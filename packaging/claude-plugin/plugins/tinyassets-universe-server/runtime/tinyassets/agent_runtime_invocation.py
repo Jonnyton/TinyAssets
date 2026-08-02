@@ -1,371 +1,771 @@
-"""Immutable records for the dark custom-agent invocation authority source."""
+"""Dark, generic admission for requester-owned custom-agent invocations.
+
+This module owns no public route and performs no provider call or external
+effect.  It turns one authenticated, process-local draft into durable,
+non-bearer provenance that later runtime stages can revalidate.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
-import re
-from dataclasses import dataclass
+import os
+import secrets
+import threading
+import weakref
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
-from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
-from tinyassets.storage.automation_activations import AutomationActivationExecutor
+# The append-only evidence contract landed concurrently with admission. Keep
+# its stable import path while isolating its record helpers from this module's
+# admission digest helpers.
+from tinyassets.agent_invocation_authority import (
+    AgentInvocationEvent,
+    AgentInvocationEventState,
+    AgentInvocationIntegrityError,
+    AgentInvocationRoot,
+)
+from tinyassets.agent_runtime import AgentRuntimeManifest, AgentRuntimeManifestInput
+from tinyassets.agent_runtime_command import AgentInvocationCommand
+from tinyassets.agent_runtime_grants import (
+    AgentRuntimeGrantEvidence,
+    AgentRuntimeGrantResolution,
+    AgentRuntimeGrantResolver,
+)
+from tinyassets.auth.middleware import (
+    current_bearer_present,
+    current_identity,
+    current_request_boundary_id,
+)
+from tinyassets.execution_subject import (
+    ExecutionSubject,
+    ExecutionSubjectKind,
+    agent_binding_automation_id,
+)
+from tinyassets.provider_work_authority import (
+    ProviderWorkBinding,
+    ProviderWorkBindingResolver,
+    ProviderWorkBindingRoot,
+    ProviderWorkBindingSeed,
+)
+from tinyassets.storage.automation_activations import (
+    AutomationActivation,
+    AutomationActivationExecutor,
+    AutomationActivationState,
+    AutomationActivationStore,
+)
 
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+AGENT_INVOCATION_OPERATION = "agent_invocation"
+AGENT_INVOCATION_ROLE = "agent_runtime"
+_MAX_INPUT_BYTES = 256 * 1024
+_ADMISSION_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 
 
-class AgentInvocationIntegrityError(RuntimeError):
-    """Persisted invocation authority evidence failed closed."""
-
-
-class AgentInvocationEventState(str, Enum):
-    ADMITTED = "admitted"
-    INVALIDATED = "invalidated"
-
-
-def _text(value: object, name: str, *, maximum: int = 512) -> str:
+def _text(value: object, name: str, *, maximum: int = 256) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
-    clean = value.strip()
-    if len(clean) > maximum:
-        raise ValueError(f"{name} exceeds {maximum} characters")
-    return clean
-
-
-def _positive(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(f"{name} must be a positive integer")
+    if len(value) > maximum:
+        raise ValueError(f"{name} is too long")
     return value
 
 
-def _digest(value: object, name: str) -> str:
-    clean = _text(value, name, maximum=71)
-    if _DIGEST.fullmatch(clean) is None:
-        raise ValueError(f"{name} must be a sha256 digest")
-    return clean
+def _integer(value: object, name: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    return value
 
 
-def _timestamp(value: object, name: str) -> str:
-    clean = _text(value, name, maximum=64)
-    try:
-        parsed = datetime.fromisoformat(clean.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an ISO-8601 timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(f"{name} must include a timezone")
-    return clean
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
+def _digest(value: object) -> str:
+    encoded = json.dumps(
         value,
-        ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        ensure_ascii=False,
         allow_nan=False,
-    )
-
-
-def _content_digest(value: object) -> str:
-    encoded = _canonical_json(value).encode("utf-8")
+    ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _subject_to_dict(subject: ExecutionSubject) -> dict[str, object]:
-    return {
-        "kind": subject.kind.value,
-        "ref": subject.ref,
-        "digest": subject.digest,
-    }
+def _admission_witness_digest(value: Mapping[str, object]) -> str:
+    """Seal one durable admission witness with server-only key material."""
+
+    secret = os.environ.get(_ADMISSION_HMAC_ENV, "").encode("utf-8")
+    if len(secret) < 32:
+        raise AgentInvocationAdmissionBlocked(
+            "admission_seal_unavailable",
+            "agent invocation admission seal is not configured",
+        )
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    sealed = hmac.new(
+        secret,
+        b"agent-invocation-admission-v1\0" + encoded,
+        hashlib.sha256,
+    ).hexdigest()
+    return f"sha256:{sealed}"
 
 
-def _subject_from_dict(value: object) -> ExecutionSubject:
-    if not isinstance(value, dict) or set(value) != {"kind", "ref", "digest"}:
-        raise ValueError("execution_subject fields do not match schema")
-    return ExecutionSubject(
-        kind=ExecutionSubjectKind(value["kind"]),
-        ref=value["ref"],
-        digest=value["digest"],
-    )
+def _digest_value(value: object, name: str) -> str:
+    text = _text(value, name)
+    if len(text) != 71 or not text.startswith("sha256:"):
+        raise ValueError(f"{name} must be a sha256 digest")
+    try:
+        int(text[7:], 16)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a sha256 digest") from exc
+    return text
+
+
+def _canonical_input(value: Mapping[str, object]) -> tuple[dict[str, Any], str]:
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("typed_input must be a non-empty object")
+    try:
+        encoded = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        detached = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("typed_input must be canonical JSON data") from exc
+    if len(encoded) > _MAX_INPUT_BYTES:
+        raise ValueError(f"typed_input exceeds {_MAX_INPUT_BYTES} bytes")
+    return detached, f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def canonical_agent_invocation_input(
+    value: Mapping[str, object],
+) -> tuple[dict[str, Any], str]:
+    """Detach and digest private typed input using the admission contract."""
+
+    return _canonical_input(value)
+
+
+class AgentInvocationAdmissionOutcome(str, Enum):
+    APPLIED = "applied"
+    REPLAYED = "replayed"
+
+
+AgentInvocationState = AgentInvocationEventState
+
+
+class AgentInvocationConflict(RuntimeError):
+    """An idempotency key was reused for different canonical intent."""
+
+
+class AgentInvocationAdmissionBlocked(PermissionError):
+    """A typed, fail-closed admission boundary refused the request."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = _text(code, "code")
+        super().__init__(_text(message, "message", maximum=512))
 
 
 @dataclass(frozen=True, slots=True)
-class AgentInvocationRoot:
-    """Immutable, non-authorizing identity written only by future admission."""
+class AgentInvocationTarget:
+    """Current server-resolved target; never accepted from request JSON."""
 
-    schema_version: int
-    invocation_id: str
-    authorizing_subject_id: str
-    authorizing_grant_generation: int
+    manifest: AgentRuntimeManifest
+    provider: str
+
+    def __post_init__(self) -> None:
+        _validated_manifest(self.manifest)
+        _text(self.provider, "provider")
+
+
+@runtime_checkable
+class AgentInvocationTargetResolver(Protocol):
+    def resolve_current(
+        self,
+        *,
+        owner_user_id: str,
+        agent_binding_id: str,
+    ) -> AgentInvocationTarget | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AgentInvocationExternalAuthoritySnapshot:
+    """Exact non-secret generations held stable through admission commit."""
+
+    owner_user_id: str
     universe_id: str
     agent_binding_id: str
-    binding_revision: int
-    execution_subject: ExecutionSubject
-    activation_automation_id: str
-    activation_epoch: int
-    executor_class: AutomationActivationExecutor
-    lease_id: str
-    typed_input_digest: str
-    command_id: str
-    command_generation: int
-    command_digest: str
-    provider_work_binding_id: str
-    provider_work_binding_generation: int
-    provider_work_binding_digest: str
-    idempotency_key_digest: str
-    request_digest: str
-    budget_digest: str
-    admission_witness_id: str
-    admission_witness_digest: str
-    created_at: str
-    root_digest: str
-
-    _FIELDS = frozenset(
-        {
-            "schema_version",
-            "invocation_id",
-            "authorizing_subject_id",
-            "authorizing_grant_generation",
-            "universe_id",
-            "agent_binding_id",
-            "binding_revision",
-            "execution_subject",
-            "activation_automation_id",
-            "activation_epoch",
-            "executor_class",
-            "lease_id",
-            "typed_input_digest",
-            "command_id",
-            "command_generation",
-            "command_digest",
-            "provider_work_binding_id",
-            "provider_work_binding_generation",
-            "provider_work_binding_digest",
-            "idempotency_key_digest",
-            "request_digest",
-            "budget_digest",
-            "admission_witness_id",
-            "admission_witness_digest",
-            "created_at",
-            "root_digest",
-        }
-    )
+    manifest_id: str
+    manifest_digest: str
+    grant_evaluated_at: float
+    grant_evidence: tuple[AgentRuntimeGrantEvidence, ...]
+    grant_evidence_set_digest: str
+    provider: str
+    assignment_generation: int
+    assignment_digest: str
+    credential_reference_digest: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
-            raise ValueError("unsupported schema_version")
         for name in (
-            "invocation_id",
-            "authorizing_subject_id",
+            "owner_user_id",
             "universe_id",
             "agent_binding_id",
-            "activation_automation_id",
-            "lease_id",
-            "command_id",
-            "provider_work_binding_id",
-            "admission_witness_id",
+            "manifest_id",
+            "provider",
         ):
             _text(getattr(self, name), name)
-        if not self.invocation_id.startswith("agent_invocation_"):
-            raise ValueError("invocation_id is not an agent invocation")
-        if not self.command_id.startswith("agent_invocation_command_"):
-            raise ValueError("command_id is not an agent invocation command")
-        if re.fullmatch(r"pwb_[0-9a-f]{32}", self.provider_work_binding_id) is None:
-            raise ValueError("provider_work_binding_id is not canonical")
         for name in (
-            "authorizing_grant_generation",
-            "binding_revision",
-            "activation_epoch",
-            "command_generation",
-            "provider_work_binding_generation",
+            "manifest_digest",
+            "grant_evidence_set_digest",
+            "assignment_digest",
+            "credential_reference_digest",
         ):
-            _positive(getattr(self, name), name)
-        if (
-            not isinstance(self.execution_subject, ExecutionSubject)
-            or self.execution_subject.kind is not ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST
+            _digest_value(getattr(self, name), name)
+        if isinstance(self.grant_evaluated_at, bool) or not isinstance(
+            self.grant_evaluated_at, (int, float)
         ):
-            raise ValueError("execution_subject must be an agent runtime manifest")
-        if not isinstance(self.executor_class, AutomationActivationExecutor):
-            raise ValueError("executor_class must be typed")
-        for name in (
-            "typed_input_digest",
-            "command_digest",
-            "provider_work_binding_digest",
-            "idempotency_key_digest",
-            "request_digest",
-            "budget_digest",
-            "admission_witness_digest",
-            "root_digest",
+            raise ValueError("grant_evaluated_at must be a timestamp")
+        if not isinstance(self.grant_evidence, tuple) or any(
+            type(item) is not AgentRuntimeGrantEvidence for item in self.grant_evidence
         ):
-            _digest(getattr(self, name), name)
-        _timestamp(self.created_at, "created_at")
-        if self.root_digest != self.computed_digest:
-            raise ValueError("root_digest does not match canonical content")
+            raise ValueError("grant_evidence must be detached typed evidence")
+        _integer(self.assignment_generation, "assignment_generation", minimum=1)
 
-    def _content_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "invocation_id": self.invocation_id,
-            "authorizing_subject_id": self.authorizing_subject_id,
-            "authorizing_grant_generation": self.authorizing_grant_generation,
-            "universe_id": self.universe_id,
-            "agent_binding_id": self.agent_binding_id,
-            "binding_revision": self.binding_revision,
-            "execution_subject": _subject_to_dict(self.execution_subject),
-            "activation_automation_id": self.activation_automation_id,
-            "activation_epoch": self.activation_epoch,
-            "executor_class": self.executor_class.value,
-            "lease_id": self.lease_id,
-            "typed_input_digest": self.typed_input_digest,
-            "command_id": self.command_id,
-            "command_generation": self.command_generation,
-            "command_digest": self.command_digest,
-            "provider_work_binding_id": self.provider_work_binding_id,
-            "provider_work_binding_generation": self.provider_work_binding_generation,
-            "provider_work_binding_digest": self.provider_work_binding_digest,
-            "idempotency_key_digest": self.idempotency_key_digest,
-            "request_digest": self.request_digest,
-            "budget_digest": self.budget_digest,
-            "admission_witness_id": self.admission_witness_id,
-            "admission_witness_digest": self.admission_witness_digest,
-            "created_at": self.created_at,
-        }
 
-    @property
-    def computed_digest(self) -> str:
-        return _content_digest(self._content_dict())
+@runtime_checkable
+class AgentInvocationExternalAuthorityFenceSource(Protocol):
+    """Linearize external authority with the admission commit.
 
-    def to_dict(self) -> dict[str, object]:
-        return {**self._content_dict(), "root_digest": self.root_digest}
+    The trusted owner validates the exact snapshot inside the same SQLite write
+    transaction that commits admission. Implementations unable to provide that
+    guarantee must return ``False``.
+    """
 
-    @classmethod
-    def build(cls, **values: Any) -> AgentInvocationRoot:
-        if "root_digest" in values:
-            raise ValueError("root_digest is server-computed")
-        provisional = object.__new__(cls)
-        for field_name in cls._FIELDS - {"root_digest"}:
-            if field_name not in values:
-                raise ValueError(f"missing {field_name}")
-            object.__setattr__(provisional, field_name, values[field_name])
-        extra = set(values) - (cls._FIELDS - {"root_digest"})
-        if extra:
-            raise ValueError("root fields do not match schema")
-        object.__setattr__(provisional, "root_digest", provisional.computed_digest)
-        provisional.__post_init__()
-        return provisional
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AgentInvocationRoot:
-        if not isinstance(data, dict) or set(data) != cls._FIELDS:
-            raise ValueError("root fields do not match schema")
-        values = dict(data)
-        values["execution_subject"] = _subject_from_dict(values["execution_subject"])
-        values["executor_class"] = AutomationActivationExecutor(values["executor_class"])
-        return cls(**values)
+    def validate_current_in_transaction(
+        self,
+        connection: object,
+        snapshot: AgentInvocationExternalAuthoritySnapshot,
+        binding: ProviderWorkBinding,
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
-class AgentInvocationEvent:
-    """One append-only invocation lifecycle event."""
+class AgentInvocationAdmissionRequest:
+    """Caller intent only; it contains no actor, target, or provider authority."""
 
-    schema_version: int
-    event_id: str
-    invocation_id: str
-    generation: int
-    state: AgentInvocationEventState
-    previous_event_digest: str | None
-    root_digest: str
-    reason_code: str | None
-    occurred_at: str
-    event_digest: str
-
-    _FIELDS = frozenset(
-        {
-            "schema_version",
-            "event_id",
-            "invocation_id",
-            "generation",
-            "state",
-            "previous_event_digest",
-            "root_digest",
-            "reason_code",
-            "occurred_at",
-            "event_digest",
-        }
-    )
+    typed_input: Mapping[str, object]
+    idempotency_key: str
+    max_tokens: int
+    max_cost_microunits: int
+    typed_input_digest: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
-            raise ValueError("unsupported schema_version")
-        for name in ("event_id", "invocation_id"):
-            _text(getattr(self, name), name)
-        if not self.event_id.startswith("agent_invocation_event_"):
-            raise ValueError("event_id is not an agent invocation event")
-        if not self.invocation_id.startswith("agent_invocation_"):
-            raise ValueError("invocation_id is not an agent invocation")
-        _positive(self.generation, "generation")
-        if not isinstance(self.state, AgentInvocationEventState):
-            raise ValueError("state must be typed")
-        if self.previous_event_digest is not None:
-            _digest(self.previous_event_digest, "previous_event_digest")
-        _digest(self.root_digest, "root_digest")
-        if self.reason_code is not None:
-            _text(self.reason_code, "reason_code", maximum=128)
-        _timestamp(self.occurred_at, "occurred_at")
-        _digest(self.event_digest, "event_digest")
-        if self.event_digest != self.computed_digest:
-            raise ValueError("event_digest does not match canonical content")
+        detached, digest = _canonical_input(self.typed_input)
+        object.__setattr__(self, "typed_input", detached)
+        object.__setattr__(self, "typed_input_digest", digest)
+        _text(self.idempotency_key, "idempotency_key", maximum=128)
+        _integer(self.max_tokens, "max_tokens")
+        _integer(self.max_cost_microunits, "max_cost_microunits")
 
-    def _content_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "event_id": self.event_id,
-            "invocation_id": self.invocation_id,
-            "generation": self.generation,
-            "state": self.state.value,
-            "previous_event_digest": self.previous_event_digest,
-            "root_digest": self.root_digest,
-            "reason_code": self.reason_code,
-            "occurred_at": self.occurred_at,
-        }
 
-    @property
-    def computed_digest(self) -> str:
-        return _content_digest(self._content_dict())
+@dataclass(frozen=True, slots=True)
+class AgentInvocationAdmissionResult:
+    outcome: AgentInvocationAdmissionOutcome
+    binding: ProviderWorkBinding
+    command: AgentInvocationCommand
+    invocation: AgentInvocationRoot
 
     def to_dict(self) -> dict[str, object]:
-        return {**self._content_dict(), "event_digest": self.event_digest}
+        return {
+            "outcome": self.outcome.value,
+            "binding": self.binding.to_dict(),
+            "command": self.command.to_dict(),
+            "invocation": self.invocation.to_dict(),
+        }
 
-    @classmethod
-    def build(cls, **values: Any) -> AgentInvocationEvent:
-        if "event_digest" in values:
-            raise ValueError("event_digest is server-computed")
-        provisional = object.__new__(cls)
-        for field_name in cls._FIELDS - {"event_digest"}:
-            if field_name not in values:
-                raise ValueError(f"missing {field_name}")
-            object.__setattr__(provisional, field_name, values[field_name])
-        extra = set(values) - (cls._FIELDS - {"event_digest"})
-        if extra:
-            raise ValueError("event fields do not match schema")
-        object.__setattr__(provisional, "event_digest", provisional.computed_digest)
-        provisional.__post_init__()
-        return provisional
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AgentInvocationEvent:
-        if not isinstance(data, dict) or set(data) != cls._FIELDS:
-            raise ValueError("event fields do not match schema")
-        values = dict(data)
-        values["state"] = AgentInvocationEventState(values["state"])
-        return cls(**values)
+@dataclass(frozen=True, slots=True)
+class _DraftPayload:
+    service_id: str
+    owner_user_id: str
+    agent_binding_id: str
+    target: AgentInvocationTarget
+    activation: AutomationActivation
+    grants: AgentRuntimeGrantResolution
+    provider_seed: ProviderWorkBindingSeed
+    request_boundary_id: str
+
+
+class LiveProviderWorkBindingDraft:
+    """One-use in-process proof that authenticated intent is still live."""
+
+    __slots__ = ("_draft_id", "_seal", "__weakref__")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("LiveProviderWorkBindingDraft must be request-boundary minted")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("LiveProviderWorkBindingDraft is immutable")
+
+    def __reduce__(self):
+        raise TypeError("LiveProviderWorkBindingDraft is non-serializable")
+
+
+@dataclass(frozen=True, slots=True)
+class _StoreAdmissionPayload:
+    owner_user_id: str
+    manifest: AgentRuntimeManifest
+    activation: AutomationActivation
+    grants: AgentRuntimeGrantResolution
+    provider_seed: ProviderWorkBindingSeed
+    typed_input_digest: str
+    idempotency_key: str
+    max_tokens: int
+    max_cost_microunits: int
+    request_boundary_digest: str
+    external_authority_snapshot: AgentInvocationExternalAuthoritySnapshot
+
+
+class _AgentInvocationStoreGrant:
+    __slots__ = ("_grant_id", "_seal", "__weakref__")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("agent invocation store grants are admission-issued")
+
+
+_CAPABILITY_KEY = secrets.token_bytes(32)
+_CAPABILITY_LOCK = threading.Lock()
+_DRAFTS: dict[
+    str,
+    tuple[weakref.ReferenceType[LiveProviderWorkBindingDraft], _DraftPayload],
+] = {}
+_STORE_GRANTS: dict[
+    str,
+    tuple[weakref.ReferenceType[_AgentInvocationStoreGrant], _StoreAdmissionPayload],
+] = {}
+
+
+def _seal(kind: str, identifier: str) -> bytes:
+    return hmac.digest(_CAPABILITY_KEY, f"{kind}\0{identifier}".encode(), "sha256")
+
+
+def _discard_draft(identifier: str) -> None:
+    with _CAPABILITY_LOCK:
+        _DRAFTS.pop(identifier, None)
+
+
+def _discard_store_grant(identifier: str) -> None:
+    with _CAPABILITY_LOCK:
+        _STORE_GRANTS.pop(identifier, None)
+
+
+def _mint_draft(payload: _DraftPayload) -> LiveProviderWorkBindingDraft:
+    identifier = secrets.token_hex(32)
+    draft = object.__new__(LiveProviderWorkBindingDraft)
+    object.__setattr__(draft, "_draft_id", identifier)
+    object.__setattr__(draft, "_seal", _seal("draft", identifier))
+    with _CAPABILITY_LOCK:
+        _DRAFTS[identifier] = (weakref.ref(draft), payload)
+    weakref.finalize(draft, _discard_draft, identifier)
+    return draft
+
+
+def _consume_draft(
+    draft: LiveProviderWorkBindingDraft,
+    *,
+    service_id: str,
+) -> _DraftPayload:
+    try:
+        exact = type(draft) is LiveProviderWorkBindingDraft and hmac.compare_digest(
+            draft._seal, _seal("draft", draft._draft_id)
+        )
+    except (AttributeError, TypeError):
+        exact = False
+    if not exact:
+        raise AgentInvocationAdmissionBlocked(
+            "draft_invalid",
+            "the live provider binding draft is not server-issued",
+        )
+    with _CAPABILITY_LOCK:
+        entry = _DRAFTS.get(draft._draft_id)
+        if entry is not None and entry[0]() is draft and entry[1].service_id == service_id:
+            _DRAFTS.pop(draft._draft_id, None)
+        else:
+            entry = None
+    if entry is None:
+        raise AgentInvocationAdmissionBlocked(
+            "draft_consumed",
+            "the live provider binding draft was already consumed",
+        )
+    payload = entry[1]
+    return payload
+
+
+def _issue_store_grant(payload: _StoreAdmissionPayload) -> _AgentInvocationStoreGrant:
+    identifier = secrets.token_hex(32)
+    grant = object.__new__(_AgentInvocationStoreGrant)
+    object.__setattr__(grant, "_grant_id", identifier)
+    object.__setattr__(grant, "_seal", _seal("store", identifier))
+    with _CAPABILITY_LOCK:
+        _STORE_GRANTS[identifier] = (weakref.ref(grant), payload)
+    weakref.finalize(grant, _discard_store_grant, identifier)
+    return grant
+
+
+def _consume_store_grant(grant: _AgentInvocationStoreGrant) -> _StoreAdmissionPayload:
+    try:
+        exact = type(grant) is _AgentInvocationStoreGrant and hmac.compare_digest(
+            grant._seal, _seal("store", grant._grant_id)
+        )
+    except (AttributeError, TypeError):
+        exact = False
+    if not exact:
+        raise AgentInvocationAdmissionBlocked(
+            "store_grant_invalid",
+            "agent invocation persistence requires an admission-issued grant",
+        )
+    with _CAPABILITY_LOCK:
+        entry = _STORE_GRANTS.get(grant._grant_id)
+        if entry is not None and entry[0]() is grant:
+            _STORE_GRANTS.pop(grant._grant_id, None)
+        else:
+            entry = None
+    if entry is None:
+        raise AgentInvocationAdmissionBlocked(
+            "store_grant_consumed",
+            "agent invocation persistence grant was already consumed",
+        )
+    return entry[1]
+
+
+def _validated_manifest(manifest: object) -> AgentRuntimeManifest:
+    try:
+        if type(manifest) is not AgentRuntimeManifest:
+            raise TypeError
+        detached_input = AgentRuntimeManifestInput.from_dict(manifest.manifest_input.to_dict())
+        detached = AgentRuntimeManifest(
+            manifest_id=manifest.manifest_id,
+            manifest_digest=manifest.manifest_digest,
+            manifest_input=detached_input,
+            created_at=manifest.created_at,
+        )
+        if detached != manifest:
+            raise ValueError
+        return detached
+    except Exception:
+        raise AgentInvocationAdmissionBlocked(
+            "manifest_invalid",
+            "the current agent manifest is invalid",
+        ) from None
+
+
+def _target_parts(target: AgentInvocationTarget, *, owner: str, binding: str) -> dict[str, Any]:
+    if type(target) is not AgentInvocationTarget:
+        raise AgentInvocationAdmissionBlocked(
+            "target_unavailable",
+            "the current agent target is unavailable",
+        )
+    manifest = _validated_manifest(target.manifest)
+    content = manifest.manifest_input.to_dict()
+    exact = (
+        content["owner_user_id"] == owner,
+        content["agent_binding_id"] == binding,
+        bool(target.provider.strip()),
+    )
+    if not all(exact):
+        raise AgentInvocationAdmissionBlocked(
+            "target_mismatch",
+            "the current agent target does not match authenticated intent",
+        )
+    return content
+
+
+def _same_grants(left: AgentRuntimeGrantResolution, right: AgentRuntimeGrantResolution) -> bool:
+    return (
+        left.manifest_id == right.manifest_id
+        and left.manifest_digest == right.manifest_digest
+        and left.evidence == right.evidence
+        and left.blockers == right.blockers
+        and left.evidence_set_digest == right.evidence_set_digest
+    )
+
+
+class AgentInvocationAdmissionService:
+    """Trusted composition root for live-boundary invocation admission."""
+
+    def __init__(
+        self,
+        base_path: str | Path,
+        *,
+        target_resolver: AgentInvocationTargetResolver,
+        grant_resolver: AgentRuntimeGrantResolver,
+        provider_binding_resolver: ProviderWorkBindingResolver,
+        external_authority_fence_source: AgentInvocationExternalAuthorityFenceSource | None = None,
+        clock: Callable[[], datetime] | None = None,
+        busy_timeout_ms: int = 30_000,
+    ) -> None:
+        if not isinstance(target_resolver, AgentInvocationTargetResolver):
+            raise ValueError("target_resolver must be server-owned")
+        if not isinstance(grant_resolver, AgentRuntimeGrantResolver):
+            raise ValueError("grant_resolver must be server-owned")
+        if not isinstance(provider_binding_resolver, ProviderWorkBindingResolver):
+            raise ValueError("provider_binding_resolver must be server-owned")
+        from tinyassets.storage.agent_runtime_invocation import (
+            SQLiteAgentInvocationExternalAuthorityFenceSource,
+            SQLiteAgentRuntimeInvocationStore,
+        )
+
+        fence_source = external_authority_fence_source or (
+            SQLiteAgentInvocationExternalAuthorityFenceSource(
+                base_path,
+                grant_resolver=grant_resolver,
+                clock=clock,
+            )
+        )
+        if not isinstance(fence_source, AgentInvocationExternalAuthorityFenceSource):
+            raise ValueError("external_authority_fence_source must be server-owned")
+
+        self._service_id = secrets.token_hex(32)
+        self._target_resolver = target_resolver
+        self._grant_resolver = grant_resolver
+        self._provider_binding_resolver = provider_binding_resolver
+        self._activation_store = AutomationActivationStore(
+            base_path,
+            busy_timeout_ms=busy_timeout_ms,
+            clock=clock,
+        )
+        self.store = SQLiteAgentRuntimeInvocationStore(
+            base_path,
+            external_authority_fence_source=fence_source,
+            busy_timeout_ms=busy_timeout_ms,
+            clock=clock,
+        )
+
+    def _resolve_external(
+        self,
+        *,
+        owner: str,
+        binding: str,
+    ) -> tuple[
+        AgentInvocationTarget,
+        AgentRuntimeGrantResolution,
+        ProviderWorkBindingSeed,
+    ]:
+        target = self._target_resolver.resolve_current(
+            owner_user_id=owner,
+            agent_binding_id=binding,
+        )
+        content = _target_parts(target, owner=owner, binding=binding)  # type: ignore[arg-type]
+        assert target is not None
+        grants = self._grant_resolver.resolve(target.manifest)
+        if not grants.ready:
+            raise AgentInvocationAdmissionBlocked(
+                "grant_not_current",
+                "one or more requested grants are not current",
+            )
+        root = ProviderWorkBindingRoot(
+            owner_user_id=owner,
+            universe_id=str(content["universe_id"]),
+            provider=target.provider,
+        )
+        provider_seed = self._provider_binding_resolver.resolve(root)
+        if type(provider_seed) is not ProviderWorkBindingSeed:
+            raise AgentInvocationAdmissionBlocked(
+                "provider_assignment_unavailable",
+                "the requester-owned provider assignment is unavailable",
+            )
+        exact_seed = (
+            provider_seed.owner_user_id == root.owner_user_id,
+            provider_seed.universe_id == root.universe_id,
+            provider_seed.provider == root.provider,
+            AGENT_INVOCATION_OPERATION in provider_seed.allowed_operations,
+            AGENT_INVOCATION_ROLE in provider_seed.allowed_roles,
+        )
+        if not all(exact_seed):
+            raise AgentInvocationAdmissionBlocked(
+                "provider_assignment_mismatch",
+                "the requester-owned provider assignment does not admit agent invocation",
+            )
+        return target, grants, provider_seed
+
+    def _resolve(
+        self,
+        *,
+        owner: str,
+        binding: str,
+        request_boundary_id: str,
+    ) -> _DraftPayload:
+        target, grants, provider_seed = self._resolve_external(
+            owner=owner,
+            binding=binding,
+        )
+        content = target.manifest.manifest_input.to_dict()
+        automation_id = agent_binding_automation_id(binding)
+        activation = self._activation_store.get(str(content["universe_id"]), automation_id)
+        expected_subject = ExecutionSubject(
+            kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
+            ref=target.manifest.manifest_id,
+            digest=target.manifest.manifest_digest,
+        )
+        if (
+            type(activation) is not AutomationActivation
+            or activation.state is not AutomationActivationState.ACTIVE
+            or activation.subject != expected_subject
+            or activation.executor_class is not AutomationActivationExecutor.CLOUD
+        ):
+            raise AgentInvocationAdmissionBlocked(
+                "activation_not_current",
+                "the exact cloud agent activation is not current",
+            )
+        return _DraftPayload(
+            service_id=self._service_id,
+            owner_user_id=owner,
+            agent_binding_id=binding,
+            target=target,
+            activation=activation,
+            grants=grants,
+            provider_seed=provider_seed,
+            request_boundary_id=request_boundary_id,
+        )
+
+    def capture_live_provider_binding_draft(
+        self,
+        *,
+        agent_binding_id: str,
+    ) -> LiveProviderWorkBindingDraft:
+        binding = _text(agent_binding_id, "agent_binding_id")
+        identity = current_identity()
+        owner = (getattr(identity, "user_id", "") or "").strip()
+        boundary_id = current_request_boundary_id()
+        if not current_bearer_present() or not owner or owner == "anonymous" or boundary_id is None:
+            raise AgentInvocationAdmissionBlocked(
+                "authentication_required",
+                "a live authenticated request is required",
+            )
+        return _mint_draft(
+            self._resolve(
+                owner=owner,
+                binding=binding,
+                request_boundary_id=boundary_id,
+            )
+        )
+
+    def admit(
+        self,
+        draft: LiveProviderWorkBindingDraft,
+        request: AgentInvocationAdmissionRequest,
+    ) -> AgentInvocationAdmissionResult:
+        if type(request) is not AgentInvocationAdmissionRequest:
+            raise ValueError("request must be an AgentInvocationAdmissionRequest")
+        payload = _consume_draft(draft, service_id=self._service_id)
+        identity = current_identity()
+        current_owner = (getattr(identity, "user_id", "") or "").strip()
+        boundary_id = current_request_boundary_id()
+        if (
+            not current_bearer_present()
+            or current_owner != payload.owner_user_id
+            or boundary_id != payload.request_boundary_id
+        ):
+            raise AgentInvocationAdmissionBlocked(
+                "live_request_ended",
+                "the live request boundary ended before admission",
+            )
+        current = self._resolve(
+            owner=payload.owner_user_id,
+            binding=payload.agent_binding_id,
+            request_boundary_id=payload.request_boundary_id,
+        )
+        unchanged = (
+            current.target == payload.target,
+            current.activation == payload.activation,
+            _same_grants(current.grants, payload.grants),
+            current.provider_seed == payload.provider_seed,
+        )
+        if not all(unchanged):
+            raise AgentInvocationAdmissionBlocked(
+                "authority_changed",
+                "agent invocation authority changed during the live request",
+            )
+        manifest_budgets = current.target.manifest.manifest_input.to_dict()["budgets"]
+        assert isinstance(manifest_budgets, dict)
+        allowed = (
+            request.max_tokens <= int(manifest_budgets.get("max_tokens", 0)),
+            request.max_cost_microunits <= int(manifest_budgets.get("max_cost_microunits", 0)),
+            request.max_tokens <= current.provider_seed.max_tokens,
+            request.max_cost_microunits <= current.provider_seed.max_cost_microunits,
+        )
+        if not all(allowed):
+            raise AgentInvocationAdmissionBlocked(
+                "budget_exceeded",
+                "the requested invocation budget exceeds a current budget envelope",
+            )
+        snapshot = _external_authority_snapshot(current)
+        grant = _issue_store_grant(
+            _StoreAdmissionPayload(
+                owner_user_id=payload.owner_user_id,
+                manifest=current.target.manifest,
+                activation=current.activation,
+                grants=current.grants,
+                provider_seed=current.provider_seed,
+                typed_input_digest=request.typed_input_digest,
+                idempotency_key=request.idempotency_key,
+                max_tokens=request.max_tokens,
+                max_cost_microunits=request.max_cost_microunits,
+                request_boundary_digest=_digest(
+                    {"request_boundary_id": payload.request_boundary_id}
+                ),
+                external_authority_snapshot=snapshot,
+            )
+        )
+        return self.store.admit(grant)
+
+
+def _external_authority_snapshot(
+    payload: _DraftPayload,
+) -> AgentInvocationExternalAuthoritySnapshot:
+    content = payload.target.manifest.manifest_input.to_dict()
+    seed = payload.provider_seed
+    return AgentInvocationExternalAuthoritySnapshot(
+        owner_user_id=payload.owner_user_id,
+        universe_id=str(content["universe_id"]),
+        agent_binding_id=payload.agent_binding_id,
+        manifest_id=payload.target.manifest.manifest_id,
+        manifest_digest=payload.target.manifest.manifest_digest,
+        grant_evaluated_at=payload.grants.evaluated_at,
+        grant_evidence=tuple(payload.grants.evidence),
+        grant_evidence_set_digest=payload.grants.evidence_set_digest,
+        provider=seed.provider,
+        assignment_generation=seed.assignment_generation,
+        assignment_digest=seed.assignment_digest,
+        credential_reference_digest=seed.credential_reference_digest,
+    )
 
 
 __all__ = [
+    "AGENT_INVOCATION_OPERATION",
+    "AGENT_INVOCATION_ROLE",
+    "AgentInvocationAdmissionBlocked",
+    "AgentInvocationAdmissionOutcome",
+    "AgentInvocationAdmissionRequest",
+    "AgentInvocationAdmissionResult",
+    "AgentInvocationAdmissionService",
+    "AgentInvocationCommand",
+    "canonical_agent_invocation_input",
+    "AgentInvocationConflict",
+    "AgentInvocationExternalAuthorityFenceSource",
+    "AgentInvocationExternalAuthoritySnapshot",
     "AgentInvocationEvent",
     "AgentInvocationEventState",
     "AgentInvocationIntegrityError",
     "AgentInvocationRoot",
+    "AgentInvocationState",
+    "AgentInvocationTarget",
+    "AgentInvocationTargetResolver",
+    "LiveProviderWorkBindingDraft",
 ]

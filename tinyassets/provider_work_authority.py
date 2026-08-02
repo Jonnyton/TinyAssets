@@ -20,6 +20,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ContextManager, Protocol, runtime_checkable
 
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
+
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,254}$")
 _PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
@@ -165,6 +167,17 @@ class ProviderWorkBindingResolver(Protocol):
     ) -> ProviderWorkBindingSeed | None: ...
 
 
+@runtime_checkable
+class ProviderWorkTransactionalBindingResolver(Protocol):
+    """Resolve the canonical current assignment inside the caller's fence."""
+
+    def resolve_current_in_transaction(
+        self,
+        connection: object,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingSeed | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderWorkBinding:
     schema_version: int
@@ -249,7 +262,7 @@ class ProviderWorkBinding:
             raise ValueError("revoked binding requires revocation generation")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "binding_id": self.binding_id,
             "generation": self.generation,
@@ -271,6 +284,7 @@ class ProviderWorkBinding:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProviderWorkBinding:
@@ -323,7 +337,7 @@ class ProviderInvocationReservationState(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
-_WORK_ITEM_KINDS = frozenset({"background_attempt", "branch_task", "run"})
+_WORK_ITEM_KINDS = frozenset({"agent_invocation", "background_attempt", "branch_task", "run"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,15 +351,48 @@ class ProviderUniverseWorkRoot:
         _reference(self.work_item_id, "work_item_id")
 
 
+def _validate_work_lineage(
+    *,
+    work_item_kind: str,
+    execution_subject: ExecutionSubject,
+    branch_def_id: str | None,
+    branch_version_id: str | None,
+    agent_invocation_command_id: str | None,
+    agent_invocation_command_digest: str | None,
+    agent_invocation_generation: int | None,
+) -> None:
+    if work_item_kind == "agent_invocation":
+        if execution_subject.kind is not ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST:
+            raise ValueError("agent invocation requires an agent runtime manifest subject")
+        if branch_def_id is not None or branch_version_id is not None:
+            raise ValueError("agent invocation cannot carry Branch lineage")
+        _reference(agent_invocation_command_id, "agent_invocation_command_id")
+        _digest(agent_invocation_command_digest, "agent_invocation_command_digest")
+        _integer(agent_invocation_generation, "agent_invocation_generation", minimum=1)
+        return
+    if execution_subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
+        raise ValueError("Branch provider work requires a branch version subject")
+    _reference(branch_def_id, "branch_def_id")
+    _reference(branch_version_id, "branch_version_id")
+    if any(
+        value is not None
+        for value in (
+            agent_invocation_command_id,
+            agent_invocation_command_digest,
+            agent_invocation_generation,
+        )
+    ):
+        raise ValueError("Branch provider work cannot carry agent invocation lineage")
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderUniverseWorkAuthority:
     """Transient facts returned only by a trusted server-owned resolver."""
 
     root: ProviderUniverseWorkRoot
     binding: ProviderWorkBinding
+    principal_id: str
     actor_id: str
-    branch_def_id: str
-    branch_version_id: str
     operation: str
     role: str
     executor_class: str
@@ -353,20 +400,31 @@ class ProviderUniverseWorkAuthority:
     max_tokens: int
     max_cost_microunits: int
     expires_at: str
+    execution_subject: ExecutionSubject
+    branch_def_id: str | None = None
+    branch_version_id: str | None = None
+    agent_invocation_command_id: str | None = None
+    agent_invocation_command_digest: str | None = None
+    agent_invocation_generation: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.root, ProviderUniverseWorkRoot):
             raise ValueError("root must be a ProviderUniverseWorkRoot")
         if not isinstance(self.binding, ProviderWorkBinding):
             raise ValueError("binding must be a ProviderWorkBinding")
-        for name in (
-            "actor_id",
-            "branch_def_id",
-            "branch_version_id",
-            "operation",
-            "role",
-        ):
+        for name in ("principal_id", "actor_id", "operation", "role"):
             _reference(getattr(self, name), name)
+        if not isinstance(self.execution_subject, ExecutionSubject):
+            raise ValueError("execution_subject must be typed")
+        _validate_work_lineage(
+            work_item_kind=self.root.work_item_kind,
+            execution_subject=self.execution_subject,
+            branch_def_id=self.branch_def_id,
+            branch_version_id=self.branch_version_id,
+            agent_invocation_command_id=self.agent_invocation_command_id,
+            agent_invocation_command_digest=self.agent_invocation_command_digest,
+            agent_invocation_generation=self.agent_invocation_generation,
+        )
         if self.executor_class != "cloud":
             raise ValueError("executor_class must be cloud")
         _integer(self.max_invocations, "max_invocations", minimum=1)
@@ -403,8 +461,8 @@ class ProviderUniverseWorkReceipt:
     principal_id: str
     actor_id: str
     universe_id: str
-    branch_def_id: str
-    branch_version_id: str
+    branch_def_id: str | None
+    branch_version_id: str | None
     provider: str
     credential_reference_digest: str
     assignment_generation: int
@@ -417,8 +475,12 @@ class ProviderUniverseWorkReceipt:
     max_cost_microunits: int
     expires_at: str
     created_at: str
+    execution_subject: ExecutionSubject | None = None
+    agent_invocation_command_id: str | None = None
+    agent_invocation_command_digest: str | None = None
+    agent_invocation_generation: int | None = None
 
-    _FIELDS = frozenset(
+    _FIELDS_V1 = frozenset(
         {
             "schema_version",
             "receipt_id",
@@ -450,9 +512,17 @@ class ProviderUniverseWorkReceipt:
             "created_at",
         }
     )
+    _FIELDS_V2 = _FIELDS_V1 | frozenset(
+        {
+            "execution_subject",
+            "agent_invocation_command_id",
+            "agent_invocation_command_digest",
+            "agent_invocation_generation",
+        }
+    )
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version not in {1, 2}:
             raise ValueError("unsupported schema_version")
         if not isinstance(self.state, ProviderWorkReceiptState):
             raise ValueError("state must be typed")
@@ -465,11 +535,36 @@ class ProviderUniverseWorkReceipt:
             "principal_id",
             "actor_id",
             "universe_id",
-            "branch_def_id",
-            "branch_version_id",
             "provider",
         ):
             _reference(getattr(self, name), name)
+        if self.schema_version == 1:
+            if self.work_item_kind == "agent_invocation":
+                raise ValueError("agent invocation receipts require schema_version 2")
+            _reference(self.branch_def_id, "branch_def_id")
+            _reference(self.branch_version_id, "branch_version_id")
+            if any(
+                value is not None
+                for value in (
+                    self.execution_subject,
+                    self.agent_invocation_command_id,
+                    self.agent_invocation_command_digest,
+                    self.agent_invocation_generation,
+                )
+            ):
+                raise ValueError("schema_version 1 cannot carry typed lineage")
+        else:
+            if not isinstance(self.execution_subject, ExecutionSubject):
+                raise ValueError("execution_subject must be typed")
+            _validate_work_lineage(
+                work_item_kind=self.work_item_kind,
+                execution_subject=self.execution_subject,
+                branch_def_id=self.branch_def_id,
+                branch_version_id=self.branch_version_id,
+                agent_invocation_command_id=self.agent_invocation_command_id,
+                agent_invocation_command_digest=self.agent_invocation_command_digest,
+                agent_invocation_generation=self.agent_invocation_generation,
+            )
         _digest(self.receipt_digest, "receipt_digest")
         _integer(self.generation, "generation", minimum=1)
         _integer(self.binding_generation, "binding_generation", minimum=1)
@@ -508,7 +603,7 @@ class ProviderUniverseWorkReceipt:
         _timestamp(self.created_at, "created_at")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "receipt_id": self.receipt_id,
             "receipt_digest": self.receipt_digest,
@@ -538,15 +633,39 @@ class ProviderUniverseWorkReceipt:
             "expires_at": self.expires_at,
             "created_at": self.created_at,
         }
+        if self.schema_version == 2:
+            assert self.execution_subject is not None
+            payload.update(
+                {
+                    "execution_subject": self.execution_subject.to_dict(),
+                    "agent_invocation_command_id": self.agent_invocation_command_id,
+                    "agent_invocation_command_digest": self.agent_invocation_command_digest,
+                    "agent_invocation_generation": self.agent_invocation_generation,
+                }
+            )
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProviderUniverseWorkReceipt:
-        if not isinstance(data, dict) or set(data) != cls._FIELDS:
+        if not isinstance(data, dict):
+            raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
+        schema_version = data.get("schema_version")
+        expected = cls._FIELDS_V1 if schema_version == 1 else cls._FIELDS_V2
+        if set(data) != expected:
             raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
         values = dict(data)
         values["state"] = ProviderWorkReceiptState(values["state"])
         values["allowed_operations"] = tuple(values["allowed_operations"])
         values["allowed_roles"] = tuple(values["allowed_roles"])
+        if schema_version == 1:
+            values.update(
+                execution_subject=None,
+                agent_invocation_command_id=None,
+                agent_invocation_command_digest=None,
+                agent_invocation_generation=None,
+            )
+        else:
+            values["execution_subject"] = ExecutionSubject.from_dict(values["execution_subject"])
         return cls(**values)
 
     def expected_digest(self) -> str:
@@ -1096,7 +1215,7 @@ def _receipt_from_authority(
 ) -> ProviderUniverseWorkReceipt:
     binding = authority.binding
     provisional = ProviderUniverseWorkReceipt(
-        schema_version=1,
+        schema_version=2,
         receipt_id=provider_work_receipt_id(
             universe_id=binding.universe_id,
             root=authority.root,
@@ -1110,7 +1229,7 @@ def _receipt_from_authority(
         binding_generation=binding.generation,
         binding_digest=binding.binding_digest,
         binding_revocation_generation=binding.revocation_generation,
-        principal_id=binding.owner_user_id,
+        principal_id=authority.principal_id,
         actor_id=authority.actor_id,
         universe_id=binding.universe_id,
         branch_def_id=authority.branch_def_id,
@@ -1127,6 +1246,10 @@ def _receipt_from_authority(
         max_cost_microunits=authority.max_cost_microunits,
         expires_at=authority.expires_at,
         created_at=created_at,
+        execution_subject=authority.execution_subject,
+        agent_invocation_command_id=authority.agent_invocation_command_id,
+        agent_invocation_command_digest=authority.agent_invocation_command_digest,
+        agent_invocation_generation=authority.agent_invocation_generation,
     )
     return replace(
         provisional,
@@ -1380,6 +1503,7 @@ __all__ = [
     "ProviderWorkBinding",
     "ProviderWorkBindingFence",
     "ProviderWorkBindingResolver",
+    "ProviderWorkTransactionalBindingResolver",
     "ProviderWorkBindingRoot",
     "ProviderWorkBindingSeed",
     "ProviderWorkBindingService",
