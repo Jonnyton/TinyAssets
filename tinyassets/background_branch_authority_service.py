@@ -486,6 +486,8 @@ class BackgroundBranchAuthorityOwnerRecord:
             self.attempt, BackgroundBranchAttemptFence
         ):
             raise ValueError("attempt must be a typed fence")
+        if self.attempt is not None and self.binding is None:
+            raise ValueError("attempt requires a binding fence")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1545,6 +1547,14 @@ class BackgroundBranchAuthorityHoldService:
         recovered_at: str,
     ) -> BackgroundBranchAuthorityOwnerWriteResult:
         current = self._held(expected)
+        if (
+            current.hold_reason
+            is not BackgroundBranchHoldReason.INDETERMINATE_PRIOR_ATTEMPT
+        ):
+            self._fail(
+                "reauthorization_required",
+                "this authority failure requires authenticated repair",
+            )
         resolution = self._resolve(
             current,
             BackgroundBranchAuthorityExitAction.RECOVER,
@@ -1616,16 +1626,33 @@ class BackgroundBranchAuthorityHoldService:
                 "binding_authority_mismatch",
                 "reauthorized binding changed the authority owner",
             )
-        if (
-            current.binding is not None
-            and binding.generation
-            <= current.binding.expected_record.generation
-        ):
+        if current.binding is None:
+            self._fail(
+                "binding_rotation_unprovable",
+                "authenticated repair requires the held binding fence",
+            )
+        held_binding = current.binding.expected_record
+        if binding.binding_id != held_binding.binding_id:
+            self._fail(
+                "binding_lineage_mismatch",
+                "authenticated repair cannot replace the binding lineage",
+            )
+        if binding.generation <= held_binding.generation:
             self._fail(
                 "binding_not_rotated",
                 "authenticated repair must advance the binding generation",
             )
         attempt = resolution.attempt
+        if (
+            current.attempt is not None
+            and attempt is not None
+            and attempt.attempt_id
+            == current.attempt.expected_record.attempt_id
+        ):
+            self._fail(
+                "stale_attempt_revived",
+                "reauthorization cannot revive the held attempt",
+            )
         if current.owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK:
             if attempt is None:
                 self._fail(
@@ -1633,15 +1660,6 @@ class BackgroundBranchAuthorityHoldService:
                     "queue reauthorization requires a fresh reserved attempt",
                 )
             assert attempt is not None
-            if (
-                current.attempt is not None
-                and attempt.attempt_id
-                == current.attempt.expected_record.attempt_id
-            ):
-                self._fail(
-                    "stale_attempt_revived",
-                    "reauthorization cannot revive the held attempt",
-                )
             self._validate_attempt(binding, attempt, current.universe_id)
         elif attempt is not None:
             self._validate_attempt(binding, attempt, current.universe_id)
@@ -1736,7 +1754,57 @@ class BackgroundBranchAuthorityHoldService:
                 "recovery_rotated_attempt",
                 "automatic recovery must advance the same attempt claim",
             )
+        self._validate_recovered_attempt(
+            current.attempt.expected_record,
+            attempt,
+        )
         self._validate_attempt(binding, attempt, current.universe_id)
+
+    def _validate_recovered_attempt(
+        self,
+        previous: BackgroundBranchAttempt,
+        recovered: BackgroundBranchAttempt,
+    ) -> None:
+        if (
+            recovered.claim_generation <= previous.claim_generation
+            or recovered.lease_generation <= previous.lease_generation
+            or recovered.lease_expires_at is not None
+        ):
+            self._fail(
+                "recovery_attempt_mutated",
+                "recovery must advance claim/lease fences and clear the lease",
+            )
+        if replace(
+            recovered.executor_audience,
+            worker_id=previous.executor_audience.worker_id,
+        ) != previous.executor_audience:
+            self._fail(
+                "recovery_attempt_mutated",
+                "recovery cannot change the executor domain",
+            )
+        if replace(
+            recovered.provenance,
+            worker_id=previous.provenance.worker_id,
+        ) != previous.provenance:
+            self._fail(
+                "recovery_attempt_mutated",
+                "recovery cannot change attempt provenance except worker",
+            )
+        normalized = replace(
+            recovered,
+            executor_audience=previous.executor_audience,
+            claim_generation=previous.claim_generation,
+            lease_generation=previous.lease_generation,
+            lease_expires_at=previous.lease_expires_at,
+            lifecycle=previous.lifecycle,
+            updated_at=previous.updated_at,
+            provenance=previous.provenance,
+        )
+        if normalized != previous:
+            self._fail(
+                "recovery_attempt_mutated",
+                "recovery changed immutable attempt authority",
+            )
 
     @staticmethod
     def _resume_state(
