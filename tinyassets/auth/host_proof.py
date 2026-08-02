@@ -26,6 +26,9 @@ _MAX_SIGNING_INPUT_B64U = 8192
 _MAX_ISSUER_OR_AUDIENCE = 2048
 _MAX_SUBJECT = 512
 _MAX_PRINCIPAL_ID = 256
+_I_JSON_MAX_INTEGER = 9_007_199_254_740_991
+# No revocation reason values were approved in the frozen v1 artifacts.
+REVOCATION_REASON_CODES: frozenset[str] = frozenset()
 
 HOST_BINDING_REFUSAL = MappingProxyType(
     {
@@ -354,10 +357,14 @@ def _validate_wire_semantics(dto_name: str, payload: dict[str, Any]) -> None:
         "accepted_generation",
         "max_concurrent",
     ):
-        if field in payload and (type(payload[field]) is not int or payload[field] < 1):
+        if field in payload and (
+            type(payload[field]) is not int or not 1 <= payload[field] <= _I_JSON_MAX_INTEGER
+        ):
             raise HostProofRefused
     for field in ("issued_at", "expires_at"):
-        if field in payload and (type(payload[field]) is not int or payload[field] < 0):
+        if field in payload and (
+            type(payload[field]) is not int or not 0 <= payload[field] <= _I_JSON_MAX_INTEGER
+        ):
             raise HostProofRefused
     if "limit" in payload and (
         type(payload["limit"]) is not int or not 1 <= payload["limit"] <= 100
@@ -383,6 +390,8 @@ def _validate_wire_semantics(dto_name: str, payload: dict[str, Any]) -> None:
         len(payload["device_label"]) > 64
         or payload["device_label"] != _nfc(payload["device_label"])
     ):
+        raise HostProofRefused
+    if "reason_code" in payload and payload["reason_code"] not in REVOCATION_REASON_CODES:
         raise HostProofRefused
 
     if dto_name == "HostChallengeRequestV1":
@@ -463,6 +472,8 @@ def _nfc(value: str) -> str:
 
 
 def _finite_nonnegative(value: int | float) -> bool:
+    if type(value) is int:
+        return 0 <= value <= _I_JSON_MAX_INTEGER
     return math.isfinite(value) and value >= 0
 
 

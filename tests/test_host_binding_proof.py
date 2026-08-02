@@ -441,6 +441,34 @@ def test_session_registration_closes_current_host_pool_enums_types_and_ranges() 
             parse_wire_dto("SessionRegisterIntentV1", rfc8785.dumps({**valid, field: value}))
 
 
+def test_i_json_safe_integer_domain_rejects_oversized_numbers_without_overflow() -> None:
+    huge = "1" + "0" * 1000
+    document = (
+        '{"host_principal_id":"hp_1","expected_generation":1,'
+        '"provider":"local","capability_id":"cap:model","visibility":"self",'
+        f'"price_floor":{huge},"max_concurrent":1,"always_active":false,'
+        f'"idempotency_key_b64u":"{_b64u(b"i" * 32)}"}}'
+    )
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto("SessionRegisterIntentV1", document)
+
+    principal = f'{{"host_principal_id":"hp_1","expected_generation":{huge}}}'
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto("PrincipalIntentV1", principal)
+
+
+def test_revocation_reason_is_fail_closed_until_spec_names_allowlisted_codes() -> None:
+    valid = {
+        "host_principal_id": "hp_1",
+        "expected_generation": 1,
+        "idempotency_key_b64u": _b64u(b"i" * 32),
+    }
+    assert parse_wire_dto("RevokeIntentV1", rfc8785.dumps(valid)) == valid
+
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto("RevokeIntentV1", rfc8785.dumps({**valid, "reason_code": "other"}))
+
+
 def test_fixed_status_and_error_enums_fail_closed() -> None:
     for dto_name, valid, field in (
         (
