@@ -14,6 +14,11 @@ from typing import Callable, Literal
 from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
 from tinyassets.agent_runtime_invocation import AgentInvocationState
 from tinyassets.agent_runtime_principal import AgentRuntimePrincipal
+from tinyassets.cloud_automation_continuation import (
+    AgentInvocationCloudContinuation,
+    CloudContinuationState,
+    CloudContinuationWriteResult,
+)
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationReservationWriteResult,
@@ -33,8 +38,14 @@ from tinyassets.storage.agent_runtime_invocation import (
     SQLiteAgentRuntimeInvocationStore,
 )
 from tinyassets.storage.automation_activations import AutomationActivationStore
+from tinyassets.storage.automation_activations import _record as _activation_record
+from tinyassets.storage.cloud_automation_continuation import (
+    SQLiteCloudAutomationContinuationStore,
+)
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
+    _claim_record,
+    _receipt_record,
 )
 
 
@@ -151,6 +162,13 @@ class AgentRuntimeProviderExecutionService:
             busy_timeout_ms=busy_timeout_ms,
             clock=self._clock,
         )
+        self.continuation_store = SQLiteCloudAutomationContinuationStore(
+            base_path,
+            busy_timeout_ms=busy_timeout_ms,
+            clock=self._clock,
+        )
+        with self.continuation_store.connection():
+            pass
 
     def issue_receipt(self, invocation_id: str) -> ProviderWorkReceiptWriteResult:
         result = self._transition(invocation_id, transition="receipt")
@@ -166,6 +184,126 @@ class AgentRuntimeProviderExecutionService:
         result = self._transition(invocation_id, transition="reserve")
         assert isinstance(result, ProviderInvocationReservationWriteResult)
         return result
+
+    def get_continuation(
+        self,
+        invocation_id: str,
+    ) -> AgentInvocationCloudContinuation | None:
+        return self.continuation_store.get_agent(invocation_id)
+
+    def prepare_continuation(
+        self,
+        invocation_id: str,
+    ) -> CloudContinuationWriteResult:
+        with self.invocation_store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                now = self._clock()
+                if now.tzinfo is None or now.utcoffset() is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "server clock is unavailable"
+                    )
+                now = now.astimezone(timezone.utc)
+                store_grant = self._validated_store_grant(
+                    conn,
+                    invocation_id=invocation_id,
+                    evaluated_at=now.timestamp(),
+                )
+                reservation_result = (
+                    self.provider_store._reserve_agent_in_transaction(
+                        conn,
+                        store_grant,
+                    )
+                )
+                reservation = reservation_result.record
+                if reservation is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider reservation is not current"
+                    )
+                aggregate = self.invocation_store.get_in_transaction(
+                    conn,
+                    invocation_id=invocation_id,
+                )
+                if aggregate is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent invocation is not current"
+                    )
+                command, invocation = aggregate
+                receipt_row = conn.execute(
+                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                    (reservation.receipt_id,),
+                ).fetchone()
+                claim_row = conn.execute(
+                    "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
+                    (reservation.claim_id,),
+                ).fetchone()
+                activation_row = conn.execute(
+                    """
+                    SELECT * FROM automation_activations
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (command.universe_id, command.activation_automation_id),
+                ).fetchone()
+                if receipt_row is None or claim_row is None or activation_row is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent continuation authority is not current"
+                    )
+                receipt = _receipt_record(receipt_row)
+                claim = _claim_record(claim_row)
+                activation = _activation_record(activation_row)
+                timestamp = now.isoformat(timespec="microseconds").replace(
+                    "+00:00", "Z"
+                )
+                record = AgentInvocationCloudContinuation.build(
+                    schema_version=1,
+                    work_item_kind="agent_invocation",
+                    continuation_id=f"agent_continuation_{invocation_id}",
+                    generation=1,
+                    state=CloudContinuationState.PREPARED,
+                    principal_id=command.authorizing_subject_id,
+                    universe_id=command.universe_id,
+                    automation_id=command.activation_automation_id,
+                    activation_epoch=command.activation_epoch,
+                    activation_lease_id=command.lease_id,
+                    execution_subject=command.execution_subject,
+                    command_id=command.command_id,
+                    command_digest=command.command_digest,
+                    invocation_id=invocation.invocation_id,
+                    invocation_generation=invocation.generation,
+                    invocation_digest=invocation.invocation_digest,
+                    provider_binding_id=command.provider_work_binding_id,
+                    provider_binding_generation=(
+                        command.provider_work_binding_generation
+                    ),
+                    provider_binding_digest=command.provider_work_binding_digest,
+                    receipt_id=receipt.receipt_id,
+                    receipt_digest=receipt.receipt_digest,
+                    claim_id=claim.claim_id,
+                    claim_generation=claim.generation,
+                    claim_digest=claim.claim_digest,
+                    reservation_id=reservation.reservation_id,
+                    reservation_digest=reservation.reservation_digest,
+                    typed_input_digest=command.typed_input_digest,
+                    max_tokens=reservation.max_tokens,
+                    max_cost_microunits=reservation.max_cost_microunits,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                result = self.continuation_store._prepare_agent_in_transaction(
+                    conn,
+                    record,
+                    expected_activation=activation,
+                    expected_command=command,
+                    expected_invocation=invocation,
+                    expected_receipt=receipt,
+                    expected_claim=claim,
+                    expected_reservation=reservation,
+                )
+                conn.commit()
+                return result
+            except Exception:
+                conn.rollback()
+                raise
 
     def arm_launch(self, invocation_id: str) -> ProviderInvocationCarrier:
         result = self._transition(invocation_id, transition="launch")
