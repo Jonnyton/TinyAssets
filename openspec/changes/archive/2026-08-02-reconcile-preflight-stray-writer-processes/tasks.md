@@ -24,10 +24,10 @@
 - [x] 2.2 Merge the repair, build a new immutable current-main image, and pass
   one normal production deploy with exact fleet, canonical canary, cleanup,
   and terminal-receipt proof.
-- [ ] 2.3 Resume the OAuth/custom-agent rendered connector acceptance only
+- [x] 2.3 Resume the OAuth/custom-agent rendered connector acceptance only
   after task 2.2, and record post-fix organic-use evidence or an explicit watch.
 
 ## 3. Foldback
 
-- [ ] 3.1 Sync the daemon-runtime delta, archive this change, and retire its
+- [x] 3.1 Sync the daemon-runtime delta, archive this change, and retire its
   release-blocker coordination scope after all live evidence is durable.
