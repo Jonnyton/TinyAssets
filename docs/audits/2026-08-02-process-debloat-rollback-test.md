@@ -5,6 +5,14 @@
 following a four-source research pass (three primary-source sweeps + two
 adversarial Codex reviews, both `partially-confirmed`).
 
+**Superseded drain state (2026-08-02 12:56 PT):** the active host goal requires
+the local bridge to remain green until the user-built cloud drain is accepted
+24/7. The OFF-week portion of this probe is cancelled: `drain.off` was removed,
+both scheduled tasks were re-enabled, and live watchdog/controller PIDs plus a
+fresh attempt-11 dispatch were verified. The lossless worktree sweep and the
+non-uptime de-bloat findings remain valid; no provider should recreate the off
+marker or disable the tasks before cloud acceptance.
+
 ## What was found
 
 - STATUS.md was modified in 180 of the last 200 origin/main commits.

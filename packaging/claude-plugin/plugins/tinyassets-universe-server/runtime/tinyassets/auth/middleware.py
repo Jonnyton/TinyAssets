@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from collections import deque
 from contextvars import ContextVar, Token
 from typing import Any
@@ -43,6 +44,10 @@ _current_identity: ContextVar[Identity | None] = ContextVar(
 _current_bearer_present: ContextVar[bool] = ContextVar(
     "tinyassets_current_bearer_present",
     default=False,
+)
+_current_request_boundary_id: ContextVar[str | None] = ContextVar(
+    "tinyassets_current_request_boundary_id",
+    default=None,
 )
 
 # Module-level provider (initialized once at startup)
@@ -79,6 +84,7 @@ def auth_middleware(token: str | None) -> Identity:
     for tools to access via `current_identity()`.
     """
     _current_bearer_present.set(bool(token))
+    _current_request_boundary_id.set(None)
     provider = _get_provider()
 
     identity = ANONYMOUS
@@ -93,6 +99,8 @@ def auth_middleware(token: str | None) -> Identity:
             identity = ANONYMOUS
 
     _current_identity.set(identity)
+    if token and identity is not ANONYMOUS:
+        _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
     return identity
 
 
@@ -143,18 +151,22 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     else:
         challenge = f'Bearer resource_metadata="{prm}"'
         body = b'{"error":"authentication_required"}'
-    await send({
-        "type": "http.response.start",
-        "status": 401,
-        "headers": [
-            (b"content-type", b"application/json"),
-            (b"www-authenticate", challenge.encode("latin1")),
-        ],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": body,
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"www-authenticate", challenge.encode("latin1")),
+            ],
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": body,
+        }
+    )
 
 
 # MCP tools whose EVERY call is a write/costly effect (the canonical write
@@ -186,7 +198,9 @@ _MAX_ANON_BODY_BYTES = 1_048_576  # 1 MiB
 
 
 async def _buffer_request_body(
-    receive: Any, *, cap: int = _MAX_ANON_BODY_BYTES,
+    receive: Any,
+    *,
+    cap: int = _MAX_ANON_BODY_BYTES,
 ) -> tuple[bytes, list[dict], bool, bool]:
     """Drain the request body: (body, raw messages, disconnected, oversized).
 
@@ -213,15 +227,19 @@ async def _buffer_request_body(
 
 async def _send_payload_too_large_413(send: Any) -> None:
     """Reject an oversized anonymous body without buffering the rest of it."""
-    await send({
-        "type": "http.response.start",
-        "status": 413,
-        "headers": [(b"content-type", b"application/json")],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": b'{"error":"request_too_large"}',
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [(b"content-type", b"application/json")],
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": b'{"error":"request_too_large"}',
+        }
+    )
 
 
 def _replay_receive(messages: list[dict], receive: Any) -> Any:
@@ -271,6 +289,12 @@ def current_bearer_present() -> bool:
     return _current_bearer_present.get()
 
 
+def current_request_boundary_id() -> str | None:
+    """Opaque identity of this exact authenticated transport request."""
+
+    return _current_request_boundary_id.get()
+
+
 class AuthContextMiddleware:
     """Resolve bearer auth into request-local identity for MCP tool calls."""
 
@@ -287,6 +311,7 @@ class AuthContextMiddleware:
 
         previous: Token[Identity | None] = _current_identity.set(ANONYMOUS)
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
+        previous_boundary: Token[str | None] = _current_request_boundary_id.set(None)
         previous_canary = set_wiki_canary_authority(False)
         try:
             auth_header = ""
@@ -304,15 +329,11 @@ class AuthContextMiddleware:
                 and scope.get("method", "").upper() == "POST"
                 and _auth_challenge_path(scope.get("path", ""))
             ):
-                body, messages, disconnected, oversized = (
-                    await _buffer_request_body(receive)
-                )
+                body, messages, disconnected, oversized = await _buffer_request_body(receive)
                 if oversized:
                     await _send_payload_too_large_413(send)
                     return
-                canary_authorized = (
-                    not disconnected and is_exact_wiki_canary_request(body)
-                )
+                canary_authorized = not disconnected and is_exact_wiki_canary_request(body)
                 receive = _replay_receive(messages, receive)
                 if canary_authorized:
                     _current_identity.set(ANONYMOUS)
@@ -353,9 +374,7 @@ class AuthContextMiddleware:
                 # pre-dispatch: an SSE response stream cannot be retro-401'd.
                 # The #1441 tool-layer write gate remains the fail-closed
                 # backstop for anything this classifier does not match.
-                body, messages, disconnected, oversized = (
-                    await _buffer_request_body(receive)
-                )
+                body, messages, disconnected, oversized = await _buffer_request_body(receive)
                 if oversized:
                     await _send_payload_too_large_413(send)
                     return
@@ -366,6 +385,7 @@ class AuthContextMiddleware:
             await self.app(scope, receive, send)
         finally:
             reset_wiki_canary_authority(previous_canary)
+            _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)
             _current_identity.reset(previous)
 
@@ -430,8 +450,7 @@ def require_action_scope(
     metadata = action_scope_for(tool, action)
     if metadata is None:
         raise PermissionError(
-            f"No action-scope metadata for {tool}.{action}; refusing "
-            "gated dispatch."
+            f"No action-scope metadata for {tool}.{action}; refusing gated dispatch."
         )
 
     # Resolve-always (WorkOS, D0b): anonymous may perform read-effect actions
@@ -500,9 +519,11 @@ def write_gate_rejection(handle: str) -> str | None:
     identity = current_identity()
     if identity.user_id != "anonymous":
         return None
-    return json.dumps({
-        "status": "rejected",
-        "error": f"{handle}: {_WRITE_GATE_GUIDANCE}",
-        "auth_required": True,
-        "tool": handle,
-    })
+    return json.dumps(
+        {
+            "status": "rejected",
+            "error": f"{handle}: {_WRITE_GATE_GUIDANCE}",
+            "auth_required": True,
+            "tool": handle,
+        }
+    )

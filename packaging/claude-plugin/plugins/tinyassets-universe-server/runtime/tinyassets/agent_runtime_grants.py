@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -120,6 +121,20 @@ class AgentRuntimeGrantSource(Protocol):
     ) -> AgentRuntimeGrantEvidence | None: ...
 
 
+class AgentRuntimeTransactionalGrantSource(Protocol):
+    """Authority reader that participates in the caller's SQLite fence."""
+
+    def resolve_current_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        subject_id: str,
+        universe_id: str,
+        reference_id: str,
+        evaluated_at: float,
+    ) -> AgentRuntimeGrantEvidence | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeGrantBlocker:
     reference_kind: str
@@ -189,29 +204,78 @@ class AccountCapabilityGrantSource:
                 -int(item["generation"]),
             ),
         )
-        grant_digest = _digest(
-            {
-                "reference_kind": "capability",
-                "reference_id": reference_id,
-                "subject_id": subject_id,
-                "universe_id": universe_id,
-                "scope": row["scope"],
-                "generation": row["generation"],
-                "created_at": row["created_at"],
-                "expires_at": row["expires_at"],
-                "revoked_at": row["revoked_at"],
-            }
-        )
-        return AgentRuntimeGrantEvidence(
-            reference_kind="capability",
-            reference_id=reference_id,
+        return _capability_evidence(
+            row,
             subject_id=subject_id,
             universe_id=universe_id,
-            scope=str(row["scope"]),
-            generation=int(row["generation"]),
-            grant_digest=grant_digest,
-            expires_at=(None if row["expires_at"] is None else float(row["expires_at"])),
+            reference_id=reference_id,
         )
+
+    def resolve_current_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        subject_id: str,
+        universe_id: str,
+        reference_id: str,
+        evaluated_at: float,
+    ) -> AgentRuntimeGrantEvidence | None:
+        if not isinstance(connection, sqlite3.Connection) or not connection.in_transaction:
+            return None
+        now = _finite_timestamp(evaluated_at, "evaluated_at")
+        row = connection.execute(
+            """
+            SELECT * FROM capability_grants
+            WHERE user_id = ? AND capability = ? AND scope IN (?, '*')
+              AND created_at <= ?
+              AND (expires_at IS NULL OR ? < expires_at)
+              AND (revoked_at IS NULL OR ? < revoked_at)
+            ORDER BY CASE WHEN scope = ? THEN 0 ELSE 1 END, generation DESC
+            LIMIT 1
+            """,
+            (subject_id, reference_id, universe_id, now, now, now, universe_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return _capability_evidence(
+            row,
+            subject_id=subject_id,
+            universe_id=universe_id,
+            reference_id=reference_id,
+        )
+
+
+def _capability_evidence(
+    row: object,
+    *,
+    subject_id: str,
+    universe_id: str,
+    reference_id: str,
+) -> AgentRuntimeGrantEvidence:
+    grant = dict(row)  # type: ignore[arg-type]
+    grant_digest = _digest(
+        {
+            "reference_kind": "capability",
+            "reference_id": reference_id,
+            "subject_id": subject_id,
+            "universe_id": universe_id,
+            "scope": grant["scope"],
+            "generation": grant["generation"],
+            "created_at": grant["created_at"],
+            "expires_at": grant["expires_at"],
+            "revoked_at": grant["revoked_at"],
+        }
+    )
+    return AgentRuntimeGrantEvidence(
+        reference_kind="capability",
+        reference_id=reference_id,
+        subject_id=subject_id,
+        universe_id=universe_id,
+        scope=str(grant["scope"]),
+        generation=int(grant["generation"]),
+        grant_digest=grant_digest,
+        expires_at=(None if grant["expires_at"] is None else float(grant["expires_at"])),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +341,75 @@ class AgentRuntimeGrantResolver:
                     continue
                 evidence.append(detached)
 
+        evidence_tuple = tuple(evidence)
+        return AgentRuntimeGrantResolution(
+            manifest_id=current_manifest.manifest_id,
+            manifest_digest=current_manifest.manifest_digest,
+            evaluated_at=now,
+            evidence=evidence_tuple,
+            blockers=tuple(blockers),
+            evidence_set_digest=_digest(
+                {
+                    "manifest_digest": current_manifest.manifest_digest,
+                    "evidence": [item.to_dict() for item in evidence_tuple],
+                }
+            ),
+        )
+
+    def resolve_in_transaction(
+        self,
+        manifest: AgentRuntimeManifest,
+        connection: sqlite3.Connection,
+        *,
+        evaluated_at: float,
+    ) -> AgentRuntimeGrantResolution:
+        """Resolve every reference while the caller holds the write fence."""
+
+        if not isinstance(connection, sqlite3.Connection) or not connection.in_transaction:
+            raise AgentRuntimeGrantError("grant fence requires an active transaction")
+        current_manifest = _validated_manifest(manifest)
+        now = _finite_timestamp(evaluated_at, "evaluated_at")
+        payload = current_manifest.to_dict()
+        references = payload["requested_references"]
+        subject_id = payload["owner_user_id"]
+        universe_id = payload["universe_id"]
+        evidence: list[AgentRuntimeGrantEvidence] = []
+        blockers: list[AgentRuntimeGrantBlocker] = []
+        for reference_kind, field, source_name in _REFERENCE_SOURCES:
+            source = getattr(self, source_name)
+            transactional = getattr(source, "resolve_current_in_transaction", None)
+            for reference_id in references[field]:
+                if not callable(transactional):
+                    blockers.append(_blocker(reference_kind, reference_id, "source_unavailable"))
+                    continue
+                try:
+                    item = transactional(
+                        connection,
+                        subject_id=subject_id,
+                        universe_id=universe_id,
+                        reference_id=reference_id,
+                        evaluated_at=now,
+                    )
+                except Exception:
+                    blockers.append(_blocker(reference_kind, reference_id, "source_error"))
+                    continue
+                if item is None:
+                    blockers.append(_blocker(reference_kind, reference_id, "grant_not_current"))
+                    continue
+                detached = _validated_detached_evidence(
+                    item,
+                    reference_kind=reference_kind,
+                    reference_id=reference_id,
+                    subject_id=subject_id,
+                    universe_id=universe_id,
+                    evaluated_at=now,
+                )
+                if detached is None:
+                    blockers.append(
+                        _blocker(reference_kind, reference_id, "source_evidence_invalid")
+                    )
+                    continue
+                evidence.append(detached)
         evidence_tuple = tuple(evidence)
         return AgentRuntimeGrantResolution(
             manifest_id=current_manifest.manifest_id,
@@ -382,4 +515,5 @@ __all__ = [
     "AgentRuntimeGrantResolution",
     "AgentRuntimeGrantResolver",
     "AgentRuntimeGrantSource",
+    "AgentRuntimeTransactionalGrantSource",
 ]

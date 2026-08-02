@@ -1400,6 +1400,44 @@ fresh-host rollback edges found later.
 - **What I would do differently:** separate ambient fleet counters from tracked
   source state before dispatch so a foldback worker starts with a clean tree.
 
+## 2026-08-02 — bounded custom-agent provider outcome
+
+- **What surprised me:** initializing a SQLite schema with `executescript`
+  inside the finalization fence silently committed the caller's transaction;
+  the RED test exposed that the apparent atomic write no longer had a live
+  transaction.
+- **Pattern worth capturing:** initialize schemas before opening a mutation
+  fence, then CAS the launched reservation and insert its inert typed outcome
+  in one transaction. If authority disappears after the paid call returns,
+  persist an indeterminate blocker and discard the output.
+- **What I would do differently:** include transaction-liveness and
+  authority-loss-during-call tests in the first test batch, alongside timeout
+  and oversized-output cases.
+
+## 2026-08-02 — uncertain provider-call restart fence
+
+- **What surprised me:** the persisted `launch_started` state is enough to
+  prevent remint, but not enough to decide when a previous process has really
+  stopped; the original durable claim expiry supplies that missing time fence.
+- **Pattern worth capturing:** pre-launch recovery may resume the same IDs,
+  while post-launch recovery must first refuse normal execution, wait out the
+  original claim window, and then close the same reservation as indeterminate.
+- **What I would do differently:** make each restart test construct a fresh
+  service from the beginning; reusing the original object proves replay but
+  does not prove restart recovery.
+
+## 2026-08-02 — no-mint useful-progress health
+
+- **What surprised me:** reusing the transition validator from an observation
+  path briefly registered a spend-capable grant even though the caller never
+  received it. Read-only projections need validation factored below minting.
+- **Pattern worth capturing:** progress is the newest exact canonical owner
+  transition, not liveness noise. Bind alarm identity to that record digest
+  plus the configured threshold, and derive alarm time from the milestone so
+  concurrent observers converge byte-for-byte.
+- **What I would do differently:** design observation APIs around a pure
+  authority validator first, then let mutation paths wrap that result in
+  one-shot capabilities.
 ## 2026-08-02 — dark background target holds
 
 - **What surprised me:** task 2.6 names queue behavior, but task 5.3 still owns
@@ -1427,3 +1465,8 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include the workflow path touch and the
   release-critical declaration in the first PR increment so exact CI evidence
   and the scope guard start together.
+# Canonical agent admission rejection repair (2026-08-02)
+
+- Surprised: structural digest/link validation still let raw database rows reach a real provider carrier; a witness must be server-sealed, not merely self-consistent.
+- Pattern: bind ephemeral drafts to an exact request nonce, persist a keyed admission witness atomically, and revalidate it on every durable authority read.
+- Differently: test claim expiry with an advanced restart clock from the first recovery slice; same-time restart tests hid the pre-launch dead-end.

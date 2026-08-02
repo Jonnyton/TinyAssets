@@ -22,6 +22,16 @@ from tinyassets.providers import call as _provider_call
 _provider_call.set_force_mock(True)
 
 
+@pytest.fixture(autouse=True)
+def _request_admission_hmac_key(monkeypatch):
+    """Install non-production server seal material for authority tests."""
+
+    monkeypatch.setenv(
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
+        "pytest-only-request-admission-hmac-key-0123456789abcdef",
+    )
+
+
 class _CredentialSubjectProvider(AuthProvider):
     """Resolve only issued test credentials to persisted subjects."""
 

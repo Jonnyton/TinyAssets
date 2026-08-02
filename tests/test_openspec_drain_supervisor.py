@@ -976,20 +976,30 @@ def test_dispatch_completes_from_stable_valid_artifact_before_process_exit(
     class HangingProcess:
         pid = 42
         returncode: int | None = None
-        stdout = None
-        stderr = None
         terminated = False
+        wait_calls = 0
 
-        def communicate(self, timeout: float) -> tuple[str, str]:
-            if self.terminated:
-                return "", ""
-            raise subprocess.TimeoutExpired(["peer"], timeout)
+        def wait(self, timeout: float) -> int:
+            self.wait_calls += 1
+            if not self.terminated:
+                raise subprocess.TimeoutExpired(["peer"], timeout)
+            return self.returncode or 0
 
         def poll(self) -> int | None:
             return self.returncode
 
     process = HangingProcess()
-    monkeypatch.setattr(drain.subprocess, "Popen", lambda *_a, **_kw: process)
+    dispatch_streams: list[object] = []
+
+    def popen(*_args, **kwargs):
+        dispatch_streams.extend((kwargs["stdout"], kwargs["stderr"]))
+        assert kwargs["stdout"] is not subprocess.PIPE
+        assert kwargs["stderr"] is not subprocess.PIPE
+        kwargs["stdout"].write("worker stdout\n")
+        kwargs["stderr"].write("worker stderr\n")
+        return process
+
+    monkeypatch.setattr(drain.subprocess, "Popen", popen)
 
     def terminate(candidate: HangingProcess) -> None:
         candidate.terminated = True
@@ -1004,7 +1014,11 @@ def test_dispatch_completes_from_stable_valid_artifact_before_process_exit(
     )
 
     assert completed.returncode == 0
+    assert completed.stdout == "worker stdout\n"
+    assert completed.stderr == "worker stderr\n"
     assert process.terminated is True
+    assert process.wait_calls == 3
+    assert all(stream.closed for stream in dispatch_streams)
 
 
 def test_dispatch_does_not_complete_from_invalid_artifact(
@@ -1023,16 +1037,14 @@ def test_dispatch_does_not_complete_from_invalid_artifact(
     class EventuallyExits:
         pid = 42
         returncode: int | None = None
-        stdout = None
-        stderr = None
         calls = 0
 
-        def communicate(self, timeout: float) -> tuple[str, str]:
+        def wait(self, timeout: float) -> int:
             self.calls += 1
             if self.calls < 3:
                 raise subprocess.TimeoutExpired(["peer"], timeout)
             self.returncode = 0
-            return "", ""
+            return 0
 
         def poll(self) -> int | None:
             return self.returncode
