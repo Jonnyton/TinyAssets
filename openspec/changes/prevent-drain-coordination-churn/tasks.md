@@ -4,6 +4,7 @@
 - [x] 1.2 Add a continuation regression proving a merged refinery `PARTIAL` is rejected when fresh current main exposes no claimable row in the assigned change boundary; observe RED.
 - [x] 1.3 Add a watchdog regression proving an explicit restart of a live supervisor that exits through orderly `stop-requested` resumes the same run directory and drain identity; observe RED.
 - [x] 1.4 Add a state regression proving an accepted refinery `PARTIAL` does not count as the first repeated implementation partial for the promoted target; observe RED.
+- [x] 1.5 Add a resume regression proving an orderly terminal timestamp is cleared before a resumed run can be interrupted again; observe RED.
 
 ## 2. Implementation
 
@@ -12,6 +13,7 @@
 - [x] 2.3 Add the cross-provider row-semantics rule to `AGENTS.md` and record the 24-attempt/zero-slice incident evidence.
 - [x] 2.4 Preserve the active run directory and identity when an explicit watchdog restart ends through orderly `stop-requested`; retain fresh-run recovery for already-terminal fatal/failure-budget state. Completed test-first 2026-08-01: the new orderly-stop regression failed because restart created a new directory, then passed alongside the existing terminal-failure fresh-run regression after the watchdog distinguished those outcomes.
 - [x] 2.5 Reset implementation-partial stall accounting after an accepted refinery handoff while preserving repeated normal-worker partial failure-budget protection. Completed test-first 2026-08-01: the regression failed with the refinery target already counted once, then passed after refinery success reset the implementation-only counter; the paired repeated normal-worker partial test still consumes one failure strike.
+- [x] 2.6 Clear `ended_at` after resume identity/provider validation and before the first running-state write, so a later reboot rediscovers the same run as unfinished. Completed test-first 2026-08-01: the simulated abrupt-exit regression first retained the stale terminal timestamp, then passed after the resume path removed it; paired watchdog discovery/restart tests remained green.
 
 ## 3. Verification and foldback
 

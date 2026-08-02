@@ -2160,6 +2160,44 @@ def test_run_recovers_unconsumed_result_before_replacement_dispatch(
     assert persisted["status"] == "blocked"
 
 
+def test_resume_clears_terminal_timestamp_before_next_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    state = _state(status="stop-requested", ended_at="2026-08-01T17:00:00-07:00")
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    class SimulatedAbruptExit(Exception):
+        pass
+
+    def interrupt_before_attempt(_state: dict[str, object]) -> int:
+        raise SimulatedAbruptExit
+
+    monkeypatch.setattr(drain, "begin_attempt", interrupt_before_attempt)
+
+    with pytest.raises(SimulatedAbruptExit):
+        drain.main(
+            [
+                "run",
+                "--repo",
+                str(repo),
+                "--run-dir",
+                str(run_dir),
+                "--resume",
+                "--hours",
+                "1",
+            ]
+        )
+
+    persisted = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == "running"
+    assert "ended_at" not in persisted
+
+
 def test_resume_does_not_recover_a_missing_recorded_artifact(
     tmp_path: Path,
 ) -> None:

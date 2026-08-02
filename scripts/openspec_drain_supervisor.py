@@ -2137,6 +2137,7 @@ def _run(args: argparse.Namespace) -> int:
             if state["provider"] != args.provider or state.get("model") != args.model:
                 print("resume provider/model must match persisted state", file=sys.stderr)
                 return 2
+            state.pop("ended_at", None)
             now = datetime.now().astimezone()
             state["deadline_at"] = (now + timedelta(hours=args.hours)).isoformat(
                 timespec="seconds"

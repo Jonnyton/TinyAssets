@@ -58,3 +58,9 @@ The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an unfi
 - **WHEN** an explicit restart targets a supervisor already ended at a fatal or failure-budget terminal outcome
 - **THEN** the watchdog preserves the authorized fresh-run decision
 - **AND** it starts exactly one fresh bounded supervisor run
+
+#### Scenario: Resumed supervisor is interrupted again
+- **WHEN** an orderly stopped supervisor resumes the same run directory and identity
+- **AND** that resumed controller is later interrupted before another orderly exit
+- **THEN** its running state has no stale terminal timestamp
+- **AND** the next watchdog discovery classifies the same run as unfinished and resumable

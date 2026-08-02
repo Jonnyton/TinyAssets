@@ -107,3 +107,12 @@ state transition resets implementation-partial accounting after an accepted
 refinery continuation; two actual consecutive normal-worker partials still
 consume the finite failure budget. This prevents a productive refinery ->
 bounded-delivery sequence from entering the 30-minute idle wait.
+
+Exact-head review then found one remaining identity hole: orderly stop writes
+`ended_at`, but resume did not remove it. A later reboot would therefore make
+the watchdog ignore the otherwise running identity and mint another run. The
+resume path now removes `ended_at` after identity/provider validation and
+before its first `status=running` write. A test first reproduced the stale
+timestamp after a simulated abrupt post-resume exit, then passed with the fix;
+the existing same-directory watchdog discovery and graceful-restart tests also
+remain green. Live restoration proof is still required before archive.
