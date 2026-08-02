@@ -197,23 +197,12 @@ def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
     assert "observed at least 2055 bytes" in warning
 
 
-def test_windows_lifecycle_capture_writer_is_bounded_while_draining(
-    tmp_path: Path,
-) -> None:
-    supervisor = _supervisor_module()
-    capture_path = tmp_path / "bounded.capture"
-    payload = b"x" * 200_000
+def test_windows_lifecycle_supervisor_has_no_descendant_eof_dependency() -> None:
+    supervisor = SUPERVISOR.read_text(encoding="utf-8")
 
-    with capture_path.open("w+b") as capture_writer:
-        observed = supervisor._drain_stream(
-            io.BytesIO(payload),
-            capture_writer=capture_writer,
-            max_bytes=4096,
-        )
-        capture_writer.flush()
-
-    assert observed == len(payload)
-    assert capture_path.stat().st_size == 4096
+    assert "subprocess.PIPE" not in supervisor
+    assert "_drain_stream" not in supervisor
+    assert "threading.Thread" not in supervisor
 
 
 def test_windows_lifecycle_cleanup_never_uses_run_timeout_cleanup(
@@ -388,6 +377,102 @@ while ($true) {
     ):
         assert f"stage={stage}" in output
     assert len(output) < 20_000
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or PWSH is None,
+    reason="Windows inherited descendant-handle contract",
+)
+def test_windows_lifecycle_supervisor_does_not_wait_for_descendant_pipe_eof(
+    tmp_path: Path,
+) -> None:
+    assert PWSH is not None
+    installer = tmp_path / "synthetic installer.exe"
+    installer.write_bytes(b"not executed by the injected lifecycle")
+    escaped_pid_path = tmp_path / "escaped-descendant.pid"
+    escaped_child = tmp_path / "escaped-descendant.ps1"
+    escaped_child.write_text(
+        """param([Parameter(Mandatory = $true)][string]$PidPath)
+Set-Content -LiteralPath $PidPath -Value $PID -NoNewline
+[Console]::Out.WriteLine("escaped descendant inherited output")
+Start-Sleep -Seconds 60
+""",
+        encoding="utf-8",
+    )
+    quoted_child = str(escaped_child).replace("'", "''")
+    quoted_pid = str(escaped_pid_path).replace("'", "''")
+    lifecycle = tmp_path / "parent-exits-lifecycle.ps1"
+    lifecycle.write_text(
+        f"""param(
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [int]$PhaseTimeoutSeconds = 180
+)
+$engine = (Get-Process -Id $PID).Path
+$childScript = '{quoted_child}'
+$pidPath = '{quoted_pid}'
+$childArgs = @(
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', ('"' + $childScript + '"'),
+    '-PidPath', ('"' + $pidPath + '"')
+)
+$escaped = Start-Process -FilePath $engine -ArgumentList $childArgs -NoNewWindow -PassThru
+$deadline = (Get-Date).AddSeconds(5)
+while (-not (Test-Path -LiteralPath $pidPath) -and (Get-Date) -lt $deadline) {{
+    Start-Sleep -Milliseconds 20
+}}
+if (-not (Test-Path -LiteralPath $pidPath)) {{
+    throw "escaped descendant did not publish its PID"
+}}
+Write-Output "lifecycle parent exiting with escaped PID $($escaped.Id)"
+exit 0
+""",
+        encoding="utf-8",
+    )
+
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SUPERVISOR),
+                "--installer",
+                str(installer),
+                "--lifecycle-script",
+                str(lifecycle),
+                "--phase-timeout-seconds",
+                "2",
+                "--total-timeout-seconds",
+                "5",
+                "--cleanup-timeout-seconds",
+                "2",
+                "--max-capture-bytes-per-stream",
+                "4096",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+        )
+    finally:
+        deadline = time.monotonic() + 2
+        while not escaped_pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if escaped_pid_path.exists():
+            escaped_pid = int(escaped_pid_path.read_text(encoding="utf-8"))
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(escaped_pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+
+    elapsed = time.monotonic() - started
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert elapsed < 3
+    assert "lifecycle parent exiting with escaped PID" in output
 
 
 def test_release_workflow_has_no_fake_signature_fallback() -> None:
