@@ -1399,3 +1399,17 @@ fresh-host rollback edges found later.
   OpenSpec change remains incomplete.
 - **What I would do differently:** separate ambient fleet counters from tracked
   source state before dispatch so a foldback worker starts with a clean tree.
+
+## 2026-08-02 — bounded custom-agent provider outcome
+
+- **What surprised me:** initializing a SQLite schema with `executescript`
+  inside the finalization fence silently committed the caller's transaction;
+  the RED test exposed that the apparent atomic write no longer had a live
+  transaction.
+- **Pattern worth capturing:** initialize schemas before opening a mutation
+  fence, then CAS the launched reservation and insert its inert typed outcome
+  in one transaction. If authority disappears after the paid call returns,
+  persist an indeterminate blocker and discard the output.
+- **What I would do differently:** include transaction-liveness and
+  authority-loss-during-call tests in the first test batch, alongside timeout
+  and oversized-output cases.
