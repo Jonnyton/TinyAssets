@@ -44,7 +44,11 @@ The PR's Windows lifecycle job reproduced the earlier non-terminal cleanup
 after the exact installer flow had also passed in 43 seconds on a fresh rerun.
 The outer supervisor used `subprocess.run(..., timeout=...)` for `taskkill`;
 Python's timeout path kills and then waits for that cleanup process without a
-second deadline, so a wedged Windows cleanup command could outlive the declared
-supervisor and job bounds. A RED behavioral regression test now forbids that
-path. Cleanup uses `Popen.wait(timeout)` and, on expiry, kills without another
-unbounded wait before continuing the already-bounded root cleanup.
+second deadline. A RED behavioral regression test now forbids that path, and
+cleanup uses `Popen.wait(timeout)` without another wait after kill. However,
+fresh PR CI at exact head `195ab197c83ef34f282523a4ea65b46d0a07526c`
+still exceeded the 300-second supervisor bound. That contradicts the initial
+claim that the `subprocess.run` path was the complete root cause. The correction
+is locally valid but insufficient; the next diagnostic must publish live phase
+and cleanup checkpoints outside the captured child streams and identify the
+last reached boundary before another termination change.
