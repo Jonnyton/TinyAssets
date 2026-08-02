@@ -64,4 +64,9 @@ truncation warning. Live checkpoints bracket child wait, timeout cleanup,
 taskkill, root wait, capture replay, and supervisor exit. On 2026-08-01 Windows
 11 / Python 3.14, the bounded-writer RED test and real noisy-child lifecycle
 test passed, and the complete desktop release workflow test file passed 15/15
-in 2.62 seconds. Exact-head PR CI remains the required environment proof.
+in 2.62 seconds. Exact-head PR CI run `30731211289` then passed on GitHub's
+`windows-latest` environment: the exact unsigned installer lifecycle completed
+install, health probe, repair, and uninstall in 51 seconds. Independent Codex
+review at `429233537d56848c95e0da8e5f89f941ee1a6e3e` returned APPROVE after
+Claude's limit-hit attempt returned no verdict. The launch arm remains dark;
+the next boundary is carrier/effect integration.
