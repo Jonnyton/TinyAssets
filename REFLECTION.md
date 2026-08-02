@@ -1413,3 +1413,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include the workflow path touch and the
   release-critical declaration in the first PR increment so exact CI evidence
   and the scope guard start together.
+
+## 2026-08-02 - Dark background target-authority holds
+
+- **What surprised me:** a service-level reauthorization check was not enough;
+  the generic store CAS correctly rejected binding-fence rotation, and safely
+  permitting it required a dedicated transaction method that re-proves both
+  the canonical prior digest and the current binding envelope.
+- **Pattern worth capturing:** a same-record recovery path that follows newer
+  authority needs two independent proofs: service-owned semantic resolution
+  and storage-owned monotonicity against the exact current rows.
+- **What I would do differently:** model the prior-binding history witness and
+  the store's special reauthorization transition in the initial contract,
+  instead of discovering that persistence boundary during GREEN.

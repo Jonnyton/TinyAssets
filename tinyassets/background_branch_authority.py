@@ -1538,6 +1538,16 @@ class BackgroundBranchAuthorityTransaction(Protocol):
     ) -> BackgroundBranchAttemptWriteResult:
         """Replace only when every stored field matches the expected snapshot."""
 
+    def reauthorize_attempt(
+        self,
+        *,
+        attempt_id: str,
+        expected: BackgroundBranchAttemptFence,
+        prior_binding: BackgroundBranchBinding,
+        replacement: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult:
+        """Follow one exact next canonical binding for the same held attempt."""
+
 
 @runtime_checkable
 class BackgroundBranchAuthorityStore(Protocol):

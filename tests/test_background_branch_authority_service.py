@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
@@ -17,6 +18,7 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchChildDelegation,
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
+    BackgroundBranchHoldReason,
     BackgroundBranchOperation,
     BackgroundBranchReceiptRefs,
     BackgroundBranchSourceKind,
@@ -34,6 +36,7 @@ from tinyassets.background_branch_authority_service import (
 )
 from tinyassets.storage.background_branch_authority import (
     SQLiteBackgroundBranchAuthorityStore,
+    db_path,
 )
 
 
@@ -625,6 +628,510 @@ def _claim_service(tmp_path, attempt, **resolver_kwargs):
         authority_service.BackgroundBranchAttemptClaimService(store, resolver),
         resolver,
     )
+
+
+class _HoldResolver:
+    def __init__(
+        self,
+        binding,
+        *,
+        reason=BackgroundBranchHoldReason.PRINCIPAL_REVOKED,
+        predecessor=authority_service.BackgroundBranchAttemptPredecessorState.UNKNOWN,
+        boundary=authority_service.BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+        audience: BackgroundBranchExecutorAudience | None = None,
+        prior_binding=None,
+        branch_version_id: str | None = None,
+        branch_content_digest: str | None = None,
+        source_generation: int | None = None,
+    ) -> None:
+        self.binding = binding
+        self.prior_binding = prior_binding
+        self.reason = reason
+        self.predecessor = predecessor
+        self.boundary = boundary
+        self.audience = audience or _audience()
+        self.branch_version_id = branch_version_id
+        self.branch_content_digest = branch_content_digest
+        self.source_generation = source_generation
+        self.requests = []
+
+    def resolve(self, request):
+        self.requests.append(request)
+        return authority_service.BackgroundBranchAttemptHoldResolution(
+            binding=self.binding,
+            prior_binding=self.prior_binding,
+            hold_reason=self.reason,
+            executor_audience=self.audience,
+            predecessor=self.predecessor,
+            boundary=self.boundary,
+            branch_version_id=(
+                self.branch_version_id or request.attempt.branch_version_id
+            ),
+            branch_content_digest=(
+                self.branch_content_digest or request.attempt.branch_content_digest
+            ),
+            source_generation=(
+                request.attempt.source_generation
+                if self.source_generation is None
+                else self.source_generation
+            ),
+            resolved_at=request.transitioned_at,
+        )
+
+
+def _hold_service(tmp_path, attempt, **resolver_kwargs):
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    binding = store.get_binding(attempt.binding_id)
+    resolver = _HoldResolver(binding, **resolver_kwargs)
+    claim_resolver = _ClaimResolver(binding)
+    return (
+        authority_service.BackgroundBranchAttemptClaimService(
+            store,
+            claim_resolver,
+            hold_resolver=resolver,
+        ),
+        resolver,
+    )
+
+
+def test_attempt_hold_accepts_no_caller_reason_or_authority() -> None:
+    assert tuple(
+        inspect.signature(
+            authority_service.BackgroundBranchAttemptClaimService.hold
+        ).parameters
+    ) == ("self", "expected", "held_at")
+
+
+def test_attempt_hold_has_one_exact_fence_winner(tmp_path) -> None:
+    attempt = _issued_attempt(tmp_path)
+    service, resolver = _hold_service(tmp_path, attempt)
+
+    held = service.hold(
+        expected=BackgroundBranchAttemptFence(attempt),
+        held_at="2026-07-30T19:31:00Z",
+    )
+    stale = service.hold(
+        expected=BackgroundBranchAttemptFence(attempt),
+        held_at="2026-07-30T19:31:01Z",
+    )
+
+    assert held.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    assert held.record is not None
+    assert held.record.attempt_id == attempt.attempt_id
+    assert held.record.logical_attempt_key == attempt.logical_attempt_key
+    assert held.record.lifecycle is BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD
+    assert held.record.hold_reason is BackgroundBranchHoldReason.PRINCIPAL_REVOKED
+    assert held.record.claim_generation == attempt.claim_generation + 1
+    assert held.record.lease_generation == attempt.lease_generation + 1
+    assert held.record.lease_expires_at is None
+    assert held.record.remaining_depth == attempt.remaining_depth
+    assert held.record.remaining_count == attempt.remaining_count
+    assert held.record.remaining_cost_microunits == attempt.remaining_cost_microunits
+    assert stale.outcome is BackgroundBranchAuthorityWriteOutcome.CONFLICT
+    assert stale.record == held.record
+    assert len(resolver.requests) == 2
+
+
+def test_claimed_attempt_hold_clears_lease_and_fences_worker(tmp_path) -> None:
+    attempt = _issued_attempt(tmp_path)
+    claim_service, _ = _claim_service(tmp_path, attempt)
+    claimed = claim_service.claim(
+        expected=BackgroundBranchAttemptFence(attempt),
+        executor_audience=_audience(),
+        claimed_at="2026-07-30T19:31:00Z",
+        lease_expires_at="2026-07-30T19:36:00Z",
+    ).record
+    assert claimed is not None
+    hold_service, _ = _hold_service(tmp_path, claimed)
+
+    held = hold_service.hold(
+        expected=BackgroundBranchAttemptFence(claimed),
+        held_at="2026-07-30T19:32:00Z",
+    ).record
+
+    assert held is not None
+    assert held.lifecycle is BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD
+    assert held.lease_expires_at is None
+    assert held.claim_generation == claimed.claim_generation + 1
+    assert held.lease_generation == claimed.lease_generation + 1
+
+
+def test_attempt_hold_has_one_concurrent_winner(tmp_path) -> None:
+    attempt = _issued_attempt(tmp_path)
+
+    def hold_once(index: int):
+        service, _ = _hold_service(tmp_path, attempt)
+        return service.hold(
+            expected=BackgroundBranchAttemptFence(attempt),
+            held_at=f"2026-07-30T19:31:{index:02d}Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(hold_once, range(8)))
+
+    assert sum(
+        result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+        for result in results
+    ) == 1
+    assert all(
+        result.outcome
+        in {
+            BackgroundBranchAuthorityWriteOutcome.APPLIED,
+            BackgroundBranchAuthorityWriteOutcome.CONFLICT,
+        }
+        for result in results
+    )
+    winners = [result.record for result in results if result.record is not None]
+    assert len({record.attempt_id for record in winners}) == 1
+
+
+def _held_attempt(tmp_path, *, reason=BackgroundBranchHoldReason.EXECUTOR_MISMATCH):
+    attempt = _issued_attempt(tmp_path)
+    service, _ = _hold_service(tmp_path, attempt, reason=reason)
+    held = service.hold(
+        expected=BackgroundBranchAttemptFence(attempt),
+        held_at="2026-07-30T19:31:00Z",
+    ).record
+    assert held is not None
+    return attempt, held
+
+
+def test_held_attempt_recovers_same_binding_only_from_conclusive_evidence(
+    tmp_path,
+) -> None:
+    _attempt, held = _held_attempt(tmp_path)
+    replacement_audience = replace(_audience(), worker_id="worker_codex_2")
+    service, _ = _hold_service(
+        tmp_path,
+        held,
+        reason=None,
+        predecessor=authority_service.BackgroundBranchAttemptPredecessorState.DEAD,
+        boundary=authority_service.BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+        audience=replacement_audience,
+    )
+
+    recovered = service.recover_held(
+        expected=BackgroundBranchAttemptFence(held),
+        replacement_audience=replacement_audience,
+        recovered_at="2026-07-30T19:32:00Z",
+    ).record
+
+    assert recovered is not None
+    assert recovered.attempt_id == held.attempt_id
+    assert recovered.binding_generation == held.binding_generation
+    assert recovered.binding_digest == held.binding_digest
+    assert recovered.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED
+    assert recovered.hold_reason is None
+    assert recovered.executor_audience == replacement_audience
+    assert recovered.claim_generation == held.claim_generation + 1
+    assert recovered.lease_generation == held.lease_generation + 1
+
+
+def test_held_attempt_indeterminate_recovery_makes_no_write(tmp_path) -> None:
+    _attempt, held = _held_attempt(tmp_path)
+    service, _ = _hold_service(
+        tmp_path,
+        held,
+        reason=None,
+        predecessor=authority_service.BackgroundBranchAttemptPredecessorState.DEAD,
+        boundary=authority_service.BackgroundBranchAttemptBoundaryState.INDETERMINATE,
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAttemptClaimError,
+        match="recovery_not_conclusive",
+    ):
+        service.recover_held(
+            expected=BackgroundBranchAttemptFence(held),
+            replacement_audience=_audience(),
+            recovered_at="2026-07-30T19:32:00Z",
+        )
+
+    assert SQLiteBackgroundBranchAuthorityStore(tmp_path).get_attempt(
+        held.attempt_id
+    ) == held
+
+
+def test_held_exit_surfaces_accept_no_proof_actor_or_binding() -> None:
+    assert tuple(
+        inspect.signature(
+            authority_service.BackgroundBranchAttemptClaimService.recover_held
+        ).parameters
+    ) == ("self", "expected", "replacement_audience", "recovered_at")
+    assert tuple(
+        inspect.signature(
+            authority_service.BackgroundBranchAttemptClaimService.reauthorize_held
+        ).parameters
+    ) == ("self", "expected", "reauthorized_at")
+
+
+def _rotate_binding(tmp_path, current, *, seed=None):
+    rotated = _service(tmp_path, _Resolver(seed or _seed())).rotate(
+        BackgroundBranchBindingFence(current)
+    ).record
+    assert rotated is not None
+    return rotated
+
+
+def _reauthorized_replacement(held, current_binding):
+    return replace(
+        held,
+        binding_digest=current_binding.binding_digest,
+        binding_generation=current_binding.generation,
+        claim_generation=held.claim_generation + 1,
+        lease_generation=held.lease_generation + 1,
+        lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+        hold_reason=None,
+        updated_at="2026-07-30T19:32:00Z",
+    )
+
+
+def test_held_attempt_reauthorizes_against_exact_next_equivalent_binding(
+    tmp_path,
+) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    rotated = _rotate_binding(tmp_path, prior_binding)
+    service, _ = _hold_service(
+        tmp_path,
+        held,
+        reason=None,
+        prior_binding=prior_binding,
+    )
+
+    reauthorized = service.reauthorize_held(
+        expected=BackgroundBranchAttemptFence(held),
+        reauthorized_at="2026-07-30T19:32:00Z",
+    ).record
+
+    assert reauthorized is not None
+    assert reauthorized.attempt_id == held.attempt_id
+    assert reauthorized.binding_generation == rotated.generation
+    assert reauthorized.binding_digest == rotated.binding_digest
+    assert reauthorized.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED
+    assert reauthorized.hold_reason is None
+    assert reauthorized.remaining_depth == held.remaining_depth
+    assert reauthorized.remaining_count == held.remaining_count
+    assert reauthorized.remaining_cost_microunits == held.remaining_cost_microunits
+
+
+def test_held_attempt_reauthorization_rejects_forged_prior_binding(tmp_path) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    _rotate_binding(tmp_path, prior_binding)
+    forged_prior = replace(
+        prior_binding,
+        source_revision="5",
+    )
+    service, _ = _hold_service(
+        tmp_path,
+        held,
+        reason=None,
+        prior_binding=forged_prior,
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAttemptClaimError,
+        match="reauthorization_prior_tampered",
+    ):
+        service.reauthorize_held(
+            expected=BackgroundBranchAttemptFence(held),
+            reauthorized_at="2026-07-30T19:32:00Z",
+        )
+
+    assert store.get_attempt(held.attempt_id) == held
+
+
+def test_reauthorization_store_independently_rejects_forged_prior_binding(
+    tmp_path,
+) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    current_binding = _rotate_binding(tmp_path, prior_binding)
+    replacement = _reauthorized_replacement(held, current_binding)
+
+    with store.transaction() as transaction:
+        with pytest.raises(ValueError, match="exact and monotonic"):
+            transaction.reauthorize_attempt(
+                attempt_id=held.attempt_id,
+                expected=BackgroundBranchAttemptFence(held),
+                prior_binding=replace(prior_binding, source_revision="5"),
+                replacement=replacement,
+            )
+
+    assert store.get_attempt(held.attempt_id) == held
+
+
+def test_reauthorization_store_rejects_other_attempt_mutations(tmp_path) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    current_binding = _rotate_binding(tmp_path, prior_binding)
+    replacement = _reauthorized_replacement(held, current_binding)
+    rotated_audience = replace(held.executor_audience, worker_id="worker_other")
+    unsafe_replacements = (
+        replace(replacement, remaining_cost_microunits=1),
+        replace(
+            replacement,
+            executor_audience=rotated_audience,
+            provenance=replace(
+                replacement.provenance,
+                worker_id=rotated_audience.worker_id,
+            ),
+        ),
+    )
+
+    for unsafe in unsafe_replacements:
+        with store.transaction() as transaction:
+            with pytest.raises(ValueError, match="exact and monotonic"):
+                transaction.reauthorize_attempt(
+                    attempt_id=held.attempt_id,
+                    expected=BackgroundBranchAttemptFence(held),
+                    prior_binding=prior_binding,
+                    replacement=unsafe,
+                )
+
+    assert store.get_attempt(held.attempt_id) == held
+
+
+def test_reauthorization_store_fails_closed_on_hidden_attempt_index_tamper(
+    tmp_path,
+) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    hidden = BackgroundBranchAttemptIssuanceService(
+        store,
+        _AttemptResolver(_attempt_resolution(prior_binding)),
+    ).issue(
+        _attempt_request(
+            prior_binding,
+            logical_key="request:17:g4:body-hidden",
+        )
+    ).record
+    assert hidden is not None
+    current_binding = _rotate_binding(tmp_path, prior_binding)
+    replacement = _reauthorized_replacement(held, current_binding)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE background_branch_attempts
+            SET binding_id = 'hidden_binding'
+            WHERE attempt_id = ?
+            """,
+            (hidden.attempt_id,),
+        )
+
+    with store.transaction() as transaction:
+        with pytest.raises(sqlite3.DatabaseError, match="index mismatch"):
+            transaction.reauthorize_attempt(
+                attempt_id=held.attempt_id,
+                expected=BackgroundBranchAttemptFence(held),
+                prior_binding=prior_binding,
+                replacement=replacement,
+            )
+
+    assert store.get_attempt(held.attempt_id) == held
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        _seed(branch_version_id="branch_spec_drain@changed"),
+        replace(_seed(), source_revision="5"),
+        replace(_seed(), remaining_cost_microunits=1),
+        replace(_seed(), remaining_cost_microunits=6_000_000),
+        replace(_seed(), expires_at="2026-09-30T00:00:00Z"),
+        replace(
+            _seed(),
+            permitted_executor_classes=(
+                BackgroundBranchExecutorClass.CLOUD,
+                BackgroundBranchExecutorClass.HOST,
+            ),
+        ),
+    ],
+)
+def test_held_attempt_reauthorization_refuses_changed_or_unsafe_facts(
+    tmp_path,
+    seed,
+) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    _rotate_binding(tmp_path, prior_binding, seed=seed)
+    service, _ = _hold_service(
+        tmp_path,
+        held,
+        reason=None,
+        prior_binding=prior_binding,
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAttemptClaimError,
+        match="reauthorization_",
+    ):
+        service.reauthorize_held(
+            expected=BackgroundBranchAttemptFence(held),
+            reauthorized_at="2026-07-30T19:32:00Z",
+        )
+
+    assert store.get_attempt(held.attempt_id) == held
+
+
+def test_held_attempt_reauthorization_refuses_skipped_generation(tmp_path) -> None:
+    original, held = _held_attempt(
+        tmp_path,
+        reason=BackgroundBranchHoldReason.REAUTHORIZATION_REQUIRED,
+    )
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    prior_binding = store.get_binding(original.binding_id)
+    assert prior_binding is not None
+    first = _rotate_binding(tmp_path, prior_binding)
+    _rotate_binding(tmp_path, first)
+    service, _ = _hold_service(
+        tmp_path,
+        held,
+        reason=None,
+        prior_binding=prior_binding,
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAttemptClaimError,
+        match="reauthorization_generation_mismatch",
+    ):
+        service.reauthorize_held(
+            expected=BackgroundBranchAttemptFence(held),
+            reauthorized_at="2026-07-30T19:32:00Z",
+        )
+
+    assert store.get_attempt(held.attempt_id) == held
 
 
 def test_attempt_claim_has_one_exact_fence_winner(tmp_path) -> None:

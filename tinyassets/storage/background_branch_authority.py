@@ -11,6 +11,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -341,6 +342,88 @@ def _attempt_transition_is_monotonic(
     )
 
 
+def _binding_digest_is_canonical(binding: BackgroundBranchBinding) -> bool:
+    payload = binding.to_dict()
+    claimed = payload.pop("binding_digest")
+    return claimed == _digest(_canonical_json(payload))
+
+
+def _attempt_reauthorization_is_monotonic(
+    current: BackgroundBranchAttempt,
+    replacement: BackgroundBranchAttempt,
+    prior_binding: BackgroundBranchBinding,
+    current_binding: BackgroundBranchBinding,
+    *,
+    attempt_count: int,
+) -> bool:
+    exact_replacement = replace(
+        current,
+        binding_digest=current_binding.binding_digest,
+        binding_generation=current_binding.generation,
+        claim_generation=current.claim_generation + 1,
+        lease_generation=current.lease_generation + 1,
+        lease_expires_at=None,
+        lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+        hold_reason=None,
+        updated_at=replacement.updated_at,
+    )
+    normalized = replace(
+        replacement,
+        binding_digest=current.binding_digest,
+        binding_generation=current.binding_generation,
+    )
+    exact_binding_facts = (
+        current.lifecycle is BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD,
+        replacement.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
+        current.binding_id == prior_binding.binding_id == current_binding.binding_id,
+        current.binding_digest == prior_binding.binding_digest,
+        current.binding_generation == prior_binding.generation,
+        current_binding.generation == prior_binding.generation + 1,
+        replacement.binding_digest == current_binding.binding_digest,
+        replacement.binding_generation == current_binding.generation,
+        current_binding.status is BackgroundBranchBindingStatus.ACTIVE,
+        current_binding.revocation_generation >= prior_binding.revocation_generation,
+        current_binding.authorizing_principal_id
+        == prior_binding.authorizing_principal_id,
+        current_binding.universe_id == prior_binding.universe_id,
+        current_binding.branch_def_id == prior_binding.branch_def_id,
+        current_binding.operation is prior_binding.operation,
+        current_binding.source_kind is prior_binding.source_kind,
+        current_binding.source_id == prior_binding.source_id,
+        current_binding.source_revision == prior_binding.source_revision,
+        current_binding.source_digest == prior_binding.source_digest,
+        current_binding.target_mode is prior_binding.target_mode,
+        current_binding.pinned_branch_version_id
+        == prior_binding.pinned_branch_version_id,
+        current_binding.permitted_executor_classes
+        == prior_binding.permitted_executor_classes,
+        current_binding.daemon_id == prior_binding.daemon_id,
+        current_binding.runtime_id == prior_binding.runtime_id,
+        current_binding.expires_at == prior_binding.expires_at,
+        current_binding.max_attempts == prior_binding.max_attempts,
+        current_binding.remaining_depth == prior_binding.remaining_depth,
+        current_binding.remaining_count == prior_binding.remaining_count,
+        current_binding.remaining_cost_microunits
+        == prior_binding.remaining_cost_microunits,
+        current_binding.child_delegation == prior_binding.child_delegation,
+        attempt_count <= current_binding.max_attempts,
+    )
+    unexpired = (
+        current_binding.expires_at is None
+        or datetime.fromisoformat(replacement.updated_at.replace("Z", "+00:00"))
+        < datetime.fromisoformat(current_binding.expires_at.replace("Z", "+00:00"))
+    )
+    return (
+        _binding_digest_is_canonical(prior_binding)
+        and all(exact_binding_facts)
+        and replacement == exact_replacement
+        and _attempt_matches_binding(current, prior_binding)
+        and _attempt_matches_binding(replacement, current_binding)
+        and _attempt_transition_is_monotonic(current, normalized)
+        and unexpired
+    )
+
+
 def _binding_from_row(row: sqlite3.Row) -> BackgroundBranchBinding:
     try:
         encoded = str(row["record_json"])
@@ -433,6 +516,62 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
         # aggregate that could hide a tampered query index or canonical record.
         attempts = tuple(_attempt_from_row(row) for row in rows)
         return sum(attempt.binding_id == binding_id for attempt in attempts)
+
+    def _get_attempt_for_write(
+        self,
+        attempt_id: str,
+    ) -> BackgroundBranchAttempt | None:
+        row = self._conn.execute(
+            "SELECT * FROM background_branch_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        return _attempt_from_row(row) if row is not None else None
+
+    @staticmethod
+    def _attempt_write_preflight(
+        current: BackgroundBranchAttempt | None,
+        expected: BackgroundBranchAttemptFence,
+        replacement: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult | None:
+        if current is None:
+            return BackgroundBranchAttemptWriteResult(
+                BackgroundBranchAuthorityWriteOutcome.MISSING,
+                None,
+            )
+        if current == replacement:
+            return BackgroundBranchAttemptWriteResult(
+                BackgroundBranchAuthorityWriteOutcome.REPLAYED,
+                current,
+            )
+        if expected.matches(current):
+            return None
+        outcome = (
+            BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH
+            if current.binding_generation
+            != expected.expected_record.binding_generation
+            else BackgroundBranchAuthorityWriteOutcome.CONFLICT
+        )
+        return BackgroundBranchAttemptWriteResult(outcome, current)
+
+    def _update_attempt(
+        self,
+        replacement: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult:
+        self._conn.execute(
+            """
+            UPDATE background_branch_attempts
+            SET logical_attempt_key = ?, binding_id = ?,
+                binding_generation = ?, lifecycle = ?, updated_at = ?,
+                updated_at_utc_micros = ?, record_digest = ?,
+                record_json = ?
+            WHERE attempt_id = ?
+            """,
+            (*_attempt_payload(replacement)[1:], replacement.attempt_id),
+        )
+        return BackgroundBranchAttemptWriteResult(
+            BackgroundBranchAuthorityWriteOutcome.APPLIED,
+            replacement,
+        )
 
     def insert_binding(
         self,
@@ -606,49 +745,53 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
             != expected.expected_record.logical_attempt_key
         ):
             raise ValueError("attempt CAS identities must match")
-        row = self._conn.execute(
-            """
-            SELECT * FROM background_branch_attempts
-            WHERE attempt_id = ?
-            """,
-            (attempt_id,),
-        ).fetchone()
-        if row is None:
-            return BackgroundBranchAttemptWriteResult(
-                BackgroundBranchAuthorityWriteOutcome.MISSING,
-                None,
-            )
-        current = _attempt_from_row(row)
-        if current == replacement:
-            return BackgroundBranchAttemptWriteResult(
-                BackgroundBranchAuthorityWriteOutcome.REPLAYED,
-                current,
-            )
-        if not expected.matches(current):
-            outcome = (
-                BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH
-                if current.binding_generation
-                != expected.expected_record.binding_generation
-                else BackgroundBranchAuthorityWriteOutcome.CONFLICT
-            )
-            return BackgroundBranchAttemptWriteResult(outcome, current)
+        current = self._get_attempt_for_write(attempt_id)
+        preflight = self._attempt_write_preflight(current, expected, replacement)
+        if preflight is not None:
+            return preflight
+        assert current is not None
         if not _attempt_transition_is_monotonic(current, replacement):
             raise ValueError("attempt replacement must be monotonic")
-        self._conn.execute(
-            """
-            UPDATE background_branch_attempts
-            SET logical_attempt_key = ?, binding_id = ?,
-                binding_generation = ?, lifecycle = ?, updated_at = ?,
-                updated_at_utc_micros = ?, record_digest = ?,
-                record_json = ?
-            WHERE attempt_id = ?
-            """,
-            (*_attempt_payload(replacement)[1:], attempt_id),
-        )
-        return BackgroundBranchAttemptWriteResult(
-            BackgroundBranchAuthorityWriteOutcome.APPLIED,
+        return self._update_attempt(replacement)
+
+    def reauthorize_attempt(
+        self,
+        *,
+        attempt_id: str,
+        expected: BackgroundBranchAttemptFence,
+        prior_binding: BackgroundBranchBinding,
+        replacement: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult:
+        if (
+            not isinstance(expected, BackgroundBranchAttemptFence)
+            or not isinstance(prior_binding, BackgroundBranchBinding)
+            or not isinstance(replacement, BackgroundBranchAttempt)
+            or attempt_id != expected.expected_record.attempt_id
+            or attempt_id != replacement.attempt_id
+        ):
+            raise ValueError("attempt reauthorization identities must match")
+        current = self._get_attempt_for_write(attempt_id)
+        preflight = self._attempt_write_preflight(current, expected, replacement)
+        if preflight is not None:
+            return preflight
+        assert current is not None
+        binding_row = self._conn.execute(
+            "SELECT * FROM background_branch_bindings WHERE binding_id = ?",
+            (current.binding_id,),
+        ).fetchone()
+        if binding_row is None:
+            raise ValueError("attempt reauthorization binding is missing")
+        current_binding = _binding_from_row(binding_row)
+        attempt_count = self.count_attempts(binding_id=current.binding_id)
+        if not _attempt_reauthorization_is_monotonic(
+            current,
             replacement,
-        )
+            prior_binding,
+            current_binding,
+            attempt_count=attempt_count,
+        ):
+            raise ValueError("attempt reauthorization must be exact and monotonic")
+        return self._update_attempt(replacement)
 
 
 class SQLiteBackgroundBranchAuthorityStore:

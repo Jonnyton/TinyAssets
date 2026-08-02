@@ -30,6 +30,7 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchChildDelegation,
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
+    BackgroundBranchHoldReason,
     BackgroundBranchOperation,
     BackgroundBranchProvenance,
     BackgroundBranchReceiptRefs,
@@ -67,6 +68,12 @@ def _canonical_json(value: object) -> str:
 def _digest(value: object) -> str:
     encoded = _canonical_json(value).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _binding_digest_is_canonical(binding: BackgroundBranchBinding) -> bool:
+    payload = binding.to_dict()
+    claimed = payload.pop("binding_digest")
+    return claimed == _digest(payload)
 
 
 def _required(value: object, name: str) -> str:
@@ -280,6 +287,12 @@ class BackgroundBranchAttemptClaimAction(str, Enum):
     RECLAIM = "reclaim"
 
 
+class BackgroundBranchAttemptHoldAction(str, Enum):
+    HOLD = "hold"
+    RECOVER = "recover"
+    REAUTHORIZE = "reauthorize"
+
+
 @dataclass(frozen=True, slots=True)
 class BackgroundBranchAttemptClaimRequest:
     """Non-authorizing inputs for a trusted claim-lifecycle resolution."""
@@ -359,6 +372,84 @@ class BackgroundBranchAttemptClaimResolver(Protocol):
         request: BackgroundBranchAttemptClaimRequest,
     ) -> BackgroundBranchAttemptClaimResolution | None:
         """Return fresh canonical evidence, or ``None`` when authority is absent."""
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAttemptHoldRequest:
+    """Non-authorizing input for trusted hold-lifecycle resolution."""
+
+    attempt: BackgroundBranchAttempt
+    action: BackgroundBranchAttemptHoldAction
+    transitioned_at: str
+    requested_audience: BackgroundBranchExecutorAudience
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt, BackgroundBranchAttempt):
+            raise ValueError("attempt must be typed")
+        if not isinstance(self.action, BackgroundBranchAttemptHoldAction):
+            raise ValueError("action must be typed")
+        _utc_timestamp(self.transitioned_at, "transitioned_at")
+        if not isinstance(self.requested_audience, BackgroundBranchExecutorAudience):
+            raise ValueError("requested_audience must be typed")
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAttemptHoldResolution:
+    """Fresh canonical classification and same-attempt recovery evidence."""
+
+    binding: BackgroundBranchBinding | None
+    prior_binding: BackgroundBranchBinding | None
+    hold_reason: BackgroundBranchHoldReason | None
+    executor_audience: BackgroundBranchExecutorAudience
+    predecessor: BackgroundBranchAttemptPredecessorState
+    boundary: BackgroundBranchAttemptBoundaryState
+    branch_version_id: str
+    branch_content_digest: str
+    source_generation: int
+    resolved_at: str
+
+    def __post_init__(self) -> None:
+        if self.binding is not None and not isinstance(
+            self.binding, BackgroundBranchBinding
+        ):
+            raise ValueError("binding must be typed when present")
+        if self.prior_binding is not None and not isinstance(
+            self.prior_binding, BackgroundBranchBinding
+        ):
+            raise ValueError("prior_binding must be typed when present")
+        if self.hold_reason is not None and not isinstance(
+            self.hold_reason, BackgroundBranchHoldReason
+        ):
+            raise ValueError("hold_reason must be typed when present")
+        if not isinstance(self.executor_audience, BackgroundBranchExecutorAudience):
+            raise ValueError("executor_audience must be typed")
+        if not isinstance(self.predecessor, BackgroundBranchAttemptPredecessorState):
+            raise ValueError("predecessor must be typed")
+        if not isinstance(self.boundary, BackgroundBranchAttemptBoundaryState):
+            raise ValueError("boundary must be typed")
+        _required(self.branch_version_id, "branch_version_id")
+        if not isinstance(self.branch_content_digest, str) or not _SHA256_RE.fullmatch(
+            self.branch_content_digest
+        ):
+            raise ValueError("branch_content_digest must be a sha256 digest")
+        if (
+            not isinstance(self.source_generation, int)
+            or isinstance(self.source_generation, bool)
+            or self.source_generation < 0
+        ):
+            raise ValueError("source_generation must be a non-negative integer")
+        _utc_timestamp(self.resolved_at, "resolved_at")
+
+
+@runtime_checkable
+class BackgroundBranchAttemptHoldResolver(Protocol):
+    """Trusted adapter for hold classification and exit evidence."""
+
+    def resolve(
+        self,
+        request: BackgroundBranchAttemptHoldRequest,
+    ) -> BackgroundBranchAttemptHoldResolution | None:
+        """Return fresh canonical evidence, or ``None`` when unavailable."""
 
 
 class BackgroundBranchAttemptClaimError(ValueError):
@@ -881,13 +972,65 @@ class BackgroundBranchAttemptClaimService:
         self,
         store: BackgroundBranchAuthorityStore,
         resolver: BackgroundBranchAttemptClaimResolver,
+        *,
+        hold_resolver: BackgroundBranchAttemptHoldResolver | None = None,
     ) -> None:
         if not isinstance(store, BackgroundBranchAuthorityStore):
             raise ValueError("store must implement BackgroundBranchAuthorityStore")
         if not isinstance(resolver, BackgroundBranchAttemptClaimResolver):
             raise ValueError("resolver must implement BackgroundBranchAttemptClaimResolver")
+        if hold_resolver is not None and not isinstance(
+            hold_resolver, BackgroundBranchAttemptHoldResolver
+        ):
+            raise ValueError(
+                "hold_resolver must implement BackgroundBranchAttemptHoldResolver"
+            )
         self._store = store
         self._resolver = resolver
+        self._hold_resolver = hold_resolver
+
+    def hold(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        held_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if current.lifecycle not in {
+            BackgroundBranchAttemptLifecycle.RESERVED,
+            BackgroundBranchAttemptLifecycle.CLAIMED,
+            BackgroundBranchAttemptLifecycle.RUNNING,
+        }:
+            self._fail(
+                "attempt_not_holdable",
+                "only reserved, claimed, or running attempts can enter a hold",
+            )
+        with self._store.transaction() as transaction:
+            resolution = self._resolve_hold(
+                current,
+                BackgroundBranchAttemptHoldAction.HOLD,
+                current.executor_audience,
+                held_at,
+            )
+            self._validate_hold_entry(
+                current,
+                transaction.get_binding(current.binding_id),
+                resolution,
+            )
+            replacement = replace(
+                current,
+                claim_generation=current.claim_generation + 1,
+                lease_generation=current.lease_generation + 1,
+                lease_expires_at=None,
+                lifecycle=BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD,
+                hold_reason=resolution.hold_reason,
+                updated_at=held_at,
+            )
+            return transaction.compare_and_swap_attempt(
+                attempt_id=current.attempt_id,
+                expected=expected,
+                replacement=replacement,
+            )
 
     def claim(
         self,
@@ -1049,6 +1192,118 @@ class BackgroundBranchAttemptClaimService:
             require_conclusive_recovery=True,
         )
 
+    def recover_held(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        replacement_audience: BackgroundBranchExecutorAudience,
+        recovered_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if (
+            current.lifecycle
+            is not BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD
+        ):
+            self._fail("attempt_not_held", "only a held attempt can recover")
+        if not isinstance(replacement_audience, BackgroundBranchExecutorAudience):
+            raise ValueError("replacement_audience must be typed")
+        if self._executor_domain(replacement_audience) != self._executor_domain(
+            current.executor_audience
+        ):
+            self._fail(
+                "executor_domain_mismatch",
+                "held recovery may rotate only the worker inside its executor domain",
+            )
+        with self._store.transaction() as transaction:
+            resolution = self._resolve_hold(
+                current,
+                BackgroundBranchAttemptHoldAction.RECOVER,
+                replacement_audience,
+                recovered_at,
+            )
+            self._validate_held_exit_evidence(
+                current,
+                transaction.get_binding(current.binding_id),
+                resolution,
+            )
+            if (
+                resolution.predecessor
+                not in {
+                    BackgroundBranchAttemptPredecessorState.DEAD,
+                    BackgroundBranchAttemptPredecessorState.INVALIDATED,
+                }
+                or resolution.boundary
+                not in {
+                    BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+                    BackgroundBranchAttemptBoundaryState.CLOSED,
+                }
+            ):
+                self._fail(
+                    "recovery_not_conclusive",
+                    "held recovery requires conclusive predecessor and boundary proof",
+                )
+            replacement = self._replacement(
+                current,
+                executor_audience=replacement_audience,
+                claim_generation=current.claim_generation + 1,
+                lease_generation=current.lease_generation + 1,
+                lease_expires_at=None,
+                lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+                updated_at=recovered_at,
+            )
+            return transaction.compare_and_swap_attempt(
+                attempt_id=current.attempt_id,
+                expected=expected,
+                replacement=replacement,
+            )
+
+    def reauthorize_held(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        reauthorized_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if (
+            current.lifecycle
+            is not BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD
+        ):
+            self._fail("attempt_not_held", "only a held attempt can reauthorize")
+        with self._store.transaction() as transaction:
+            resolution = self._resolve_hold(
+                current,
+                BackgroundBranchAttemptHoldAction.REAUTHORIZE,
+                current.executor_audience,
+                reauthorized_at,
+            )
+            binding = transaction.get_binding(current.binding_id)
+            self._validate_reauthorization(
+                current,
+                binding,
+                resolution,
+                attempt_count=transaction.count_attempts(
+                    binding_id=current.binding_id
+                ),
+            )
+            assert binding is not None
+            replacement = replace(
+                current,
+                binding_digest=binding.binding_digest,
+                binding_generation=binding.generation,
+                claim_generation=current.claim_generation + 1,
+                lease_generation=current.lease_generation + 1,
+                lease_expires_at=None,
+                lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+                hold_reason=None,
+                updated_at=reauthorized_at,
+            )
+            return transaction.reauthorize_attempt(
+                attempt_id=current.attempt_id,
+                expected=expected,
+                prior_binding=resolution.prior_binding,
+                replacement=replacement,
+            )
+
     @staticmethod
     def _expected(
         expected: BackgroundBranchAttemptFence,
@@ -1082,8 +1337,19 @@ class BackgroundBranchAttemptClaimService:
             lease_generation=lease_generation,
             lease_expires_at=lease_expires_at,
             lifecycle=lifecycle,
+            hold_reason=None,
             updated_at=updated_at,
             provenance=provenance,
+        )
+
+    @staticmethod
+    def _executor_domain(
+        audience: BackgroundBranchExecutorAudience,
+    ) -> tuple[object, str | None, str | None]:
+        return (
+            audience.executor_class,
+            audience.daemon_id,
+            audience.runtime_id,
         )
 
     def _compare_and_swap(
@@ -1170,6 +1436,308 @@ class BackgroundBranchAttemptClaimService:
             )
         return resolution
 
+    def _resolve_hold(
+        self,
+        current: BackgroundBranchAttempt,
+        action: BackgroundBranchAttemptHoldAction,
+        requested_audience: BackgroundBranchExecutorAudience,
+        transitioned_at: str,
+    ) -> BackgroundBranchAttemptHoldResolution:
+        if self._hold_resolver is None:
+            self._fail(
+                "hold_resolution_unavailable",
+                "hold transitions require a trusted resolver",
+            )
+        assert self._hold_resolver is not None
+        resolution = self._hold_resolver.resolve(
+            BackgroundBranchAttemptHoldRequest(
+                attempt=current,
+                action=action,
+                transitioned_at=transitioned_at,
+                requested_audience=requested_audience,
+            )
+        )
+        if resolution is None:
+            self._fail("hold_resolution_missing", "canonical hold evidence is absent")
+        if not isinstance(resolution, BackgroundBranchAttemptHoldResolution):
+            self._fail(
+                "hold_resolution_invalid",
+                "resolver returned invalid hold evidence",
+            )
+        assert isinstance(resolution, BackgroundBranchAttemptHoldResolution)
+        if resolution.executor_audience != requested_audience:
+            self._fail(
+                "executor_mismatch",
+                "resolved executor audience does not match the request",
+            )
+        return resolution
+
+    def _validate_hold_entry(
+        self,
+        attempt: BackgroundBranchAttempt,
+        binding: BackgroundBranchBinding | None,
+        resolution: BackgroundBranchAttemptHoldResolution,
+    ) -> None:
+        reason = resolution.hold_reason
+        if reason is None:
+            self._fail("hold_reason_missing", "hold entry requires a closed reason")
+        if resolution.prior_binding is not None:
+            self._fail(
+                "hold_resolution_invalid",
+                "hold entry cannot carry prior binding evidence",
+            )
+        if reason is BackgroundBranchHoldReason.BINDING_MISSING:
+            if binding is not None or resolution.binding is not None:
+                self._fail(
+                    "hold_classification_mismatch",
+                    "binding_missing requires an absent canonical binding",
+                )
+            return
+        if binding is None or resolution.binding != binding:
+            self._fail(
+                "canonical_binding_mismatch",
+                "hold evidence does not match the atomic binding snapshot",
+            )
+        status_reasons = {
+            BackgroundBranchBindingStatus.REVOKED: (
+                BackgroundBranchHoldReason.BINDING_REVOKED
+            ),
+            BackgroundBranchBindingStatus.EXHAUSTED: (
+                BackgroundBranchHoldReason.BINDING_EXHAUSTED
+            ),
+            BackgroundBranchBindingStatus.EXPIRED: (
+                BackgroundBranchHoldReason.BINDING_EXPIRED
+            ),
+        }
+        required_reason = status_reasons.get(binding.status)
+        if required_reason is not None and reason is not required_reason:
+            self._fail(
+                "hold_classification_mismatch",
+                "binding status and hold reason disagree",
+            )
+        if (
+            binding.status is BackgroundBranchBindingStatus.ACTIVE
+            and reason in status_reasons.values()
+        ):
+            self._fail(
+                "hold_classification_mismatch",
+                "active binding cannot use a terminal binding reason",
+            )
+        if (
+            binding.expires_at is not None
+            and _utc_timestamp(resolution.resolved_at, "resolved_at")
+            >= _utc_timestamp(binding.expires_at, "expires_at")
+            and reason is not BackgroundBranchHoldReason.BINDING_EXPIRED
+        ):
+            self._fail(
+                "hold_classification_mismatch",
+                "expired binding requires binding_expired",
+            )
+        if (
+            resolution.branch_version_id != attempt.branch_version_id
+            or resolution.branch_content_digest != attempt.branch_content_digest
+            or resolution.source_generation != attempt.source_generation
+        ):
+            self._fail(
+                "hold_resolution_mismatch",
+                "hold evidence does not describe the exact attempt pins",
+            )
+
+    def _validate_held_exit_evidence(
+        self,
+        attempt: BackgroundBranchAttempt,
+        binding: BackgroundBranchBinding | None,
+        resolution: BackgroundBranchAttemptHoldResolution,
+    ) -> None:
+        if resolution.hold_reason is not None or resolution.prior_binding is not None:
+            self._fail(
+                "hold_exit_resolution_invalid",
+                "held recovery cannot carry a hold reason or prior binding",
+            )
+        if binding is None or resolution.binding != binding:
+            self._fail(
+                "canonical_binding_mismatch",
+                "held recovery evidence does not match the atomic binding snapshot",
+            )
+        if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
+            self._fail("binding_not_active", "held recovery binding is not active")
+        if (
+            binding.binding_id != attempt.binding_id
+            or binding.binding_digest != attempt.binding_digest
+            or binding.generation != attempt.binding_generation
+        ):
+            self._fail(
+                "binding_fence_mismatch",
+                "held recovery cannot rotate its binding fence",
+            )
+        if (
+            resolution.branch_version_id != attempt.branch_version_id
+            or resolution.branch_content_digest != attempt.branch_content_digest
+            or resolution.source_generation != attempt.source_generation
+        ):
+            self._fail(
+                "hold_exit_resolution_mismatch",
+                "held recovery evidence does not match the exact attempt pins",
+            )
+        resolved_at = _utc_timestamp(resolution.resolved_at, "resolved_at")
+        if binding.expires_at is not None and resolved_at >= _utc_timestamp(
+            binding.expires_at, "expires_at"
+        ):
+            self._fail("binding_expired", "held recovery binding has expired")
+        self._validate_executor_against_binding(
+            resolution.executor_audience,
+            binding,
+            code="executor_mismatch",
+        )
+
+    def _validate_reauthorization(
+        self,
+        attempt: BackgroundBranchAttempt,
+        binding: BackgroundBranchBinding | None,
+        resolution: BackgroundBranchAttemptHoldResolution,
+        *,
+        attempt_count: int,
+    ) -> None:
+        prior = resolution.prior_binding
+        if resolution.hold_reason is not None or prior is None:
+            self._fail(
+                "reauthorization_resolution_invalid",
+                "reauthorization requires one prior binding and no hold reason",
+            )
+        if binding is None or resolution.binding != binding:
+            self._fail(
+                "reauthorization_binding_mismatch",
+                "reauthorization evidence does not match the atomic binding snapshot",
+            )
+        assert prior is not None
+        if not _binding_digest_is_canonical(prior):
+            self._fail(
+                "reauthorization_prior_tampered",
+                "prior binding digest is not canonical",
+            )
+        if (
+            prior.binding_id != attempt.binding_id
+            or prior.binding_digest != attempt.binding_digest
+            or prior.generation != attempt.binding_generation
+        ):
+            self._fail(
+                "reauthorization_prior_mismatch",
+                "prior binding does not own the held attempt fence",
+            )
+        if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
+            self._fail(
+                "reauthorization_binding_inactive",
+                "reauthorization binding is not active",
+            )
+        if binding.generation != prior.generation + 1:
+            self._fail(
+                "reauthorization_generation_mismatch",
+                "reauthorization requires the exact next binding generation",
+            )
+        if binding.revocation_generation < prior.revocation_generation:
+            self._fail(
+                "reauthorization_revocation_regression",
+                "reauthorization cannot regress revocation fencing",
+            )
+        exact_binding_facts = (
+            binding.binding_id == prior.binding_id,
+            binding.authorizing_principal_id == prior.authorizing_principal_id,
+            binding.universe_id == prior.universe_id,
+            binding.branch_def_id == prior.branch_def_id,
+            binding.operation is prior.operation,
+            binding.source_kind is prior.source_kind,
+            binding.source_id == prior.source_id,
+            binding.source_revision == prior.source_revision,
+            binding.source_digest == prior.source_digest,
+            binding.target_mode is prior.target_mode,
+            binding.pinned_branch_version_id == prior.pinned_branch_version_id,
+            binding.permitted_executor_classes
+            == prior.permitted_executor_classes,
+            binding.daemon_id == prior.daemon_id,
+            binding.runtime_id == prior.runtime_id,
+            binding.expires_at == prior.expires_at,
+            binding.max_attempts == prior.max_attempts,
+            binding.remaining_depth == prior.remaining_depth,
+            binding.remaining_count == prior.remaining_count,
+            binding.remaining_cost_microunits
+            == prior.remaining_cost_microunits,
+            binding.child_delegation == prior.child_delegation,
+        )
+        if not all(exact_binding_facts):
+            self._fail(
+                "reauthorization_fact_mismatch",
+                "reauthorization changed an attempt-bound binding fact",
+            )
+        attempt_identity_matches = (
+            attempt.authorizing_principal_id == binding.authorizing_principal_id,
+            attempt.universe_id == binding.universe_id,
+            attempt.branch_def_id == binding.branch_def_id,
+            attempt.operation is binding.operation,
+            attempt.source_kind is binding.source_kind,
+            attempt.source_id == binding.source_id,
+            resolution.branch_version_id == attempt.branch_version_id,
+            resolution.branch_content_digest == attempt.branch_content_digest,
+            resolution.source_generation == attempt.source_generation,
+        )
+        if not all(attempt_identity_matches):
+            self._fail(
+                "reauthorization_attempt_mismatch",
+                "reauthorization cannot prove the exact attempt pins",
+            )
+        if (
+            binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION
+            and binding.pinned_branch_version_id != attempt.branch_version_id
+        ):
+            self._fail(
+                "reauthorization_target_mismatch",
+                "pinned binding does not authorize the attempt target",
+            )
+        resolved_at = _utc_timestamp(resolution.resolved_at, "resolved_at")
+        if binding.expires_at is not None and resolved_at >= _utc_timestamp(
+            binding.expires_at, "expires_at"
+        ):
+            self._fail(
+                "reauthorization_binding_expired",
+                "reauthorization binding has expired",
+            )
+        if not all(
+            (
+                attempt.remaining_depth <= binding.remaining_depth,
+                attempt.remaining_count <= binding.remaining_count,
+                attempt.remaining_cost_microunits
+                <= binding.remaining_cost_microunits,
+                attempt_count <= binding.max_attempts,
+            )
+        ):
+            self._fail(
+                "reauthorization_budget_mismatch",
+                "held attempt does not fit inside the new binding envelope",
+            )
+        if resolution.executor_audience != attempt.executor_audience:
+            self._fail(
+                "reauthorization_executor_mismatch",
+                "reauthorization cannot rotate the held executor audience",
+            )
+        self._validate_executor_against_binding(
+            resolution.executor_audience,
+            binding,
+            code="reauthorization_executor_mismatch",
+        )
+
+    def _validate_executor_against_binding(
+        self,
+        audience: BackgroundBranchExecutorAudience,
+        binding: BackgroundBranchBinding,
+        *,
+        code: str,
+    ) -> None:
+        if audience.executor_class not in binding.permitted_executor_classes:
+            self._fail(code, "executor class is not permitted")
+        if binding.daemon_id is not None and audience.daemon_id != binding.daemon_id:
+            self._fail(code, "daemon is not permitted")
+        if binding.runtime_id is not None and audience.runtime_id != binding.runtime_id:
+            self._fail(code, "runtime is not permitted")
+
     def _validate_binding(
         self,
         attempt: BackgroundBranchAttempt,
@@ -1215,13 +1783,11 @@ class BackgroundBranchAttemptClaimService:
             binding.expires_at, "expires_at"
         ):
             self._fail("binding_expired", "attempt binding has expired")
-        audience = resolution.executor_audience
-        if audience.executor_class not in binding.permitted_executor_classes:
-            self._fail("executor_mismatch", "executor class is not permitted")
-        if binding.daemon_id is not None and audience.daemon_id != binding.daemon_id:
-            self._fail("executor_mismatch", "daemon is not permitted")
-        if binding.runtime_id is not None and audience.runtime_id != binding.runtime_id:
-            self._fail("executor_mismatch", "runtime is not permitted")
+        self._validate_executor_against_binding(
+            resolution.executor_audience,
+            binding,
+            code="executor_mismatch",
+        )
 
     @staticmethod
     def _fail(code: str, detail: str) -> None:
@@ -1236,6 +1802,10 @@ __all__ = [
     "BackgroundBranchAttemptClaimResolution",
     "BackgroundBranchAttemptClaimResolver",
     "BackgroundBranchAttemptClaimService",
+    "BackgroundBranchAttemptHoldAction",
+    "BackgroundBranchAttemptHoldRequest",
+    "BackgroundBranchAttemptHoldResolution",
+    "BackgroundBranchAttemptHoldResolver",
     "BackgroundBranchAttemptIssuanceError",
     "BackgroundBranchAttemptIssuanceRequest",
     "BackgroundBranchAttemptIssuanceResolution",
