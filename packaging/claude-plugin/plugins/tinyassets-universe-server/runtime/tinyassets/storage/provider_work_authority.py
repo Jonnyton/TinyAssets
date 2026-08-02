@@ -1138,6 +1138,25 @@ class SQLiteProviderWorkAuthorityStore:
         with self._ledger_transaction() as transaction:
             return transaction._insert(binding)
 
+    def _issue_binding_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        seed: ProviderWorkBindingSeed,
+    ) -> ProviderWorkBindingWriteResult:
+        """Compose canonical binding issuance into a larger atomic aggregate.
+
+        This is intentionally private: the caller must already own an active
+        SQLite transaction and a trusted, server-resolved seed.  Provider work
+        remains unusable without its later receipt/claim/reservation lineage.
+        """
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("binding issuance requires an active SQLite transaction")
+        if not isinstance(seed, ProviderWorkBindingSeed):
+            raise ValueError("seed must be a ProviderWorkBindingSeed")
+        binding = _from_seed(seed, created_at=self.timestamp())
+        return _Transaction(conn)._insert(binding)
+
     def install_test_binding(
         self,
         seed: ProviderWorkBindingSeed,
