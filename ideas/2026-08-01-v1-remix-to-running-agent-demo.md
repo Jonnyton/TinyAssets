@@ -1,7 +1,8 @@
 # Draft: V1 remix-to-running agent demo
 
-**Status:** Awaiting host approval. This is not implementation authority and
-does not change `PLAN.md` or OpenSpec.
+**Status:** Host-approved 2026-08-01. Promoted into `PLAN.md` and the existing
+OpenSpec coordination root `activate-custom-agent-runtimes`; delivery still
+follows its separately claimed, independently reviewed successor changes.
 
 ## Problem statement
 
@@ -108,8 +109,9 @@ scheduled run with the user's computer off, canonical export/re-import, a
 second-account remix, and post-fix organic-use evidence or an explicit watch
 item if no organic use has occurred yet.
 
-## Open question
+## Decision
 
-Approve the intelligence-agent domain for the first V1 golden path, or choose
-the coding-agent direction while accepting its larger sandbox and write-safety
-surface.
+The host approved the 24/7 remixed Slack intelligence agent as the first V1
+golden path on 2026-08-01. Coding-agent and bring-your-own foreign-agent
+experiences remain subsequent compositions over the same substrate, not new
+platform archetypes.
