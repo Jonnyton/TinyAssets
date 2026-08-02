@@ -9,19 +9,23 @@ import threading
 import weakref
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
 from tinyassets.agent_runtime_invocation import AgentInvocationState
 from tinyassets.agent_runtime_principal import AgentRuntimePrincipal
 from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
+    ProviderInvocationReservationWriteResult,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
     ProviderWorkBindingRoot,
     ProviderWorkBindingSeed,
     ProviderWorkBindingState,
+    ProviderWorkExecutionClaimWriteResult,
     ProviderWorkReceiptWriteResult,
     ProviderWorkTransactionalBindingResolver,
+    _mint_provider_invocation_carrier,
 )
 from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
 from tinyassets.storage.agent_runtime_invocation import (
@@ -137,6 +141,46 @@ class AgentRuntimeProviderExecutionService:
         )
 
     def issue_receipt(self, invocation_id: str) -> ProviderWorkReceiptWriteResult:
+        result = self._transition(invocation_id, transition="receipt")
+        assert isinstance(result, ProviderWorkReceiptWriteResult)
+        return result
+
+    def claim(self, invocation_id: str) -> ProviderWorkExecutionClaimWriteResult:
+        result = self._transition(invocation_id, transition="claim")
+        assert isinstance(result, ProviderWorkExecutionClaimWriteResult)
+        return result
+
+    def reserve(self, invocation_id: str) -> ProviderInvocationReservationWriteResult:
+        result = self._transition(invocation_id, transition="reserve")
+        assert isinstance(result, ProviderInvocationReservationWriteResult)
+        return result
+
+    def arm_launch(self, invocation_id: str) -> ProviderInvocationCarrier:
+        result = self._transition(invocation_id, transition="launch")
+        assert isinstance(result, ProviderInvocationReservationWriteResult)
+        if result.outcome.value == "replayed":
+            raise PermissionError("provider invocation reservation is already armed")
+        if (
+            result.outcome.value != "applied"
+            or result.record is None
+            or result.receipt is None
+            or result.claim is None
+            or result.mint_proof is None
+        ):
+            raise PermissionError("provider invocation reservation could not be armed")
+        return _mint_provider_invocation_carrier(
+            result.receipt,
+            result.claim,
+            result.record,
+            result.mint_proof,
+        )
+
+    def _transition(
+        self,
+        invocation_id: str,
+        *,
+        transition: Literal["receipt", "claim", "reserve", "launch"],
+    ) -> object:
         with self.invocation_store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -146,24 +190,44 @@ class AgentRuntimeProviderExecutionService:
                         "server clock is unavailable"
                     )
                 now = now.astimezone(timezone.utc)
-                result = self._issue_in_transaction(
+                store_grant = self._validated_store_grant(
                     conn,
                     invocation_id=invocation_id,
                     evaluated_at=now.timestamp(),
                 )
+                if transition == "receipt":
+                    result = self.provider_store._issue_universe_receipt_in_transaction(
+                        conn,
+                        store_grant,
+                    )
+                elif transition == "claim":
+                    result = self.provider_store._claim_agent_in_transaction(
+                        conn,
+                        store_grant,
+                    )
+                elif transition == "reserve":
+                    result = self.provider_store._reserve_agent_in_transaction(
+                        conn,
+                        store_grant,
+                    )
+                else:
+                    result = self.provider_store._arm_agent_launch_in_transaction(
+                        conn,
+                        store_grant,
+                    )
                 conn.commit()
                 return result
             except Exception:
                 conn.rollback()
                 raise
 
-    def _issue_in_transaction(
+    def _validated_store_grant(
         self,
         conn: sqlite3.Connection,
         *,
         invocation_id: str,
         evaluated_at: float,
-    ) -> ProviderWorkReceiptWriteResult:
+    ) -> _AgentProviderReceiptStoreGrant:
         try:
             aggregate = self.invocation_store.get_in_transaction(
                 conn,
@@ -288,7 +352,7 @@ class AgentRuntimeProviderExecutionService:
             ),
             binding=binding,
             principal_id=principal.principal_digest,
-            actor_id=invocation.invocation_id,
+            actor_id=command.lease_id,
             operation="agent_invocation",
             role="agent_runtime",
             executor_class="cloud",
@@ -321,10 +385,7 @@ class AgentRuntimeProviderExecutionService:
             grant_id,
             issuer_pid,
         )
-        return self.provider_store._issue_universe_receipt_in_transaction(
-            conn,
-            store_grant,
-        )
+        return store_grant
 
 
 __all__ = [

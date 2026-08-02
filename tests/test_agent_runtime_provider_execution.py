@@ -20,9 +20,14 @@ from tinyassets.agent_runtime_grants import (
 )
 from tinyassets.execution_subject import ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
+    ProviderInvocationLaunchRequest,
+    ProviderInvocationReservationRequest,
+    ProviderInvocationReservationState,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
+    ProviderWorkExecutionClaimRequest,
 )
 from tinyassets.storage import db_path
 from tinyassets.storage.accounts import grant_capabilities
@@ -271,6 +276,291 @@ def test_grant_time_is_sampled_after_waiting_for_write_fence(
     with sqlite3.connect(db_path(tmp_path)) as connection:
         count = connection.execute(
             "SELECT COUNT(*) FROM provider_work_receipts"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_agent_claim_reserve_and_launch_are_replay_safe_across_restart(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+
+    def restarted_service() -> AgentRuntimeProviderExecutionService:
+        return AgentRuntimeProviderExecutionService(
+            tmp_path,
+            grant_resolver=grant_resolver,
+            provider_binding_resolver=provider_resolver,
+            clock=lambda: NOW,
+        )
+
+    invocation_id = admitted.invocation.invocation_id
+    service = restarted_service()
+    service.issue_receipt(invocation_id)
+    claim = service.claim(invocation_id)
+    assert claim.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED
+    assert claim.record is not None
+    assert claim.record.worker_id == admitted.command.lease_id
+    assert claim.record.runtime_id == admitted.command.execution_subject.ref
+
+    replayed_claim = restarted_service().claim(invocation_id)
+    assert replayed_claim.outcome is ProviderWorkAuthorityWriteOutcome.REPLAYED
+    assert replayed_claim.record == claim.record
+
+    reservation = restarted_service().reserve(invocation_id)
+    assert reservation.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED
+    assert reservation.record is not None
+    assert reservation.record.invocation_key == invocation_id
+    assert reservation.record.max_tokens == admitted.command.max_tokens
+    assert (
+        reservation.record.max_cost_microunits
+        == admitted.command.max_cost_microunits
+    )
+
+    replayed_reservation = restarted_service().reserve(invocation_id)
+    assert (
+        replayed_reservation.outcome
+        is ProviderWorkAuthorityWriteOutcome.REPLAYED
+    )
+    assert replayed_reservation.record == reservation.record
+
+    carrier = restarted_service().arm_launch(invocation_id)
+    assert isinstance(carrier, ProviderInvocationCarrier)
+    assert carrier.provider == admitted.command.provider
+    assert carrier.operation == "agent_invocation"
+    assert carrier.role == "agent_runtime"
+    assert carrier.max_tokens == admitted.command.max_tokens
+    with pytest.raises(PermissionError, match="already armed"):
+        restarted_service().arm_launch(invocation_id)
+
+
+def test_eight_agent_launchers_mint_one_carrier(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    invocation_id = admitted.invocation.invocation_id
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    service.issue_receipt(invocation_id)
+    service.claim(invocation_id)
+    service.reserve(invocation_id)
+
+    def arm(_index: int) -> object:
+        candidate = AgentRuntimeProviderExecutionService(
+            tmp_path,
+            grant_resolver=grant_resolver,
+            provider_binding_resolver=provider_resolver,
+            clock=lambda: NOW,
+        )
+        try:
+            return candidate.arm_launch(invocation_id)
+        except PermissionError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(arm, range(8)))
+
+    assert sum(isinstance(item, ProviderInvocationCarrier) for item in results) == 1
+    assert all(
+        isinstance(item, ProviderInvocationCarrier)
+        or (isinstance(item, PermissionError) and "already armed" in str(item))
+        for item in results
+    )
+
+
+def test_generic_transition_helpers_cannot_advance_agent_receipt(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    invocation_id = admitted.invocation.invocation_id
+    receipt = service.issue_receipt(invocation_id).record
+    assert receipt is not None
+    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+        service.provider_store.claim(
+            ProviderWorkExecutionClaimRequest(
+                receipt_id=receipt.receipt_id,
+                receipt_digest=receipt.receipt_digest,
+                worker_id="forged_worker",
+                runtime_id="forged_runtime",
+                claim_nonce_digest=f"sha256:{'8' * 64}",
+                lease_seconds=300,
+            )
+        )
+
+    claim = service.claim(invocation_id).record
+    assert claim is not None
+    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+        service.provider_store.reserve(
+            ProviderInvocationReservationRequest(
+                receipt_id=receipt.receipt_id,
+                receipt_digest=receipt.receipt_digest,
+                claim_id=claim.claim_id,
+                claim_digest=claim.claim_digest,
+                claim_generation=claim.generation,
+                invocation_key=invocation_id,
+                operation="agent_invocation",
+                role="agent_runtime",
+                max_tokens=admitted.command.max_tokens,
+                max_cost_microunits=admitted.command.max_cost_microunits,
+            )
+        )
+
+    reservation = service.reserve(invocation_id).record
+    assert reservation is not None
+    assert reservation.state is ProviderInvocationReservationState.RESERVED
+    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+        service.provider_store.arm_launch_carrier(
+            ProviderInvocationLaunchRequest.from_reservation(reservation)
+        )
+
+    persisted = service.provider_store.list_reservations(receipt.receipt_id)
+    assert persisted == (reservation,)
+
+
+def test_revocation_before_launch_preserves_unarmed_reservation(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionBlocked,
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    invocation_id = admitted.invocation.invocation_id
+    receipt = service.issue_receipt(invocation_id).record
+    assert receipt is not None
+    service.claim(invocation_id)
+    reservation = service.reserve(invocation_id).record
+    assert reservation is not None
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        connection.execute(
+            "UPDATE provider_work_bindings SET state = 'revoked' "
+            "WHERE binding_id = ?",
+            (receipt.binding_id,),
+        )
+
+    with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="provider binding"):
+        service.arm_launch(invocation_id)
+    assert service.provider_store.list_reservations(receipt.receipt_id) == (
+        reservation,
+    )
+
+
+def test_concurrent_agent_reservations_conserve_one_budget_envelope(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    invocation_id = admitted.invocation.invocation_id
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    receipt = service.issue_receipt(invocation_id).record
+    assert receipt is not None
+    service.claim(invocation_id)
+
+    def reserve(_index: int):
+        return AgentRuntimeProviderExecutionService(
+            tmp_path,
+            grant_resolver=grant_resolver,
+            provider_binding_resolver=provider_resolver,
+            clock=lambda: NOW,
+        ).reserve(invocation_id)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(reserve, range(8)))
+
+    assert sum(
+        item.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for item in results
+    ) == 1
+    assert all(
+        item.outcome
+        in {
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            ProviderWorkAuthorityWriteOutcome.REPLAYED,
+        }
+        for item in results
+    )
+    reservations = service.provider_store.list_reservations(receipt.receipt_id)
+    assert len(reservations) == 1
+    assert sum(item.max_tokens for item in reservations) == admitted.command.max_tokens
+    assert (
+        sum(item.max_cost_microunits for item in reservations)
+        == admitted.command.max_cost_microunits
+    )
+
+
+def test_expired_agent_receipt_cannot_be_claimed(
+    tmp_path, authenticate_request
+) -> None:
+    from datetime import timedelta
+
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    current_time = [NOW]
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: current_time[0],
+    )
+    service.issue_receipt(admitted.invocation.invocation_id)
+    current_time[0] = NOW + timedelta(days=2)
+
+    result = service.claim(admitted.invocation.invocation_id)
+    assert result.outcome is ProviderWorkAuthorityWriteOutcome.STALE
+    assert result.record is None
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM provider_work_execution_claims"
         ).fetchone()[0]
     assert count == 0
 
