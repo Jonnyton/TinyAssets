@@ -41,6 +41,12 @@ When owned, claimable, and policy-qualified stale STATUS candidates are absent, 
 - **THEN** the refinery handoff does not count as the first repeated implementation partial
 - **AND** the supervisor immediately resumes the preserved target without consuming a failure strike or entering the idle wait
 
+#### Scenario: Refinery continuation receipt is replayed
+- **WHEN** a verified merge-backed `PARTIAL` receipt was already accepted by the bounded run
+- **AND** a later worker reports that same receipt again
+- **THEN** the supervisor suppresses the replay before continuation validation
+- **AND** the replay does not reset the run's existing failure budget
+
 #### Scenario: Coordination is genuinely exhausted
 - **WHEN** claimable, stale, owned, and refinable counts are all zero after exact-current-main inspection
 - **THEN** the supervisor may accept `NO_CANDIDATE` and wait without consuming a failure strike
@@ -64,3 +70,20 @@ The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an unfi
 - **AND** that resumed controller is later interrupted before another orderly exit
 - **THEN** its running state has no stale terminal timestamp
 - **AND** the next watchdog discovery classifies the same run as unfinished and resumable
+
+#### Scenario: Resume is interrupted during result recovery
+- **WHEN** a resumed controller clears its prior terminal timestamp
+- **AND** it is interrupted while recovering an earlier result or verifying a merge receipt
+- **THEN** the cleared timestamp is already durable on disk
+- **AND** the next watchdog discovery resumes the same run identity
+
+#### Scenario: Explicit restart overlaps an abrupt controller exit
+- **WHEN** an explicit restart is pending for an unfinished run
+- **AND** the controller exits before recording orderly `stop-requested`
+- **THEN** the watchdog resumes the discovered unfinished run directory and identity
+- **AND** it does not mint a fresh identity
+
+#### Scenario: Restart launch fails
+- **WHEN** the watchdog has selected the preserved restart decision
+- **AND** launching the supervisor fails before a process is created
+- **THEN** the restart request remains durable for the next watchdog attempt

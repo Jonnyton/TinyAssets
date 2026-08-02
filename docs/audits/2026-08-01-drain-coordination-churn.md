@@ -116,3 +116,14 @@ before its first `status=running` write. A test first reproduced the stale
 timestamp after a simulated abrupt post-resume exit, then passed with the fix;
 the existing same-directory watchdog discovery and graceful-restart tests also
 remain green. Live restoration proof is still required before archive.
+
+Exact-head re-review at `f0fc759c` found three narrower variants of the same
+identity/progress failure: the cleared timestamp was not durable until after
+interruptible GitHub recovery calls; two explicit-restart paths could still
+override a discovered unfinished run; and accepted refinery `PARTIAL` receipts
+were replayable and could reset the failure counter. Test-first hardening now
+persists the unfinished state before recovery, retains restart intent until a
+supervisor process is created, preserves unfinished discovery in every restart
+branch, and consumes canonical receipts for both `MERGED` and `PARTIAL` results.
+The seven new regressions and full 201-test controller/watchdog suite passed on
+Windows on 2026-08-01. Exact-head review and live restoration remain required.

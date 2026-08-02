@@ -2198,6 +2198,49 @@ def test_resume_clears_terminal_timestamp_before_next_attempt(
     assert "ended_at" not in persisted
 
 
+def test_resume_persists_cleared_terminal_timestamp_before_result_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    state_path = run_dir / "state.json"
+    state = _state(status="stop-requested", ended_at="2026-08-01T17:00:00-07:00")
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    observed: list[dict[str, object]] = []
+
+    class SimulatedAbruptExit(Exception):
+        pass
+
+    def interrupt_during_recovery(
+        _state: dict[str, object],
+        **_kwargs: object,
+    ) -> bool:
+        observed.append(json.loads(state_path.read_text(encoding="utf-8")))
+        raise SimulatedAbruptExit
+
+    monkeypatch.setattr(drain, "recover_invalid_result", interrupt_during_recovery)
+
+    with pytest.raises(SimulatedAbruptExit):
+        drain.main(
+            [
+                "run",
+                "--repo",
+                str(repo),
+                "--run-dir",
+                str(run_dir),
+                "--resume",
+                "--hours",
+                "1",
+            ]
+        )
+
+    assert len(observed) == 1
+    assert "ended_at" not in observed[0]
+
+
 def test_resume_does_not_recover_a_missing_recorded_artifact(
     tmp_path: Path,
 ) -> None:
@@ -2605,6 +2648,23 @@ def test_verified_merge_records_bounded_receipt_and_rejects_exact_replay() -> No
     )
 
 
+def test_verified_partial_records_receipt_and_rejects_exact_replay() -> None:
+    state = _state(attempt_kind="refinery")
+    result = drain.DrainResult(
+        "PARTIAL",
+        "refine-openspec-target",
+        "https://github.com/o/r/pull/12",
+    )
+
+    drain.apply_result(state, result, merge_verified=True)
+
+    assert state["merged_prs"] == ["https://github.com/o/r/pull/12"]
+    assert (
+        drain.duplicate_merge_rejection(result, state)
+        == "already-consumed=https://github.com/o/r/pull/12"
+    )
+
+
 def test_merge_receipt_rejects_repo_case_and_number_format_replay() -> None:
     state = _state(
         completed_slices=1,
@@ -2795,6 +2855,32 @@ def test_legacy_merge_receipts_exclude_prior_verification_failure(
 
     assert receipts == []
     assert verifier_calls == []
+
+
+def test_legacy_merge_receipts_include_verified_partial_results(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: PARTIAL refine-openspec-target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-08-01T00:00:00-07:00 result attempt=1 status=partial "
+        f"target=refine-openspec-target pr={pr}\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(attempts=1, last_consumed_attempt=1),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == [pr]
 
 
 @pytest.mark.parametrize(
@@ -3488,6 +3574,93 @@ def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
     assert state["admission"] is None
     assert state["resume_target"] is None
     assert state["recent_consumed_targets"] == ["old-target"]
+    assert state["status"] == "duplicate-merge-suppressed"
+
+
+def test_run_rejects_replayed_refinery_partial_without_resetting_failure_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    pr = "https://github.com/o/r/pull/12"
+    target = "refine-openspec-exact-target"
+    refinery = drain.CandidateHint(
+        "REFINERY",
+        "Refine OpenSpec exact-target",
+        ("openspec/changes/exact-target/",),
+    )
+    claimable = drain.CandidateHint(
+        "CLAIMABLE",
+        "Implement exact-target slice",
+        ("openspec/changes/exact-target/tasks.md",),
+    )
+    initial_state = _state(
+        attempts=0,
+        last_consumed_attempt=0,
+        consecutive_failures=1,
+        merged_prs=[pr],
+    )
+    snapshots = [
+        drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0, 1),
+            hints=(refinery,),
+        ),
+        drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(1, 0, 0, 0),
+            hints=(claimable,),
+        ),
+    ]
+    snapshot_calls = 0
+
+    def inspect_snapshot(**_kwargs: object) -> drain.CandidateSnapshot:
+        nonlocal snapshot_calls
+        snapshot = snapshots[min(snapshot_calls, len(snapshots) - 1)]
+        snapshot_calls += 1
+        return snapshot
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        result_path.write_text(
+            f"DRAIN_RESULT: PARTIAL {target} {pr}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_new_state", lambda _args: initial_state)
+    monkeypatch.setattr(drain, "inspect_current_main_snapshot", inspect_snapshot)
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(drain, "verify_merged", lambda *_args, **_kwargs: True)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--once",
+            "--hours",
+            "1",
+            "--max-slices",
+            "3",
+            "--max-failures",
+            "2",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert snapshot_calls == 1
+    assert state["consecutive_failures"] == 1
+    assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["merged_prs"] == [pr]
     assert state["status"] == "duplicate-merge-suppressed"
 
 

@@ -44,6 +44,10 @@ After a refinery returns `PARTIAL` and its PR is verified merged, the supervisor
 
 The validation is structural and deterministic: it uses classification plus symmetric file-atom overlap. It does not infer whether prose sounds actionable.
 
+### 5. Make restart and merge-receipt intent durable before external work
+
+Resume clears and persists the prior terminal timestamp before result recovery can call GitHub. The watchdog retains an explicit restart marker until the selected supervisor process is created and preserves a discovered unfinished run instead of overriding it with a fresh-run decision. Accepted verified `MERGED` and `PARTIAL` results both consume their canonical PR receipt for the bounded run; replay suppression preserves an existing failure strike for `PARTIAL` rather than laundering the budget through coordination.
+
 ## Risks / Trade-offs
 
 - **Agent still chooses an over-broad slice** → The prompt gives exact row semantics and the controller rejects non-claimable continuations; independent review remains required.
