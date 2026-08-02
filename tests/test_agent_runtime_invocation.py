@@ -94,7 +94,12 @@ class _TargetResolver:
 
 
 class _ProviderResolver:
+    def __init__(self) -> None:
+        self.assignment_generation = 4
+        self.calls = 0
+
     def resolve(self, root: ProviderWorkBindingRoot):
+        self.calls += 1
         return ProviderWorkBindingSeed(
             owner_user_id=root.owner_user_id,
             universe_id=root.universe_id,
@@ -102,7 +107,7 @@ class _ProviderResolver:
             credential_reference_digest=f"sha256:{'e' * 64}",
             allowed_operations=("agent_invocation",),
             allowed_roles=("agent_runtime",),
-            assignment_generation=4,
+            assignment_generation=self.assignment_generation,
             assignment_digest=f"sha256:{'f' * 64}",
             max_invocations=8,
             max_tokens=10_000,
@@ -111,7 +116,11 @@ class _ProviderResolver:
         )
 
 
-def _service(tmp_path, manifest: AgentRuntimeManifest | None = None):
+def _service(
+    tmp_path,
+    manifest: AgentRuntimeManifest | None = None,
+    provider_resolver: _ProviderResolver | None = None,
+):
     from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionService
 
     current_manifest = manifest or _manifest()
@@ -137,7 +146,7 @@ def _service(tmp_path, manifest: AgentRuntimeManifest | None = None):
         tmp_path,
         target_resolver=target_resolver,
         grant_resolver=AgentRuntimeGrantResolver(clock=lambda: NOW.timestamp()),
-        provider_binding_resolver=_ProviderResolver(),
+        provider_binding_resolver=provider_resolver or _ProviderResolver(),
         clock=lambda: NOW,
     )
     return service, target_resolver
@@ -198,6 +207,8 @@ def test_live_admission_atomically_links_secret_free_server_records(
     assert result.invocation.generation == 1
     assert _counts(tmp_path) == (1, 1, 1, 1)
     assert target_resolver.calls == [
+        ("user::alice", "agent_binding_alice"),
+        ("user::alice", "agent_binding_alice"),
         ("user::alice", "agent_binding_alice"),
         ("user::alice", "agent_binding_alice"),
     ]
@@ -339,6 +350,27 @@ def test_lower_level_store_refuses_caller_built_or_forged_grants(
     service, _resolver = _service(tmp_path)
     with pytest.raises(AgentInvocationAdmissionBlocked):
         service.store.admit(object())  # type: ignore[arg-type]
+    assert _counts(tmp_path) == (0, 0, 0, 0)
+
+
+def test_provider_assignment_change_during_atomic_write_rolls_back_every_record(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionBlocked
+
+    class _RevokingProviderResolver(_ProviderResolver):
+        def resolve(self, root: ProviderWorkBindingRoot):
+            if self.calls == 3:
+                self.assignment_generation += 1
+            return super().resolve(root)
+
+    authenticate_request("user::alice")
+    resolver = _RevokingProviderResolver()
+    service, _target = _service(tmp_path, provider_resolver=resolver)
+
+    with pytest.raises(AgentInvocationAdmissionBlocked, match="during atomic admission"):
+        service.admit(_capture(service), _request())
+    assert resolver.calls == 4
     assert _counts(tmp_path) == (0, 0, 0, 0)
 
 

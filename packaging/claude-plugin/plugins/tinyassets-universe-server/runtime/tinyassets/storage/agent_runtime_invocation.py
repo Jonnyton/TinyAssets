@@ -260,6 +260,11 @@ class SQLiteAgentRuntimeInvocationStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if not payload.revalidate_external_authority():
+                    raise AgentInvocationAdmissionBlocked(
+                        "authority_changed",
+                        "agent invocation authority changed before atomic admission",
+                    )
                 activation_current = AutomationActivationStore.validate_claim_in_transaction(
                     conn,
                     universe_id=activation.universe_id,
@@ -332,6 +337,22 @@ class SQLiteAgentRuntimeInvocationStore:
                         raise ValueError("persisted agent invocation aggregate is incomplete")
                     invocation = _invocation_record(invocation_row)
                     _require_initial_event(conn, invocation)
+                    final_activation_current = (
+                        AutomationActivationStore.validate_claim_in_transaction(
+                            conn,
+                            universe_id=activation.universe_id,
+                            automation_id=activation.automation_id,
+                            epoch=activation.epoch,
+                            executor_class=activation.executor_class,
+                            subject=activation.subject,
+                            lease_id=activation.lease_id,
+                        )
+                    )
+                    if not final_activation_current or not payload.revalidate_external_authority():
+                        raise AgentInvocationAdmissionBlocked(
+                            "authority_changed",
+                            "agent invocation authority changed during atomic replay",
+                        )
                     conn.commit()
                     return AgentInvocationAdmissionResult(
                         outcome=AgentInvocationAdmissionOutcome.REPLAYED,
@@ -471,6 +492,20 @@ class SQLiteAgentRuntimeInvocationStore:
                         event["created_at"],
                     ),
                 )
+                final_activation_current = AutomationActivationStore.validate_claim_in_transaction(
+                    conn,
+                    universe_id=activation.universe_id,
+                    automation_id=activation.automation_id,
+                    epoch=activation.epoch,
+                    executor_class=activation.executor_class,
+                    subject=activation.subject,
+                    lease_id=activation.lease_id,
+                )
+                if not final_activation_current or not payload.revalidate_external_authority():
+                    raise AgentInvocationAdmissionBlocked(
+                        "authority_changed",
+                        "agent invocation authority changed during atomic admission",
+                    )
                 conn.commit()
             except Exception:
                 conn.rollback()

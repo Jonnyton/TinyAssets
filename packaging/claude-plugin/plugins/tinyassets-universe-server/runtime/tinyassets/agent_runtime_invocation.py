@@ -393,6 +393,10 @@ class _StoreAdmissionPayload:
     idempotency_key: str
     max_tokens: int
     max_cost_microunits: int
+    revalidate_external_authority: Callable[[], bool] = field(
+        repr=False,
+        compare=False,
+    )
 
 
 class _AgentInvocationStoreGrant:
@@ -597,30 +601,22 @@ class AgentInvocationAdmissionService:
             clock=clock,
         )
 
-    def _resolve(self, *, owner: str, binding: str) -> _DraftPayload:
+    def _resolve_external(
+        self,
+        *,
+        owner: str,
+        binding: str,
+    ) -> tuple[
+        AgentInvocationTarget,
+        AgentRuntimeGrantResolution,
+        ProviderWorkBindingSeed,
+    ]:
         target = self._target_resolver.resolve_current(
             owner_user_id=owner,
             agent_binding_id=binding,
         )
         content = _target_parts(target, owner=owner, binding=binding)  # type: ignore[arg-type]
         assert target is not None
-        automation_id = agent_binding_automation_id(binding)
-        activation = self._activation_store.get(str(content["universe_id"]), automation_id)
-        expected_subject = ExecutionSubject(
-            kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
-            ref=target.manifest.manifest_id,
-            digest=target.manifest.manifest_digest,
-        )
-        if (
-            type(activation) is not AutomationActivation
-            or activation.state is not AutomationActivationState.ACTIVE
-            or activation.subject != expected_subject
-            or activation.executor_class is not AutomationActivationExecutor.CLOUD
-        ):
-            raise AgentInvocationAdmissionBlocked(
-                "activation_not_current",
-                "the exact cloud agent activation is not current",
-            )
         grants = self._grant_resolver.resolve(target.manifest)
         if not grants.ready:
             raise AgentInvocationAdmissionBlocked(
@@ -649,6 +645,31 @@ class AgentInvocationAdmissionService:
             raise AgentInvocationAdmissionBlocked(
                 "provider_assignment_mismatch",
                 "the requester-owned provider assignment does not admit agent invocation",
+            )
+        return target, grants, provider_seed
+
+    def _resolve(self, *, owner: str, binding: str) -> _DraftPayload:
+        target, grants, provider_seed = self._resolve_external(
+            owner=owner,
+            binding=binding,
+        )
+        content = target.manifest.manifest_input.to_dict()
+        automation_id = agent_binding_automation_id(binding)
+        activation = self._activation_store.get(str(content["universe_id"]), automation_id)
+        expected_subject = ExecutionSubject(
+            kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
+            ref=target.manifest.manifest_id,
+            digest=target.manifest.manifest_digest,
+        )
+        if (
+            type(activation) is not AutomationActivation
+            or activation.state is not AutomationActivationState.ACTIVE
+            or activation.subject != expected_subject
+            or activation.executor_class is not AutomationActivationExecutor.CLOUD
+        ):
+            raise AgentInvocationAdmissionBlocked(
+                "activation_not_current",
+                "the exact cloud agent activation is not current",
             )
         return _DraftPayload(
             service_id=self._service_id,
@@ -729,9 +750,28 @@ class AgentInvocationAdmissionService:
                 idempotency_key=request.idempotency_key,
                 max_tokens=request.max_tokens,
                 max_cost_microunits=request.max_cost_microunits,
+                revalidate_external_authority=lambda: self._external_authority_matches(current),
             )
         )
         return self.store.admit(grant)
+
+    def _external_authority_matches(self, expected: _DraftPayload) -> bool:
+        """Re-read non-activation owners inside the persistence transaction."""
+
+        try:
+            target, grants, provider_seed = self._resolve_external(
+                owner=expected.owner_user_id,
+                binding=expected.agent_binding_id,
+            )
+        except Exception:
+            return False
+        return all(
+            (
+                target == expected.target,
+                _same_grants(grants, expected.grants),
+                provider_seed == expected.provider_seed,
+            )
+        )
 
 
 __all__ = [
