@@ -1,6 +1,6 @@
 # Custom-agent invocation command source foundation
 
-Freshness: 2026-08-02, Windows local worktree based on `origin/main` at `61da7f21`; the exact reviewed head and final integration base are recorded in the PR.
+Freshness: 2026-08-02, Windows local worktree rebased on `origin/main` at `244266f2`; the exact reviewed head is recorded in the PR.
 
 ## Outcome
 
@@ -17,8 +17,8 @@ This slice cannot admit or run work. `AgentRuntimeCommandStore` exposes no produ
 ## Evidence
 
 - RED: `python -m pytest tests/test_agent_runtime_command.py -q` failed at collection because `tinyassets.agent_runtime_command` did not exist.
-- Focused GREEN: `python -m pytest tests/test_agent_runtime_command.py -q` passed all 15 tests, including self-consistent-row inertness and projected/JSON/digest tamper refusal.
-- Runtime/authority regression: 10 command, invocation, principal, grant, provider-work, activation, execution-subject, runtime, component-compiler, and plan-compiler modules passed all 173 tests in 4.40 seconds.
+- Focused GREEN: `python -m pytest tests/test_agent_runtime_command.py -q` passed all 18 tests, including self-consistent-row inertness, projected/JSON/digest tamper refusal, signed-64-bit limit checks, and Boolean refusal.
+- Runtime/authority regression: 10 command, invocation, principal, grant, provider-work, activation, execution-subject, runtime, component-compiler, and plan-compiler modules passed all 176 tests in 4.23 seconds.
 - Ruff format/check passed for canonical modules, packaged mirrors, and the focused test.
 - `openspec validate activate-custom-agent-runtime-core --type change --strict --no-interactive` passed; the bounded-flow gate returned `ALLOWED` at global delivery WIP 4.
 - Packaged isolated imports passed, and `python scripts/invariants_run.py --check mirror-parity` matched all 313 canonical files.

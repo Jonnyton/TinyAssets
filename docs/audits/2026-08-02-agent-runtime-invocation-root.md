@@ -26,4 +26,4 @@ Independent exact-head review rejected the first callback-based witness design b
 
 ## Explicit remaining work
 
-OpenSpec tasks 3.1 and 3.2 remain open. There is still no canonical `AgentInvocationCommand`, no atomic three-record admission writer, no provider reservation or execution call site, no continuation/resume composition, and no spend-capable or public/app/workflow path. The next implementation must wait for an exact handoff from the active provider/cloud owner and then use this read contract without adding a standalone invocation mint path.
+OpenSpec tasks 3.1 and 3.2 remain open. The later inert command foundation is recorded in `docs/audits/2026-08-02-agent-runtime-command.md`, but there is still no atomic three-record admission writer, provider reservation or execution call site, continuation/resume composition, or spend-capable or public/app/workflow path. The next integration must wait for an exact handoff from the active provider/cloud owner and use both read contracts without adding a standalone command or invocation mint path.

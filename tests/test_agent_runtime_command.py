@@ -122,6 +122,9 @@ def test_command_is_canonical_immutable_and_not_a_runtime_principal() -> None:
         ({"max_tokens": -1}, "max_tokens"),
         ({"max_cost_microunits": -1}, "max_cost_microunits"),
         ({"max_turns": 0}, "max_turns"),
+        ({"max_invocations": 1 << 63}, "max_invocations"),
+        ({"max_tokens": 1 << 63}, "max_tokens"),
+        ({"max_turns": True}, "max_turns"),
         ({"expires_at": "2026-08-02"}, "timezone"),
     ],
 )
