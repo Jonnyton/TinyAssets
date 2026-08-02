@@ -4,7 +4,7 @@ Five unsigned Windows installer verification jobs remained inside one lifecycle 
 
 ## What Changes
 
-- Run the Windows installer lifecycle under an independent outer supervisor with one total deadline shorter than the GitHub job timeout.
+- Run the Windows installer lifecycle under a stdlib Python parent supervisor with one total deadline shorter than the GitHub job timeout.
 - Make the inner lifecycle report phase start, completion, timeout, and exact process identity while leaving total-deadline enforcement to the supervisor.
 - Capture child output in durable files and replay it before the supervisor returns so a caught hang retains diagnostic evidence.
 - Add a real Windows regression that proves an intentionally hung child is terminated and reported within the outer deadline.
@@ -22,4 +22,4 @@ None.
 
 ## Impact
 
-The change affects `.github/workflows/desktop-release.yml`, the Windows lifecycle script and its focused tests, and one new supervisor script under `tests/desktop_install/`. It does not publish or sign an installer, change application runtime behavior, or satisfy the clean-machine acceptance matrix.
+The change affects `.github/workflows/desktop-release.yml`, the Windows lifecycle script and its focused tests, and one new stdlib Python supervisor under `tests/desktop_install/`. It does not publish or sign an installer, change application runtime behavior, or satisfy the clean-machine acceptance matrix.

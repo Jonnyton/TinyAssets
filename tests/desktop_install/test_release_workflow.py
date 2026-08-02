@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "desktop-release.yml"
-SUPERVISOR = Path(__file__).with_name("windows_lifecycle_supervisor.ps1")
+SUPERVISOR = Path(__file__).with_name("windows_lifecycle_supervisor.py")
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
 
 
@@ -103,7 +103,7 @@ def test_unsigned_windows_artifact_is_installed_repaired_and_uninstalled() -> No
     supervisor = SUPERVISOR.read_text(encoding="utf-8")
 
     assert "test-unsigned-windows-install:" in workflow
-    assert "windows_lifecycle_supervisor.ps1" in workflow
+    assert "windows_lifecycle_supervisor.py" in workflow
     assert "windows_lifecycle.ps1" in supervisor
     assert "health-probe" in lifecycle
     assert "Invoke-Installer" in lifecycle
@@ -120,8 +120,9 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     )[0]
 
     assert "timeout-minutes: 10" in install_job
-    assert "windows_lifecycle_supervisor.ps1" in install_job
-    assert "-TotalTimeoutSeconds 300" in install_job
+    assert "actions/setup-python@v5" in install_job
+    assert "windows_lifecycle_supervisor.py" in install_job
+    assert "--total-timeout-seconds 300" in install_job
     assert "PhaseTimeoutSeconds" in lifecycle
     assert "WaitForExit" in lifecycle
     assert ".Kill()" in lifecycle
@@ -134,9 +135,10 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "Start-Process" in lifecycle
     assert "-Wait" not in lifecycle
     assert "10_000" not in lifecycle
-    assert "MaxCaptureBytesPerStream" in supervisor
-    assert "[System.IO.File]::Open" in supervisor
-    assert "Get-Content" not in supervisor
+    assert "TemporaryFile" in supervisor
+    assert "TimeoutExpired" in supervisor
+    assert "proc.wait(timeout=" in supervisor
+    assert "taskkill" in supervisor
 
 
 @pytest.mark.skipif(
@@ -170,25 +172,19 @@ while ($true) {
     started = time.monotonic()
     result = subprocess.run(
         [
-            PWSH,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
+            sys.executable,
             str(SUPERVISOR),
-            "-Installer",
+            "--installer",
             str(installer),
-            "-LifecycleScript",
+            "--lifecycle-script",
             str(lifecycle),
-            "-PhaseTimeoutSeconds",
+            "--phase-timeout-seconds",
             "1",
-            "-TotalTimeoutSeconds",
+            "--total-timeout-seconds",
             "2",
-            "-CleanupTimeoutSeconds",
+            "--cleanup-timeout-seconds",
             "2",
-            "-MaxCaptureBytesPerStream",
+            "--max-capture-bytes-per-stream",
             "4096",
         ],
         capture_output=True,

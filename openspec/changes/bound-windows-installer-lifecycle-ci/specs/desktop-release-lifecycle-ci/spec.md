@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Windows release lifecycle verification has an independent total deadline
-The desktop release workflow SHALL execute the exact unsigned Windows installer lifecycle beneath an outer supervisor whose total deadline is independent of all waits and cleanup performed by the lifecycle child. The supervisor deadline MUST expire before the GitHub job timeout begins cancellation, and the job timeout MUST remain as defense in depth rather than the primary lifecycle bound.
+The desktop release workflow SHALL execute the exact unsigned Windows installer lifecycle beneath a non-PowerShell parent supervisor whose total deadline is independent of all waits and cleanup performed by the lifecycle child. The supervisor deadline MUST expire before the GitHub job timeout begins cancellation, and the job timeout MUST remain as defense in depth rather than the primary lifecycle bound.
 
 #### Scenario: Lifecycle child hangs inside a phase or cleanup path
 - **WHEN** the Windows lifecycle child does not exit before the supervisor's total deadline
