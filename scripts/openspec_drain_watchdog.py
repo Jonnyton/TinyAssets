@@ -105,6 +105,21 @@ def _run_records(output_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
     return records
 
 
+def stop_restart_signals(
+    stop_request: Path,
+    restart_request: Path,
+    off_marker: Path,
+) -> tuple[bool, bool]:
+    """Poll live stop/restart requests, with drain.off dominating both.
+
+    The durable off marker forces a stop and vetoes any restart request,
+    so a watchdog already inside its loop honors it without needing a
+    process restart (where the entry gate would catch it).
+    """
+    off = off_marker.exists()
+    return (stop_request.exists() or off, restart_request.exists() and not off)
+
+
 def discover_decision(
     output_dir: Path,
     *,
@@ -423,6 +438,7 @@ def _watch(args: argparse.Namespace) -> int:
     health_path = watchdog_dir / "health.json"
     stop_request = watchdog_dir / "stop.request"
     restart_request = watchdog_dir / "restart.request"
+    off_marker = watchdog_dir / "drain.off"
     watchdog_dir.mkdir(parents=True, exist_ok=True)
 
     lock = RunLock(
@@ -471,8 +487,9 @@ def _watch(args: argparse.Namespace) -> int:
         while True:
             launch_decision: Decision | None = None
             consume_restart_after_launch = False
-            wants_stop = stop_request.exists()
-            wants_restart = restart_request.exists()
+            wants_stop, wants_restart = stop_restart_signals(
+                stop_request, restart_request, off_marker
+            )
             alive = bool(controller_pid and _pid_is_alive(controller_pid))
             state = (
                 _read_json(active_run / "state.json")

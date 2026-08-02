@@ -85,6 +85,35 @@ findings that were each adopted:
   the supervisor observes the stop; accepted rather than hard-killing
   mid-write.
 
+## Codex re-review round 2 (adapt → adopted, 2026-08-02)
+
+- **The drain re-armed itself once more**: the still-running task tree
+  restarted the (old-code) watchdog, which deleted `stop.request` at
+  startup and re-attached to the live supervisor (attempt 9). Adopted:
+  runtime polling of `drain.off` inside both loops —
+  `wait_interruptibly(off_file=...)` in the supervisor and
+  `stop_restart_signals()` in the watchdog loop (off forces stop and
+  vetoes restart requests) — so a marker appearing mid-run stops the
+  drain without a process restart. Stop was re-armed
+  (`supervisor.stop` + `stop.request`) with a bounded hard-stop
+  fallback (`Stop-ScheduledTask`) if the graceful window expires.
+- **Credential-scatter root cause found and fixed**: the main repo's
+  local `.git/config` set
+  `credential.helper = store --file C:\...\Projects\Workflow\...`
+  (pre-rename path, unquoted backslashes, shared by every worktree) —
+  any credential fill wrote the mangled flat file into the CWD, which
+  is how ~450 copies accumulated, including one in a worktree created
+  the same day. Fixed to the canonical TinyAssets path with forward
+  slashes. All residual copies (19 more under `.claude/worktrees/` and
+  nested lanes) verified byte-identical to the canonical file, then
+  deleted; fleet-wide count is now 0. Token rotation remains a host
+  ask.
+- **Sweep executor hardened further**: per-lane revalidation
+  immediately before each removal (clean + landed + ignored-screen +
+  reflog), and a detached-HEAD backup ref (a detached HEAD is
+  reachable from itself, so it previously earned no backup yet lost
+  its only ref on removal — latent, no current lane matches).
+
 ## Restore steps (if the test says restore)
 
 ```powershell

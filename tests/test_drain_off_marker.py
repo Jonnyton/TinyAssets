@@ -62,6 +62,46 @@ def test_watchdog_reports_off_and_keeps_marker(tmp_path: Path) -> None:
     assert marker.exists()
 
 
+def test_watchdog_loop_signals_honor_off_marker(tmp_path: Path) -> None:
+    watchdog = _load("openspec_drain_watchdog")
+    stop_request = tmp_path / "stop.request"
+    restart_request = tmp_path / "restart.request"
+    off_marker = tmp_path / "drain.off"
+
+    assert watchdog.stop_restart_signals(
+        stop_request, restart_request, off_marker
+    ) == (False, False)
+
+    restart_request.write_text("restart\n", encoding="utf-8")
+    assert watchdog.stop_restart_signals(
+        stop_request, restart_request, off_marker
+    ) == (False, True)
+
+    # drain.off forces stop and vetoes a pending restart request.
+    off_marker.write_text("off\n", encoding="utf-8")
+    assert watchdog.stop_restart_signals(
+        stop_request, restart_request, off_marker
+    ) == (True, False)
+
+
+def test_supervisor_wait_observes_off_marker_mid_run(tmp_path: Path) -> None:
+    supervisor = _load("openspec_drain_supervisor")
+    stop_file = tmp_path / "supervisor.stop"
+    off_file = tmp_path / "drain.off"
+    off_file.write_text("off\n", encoding="utf-8")
+
+    result = supervisor.wait_interruptibly(
+        stop_file=stop_file,
+        seconds=30.0,
+        deadline_monotonic=1_000_000.0,
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        off_file=off_file,
+    )
+
+    assert result == "stop-requested"
+
+
 def test_supervisor_refuses_run_even_with_clear_stop(
     tmp_path: Path, capsys
 ) -> None:
