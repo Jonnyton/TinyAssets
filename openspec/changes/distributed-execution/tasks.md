@@ -1,8 +1,10 @@
 # Tasks - distributed execution
 
-Current-main execution ledger, refreshed against `origin/main@405a7b7e` on
-2026-07-24. A checked task means its behavior is present on main, not merely
-implemented on a draft branch. Only the #1485 runner/diagnostic seam is checked.
+Current-main execution ledger, refreshed through `origin/main@61da7f21` on
+2026-08-02. A checked task means its behavior or required evidence is present
+on main, not merely implemented on a draft branch. The #1485 runner seam, D0
+authority spine, evidence non-promotion types, and recovered extraction
+provenance are checked below; later runtime and live obligations remain open.
 
 The immediate apply slice is D0, a dark fake/test-only contract spine. D0 does
 not complete V1. No item may disappear because it is outside D0; the complete
@@ -65,27 +67,30 @@ Never merge, rebase, or cherry-pick a named stale PR wholesale. For each step,
 port a failing test onto current main, implement the least behavior, record the
 source PR/commit, and verify that unrelated current-main files are unchanged.
 
-- [ ] 2.1 Inventory #1472 only for reviewed capsule/result/device canonical
+Recovered D0 provenance and current-main replacement evidence are recorded in
+`extraction-manifest.md`. Tasks 2.6 and 2.7 remain deliberately open there.
+
+- [x] 2.1 Inventory #1472 only for reviewed capsule/result/device canonical
   vectors and mutation tests; exclude its S0 worker/deploy removals and broad
   runtime/config lineage.
-- [ ] 2.2 Extract from #1477 only the minimal M1/B2 primitives needed by D0;
+- [x] 2.2 Extract from #1477 only the minimal M1/B2 primitives needed by D0;
   exclude `run_graph`, transport, provider, production-root, and inherited
   unrelated changes.
-- [ ] 2.3 Extract #1479's immutable domain partitions and exact owner binding
+- [x] 2.3 Extract #1479's immutable domain partitions and exact owner binding
   after the base M1 carriers are green on current main.
-- [ ] 2.4 Extract #1481's monotonic floor, replacement-resistant evidence
+- [x] 2.4 Extract #1481's monotonic floor, replacement-resistant evidence
   ledger, and verify-first replay after domain contracts are green.
-- [ ] 2.5 Extract #1487's fresh blob proof, physical-root identity, lock order,
+- [x] 2.5 Extract #1487's fresh blob proof, physical-root identity, lock order,
   operation-local index, and exact table validation after the ledger is green.
 - [ ] 2.6 Extract only #1491's key/thumbprint binding and non-vacuous per-fence
   mutations after the relevant current-main S3 carriers and consumers exist
   and before any authenticated B2 transport is activated.
 - [ ] 2.7 Recreate #1478's CPython 3.11 and semantic authority gates from stable
   current-main test paths; keep suspicious-read scanning advisory.
-- [ ] 2.8 Prove #1572 contributes no code, schema, test, or compatibility
+- [x] 2.8 Prove #1572 contributes no code, schema, test, or compatibility
   behavior to this change; its M2 branch-version/legacy-ID break remains
   separately design-gated.
-- [ ] 2.9 Diff the extraction result against #1697 and prove its exact
+- [x] 2.9 Diff the extraction result against #1697 and prove its exact
   server-derived epoch-2 worker descriptor, heartbeat, lifecycle, and
   contested-registration behavior remains intact.
 
