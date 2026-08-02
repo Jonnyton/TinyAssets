@@ -18,6 +18,8 @@ import rfc8785
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from tinyassets.auth.host_binding import HostBindingIdentity
+
 SCHEMA_VERSION = "host-binding-v1"
 POLICY_VERSION = "host-binding-v1"
 DOMAIN_SEPARATOR = b"tinyassets.host-principal-proof.v1\0"
@@ -36,6 +38,10 @@ _IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 _PRINCIPAL_TTL_SECONDS = 90 * 24 * 60 * 60
 _IDEMPOTENCY_LOOKUP_DOMAIN = b"tinyassets.host-enrollment.idempotency-lookup.v1"
 _IDEMPOTENCY_BINDING_DOMAIN = b"tinyassets.host-enrollment.idempotency-binding.v1"
+_INVENTORY_CURSOR_DOMAIN = b"tinyassets.host-inventory.cursor.v1"
+_INVENTORY_DEFAULT_LIMIT = 25
+_INVENTORY_MAX_LIMIT = 100
+_MAX_INVENTORY_AUTH_AGE_SECONDS = 300
 # No revocation reason values were approved in the frozen v1 artifacts.
 REVOCATION_REASON_CODES: frozenset[str] = frozenset()
 
@@ -74,6 +80,179 @@ class HostEnrollmentIdempotencyConflict(ValueError):
 
 class HostEnrollmentWritersDisabled(RuntimeError):
     """Enrollment stays dark until production storage and rollout gates pass."""
+
+
+class HostInventoryRefused(HostProofRefused):
+    """One non-enumerating refusal for private host inventory."""
+
+
+class HostInventoryStore(Protocol):
+    def list_inventory(
+        self,
+        *,
+        issuer: str,
+        subject: str,
+        after_principal_id: str | None,
+        limit: int,
+    ) -> list[Mapping[str, object]]: ...
+
+
+class HostInventoryCoordinator:
+    def __init__(
+        self,
+        *,
+        store: HostInventoryStore,
+        audience: str,
+        cursor_hmac_key: bytes,
+    ) -> None:
+        if type(audience) is not str or not audience or audience != audience.strip():
+            raise ValueError("audience must be non-empty and canonical")
+        if type(cursor_hmac_key) is not bytes or len(cursor_hmac_key) < 32:
+            raise ValueError("cursor_hmac_key must contain at least 32 bytes")
+        self._store = store
+        self._audience = audience
+        self._cursor_hmac_key = cursor_hmac_key
+
+    def list_inventory(
+        self,
+        *,
+        identity: HostBindingIdentity,
+        query: Mapping[str, object],
+        now: int,
+    ) -> dict[str, object]:
+        if (
+            type(identity) is not HostBindingIdentity
+            or type(now) is not int
+            or isinstance(now, bool)
+            or type(query) is not dict
+            or not hmac.compare_digest(identity.audience, self._audience)
+            or "host:manage" not in identity.permissions
+            or identity.auth_time > now
+            or now - identity.auth_time > _MAX_INVENTORY_AUTH_AGE_SECONDS
+        ):
+            raise HostInventoryRefused
+
+        try:
+            parsed_query = parse_wire_dto("HostInventoryQueryV1", rfc8785.dumps(query))
+            limit = parsed_query.get("limit", _INVENTORY_DEFAULT_LIMIT)
+            if type(limit) is not int or not 1 <= limit <= _INVENTORY_MAX_LIMIT:
+                raise HostProofRefused
+            after_principal_id = self._decode_cursor(
+                parsed_query.get("cursor"), identity=identity
+            )
+        except (HostProofRefused, rfc8785.CanonicalizationError, TypeError, ValueError) as exc:
+            raise HostInventoryRefused from exc
+
+        records = self._store.list_inventory(
+            issuer=identity.issuer,
+            subject=identity.subject,
+            after_principal_id=after_principal_id,
+            limit=limit + 1,
+        )
+        if type(records) is not list or len(records) > limit + 1:
+            raise RuntimeError("host inventory store returned an invalid page")
+
+        items: list[dict[str, object]] = []
+        try:
+            for record in records[:limit]:
+                if (
+                    type(record) is not dict
+                    or record.get("issuer") != identity.issuer
+                    or record.get("subject") != identity.subject
+                ):
+                    raise HostProofRefused
+                item = {
+                    field: record[field]
+                    for field in (
+                        "host_principal_id",
+                        "status",
+                        "generation",
+                        "policy_version",
+                        "issued_at",
+                        "expires_at",
+                    )
+                }
+                for field in ("last_seen_bucket", "device_label"):
+                    if record.get(field) is not None:
+                        item[field] = record[field]
+                _validate_wire_mapping("HostInventoryItemV1", item)
+                items.append(item)
+        except (HostProofRefused, KeyError, TypeError, ValueError) as exc:
+            raise HostInventoryRefused from exc
+
+        page: dict[str, object] = {"schema_version": SCHEMA_VERSION, "items": items}
+        if len(records) > limit:
+            page["next_cursor"] = self._encode_cursor(
+                identity=identity,
+                after_principal_id=items[-1]["host_principal_id"],
+            )
+        _validate_wire_mapping("HostInventoryPageV1", page)
+        return page
+
+    def _encode_cursor(
+        self,
+        *,
+        identity: HostBindingIdentity,
+        after_principal_id: object,
+    ) -> str:
+        if type(after_principal_id) is not str or not after_principal_id:
+            raise HostInventoryRefused
+        payload = rfc8785.dumps(
+            {
+                "after_principal_id": after_principal_id,
+            }
+        )
+        signature = hmac.new(
+            self._cursor_hmac_key,
+            _INVENTORY_CURSOR_DOMAIN
+            + b"\0"
+            + self._owner_cursor_binding(identity)
+            + b"\0"
+            + payload,
+            hashlib.sha256,
+        ).digest()
+        return _encode_b64u(payload + signature)
+
+    def _decode_cursor(
+        self,
+        cursor: object,
+        *,
+        identity: HostBindingIdentity,
+    ) -> str | None:
+        if cursor is None:
+            return None
+        if type(cursor) is not str:
+            raise HostProofRefused
+        encoded = canonical_b64u(cursor)
+        if len(encoded) <= 32:
+            raise HostProofRefused
+        payload, signature = encoded[:-32], encoded[-32:]
+        expected = hmac.new(
+            self._cursor_hmac_key,
+            _INVENTORY_CURSOR_DOMAIN
+            + b"\0"
+            + self._owner_cursor_binding(identity)
+            + b"\0"
+            + payload,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise HostProofRefused
+        decoded = _parse_json_object(payload)
+        if frozenset(decoded) != {"after_principal_id"}:
+            raise HostProofRefused
+        after_principal_id = decoded.get("after_principal_id")
+        if type(after_principal_id) is not str or not after_principal_id:
+            raise HostProofRefused
+        return after_principal_id
+
+    def _owner_cursor_binding(self, identity: HostBindingIdentity) -> bytes:
+        owner = rfc8785.dumps({"issuer": identity.issuer, "subject": identity.subject})
+        return hmac.new(
+            self._cursor_hmac_key,
+            _INVENTORY_CURSOR_DOMAIN + b"\0owner\0" + owner,
+            hashlib.sha256,
+        ).digest()
 
 
 @dataclass(frozen=True)
