@@ -311,6 +311,8 @@ jobs:
           if ($installer.Count -ne 1) {
             throw "expected exactly one Windows installer"
           }
+          # The supervisor captures directly to private files so escaped
+          # descendants cannot retain GitHub runner output-stream handles.
           python ./tests/desktop_install/windows_lifecycle_supervisor.py `
             --installer $installer.FullName `
             --phase-timeout-seconds 90 `
