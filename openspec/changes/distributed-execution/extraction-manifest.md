@@ -49,7 +49,7 @@ cherry-picked, or used as the branch base.
 
 ## Explicit #1572 exclusion
 
-PR #1572 remains open and design-gated at head
+PR #1572 was closed unmerged on 2026-08-02 and remains design-gated at head
 `42e7dca79e8e07ca7a71ceaf2663cba93d34dbb4`. Its branch-version M2 design,
 `tinyassets/runtime/signed_records.py`, full-hash version-ID behavior, legacy-ID
 break, branch-version tests, schema expectations, and compatibility behavior

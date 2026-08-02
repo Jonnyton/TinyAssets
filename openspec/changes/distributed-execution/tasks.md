@@ -1,8 +1,10 @@
 # Tasks - distributed execution
 
-Current-main execution ledger, refreshed against `origin/main@405a7b7e` on
-2026-07-24. A checked task means its behavior is present on main, not merely
-implemented on a draft branch. Only the #1485 runner/diagnostic seam is checked.
+Current-main execution ledger, refreshed through `origin/main@61da7f21` on
+2026-08-02. A checked task means its behavior or required evidence is present
+on main, not merely implemented on a draft branch. The #1485 runner seam, D0
+authority spine, evidence non-promotion types, and recovered extraction
+provenance are checked below; later runtime and live obligations remain open.
 
 The immediate apply slice is D0, a dark fake/test-only contract spine. D0 does
 not complete V1. No item may disappear because it is outside D0; the complete
