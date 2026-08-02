@@ -2318,3 +2318,15 @@ Notes:
 - Reflection: composition-root time, exact evidence scope, and detached source state are reusable authority-boundary requirements.
 - Publish/cleanup: one coordination-only PR; remove both runtime-grant worktrees after verified foldback.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-grant-foldback/_PURPOSE.md`
+
+## 2026-08-01 - V1 remix contract repair landed
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/v1-cross-user-remix-foldback-20260802`
+- Lane state: PR #2146 merged as `0721c3d1`; implementation claim retired.
+- Worktree: `C:/Users/Jonathan/Projects/wf-v1-cross-user-remix-foldback-20260802`
+- Purpose: retire the landed public contract-repair claim while preserving the exact remaining live acceptance evidence.
+- Verification: exact-head review approved; 77 focused tests, Ruff, diff check, mirror parity, and all 67 strict OpenSpec items passed.
+- Remaining: deployed first-attempt rendered proof, a public definition from another authenticated creator, and post-fix organic-use evidence.
+- Publish/cleanup: coordination-only PR, then remove the implementation and foldback worktrees after merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-cross-user-remix-foldback-20260802/_PURPOSE.md`
