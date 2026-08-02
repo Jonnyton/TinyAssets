@@ -11,7 +11,7 @@
 
 ## 2. RED Contract and Security Proofs
 
-- [ ] 2.1 **Blocked on 1.3-1.8:** add failing tests proving only TLS `Authorization: Bearer` with the configured issuer + exact sole host-binding audience + non-empty WorkOS `sub` owns a principal; MCP-only, MCP+host, extra/wrong/missing/no-audience, cookie/query/CORS/ambient authority, missing/stale `auth_time`, fresh `iat` from refresh/non-interactive grants, malformed `org_id`, body owner, environment, process, universe ACL, anonymous, and maintainer identity fail before mutation.
+- [x] 2.1 **Blocked on 1.3-1.8:** add failing tests proving only TLS `Authorization: Bearer` with the configured issuer + exact sole host-binding audience + non-empty WorkOS `sub` owns a principal; MCP-only, MCP+host, extra/wrong/missing/no-audience, cookie/query/CORS/ambient authority, missing/stale `auth_time`, fresh `iat` from refresh/non-interactive grants, malformed `org_id`, body owner, environment, process, universe ACL, anonymous, and maintainer identity fail before mutation.
 - [ ] 2.2 Add failing Ed25519/RFC 8037 and RFC 8785 `HostProofV1` tests covering exact DTO/route/scope/signature-role matrix, same-input dual-key rotation, missing/extra/duplicate/swapped/same-key signatures, signing bytes, domain separation, duplicate JSON keys, Unicode variants, invalid key material, algorithm confusion, TTL, one-use nonce, every bound field, separate challenge/nonce limits, replay, and non-enumerating timing/shape.
 - [ ] 2.3 Add failing retry/crash/concurrency tests proving fresh-challenge response-loss recovery, changed-body conflict, 24-hour idempotency expiry, one same-subject/key winner across server instances, distinct per-device principals, and non-enumerating cross-subject key-reuse refusal.
 - [ ] 2.4 Add failing private-inventory tests for subject-only bounded cursor pagination (25 default/100 maximum), lost-device discovery, owner/query injection, cross-subject cursor, MCP-audience refusal, management-field allowlist, and proof that results grant no device/consumer authority.
@@ -22,7 +22,7 @@
 
 ## 3. Blocked Runtime Implementation
 
-- [ ] 3.1 **Blocked on section 1 and RED evidence:** implement a route-local WorkOS validator using `WORKOS_AUTHKIT_DOMAIN` plus mandatory `WORKOS_HOST_BINDING_RESOURCE`; never modify or reuse the global MCP provider.
+- [x] 3.1 **Blocked on section 1 and RED evidence:** implement a route-local WorkOS validator using `WORKOS_AUTHKIT_DOMAIN` plus mandatory `WORKOS_HOST_BINDING_RESOURCE`; never modify or reuse the global MCP provider.
 - [ ] 3.2 Add typed principal/challenge/nonce/idempotency/tombstone storage and readers behind disabled writers with exact uniqueness, retention, account-export/deletion, and mixed-version behavior.
 - [ ] 3.3 Implement authenticated challenge/register, bounded self-inventory, exact read, revoke, rotate, renew, and recovery routes with the frozen proof/scopes and no owner selector.
 - [ ] 3.4 Link authenticated host-pool sessions to stable principal+generation without changing insert-always registration or exact deregistration; keep legacy/dev rows unattested.
