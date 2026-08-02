@@ -105,6 +105,21 @@ def _run_records(output_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
     return records
 
 
+def stop_restart_signals(
+    stop_request: Path,
+    restart_request: Path,
+    off_marker: Path,
+) -> tuple[bool, bool]:
+    """Poll live stop/restart requests, with drain.off dominating both.
+
+    The durable off marker forces a stop and vetoes any restart request,
+    so a watchdog already inside its loop honors it without needing a
+    process restart (where the entry gate would catch it).
+    """
+    off = off_marker.exists()
+    return (stop_request.exists() or off, restart_request.exists() and not off)
+
+
 def discover_decision(
     output_dir: Path,
     *,
@@ -423,6 +438,7 @@ def _watch(args: argparse.Namespace) -> int:
     health_path = watchdog_dir / "health.json"
     stop_request = watchdog_dir / "stop.request"
     restart_request = watchdog_dir / "restart.request"
+    off_marker = watchdog_dir / "drain.off"
     watchdog_dir.mkdir(parents=True, exist_ok=True)
 
     lock = RunLock(
@@ -471,8 +487,9 @@ def _watch(args: argparse.Namespace) -> int:
         while True:
             launch_decision: Decision | None = None
             consume_restart_after_launch = False
-            wants_stop = stop_request.exists()
-            wants_restart = restart_request.exists()
+            wants_stop, wants_restart = stop_restart_signals(
+                stop_request, restart_request, off_marker
+            )
             alive = bool(controller_pid and _pid_is_alive(controller_pid))
             state = (
                 _read_json(active_run / "state.json")
@@ -741,6 +758,23 @@ def main(argv: list[str] | None = None) -> int:
         marker = watchdog_dir / f"{args.command}.request"
         marker.write_text(f"{args.command} requested {_now_iso()}\n", encoding="utf-8")
         print(f"{args.command} requested: {marker}")
+        return 0
+    off_marker = watchdog_dir / "drain.off"
+    if off_marker.exists():
+        # Durable off switch: unlike stop.request (deleted on every fresh
+        # start, after which orderly-stopped runs are resumed), this marker
+        # is never auto-cleared. Removing the file is the only re-enable.
+        watchdog_dir.mkdir(parents=True, exist_ok=True)
+        _write_health(
+            watchdog_dir / "health.json",
+            state=None,
+            alive=False,
+            mode="off",
+            run_dir=None,
+            pid=None,
+            message=f"drain disabled by durable off marker: {off_marker}",
+        )
+        print(f"drain.off present: {off_marker}; refusing to run", file=sys.stderr)
         return 0
     if args.poll_seconds <= 0:
         print("--poll-seconds must be positive", file=sys.stderr)

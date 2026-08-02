@@ -1799,11 +1799,19 @@ def wait_interruptibly(
     deadline_monotonic: float,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    off_file: Path | None = None,
 ) -> str:
-    """Wait in short polls so a stop request is observed promptly."""
+    """Wait in short polls so a stop request is observed promptly.
+
+    ``off_file`` is the durable drain.off marker: entry gating alone is
+    not enough, because a supervisor already inside its attempt loop
+    must also observe the marker without a restart.
+    """
     end = min(deadline_monotonic, monotonic() + max(0.0, seconds))
     while monotonic() < end:
         if stop_file.exists():
+            return "stop-requested"
+        if off_file is not None and off_file.exists():
             return "stop-requested"
         sleep(min(STOP_POLL_SECONDS, max(0.0, end - monotonic())))
     return "deadline" if monotonic() >= deadline_monotonic else "interval"
@@ -2100,6 +2108,9 @@ def _run(args: argparse.Namespace) -> int:
     run_dir = args.run_dir.resolve()
     state_path = run_dir / "state.json"
     stop_file = run_dir / "supervisor.stop"
+    off_marker = (
+        args.repo / "output" / "openspec-drain-watchdog" / "drain.off"
+    )
     prompts_dir = run_dir / "prompts"
     results_dir = run_dir / "results"
     prompts_dir.mkdir(parents=True, exist_ok=True)
@@ -2213,7 +2224,7 @@ def _run(args: argparse.Namespace) -> int:
             if reason:
                 state["status"] = reason
                 break
-            if stop_file.exists():
+            if stop_file.exists() or off_marker.exists():
                 state["status"] = "stop-requested"
                 break
 
@@ -2334,6 +2345,7 @@ def _run(args: argparse.Namespace) -> int:
                     break
                 wait_interruptibly(
                     stop_file=stop_file,
+                    off_file=off_marker,
                     seconds=args.idle_minutes * 60,
                     deadline_monotonic=deadline_monotonic,
                 )
@@ -2443,6 +2455,7 @@ def _run(args: argparse.Namespace) -> int:
                     continue
                 wait_interruptibly(
                     stop_file=stop_file,
+                    off_file=off_marker,
                     seconds=args.idle_minutes * 60,
                     deadline_monotonic=deadline_monotonic,
                 )
@@ -2678,6 +2691,7 @@ def _run(args: argparse.Namespace) -> int:
             ):
                 wait_interruptibly(
                     stop_file=stop_file,
+                    off_file=off_marker,
                     seconds=args.idle_minutes * 60,
                     deadline_monotonic=deadline_monotonic,
                 )
@@ -2749,6 +2763,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"repo is not a directory: {args.repo}", file=sys.stderr)
         return 2
     args.repo = args.repo.resolve()
+    off_marker = args.repo / "output" / "openspec-drain-watchdog" / "drain.off"
+    if off_marker.exists():
+        # Durable off switch shared with the watchdog; --clear-stop must
+        # not override it. Removing the file is the only re-enable.
+        print(
+            f"drain.off present: {off_marker}; refusing to run",
+            file=sys.stderr,
+        )
+        return 2
     if args.run_dir is None:
         args.run_dir = args.repo / "output" / "openspec-drain"
     return _run(args)
