@@ -40,45 +40,35 @@ TRIGGERS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         ),
     ),
     (
-        "review/finding",
-        "Dispatch the opposite-provider review gate: have Codex re-check the "
-        "sources + the actual code and return approve/adapt/reject BEFORE you "
-        "present a verdict, finding, or 'looks correct' claim.",
+        "cross-family-gate",
+        "This names an opposite-provider / cross-family review gate — dispatch "
+        "Codex to re-check sources + actual code and return "
+        "approve/adapt/reject before the gated step advances.",
         re.compile(
-            r"\b(review|verif\w+|audit|conformance|finding|findings|verdict|"
-            r"is this (right|correct|sound)|double[- ]?check|sanity[- ]?check|"
-            r"security review|re-?check)\b",
+            r"\b(cross[- ]?family|opposite[- ]?provider|dual[- ]?family|"
+            r"research[- ]derived|codex review|security (review|audit))\b",
             re.I,
         ),
     ),
     (
-        "risky/ship",
-        "Get an adversarial second opinion before acting: ask Codex to *refute* "
-        "the change/plan/result — independent skeptic pass before it ships.",
+        "high-risk-ship",
+        "High-risk / hard-to-reverse change: ask Codex to *refute* it before "
+        "it ships — independent skeptic pass on Codex's budget.",
         re.compile(
-            r"\b(ship|push|deploy|merge|release|roll[- ]?out|rollout|land|"
-            r"production|risky|breaking change|data ?loss|migration)\b",
-            re.I,
-        ),
-    ),
-    (
-        "decision/recommend",
-        "Get a diverse-perspective judge: have Codex independently weigh the "
-        "options before you present a recommendation (different model than the "
-        "writer).",
-        re.compile(
-            r"\b(recommend\w*|which (one|approach|option|way)|should (i|we)|"
-            r"compare|trade[- ]?offs?|decide|decision|best approach|judge)\b",
+            r"\b(deploy|production|release|roll[- ]?out|rollout|migration|"
+            r"data ?loss|breaking change|irreversible|mass[- ](delete|deletion)|"
+            # merged-is-deployed repo: shipping/merging to main IS production
+            r"auth (change|migration)|ship (it|this)|(push|merge) to main)\b",
             re.I,
         ),
     ),
     (
         "second-opinion",
-        "Ask Codex to *refute* it — an independent skeptic pass before you rely "
-        "on this result.",
+        "The user is explicitly inviting an independent check — ask Codex to "
+        "*refute* the result before relying on it.",
         re.compile(
-            r"\b(second opinion|refute|are you sure|surprising|unexpected|"
-            r"skeptic\w*|sceptic\w*|challenge this|does this (look|seem) (right|ok))\b",
+            r"\b(second opinion|refute|are you sure|skeptic\w*|sceptic\w*|"
+            r"challenge this)\b",
             re.I,
         ),
     ),
@@ -95,19 +85,15 @@ def classify(prompt: str) -> tuple[str, str] | None:
 def render(label: str, instruction: str) -> str:
     return "\n".join(
         (
-            f"Codex cross-family reflex — qualifying signal: {label}.",
-            "You have Codex (a second model family) wired into the harness. Per",
-            'CLAUDE.md §"Calling Codex via MCP", dispatch PROACTIVELY now — do not',
-            "wait to be told:",
+            f"Codex judgment-class signal: {label}.",
             f"  → {instruction}",
-            "  Prefer BACKGROUND offload so you keep working on Codex's budget, not",
-            "  Claude's: `python scripts/codex_review.py --out <file> --prompt \"...\"`",
-            "  via a background Bash call; keep working; read <file> when it finishes.",
-            "  Inline mcp__codex__codex only for a quick blocking gate; never wrap",
-            "  Codex in a Claude teammate (that burns Claude tokens to relay).",
-            "This dispatch is a standing reflex, not an option. If you deliberately",
-            "skip it, say so in one line and why — don't just default to doing it",
-            "yourself.",
+            "  BACKGROUND offload on Codex's quota: `python scripts/codex_review.py",
+            '  --out <lane-local-file> --prompt "<ask>"` in a background Bash call',
+            "  (the wrapper feeds Codex via stdin — never multi-line argv — and",
+            "  fail-closes with `VERDICT: error` on timeout/no-output).",
+            "  Inline `mcp__codex__codex` only for a quick blocking gate.",
+            'Policy: CLAUDE.md §"Calling Codex via MCP" — dispatch for',
+            "judgment-class decisions, not routine work.",
         )
     )
 

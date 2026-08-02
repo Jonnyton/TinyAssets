@@ -308,11 +308,16 @@ def test_render_text_names_lifecycle_checkpoints() -> None:
     assert "ideas/INBOX.md" in rendered
 
 
-def test_hook_maps_action_prompts_to_lifecycle_phases() -> None:
-    assert provider_context_feed_hook.phase_for_prompt("please review this PR") == "review"
-    assert provider_context_feed_hook.phase_for_prompt("push and open a pull request") == "foldback"
-    assert provider_context_feed_hook.phase_for_prompt("write a design plan") == "plan"
-    assert provider_context_feed_hook.phase_for_prompt("remember this idea") == "memory-write"
+def test_hook_maps_only_explicit_coordination_prompts() -> None:
+    # Narrowed 2026-08-02 (process de-bloat): only explicit
+    # coordination-lifecycle moments fire; generic software verbs do not.
+    assert provider_context_feed_hook.phase_for_prompt("claim the row and start") == "claim"
+    assert provider_context_feed_hook.phase_for_prompt("fold back the lane") == "foldback"
+    assert provider_context_feed_hook.phase_for_prompt("open a PR for this") == "foldback"
+    assert provider_context_feed_hook.phase_for_prompt("update your agent-memory") == "memory-write"
+    assert provider_context_feed_hook.phase_for_prompt("please review this PR") is None
+    assert provider_context_feed_hook.phase_for_prompt("write a design plan") is None
+    assert provider_context_feed_hook.phase_for_prompt("fix the bug and add a test") is None
     assert provider_context_feed_hook.phase_for_prompt("hello") is None
 
 

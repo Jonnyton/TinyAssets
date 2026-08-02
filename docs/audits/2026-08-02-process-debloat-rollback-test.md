@@ -163,3 +163,46 @@ Fleet: 552 → ~405 worktrees.
 4. AGENTS.md/CLAUDE.md shrink toward "short, accurate"; convert rules
    that matter into executable checks; gate the cross-family dispatch
    reflex to judgment-class decisions.
+
+## ADDENDUM 2026-08-02 ~13:10 PT — experiment CONTAMINATED (third drain resurrection)
+
+The OFF condition held ~13h (23:39 Aug 1 → 12:55 Aug 2 PT), then was
+externally reversed while a Claude session was live:
+
+- `drain.off` marker DELETED (actor unknown; the tray/watchdog scripts
+  never delete it — this was a separate deliberate or destructive act).
+- Both schtasks RE-ENABLED between two checks minutes apart (Disabled at
+  ~13:04, Ready/Running at ~13:08). Task Scheduler operational log is
+  disabled — no attribution. A Codex session with
+  `--dangerously-bypass-approvals-and-sandbox` had been running since 12:17.
+- **Third automation layer found** (never covered by the shutdown):
+  "TinyAssets OpenSpec Drain" (logon trigger) and "TinyAssets OpenSpec
+  Drain Guard" (daily + 1-minute repetition) both run
+  `launch_openspec_drain_tray.vbs` → hidden `openspec_drain_tray.ps1`
+  → watchdog relaunch. The patched watchdog gate passed legitimately
+  because the marker was already gone; it auto-resumed run
+  20260801-215608 (attempt 11) with a live peer write-worker on
+  bind-host-principal prompt 011.
+- Deliberately NOT re-killed: an active concurrent agent is maintaining
+  it (restart-loop fight risk; mid-write worker corruption risk; the
+  cloud-drain-vs-rollback host decision is still open).
+
+**Consequence:** the 2026-08-09 re-measurement is INVALID as designed
+(the OFF window is 13h, not 7d). Options for the host decision row:
+(a) drain stays ON → re-purpose the baseline as a with-drain measurement
+and skip the rollback; (b) drain goes OFF again → disable BOTH schtasks
+AND delete both tray launch scripts (or add drain.off honoring to the
+tray), recreate `drain.off`, restart the 7-day clock; (c) fold into the
+cloud-drain decision and retire the local drain machinery entirely.
+
+## RESOLUTION 2026-08-02 ~13:30 PT — host decision: drain stays ON
+
+Host (direct, this session): the drain is his deliberate 24/7 build agent
+working the overall backlog; another session was told to keep the LOCAL drain
+alive until the cloud drain (activate-main-universe-spec-drain) ships. The
+"resurrections" were host-directed, not rogue automation. The rollback test
+is RETIRED (option a): its baseline stands as a with-drain measurement only;
+no 2026-08-09 re-measure. When the cloud drain goes live, the local drain's
+retirement must enumerate ALL restart layers: both schtasks, the
+launch_openspec_drain_tray.vbs logon/guard chain, and the maintaining
+session's standing instruction.

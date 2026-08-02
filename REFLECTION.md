@@ -1387,3 +1387,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** use stdin for the first PR-body receipt
   update instead of PowerShell's multi-line `--body` argument, which briefly
   marked the PR ready before the receipt was attached.
+
+## 2026-08-02 — host-principal lifecycle foldback
+
+- **What surprised me:** after PR #2148 squash-merged, rebasing onto current
+  main recognized both the implementation and its durable claim as upstream
+  patch-equivalents and dropped them without conflict.
+- **Pattern worth capturing:** a continuation worker should prove the merged
+  implementation is absent from `origin/main...HEAD` before creating the
+  coordination diff, then retire only the exact landed claim while the larger
+  OpenSpec change remains incomplete.
+- **What I would do differently:** separate ambient fleet counters from tracked
+  source state before dispatch so a foldback worker starts with a clean tree.

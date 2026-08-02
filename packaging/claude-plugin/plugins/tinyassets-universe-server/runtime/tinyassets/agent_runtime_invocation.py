@@ -19,6 +19,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
+# The append-only evidence contract landed concurrently with admission. Keep
+# its stable import path while isolating its record helpers from this module's
+# admission digest helpers.
+from tinyassets.agent_invocation_authority import (
+    AgentInvocationEvent,
+    AgentInvocationEventState,
+    AgentInvocationIntegrityError,
+    AgentInvocationRoot,
+)
 from tinyassets.agent_runtime import AgentRuntimeManifest, AgentRuntimeManifestInput
 from tinyassets.agent_runtime_grants import (
     AgentRuntimeGrantEvidence,
@@ -862,6 +871,10 @@ __all__ = [
     "AgentInvocationConflict",
     "AgentInvocationExternalAuthorityFenceSource",
     "AgentInvocationExternalAuthoritySnapshot",
+    "AgentInvocationEvent",
+    "AgentInvocationEventState",
+    "AgentInvocationIntegrityError",
+    "AgentInvocationRoot",
     "AgentInvocationState",
     "AgentInvocationTarget",
     "AgentInvocationTargetResolver",
