@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
@@ -49,20 +51,21 @@ def _powershell() -> str:
 
 
 def _replay_capture(
-    capture: BinaryIO,
+    capture_path: Path,
     *,
+    capture_writer: BinaryIO,
     name: str,
     destination: TextIO,
     max_bytes: int,
 ) -> None:
-    capture.flush()
-    initial_observed_bytes = os.fstat(capture.fileno()).st_size
+    capture_writer.flush()
+    initial_observed_bytes = os.fstat(capture_writer.fileno()).st_size
     replay_bytes = min(initial_observed_bytes, max_bytes)
-    capture.seek(0)
-    data = capture.read(replay_bytes)
+    with capture_path.open("rb") as capture_reader:
+        data = capture_reader.read(replay_bytes)
     observed_bytes = max(
         initial_observed_bytes,
-        os.fstat(capture.fileno()).st_size,
+        os.fstat(capture_writer.fileno()).st_size,
     )
     destination.write(data.decode("utf-8", errors="replace"))
     destination.flush()
@@ -73,6 +76,29 @@ def _replay_capture(
             f"observed at least {observed_bytes} bytes",
             flush=True,
         )
+
+
+@contextmanager
+def _capture_file() -> Iterator[tuple[Path, BinaryIO]]:
+    capture_writer = tempfile.NamedTemporaryFile(
+        mode="w+b",
+        prefix="tinyassets-lifecycle-",
+        suffix=".capture",
+        delete=False,
+    )
+    capture_path = Path(capture_writer.name)
+    try:
+        yield capture_path, capture_writer
+    finally:
+        capture_writer.close()
+        try:
+            capture_path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                "::warning title=Windows lifecycle capture cleanup::"
+                f"temporary capture could not be removed: {exc}",
+                flush=True,
+            )
 
 
 def _terminate_tree(process: subprocess.Popen[bytes], *, cleanup_timeout_seconds: int) -> None:
@@ -155,15 +181,15 @@ def main() -> int:
     )
 
     with (
-        tempfile.TemporaryFile(mode="w+b") as stdout_capture,
-        tempfile.TemporaryFile(mode="w+b") as stderr_capture,
+        _capture_file() as (stdout_capture_path, stdout_capture_writer),
+        _capture_file() as (stderr_capture_path, stderr_capture_writer),
     ):
         try:
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=stdout_capture,
-                stderr=stderr_capture,
+                stdout=stdout_capture_writer,
+                stderr=stderr_capture_writer,
                 creationflags=creationflags,
             )
         except OSError as exc:
@@ -190,13 +216,15 @@ def main() -> int:
             return_code = 1
 
         _replay_capture(
-            stdout_capture,
+            stdout_capture_path,
+            capture_writer=stdout_capture_writer,
             name="stdout",
             destination=sys.stdout,
             max_bytes=args.max_capture_bytes_per_stream,
         )
         _replay_capture(
-            stderr_capture,
+            stderr_capture_path,
+            capture_writer=stderr_capture_writer,
             name="stderr",
             destination=sys.stderr,
             max_bytes=args.max_capture_bytes_per_stream,

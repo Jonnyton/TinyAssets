@@ -145,7 +145,8 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "Start-Process" in lifecycle
     assert "-Wait" not in lifecycle
     assert "10_000" not in lifecycle
-    assert "TemporaryFile" in supervisor
+    assert "NamedTemporaryFile" in supervisor
+    assert 'capture_path.open("rb")' in supervisor
     assert "TimeoutExpired" in supervisor
     assert "process.wait(timeout=" in supervisor
     assert "taskkill" in supervisor
@@ -154,38 +155,33 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
 def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     supervisor = _supervisor_module()
     capture_path = tmp_path / "capture.bin"
+    original_path_open = Path.open
 
     with capture_path.open("w+b") as capture:
         capture.write(b"before\n")
         capture.flush()
 
-        class AppendDuringSeek:
-            def __init__(self) -> None:
-                self.appended = False
+        def append_before_independent_open(
+            path: Path,
+            mode: str = "r",
+            *args: object,
+            **kwargs: object,
+        ):
+            if path == capture_path and mode == "rb":
+                with original_path_open(capture_path, "ab") as appender:
+                    appender.write(b"x" * 2048)
+            return original_path_open(path, mode, *args, **kwargs)
 
-            def fileno(self) -> int:
-                return capture.fileno()
-
-            def flush(self) -> None:
-                capture.flush()
-
-            def seek(self, offset: int) -> int:
-                if offset == 0 and not self.appended:
-                    self.appended = True
-                    capture.seek(0, os.SEEK_END)
-                    capture.write(b"x" * 2048)
-                    capture.flush()
-                return capture.seek(offset)
-
-            def read(self, size: int) -> bytes:
-                return capture.read(size)
+        monkeypatch.setattr(Path, "open", append_before_independent_open)
 
         destination = io.StringIO()
         supervisor._replay_capture(
-            AppendDuringSeek(),
+            capture_path,
+            capture_writer=capture,
             name="stdout",
             destination=destination,
             max_bytes=1024,
@@ -195,6 +191,58 @@ def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
     warning = capsys.readouterr().out
     assert "stdout capture truncated; replay cap 1024 bytes" in warning
     assert "observed at least 2055 bytes" in warning
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows inherited file-handle cursor contract",
+)
+def test_windows_lifecycle_capture_reader_is_independent_from_live_writer(
+    tmp_path: Path,
+) -> None:
+    supervisor = _supervisor_module()
+    capture_path = tmp_path / "live-capture.bin"
+    ready_path = tmp_path / "writer-ready"
+    writer_script = """
+import os
+import pathlib
+import sys
+
+sys.stdout.buffer.write(b"phase-marker\\n")
+sys.stdout.buffer.flush()
+pathlib.Path(sys.argv[1]).write_text("ready", encoding="utf-8")
+payload = b"x" * 65536
+while True:
+    os.write(sys.stdout.fileno(), payload)
+"""
+
+    with capture_path.open("w+b") as capture_writer:
+        process = subprocess.Popen(
+            [sys.executable, "-c", writer_script, str(ready_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=capture_writer,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not ready_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready_path.exists(), "synthetic capture writer did not start"
+
+            destination = io.StringIO()
+            supervisor._replay_capture(
+                capture_path,
+                capture_writer=capture_writer,
+                name="stdout",
+                destination=destination,
+                max_bytes=262_144,
+            )
+        finally:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert destination.getvalue().startswith("phase-marker\n")
 
 
 @pytest.mark.skipif(
