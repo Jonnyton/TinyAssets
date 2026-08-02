@@ -88,6 +88,24 @@ def test_assert_handles_fails_on_legacy_leak(monkeypatch):
     assert "universe" in exc.value.msg
 
 
+@pytest.mark.parametrize(
+    "extra_handle",
+    ["contribution", "dataset", "manifest", "forge", "promotion"],
+)
+def test_assert_handles_rejects_data_commons_catalog_handles(
+    monkeypatch, extra_handle
+):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS + [extra_handle]),
+    )
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
+    assert exc.value.code == 4
+    assert extra_handle in exc.value.msg
+
+
 def test_assert_handles_fails_on_missing_handle(monkeypatch):
     short = [n for n in _CANONICAL_PLUS_STATUS if n != "run_graph"]
     monkeypatch.setattr(canary, "_post", _scripted_post(short))
