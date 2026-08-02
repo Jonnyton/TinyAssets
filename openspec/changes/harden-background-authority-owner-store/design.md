@@ -7,7 +7,7 @@ The canonical background binding and attempt records already share one SQLite da
 Goals:
 
 - persist owner records with integrity-checked canonical JSON;
-- validate current owner, binding, and attempt fences in one SQLite transaction;
+- validate current owner and every applicable binding/attempt fence or exact expected absence in one SQLite transaction;
 - commit recovery attempt CAS and owner CAS atomically;
 - commit reauthorization attempt insertion/replay and owner CAS atomically;
 - make every conflict, malformed row, and injected failure roll back the whole transition.
@@ -33,10 +33,10 @@ The typed owner record gains strict `to_dict` / `from_dict` support. The owner t
 
 The service API remains unchanged. The concrete store inspects the current and replacement owner fences:
 
-- hold-only transitions validate referenced canonical rows and change only the owner;
-- recovery requires the same binding and attempt identity, applies the existing monotonic attempt CAS, then updates the owner;
-- reauthorization requires the current fenced rows, an already-committed newer binding, and inserts or exactly replays the fresh reserved attempt before updating the owner;
-- source-owner exits without an attempt still require the replacement binding to be canonical.
+- hold-only transitions validate referenced canonical rows and change only the owner, except that a closed missing-authority reason proves the applicable row is absent and preserves any non-authorizing fence only for audit;
+- recovery is available only when both owner records fence the same present attempt; it requires the same binding and attempt identity, applies the existing monotonic attempt CAS, then updates the owner;
+- queue-owner reauthorization requires the current fenced rows, an already-committed newer binding, and inserts or exactly replays the fresh reserved attempt before updating the owner;
+- source-owner reauthorization may exit without a replacement attempt only after validating the newer canonical binding and any previous attempt fence; binding rotation leaves that old attempt stale/non-runnable and the owner never revives or mutates it.
 
 Any missing/conflicting row or write outcome aborts the transaction. Resolver output is evidence to validate, never an independently authoritative record.
 

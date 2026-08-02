@@ -6,8 +6,8 @@
 
 - [ ] 1.1 RED: prove no production owner store exists and that resolver-only recovered/reauthorized attempts can be published by the current fake-store contract.
 - [ ] 1.2 Add strict canonical owner-record serialization and a dark owner table in the existing SQLite background authority database.
-- [ ] 1.3 RED/GREEN: atomically validate current owner/binding/attempt fences, compare-and-swap same-attempt recovery, and update the owner in one transaction.
-- [ ] 1.4 RED/GREEN: atomically validate the newer binding, insert or exactly replay the fresh reserved attempt, and update the reauthorized owner in one transaction.
+- [ ] 1.3 RED/GREEN: atomically persist closed missing-authority holds from exact absence, and require a present exact attempt for same-attempt recovery before updating attempt and owner in one transaction.
+- [ ] 1.4 RED/GREEN: for queue reauthorization atomically validate the newer binding, insert or exactly replay the fresh reserved attempt, and update the owner; for source reauthorization validate the newer binding and any prior attempt while safely allowing no replacement attempt.
 
 ## 2. Adversarial verification
 
