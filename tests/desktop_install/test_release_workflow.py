@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+import pytest
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "desktop-release.yml"
+SUPERVISOR = Path(__file__).with_name("windows_lifecycle_supervisor.ps1")
+PWSH = shutil.which("pwsh") or shutil.which("powershell")
 
 
 def _workflow_text() -> str:
@@ -109,7 +118,9 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
         "  sign-and-verify:", 1
     )[0]
 
-    assert "timeout-minutes: 15" in install_job
+    assert "timeout-minutes: 10" in install_job
+    assert "windows_lifecycle_supervisor.ps1" in install_job
+    assert "-TotalTimeoutSeconds 300" in install_job
     assert "PhaseTimeoutSeconds" in lifecycle
     assert "WaitForExit" in lifecycle
     assert ".Kill($true)" in lifecycle
@@ -121,6 +132,69 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "Start-Process" in lifecycle
     assert "-Wait" not in lifecycle
     assert "10_000" not in lifecycle
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or PWSH is None,
+    reason="Windows PowerShell process-tree contract",
+)
+def test_windows_lifecycle_supervisor_bounds_and_reports_hung_child(
+    tmp_path: Path,
+) -> None:
+    assert PWSH is not None
+    assert SUPERVISOR.is_file(), "Windows lifecycle supervisor is missing"
+
+    installer = tmp_path / "synthetic installer.exe"
+    installer.write_bytes(b"not executed by the injected lifecycle")
+    lifecycle = tmp_path / "synthetic hung lifecycle.ps1"
+    lifecycle.write_text(
+        """param(
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [int]$PhaseTimeoutSeconds = 180
+)
+Write-Output \"synthetic lifecycle phase began for $Installer\"
+Start-Sleep -Seconds 60
+""",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["RUNNER_TEMP"] = str(tmp_path)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [
+            PWSH,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SUPERVISOR),
+            "-Installer",
+            str(installer),
+            "-LifecycleScript",
+            str(lifecycle),
+            "-PhaseTimeoutSeconds",
+            "1",
+            "-TotalTimeoutSeconds",
+            "2",
+            "-CleanupTimeoutSeconds",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert elapsed < 15
+    assert "synthetic lifecycle phase began" in output
+    assert "total lifecycle timed out after 2 seconds" in output
 
 
 def test_release_workflow_has_no_fake_signature_fallback() -> None:

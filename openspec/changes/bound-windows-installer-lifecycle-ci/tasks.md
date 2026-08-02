@@ -1,7 +1,7 @@
 ## 1. Regression contracts
 
-- [ ] 1.1 Add a Windows regression that runs a synthetic hung lifecycle child and proves an outer deadline returns its phase output plus a non-zero total-timeout verdict within a bounded wall clock; observe RED before the supervisor exists.
-- [ ] 1.2 Tighten the workflow contract test so the release job must invoke the supervisor and preserve a distinct, later job-level timeout; observe RED against the direct lifecycle invocation.
+- [x] 1.1 Add a Windows regression that runs a synthetic hung lifecycle child and proves an outer deadline returns its phase output plus a non-zero total-timeout verdict within a bounded wall clock; observe RED before the supervisor exists.
+- [x] 1.2 Tighten the workflow contract test so the release job must invoke the supervisor and preserve a distinct, later job-level timeout; observe RED against the direct lifecycle invocation.
 
 ## 2. Implementation
 
