@@ -592,13 +592,28 @@ class AgentRuntimeProviderExecutionService:
                 raise AgentRuntimeProviderExecutionBlocked(
                     "agent provider launch requires uncertain-call reconciliation"
                 )
-        self.issue_receipt(invocation_id)
-        self.claim(invocation_id)
-        self.reserve(invocation_id)
-        prepared = self.prepare_continuation(invocation_id).record
-        if type(prepared) is not AgentInvocationCloudContinuation:
-            raise AgentRuntimeProviderExecutionBlocked("agent provider continuation is not current")
-        carrier = self.arm_launch(invocation_id)
+        try:
+            self.issue_receipt(invocation_id)
+            self.claim(invocation_id)
+            self.reserve(invocation_id)
+            prepared = self.prepare_continuation(invocation_id).record
+            if type(prepared) is not AgentInvocationCloudContinuation:
+                raise AgentRuntimeProviderExecutionBlocked(
+                    "agent provider continuation is not current"
+                )
+            carrier = self.arm_launch(invocation_id)
+        except AgentRuntimeProviderExecutionBlocked:
+            concurrent_outcome = self.get_provider_outcome(invocation_id)
+            if concurrent_outcome is not None:
+                return concurrent_outcome
+            raise
+        except PermissionError as exc:
+            concurrent_outcome = self.get_provider_outcome(invocation_id)
+            if concurrent_outcome is not None:
+                return concurrent_outcome
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent provider execution is owned by a concurrent launch"
+            ) from exc
         launched = self.provider_store.get_reservation(prepared.reservation_id)
         if (
             launched is None
