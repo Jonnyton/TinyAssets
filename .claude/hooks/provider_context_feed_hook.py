@@ -11,19 +11,32 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Narrowed 2026-08-02 (process de-bloat): fire only on explicit
+# coordination-lifecycle moments, not on generic software verbs — the old
+# build/plan/status patterns matched nearly every prompt and re-injected the
+# same candidates each turn. AGENTS.md still instructs running the script
+# manually at the other checkpoints when advancing durable work.
 PHASE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "foldback",
-        re.compile(r"\b(push|pull request|merge|land|commit|ship|fold[- ]?back)\b", re.I),
+        re.compile(
+            r"\b(fold[- ]?back|open (a |the )?pr|retire (the |a )?row|"
+            r"merge (it|this|the pr)|ship it)\b",
+            re.I,
+        ),
     ),
-    ("review", re.compile(r"\b(review|verify|audit|approve|quality gate)\b", re.I)),
+    (
+        "claim",
+        re.compile(
+            r"\b(claim|reap|stale[- ]claim|worktree lane|hand[- ]?off|"
+            r"pick up (a|the) (row|task|lane))\b",
+            re.I,
+        ),
+    ),
     (
         "memory-write",
-        re.compile(r"\b(remember|memory|idea|inbox|reflection|handoff|purpose)\b", re.I),
+        re.compile(r"\b(agent[- ]memory|reflection|_PURPOSE)\b", re.I),
     ),
-    ("build", re.compile(r"\b(build|implement|fix|code|edit|refactor|test)\b", re.I)),
-    ("plan", re.compile(r"\b(plan|design|spec|scope|research|implication)\b", re.I)),
-    ("claim", re.compile(r"\b(claim|status|task|worktree|pipeline)\b", re.I)),
 )
 
 
@@ -108,6 +121,23 @@ def main() -> int:
             return 0
     else:
         return 0
+
+    # Once per (session, phase): re-injecting the same candidate list every
+    # qualifying prompt is pure context tax.
+    session_id = str(payload.get("session_id") or "")
+    if session_id:
+        import tempfile
+
+        stamp = (
+            Path(tempfile.gettempdir())
+            / f"tinyassets-feed-{session_id[:16]}-{phase}.stamp"
+        )
+        if stamp.exists():
+            return 0
+        try:
+            stamp.write_text("seen", encoding="utf-8")
+        except OSError:
+            pass
 
     context = render_context(_load_candidates(_project_dir(payload), phase), phase)
     if not context:
