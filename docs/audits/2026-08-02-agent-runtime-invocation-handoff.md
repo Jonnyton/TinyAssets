@@ -84,10 +84,16 @@ replaying a used draft grants no authority and produces no writes.
   isolation; broader authority regressions, lint, strict OpenSpec, and packaged
   mirror parity must pass.
 
-## Implementation result
+## Implementation candidate and open gate
 
-Task 3.2 is complete at exact head
-`063e1576593e24fd079b60e94d3935540c96f00e`.
+Task 3.2 has a reviewed implementation candidate, but is not complete and must
+not merge yet. The final post-rebase review at
+`bab1bc5bb11f37f075e386b426d2ffb580e27abe` found that the
+`AgentInvocationExternalAuthorityFenceSource` is implemented only by the test
+double. The interface correctly requires a mutation lock spanning validation
+through commit, but no canonical production owner currently provides that lock
+across manifest, grant, and provider-assignment mutation paths. An interface is
+not operational authority.
 
 - `tinyassets/agent_runtime_invocation.py` owns caller-intent validation, the
   authenticated one-use draft, a second live-state resolution, the sealed
@@ -123,13 +129,18 @@ Verification on 2026-08-02, Windows worktree:
   user-owned-cloud regressions passed.
 - Ruff, strict OpenSpec, canonical/plugin mirror parity, pre-commit import graph,
   and isolated packaged imports passed.
-- Independent exact-head capability review: APPROVE at `063e1576`.
+- Pre-rebase independent capability review: APPROVE at `063e1576`.
 - Independent exact-head storage/concurrency review: APPROVE at `063e1576`.
+- Final post-rebase capability review: REQUEST_CHANGES at `bab1bc5b`; implement
+  and wire the production fence owner and prove manifest/grant/provider mutation
+  exclusion, not only the provider-assignment test double.
 
 The first exact code review correctly rejected the original repeated-read
 design because authority could change after its last check but before commit.
-The accepted design instead requires the trusted external authority owner to
+The candidate design instead requires the trusted external authority owner to
 hold its mutation fence across commit while activation is transactionally
-checked in SQLite. Task 3.3 remains the next boundary: only this exact admitted
-lineage may enter canonical provider receipt/claim/reservation/launch, with a
-fresh live authority check before spend.
+checked in SQLite. The remaining gate is concrete production ownership and
+wiring of that fence. Task 3.3 follows only after task 3.2 passes that gate:
+only the exact admitted lineage may enter canonical provider
+receipt/claim/reservation/launch, with a fresh live authority check before
+spend.
