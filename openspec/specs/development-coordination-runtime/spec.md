@@ -596,8 +596,11 @@ subscription credentials and the notification area belong to that session.
 The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an
 unfinished drain whose recorded controller is dead using the same run directory
 and exact identity, and SHALL start a fresh bounded run only when no unfinished
-run exists or an explicit restart request has gracefully stopped the prior run.
-It MUST NOT automatically restart fatal or failure-budget terminal outcomes.
+run exists or an explicit restart targets an already-terminal fatal or
+failure-budget run. An explicit restart of a live supervisor that exits through
+orderly `stop-requested` SHALL resume that same run directory and identity with
+stale-lock and stop-marker recovery. A durably `stop-requested` run SHALL remain
+resumable across a watchdog-process interruption before relaunch.
 
 #### Scenario: Existing manual drain is alive
 
@@ -624,9 +627,50 @@ It MUST NOT automatically restart fatal or failure-budget terminal outcomes.
 #### Scenario: Explicit restart gracefully stops a live supervisor
 
 - **WHEN** an explicit restart is requested while a supervisor is live
-- **AND** that supervisor exits with a terminal outcome during graceful stop
-- **THEN** the watchdog preserves the already-authorized fresh-run decision
+- **AND** that supervisor exits through orderly `stop-requested`
+- **THEN** the watchdog resumes the same run directory and exact drain identity
+- **AND** the preserved admission and resume target remain available to the next worker
+
+#### Scenario: Explicit restart follows an already-terminal failure
+
+- **WHEN** an explicit restart targets a supervisor already ended at a fatal or
+  failure-budget terminal outcome
+- **THEN** the watchdog preserves the authorized fresh-run decision
 - **AND** it starts exactly one fresh bounded supervisor run
+
+#### Scenario: Resumed supervisor is interrupted again
+
+- **WHEN** an orderly stopped supervisor resumes the same run directory and identity
+- **AND** that resumed controller is later interrupted before another orderly exit
+- **THEN** its running state has no stale terminal timestamp
+- **AND** the next watchdog discovery classifies the same run as unfinished and resumable
+
+#### Scenario: Resume is interrupted during result recovery
+
+- **WHEN** a resumed controller clears its prior terminal timestamp
+- **AND** it is interrupted while recovering an earlier result or verifying a merge receipt
+- **THEN** the cleared timestamp is already durable on disk
+- **AND** the next watchdog discovery resumes the same run identity
+
+#### Scenario: Explicit restart overlaps an abrupt controller exit
+
+- **WHEN** an explicit restart is pending for an unfinished run
+- **AND** the controller exits before recording orderly `stop-requested`
+- **THEN** the watchdog resumes the discovered unfinished run directory and identity
+- **AND** it does not mint a fresh identity
+
+#### Scenario: Restart launch fails
+
+- **WHEN** the watchdog has selected the preserved restart decision
+- **AND** launching the supervisor fails before a process is created
+- **THEN** the restart request remains durable for the next watchdog attempt
+
+#### Scenario: Watchdog exits after orderly stop but before relaunch
+
+- **WHEN** a drain is durably `stop-requested` with its terminal timestamp
+- **AND** the watchdog process exits before it can relaunch the supervisor
+- **THEN** the next watchdog discovery resumes that same run directory and identity
+- **AND** an observational dry-run does not consume pending restart intent
 
 #### Scenario: Clean budget ends during the signed-in session
 
@@ -1237,6 +1281,18 @@ When owned, claimable, and policy-qualified stale STATUS candidates are absent, 
 - **AND** fresh current main contains no claimable row overlapping the assigned change boundary
 - **THEN** the supervisor rejects the continuation as non-delivery coordination churn
 - **AND** it does not treat the refinery pseudo-target as implementation admission
+
+#### Scenario: Refinery handoff and implementation both make bounded progress
+- **WHEN** an accepted refinery `PARTIAL` exposes a claimable target
+- **AND** the next ordinary worker merges a bounded `PARTIAL` slice for that same target
+- **THEN** the refinery handoff does not count as the first repeated implementation partial
+- **AND** the supervisor immediately resumes the preserved target without consuming a failure strike or entering the idle wait
+
+#### Scenario: Refinery continuation receipt is replayed
+- **WHEN** a verified merge-backed `PARTIAL` receipt was already accepted by the bounded run
+- **AND** a later worker reports that same receipt again
+- **THEN** the supervisor suppresses the replay before continuation validation
+- **AND** the replay does not reset the run's existing failure budget
 
 #### Scenario: Coordination is genuinely exhausted
 - **WHEN** claimable, stale, owned, and refinable counts are all zero after exact-current-main inspection
