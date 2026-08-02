@@ -1,7 +1,7 @@
 ## 1. Contract Review and Publication
 
 - [x] 1.1 Run strict OpenSpec and bounded-flow checks, obtain an independent exact-head architecture/security review of this contract-only proposal, design, spec, host-approved V1 golden path, and successor graph, and fold every blocking finding before publication. Approved at exact head `af4b8d3f189398bf58a9873661a9beefc583fa6a`: strict validation, bounded-flow admission, 15 flow tests, and diff checks passed with no blocking architecture/security finding; the nonblocking live-proof refinement is folded into task 2.5.
-- [ ] 1.2 Re-audit current main, record exact owning changes/APIs for activation/provider authority, boundary ingress/effects, Branch/Run/evaluation/adjacent authority, Engine OS, organization/interlocutor authority, conversation custody, and personification, then publish this contract without runtime files and move its STATUS row to monitoring.
+- [x] 1.2 Re-audit current main, record exact owning changes/APIs for activation/provider authority, boundary ingress/effects, Branch/Run/evaluation/adjacent authority, Engine OS, organization/interlocutor authority, conversation custody, and personification, then publish this contract without runtime files and move its STATUS row to monitoring. Audited base `11657461`, recorded built/dark/missing owners in `design.md`, independently approved exact head `03e940291bc31f24c56fa4dd3ed4fc9765c8c10a`, and published contract-only PR #2133 as merge `6be77ef2`.
 
 ## 2. Separately Admitted Delivery Successors
 
