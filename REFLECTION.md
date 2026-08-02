@@ -1363,3 +1363,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** test abrupt exit at every persistence
   boundary in the first restart matrix, including before recovery and during
   process launch, instead of only interrupting before the next worker attempt.
+
+## 2026-08-01 — host-enrollment retry convergence
+
+- **What surprised me:** two older same-target drafts existed, but both were
+  closed by a superseded host-priority gate; current STATUS deliberately
+  re-admitted a narrower exact-file RED/GREEN slice.
+- **Pattern worth capturing:** for drain review receipts, publish the review
+  comment first, return the PR to draft before any body mutation, update the
+  body through stdin, verify the receipt/head, then mark ready.
+- **What I would do differently:** use stdin for the first PR-body receipt
+  update instead of PowerShell's multi-line `--body` argument, which briefly
+  marked the PR ready before the receipt was attached.
