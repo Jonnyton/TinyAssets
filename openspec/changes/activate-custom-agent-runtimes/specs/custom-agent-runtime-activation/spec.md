@@ -153,3 +153,9 @@ The system MUST NOT declare custom-agent runtime activation complete until it pa
 - **WHEN** one production activation satisfies every required structural and live proof using only requester-owned authority
 - **THEN** evidence records exact versions, environments, timestamps, load shape, recovery events, rendered conversations, effect receipts, and privacy-safe organic-use source
 - **AND** the capability may sync to as-built specs and archive after independent exact-head review
+
+#### Scenario: Approved V1 remix-to-running golden path passes
+- **WHEN** a browser-only user blends components from public definitions by at least two other creators, fully customizes the child through canonical handles, privately binds their own supported provider authority and Slack connection, and asks the agent in rendered Slack to create a recurring intelligence workflow
+- **THEN** the agent uses ordinary Branch, Run, evaluator, and Gate primitives to dry-test without effects, evaluate against frozen criteria, present an evidence-backed revision, request activation, and deliver a cited scheduled result during a continuous PC-off cloud window that includes worker recovery
+- **AND** canonical export/re-import plus a second-account remix preserve public content and verified component lineage while transferring no private binding, credential, goal, conversation, or runtime state
+- **AND** no intelligence-agent, Slack-agent, coding-agent, OpenClaw, Hermes, or other starter/archetype enum or privileged runtime path is introduced

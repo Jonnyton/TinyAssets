@@ -14,6 +14,7 @@ This change is the contract-only coordination root for that outcome. It defines 
 - Extend only targets and operations behind the canonical seven MCP handles; add no top-level agent or app tool.
 - Stage implementation behind explicit handoffs from the active cloud-drain/provider-authority, outbound-boundary, organization-authority, Engine OS confinement, and personification-relay owners.
 - Split delivery into bounded activation-core, app-conversation, workflow-iteration, canonical-control, and live-proof successors; this change writes no runtime code.
+- Freeze the host-approved first V1 proof as one browser-only, remix-to-running Slack intelligence-agent journey: multi-creator public remix, unrestricted component replacement within the open envelope, private provider/app/cloud binding, Slack-authored workflow test/evaluate/revise/activate, PC-off delivery, lossless export/re-import, and a second-account remix with no private-state transfer. The intelligence domain is acceptance content, never a platform archetype.
 
 ## Capabilities
 
