@@ -136,3 +136,18 @@ dry-run health observation no longer consumes restart intent, and duplicate
 logs now report the actual `MERGED` or `PARTIAL` status. Three regressions first
 failed on those exact boundaries and then passed. A new exact-head review and
 live restoration are still required.
+
+## Original identity restored
+
+**Freshness:** 2026-08-01 19:07 PDT, Windows controller checkout at merged main
+`a5594989`.
+
+After PR #2105 merged with exact-head Claude approval, the controller checkout
+advanced to that main commit. The original run directory resumed with identity
+`drain-20260801-113628-6deab6`; `ended_at` was durably cleared, its existing
+admission/worktree and resume target remained intact, and attempt 35 reported
+`claimable=1`, `owned=1` before dispatch. The watchdog attached to controller
+PID 21440 and remained `health=running`, `mode=attach`, with zero consecutive
+failures across repeated polls. The logon task and one-minute guard task both
+remain installed, so local restart supervision continues until the cloud drain
+is live.
