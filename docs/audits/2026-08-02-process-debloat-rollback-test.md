@@ -136,12 +136,20 @@ Remove-Item "C:\Users\Jonathan\Projects\wf-openspec-drain-controller\output\open
   lane (STATUS row) is unaffected and already anticipated stopping the
   local tray after cloud acceptance.
 
-## Later phases (tracked in the STATUS Work row)
+## Phase 2 executed: worktree sweep (2026-08-02)
 
-2. Lossless worktree sweep: remove only worktrees with a clean tree
-   (`_PURPOSE.md`-only allowed) whose HEAD is an ancestor of
-   origin/main; no branch deletion; skip `.codex-worktrees/` and the
-   drain controller.
+154 lanes removed, 0 skipped, 213 backup refs under
+`refs/debloat-backup/` (reflog shas unreachable from the branch tip and
+origin/main, plus detached-HEAD protection). Each lane was revalidated
+immediately before removal: clean tree (`_PURPOSE.md`-only allowed) AND
+landed (HEAD ancestor of origin/main, or HEAD exactly equal to a merged
+PR's `headRefOid` — the squash-merge-safe proof) AND ignored files all
+in the disposable set. No branches deleted; no `--force`. 63 lanes with
+unique local artifacts (review briefs, `knowledge.db`, dist builds)
+were left in place, as were all dirty and genuinely-unmerged lanes.
+Fleet: 552 → ~405 worktrees.
+
+## Later phases (tracked in the STATUS Work row)
 3. OpenSpec backlog triage: force-archive to actively-built changes,
    adopt a WIP limit and a skip-threshold (small changes need no spec).
 4. AGENTS.md/CLAUDE.md shrink toward "short, accurate"; convert rules
