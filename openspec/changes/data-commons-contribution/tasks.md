@@ -1,5 +1,5 @@
 > **Partially implemented legacy change.** Checked requirements below have
-> executable evidence on `main`; unchecked requirements in `specs/` remain
+> executable evidence on this implementing branch; unchecked requirements in `specs/` remain
 > target-only intended behavior. Authored
 > 2026-07-25 as the successor for `build-forward-platform-capabilities` tasks
 > 3.1 (non-monetary half) and 3.2, per that umbrella's decision D1 (a slice
