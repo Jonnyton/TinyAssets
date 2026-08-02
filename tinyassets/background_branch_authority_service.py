@@ -386,6 +386,7 @@ class BackgroundBranchAuthorityFailureKind(str, Enum):
     MISSING = "missing"
     STALE = "stale"
     REVOKED = "revoked"
+    EXPIRED = "expired"
     EXHAUSTED = "exhausted"
     UNAUTHORIZED = "unauthorized"
     SOURCE_MISMATCHED = "source_mismatched"
@@ -406,6 +407,9 @@ _FAILURE_HOLD_REASONS = {
     ),
     BackgroundBranchAuthorityFailureKind.REVOKED: (
         BackgroundBranchHoldReason.BINDING_REVOKED
+    ),
+    BackgroundBranchAuthorityFailureKind.EXPIRED: (
+        BackgroundBranchHoldReason.BINDING_EXPIRED
     ),
     BackgroundBranchAuthorityFailureKind.EXHAUSTED: (
         BackgroundBranchHoldReason.BINDING_EXHAUSTED
@@ -1561,22 +1565,7 @@ class BackgroundBranchAuthorityHoldService:
             authentication_context_id=None,
             transitioned_at=recovered_at,
         )
-        if (
-            resolution.predecessor
-            not in {
-                BackgroundBranchAttemptPredecessorState.DEAD,
-                BackgroundBranchAttemptPredecessorState.INVALIDATED,
-            }
-            or resolution.boundary
-            not in {
-                BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
-                BackgroundBranchAttemptBoundaryState.CLOSED,
-            }
-        ):
-            self._fail(
-                "recovery_not_conclusive",
-                "recovery requires a dead/invalidated predecessor and conclusive boundary",
-            )
+        self._require_conclusive_reconciliation(resolution)
         self._validate_same_authority(current, resolution)
         assert resolution.attempt is not None
         replacement = replace(
@@ -1607,6 +1596,11 @@ class BackgroundBranchAuthorityHoldService:
             transitioned_at=reauthorized_at,
         )
         if (
+            current.hold_reason
+            is BackgroundBranchHoldReason.INDETERMINATE_PRIOR_ATTEMPT
+        ):
+            self._require_conclusive_reconciliation(resolution)
+        if (
             resolution.authenticated_principal_id
             != current.authorizing_principal_id
             and not resolution.is_universe_admin
@@ -1618,6 +1612,12 @@ class BackgroundBranchAuthorityHoldService:
         binding = resolution.binding
         if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
             self._fail("binding_not_active", "reauthorized binding must be active")
+        if (
+            binding.expires_at is not None
+            and _utc_timestamp(binding.expires_at, "binding.expires_at")
+            <= _utc_timestamp(resolution.resolved_at, "resolution.resolved_at")
+        ):
+            self._fail("binding_expired", "reauthorized binding has expired")
         if (
             binding.universe_id != current.universe_id
             or binding.authorizing_principal_id != current.authorizing_principal_id
@@ -1806,6 +1806,27 @@ class BackgroundBranchAuthorityHoldService:
                 "recovery changed immutable attempt authority",
             )
 
+    def _require_conclusive_reconciliation(
+        self,
+        resolution: BackgroundBranchAuthorityExitResolution,
+    ) -> None:
+        if (
+            resolution.predecessor
+            not in {
+                BackgroundBranchAttemptPredecessorState.DEAD,
+                BackgroundBranchAttemptPredecessorState.INVALIDATED,
+            }
+            or resolution.boundary
+            not in {
+                BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+                BackgroundBranchAttemptBoundaryState.CLOSED,
+            }
+        ):
+            self._fail(
+                "recovery_not_conclusive",
+                "recovery requires a dead/invalidated predecessor and conclusive boundary",
+            )
+
     @staticmethod
     def _resume_state(
         owner_kind: BackgroundBranchAuthorityOwnerKind,
@@ -1825,6 +1846,30 @@ class BackgroundBranchAuthorityHoldService:
             or attempt.binding_digest != binding.binding_digest
             or attempt.binding_generation != binding.generation
             or attempt.universe_id != universe_id
+            or attempt.authorizing_principal_id
+            != binding.authorizing_principal_id
+            or attempt.branch_def_id != binding.branch_def_id
+            or attempt.operation is not binding.operation
+            or attempt.source_kind is not binding.source_kind
+            or attempt.source_id != binding.source_id
+            or attempt.executor_audience.executor_class
+            not in binding.permitted_executor_classes
+            or (
+                binding.daemon_id is not None
+                and attempt.executor_audience.daemon_id != binding.daemon_id
+            )
+            or (
+                binding.runtime_id is not None
+                and attempt.executor_audience.runtime_id != binding.runtime_id
+            )
+            or (
+                binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION
+                and attempt.branch_version_id != binding.pinned_branch_version_id
+            )
+            or attempt.remaining_depth > binding.remaining_depth
+            or attempt.remaining_count > binding.remaining_count
+            or attempt.remaining_cost_microunits
+            > binding.remaining_cost_microunits
         ):
             raise BackgroundBranchAuthorityHoldError(
                 "attempt_authority_mismatch",
