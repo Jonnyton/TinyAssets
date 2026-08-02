@@ -842,6 +842,13 @@ class _Transaction:
         now: datetime,
         agent_store_grant: object | None = None,
     ) -> ProviderInvocationReservationWriteResult:
+        agent_authority = (
+            SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                agent_store_grant
+            )
+            if agent_store_grant is not None
+            else None
+        )
         reservation_row = self._conn.execute(
             "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
             (request.reservation_id,),
@@ -852,6 +859,27 @@ class _Transaction:
                 None,
             )
         reservation = _reservation_record(reservation_row)
+        receipt_row = self._conn.execute(
+            "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+            (reservation.receipt_id,),
+        ).fetchone()
+        if receipt_row is None:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        receipt = _receipt_record(receipt_row)
+        if receipt.work_item_kind == "agent_invocation":
+            if agent_authority is None:
+                agent_authority = (
+                    SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                        None
+                    )
+                )
+            if _agent_receipt_for_authority(self._conn, agent_authority) != receipt:
+                raise PermissionError("agent launch authority does not match receipt")
+        elif agent_authority is not None:
+            raise PermissionError("agent transition grant cannot authorize Branch work")
         same_identity = (
             reservation.receipt_id == request.receipt_id,
             reservation.receipt_digest == request.receipt_digest,
@@ -880,28 +908,15 @@ class _Transaction:
                 reservation,
             )
 
-        receipt_row = self._conn.execute(
-            "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
-            (request.receipt_id,),
-        ).fetchone()
         claim_row = self._conn.execute(
             "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
             (request.claim_id,),
         ).fetchone()
-        if receipt_row is None or claim_row is None:
+        if claim_row is None:
             return ProviderInvocationReservationWriteResult(
                 ProviderWorkAuthorityWriteOutcome.STALE,
                 None,
             )
-        receipt = _receipt_record(receipt_row)
-        if receipt.work_item_kind == "agent_invocation":
-            authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
-                agent_store_grant
-            )
-            if _agent_receipt_for_authority(self._conn, authority) != receipt:
-                raise PermissionError("agent launch authority does not match receipt")
-        elif agent_store_grant is not None:
-            raise PermissionError("agent transition grant cannot authorize Branch work")
         claim = _claim_record(claim_row)
         binding_row = self._conn.execute(
             "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
@@ -1155,6 +1170,7 @@ class SQLiteProviderWorkAuthorityStore:
             ).total_seconds()
         )
         if remaining_seconds < 1:
+            self._consume_agent_transition_grant(store_grant)
             return ProviderWorkExecutionClaimWriteResult(
                 ProviderWorkAuthorityWriteOutcome.STALE,
                 None,
@@ -1195,6 +1211,7 @@ class SQLiteProviderWorkAuthorityStore:
             (receipt.receipt_id,),
         ).fetchone()
         if claim_row is None:
+            self._consume_agent_transition_grant(store_grant)
             return ProviderInvocationReservationWriteResult(
                 ProviderWorkAuthorityWriteOutcome.MISSING,
                 None,
@@ -1237,6 +1254,7 @@ class SQLiteProviderWorkAuthorityStore:
             (receipt.receipt_id, authority.root.work_item_id),
         ).fetchone()
         if reservation_row is None:
+            self._consume_agent_transition_grant(store_grant)
             return ProviderInvocationReservationWriteResult(
                 ProviderWorkAuthorityWriteOutcome.MISSING,
                 None,

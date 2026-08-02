@@ -338,6 +338,75 @@ def test_agent_claim_reserve_and_launch_are_replay_safe_across_restart(
     assert carrier.max_tokens == admitted.command.max_tokens
     with pytest.raises(PermissionError, match="already armed"):
         restarted_service().arm_launch(invocation_id)
+    from tinyassets import agent_runtime_provider_execution as execution_module
+
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
+
+
+def test_agent_transition_grants_are_consumed_on_missing_paths(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets import agent_runtime_provider_execution as execution_module
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+
+    missing_reservation = service.reserve(invocation_id)
+    assert missing_reservation.outcome is ProviderWorkAuthorityWriteOutcome.MISSING
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
+
+    service.claim(invocation_id)
+    with pytest.raises(PermissionError, match="could not be armed"):
+        service.arm_launch(invocation_id)
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
+
+
+def test_agent_transition_grant_cannot_be_reused(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets import agent_runtime_provider_execution as execution_module
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+
+    with service.invocation_store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        grant = service._validated_store_grant(
+            connection,
+            invocation_id=invocation_id,
+            evaluated_at=NOW.timestamp(),
+        )
+        claim = service.provider_store._claim_agent_in_transaction(connection, grant)
+        assert claim.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED
+        with pytest.raises(PermissionError, match="invalid or consumed"):
+            service.provider_store._reserve_agent_in_transaction(connection, grant)
+        connection.rollback()
+
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
 
 
 def test_eight_agent_launchers_mint_one_carrier(
@@ -566,6 +635,9 @@ def test_expired_agent_receipt_cannot_be_claimed(
     result = service.claim(admitted.invocation.invocation_id)
     assert result.outcome is ProviderWorkAuthorityWriteOutcome.STALE
     assert result.record is None
+    from tinyassets import agent_runtime_provider_execution as execution_module
+
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
     with sqlite3.connect(db_path(tmp_path)) as connection:
         count = connection.execute(
             "SELECT COUNT(*) FROM provider_work_execution_claims"
