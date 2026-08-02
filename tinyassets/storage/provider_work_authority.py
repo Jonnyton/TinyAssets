@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from tinyassets.provider_work_authority import (
+    ProviderInvocationLaunchRequest,
     ProviderInvocationReservation,
     ProviderInvocationReservationRequest,
+    ProviderInvocationReservationState,
     ProviderInvocationReservationWriteResult,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
@@ -31,6 +33,7 @@ from tinyassets.provider_work_authority import (
     _from_seed,
     _receipt_from_authority,
     _reservation_from_request,
+    _reservation_with_state,
     provider_invocation_reservation_id,
     provider_work_binding_id,
     provider_work_claim_id,
@@ -716,6 +719,113 @@ class _Transaction:
             candidate,
         )
 
+    def arm_launch(
+        self,
+        request: ProviderInvocationLaunchRequest,
+        *,
+        now: datetime,
+    ) -> ProviderInvocationReservationWriteResult:
+        reservation_row = self._conn.execute(
+            "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
+            (request.reservation_id,),
+        ).fetchone()
+        if reservation_row is None:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.MISSING,
+                None,
+            )
+        reservation = _reservation_record(reservation_row)
+        same_identity = (
+            reservation.receipt_id == request.receipt_id,
+            reservation.receipt_digest == request.receipt_digest,
+            reservation.claim_id == request.claim_id,
+            reservation.claim_digest == request.claim_digest,
+            reservation.claim_generation == request.claim_generation,
+            reservation.invocation_key == request.invocation_key,
+        )
+        reserved_form = _reservation_with_state(
+            reservation,
+            ProviderInvocationReservationState.RESERVED,
+        )
+        if not all(same_identity) or reserved_form.reservation_digest != request.reserved_digest:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                reservation,
+            )
+        if reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+                reservation,
+            )
+        if reservation.state is not ProviderInvocationReservationState.RESERVED:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                reservation,
+            )
+
+        receipt_row = self._conn.execute(
+            "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+            (request.receipt_id,),
+        ).fetchone()
+        claim_row = self._conn.execute(
+            "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
+            (request.claim_id,),
+        ).fetchone()
+        if receipt_row is None or claim_row is None:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        receipt = _receipt_record(receipt_row)
+        claim = _claim_record(claim_row)
+        binding_row = self._conn.execute(
+            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+            (receipt.binding_id,),
+        ).fetchone()
+        binding = _record(binding_row) if binding_row is not None else None
+        current = (
+            receipt.receipt_digest == request.receipt_digest,
+            receipt.state is ProviderWorkReceiptState.ACTIVE,
+            datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00") > now,
+            claim.receipt_id == receipt.receipt_id,
+            claim.receipt_digest == receipt.receipt_digest,
+            claim.claim_digest == request.claim_digest,
+            claim.generation == request.claim_generation,
+            claim.state.value == "active",
+            datetime.fromisoformat(claim.lease_expires_at.removesuffix("Z") + "+00:00") > now,
+            binding is not None,
+            binding is not None and binding.state is ProviderWorkBindingState.ACTIVE,
+            binding is not None and binding.generation == receipt.binding_generation,
+            binding is not None and binding.binding_digest == receipt.binding_digest,
+        )
+        if not all(current):
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        armed = _reservation_with_state(
+            reservation,
+            ProviderInvocationReservationState.LAUNCH_STARTED,
+        )
+        self._conn.execute(
+            """
+            UPDATE provider_invocation_reservations
+            SET reservation_digest = ?, state = ?, record_json = ?
+            WHERE reservation_id = ? AND reservation_digest = ? AND state = 'reserved'
+            """,
+            (
+                armed.reservation_digest,
+                armed.state.value,
+                _json_record(armed),
+                armed.reservation_id,
+                request.reserved_digest,
+            ),
+        )
+        return ProviderInvocationReservationWriteResult(
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            armed,
+        )
+
 
 class _BindingTransaction:
     """Expose only the binding CAS surface to production service callers."""
@@ -866,6 +976,16 @@ class SQLiteProviderWorkAuthorityStore:
                 now=now,
                 created_at=self._timestamp(now),
             )
+
+    def arm_launch(
+        self,
+        request: ProviderInvocationLaunchRequest,
+    ) -> ProviderInvocationReservationWriteResult:
+        if not isinstance(request, ProviderInvocationLaunchRequest):
+            raise ValueError("request must be a ProviderInvocationLaunchRequest")
+        now = self._now()
+        with self._ledger_transaction() as transaction:
+            return transaction.arm_launch(request, now=now)
 
     def list_reservations(
         self,

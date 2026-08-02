@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from tinyassets.provider_work_authority import (
+    ProviderInvocationLaunchRequest,
     ProviderInvocationReservationRequest,
+    ProviderInvocationReservationState,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
@@ -643,6 +645,112 @@ def test_reservations_conserve_invocation_token_and_cost_budgets(tmp_path) -> No
         )
     )
     assert replay.outcome is ProviderWorkAuthorityWriteOutcome.REPLAYED
+
+
+def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_1",
+            runtime_id="runtime_cloud_1",
+            claim_nonce_digest=f"sha256:{'7' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation = store.reserve(
+        ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key="attempt-launch",
+            operation="repository_spec_delivery",
+            role="writer",
+            max_tokens=20_000,
+            max_cost_microunits=1_000_000,
+        )
+    ).record
+    assert reservation is not None
+    request = ProviderInvocationLaunchRequest.from_reservation(reservation)
+
+    def arm_once(_index: int):
+        return SQLiteProviderWorkAuthorityStore(
+            tmp_path,
+            clock=lambda: NOW,
+        ).arm_launch(request)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(arm_once, range(8)))
+
+    assert (
+        sum(result.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for result in results) == 1
+    )
+    assert all(
+        result.outcome
+        in {
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            ProviderWorkAuthorityWriteOutcome.REPLAYED,
+        }
+        for result in results
+    )
+    armed = store.list_reservations(receipt.receipt_id)[0]
+    assert armed.state is ProviderInvocationReservationState.LAUNCH_STARTED
+    assert armed.reservation_digest != reservation.reservation_digest
+    assert (
+        SQLiteProviderWorkAuthorityStore(
+            tmp_path,
+            clock=lambda: NOW,
+        )
+        .arm_launch(request)
+        .record
+        == armed
+    )
+
+
+def test_launch_arm_fails_closed_after_binding_revocation(tmp_path) -> None:
+    store, binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_1",
+            runtime_id="runtime_cloud_1",
+            claim_nonce_digest=f"sha256:{'8' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation = store.reserve(
+        ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key="attempt-revoked-before-launch",
+            operation="repository_spec_delivery",
+            role="writer",
+            max_tokens=1,
+            max_cost_microunits=1,
+        )
+    ).record
+    assert reservation is not None
+    ProviderWorkBindingService(store).revoke(ProviderWorkBindingFence(binding))
+
+    result = store.arm_launch(ProviderInvocationLaunchRequest.from_reservation(reservation))
+
+    assert result.outcome is ProviderWorkAuthorityWriteOutcome.STALE
+    assert result.record is None
+    persisted = store.list_reservations(receipt.receipt_id)[0]
+    assert persisted.state is ProviderInvocationReservationState.RESERVED
 
 
 def test_expired_claim_cannot_replay_or_reserve(tmp_path) -> None:
