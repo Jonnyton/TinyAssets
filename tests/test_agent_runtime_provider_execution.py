@@ -66,9 +66,7 @@ def _admitted_invocation(tmp_path, authenticate_request):
     return manifest, grant_resolver, provider_resolver, admission, admitted
 
 
-def test_atomic_agent_receipt_binds_exact_admitted_lineage(
-    tmp_path, authenticate_request
-) -> None:
+def test_atomic_agent_receipt_binds_exact_admitted_lineage(tmp_path, authenticate_request) -> None:
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionService,
     )
@@ -93,24 +91,22 @@ def test_atomic_agent_receipt_binds_exact_admitted_lineage(
     assert receipt.execution_subject.ref == manifest.manifest_id
     assert receipt.agent_invocation_command_id == admitted.command.command_id
     assert receipt.agent_invocation_command_digest == admitted.command.command_digest
-    assert receipt.agent_invocation_generation == admitted.invocation.generation
-    assert receipt.principal_id == admitted.command.authorizing_principal_digest
+    assert receipt.agent_invocation_generation == admitted.invocation.command_generation
+    assert receipt.principal_id.startswith("sha256:")
     assert receipt.binding_id == admitted.binding.binding_id
     assert receipt.max_invocations == 1
-    assert receipt.max_tokens == admitted.command.max_tokens
-    assert receipt.max_cost_microunits == admitted.command.max_cost_microunits
+    assert receipt.max_tokens == admitted.command.budget.max_tokens
+    assert receipt.max_cost_microunits == admitted.command.budget.max_cost_microunits
     assert admission.store.get(invocation_id=admitted.invocation.invocation_id) is not None
 
 
-def test_concurrent_agent_receipt_issue_has_one_identity(
-    tmp_path, authenticate_request
-) -> None:
+def test_concurrent_agent_receipt_issue_has_one_identity(tmp_path, authenticate_request) -> None:
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
 
     def issue(_index: int):
@@ -124,9 +120,7 @@ def test_concurrent_agent_receipt_issue_has_one_identity(
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(issue, range(8)))
 
-    assert sum(
-        item.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for item in results
-    ) == 1
+    assert sum(item.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for item in results) == 1
     assert all(
         item.outcome
         in {
@@ -138,16 +132,14 @@ def test_concurrent_agent_receipt_issue_has_one_identity(
     assert len({item.record for item in results}) == 1
 
 
-def test_agent_receipt_refuses_missing_or_revoked_authority(
-    tmp_path, authenticate_request
-) -> None:
+def test_agent_receipt_refuses_missing_or_revoked_authority(tmp_path, authenticate_request) -> None:
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionBlocked,
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -160,17 +152,14 @@ def test_agent_receipt_refuses_missing_or_revoked_authority(
 
     with sqlite3.connect(db_path(tmp_path)) as connection:
         connection.execute(
-            "UPDATE capability_grants SET revoked_at = ? "
-            "WHERE user_id = ? AND capability = ?",
+            "UPDATE capability_grants SET revoked_at = ? WHERE user_id = ? AND capability = ?",
             (NOW.timestamp(), "user::alice", "provider.invoke"),
         )
     with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="grant"):
         service.issue_receipt(admitted.invocation.invocation_id)
 
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        count = connection.execute(
-            "SELECT COUNT(*) FROM provider_work_receipts"
-        ).fetchone()[0]
+        count = connection.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
     assert count == 0
 
 
@@ -183,8 +172,8 @@ def test_changed_provider_assignment_and_direct_store_bypass_write_nothing(
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -198,19 +187,19 @@ def test_changed_provider_assignment_and_direct_store_bypass_write_nothing(
             work_item_id=admitted.invocation.invocation_id,
         ),
         binding=admitted.binding,
-        principal_id=admitted.command.authorizing_principal_digest,
+        principal_id="sha256:" + "1" * 64,
         actor_id=admitted.invocation.invocation_id,
         operation="agent_invocation",
         role="agent_runtime",
         executor_class="cloud",
         max_invocations=1,
-        max_tokens=admitted.command.max_tokens,
-        max_cost_microunits=admitted.command.max_cost_microunits,
+        max_tokens=admitted.command.budget.max_tokens,
+        max_cost_microunits=admitted.command.budget.max_cost_microunits,
         expires_at=admitted.binding.expires_at,
         execution_subject=admitted.command.execution_subject,
         agent_invocation_command_id=admitted.command.command_id,
         agent_invocation_command_digest=admitted.command.command_digest,
-        agent_invocation_generation=admitted.invocation.generation,
+        agent_invocation_generation=admitted.invocation.command_generation,
     )
     assert not hasattr(execution_module, "_mint_receipt_store_grant")
     with pytest.raises(PermissionError, match="canonical runtime authority fence"):
@@ -229,9 +218,7 @@ def test_changed_provider_assignment_and_direct_store_bypass_write_nothing(
         service.issue_receipt(admitted.invocation.invocation_id)
 
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        count = connection.execute(
-            "SELECT COUNT(*) FROM provider_work_receipts"
-        ).fetchone()[0]
+        count = connection.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
     assert count == 0
 
 
@@ -245,8 +232,8 @@ def test_grant_time_is_sampled_after_waiting_for_write_fence(
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     with sqlite3.connect(db_path(tmp_path)) as connection:
         connection.execute(
@@ -275,9 +262,7 @@ def test_grant_time_is_sampled_after_waiting_for_write_fence(
                 future.result(timeout=5)
 
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        count = connection.execute(
-            "SELECT COUNT(*) FROM provider_work_receipts"
-        ).fetchone()[0]
+        count = connection.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
     assert count == 0
 
 
@@ -288,8 +273,8 @@ def test_agent_claim_reserve_and_launch_are_replay_safe_across_restart(
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
 
     def restarted_service() -> AgentRuntimeProviderExecutionService:
@@ -317,25 +302,19 @@ def test_agent_claim_reserve_and_launch_are_replay_safe_across_restart(
     assert reservation.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED
     assert reservation.record is not None
     assert reservation.record.invocation_key == invocation_id
-    assert reservation.record.max_tokens == admitted.command.max_tokens
-    assert (
-        reservation.record.max_cost_microunits
-        == admitted.command.max_cost_microunits
-    )
+    assert reservation.record.max_tokens == admitted.command.budget.max_tokens
+    assert reservation.record.max_cost_microunits == admitted.command.budget.max_cost_microunits
 
     replayed_reservation = restarted_service().reserve(invocation_id)
-    assert (
-        replayed_reservation.outcome
-        is ProviderWorkAuthorityWriteOutcome.REPLAYED
-    )
+    assert replayed_reservation.outcome is ProviderWorkAuthorityWriteOutcome.REPLAYED
     assert replayed_reservation.record == reservation.record
 
     carrier = restarted_service().arm_launch(invocation_id)
     assert isinstance(carrier, ProviderInvocationCarrier)
-    assert carrier.provider == admitted.command.provider
+    assert carrier.provider == admitted.binding.provider
     assert carrier.operation == "agent_invocation"
     assert carrier.role == "agent_runtime"
-    assert carrier.max_tokens == admitted.command.max_tokens
+    assert carrier.max_tokens == admitted.command.budget.max_tokens
     with pytest.raises(PermissionError, match="already armed"):
         restarted_service().arm_launch(invocation_id)
     from tinyassets import agent_runtime_provider_execution as execution_module
@@ -351,8 +330,8 @@ def test_agent_transition_grants_are_consumed_on_missing_paths(
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -373,16 +352,14 @@ def test_agent_transition_grants_are_consumed_on_missing_paths(
     assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
 
 
-def test_agent_transition_grant_cannot_be_reused(
-    tmp_path, authenticate_request
-) -> None:
+def test_agent_transition_grant_cannot_be_reused(tmp_path, authenticate_request) -> None:
     from tinyassets import agent_runtime_provider_execution as execution_module
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -419,8 +396,8 @@ def test_agent_transition_grant_is_discarded_when_receipt_lookup_raises(
     )
     from tinyassets.storage import provider_work_authority as provider_store_module
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -453,8 +430,8 @@ def test_agent_launch_grant_cannot_probe_another_receipts_reservation(
     )
     from tinyassets.storage import provider_work_authority as provider_store_module
 
-    _manifest, grant_resolver, provider_resolver, admission, admitted_a = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, admission, admitted_a = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     admitted_b = admission.admit(
         _capture(admission),
@@ -509,21 +486,17 @@ def test_agent_launch_grant_cannot_probe_another_receipts_reservation(
                 )
             connection.rollback()
 
-    assert service.provider_store.list_reservations(request_b.receipt_id) == (
-        reservation_b,
-    )
+    assert service.provider_store.list_reservations(request_b.receipt_id) == (reservation_b,)
     assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
 
 
-def test_eight_agent_launchers_mint_one_carrier(
-    tmp_path, authenticate_request
-) -> None:
+def test_eight_agent_launchers_mint_one_carrier(tmp_path, authenticate_request) -> None:
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     invocation_id = admitted.invocation.invocation_id
     service = AgentRuntimeProviderExecutionService(
@@ -573,8 +546,8 @@ def test_generic_transition_helpers_cannot_advance_agent_receipt(
         ).parameters
         assert "allow_agent_invocation" not in parameters
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -610,8 +583,8 @@ def test_generic_transition_helpers_cannot_advance_agent_receipt(
                 invocation_key=invocation_id,
                 operation="agent_invocation",
                 role="agent_runtime",
-                max_tokens=admitted.command.max_tokens,
-                max_cost_microunits=admitted.command.max_cost_microunits,
+                max_tokens=admitted.command.budget.max_tokens,
+                max_cost_microunits=admitted.command.budget.max_cost_microunits,
             )
         )
 
@@ -635,8 +608,8 @@ def test_revocation_before_launch_preserves_unarmed_reservation(
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     service = AgentRuntimeProviderExecutionService(
         tmp_path,
@@ -652,16 +625,13 @@ def test_revocation_before_launch_preserves_unarmed_reservation(
     assert reservation is not None
     with sqlite3.connect(db_path(tmp_path)) as connection:
         connection.execute(
-            "UPDATE provider_work_bindings SET state = 'revoked' "
-            "WHERE binding_id = ?",
+            "UPDATE provider_work_bindings SET state = 'revoked' WHERE binding_id = ?",
             (receipt.binding_id,),
         )
 
     with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="provider binding"):
         service.arm_launch(invocation_id)
-    assert service.provider_store.list_reservations(receipt.receipt_id) == (
-        reservation,
-    )
+    assert service.provider_store.list_reservations(receipt.receipt_id) == (reservation,)
 
 
 def test_concurrent_agent_reservations_conserve_one_budget_envelope(
@@ -671,8 +641,8 @@ def test_concurrent_agent_reservations_conserve_one_budget_envelope(
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     invocation_id = admitted.invocation.invocation_id
     service = AgentRuntimeProviderExecutionService(
@@ -696,9 +666,7 @@ def test_concurrent_agent_reservations_conserve_one_budget_envelope(
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(reserve, range(8)))
 
-    assert sum(
-        item.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for item in results
-    ) == 1
+    assert sum(item.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for item in results) == 1
     assert all(
         item.outcome
         in {
@@ -709,24 +677,22 @@ def test_concurrent_agent_reservations_conserve_one_budget_envelope(
     )
     reservations = service.provider_store.list_reservations(receipt.receipt_id)
     assert len(reservations) == 1
-    assert sum(item.max_tokens for item in reservations) == admitted.command.max_tokens
+    assert sum(item.max_tokens for item in reservations) == admitted.command.budget.max_tokens
     assert (
         sum(item.max_cost_microunits for item in reservations)
-        == admitted.command.max_cost_microunits
+        == admitted.command.budget.max_cost_microunits
     )
 
 
-def test_expired_agent_receipt_cannot_be_claimed(
-    tmp_path, authenticate_request
-) -> None:
+def test_expired_agent_receipt_cannot_be_claimed(tmp_path, authenticate_request) -> None:
     from datetime import timedelta
 
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionService,
     )
 
-    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     current_time = [NOW]
     service = AgentRuntimeProviderExecutionService(
@@ -770,14 +736,13 @@ def test_agent_receipt_refuses_each_stale_authority_source(
         AgentRuntimeProviderExecutionService,
     )
 
-    manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     with sqlite3.connect(db_path(tmp_path)) as connection:
         if mutation == "manifest":
             connection.execute(
-                "UPDATE agent_runtime_manifests SET manifest_digest = ? "
-                "WHERE manifest_id = ?",
+                "UPDATE agent_runtime_manifests SET manifest_digest = ? WHERE manifest_id = ?",
                 (f"sha256:{'9' * 64}", manifest.manifest_id),
             )
         elif mutation == "activation":
@@ -790,8 +755,7 @@ def test_agent_receipt_refuses_each_stale_authority_source(
             )
         else:
             connection.execute(
-                "UPDATE provider_work_bindings SET state = 'revoked' "
-                "WHERE universe_id = ?",
+                "UPDATE provider_work_bindings SET state = 'revoked' WHERE universe_id = ?",
                 ("universe_alice",),
             )
 
@@ -805,7 +769,5 @@ def test_agent_receipt_refuses_each_stale_authority_source(
         service.issue_receipt(admitted.invocation.invocation_id)
 
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        count = connection.execute(
-            "SELECT COUNT(*) FROM provider_work_receipts"
-        ).fetchone()[0]
+        count = connection.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
     assert count == 0

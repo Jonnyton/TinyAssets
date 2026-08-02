@@ -29,6 +29,7 @@ from tinyassets.agent_invocation_authority import (
     AgentInvocationRoot,
 )
 from tinyassets.agent_runtime import AgentRuntimeManifest, AgentRuntimeManifestInput
+from tinyassets.agent_runtime_command import AgentInvocationCommand
 from tinyassets.agent_runtime_grants import (
     AgentRuntimeGrantEvidence,
     AgentRuntimeGrantResolution,
@@ -126,8 +127,7 @@ class AgentInvocationAdmissionOutcome(str, Enum):
     REPLAYED = "replayed"
 
 
-class AgentInvocationState(str, Enum):
-    ADMITTED = "admitted"
+AgentInvocationState = AgentInvocationEventState
 
 
 class AgentInvocationConflict(RuntimeError):
@@ -245,186 +245,11 @@ class AgentInvocationAdmissionRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class AgentInvocationCommand:
-    schema_version: int
-    command_id: str
-    command_digest: str
-    invocation_id: str
-    invocation_generation: int
-    authorizing_subject_id: str
-    authorizing_principal_digest: str
-    grant_evidence_set_digest: str
-    grant_evaluated_at: float
-    universe_id: str
-    agent_binding_id: str
-    binding_revision: int
-    execution_subject: ExecutionSubject
-    activation_automation_id: str
-    activation_epoch: int
-    executor_class: AutomationActivationExecutor
-    lease_id: str
-    typed_input_digest: str
-    provider_work_binding_id: str
-    provider_work_binding_generation: int
-    provider_work_binding_digest: str
-    provider: str
-    max_tokens: int
-    max_cost_microunits: int
-    idempotency_key_digest: str
-    created_at: str
-
-    def __post_init__(self) -> None:
-        if self.schema_version != 1:
-            raise ValueError("unsupported command schema_version")
-        for name in (
-            "command_id",
-            "invocation_id",
-            "authorizing_subject_id",
-            "universe_id",
-            "agent_binding_id",
-            "activation_automation_id",
-            "lease_id",
-            "provider_work_binding_id",
-            "provider",
-            "created_at",
-        ):
-            _text(getattr(self, name), name)
-        if not self.command_id.startswith("agent_invocation_command_"):
-            raise ValueError("command_id is invalid")
-        if not self.invocation_id.startswith("agent_invocation_"):
-            raise ValueError("invocation_id is invalid")
-        for name in (
-            "command_digest",
-            "authorizing_principal_digest",
-            "grant_evidence_set_digest",
-            "typed_input_digest",
-            "provider_work_binding_digest",
-            "idempotency_key_digest",
-        ):
-            _digest_value(getattr(self, name), name)
-        _integer(self.invocation_generation, "invocation_generation", minimum=1)
-        _integer(self.binding_revision, "binding_revision", minimum=1)
-        _integer(self.activation_epoch, "activation_epoch", minimum=1)
-        _integer(
-            self.provider_work_binding_generation,
-            "provider_work_binding_generation",
-            minimum=1,
-        )
-        _integer(self.max_tokens, "max_tokens")
-        _integer(self.max_cost_microunits, "max_cost_microunits")
-        if not isinstance(self.grant_evaluated_at, (int, float)) or isinstance(
-            self.grant_evaluated_at, bool
-        ):
-            raise ValueError("grant_evaluated_at must be a timestamp")
-        if (
-            not isinstance(self.execution_subject, ExecutionSubject)
-            or self.execution_subject.kind is not ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST
-        ):
-            raise ValueError("execution_subject must be an agent runtime manifest")
-        if not isinstance(self.executor_class, AutomationActivationExecutor):
-            raise ValueError("executor_class must be typed")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "command_id": self.command_id,
-            "command_digest": self.command_digest,
-            "invocation_id": self.invocation_id,
-            "invocation_generation": self.invocation_generation,
-            "authorizing_subject_id": self.authorizing_subject_id,
-            "authorizing_principal_digest": self.authorizing_principal_digest,
-            "grant_evidence_set_digest": self.grant_evidence_set_digest,
-            "grant_evaluated_at": self.grant_evaluated_at,
-            "universe_id": self.universe_id,
-            "agent_binding_id": self.agent_binding_id,
-            "binding_revision": self.binding_revision,
-            "execution_subject": self.execution_subject.to_dict(),
-            "activation_automation_id": self.activation_automation_id,
-            "activation_epoch": self.activation_epoch,
-            "executor_class": self.executor_class.value,
-            "lease_id": self.lease_id,
-            "typed_input_digest": self.typed_input_digest,
-            "provider_work_binding_id": self.provider_work_binding_id,
-            "provider_work_binding_generation": self.provider_work_binding_generation,
-            "provider_work_binding_digest": self.provider_work_binding_digest,
-            "provider": self.provider,
-            "max_tokens": self.max_tokens,
-            "max_cost_microunits": self.max_cost_microunits,
-            "idempotency_key_digest": self.idempotency_key_digest,
-            "created_at": self.created_at,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> AgentInvocationCommand:
-        values = dict(payload)
-        values["execution_subject"] = ExecutionSubject.from_dict(
-            values["execution_subject"]  # type: ignore[arg-type]
-        )
-        values["executor_class"] = AutomationActivationExecutor(values["executor_class"])
-        return cls(**values)  # type: ignore[arg-type]
-
-    def expected_digest(self) -> str:
-        payload = self.to_dict()
-        del payload["command_digest"]
-        return _digest(payload)
-
-
-@dataclass(frozen=True, slots=True)
-class AgentInvocation:
-    schema_version: int
-    invocation_id: str
-    invocation_digest: str
-    generation: int
-    state: AgentInvocationState
-    command_id: str
-    command_digest: str
-    created_at: str
-
-    def __post_init__(self) -> None:
-        if self.schema_version != 1:
-            raise ValueError("unsupported invocation schema_version")
-        for name in ("invocation_id", "command_id", "created_at"):
-            _text(getattr(self, name), name)
-        if not self.invocation_id.startswith("agent_invocation_"):
-            raise ValueError("invocation_id is invalid")
-        if not self.command_id.startswith("agent_invocation_command_"):
-            raise ValueError("command_id is invalid")
-        _digest_value(self.invocation_digest, "invocation_digest")
-        _digest_value(self.command_digest, "command_digest")
-        _integer(self.generation, "generation", minimum=1)
-        if not isinstance(self.state, AgentInvocationState):
-            raise ValueError("state must be typed")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "invocation_id": self.invocation_id,
-            "invocation_digest": self.invocation_digest,
-            "generation": self.generation,
-            "state": self.state.value,
-            "command_id": self.command_id,
-            "command_digest": self.command_digest,
-            "created_at": self.created_at,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> AgentInvocation:
-        values = dict(payload)
-        values["state"] = AgentInvocationState(values["state"])
-        return cls(**values)  # type: ignore[arg-type]
-
-    def expected_digest(self) -> str:
-        payload = self.to_dict()
-        del payload["invocation_digest"]
-        return _digest(payload)
-
-
-@dataclass(frozen=True, slots=True)
 class AgentInvocationAdmissionResult:
     outcome: AgentInvocationAdmissionOutcome
     binding: ProviderWorkBinding
     command: AgentInvocationCommand
-    invocation: AgentInvocation
+    invocation: AgentInvocationRoot
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -472,6 +297,9 @@ class _StoreAdmissionPayload:
     idempotency_key: str
     max_tokens: int
     max_cost_microunits: int
+    authorizing_grant_generation: int
+    admission_witness_id: str
+    admission_witness_digest: str
     external_authority_snapshot: AgentInvocationExternalAuthoritySnapshot
 
 
@@ -828,6 +656,28 @@ class AgentInvocationAdmissionService:
                 "budget_exceeded",
                 "the requested invocation budget exceeds a current budget envelope",
             )
+        snapshot = _external_authority_snapshot(current)
+        witness_id = f"agent_invocation_admission_{secrets.token_hex(32)}"
+        witness_digest = _digest(
+            {
+                "schema_version": 1,
+                "admission_witness_id": witness_id,
+                "authorizing_subject_id": payload.owner_user_id,
+                "authorizing_grant_generation": 1,
+                "universe_id": snapshot.universe_id,
+                "agent_binding_id": snapshot.agent_binding_id,
+                "manifest_id": snapshot.manifest_id,
+                "manifest_digest": snapshot.manifest_digest,
+                "activation_epoch": current.activation.epoch,
+                "lease_id": current.activation.lease_id,
+                "typed_input_digest": request.typed_input_digest,
+                "idempotency_key": request.idempotency_key,
+                "max_tokens": request.max_tokens,
+                "max_cost_microunits": request.max_cost_microunits,
+                "provider_assignment_generation": snapshot.assignment_generation,
+                "provider_assignment_digest": snapshot.assignment_digest,
+            }
+        )
         grant = _issue_store_grant(
             _StoreAdmissionPayload(
                 owner_user_id=payload.owner_user_id,
@@ -839,7 +689,13 @@ class AgentInvocationAdmissionService:
                 idempotency_key=request.idempotency_key,
                 max_tokens=request.max_tokens,
                 max_cost_microunits=request.max_cost_microunits,
-                external_authority_snapshot=_external_authority_snapshot(current),
+                # This is generation one of the one-use, authenticated
+                # admission grant. Runtime capability generations remain live
+                # evidence and are deliberately not frozen into the command.
+                authorizing_grant_generation=1,
+                admission_witness_id=witness_id,
+                admission_witness_digest=witness_digest,
+                external_authority_snapshot=snapshot,
             )
         )
         return self.store.admit(grant)
@@ -869,7 +725,6 @@ def _external_authority_snapshot(
 __all__ = [
     "AGENT_INVOCATION_OPERATION",
     "AGENT_INVOCATION_ROLE",
-    "AgentInvocation",
     "AgentInvocationAdmissionBlocked",
     "AgentInvocationAdmissionOutcome",
     "AgentInvocationAdmissionRequest",

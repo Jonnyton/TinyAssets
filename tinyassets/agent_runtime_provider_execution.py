@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal, Mapping
 
+from tinyassets.agent_invocation_authority import AgentInvocationEventState
 from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
 from tinyassets.agent_runtime_health import (
     AgentRuntimeHealthState,
@@ -22,7 +23,6 @@ from tinyassets.agent_runtime_health import (
 from tinyassets.agent_runtime_invocation import (
     AGENT_INVOCATION_OPERATION,
     AGENT_INVOCATION_ROLE,
-    AgentInvocationState,
     canonical_agent_invocation_input,
 )
 from tinyassets.agent_runtime_principal import AgentRuntimePrincipal
@@ -177,12 +177,10 @@ class AgentRuntimeProviderExecutionService:
             busy_timeout_ms=busy_timeout_ms,
             clock=self._clock,
         )
-        external_authority_fence_source = (
-            SQLiteAgentInvocationExternalAuthorityFenceSource(
-                base_path,
-                grant_resolver=grant_resolver,
-                clock=self._clock,
-            )
+        external_authority_fence_source = SQLiteAgentInvocationExternalAuthorityFenceSource(
+            base_path,
+            grant_resolver=grant_resolver,
+            clock=self._clock,
         )
         self.invocation_store = SQLiteAgentRuntimeInvocationStore(
             base_path,
@@ -260,10 +258,10 @@ class AgentRuntimeProviderExecutionService:
                     invocation_id=invocation_id,
                 )
                 if aggregate is None:
-                    raise AgentRuntimeProviderExecutionBlocked(
-                        "agent invocation is not current"
-                    )
-                command, invocation = aggregate
+                    raise AgentRuntimeProviderExecutionBlocked("agent invocation is not current")
+                command, invocation, event = aggregate
+                if event.state is not AgentInvocationEventState.ADMITTED:
+                    raise AgentRuntimeProviderExecutionBlocked("agent invocation is not admitted")
                 manifest = AgentRuntimeManifestStore.resolve_current_in_transaction(
                     conn,
                     owner_user_id=command.authorizing_subject_id,
@@ -271,27 +269,22 @@ class AgentRuntimeProviderExecutionService:
                     manifest_digest=command.execution_subject.digest,
                 )
                 if manifest is None:
-                    raise AgentRuntimeProviderExecutionBlocked(
-                        "agent manifest is not current"
-                    )
+                    raise AgentRuntimeProviderExecutionBlocked("agent manifest is not current")
                 milestone = "invocation_admitted"
-                record_digest = invocation.invocation_digest
+                record_digest = invocation.root_digest
                 progress_at = invocation.created_at
                 continuation_row = conn.execute(
-                    "SELECT * FROM cloud_execution_continuations "
-                    "WHERE work_item_id = ?",
+                    "SELECT * FROM cloud_execution_continuations WHERE work_item_id = ?",
                     (invocation_id,),
                 ).fetchone()
                 continuation = (
-                    _agent_record(continuation_row)
-                    if continuation_row is not None
-                    else None
+                    _agent_record(continuation_row) if continuation_row is not None else None
                 )
                 if continuation is not None:
                     if (
                         continuation.command_id != command.command_id
                         or continuation.command_digest != command.command_digest
-                        or continuation.invocation_digest != invocation.invocation_digest
+                        or continuation.invocation_digest != invocation.root_digest
                     ):
                         raise AgentRuntimeProviderExecutionBlocked(
                             "agent health continuation lineage is not exact"
@@ -306,8 +299,7 @@ class AgentRuntimeProviderExecutionService:
                 if outcome is not None:
                     if continuation is None or (
                         outcome.continuation_id != continuation.continuation_id
-                        or outcome.continuation_digest
-                        != continuation.continuation_digest
+                        or outcome.continuation_digest != continuation.continuation_digest
                     ):
                         raise AgentRuntimeProviderExecutionBlocked(
                             "agent health outcome lineage is not exact"
@@ -325,9 +317,7 @@ class AgentRuntimeProviderExecutionService:
                     authority_current = False
                 else:
                     authority_current = True
-                progress_time = datetime.fromisoformat(
-                    progress_at.removesuffix("Z") + "+00:00"
-                )
+                progress_time = datetime.fromisoformat(progress_at.removesuffix("Z") + "+00:00")
                 if progress_time > now:
                     raise AgentRuntimeProviderExecutionBlocked(
                         "agent useful progress timestamp is in the future"
@@ -353,9 +343,7 @@ class AgentRuntimeProviderExecutionService:
                     observed_at=observed_at,
                     no_progress_seconds=no_progress_seconds,
                     authority_current=authority_current,
-                    terminal_outcome_state=(
-                        outcome.state.value if outcome is not None else None
-                    ),
+                    terminal_outcome_state=(outcome.state.value if outcome is not None else None),
                     alarm=None,
                 )
                 if state is AgentRuntimeHealthState.STALLED:
@@ -372,12 +360,9 @@ class AgentRuntimeProviderExecutionService:
                             useful_milestone=milestone,
                             useful_progress_at=progress_at,
                             threshold_seconds=no_progress_after_seconds,
-                            raised_at=(
-                                progress_time
-                                + timedelta(seconds=no_progress_after_seconds)
-                            ).isoformat(timespec="microseconds").replace(
-                                "+00:00", "Z"
-                            ),
+                            raised_at=(progress_time + timedelta(seconds=no_progress_after_seconds))
+                            .isoformat(timespec="microseconds")
+                            .replace("+00:00", "Z"),
                         ),
                     )
                     health = AgentRuntimeUsefulProgressHealth.build(
@@ -415,8 +400,7 @@ class AgentRuntimeProviderExecutionService:
                     conn.commit()
                     return existing
                 continuation_row = conn.execute(
-                    "SELECT * FROM cloud_execution_continuations "
-                    "WHERE work_item_id = ?",
+                    "SELECT * FROM cloud_execution_continuations WHERE work_item_id = ?",
                     (invocation_id,),
                 ).fetchone()
                 if continuation_row is None:
@@ -425,13 +409,11 @@ class AgentRuntimeProviderExecutionService:
                     )
                 continuation = _agent_record(continuation_row)
                 reservation_row = conn.execute(
-                    "SELECT * FROM provider_invocation_reservations "
-                    "WHERE reservation_id = ?",
+                    "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
                     (continuation.reservation_id,),
                 ).fetchone()
                 claim_row = conn.execute(
-                    "SELECT * FROM provider_work_execution_claims "
-                    "WHERE claim_id = ?",
+                    "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
                     (continuation.claim_id,),
                 ).fetchone()
                 receipt_row = conn.execute(
@@ -473,9 +455,7 @@ class AgentRuntimeProviderExecutionService:
                     )
                 now = self._clock()
                 if now.tzinfo is None or now.utcoffset() is None:
-                    raise AgentRuntimeProviderExecutionBlocked(
-                        "server clock is unavailable"
-                    )
+                    raise AgentRuntimeProviderExecutionBlocked("server clock is unavailable")
                 claim_expires = datetime.fromisoformat(
                     claim.lease_expires_at.removesuffix("Z") + "+00:00"
                 )
@@ -494,9 +474,7 @@ class AgentRuntimeProviderExecutionService:
                     latency_ms=None,
                     typed_output=None,
                     blocker_code="provider_call_lost_after_launch",
-                    blocker_detail=(
-                        "worker recovery found an expired claim after provider launch"
-                    ),
+                    blocker_detail=("worker recovery found an expired claim after provider launch"),
                     created_at=now,
                 )
                 conn.commit()
@@ -532,8 +510,7 @@ class AgentRuntimeProviderExecutionService:
             )
             if (
                 existing_reservation is not None
-                and existing_reservation.state
-                is ProviderInvocationReservationState.LAUNCH_STARTED
+                and existing_reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED
             ):
                 raise AgentRuntimeProviderExecutionBlocked(
                     "agent provider launch requires uncertain-call reconciliation"
@@ -543,9 +520,7 @@ class AgentRuntimeProviderExecutionService:
         self.reserve(invocation_id)
         prepared = self.prepare_continuation(invocation_id).record
         if type(prepared) is not AgentInvocationCloudContinuation:
-            raise AgentRuntimeProviderExecutionBlocked(
-                "agent provider continuation is not current"
-            )
+            raise AgentRuntimeProviderExecutionBlocked("agent provider continuation is not current")
         carrier = self.arm_launch(invocation_id)
         launched = self.provider_store.get_reservation(prepared.reservation_id)
         if (
@@ -654,12 +629,10 @@ class AgentRuntimeProviderExecutionService:
                 invocation_id=invocation_id,
             )
             if aggregate is None:
-                raise AgentRuntimeProviderExecutionBlocked(
-                    "agent invocation is not current"
-                )
-            command, invocation = aggregate
+                raise AgentRuntimeProviderExecutionBlocked("agent invocation is not current")
+            command, invocation, event = aggregate
             if (
-                invocation.state is not AgentInvocationState.ADMITTED
+                event.state is not AgentInvocationEventState.ADMITTED
                 or command.typed_input_digest != typed_input_digest
             ):
                 raise AgentRuntimeProviderExecutionBlocked(
@@ -706,15 +679,11 @@ class AgentRuntimeProviderExecutionService:
         components = content["components"]
         component = components.get(component_key) if isinstance(components, dict) else None
         if not isinstance(component, dict) or component.get("runtime_mode") != "execute":
-            raise AgentRuntimeProviderExecutionBlocked(
-                "agent entry component is not executable"
-            )
+            raise AgentRuntimeProviderExecutionBlocked("agent entry component is not executable")
         adapter = component.get("adapter")
         configuration = component.get("configuration")
         instructions = (
-            configuration.get("instructions")
-            if isinstance(configuration, dict)
-            else None
+            configuration.get("instructions") if isinstance(configuration, dict) else None
         )
         if (
             not isinstance(adapter, dict)
@@ -722,9 +691,7 @@ class AgentRuntimeProviderExecutionService:
             or not isinstance(instructions, str)
             or not instructions.strip()
         ):
-            raise AgentRuntimeProviderExecutionBlocked(
-                "agent prompt component is not executable"
-            )
+            raise AgentRuntimeProviderExecutionBlocked("agent prompt component is not executable")
         prompt = json.dumps(
             typed_input,
             ensure_ascii=False,
@@ -770,8 +737,7 @@ class AgentRuntimeProviderExecutionService:
                     else:
                         grant._discard()
                 row = conn.execute(
-                    "SELECT * FROM provider_invocation_reservations "
-                    "WHERE reservation_id = ?",
+                    "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
                     (continuation.reservation_id,),
                 ).fetchone()
                 current = _reservation_record(row) if row is not None else None
@@ -808,20 +774,16 @@ class AgentRuntimeProviderExecutionService:
             try:
                 now = self._clock()
                 if now.tzinfo is None or now.utcoffset() is None:
-                    raise AgentRuntimeProviderExecutionBlocked(
-                        "server clock is unavailable"
-                    )
+                    raise AgentRuntimeProviderExecutionBlocked("server clock is unavailable")
                 now = now.astimezone(timezone.utc)
                 store_grant = self._validated_store_grant(
                     conn,
                     invocation_id=invocation_id,
                     evaluated_at=now.timestamp(),
                 )
-                reservation_result = (
-                    self.provider_store._reserve_agent_in_transaction(
-                        conn,
-                        store_grant,
-                    )
+                reservation_result = self.provider_store._reserve_agent_in_transaction(
+                    conn,
+                    store_grant,
                 )
                 reservation = reservation_result.record
                 if reservation is None:
@@ -833,10 +795,10 @@ class AgentRuntimeProviderExecutionService:
                     invocation_id=invocation_id,
                 )
                 if aggregate is None:
-                    raise AgentRuntimeProviderExecutionBlocked(
-                        "agent invocation is not current"
-                    )
-                command, invocation = aggregate
+                    raise AgentRuntimeProviderExecutionBlocked("agent invocation is not current")
+                command, invocation, event = aggregate
+                if event.state is not AgentInvocationEventState.ADMITTED:
+                    raise AgentRuntimeProviderExecutionBlocked("agent invocation is not admitted")
                 receipt_row = conn.execute(
                     "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
                     (reservation.receipt_id,),
@@ -859,9 +821,7 @@ class AgentRuntimeProviderExecutionService:
                 receipt = _receipt_record(receipt_row)
                 claim = _claim_record(claim_row)
                 activation = _activation_record(activation_row)
-                timestamp = now.isoformat(timespec="microseconds").replace(
-                    "+00:00", "Z"
-                )
+                timestamp = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
                 record = AgentInvocationCloudContinuation.build(
                     schema_version=1,
                     work_item_kind="agent_invocation",
@@ -877,12 +837,10 @@ class AgentRuntimeProviderExecutionService:
                     command_id=command.command_id,
                     command_digest=command.command_digest,
                     invocation_id=invocation.invocation_id,
-                    invocation_generation=invocation.generation,
-                    invocation_digest=invocation.invocation_digest,
+                    invocation_generation=event.generation,
+                    invocation_digest=invocation.root_digest,
                     provider_binding_id=command.provider_work_binding_id,
-                    provider_binding_generation=(
-                        command.provider_work_binding_generation
-                    ),
+                    provider_binding_generation=(command.provider_work_binding_generation),
                     provider_binding_digest=command.provider_work_binding_digest,
                     receipt_id=receipt.receipt_id,
                     receipt_digest=receipt.receipt_digest,
@@ -944,9 +902,7 @@ class AgentRuntimeProviderExecutionService:
             try:
                 now = self._clock()
                 if now.tzinfo is None or now.utcoffset() is None:
-                    raise AgentRuntimeProviderExecutionBlocked(
-                        "server clock is unavailable"
-                    )
+                    raise AgentRuntimeProviderExecutionBlocked("server clock is unavailable")
                 now = now.astimezone(timezone.utc)
                 store_grant = self._validated_store_grant(
                     conn,
@@ -997,8 +953,8 @@ class AgentRuntimeProviderExecutionService:
             ) from None
         if aggregate is None:
             raise AgentRuntimeProviderExecutionBlocked("agent invocation is not current")
-        command, invocation = aggregate
-        if invocation.state is not AgentInvocationState.ADMITTED:
+        command, invocation, event = aggregate
+        if event.state is not AgentInvocationEventState.ADMITTED:
             raise AgentRuntimeProviderExecutionBlocked("agent invocation is not admitted")
 
         manifest = AgentRuntimeManifestStore.resolve_current_in_transaction(
@@ -1027,6 +983,9 @@ class AgentRuntimeProviderExecutionService:
         )
         if not grants.ready:
             raise AgentRuntimeProviderExecutionBlocked("agent grant is not current")
+        admitted_at = datetime.fromisoformat(
+            command.created_at.removesuffix("Z") + "+00:00"
+        ).timestamp()
         principal = AgentRuntimePrincipal(
             authorizing_subject_id=command.authorizing_subject_id,
             universe_id=command.universe_id,
@@ -1038,18 +997,14 @@ class AgentRuntimeProviderExecutionService:
             executor_class=command.executor_class,
             lease_id=command.lease_id,
             invocation_id=invocation.invocation_id,
-            invocation_generation=invocation.generation,
+            invocation_generation=event.generation,
             typed_input_digest=command.typed_input_digest,
-            evaluated_at=command.grant_evaluated_at,
+            # Principal identity is stable across restart while grant authority
+            # itself is still resolved against `evaluated_at` above.
+            evaluated_at=admitted_at,
             grant_evidence=tuple(grants.evidence),
             grant_evidence_set_digest=grants.evidence_set_digest,
         )
-        if (
-            grants.evidence_set_digest != command.grant_evidence_set_digest
-            or principal.principal_digest != command.authorizing_principal_digest
-        ):
-            raise AgentRuntimeProviderExecutionBlocked("agent principal is not current")
-
         binding = self.provider_store.get_binding_in_transaction(
             conn,
             binding_id=command.provider_work_binding_id,
@@ -1059,7 +1014,7 @@ class AgentRuntimeProviderExecutionService:
         assignment_root = ProviderWorkBindingRoot(
             owner_user_id=command.authorizing_subject_id,
             universe_id=command.universe_id,
-            provider=command.provider,
+            provider=binding.provider,
         )
         try:
             assignment = self.provider_binding_resolver.resolve_current_in_transaction(
@@ -1071,26 +1026,22 @@ class AgentRuntimeProviderExecutionService:
                 "provider assignment source is unavailable"
             ) from None
         if type(assignment) is not ProviderWorkBindingSeed:
-            raise AgentRuntimeProviderExecutionBlocked(
-                "provider assignment is not current"
-            )
+            raise AgentRuntimeProviderExecutionBlocked("provider assignment is not current")
         binding_matches = (
             binding.state is ProviderWorkBindingState.ACTIVE,
             binding.generation == command.provider_work_binding_generation,
             binding.binding_digest == command.provider_work_binding_digest,
             binding.owner_user_id == command.authorizing_subject_id,
             binding.universe_id == command.universe_id,
-            binding.provider == command.provider,
             "agent_invocation" in binding.allowed_operations,
             "agent_runtime" in binding.allowed_roles,
             binding.max_invocations >= 1,
-            binding.max_tokens >= command.max_tokens,
-            binding.max_cost_microunits >= command.max_cost_microunits,
+            binding.max_tokens >= command.budget.max_tokens,
+            binding.max_cost_microunits >= command.budget.max_cost_microunits,
             assignment.owner_user_id == binding.owner_user_id,
             assignment.universe_id == binding.universe_id,
             assignment.provider == binding.provider,
-            assignment.credential_reference_digest
-            == binding.credential_reference_digest,
+            assignment.credential_reference_digest == binding.credential_reference_digest,
             assignment.allowed_operations == binding.allowed_operations,
             assignment.allowed_roles == binding.allowed_roles,
             assignment.assignment_generation == binding.assignment_generation,
@@ -1115,13 +1066,13 @@ class AgentRuntimeProviderExecutionService:
             role="agent_runtime",
             executor_class="cloud",
             max_invocations=1,
-            max_tokens=command.max_tokens,
-            max_cost_microunits=command.max_cost_microunits,
+            max_tokens=command.budget.max_tokens,
+            max_cost_microunits=command.budget.max_cost_microunits,
             expires_at=binding.expires_at,
             execution_subject=command.execution_subject,
             agent_invocation_command_id=command.command_id,
             agent_invocation_command_digest=command.command_digest,
-            agent_invocation_generation=invocation.generation,
+            agent_invocation_generation=event.generation,
         )
         return authority
 

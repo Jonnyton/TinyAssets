@@ -58,8 +58,8 @@ def _execution_service(tmp_path, authenticate_request):
         AgentRuntimeProviderExecutionService,
     )
 
-    manifest, grant_resolver, provider_resolver, _admission, admitted = (
-        _admitted_invocation(tmp_path, authenticate_request)
+    manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
     )
     universe_dir = tmp_path / "universes" / "universe_alice"
     universe_dir.mkdir(parents=True)
@@ -97,9 +97,7 @@ def test_actual_provider_call_uses_exact_manifest_input_and_registered_universe(
 ) -> None:
     from tinyassets.agent_runtime_provider_execution import AgentProviderOutcomeState
 
-    service, admitted, universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     wrong_universe = tmp_path / "ambient-other-universe"
     wrong_universe.mkdir()
     monkeypatch.setenv("TINYASSETS_UNIVERSE", str(wrong_universe))
@@ -124,7 +122,7 @@ def test_actual_provider_call_uses_exact_manifest_input_and_registered_universe(
     prompt, system, config, seen_universe = provider.calls[0]
     assert '"kind":"repository_patch_request"' in prompt
     assert system == "apply the typed request"
-    assert config.max_tokens == admitted.command.max_tokens
+    assert config.max_tokens == admitted.command.budget.max_tokens
     assert seen_universe == universe_dir.resolve()
     assert seen_universe != wrong_universe.resolve()
     assert service.get_provider_outcome(admitted.invocation.invocation_id) == result
@@ -147,9 +145,7 @@ def test_changed_typed_input_is_rejected_before_reservation_or_call(
         AgentRuntimeProviderExecutionBlocked,
     )
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     provider = _RecordingProvider()
 
     with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="typed input"):
@@ -170,9 +166,7 @@ def test_provider_error_is_indeterminate_and_never_falls_back(
     from tinyassets.agent_runtime_provider_execution import AgentProviderOutcomeState
     from tinyassets.exceptions import ProviderTimeoutError
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     selected = _RecordingProvider(error=ProviderTimeoutError("uncertain timeout"))
     fallback = _RecordingProvider(text="must not run")
     fallback.name = "ollama-local"
@@ -198,9 +192,7 @@ def test_oversized_provider_output_is_failed_without_persisting_text(
 ) -> None:
     from tinyassets.agent_runtime_provider_execution import AgentProviderOutcomeState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     provider = _RecordingProvider(text="x" * (64 * 1024))
 
     result = service.execute_provider_call(
@@ -227,9 +219,7 @@ def test_authority_lost_during_call_records_indeterminate_not_output(
 ) -> None:
     from tinyassets.agent_runtime_provider_execution import AgentProviderOutcomeState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     provider = _RecordingProvider(
         text="must not finalize",
         on_call=service.provider_binding_resolver.revoke,
@@ -257,9 +247,7 @@ def test_restart_before_launch_resumes_same_reservation_and_spends_once(
         AgentRuntimeProviderExecutionService,
     )
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     invocation_id = admitted.invocation.invocation_id
     original = None
     original_continuation = None
@@ -302,9 +290,7 @@ def test_uncertain_launch_waits_for_original_claim_then_blocks_without_remint(
         AgentRuntimeProviderExecutionService,
     )
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     invocation_id = admitted.invocation.invocation_id
     service.issue_receipt(invocation_id)
     service.claim(invocation_id)
@@ -367,9 +353,15 @@ def test_uncertain_launch_waits_for_original_claim_then_blocks_without_remint(
     assert terminal is not None
     assert terminal.state is ProviderInvocationReservationState.INDETERMINATE
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM agent_invocation_provider_outcomes"
-        ).fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT COUNT(*) FROM provider_invocation_reservations"
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM agent_invocation_provider_outcomes"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM provider_invocation_reservations").fetchone()[
+                0
+            ]
+            == 1
+        )

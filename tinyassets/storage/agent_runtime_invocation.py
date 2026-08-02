@@ -5,111 +5,62 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
+from tinyassets.agent_invocation_authority import (
+    AgentInvocationEvent,
+    AgentInvocationEventState,
+    AgentInvocationRoot,
+)
+from tinyassets.agent_runtime_command import (
+    AgentInvocationBudgetEnvelope,
+    AgentInvocationCommand,
+)
 from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
 from tinyassets.agent_runtime_invocation import (
-    AgentInvocation,
     AgentInvocationAdmissionBlocked,
     AgentInvocationAdmissionOutcome,
     AgentInvocationAdmissionResult,
-    AgentInvocationCommand,
     AgentInvocationConflict,
     AgentInvocationExternalAuthorityFenceSource,
     AgentInvocationExternalAuthoritySnapshot,
-    AgentInvocationState,
     _AgentInvocationStoreGrant,
     _consume_store_grant,
     _digest,
 )
-from tinyassets.agent_runtime_principal import (
-    AgentInvocationAuthorityEvidence,
-    AgentRuntimePrincipal,
-)
+from tinyassets.agent_runtime_principal import AgentInvocationAuthorityEvidence
 from tinyassets.ids import new_ulid
 from tinyassets.provider_work_authority import (
     ProviderWorkAuthorityWriteOutcome,
     ProviderWorkBinding,
 )
 from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
+from tinyassets.storage.agent_runtime_commands import (
+    _SCHEMA as _COMMAND_SCHEMA,
+)
+from tinyassets.storage.agent_runtime_commands import (
+    _command as _canonical_command,
+)
+from tinyassets.storage.agent_runtime_invocations import (
+    _SCHEMA as _ROOT_SCHEMA,
+)
+from tinyassets.storage.agent_runtime_invocations import (
+    _event as _canonical_event,
+)
+from tinyassets.storage.agent_runtime_invocations import (
+    _root as _canonical_root,
+)
+from tinyassets.storage.agent_runtime_invocations import (
+    _validated_chain,
+)
 from tinyassets.storage.automation_activations import AutomationActivationStore
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
 
-_PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS agent_invocation_commands (
-    command_id TEXT PRIMARY KEY,
-    command_digest TEXT NOT NULL UNIQUE,
-    invocation_id TEXT NOT NULL UNIQUE,
-    owner_user_id TEXT NOT NULL,
-    universe_id TEXT NOT NULL,
-    agent_binding_id TEXT NOT NULL,
-    idempotency_key_digest TEXT NOT NULL,
-    request_digest TEXT NOT NULL,
-    provider_work_binding_id TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(owner_user_id, idempotency_key_digest),
-    FOREIGN KEY(provider_work_binding_id)
-        REFERENCES provider_work_bindings(binding_id)
-);
-CREATE INDEX IF NOT EXISTS idx_agent_invocation_command_target
-ON agent_invocation_commands(owner_user_id, universe_id, agent_binding_id);
-
-CREATE TABLE IF NOT EXISTS agent_invocations (
-    invocation_id TEXT PRIMARY KEY,
-    invocation_digest TEXT NOT NULL UNIQUE,
-    generation INTEGER NOT NULL CHECK(generation >= 1),
-    state TEXT NOT NULL CHECK(state IN ('admitted')),
-    command_id TEXT NOT NULL UNIQUE,
-    command_digest TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(command_id) REFERENCES agent_invocation_commands(command_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_invocation_events (
-    event_id TEXT PRIMARY KEY,
-    invocation_id TEXT NOT NULL,
-    generation INTEGER NOT NULL CHECK(generation >= 1),
-    event_digest TEXT NOT NULL UNIQUE,
-    event_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(invocation_id, generation),
-    FOREIGN KEY(invocation_id) REFERENCES agent_invocations(invocation_id)
-);
-
-CREATE TRIGGER IF NOT EXISTS trg_agent_invocation_commands_no_update
-BEFORE UPDATE ON agent_invocation_commands BEGIN
-    SELECT RAISE(ABORT, 'agent invocation commands are immutable');
-END;
-CREATE TRIGGER IF NOT EXISTS trg_agent_invocation_commands_no_delete
-BEFORE DELETE ON agent_invocation_commands BEGIN
-    SELECT RAISE(ABORT, 'agent invocation commands are immutable');
-END;
-CREATE TRIGGER IF NOT EXISTS trg_agent_invocations_no_update
-BEFORE UPDATE ON agent_invocations BEGIN
-    SELECT RAISE(ABORT, 'agent invocation roots are append-only');
-END;
-CREATE TRIGGER IF NOT EXISTS trg_agent_invocations_no_delete
-BEFORE DELETE ON agent_invocations BEGIN
-    SELECT RAISE(ABORT, 'agent invocation roots are append-only');
-END;
-CREATE TRIGGER IF NOT EXISTS trg_agent_invocation_events_no_update
-BEFORE UPDATE ON agent_invocation_events BEGIN
-    SELECT RAISE(ABORT, 'agent invocation events are append-only');
-END;
-CREATE TRIGGER IF NOT EXISTS trg_agent_invocation_events_no_delete
-BEFORE DELETE ON agent_invocation_events BEGIN
-    SELECT RAISE(ABORT, 'agent invocation events are append-only');
-END;
-"""
+_SCHEMA = _COMMAND_SCHEMA + _ROOT_SCHEMA
 
 
 class SQLiteAgentInvocationExternalAuthorityFenceSource:
@@ -194,45 +145,11 @@ def _timestamp(value: datetime) -> str:
 
 
 def _command_record(row: sqlite3.Row) -> AgentInvocationCommand:
-    try:
-        command = AgentInvocationCommand.from_dict(json.loads(row["record_json"]))
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("persisted agent invocation command is invalid") from exc
-    exact = (
-        command.command_id == row["command_id"],
-        command.command_digest == row["command_digest"],
-        command.invocation_id == row["invocation_id"],
-        command.authorizing_subject_id == row["owner_user_id"],
-        command.universe_id == row["universe_id"],
-        command.agent_binding_id == row["agent_binding_id"],
-        command.idempotency_key_digest == row["idempotency_key_digest"],
-        command.provider_work_binding_id == row["provider_work_binding_id"],
-        command.created_at == row["created_at"],
-        command.command_digest == command.expected_digest(),
-    )
-    if not all(exact):
-        raise ValueError("persisted agent invocation command failed integrity validation")
-    return command
+    return _canonical_command(row)
 
 
-def _invocation_record(row: sqlite3.Row) -> AgentInvocation:
-    try:
-        invocation = AgentInvocation.from_dict(json.loads(row["record_json"]))
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("persisted agent invocation root is invalid") from exc
-    exact = (
-        invocation.invocation_id == row["invocation_id"],
-        invocation.invocation_digest == row["invocation_digest"],
-        invocation.generation == row["generation"],
-        invocation.state.value == row["state"],
-        invocation.command_id == row["command_id"],
-        invocation.command_digest == row["command_digest"],
-        invocation.created_at == row["created_at"],
-        invocation.invocation_digest == invocation.expected_digest(),
-    )
-    if not all(exact):
-        raise ValueError("persisted agent invocation root failed integrity validation")
-    return invocation
+def _invocation_record(row: sqlite3.Row) -> AgentInvocationRoot:
+    return _canonical_root(row)
 
 
 def _record_json(record: object) -> str:
@@ -244,37 +161,20 @@ def _record_json(record: object) -> str:
     )
 
 
-def _require_initial_event(
+def _current_event(
     conn: sqlite3.Connection,
-    invocation: AgentInvocation,
-) -> None:
+    invocation: AgentInvocationRoot,
+) -> AgentInvocationEvent:
     rows = conn.execute(
         """
-        SELECT * FROM agent_invocation_events
-        WHERE invocation_id = ? AND generation = 1
+        SELECT * FROM agent_runtime_invocation_events
+        WHERE invocation_id = ? ORDER BY generation ASC
         """,
         (invocation.invocation_id,),
     ).fetchall()
-    if len(rows) != 1:
-        raise ValueError("persisted agent invocation initial event is missing")
-    row = rows[0]
-    try:
-        event = json.loads(row["event_json"])
-        stored_digest = event.pop("event_digest")
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("persisted agent invocation event is invalid") from exc
-    exact = (
-        row["event_id"] == event.get("event_id"),
-        row["invocation_id"] == invocation.invocation_id == event.get("invocation_id"),
-        row["generation"] == invocation.generation == event.get("generation"),
-        row["event_digest"] == stored_digest == _digest(event),
-        event.get("state") == invocation.state.value,
-        event.get("command_id") == invocation.command_id,
-        event.get("command_digest") == invocation.command_digest,
-        event.get("created_at") == invocation.created_at == row["created_at"],
-    )
-    if not all(exact):
-        raise ValueError("persisted agent invocation event failed integrity validation")
+    events = tuple(_canonical_event(row) for row in rows)
+    _validated_chain(invocation, events)
+    return events[-1]
 
 
 class SQLiteAgentRuntimeInvocationStore:
@@ -391,7 +291,9 @@ class SQLiteAgentRuntimeInvocationStore:
                     )
                 request_digest = _digest(
                     {
+                        "schema_version": 1,
                         "authorizing_subject_id": payload.owner_user_id,
+                        "authorizing_grant_generation": payload.authorizing_grant_generation,
                         "universe_id": manifest_content["universe_id"],
                         "agent_binding_id": manifest_content["agent_binding_id"],
                         "binding_revision": manifest_content["binding_revision"],
@@ -401,7 +303,6 @@ class SQLiteAgentRuntimeInvocationStore:
                         "executor_class": activation.executor_class.value,
                         "lease_id": activation.lease_id,
                         "typed_input_digest": payload.typed_input_digest,
-                        "grant_evidence_set_digest": payload.grants.evidence_set_digest,
                         "provider_work_binding_id": binding.binding_id,
                         "provider_work_binding_generation": binding.generation,
                         "provider_work_binding_digest": binding.binding_digest,
@@ -411,25 +312,28 @@ class SQLiteAgentRuntimeInvocationStore:
                 )
                 existing = conn.execute(
                     """
-                    SELECT * FROM agent_invocation_commands
-                    WHERE owner_user_id = ? AND idempotency_key_digest = ?
+                    SELECT * FROM agent_runtime_invocation_commands
+                    WHERE authorizing_subject_id = ? AND universe_id = ?
+                      AND json_extract(record_json, '$.idempotency_key_digest') = ?
                     """,
-                    (payload.owner_user_id, key_digest),
+                    (payload.owner_user_id, manifest_content["universe_id"], key_digest),
                 ).fetchone()
                 if existing is not None:
-                    if existing["request_digest"] != request_digest:
+                    command = _command_record(existing)
+                    if command.request_digest != request_digest:
                         raise AgentInvocationConflict(
                             "idempotency_key was already used for different invocation input"
                         )
-                    command = _command_record(existing)
                     invocation_row = conn.execute(
-                        "SELECT * FROM agent_invocations WHERE invocation_id = ?",
+                        "SELECT * FROM agent_runtime_invocation_roots WHERE invocation_id = ?",
                         (command.invocation_id,),
                     ).fetchone()
                     if invocation_row is None:
                         raise ValueError("persisted agent invocation aggregate is incomplete")
                     invocation = _invocation_record(invocation_row)
-                    _require_initial_event(conn, invocation)
+                    event = _current_event(conn, invocation)
+                    if event.state is not AgentInvocationEventState.ADMITTED:
+                        raise AgentInvocationConflict("idempotent invocation is no longer admitted")
                     final_activation_current = (
                         AutomationActivationStore.validate_claim_in_transaction(
                             conn,
@@ -455,33 +359,20 @@ class SQLiteAgentRuntimeInvocationStore:
                     )
 
                 invocation_id = f"agent_invocation_{new_ulid()}"
-                principal = AgentRuntimePrincipal(
-                    authorizing_subject_id=payload.owner_user_id,
-                    universe_id=str(manifest_content["universe_id"]),
-                    agent_binding_id=str(manifest_content["agent_binding_id"]),
-                    binding_revision=int(manifest_content["binding_revision"]),
-                    execution_subject=activation.subject,
-                    activation_automation_id=activation.automation_id,
-                    activation_epoch=activation.epoch,
-                    executor_class=activation.executor_class,
-                    lease_id=activation.lease_id,
-                    invocation_id=invocation_id,
-                    invocation_generation=1,
-                    typed_input_digest=payload.typed_input_digest,
-                    evaluated_at=payload.grants.evaluated_at,
-                    grant_evidence=tuple(payload.grants.evidence),
-                    grant_evidence_set_digest=payload.grants.evidence_set_digest,
+                budget = AgentInvocationBudgetEnvelope.build(
+                    max_invocations=1,
+                    max_tokens=payload.max_tokens,
+                    max_cost_microunits=payload.max_cost_microunits,
+                    max_turns=1,
+                    expires_at=payload.provider_seed.expires_at,
                 )
-                provisional_command = AgentInvocationCommand(
+                command = AgentInvocationCommand.build(
                     schema_version=1,
                     command_id=f"agent_invocation_command_{new_ulid()}",
-                    command_digest=_PLACEHOLDER_DIGEST,
+                    generation=1,
                     invocation_id=invocation_id,
-                    invocation_generation=1,
                     authorizing_subject_id=payload.owner_user_id,
-                    authorizing_principal_digest=principal.principal_digest,
-                    grant_evidence_set_digest=payload.grants.evidence_set_digest,
-                    grant_evaluated_at=payload.grants.evaluated_at,
+                    authorizing_grant_generation=payload.authorizing_grant_generation,
                     universe_id=str(manifest_content["universe_id"]),
                     agent_binding_id=str(manifest_content["agent_binding_id"]),
                     binding_revision=int(manifest_content["binding_revision"]),
@@ -494,95 +385,111 @@ class SQLiteAgentRuntimeInvocationStore:
                     provider_work_binding_id=binding.binding_id,
                     provider_work_binding_generation=binding.generation,
                     provider_work_binding_digest=binding.binding_digest,
-                    provider=binding.provider,
-                    max_tokens=payload.max_tokens,
-                    max_cost_microunits=payload.max_cost_microunits,
                     idempotency_key_digest=key_digest,
+                    request_digest=request_digest,
+                    budget=budget,
+                    admission_witness_id=payload.admission_witness_id,
+                    admission_witness_digest=payload.admission_witness_digest,
                     created_at=created_at,
                 )
-                command = replace(
-                    provisional_command,
-                    command_digest=provisional_command.expected_digest(),
-                )
-                provisional_invocation = AgentInvocation(
+                invocation = AgentInvocationRoot.build(
                     schema_version=1,
                     invocation_id=invocation_id,
-                    invocation_digest=_PLACEHOLDER_DIGEST,
-                    generation=1,
-                    state=AgentInvocationState.ADMITTED,
+                    authorizing_subject_id=command.authorizing_subject_id,
+                    authorizing_grant_generation=command.authorizing_grant_generation,
+                    universe_id=command.universe_id,
+                    agent_binding_id=command.agent_binding_id,
+                    binding_revision=command.binding_revision,
+                    execution_subject=command.execution_subject,
+                    activation_automation_id=command.activation_automation_id,
+                    activation_epoch=command.activation_epoch,
+                    executor_class=command.executor_class,
+                    lease_id=command.lease_id,
+                    typed_input_digest=command.typed_input_digest,
                     command_id=command.command_id,
+                    command_generation=command.generation,
                     command_digest=command.command_digest,
+                    provider_work_binding_id=command.provider_work_binding_id,
+                    provider_work_binding_generation=command.provider_work_binding_generation,
+                    provider_work_binding_digest=command.provider_work_binding_digest,
+                    idempotency_key_digest=command.idempotency_key_digest,
+                    request_digest=command.request_digest,
+                    budget_digest=command.budget.budget_digest,
+                    admission_witness_id=command.admission_witness_id,
+                    admission_witness_digest=command.admission_witness_digest,
                     created_at=created_at,
                 )
-                invocation = replace(
-                    provisional_invocation,
-                    invocation_digest=provisional_invocation.expected_digest(),
+                event = AgentInvocationEvent.build(
+                    schema_version=1,
+                    event_id=f"agent_invocation_event_{new_ulid()}",
+                    invocation_id=invocation.invocation_id,
+                    generation=1,
+                    state=AgentInvocationEventState.ADMITTED,
+                    previous_event_digest=None,
+                    root_digest=invocation.root_digest,
+                    reason_code=None,
+                    occurred_at=created_at,
                 )
-                event = {
-                    "event_id": f"agent_invocation_event_{new_ulid()}",
-                    "invocation_id": invocation.invocation_id,
-                    "generation": invocation.generation,
-                    "state": invocation.state.value,
-                    "command_id": command.command_id,
-                    "command_digest": command.command_digest,
-                    "created_at": created_at,
-                }
-                event["event_digest"] = _digest(event)
                 conn.execute(
                     """
-                    INSERT INTO agent_invocation_commands (
-                        command_id, command_digest, invocation_id, owner_user_id,
-                        universe_id, agent_binding_id, idempotency_key_digest,
-                        request_digest, provider_work_binding_id, record_json,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO agent_runtime_invocation_commands (
+                        command_id, invocation_id, authorizing_subject_id,
+                        universe_id, agent_binding_id, provider_work_binding_id,
+                        admission_witness_id, command_digest, record_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         command.command_id,
-                        command.command_digest,
                         command.invocation_id,
                         command.authorizing_subject_id,
                         command.universe_id,
                         command.agent_binding_id,
-                        command.idempotency_key_digest,
-                        request_digest,
                         command.provider_work_binding_id,
+                        command.admission_witness_id,
+                        command.command_digest,
                         _record_json(command),
                         command.created_at,
                     ),
                 )
                 conn.execute(
                     """
-                    INSERT INTO agent_invocations (
-                        invocation_id, invocation_digest, generation, state,
-                        command_id, command_digest, record_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO agent_runtime_invocation_roots (
+                        invocation_id, authorizing_subject_id, universe_id,
+                        agent_binding_id, command_id, provider_work_binding_id,
+                        admission_witness_id, root_digest, record_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         invocation.invocation_id,
-                        invocation.invocation_digest,
-                        invocation.generation,
-                        invocation.state.value,
+                        invocation.authorizing_subject_id,
+                        invocation.universe_id,
+                        invocation.agent_binding_id,
                         invocation.command_id,
-                        invocation.command_digest,
+                        invocation.provider_work_binding_id,
+                        invocation.admission_witness_id,
+                        invocation.root_digest,
                         _record_json(invocation),
                         invocation.created_at,
                     ),
                 )
                 conn.execute(
                     """
-                    INSERT INTO agent_invocation_events (
-                        event_id, invocation_id, generation, event_digest,
-                        event_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO agent_runtime_invocation_events (
+                        event_id, invocation_id, generation, state,
+                        previous_event_digest, root_digest, event_digest,
+                        record_json, occurred_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        event["event_id"],
-                        event["invocation_id"],
-                        event["generation"],
-                        event["event_digest"],
-                        json.dumps(event, separators=(",", ":"), sort_keys=True),
-                        event["created_at"],
+                        event.event_id,
+                        event.invocation_id,
+                        event.generation,
+                        event.state.value,
+                        event.previous_event_digest,
+                        event.root_digest,
+                        event.event_digest,
+                        _record_json(event),
+                        event.occurred_at,
                     ),
                 )
                 final_activation_current = AutomationActivationStore.validate_claim_in_transaction(
@@ -614,7 +521,7 @@ class SQLiteAgentRuntimeInvocationStore:
         self,
         *,
         invocation_id: str,
-    ) -> tuple[AgentInvocationCommand, AgentInvocation] | None:
+    ) -> tuple[AgentInvocationCommand, AgentInvocationRoot, AgentInvocationEvent] | None:
         with self.connection() as conn:
             conn.execute("BEGIN")
             return self.get_in_transaction(conn, invocation_id=invocation_id)
@@ -624,29 +531,40 @@ class SQLiteAgentRuntimeInvocationStore:
         conn: sqlite3.Connection,
         *,
         invocation_id: str,
-    ) -> tuple[AgentInvocationCommand, AgentInvocation] | None:
+    ) -> tuple[AgentInvocationCommand, AgentInvocationRoot, AgentInvocationEvent] | None:
         """Read and integrity-check one aggregate inside the caller's fence."""
 
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             return None
         invocation_row = conn.execute(
-            "SELECT * FROM agent_invocations WHERE invocation_id = ?",
+            "SELECT * FROM agent_runtime_invocation_roots WHERE invocation_id = ?",
             (invocation_id,),
         ).fetchone()
         if invocation_row is None:
             return None
         invocation = _invocation_record(invocation_row)
-        _require_initial_event(conn, invocation)
+        event = _current_event(conn, invocation)
         command_row = conn.execute(
-            "SELECT * FROM agent_invocation_commands WHERE command_id = ?",
+            "SELECT * FROM agent_runtime_invocation_commands WHERE command_id = ?",
             (invocation.command_id,),
         ).fetchone()
         if command_row is None:
             raise ValueError("persisted agent invocation aggregate is incomplete")
         command = _command_record(command_row)
-        if command.command_digest != invocation.command_digest:
+        exact = (
+            command.invocation_id == invocation.invocation_id,
+            command.generation == invocation.command_generation,
+            command.command_digest == invocation.command_digest,
+            command.provider_work_binding_id == invocation.provider_work_binding_id,
+            command.provider_work_binding_generation == invocation.provider_work_binding_generation,
+            command.provider_work_binding_digest == invocation.provider_work_binding_digest,
+            command.budget.budget_digest == invocation.budget_digest,
+            command.admission_witness_id == invocation.admission_witness_id,
+            command.admission_witness_digest == invocation.admission_witness_digest,
+        )
+        if not all(exact):
             raise ValueError("persisted agent invocation aggregate failed linkage validation")
-        return command, invocation
+        return command, invocation, event
 
     def resolve_current(
         self,
@@ -656,12 +574,12 @@ class SQLiteAgentRuntimeInvocationStore:
         aggregate = self.get(invocation_id=invocation_id)
         if aggregate is None:
             return None
-        command, invocation = aggregate
-        if invocation.state is not AgentInvocationState.ADMITTED:
+        command, invocation, event = aggregate
+        if event.state is not AgentInvocationEventState.ADMITTED:
             return None
         return AgentInvocationAuthorityEvidence(
             invocation_id=invocation.invocation_id,
-            invocation_generation=invocation.generation,
+            invocation_generation=event.generation,
             authorizing_subject_id=command.authorizing_subject_id,
             universe_id=command.universe_id,
             agent_binding_id=command.agent_binding_id,

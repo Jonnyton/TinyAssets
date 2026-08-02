@@ -291,9 +291,9 @@ def _counts(tmp_path) -> tuple[int, int, int, int]:
             int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
             for table in (
                 "provider_work_bindings",
-                "agent_invocation_commands",
-                "agent_invocations",
-                "agent_invocation_events",
+                "agent_runtime_invocation_commands",
+                "agent_runtime_invocation_roots",
+                "agent_runtime_invocation_events",
             )
         )  # type: ignore[return-value]
 
@@ -315,9 +315,38 @@ def test_live_admission_atomically_links_secret_free_server_records(
     assert result.command.executor_class is AutomationActivationExecutor.CLOUD
     assert result.command.authorizing_subject_id == "user::alice"
     assert result.command.typed_input_digest.startswith("sha256:")
-    assert result.command.authorizing_principal_digest.startswith("sha256:")
-    assert result.invocation.generation == 1
+    assert result.command.authorizing_grant_generation == 1
+    assert result.command.admission_witness_digest.startswith("sha256:")
+    assert result.invocation.command_generation == 1
+    assert result.invocation.root_digest.startswith("sha256:")
     assert _counts(tmp_path) == (1, 1, 1, 1)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert (
+        not {
+            "agent_invocation_commands",
+            "agent_invocations",
+            "agent_invocation_events",
+        }
+        & tables
+    )
+    assert {
+        "agent_runtime_invocation_commands",
+        "agent_runtime_invocation_roots",
+        "agent_runtime_invocation_events",
+    } <= tables
+    from tinyassets.storage.agent_runtime_commands import AgentRuntimeCommandStore
+    from tinyassets.storage.agent_runtime_invocations import AgentRuntimeInvocationStore
+
+    assert AgentRuntimeCommandStore(tmp_path)._load(result.command.command_id) == result.command
+    loaded_root = AgentRuntimeInvocationStore(tmp_path)._load(result.invocation.invocation_id)
+    assert loaded_root is not None
+    assert loaded_root[0] == result.invocation
     assert target_resolver.calls == [
         ("user::alice", "agent_binding_alice"),
         ("user::alice", "agent_binding_alice"),
@@ -597,7 +626,9 @@ def test_recovery_source_resolves_same_bearer_free_invocation_after_request_ends
         grant_resolver=AgentRuntimeGrantResolver(clock=lambda: NOW.timestamp()),
     ).derive(manifest=_manifest(), invocation_id=result.invocation.invocation_id)
     assert principal.authorizing_subject_id == "user::alice"
-    assert principal.principal_digest == result.command.authorizing_principal_digest
+    assert principal.invocation_id == result.command.invocation_id
+    assert principal.typed_input_digest == result.command.typed_input_digest
+    assert "authorizing_principal_digest" not in result.command.to_dict()
     assert (
         "bearer"
         not in json.dumps(

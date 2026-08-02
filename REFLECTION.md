@@ -1438,3 +1438,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** design observation APIs around a pure
   authority validator first, then let mutation paths wrap that result in
   one-shot capabilities.
+
+## 2026-08-02 - Windows lifecycle supervisor escape
+
+- **What surprised me:** the intended private-file capture invariant had
+  regressed into anonymous pipes even though the workflow still advertised a
+  five-minute supervisor bound; descendant-owned pipe handles can outlive that
+  bound without any product process still being the root owner.
+- **Pattern worth capturing:** prove a timeout at the exact output-handle
+  boundary, keep the PR draft until the real Windows runner emits the
+  lifecycle child's replayed phase notices and the supervisor's own terminal
+  checkpoint, and treat a green outer job alone as insufficient evidence.
+- **What I would do differently:** include the workflow path touch and the
+  release-critical declaration in the first PR increment so exact CI evidence
+  and the scope guard start together.

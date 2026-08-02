@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
-from tinyassets.agent_runtime_invocation import AgentInvocation, AgentInvocationCommand
+from tinyassets.agent_invocation_authority import AgentInvocationRoot
+from tinyassets.agent_runtime_command import AgentInvocationCommand
 from tinyassets.background_branch_authority import BackgroundBranchBinding
 from tinyassets.cloud_automation_continuation import (
     AgentInvocationCloudContinuation,
@@ -181,10 +182,8 @@ class SQLiteCloudAutomationContinuationStore:
             raise ValueError("expected_activation does not match record")
         exact_authority = (
             expected_background.binding_id == record.background_binding_id,
-            expected_background.generation
-            == record.background_binding_generation,
-            expected_background.binding_digest
-            == record.background_binding_digest,
+            expected_background.generation == record.background_binding_generation,
+            expected_background.binding_digest == record.background_binding_digest,
             expected_provider.binding_id == record.provider_binding_id,
             expected_provider.generation == record.provider_binding_generation,
             expected_provider.binding_digest == record.provider_binding_digest,
@@ -235,16 +234,20 @@ class SQLiteCloudAutomationContinuationStore:
                 )
                 background_unexpired = expected_background.expires_at is None
                 if expected_background.expires_at is not None:
-                    background_unexpired = datetime.fromisoformat(
-                        expected_background.expires_at.removesuffix("Z")
-                        + "+00:00"
-                    ) > now
-                if background is None or not all((
-                    background["status"] == "active",
-                    background["generation"] == expected_background.generation,
-                    background["record_json"] == expected_background_json,
-                    background_unexpired,
-                )):
+                    background_unexpired = (
+                        datetime.fromisoformat(
+                            expected_background.expires_at.removesuffix("Z") + "+00:00"
+                        )
+                        > now
+                    )
+                if background is None or not all(
+                    (
+                        background["status"] == "active",
+                        background["generation"] == expected_background.generation,
+                        background["record_json"] == expected_background_json,
+                        background_unexpired,
+                    )
+                ):
                     raise PermissionError("background_binding_not_current")
                 provider = conn.execute(
                     """
@@ -260,17 +263,21 @@ class SQLiteCloudAutomationContinuationStore:
                     separators=(",", ":"),
                     sort_keys=True,
                 )
-                provider_unexpired = datetime.fromisoformat(
-                    expected_provider.expires_at.removesuffix("Z") + "+00:00"
-                ) > now
-                if provider is None or not all((
-                    provider["state"] == "active",
-                    provider["generation"] == expected_provider.generation,
-                    provider["binding_digest"]
-                    == expected_provider.binding_digest,
-                    provider["record_json"] == expected_provider_json,
-                    provider_unexpired,
-                )):
+                provider_unexpired = (
+                    datetime.fromisoformat(
+                        expected_provider.expires_at.removesuffix("Z") + "+00:00"
+                    )
+                    > now
+                )
+                if provider is None or not all(
+                    (
+                        provider["state"] == "active",
+                        provider["generation"] == expected_provider.generation,
+                        provider["binding_digest"] == expected_provider.binding_digest,
+                        provider["record_json"] == expected_provider_json,
+                        provider_unexpired,
+                    )
+                ):
                     raise PermissionError("provider_binding_not_current")
                 row = conn.execute(
                     """
@@ -323,7 +330,7 @@ class SQLiteCloudAutomationContinuationStore:
         *,
         expected_activation: AutomationActivation,
         expected_command: AgentInvocationCommand,
-        expected_invocation: AgentInvocation,
+        expected_invocation: AgentInvocationRoot,
         expected_receipt: ProviderUniverseWorkReceipt,
         expected_claim: ProviderWorkExecutionClaim,
         expected_reservation: ProviderInvocationReservation,
@@ -334,7 +341,7 @@ class SQLiteCloudAutomationContinuationStore:
             (record, AgentInvocationCloudContinuation),
             (expected_activation, AutomationActivation),
             (expected_command, AgentInvocationCommand),
-            (expected_invocation, AgentInvocation),
+            (expected_invocation, AgentInvocationRoot),
             (expected_receipt, ProviderUniverseWorkReceipt),
             (expected_claim, ProviderWorkExecutionClaim),
             (expected_reservation, ProviderInvocationReservation),
@@ -353,15 +360,13 @@ class SQLiteCloudAutomationContinuationStore:
             expected_command.execution_subject == record.execution_subject,
             expected_command.typed_input_digest == record.typed_input_digest,
             expected_command.provider_work_binding_id == record.provider_binding_id,
-            expected_command.provider_work_binding_generation
-            == record.provider_binding_generation,
-            expected_command.provider_work_binding_digest
-            == record.provider_binding_digest,
-            expected_command.max_tokens == record.max_tokens,
-            expected_command.max_cost_microunits == record.max_cost_microunits,
+            expected_command.provider_work_binding_generation == record.provider_binding_generation,
+            expected_command.provider_work_binding_digest == record.provider_binding_digest,
+            expected_command.budget.max_tokens == record.max_tokens,
+            expected_command.budget.max_cost_microunits == record.max_cost_microunits,
             expected_invocation.invocation_id == record.invocation_id,
-            expected_invocation.invocation_digest == record.invocation_digest,
-            expected_invocation.generation == record.invocation_generation,
+            expected_invocation.root_digest == record.invocation_digest,
+            expected_invocation.command_generation == record.invocation_generation,
             expected_invocation.command_id == record.command_id,
             expected_invocation.command_digest == record.command_digest,
             expected_activation.universe_id == record.universe_id,
@@ -395,8 +400,7 @@ class SQLiteCloudAutomationContinuationStore:
                 ProviderInvocationReservationState.LAUNCH_STARTED,
             },
             expected_reservation.max_tokens == record.max_tokens,
-            expected_reservation.max_cost_microunits
-            == record.max_cost_microunits,
+            expected_reservation.max_cost_microunits == record.max_cost_microunits,
         )
         if not all(exact):
             raise PermissionError("agent continuation lineage is not exact")
@@ -413,13 +417,13 @@ class SQLiteCloudAutomationContinuationStore:
 
         persisted = (
             (
-                "agent_invocation_commands",
+                "agent_runtime_invocation_commands",
                 "command_id",
                 record.command_id,
                 expected_command,
             ),
             (
-                "agent_invocations",
+                "agent_runtime_invocation_roots",
                 "invocation_id",
                 record.invocation_id,
                 expected_invocation,
@@ -464,8 +468,7 @@ class SQLiteCloudAutomationContinuationStore:
         if row is not None:
             current = _agent_record(row)
             replayed = current.matches_preparation(record) or (
-                expected_reservation.state
-                is ProviderInvocationReservationState.LAUNCH_STARTED
+                expected_reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED
                 and current.matches_armed_reconciliation(record)
             )
             return CloudContinuationWriteResult(
