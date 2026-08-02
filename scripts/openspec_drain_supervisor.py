@@ -1997,31 +1997,27 @@ def _dispatch(
         result_path=result_path,
         worker_cwd=worker_cwd,
     )
-    process = subprocess.Popen(
-        command,
-        cwd=worker_cwd or args.repo,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    stdout_path = result_path.with_suffix(result_path.suffix + ".stdout.log")
+    stderr_path = result_path.with_suffix(result_path.suffix + ".stderr.log")
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        stdout_path.open("w", encoding="utf-8") as stdout_handle,
+        stderr_path.open("w", encoding="utf-8") as stderr_handle,
+    ):
+        process = subprocess.Popen(
+            command,
+            cwd=worker_cwd or args.repo,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            text=True,
+        )
     deadline = time.monotonic() + args.worker_timeout + 90
     prior_valid_artifact: str | None = None
-    last_timeout: subprocess.TimeoutExpired | None = None
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _terminate_process_tree(process)
-            try:
-                stdout, stderr = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                if process.stdout:
-                    process.stdout.close()
-                if process.stderr:
-                    process.stderr.close()
-                process.wait(timeout=10)
-                stdout = last_timeout.stdout if last_timeout else ""
-                stderr = last_timeout.stderr if last_timeout else ""
+            _terminate_and_reap_process(process)
+            stdout, stderr = _read_dispatch_logs(stdout_path, stderr_path)
             return subprocess.CompletedProcess(
                 command,
                 124,
@@ -2029,17 +2025,15 @@ def _dispatch(
                 stderr=stderr or "outer supervisor timeout",
             )
         try:
-            stdout, stderr = process.communicate(
-                timeout=min(RESULT_POLL_SECONDS, remaining)
-            )
+            process.wait(timeout=min(RESULT_POLL_SECONDS, remaining))
+            stdout, stderr = _read_dispatch_logs(stdout_path, stderr_path)
             return subprocess.CompletedProcess(
                 command,
                 process.returncode,
                 stdout=stdout,
                 stderr=stderr,
             )
-        except subprocess.TimeoutExpired as exc:
-            last_timeout = exc
+        except subprocess.TimeoutExpired:
             try:
                 artifact = result_path.read_text(
                     encoding="utf-8",
@@ -2053,24 +2047,39 @@ def _dispatch(
                 prior_valid_artifact = artifact
                 continue
 
-            _terminate_process_tree(process)
-            try:
-                stdout, stderr = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                if process.stdout:
-                    process.stdout.close()
-                if process.stderr:
-                    process.stderr.close()
-                process.wait(timeout=10)
-                stdout = exc.stdout or ""
-                stderr = exc.stderr or ""
+            _terminate_and_reap_process(process)
+            stdout, stderr = _read_dispatch_logs(stdout_path, stderr_path)
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout=stdout or "",
-                stderr=stderr or "",
+                stdout=stdout,
+                stderr=stderr,
             )
+
+
+def _read_dispatch_logs(stdout_path: Path, stderr_path: Path) -> tuple[str, str]:
+    def read(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    return read(stdout_path), read(stderr_path)
+
+
+def _terminate_and_reap_process(process: subprocess.Popen[str]) -> None:
+    """Terminate and boundedly reap a launcher that owns no supervisor pipes."""
+    _terminate_process_tree(process)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # A completed result artifact is authoritative. Do not keep the
+            # 24/7 supervisor blocked on a broken Windows process handle.
+            pass
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
