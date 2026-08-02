@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-08-01 - Host-proof cryptographic verifier
+
+- Provider: `codex-gpt5-desktop-agent-runtime`
+- Branch: `codex/host-proof-crypto-20260802`
+- Lane state: claimed OpenSpec `bind-host-principal-to-account` task 2.2 only
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim`
+- STATUS/Issue/PR: closed `HostProofV1` DTO/canonicalization/signature-role/time/replay verifier seam; no routes or storage
+- Purpose: establish the replay-safe device proof needed before a private host binding can authorize unattended user-owned execution
+- Review gate: mandatory RED/GREEN, RFC 8037/JCS hostile-input coverage, strict OpenSpec, secret scan, exact-head independent security review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim/_PURPOSE.md`
+- Ship/abandon: one main-based PR; leave task 2.3+ and all storage/routes/host-pool/deployment work unchecked
+
 ## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
 
 - Provider: `codex-gpt5-desktop-installer`
