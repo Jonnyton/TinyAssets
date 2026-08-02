@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -57,6 +58,7 @@ def _replay_capture(
     name: str,
     destination: TextIO,
     max_bytes: int,
+    observed_bytes: int | None = None,
 ) -> None:
     capture_writer.flush()
     initial_observed_bytes = os.fstat(capture_writer.fileno()).st_size
@@ -64,6 +66,7 @@ def _replay_capture(
     with capture_path.open("rb") as capture_reader:
         data = capture_reader.read(replay_bytes)
     observed_bytes = max(
+        observed_bytes or 0,
         initial_observed_bytes,
         os.fstat(capture_writer.fileno()).st_size,
     )
@@ -76,6 +79,32 @@ def _replay_capture(
             f"observed at least {observed_bytes} bytes",
             flush=True,
         )
+
+
+def _drain_stream(
+    stream: BinaryIO,
+    *,
+    capture_writer: BinaryIO,
+    max_bytes: int,
+) -> int:
+    observed_bytes = 0
+    captured_bytes = 0
+    while chunk := stream.read(65_536):
+        observed_bytes += len(chunk)
+        remaining_bytes = max_bytes - captured_bytes
+        if remaining_bytes > 0:
+            captured = chunk[:remaining_bytes]
+            capture_writer.write(captured)
+            captured_bytes += len(captured)
+    capture_writer.flush()
+    return observed_bytes
+
+
+def _checkpoint(stage: str) -> None:
+    print(
+        f"::notice title=Windows lifecycle checkpoint::stage={stage}",
+        flush=True,
+    )
 
 
 @contextmanager
@@ -104,6 +133,7 @@ def _capture_file() -> Iterator[tuple[Path, BinaryIO]]:
 def _terminate_tree(process: subprocess.Popen[bytes], *, cleanup_timeout_seconds: int) -> None:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     cleanup: subprocess.Popen[bytes] | None = None
+    _checkpoint("cleanup.taskkill.started")
     try:
         cleanup = subprocess.Popen(
             ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
@@ -147,6 +177,7 @@ def _terminate_tree(process: subprocess.Popen[bytes], *, cleanup_timeout_seconds
                 f"root kill failed for child PID {process.pid}: {exc}",
                 flush=True,
             )
+    _checkpoint("cleanup.root_wait.started")
     try:
         process.wait(timeout=cleanup_timeout_seconds)
     except subprocess.TimeoutExpired:
@@ -155,6 +186,7 @@ def _terminate_tree(process: subprocess.Popen[bytes], *, cleanup_timeout_seconds
             f"child PID {process.pid} survived bounded cleanup",
             flush=True,
         )
+    _checkpoint("cleanup.finished")
 
 
 def main() -> int:
@@ -193,13 +225,50 @@ def main() -> int:
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=stdout_capture_writer,
-                stderr=stderr_capture_writer,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 creationflags=creationflags,
             )
         except OSError as exc:
             print(f"Windows lifecycle child failed to start: {exc}", file=sys.stderr)
             return 1
+
+        assert process.stdout is not None
+        assert process.stderr is not None
+        capture_observed: dict[str, int] = {}
+
+        def drain(
+            name: str,
+            stream: BinaryIO,
+            capture_writer: BinaryIO,
+        ) -> None:
+            try:
+                capture_observed[name] = _drain_stream(
+                    stream,
+                    capture_writer=capture_writer,
+                    max_bytes=args.max_capture_bytes_per_stream,
+                )
+            except OSError as exc:
+                print(
+                    f"::warning title=Windows lifecycle capture::{name} drain stopped: {exc}",
+                    flush=True,
+                )
+
+        capture_streams = {
+            "stdout": (process.stdout, stdout_capture_path, stdout_capture_writer, sys.stdout),
+            "stderr": (process.stderr, stderr_capture_path, stderr_capture_writer, sys.stderr),
+        }
+        capture_threads = {
+            name: threading.Thread(
+                target=drain,
+                args=(name, stream, capture_writer),
+                name=f"windows-lifecycle-{name}-drain",
+                daemon=True,
+            )
+            for name, (stream, _path, capture_writer, _destination) in capture_streams.items()
+        }
+        for thread in capture_threads.values():
+            thread.start()
 
         print(
             "::notice title=Windows lifecycle supervisor::"
@@ -208,33 +277,42 @@ def main() -> int:
             flush=True,
         )
         timed_out = False
+        _checkpoint("child.wait.started")
         try:
             return_code = process.wait(timeout=args.total_timeout_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
+            _checkpoint("child.wait.timed_out")
             print(
                 "::error title=Windows lifecycle total timeout::"
                 f"child PID {process.pid} exceeded {args.total_timeout_seconds} seconds",
                 flush=True,
             )
+            _checkpoint("cleanup.started")
             _terminate_tree(process, cleanup_timeout_seconds=args.cleanup_timeout_seconds)
             return_code = 1
 
-        _replay_capture(
-            stdout_capture_path,
-            capture_writer=stdout_capture_writer,
-            name="stdout",
-            destination=sys.stdout,
-            max_bytes=args.max_capture_bytes_per_stream,
-        )
-        _replay_capture(
-            stderr_capture_path,
-            capture_writer=stderr_capture_writer,
-            name="stderr",
-            destination=sys.stderr,
-            max_bytes=args.max_capture_bytes_per_stream,
-        )
+        for name, (stream, capture_path, capture_writer, destination) in capture_streams.items():
+            _checkpoint(f"capture.{name}.started")
+            thread = capture_threads[name]
+            thread.join(timeout=args.cleanup_timeout_seconds)
+            if thread.is_alive():
+                print(
+                    "::warning title=Windows lifecycle capture::"
+                    f"{name} drain survived bounded cleanup",
+                    flush=True,
+                )
+            _replay_capture(
+                capture_path,
+                capture_writer=capture_writer,
+                name=name,
+                destination=destination,
+                max_bytes=args.max_capture_bytes_per_stream,
+                observed_bytes=capture_observed.get(name),
+            )
+            _checkpoint(f"capture.{name}.finished")
 
+    _checkpoint("supervisor.exiting")
     if timed_out:
         print(
             f"total lifecycle timed out after {args.total_timeout_seconds} seconds",
