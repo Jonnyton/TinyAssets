@@ -1019,14 +1019,21 @@ class SQLiteProviderWorkAuthorityStore:
     def _issue_universe_receipt_in_transaction(
         self,
         conn: sqlite3.Connection,
-        authority: ProviderUniverseWorkAuthority,
+        store_grant: object,
     ) -> ProviderWorkReceiptWriteResult:
         """Issue a receipt inside an existing trusted SQLite write fence."""
 
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("provider receipt issuance requires an active transaction")
-        if not isinstance(authority, ProviderUniverseWorkAuthority):
-            raise ValueError("authority must be a ProviderUniverseWorkAuthority")
+        from tinyassets.agent_runtime_provider_execution import (
+            _AgentProviderReceiptStoreGrant,
+        )
+
+        if type(store_grant) is not _AgentProviderReceiptStoreGrant:
+            raise PermissionError(
+                "provider receipt transaction requires a service-issued grant"
+            )
+        authority = store_grant._consume()
         now = self._now()
         candidate = _receipt_from_authority(
             authority,

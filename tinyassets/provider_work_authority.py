@@ -167,6 +167,17 @@ class ProviderWorkBindingResolver(Protocol):
     ) -> ProviderWorkBindingSeed | None: ...
 
 
+@runtime_checkable
+class ProviderWorkTransactionalBindingResolver(Protocol):
+    """Resolve the canonical current assignment inside the caller's fence."""
+
+    def resolve_current_in_transaction(
+        self,
+        connection: object,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingSeed | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderWorkBinding:
     schema_version: int
@@ -1492,6 +1503,7 @@ __all__ = [
     "ProviderWorkBinding",
     "ProviderWorkBindingFence",
     "ProviderWorkBindingResolver",
+    "ProviderWorkTransactionalBindingResolver",
     "ProviderWorkBindingRoot",
     "ProviderWorkBindingSeed",
     "ProviderWorkBindingService",

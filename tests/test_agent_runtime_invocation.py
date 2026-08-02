@@ -177,6 +177,11 @@ class _ProviderResolver:
                 expires_at="2026-08-03T00:00:00Z",
             )
 
+    def resolve_current_in_transaction(self, connection, root: ProviderWorkBindingRoot):
+        if not connection.in_transaction:
+            return None
+        return self.resolve(root)
+
     def revoke(self) -> None:
         with self.lock:
             self.assignment_generation += 1

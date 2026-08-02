@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 import sqlite3
+import threading
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -13,8 +17,11 @@ from tinyassets.agent_runtime_principal import AgentRuntimePrincipal
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
+    ProviderWorkBindingRoot,
+    ProviderWorkBindingSeed,
     ProviderWorkBindingState,
     ProviderWorkReceiptWriteResult,
+    ProviderWorkTransactionalBindingResolver,
 )
 from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
 from tinyassets.storage.agent_runtime_invocation import (
@@ -31,6 +38,79 @@ class AgentRuntimeProviderExecutionBlocked(PermissionError):
     """Raised when admitted work no longer has exact current authority."""
 
 
+class _AgentProviderReceiptStoreGrant:
+    """One-shot, process-local proof that the agent authority fence passed."""
+
+    __slots__ = ("_grant_id", "_issuer_pid", "__weakref__")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("agent provider receipt grants are service-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("agent provider receipt grants are immutable")
+
+    def __reduce__(self):
+        raise TypeError("agent provider receipt grants are non-serializable")
+
+    def _consume(self) -> ProviderUniverseWorkAuthority:
+        if type(self) is not _AgentProviderReceiptStoreGrant:
+            raise PermissionError("agent provider receipt grant is not service-issued")
+        current_pid = os.getpid()
+        if self._issuer_pid != current_pid:
+            raise PermissionError("agent provider receipt grant belongs to another process")
+        with _RECEIPT_GRANT_LOCK:
+            entry = _ACTIVE_RECEIPT_GRANTS.get(self._grant_id)
+            if entry is None or entry[0]() is not self or entry[2] != current_pid:
+                raise PermissionError("agent provider receipt grant is invalid or consumed")
+            del _ACTIVE_RECEIPT_GRANTS[self._grant_id]
+        return entry[1]
+
+
+_RECEIPT_GRANT_LOCK = threading.Lock()
+_ACTIVE_RECEIPT_GRANTS: dict[
+    str,
+    tuple[
+        weakref.ReferenceType[_AgentProviderReceiptStoreGrant],
+        ProviderUniverseWorkAuthority,
+        int,
+    ],
+] = {}
+
+
+def _reset_receipt_grants_after_fork() -> None:
+    global _RECEIPT_GRANT_LOCK
+    global _ACTIVE_RECEIPT_GRANTS
+    _RECEIPT_GRANT_LOCK = threading.Lock()
+    _ACTIVE_RECEIPT_GRANTS = {}
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_receipt_grants_after_fork)
+
+
+def _discard_receipt_grant(grant_id: str, issuer_pid: int) -> None:
+    if issuer_pid != os.getpid():
+        return
+    with _RECEIPT_GRANT_LOCK:
+        _ACTIVE_RECEIPT_GRANTS.pop(grant_id, None)
+
+
+def _mint_receipt_store_grant(
+    authority: ProviderUniverseWorkAuthority,
+) -> _AgentProviderReceiptStoreGrant:
+    if type(authority) is not ProviderUniverseWorkAuthority:
+        raise TypeError("authority must be exact provider universe authority")
+    grant_id = secrets.token_hex(32)
+    issuer_pid = os.getpid()
+    grant = object.__new__(_AgentProviderReceiptStoreGrant)
+    object.__setattr__(grant, "_grant_id", grant_id)
+    object.__setattr__(grant, "_issuer_pid", issuer_pid)
+    with _RECEIPT_GRANT_LOCK:
+        _ACTIVE_RECEIPT_GRANTS[grant_id] = (weakref.ref(grant), authority, issuer_pid)
+    weakref.finalize(grant, _discard_receipt_grant, grant_id, issuer_pid)
+    return grant
+
+
 class AgentRuntimeProviderExecutionService:
     """Mint one replay-safe provider receipt under one SQLite authority fence."""
 
@@ -39,13 +119,20 @@ class AgentRuntimeProviderExecutionService:
         base_path: str | Path,
         *,
         grant_resolver: AgentRuntimeGrantResolver,
+        provider_binding_resolver: ProviderWorkTransactionalBindingResolver,
         clock: Callable[[], datetime] | None = None,
         busy_timeout_ms: int = 30_000,
     ) -> None:
         if not isinstance(grant_resolver, AgentRuntimeGrantResolver):
             raise ValueError("grant_resolver must be server-owned")
+        if not isinstance(
+            provider_binding_resolver,
+            ProviderWorkTransactionalBindingResolver,
+        ):
+            raise ValueError("provider_binding_resolver must be transactional")
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self.grant_resolver = grant_resolver
+        self.provider_binding_resolver = provider_binding_resolver
         self.provider_store = SQLiteProviderWorkAuthorityStore(
             base_path,
             busy_timeout_ms=busy_timeout_ms,
@@ -66,13 +153,15 @@ class AgentRuntimeProviderExecutionService:
         )
 
     def issue_receipt(self, invocation_id: str) -> ProviderWorkReceiptWriteResult:
-        now = self._clock()
-        if now.tzinfo is None or now.utcoffset() is None:
-            raise AgentRuntimeProviderExecutionBlocked("server clock is unavailable")
-        now = now.astimezone(timezone.utc)
         with self.invocation_store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = self._clock()
+                if now.tzinfo is None or now.utcoffset() is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "server clock is unavailable"
+                    )
+                now = now.astimezone(timezone.utc)
                 result = self._issue_in_transaction(
                     conn,
                     invocation_id=invocation_id,
@@ -161,6 +250,24 @@ class AgentRuntimeProviderExecutionService:
         )
         if binding is None:
             raise AgentRuntimeProviderExecutionBlocked("provider binding is not current")
+        assignment_root = ProviderWorkBindingRoot(
+            owner_user_id=command.authorizing_subject_id,
+            universe_id=command.universe_id,
+            provider=command.provider,
+        )
+        try:
+            assignment = self.provider_binding_resolver.resolve_current_in_transaction(
+                conn,
+                assignment_root,
+            )
+        except Exception:
+            raise AgentRuntimeProviderExecutionBlocked(
+                "provider assignment source is unavailable"
+            ) from None
+        if type(assignment) is not ProviderWorkBindingSeed:
+            raise AgentRuntimeProviderExecutionBlocked(
+                "provider assignment is not current"
+            )
         binding_matches = (
             binding.state is ProviderWorkBindingState.ACTIVE,
             binding.generation == command.provider_work_binding_generation,
@@ -173,6 +280,19 @@ class AgentRuntimeProviderExecutionService:
             binding.max_invocations >= 1,
             binding.max_tokens >= command.max_tokens,
             binding.max_cost_microunits >= command.max_cost_microunits,
+            assignment.owner_user_id == binding.owner_user_id,
+            assignment.universe_id == binding.universe_id,
+            assignment.provider == binding.provider,
+            assignment.credential_reference_digest
+            == binding.credential_reference_digest,
+            assignment.allowed_operations == binding.allowed_operations,
+            assignment.allowed_roles == binding.allowed_roles,
+            assignment.assignment_generation == binding.assignment_generation,
+            assignment.assignment_digest == binding.assignment_digest,
+            assignment.max_invocations == binding.max_invocations,
+            assignment.max_tokens == binding.max_tokens,
+            assignment.max_cost_microunits == binding.max_cost_microunits,
+            assignment.expires_at == binding.expires_at,
         )
         if not all(binding_matches):
             raise AgentRuntimeProviderExecutionBlocked("provider binding is not current")
@@ -197,9 +317,10 @@ class AgentRuntimeProviderExecutionService:
             agent_invocation_command_digest=command.command_digest,
             agent_invocation_generation=invocation.generation,
         )
+        store_grant = _mint_receipt_store_grant(authority)
         return self.provider_store._issue_universe_receipt_in_transaction(
             conn,
-            authority,
+            store_grant,
         )
 
 
