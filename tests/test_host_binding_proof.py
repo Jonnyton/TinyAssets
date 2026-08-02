@@ -30,12 +30,20 @@ from tinyassets.auth.host_proof import (
     HostEnrollmentWritersDisabled,
     HostInventoryCoordinator,
     HostInventoryRefused,
+    HostLifecycleCoordinator,
+    HostLifecycleIdempotencyConflict,
+    HostLifecyclePrincipalV1,
+    HostLifecycleRefused,
+    HostLifecycleTransactionOutcome,
+    HostLifecycleTransactionRequest,
     HostPrincipalResultV1,
     HostProofBindingV1,
     HostProofRefused,
     HostProofTimingExceeded,
+    HostRecoveryResultV1,
     canonical_b64u,
     direct_account_revoke_policy,
+    host_principal_authority_is_current,
     host_proof_signing_bytes,
     jwk_thumbprint,
     operation_policy,
@@ -1397,3 +1405,334 @@ def test_inventory_allows_lost_device_discovery_but_grants_no_authority() -> Non
         "signatures",
     }
     assert forbidden.isdisjoint(page["items"][0])
+
+
+class _LifecycleContractStore:
+    """Atomic lifecycle model; durable persistence remains task 3.2."""
+
+    def __init__(self, principal: HostLifecyclePrincipalV1) -> None:
+        self._lock = threading.Lock()
+        self.principals = {principal.host_principal_id: principal}
+        self.receipts: dict[str, tuple[str, object, int]] = {}
+        self.consumed: set[str] = set()
+        self.tombstones: set[str] = set()
+        self.requests: list[HostLifecycleTransactionRequest] = []
+        self.mutation_count = 0
+        self.fail_before_commit_once = False
+        self.lose_response_after_commit_once = False
+
+    def load_principal(
+        self, *, issuer: str, subject: str, host_principal_id: str
+    ) -> HostLifecyclePrincipalV1 | None:
+        principal = self.principals.get(host_principal_id)
+        if principal is None or principal.issuer != issuer or principal.subject != subject:
+            return None
+        return principal
+
+    def commit_lifecycle(
+        self, request: HostLifecycleTransactionRequest
+    ) -> HostLifecycleTransactionOutcome:
+        lose_response = False
+        with self._lock:
+            self.requests.append(request)
+            if request.challenge_id_b64u in self.consumed:
+                return HostLifecycleTransactionOutcome("replayed")
+            consumed = set(self.consumed)
+            consumed.add(request.challenge_id_b64u)
+
+            receipt = self.receipts.get(request.idempotency_lookup_hash)
+            if receipt is not None and receipt[2] > request.transaction_time:
+                binding_hash, result, _expiry = receipt
+                self.consumed = consumed
+                if binding_hash != request.idempotency_binding_hash:
+                    return HostLifecycleTransactionOutcome("idempotency_conflict")
+                return HostLifecycleTransactionOutcome("committed", result)
+
+            principals = copy.copy(self.principals)
+            tombstones = set(self.tombstones)
+            principal = principals.get(request.host_principal_id)
+            if (
+                principal is None
+                or principal.status != "active"
+                or principal.generation != request.expected_generation
+                or principal.expires_at <= request.transaction_time
+            ):
+                self.consumed = consumed
+                return HostLifecycleTransactionOutcome("refused")
+
+            if request.operation == "renew":
+                result = replace(
+                    principal,
+                    expires_at=request.transaction_time + 90 * 24 * 60 * 60,
+                )
+                principals[principal.host_principal_id] = result
+                public_result: object = result.to_result()
+            elif request.operation == "revoke":
+                result = replace(principal, generation=principal.generation + 1, status="revoked")
+                principals[principal.host_principal_id] = result
+                tombstones.add(principal.key_thumbprint)
+                public_result = result.to_result()
+            elif request.operation == "rotate":
+                if request.new_key_thumbprint in tombstones or any(
+                    candidate.status == "active"
+                    and candidate.key_thumbprint == request.new_key_thumbprint
+                    for candidate in principals.values()
+                ):
+                    self.consumed = consumed
+                    return HostLifecycleTransactionOutcome("refused")
+                tombstones.add(principal.key_thumbprint)
+                result = replace(
+                    principal,
+                    generation=principal.generation + 1,
+                    public_jwk=request.new_public_jwk,
+                    key_thumbprint=request.new_key_thumbprint,
+                )
+                principals[principal.host_principal_id] = result
+                public_result = result.to_result()
+            elif request.operation == "recover":
+                if request.new_key_thumbprint in tombstones or any(
+                    candidate.status == "active"
+                    and candidate.key_thumbprint == request.new_key_thumbprint
+                    for candidate in principals.values()
+                ):
+                    self.consumed = consumed
+                    return HostLifecycleTransactionOutcome("refused")
+                revoked = replace(principal, generation=principal.generation + 1, status="revoked")
+                replacement = HostLifecyclePrincipalV1(
+                    issuer=principal.issuer,
+                    subject=principal.subject,
+                    host_principal_id=request.replacement_principal_id,
+                    generation=1,
+                    status="active",
+                    issued_at=request.transaction_time,
+                    expires_at=request.transaction_time + 90 * 24 * 60 * 60,
+                    policy_version=principal.policy_version,
+                    public_jwk=request.new_public_jwk,
+                    key_thumbprint=request.new_key_thumbprint,
+                    device_label=request.device_label,
+                )
+                principals[principal.host_principal_id] = revoked
+                principals[replacement.host_principal_id] = replacement
+                tombstones.add(principal.key_thumbprint)
+                public_result = HostRecoveryResultV1(
+                    revoked=revoked.to_result(), replacement=replacement.to_result()
+                )
+            else:
+                raise AssertionError(f"unexpected operation {request.operation}")
+
+            receipts = copy.copy(self.receipts)
+            receipts[request.idempotency_lookup_hash] = (
+                request.idempotency_binding_hash,
+                public_result,
+                request.idempotency_expires_at,
+            )
+            if self.fail_before_commit_once:
+                self.fail_before_commit_once = False
+                raise RuntimeError("injected lifecycle pre-commit crash")
+            self.principals = principals
+            self.tombstones = tombstones
+            self.receipts = receipts
+            self.consumed = consumed
+            self.mutation_count += 1
+            if self.lose_response_after_commit_once:
+                self.lose_response_after_commit_once = False
+                lose_response = True
+
+        if lose_response:
+            raise _ResponseLost("injected lifecycle response loss")
+        return HostLifecycleTransactionOutcome("committed", public_result)
+
+
+def _lifecycle_principal(
+    *, key: Ed25519PrivateKey | None = None, expires_at: int = NOW + 31 * 24 * 60 * 60
+) -> HostLifecyclePrincipalV1:
+    selected_key = key or _key(1)
+    return HostLifecyclePrincipalV1(
+        issuer=ISSUER,
+        subject="user_01HOSTOWNER",
+        host_principal_id="hp_01HOST",
+        generation=7,
+        status="active",
+        issued_at=NOW - 59 * 24 * 60 * 60,
+        expires_at=expires_at,
+        policy_version="host-binding-v1",
+        public_jwk=_jwk(selected_key),
+        key_thumbprint=jwk_thumbprint(_jwk(selected_key)),
+        device_label="Laptop",
+    )
+
+
+def _lifecycle(store: _LifecycleContractStore) -> HostLifecycleCoordinator:
+    return HostLifecycleCoordinator(
+        store=store,
+        idempotency_hmac_key=b"l" * 32,
+        writers_enabled=True,
+        new_principal_id=lambda: "hp_replacement",
+    )
+
+
+def _complete_lifecycle(
+    coordinator: HostLifecycleCoordinator,
+    operation: str,
+    keys: dict[str, Ed25519PrivateKey],
+    *,
+    expected_generation: int = 7,
+    challenge_seed: int = 30,
+    idempotency_seed: int = 40,
+    device_label: str | None = None,
+    now: int = NOW,
+) -> HostPrincipalResultV1 | HostRecoveryResultV1:
+    intent: dict[str, object] = {
+        "host_principal_id": "hp_01HOST",
+        "expected_generation": expected_generation,
+        "idempotency_key_b64u": _b64u(bytes([idempotency_seed]) * 32),
+    }
+    if operation in {"rotate", "recover"}:
+        intent["new_public_jwk"] = _jwk(keys["new"])
+    if device_label is not None:
+        intent["device_label"] = device_label
+    canonical_intent = rfc8785.dumps(intent)
+    policy = operation_policy(operation)
+    binding = HostProofBindingV1(
+        schema_version="host-binding-v1",
+        policy_version="host-binding-v1",
+        operation=operation,
+        permission=policy.permission,
+        issuer=ISSUER,
+        subject="user_01HOSTOWNER",
+        audience=AUDIENCE,
+        method=policy.method,
+        path=policy.path,
+        body_sha256="sha256:" + hashlib.sha256(canonical_intent).hexdigest(),
+        key_thumbprints={role: jwk_thumbprint(_jwk(key)) for role, key in keys.items()},
+        host_principal_id="hp_01HOST",
+        expected_generation=expected_generation,
+        challenge_id_b64u=_b64u(bytes([challenge_seed]) * 32),
+        issued_at=now - 30,
+        expires_at=now + 270,
+    )
+    return coordinator.complete_lifecycle(
+        submission_json=_submission(binding, keys),
+        binding=binding,
+        intent=intent,
+        signing_input_b64u=_b64u(host_proof_signing_bytes(binding)),
+        now=now,
+    )
+
+
+def test_principal_expires_at_90_days_and_renews_only_in_final_30_days() -> None:
+    enrolled = _complete_enrollment(
+        _enrollment(_EnrollmentContractStore()), _key(9), challenge_seed=29
+    )
+    assert enrolled.expires_at == NOW + 90 * 24 * 60 * 60
+
+    early_store = _LifecycleContractStore(
+        _lifecycle_principal(expires_at=NOW + 30 * 24 * 60 * 60 + 1)
+    )
+    with pytest.raises(HostLifecycleRefused):
+        _complete_lifecycle(_lifecycle(early_store), "renew", {"current": _key(1)})
+
+    store = _LifecycleContractStore(_lifecycle_principal(expires_at=NOW + 30 * 24 * 60 * 60))
+    renewed = _complete_lifecycle(_lifecycle(store), "renew", {"current": _key(1)})
+    assert renewed.expires_at == NOW + 90 * 24 * 60 * 60
+    assert renewed.host_principal_generation == 7
+    assert not host_principal_authority_is_current(
+        _lifecycle_principal(expires_at=NOW), expected_generation=7, now=NOW
+    )
+
+
+def test_lifecycle_generation_cas_and_revoke_are_terminal_and_idempotent() -> None:
+    store = _LifecycleContractStore(_lifecycle_principal())
+    coordinator = _lifecycle(store)
+    with pytest.raises(HostLifecycleRefused):
+        _complete_lifecycle(coordinator, "revoke", {"current": _key(1)}, expected_generation=6)
+
+    revoked = _complete_lifecycle(coordinator, "revoke", {"current": _key(1)})
+    repeated = _complete_lifecycle(coordinator, "revoke", {"current": _key(1)}, challenge_seed=31)
+    assert revoked == repeated
+    assert revoked.status == "revoked"
+    assert revoked.host_principal_generation == 8
+    assert store.mutation_count == 1
+    with pytest.raises(HostLifecycleRefused):
+        _complete_lifecycle(coordinator, "renew", {"current": _key(1)}, challenge_seed=32)
+
+
+def test_rotation_requires_role_correct_same_input_dual_key_proof_and_fences_old_key() -> None:
+    store = _LifecycleContractStore(_lifecycle_principal())
+    coordinator = _lifecycle(store)
+    rotated = _complete_lifecycle(coordinator, "rotate", {"current": _key(1), "new": _key(2)})
+    assert rotated.host_principal_generation == 8
+    assert store.principals["hp_01HOST"].key_thumbprint == jwk_thumbprint(_jwk(_key(2)))
+    assert not host_principal_authority_is_current(
+        store.principals["hp_01HOST"], expected_generation=7, now=NOW
+    )
+    with pytest.raises(HostLifecycleRefused):
+        _complete_lifecycle(
+            coordinator,
+            "rotate",
+            {"current": _key(2), "new": _key(1)},
+            expected_generation=8,
+            challenge_seed=31,
+            idempotency_seed=41,
+        )
+    with pytest.raises(HostProofRefused):
+        _complete_lifecycle(
+            coordinator,
+            "rotate",
+            {"current": _key(1), "new": _key(3)},
+            expected_generation=8,
+            challenge_seed=32,
+            idempotency_seed=42,
+        )
+
+
+def test_recovery_is_atomic_and_response_loss_returns_committed_replacement() -> None:
+    store = _LifecycleContractStore(_lifecycle_principal())
+    coordinator = _lifecycle(store)
+    store.fail_before_commit_once = True
+    with pytest.raises(RuntimeError, match="pre-commit"):
+        _complete_lifecycle(coordinator, "recover", {"new": _key(2)})
+    assert store.mutation_count == 0
+    assert set(store.principals) == {"hp_01HOST"}
+
+    store.lose_response_after_commit_once = True
+    with pytest.raises(_ResponseLost):
+        _complete_lifecycle(coordinator, "recover", {"new": _key(2)})
+    recovered = _complete_lifecycle(coordinator, "recover", {"new": _key(2)}, challenge_seed=31)
+    assert recovered.revoked.status == "revoked"
+    assert recovered.replacement.host_principal_id == "hp_replacement"
+    assert store.mutation_count == 1
+    with pytest.raises(HostLifecycleIdempotencyConflict):
+        _complete_lifecycle(
+            coordinator,
+            "recover",
+            {"new": _key(2)},
+            challenge_seed=32,
+            device_label="Changed",
+        )
+    assert store.mutation_count == 1
+    request_text = repr(store.requests[-1])
+    assert "Changed" not in request_text
+    assert _jwk(_key(2))["x"] not in request_text
+    assert jwk_thumbprint(_jwk(_key(2))) not in request_text
+    assert _b64u(bytes([40]) * 32) not in request_text
+
+
+@pytest.mark.parametrize("label", ["x" * 65, "e\u0301"])
+def test_recovery_refuses_unbounded_or_non_nfc_device_label_before_mutation(label: str) -> None:
+    store = _LifecycleContractStore(_lifecycle_principal())
+    with pytest.raises(HostLifecycleRefused):
+        _complete_lifecycle(_lifecycle(store), "recover", {"new": _key(2)}, device_label=label)
+    assert store.requests == []
+
+
+def test_prospective_fence_rechecks_status_generation_and_expiry_before_commit() -> None:
+    principal = _lifecycle_principal()
+    assert host_principal_authority_is_current(principal, expected_generation=7, now=NOW)
+    assert not host_principal_authority_is_current(
+        replace(principal, status="revoked"), expected_generation=7, now=NOW
+    )
+    assert not host_principal_authority_is_current(principal, expected_generation=6, now=NOW)
+    assert not host_principal_authority_is_current(
+        replace(principal, expires_at=NOW), expected_generation=7, now=NOW
+    )
