@@ -1004,6 +1004,10 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderWorkReceiptWriteResult:
         if not isinstance(authority, ProviderUniverseWorkAuthority):
             raise ValueError("authority must be a ProviderUniverseWorkAuthority")
+        if authority.root.work_item_kind == "agent_invocation":
+            raise PermissionError(
+                "agent receipts require the canonical runtime authority fence"
+            )
         now = self._now()
         candidate = _receipt_from_authority(
             authority,

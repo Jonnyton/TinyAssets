@@ -498,16 +498,16 @@ def test_agent_invocation_receipt_has_manifest_subject_without_branch_lineage(
         agent_invocation_command_digest=f"sha256:{'3' * 64}",
         agent_invocation_generation=1,
     )
-    receipt = (
+    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
         ProviderWorkReceiptService(
             store,
             _UniverseWorkResolver(authority),
-        )
-        .issue(root)
-        .record
+        ).issue(root)
+    receipt = provider_authority._receipt_from_authority(
+        authority,
+        created_at="2026-08-01T06:00:00.000000Z",
     )
 
-    assert receipt is not None
     assert receipt.schema_version == 2
     assert receipt.execution_subject == authority.execution_subject
     assert receipt.branch_def_id is None

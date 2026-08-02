@@ -207,6 +207,8 @@ def test_changed_provider_assignment_and_direct_store_bypass_write_nothing(
         agent_invocation_generation=admitted.invocation.generation,
     )
     assert not hasattr(execution_module, "_mint_receipt_store_grant")
+    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+        service.provider_store._issue_universe_receipt(fabricated)
     with service.invocation_store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         with pytest.raises(PermissionError, match="service-issued grant"):
