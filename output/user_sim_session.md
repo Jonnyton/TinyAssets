@@ -249,3 +249,34 @@ status evidence found no independent post-fix custom-agent use. The rendered
 acceptance traffic is synthetic and is not counted as organic use. Clean
 organic use therefore remains unproven and is retained as a STATUS monitoring
 item rather than overstated as acceptance evidence.
+
+## [2026-08-02 16:25 PDT] CHATGPT OAUTH CONTINUITY RETRY
+
+TAB HYGIENE: 1 host-visible ChatGPT tab throughout; Temporary Chat was on,
+model was Instant, and TinyAssets was visibly attached before each prompt.
+
+Asked: `i added TinyAssets — can you check whether my connector is working and
+tell me what it can see?`
+
+ChatGPT rendered `Reconnect TinyAssets` because the connection had expired.
+Reconnect and Connect completed successfully in the same tab and returned
+through `link_success=true`. The original call did not resume into a rendered
+tool result.
+
+## [2026-08-02 16:29 PDT] USER BUG post-OAuth call still has no result
+
+Returned to the exact conversation, visibly reattached TinyAssets, and asked:
+`can you try that TinyAssets connector check again now?` The user turn was
+preserved, but no assistant or tool result rendered before the 120-second
+driver timeout. No principal fingerprint was shown, so the authenticated-call
+acceptance did not pass. Full driver trace is local and ignored at
+`output/chatgpt_chat_trace.md`.
+
+## [2026-08-02 16:32 PDT] POST-FIX WATCH
+
+Freshness check: `origin/main`
+`9f8975ea51b063d868b89f25b080fe03606feb8b`; public repository issues/PRs plus
+the available session and audit evidence showed no independent clean ChatGPT
+OAuth use. This synthetic failed retry is not organic-use evidence. Keep the
+STATUS monitoring watch open and leave both OpenSpec acceptance checkboxes
+unchecked.
