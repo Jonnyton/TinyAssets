@@ -289,6 +289,20 @@ class AgentRuntimeProviderExecutionService:
                         continuation.command_id != command.command_id
                         or continuation.command_digest != command.command_digest
                         or continuation.invocation_digest != invocation.root_digest
+                        or continuation.invocation_generation != event.generation
+                        or continuation.universe_id != command.universe_id
+                        or continuation.automation_id != command.activation_automation_id
+                        or continuation.activation_epoch != command.activation_epoch
+                        or continuation.activation_lease_id != command.lease_id
+                        or continuation.execution_subject != command.execution_subject
+                        or continuation.provider_binding_id != command.provider_work_binding_id
+                        or continuation.provider_binding_generation
+                        != command.provider_work_binding_generation
+                        or continuation.provider_binding_digest
+                        != command.provider_work_binding_digest
+                        or continuation.typed_input_digest != command.typed_input_digest
+                        or continuation.max_tokens != command.budget.max_tokens
+                        or continuation.max_cost_microunits != command.budget.max_cost_microunits
                     ):
                         raise AgentRuntimeProviderExecutionBlocked(
                             "agent health continuation lineage is not exact"
@@ -323,6 +337,11 @@ class AgentRuntimeProviderExecutionService:
                         receipt.agent_invocation_generation == continuation.invocation_generation,
                         receipt.receipt_id == continuation.receipt_id,
                         receipt.receipt_digest == continuation.receipt_digest,
+                        receipt.actor_id == continuation.activation_lease_id,
+                        receipt.universe_id == continuation.universe_id,
+                        receipt.execution_subject == continuation.execution_subject,
+                        receipt.max_tokens >= continuation.max_tokens,
+                        receipt.max_cost_microunits >= continuation.max_cost_microunits,
                         claim.receipt_id == receipt.receipt_id,
                         claim.receipt_digest == receipt.receipt_digest,
                         claim.claim_id == continuation.claim_id,

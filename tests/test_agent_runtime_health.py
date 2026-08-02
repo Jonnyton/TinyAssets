@@ -153,6 +153,56 @@ def test_health_refuses_partial_continuation_lineage(tmp_path, authenticate_requ
         )
 
 
+def test_health_refuses_self_consistent_continuation_not_anchored_to_command(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionBlocked,
+    )
+    from tinyassets.cloud_automation_continuation import (
+        AgentInvocationCloudContinuation,
+    )
+
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+    service.claim(invocation_id)
+    service.reserve(invocation_id)
+    continuation = service.prepare_continuation(invocation_id).record
+    assert isinstance(continuation, AgentInvocationCloudContinuation)
+    values = {
+        name: getattr(continuation, name)
+        for name in AgentInvocationCloudContinuation._FIELDS
+        if name != "continuation_digest"
+    }
+    values["typed_input_digest"] = f"sha256:{'9' * 64}"
+    tampered = AgentInvocationCloudContinuation.build(**values)
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        connection.execute(
+            """
+            UPDATE cloud_execution_continuations
+            SET continuation_digest = ?, record_json = ?
+            WHERE continuation_id = ?
+            """,
+            (
+                tampered.continuation_digest,
+                json.dumps(
+                    tampered.to_dict(),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                tampered.continuation_id,
+            ),
+        )
+
+    with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="lineage"):
+        service.project_useful_progress(
+            invocation_id,
+            no_progress_after_seconds=60,
+        )
+
+
 def test_stale_activation_is_visible_and_cannot_report_healthy(
     tmp_path, authenticate_request
 ) -> None:
