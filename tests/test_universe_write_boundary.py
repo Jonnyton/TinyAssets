@@ -528,6 +528,14 @@ class TestOpenCommonsContribution:
                 "drafts/notes/private-source.txt",
                 "wiki/drafts/notes/private-source.txt",
             ),
+            (
+                "pages/custom/extensionless-entry",
+                "wiki/pages/custom/extensionless-entry.md",
+            ),
+            (
+                "drafts/custom/extensionless-entry",
+                "wiki/drafts/custom/extensionless-entry.md",
+            ),
         ],
     )
     def test_exact_page_paths_stay_within_public_markdown_roots(

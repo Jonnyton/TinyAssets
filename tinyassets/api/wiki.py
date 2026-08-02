@@ -222,8 +222,6 @@ def _resolve_page(name: str) -> Path | None:
         relative = Path(requested_path)
         if relative.is_absolute() or ".." in relative.parts:
             return None
-        if relative.suffix == "":
-            relative = relative.with_suffix(".md")
         if relative.suffix.lower() != ".md":
             return None
         candidate = (_wiki_root() / relative).resolve()

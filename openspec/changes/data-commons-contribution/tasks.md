@@ -1,5 +1,6 @@
-> **Target-only change — nothing here is built.** Every requirement in
-> `specs/` describes intended behavior, not behavior on `main`. Authored
+> **Partially implemented legacy change.** Checked requirements below have
+> executable evidence on `main`; unchecked requirements in `specs/` remain
+> target-only intended behavior. Authored
 > 2026-07-25 as the successor for `build-forward-platform-capabilities` tasks
 > 3.1 (non-monetary half) and 3.2, per that umbrella's decision D1 (a slice
 > must become a narrower change before implementation).
@@ -53,7 +54,7 @@
 - [x] 1.4 Keep the commons anyone-writable: any authenticated principal contributes subject only to the existing auth-scope gate, with no invitation list, curation seat, or platform-approval step consulted.
   > Verified 2026-08-02 with a non-founder, non-maintainer `ordinary-contributor` identity holding only `tinyassets.wiki.write` and `tinyassets.wiki.read`; the explicit commons write and subsequent reads succeed without another gate.
 - [x] 1.5 Assert by test that the advertised handle set is unchanged after implementation — the `--assert-handles` canonical set, with no contribution, dataset, manifest, forge, or promotion handle added.
-  > Verified 2026-08-02 by the offline canonical-handle canary, including named rejection probes for `contribution`, `dataset`, `manifest`, `forge`, and `promotion`; the full claimed regression set reports 125 passed.
+  > Verified 2026-08-02 by the offline canonical-handle canary, including named rejection probes for `contribution`, `dataset`, `manifest`, `forge`, and `promotion`; the full claimed regression set reports 127 passed.
 
 ## 2. Manifest entries: immutable, content-addressed, reference-moving
 
