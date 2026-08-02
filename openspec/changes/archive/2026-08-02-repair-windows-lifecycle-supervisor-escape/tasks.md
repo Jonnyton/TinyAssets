@@ -6,4 +6,4 @@
 ## 2. Verify and Land
 
 - [x] 2.1 Run focused cross-platform tests, Ruff, strict OpenSpec, workflow assertions, and document the recurring runs plus root-cause evidence.
-- [ ] 2.2 Obtain independent exact-head review and require the PR's unsigned Windows lifecycle job to return a supervisor-authored terminal verdict before merge; sync and archive the change on land.
+- [x] 2.2 Obtain independent exact-head review and require the PR's unsigned Windows lifecycle job to return a supervisor-authored terminal verdict before merge; sync and archive the change on land.
