@@ -23,6 +23,9 @@
 ## 4. Single-Active Recovery and Health
 
 - [ ] 4.1 Test-first, compose agent invocation with canonical cloud continuation and restart reconciliation under the same subject/command/invocation/provider identities; prove no `BackgroundBranchAttempt`, replacement identity, graph/effect/app, or public-control path is reached.
+  - [x] 4.1a Canonical prepared continuation — completed 2026-08-02 at `fe624bc9`: after fresh transactional authority validation, the canonical cloud-continuation owner persists one non-authorizing `agent_invocation` continuation binding the exact activation subject/epoch/lease, command, invocation, provider binding, receipt, claim, reservation, typed-input digest, and budgets. Eight preparers converge on one identity; restart and post-launch-arm reconciliation replay it; stale activation writes nothing; no Branch attempt table is created or read. 126 combined agent/provider/Branch-continuation tests, Ruff, strict OpenSpec, 316-file mirror parity, pre-commit gates, and exact-head independent architecture/security review pass.
+  - [ ] 4.1b Actual provider call and typed outcome — consume the already-armed carrier at the canonical router, persist one bounded typed result or explicit indeterminate blocker, finalize the same reservation without granting graph/effect/app authority, and prove no ambient/fallback provider substitution.
+  - [ ] 4.1c Restart reconciliation — resume from admitted/reserved/prepared states under the same identities; after an uncertain launched call, reconcile or block without reminting a carrier, invocation, reservation, continuation, or spend.
 - [ ] 4.2 Test-first, add the private useful-progress projection over canonical owner records with exact subject/epoch/lease/grant/budget revalidation, stale-executor fencing, and no-progress alarms.
 
 ## 5. Dark Verification and Foldback
