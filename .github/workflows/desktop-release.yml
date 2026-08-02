@@ -290,9 +290,13 @@ jobs:
   test-unsigned-windows-install:
     needs: build
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Download unsigned Windows installer
         uses: actions/download-artifact@v4
@@ -307,8 +311,9 @@ jobs:
           if ($installer.Count -ne 1) {
             throw "expected exactly one Windows installer"
           }
-          ./tests/desktop_install/windows_lifecycle.ps1 `
-            -Installer $installer.FullName
+          python ./tests/desktop_install/windows_lifecycle_supervisor.py `
+            --installer $installer.FullName `
+            --total-timeout-seconds 300
 
   sign-and-verify:
     needs: [plan, build, test-unsigned-windows-install]
