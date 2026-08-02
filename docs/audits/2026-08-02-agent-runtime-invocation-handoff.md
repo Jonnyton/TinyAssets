@@ -83,3 +83,53 @@ replaying a used draft grants no authority and produces no writes.
   bearer-free recovery evidence, forged-record refusal, and Branch-ledger
   isolation; broader authority regressions, lint, strict OpenSpec, and packaged
   mirror parity must pass.
+
+## Implementation result
+
+Task 3.2 is complete at exact head
+`063e1576593e24fd079b60e94d3935540c96f00e`.
+
+- `tinyassets/agent_runtime_invocation.py` owns caller-intent validation, the
+  authenticated one-use draft, a second live-state resolution, the sealed
+  one-use persistence grant, immutable command/root types, and the required
+  `AgentInvocationExternalAuthorityFenceSource` contract. There is no unsafe
+  fallback when a trusted authority owner cannot validate its pinned manifest,
+  grant, and provider-assignment generations while holding their mutation lock
+  through commit.
+- `tinyassets/storage/agent_runtime_invocation.py` holds that external fence
+  across one `BEGIN IMMEDIATE` transaction, checks the exact activation fence
+  inside the transaction, links canonical provider-binding issuance with the
+  command/root/initial event, and rolls the entire aggregate back on failure.
+  Commands, roots, and events are immutable or append-only and digest-checked
+  on replay/read.
+- `tinyassets/storage/provider_work_authority.py` exposes only a private
+  active-transaction composition hook. It does not issue receipts, claims,
+  reservations, call carriers, or provider work.
+- Canonical runtime changes are byte-identical in the packaged daemon. No MCP,
+  app, Branch-attempt, drain-policy, workflow/graph, effect, provider-call, or
+  public-control route was added.
+
+Failure-first evidence includes exact replay, changed-input conflict, eight-way
+single-winner admission, ended/reused/cloned draft refusal, direct-store bypass
+refusal, forced post-binding rollback, budget refusal, bearer-free recovery,
+initial-event integrity, and a concurrent provider-assignment revocation that
+blocks on the external fence until after commit.
+
+Verification on 2026-08-02, Windows worktree:
+
+- 12 focused invocation-admission tests passed.
+- 255 combined custom-agent manifest/compiler/grant/principal/invocation,
+  activation, execution-subject, provider-authority, continuation, and
+  user-owned-cloud regressions passed.
+- Ruff, strict OpenSpec, canonical/plugin mirror parity, pre-commit import graph,
+  and isolated packaged imports passed.
+- Independent exact-head capability review: APPROVE at `063e1576`.
+- Independent exact-head storage/concurrency review: APPROVE at `063e1576`.
+
+The first exact code review correctly rejected the original repeated-read
+design because authority could change after its last check but before commit.
+The accepted design instead requires the trusted external authority owner to
+hold its mutation fence across commit while activation is transactionally
+checked in SQLite. Task 3.3 remains the next boundary: only this exact admitted
+lineage may enter canonical provider receipt/claim/reservation/launch, with a
+fresh live authority check before spend.
