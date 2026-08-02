@@ -1291,6 +1291,7 @@ def test_private_inventory_defaults_to_25_and_pages_subject_only() -> None:
         first["next_cursor"] + "=" * (-len(first["next_cursor"]) % 4)
     )
     assert b"user_01HOSTOWNER" not in decoded_cursor
+    assert b"owner_binding" not in decoded_cursor
     second = coordinator.list_inventory(
         identity=_inventory_identity(),
         query={"cursor": first["next_cursor"]},
@@ -1341,6 +1342,24 @@ def test_inventory_cursor_is_subject_bound_and_mcp_audience_is_refused() -> None
             now=NOW,
         )
     assert len(store.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        replace(_inventory_identity(), auth_time=NOW - 301),
+        replace(_inventory_identity(), auth_time=NOW + 1),
+        replace(_inventory_identity(), permissions=frozenset()),
+    ],
+)
+def test_inventory_requires_recent_step_up_manage_authority(
+    identity: HostBindingIdentity,
+) -> None:
+    store = _InventoryContractStore([_inventory_record(1)])
+
+    with pytest.raises(HostInventoryRefused):
+        _inventory(store).list_inventory(identity=identity, query={}, now=NOW)
+    assert store.calls == []
 
 
 def test_inventory_allows_lost_device_discovery_but_grants_no_authority() -> None:

@@ -199,13 +199,16 @@ class HostInventoryCoordinator:
             raise HostInventoryRefused
         payload = rfc8785.dumps(
             {
-                "owner_binding": self._owner_cursor_binding(identity),
                 "after_principal_id": after_principal_id,
             }
         )
         signature = hmac.new(
             self._cursor_hmac_key,
-            _INVENTORY_CURSOR_DOMAIN + b"\0" + payload,
+            _INVENTORY_CURSOR_DOMAIN
+            + b"\0"
+            + self._owner_cursor_binding(identity)
+            + b"\0"
+            + payload,
             hashlib.sha256,
         ).digest()
         return _encode_b64u(payload + signature)
@@ -226,34 +229,30 @@ class HostInventoryCoordinator:
         payload, signature = encoded[:-32], encoded[-32:]
         expected = hmac.new(
             self._cursor_hmac_key,
-            _INVENTORY_CURSOR_DOMAIN + b"\0" + payload,
+            _INVENTORY_CURSOR_DOMAIN
+            + b"\0"
+            + self._owner_cursor_binding(identity)
+            + b"\0"
+            + payload,
             hashlib.sha256,
         ).digest()
         if not hmac.compare_digest(signature, expected):
             raise HostProofRefused
         decoded = _parse_json_object(payload)
-        if frozenset(decoded) != {"owner_binding", "after_principal_id"}:
+        if frozenset(decoded) != {"after_principal_id"}:
             raise HostProofRefused
-        owner_binding = decoded.get("owner_binding")
         after_principal_id = decoded.get("after_principal_id")
-        if (
-            type(owner_binding) is not str
-            or type(after_principal_id) is not str
-            or not after_principal_id
-            or not hmac.compare_digest(owner_binding, self._owner_cursor_binding(identity))
-        ):
+        if type(after_principal_id) is not str or not after_principal_id:
             raise HostProofRefused
         return after_principal_id
 
-    def _owner_cursor_binding(self, identity: HostBindingIdentity) -> str:
+    def _owner_cursor_binding(self, identity: HostBindingIdentity) -> bytes:
         owner = rfc8785.dumps({"issuer": identity.issuer, "subject": identity.subject})
-        return _encode_b64u(
-            hmac.new(
-                self._cursor_hmac_key,
-                _INVENTORY_CURSOR_DOMAIN + b"\0owner\0" + owner,
-                hashlib.sha256,
-            ).digest()
-        )
+        return hmac.new(
+            self._cursor_hmac_key,
+            _INVENTORY_CURSOR_DOMAIN + b"\0owner\0" + owner,
+            hashlib.sha256,
+        ).digest()
 
 
 @dataclass(frozen=True)
