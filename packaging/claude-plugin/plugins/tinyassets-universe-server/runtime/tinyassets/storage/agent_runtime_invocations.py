@@ -7,7 +7,6 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol
 
 from tinyassets.agent_runtime_invocation import (
     AgentInvocationEvent,
@@ -53,12 +52,6 @@ CREATE TABLE IF NOT EXISTS agent_runtime_invocation_events (
         REFERENCES agent_runtime_invocation_roots(invocation_id)
 );
 """
-
-
-class AgentInvocationAdmissionWitnessVerifier(Protocol):
-    """Future canonical command/binding owner verification boundary."""
-
-    def verify_current_admission(self, *, root: AgentInvocationRoot) -> bool: ...
 
 
 def _canonical_json(value: object) -> str:
@@ -154,11 +147,9 @@ class AgentRuntimeInvocationStore:
         self,
         base_path: str | Path,
         *,
-        witness_verifier: AgentInvocationAdmissionWitnessVerifier | None = None,
         busy_timeout_ms: int = 30_000,
     ) -> None:
         self.base_path = Path(base_path)
-        self._witness_verifier = witness_verifier
         self._busy_timeout_ms = int(busy_timeout_ms)
         if self._busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
@@ -215,46 +206,12 @@ class AgentRuntimeInvocationStore:
         loaded = self._load(invocation_id)
         if loaded is None:
             return None
-        root, events = loaded
-        if events[-1].state is AgentInvocationEventState.INVALIDATED:
-            return None
-        verifier = self._witness_verifier
-        if verifier is None:
-            return None
-        try:
-            accepted = verifier.verify_current_admission(root=root)
-        except Exception as exc:
-            raise AgentInvocationIntegrityError(
-                "canonical admission witness verification failed"
-            ) from exc
-        if not isinstance(accepted, bool):
-            raise AgentInvocationIntegrityError(
-                "canonical admission witness verifier returned an invalid result"
-            )
-        if not accepted:
-            return None
-        final = self._load(invocation_id)
-        if final != loaded:
-            raise AgentInvocationIntegrityError(
-                "invocation changed during admission witness verification"
-            )
-        return AgentInvocationAuthorityEvidence(
-            invocation_id=root.invocation_id,
-            invocation_generation=events[-1].generation,
-            authorizing_subject_id=root.authorizing_subject_id,
-            universe_id=root.universe_id,
-            agent_binding_id=root.agent_binding_id,
-            binding_revision=root.binding_revision,
-            execution_subject=root.execution_subject,
-            activation_automation_id=root.activation_automation_id,
-            activation_epoch=root.activation_epoch,
-            executor_class=root.executor_class,
-            lease_id=root.lease_id,
-            typed_input_digest=root.typed_input_digest,
-        )
+        # A structurally valid row is not admission authority. Positive resolution
+        # stays impossible until the canonical command/provider-binding owner can
+        # return and revalidate a sealed typed witness in the same authority flow.
+        return None
 
 
 __all__ = [
-    "AgentInvocationAdmissionWitnessVerifier",
     "AgentRuntimeInvocationStore",
 ]

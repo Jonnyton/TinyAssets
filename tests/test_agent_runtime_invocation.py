@@ -74,16 +74,6 @@ def _admitted(root: AgentInvocationRoot, **changes: object) -> AgentInvocationEv
     return AgentInvocationEvent.build(**values)  # type: ignore[arg-type]
 
 
-class _WitnessVerifier:
-    def __init__(self, accepted: bool = True) -> None:
-        self.accepted = accepted
-        self.records: list[AgentInvocationRoot] = []
-
-    def verify_current_admission(self, *, root: AgentInvocationRoot) -> bool:
-        self.records.append(root)
-        return self.accepted
-
-
 def _initialize(store: AgentRuntimeInvocationStore) -> None:
     assert store.resolve_current(invocation_id="agent_invocation_missing") is None
 
@@ -181,40 +171,20 @@ def test_self_consistent_row_is_not_authority_without_canonical_witness_verifier
     assert store.resolve_current(invocation_id=root.invocation_id) is None
 
 
-def test_rejected_admission_witness_is_not_current(tmp_path) -> None:
-    verifier = _WitnessVerifier(accepted=False)
-    store = AgentRuntimeInvocationStore(tmp_path, witness_verifier=verifier)
-    _initialize(store)
-    root = _root()
-    _insert_root(tmp_path, root)
-    _insert_event(tmp_path, _admitted(root))
+def test_arbitrary_positive_verifier_cannot_be_injected(tmp_path) -> None:
+    class _AttackerVerifier:
+        def verify_current_admission(self, *, root: AgentInvocationRoot) -> bool:
+            return True
 
-    assert store.resolve_current(invocation_id=root.invocation_id) is None
-    assert verifier.records == [root]
-
-
-def test_verified_admitted_root_resolves_exact_principal_evidence(tmp_path) -> None:
-    verifier = _WitnessVerifier()
-    store = AgentRuntimeInvocationStore(tmp_path, witness_verifier=verifier)
-    _initialize(store)
-    root = _root()
-    _insert_root(tmp_path, root)
-    _insert_event(tmp_path, _admitted(root))
-
-    evidence = store.resolve_current(invocation_id=root.invocation_id)
-
-    assert evidence is not None
-    assert evidence.invocation_id == root.invocation_id
-    assert evidence.invocation_generation == 1
-    assert evidence.authorizing_subject_id == root.authorizing_subject_id
-    assert evidence.execution_subject == root.execution_subject
-    assert evidence.activation_epoch == root.activation_epoch
-    assert evidence.typed_input_digest == root.typed_input_digest
-    assert verifier.records == [root]
+    with pytest.raises(TypeError, match="witness_verifier"):
+        AgentRuntimeInvocationStore(
+            tmp_path,
+            witness_verifier=_AttackerVerifier(),  # type: ignore[call-arg]
+        )
 
 
 def test_invalidated_invocation_cannot_resurrect(tmp_path) -> None:
-    store = AgentRuntimeInvocationStore(tmp_path, witness_verifier=_WitnessVerifier())
+    store = AgentRuntimeInvocationStore(tmp_path)
     _initialize(store)
     root = _root()
     admitted = _admitted(root)
@@ -253,7 +223,7 @@ def test_invalidated_invocation_cannot_resurrect(tmp_path) -> None:
 
 @pytest.mark.parametrize("tamper", ["projection", "json", "digest"])
 def test_persisted_root_tampering_fails_closed(tmp_path, tamper: str) -> None:
-    store = AgentRuntimeInvocationStore(tmp_path, witness_verifier=_WitnessVerifier())
+    store = AgentRuntimeInvocationStore(tmp_path)
     _initialize(store)
     root = _root()
     _insert_root(tmp_path, root)
@@ -282,7 +252,7 @@ def test_persisted_root_tampering_fails_closed(tmp_path, tamper: str) -> None:
 
 
 def test_event_generation_gap_or_hash_break_fails_closed(tmp_path) -> None:
-    store = AgentRuntimeInvocationStore(tmp_path, witness_verifier=_WitnessVerifier())
+    store = AgentRuntimeInvocationStore(tmp_path)
     _initialize(store)
     root = _root()
     admitted = _admitted(root)
@@ -302,38 +272,6 @@ def test_event_generation_gap_or_hash_break_fails_closed(tmp_path) -> None:
     _insert_event(tmp_path, broken)
 
     with pytest.raises(AgentInvocationIntegrityError, match="chain"):
-        store.resolve_current(invocation_id=root.invocation_id)
-
-
-def test_invalidation_during_witness_verification_fails_closed(tmp_path) -> None:
-    root = _root()
-    admitted = _admitted(root)
-
-    class _RevokingVerifier:
-        def verify_current_admission(self, *, root: AgentInvocationRoot) -> bool:
-            invalidated = AgentInvocationEvent.build(
-                schema_version=1,
-                event_id="agent_invocation_event_02",
-                invocation_id=root.invocation_id,
-                generation=2,
-                state=AgentInvocationEventState.INVALIDATED,
-                previous_event_digest=admitted.event_digest,
-                root_digest=root.root_digest,
-                reason_code="grant_revoked",
-                occurred_at="2026-08-02T12:01:00.000000Z",
-            )
-            _insert_event(tmp_path, invalidated)
-            return True
-
-    store = AgentRuntimeInvocationStore(
-        tmp_path,
-        witness_verifier=_RevokingVerifier(),
-    )
-    _initialize(store)
-    _insert_root(tmp_path, root)
-    _insert_event(tmp_path, admitted)
-
-    with pytest.raises(AgentInvocationIntegrityError, match="changed"):
         store.resolve_current(invocation_id=root.invocation_id)
 
 
