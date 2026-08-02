@@ -5,6 +5,7 @@ import pickle
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
@@ -285,12 +286,13 @@ def _capture(service):
     return service.capture_live_provider_binding_draft(agent_binding_id="agent_binding_alice")
 
 
-def _counts(tmp_path) -> tuple[int, int, int, int]:
+def _counts(tmp_path) -> tuple[int, int, int, int, int]:
     with sqlite3.connect(db_path(tmp_path)) as conn:
         return tuple(
             int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
             for table in (
                 "provider_work_bindings",
+                "agent_runtime_invocation_admission_witnesses",
                 "agent_runtime_invocation_commands",
                 "agent_runtime_invocation_roots",
                 "agent_runtime_invocation_events",
@@ -319,7 +321,7 @@ def test_live_admission_atomically_links_secret_free_server_records(
     assert result.command.admission_witness_digest.startswith("sha256:")
     assert result.invocation.command_generation == 1
     assert result.invocation.root_digest.startswith("sha256:")
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
     with sqlite3.connect(db_path(tmp_path)) as conn:
         tables = {
             str(row[0])
@@ -373,7 +375,175 @@ def test_exact_retry_uses_fresh_live_draft_and_replays_same_three_identities(
     assert second.binding == first.binding
     assert second.command == first.command
     assert second.invocation == first.invocation
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
+
+
+def test_self_consistent_raw_rows_without_server_seal_cannot_mint_authority(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_invocation_authority import (
+        AgentInvocationEvent,
+        AgentInvocationEventState,
+        AgentInvocationRoot,
+    )
+    from tinyassets.agent_runtime_command import AgentInvocationCommand
+
+    authenticate_request("user::alice")
+    service, _resolver = _service(tmp_path)
+    admitted = service.admit(_capture(service), _request())
+    original = admitted.command
+    invocation_id = "agent_invocation_forged"
+    command_id = "agent_invocation_command_forged"
+    witness_id = "agent_invocation_admission_forged"
+    forged_seal = f"sha256:{'8' * 64}"
+    command = AgentInvocationCommand.build(
+        schema_version=1,
+        command_id=command_id,
+        generation=1,
+        invocation_id=invocation_id,
+        authorizing_subject_id=original.authorizing_subject_id,
+        authorizing_grant_generation=999,
+        universe_id=original.universe_id,
+        agent_binding_id=original.agent_binding_id,
+        binding_revision=original.binding_revision,
+        execution_subject=original.execution_subject,
+        activation_automation_id=original.activation_automation_id,
+        activation_epoch=original.activation_epoch,
+        executor_class=original.executor_class,
+        lease_id=original.lease_id,
+        typed_input_digest=original.typed_input_digest,
+        provider_work_binding_id=original.provider_work_binding_id,
+        provider_work_binding_generation=original.provider_work_binding_generation,
+        provider_work_binding_digest=original.provider_work_binding_digest,
+        idempotency_key_digest=f"sha256:{'7' * 64}",
+        request_digest=f"sha256:{'6' * 64}",
+        budget=original.budget,
+        admission_witness_id=witness_id,
+        admission_witness_digest=forged_seal,
+        created_at=original.created_at,
+    )
+    root = AgentInvocationRoot.build(
+        schema_version=1,
+        invocation_id=invocation_id,
+        authorizing_subject_id=command.authorizing_subject_id,
+        authorizing_grant_generation=command.authorizing_grant_generation,
+        universe_id=command.universe_id,
+        agent_binding_id=command.agent_binding_id,
+        binding_revision=command.binding_revision,
+        execution_subject=command.execution_subject,
+        activation_automation_id=command.activation_automation_id,
+        activation_epoch=command.activation_epoch,
+        executor_class=command.executor_class,
+        lease_id=command.lease_id,
+        typed_input_digest=command.typed_input_digest,
+        command_id=command.command_id,
+        command_generation=command.generation,
+        command_digest=command.command_digest,
+        provider_work_binding_id=command.provider_work_binding_id,
+        provider_work_binding_generation=command.provider_work_binding_generation,
+        provider_work_binding_digest=command.provider_work_binding_digest,
+        idempotency_key_digest=command.idempotency_key_digest,
+        request_digest=command.request_digest,
+        budget_digest=command.budget.budget_digest,
+        admission_witness_id=witness_id,
+        admission_witness_digest=forged_seal,
+        created_at=command.created_at,
+    )
+    event = AgentInvocationEvent.build(
+        schema_version=1,
+        event_id="agent_invocation_event_forged",
+        invocation_id=invocation_id,
+        generation=1,
+        state=AgentInvocationEventState.ADMITTED,
+        previous_event_digest=None,
+        root_digest=root.root_digest,
+        reason_code=None,
+        occurred_at=command.created_at,
+    )
+    witness = {
+        "schema_version": 1,
+        "admission_witness_id": witness_id,
+        "generation": 999,
+        "authorizing_subject_id": command.authorizing_subject_id,
+        "invocation_id": invocation_id,
+        "command_id": command_id,
+        "universe_id": command.universe_id,
+        "agent_binding_id": command.agent_binding_id,
+        "request_boundary_digest": f"sha256:{'5' * 64}",
+        "request_digest": command.request_digest,
+        "provider_work_binding_id": command.provider_work_binding_id,
+        "provider_work_binding_generation": command.provider_work_binding_generation,
+        "provider_work_binding_digest": command.provider_work_binding_digest,
+        "created_at": command.created_at,
+        "witness_digest": forged_seal,
+    }
+
+    def canonical(value: object) -> str:
+        return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "INSERT INTO agent_runtime_invocation_admission_witnesses VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                witness_id,
+                999,
+                command.authorizing_subject_id,
+                invocation_id,
+                command_id,
+                witness["request_boundary_digest"],
+                forged_seal,
+                canonical(witness),
+                command.created_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO agent_runtime_invocation_commands VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                command_id,
+                invocation_id,
+                command.authorizing_subject_id,
+                command.universe_id,
+                command.agent_binding_id,
+                command.provider_work_binding_id,
+                witness_id,
+                command.command_digest,
+                canonical(command.to_dict()),
+                command.created_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO agent_runtime_invocation_roots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                invocation_id,
+                root.authorizing_subject_id,
+                root.universe_id,
+                root.agent_binding_id,
+                root.command_id,
+                root.provider_work_binding_id,
+                witness_id,
+                root.root_digest,
+                canonical(root.to_dict()),
+                root.created_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO agent_runtime_invocation_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.event_id,
+                invocation_id,
+                event.generation,
+                event.state.value,
+                None,
+                event.root_digest,
+                event.event_digest,
+                canonical(event.to_dict()),
+                event.occurred_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="witness"):
+        service.store.get(invocation_id=invocation_id)
 
 
 def test_changed_input_conflicts_and_rolls_back_every_new_record(
@@ -390,7 +560,7 @@ def test_changed_input_conflicts_and_rolls_back_every_new_record(
             _capture(service),
             _request(typed_input={"kind": "repository_patch_request", "request": "different"}),
         )
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
 
 
 def test_concurrent_duplicate_admission_has_one_winner(tmp_path, authenticate_request) -> None:
@@ -399,17 +569,18 @@ def test_concurrent_duplicate_admission_has_one_winner(tmp_path, authenticate_re
     authenticate_request("user::alice")
     service, _resolver = _service(tmp_path)
     drafts = [_capture(service) for _ in range(8)]
+    request_contexts = [copy_context() for _ in drafts]
 
-    def admit_one(draft):
-        authenticate_request("user::alice")
-        return service.admit(draft, _request())
+    def admit_one(item):
+        context, draft = item
+        return context.run(service.admit, draft, _request())
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(admit_one, drafts))
+        results = list(pool.map(admit_one, zip(request_contexts, drafts, strict=True)))
 
     assert sum(item.outcome is AgentInvocationAdmissionOutcome.APPLIED for item in results) == 1
     assert len({item.invocation.invocation_id for item in results}) == 1
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
 
 
 def test_missed_or_reused_live_boundary_creates_nothing(tmp_path, authenticate_request) -> None:
@@ -422,14 +593,29 @@ def test_missed_or_reused_live_boundary_creates_nothing(tmp_path, authenticate_r
 
     with pytest.raises(AgentInvocationAdmissionBlocked, match="live request"):
         service.admit(missed, _request())
-    assert _counts(tmp_path) == (0, 0, 0, 0)
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
 
     authenticate_request("user::alice")
     consumed = _capture(service)
     service.admit(consumed, _request())
     with pytest.raises(AgentInvocationAdmissionBlocked, match="consumed"):
         service.admit(consumed, _request())
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
+
+
+def test_draft_cannot_cross_request_boundary_for_same_owner(tmp_path, authenticate_request) -> None:
+    from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionBlocked
+
+    authenticate_request("user::alice")
+    service, _resolver = _service(tmp_path)
+    draft = _capture(service)
+
+    authenticate_request(None)
+    authenticate_request("user::alice")
+    with pytest.raises(AgentInvocationAdmissionBlocked, match="request boundary"):
+        service.admit(draft, _request())
+
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
 
 
 def test_draft_is_nonserializable_and_cannot_be_directly_forged(
@@ -458,7 +644,7 @@ def test_draft_is_nonserializable_and_cannot_be_directly_forged(
     with pytest.raises(AgentInvocationAdmissionBlocked):
         service.admit(clone, _request())
     service.admit(draft, _request())
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
 
 
 def test_failure_after_provider_binding_insert_rolls_back_whole_aggregate(
@@ -477,7 +663,7 @@ def test_failure_after_provider_binding_insert_rolls_back_whole_aggregate(
     )
     with pytest.raises(RuntimeError, match="allocator"):
         service.admit(draft, _request())
-    assert _counts(tmp_path) == (0, 0, 0, 0)
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
 
 
 def test_lower_level_store_refuses_caller_built_or_forged_grants(
@@ -489,7 +675,23 @@ def test_lower_level_store_refuses_caller_built_or_forged_grants(
     service, _resolver = _service(tmp_path)
     with pytest.raises(AgentInvocationAdmissionBlocked):
         service.store.admit(object())  # type: ignore[arg-type]
-    assert _counts(tmp_path) == (0, 0, 0, 0)
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
+
+
+def test_missing_server_admission_seal_rolls_back_every_record(
+    tmp_path, authenticate_request, monkeypatch
+) -> None:
+    from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionBlocked
+
+    authenticate_request("user::alice")
+    service, _resolver = _service(tmp_path)
+    draft = _capture(service)
+    monkeypatch.delenv("TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY")
+
+    with pytest.raises(AgentInvocationAdmissionBlocked, match="seal"):
+        service.admit(draft, _request())
+
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
 
 
 def test_external_authority_fence_validates_inside_atomic_commit(
@@ -507,7 +709,7 @@ def test_external_authority_fence_validates_inside_atomic_commit(
 
     assert result.outcome.value == "applied"
     assert fence.checked_transaction is True
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
 
 
 def test_production_fence_excludes_manifest_grant_and_provider_mutations(
@@ -591,7 +793,7 @@ def test_production_fence_excludes_manifest_grant_and_provider_mutations(
 
     assert result.outcome.value == "applied"
     assert all(event.is_set() for event in finished)
-    assert _counts(tmp_path) == (1, 1, 1, 1)
+    assert _counts(tmp_path) == (1, 1, 1, 1, 1)
 
 
 def test_production_fence_fails_closed_without_canonical_manifest(
@@ -605,7 +807,7 @@ def test_production_fence_fails_closed_without_canonical_manifest(
     with pytest.raises(AgentInvocationAdmissionBlocked, match="external authority"):
         service.admit(_capture(service), _request())
 
-    assert _counts(tmp_path) == (0, 0, 0, 0)
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
 
 
 def test_recovery_source_resolves_same_bearer_free_invocation_after_request_ends(
@@ -646,7 +848,7 @@ def test_budget_or_authority_change_is_rejected_before_partial_write(
     service, _resolver = _service(tmp_path)
     with pytest.raises(AgentInvocationAdmissionBlocked, match="budget"):
         service.admit(_capture(service), _request(max_tokens=2_001))
-    assert _counts(tmp_path) == (0, 0, 0, 0)
+    assert _counts(tmp_path) == (0, 0, 0, 0, 0)
 
 
 def test_invocation_module_has_no_branch_attempt_or_public_effect_dependency() -> None:

@@ -281,6 +281,51 @@ def test_restart_before_launch_resumes_same_reservation_and_spends_once(
     assert len(provider.calls) == 1
 
 
+@pytest.mark.parametrize("stage", ["reserved", "prepared"])
+def test_restart_after_claim_expiry_renews_prelaunch_lineage_and_spends_once(
+    tmp_path, authenticate_request, stage
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+    original_claim = service.claim(invocation_id).record
+    original_reservation = service.reserve(invocation_id).record
+    assert original_claim is not None and original_reservation is not None
+    original_continuation = None
+    if stage == "prepared":
+        original_continuation = service.prepare_continuation(invocation_id).record
+        assert original_continuation is not None
+
+    restarted = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=service.grant_resolver,
+        provider_binding_resolver=service.provider_binding_resolver,
+        clock=lambda: NOW + timedelta(seconds=301),
+    )
+    provider = _RecordingProvider()
+    result = restarted.execute_provider_call(
+        invocation_id,
+        typed_input=_request().typed_input,
+        router=ProviderRouter({"codex": provider}),
+    )
+
+    assert result.state.value == "succeeded"
+    assert result.reservation_id == original_reservation.reservation_id
+    if original_continuation is not None:
+        assert result.continuation_id == original_continuation.continuation_id
+    assert len(provider.calls) == 1
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        generation = connection.execute(
+            "SELECT generation FROM provider_work_execution_claims WHERE claim_id = ?",
+            (original_claim.claim_id,),
+        ).fetchone()[0]
+    assert generation == original_claim.generation + 1
+
+
 def test_uncertain_launch_waits_for_original_claim_then_blocks_without_remint(
     tmp_path, authenticate_request
 ) -> None:

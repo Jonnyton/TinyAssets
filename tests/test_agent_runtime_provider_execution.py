@@ -684,6 +684,50 @@ def test_concurrent_agent_reservations_conserve_one_budget_envelope(
     )
 
 
+def test_concurrent_expired_prelaunch_claim_takeover_converges_on_one_generation(
+    tmp_path, authenticate_request
+) -> None:
+    from datetime import timedelta
+
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = _admitted_invocation(
+        tmp_path, authenticate_request
+    )
+    invocation_id = admitted.invocation.invocation_id
+    initial = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    initial.issue_receipt(invocation_id)
+    first_claim = initial.claim(invocation_id).record
+    first_reservation = initial.reserve(invocation_id).record
+    assert first_claim is not None and first_reservation is not None
+
+    def recover(_index: int):
+        return AgentRuntimeProviderExecutionService(
+            tmp_path,
+            grant_resolver=grant_resolver,
+            provider_binding_resolver=provider_resolver,
+            clock=lambda: NOW + timedelta(seconds=301),
+        ).claim(invocation_id)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(recover, range(8)))
+
+    assert sum(item.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED for item in results) == 1
+    assert all(item.record is not None for item in results)
+    assert {item.record.generation for item in results if item.record} == {2}
+    reservation = initial.provider_store.get_reservation(first_reservation.reservation_id)
+    assert reservation is not None
+    assert reservation.reservation_id == first_reservation.reservation_id
+    assert reservation.claim_generation == 2
+
+
 def test_expired_agent_receipt_cannot_be_claimed(tmp_path, authenticate_request) -> None:
     from datetime import timedelta
 

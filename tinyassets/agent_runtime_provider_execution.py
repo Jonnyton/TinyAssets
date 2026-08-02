@@ -280,6 +280,10 @@ class AgentRuntimeProviderExecutionService:
                 continuation = (
                     _agent_record(continuation_row) if continuation_row is not None else None
                 )
+                outcome = SQLiteAgentRuntimeProviderOutcomeStore.get_in_transaction(
+                    conn,
+                    invocation_id=invocation_id,
+                )
                 if continuation is not None:
                     if (
                         continuation.command_id != command.command_id
@@ -289,13 +293,67 @@ class AgentRuntimeProviderExecutionService:
                         raise AgentRuntimeProviderExecutionBlocked(
                             "agent health continuation lineage is not exact"
                         )
+                    receipt_row = conn.execute(
+                        "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                        (continuation.receipt_id,),
+                    ).fetchone()
+                    claim_row = conn.execute(
+                        "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
+                        (continuation.claim_id,),
+                    ).fetchone()
+                    reservation_row = conn.execute(
+                        "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
+                        (continuation.reservation_id,),
+                    ).fetchone()
+                    if receipt_row is None or claim_row is None or reservation_row is None:
+                        raise AgentRuntimeProviderExecutionBlocked(
+                            "agent health continuation authority is incomplete"
+                        )
+                    receipt = _receipt_record(receipt_row)
+                    claim = _claim_record(claim_row)
+                    reservation = _reservation_record(reservation_row)
+                    lineage_exact = (
+                        receipt.work_item_kind == "agent_invocation",
+                        receipt.work_item_id == invocation.invocation_id,
+                        receipt.binding_id == continuation.provider_binding_id,
+                        receipt.binding_generation == continuation.provider_binding_generation,
+                        receipt.binding_digest == continuation.provider_binding_digest,
+                        receipt.agent_invocation_command_id == command.command_id,
+                        receipt.agent_invocation_command_digest == command.command_digest,
+                        receipt.agent_invocation_generation == continuation.invocation_generation,
+                        receipt.receipt_id == continuation.receipt_id,
+                        receipt.receipt_digest == continuation.receipt_digest,
+                        claim.receipt_id == receipt.receipt_id,
+                        claim.receipt_digest == receipt.receipt_digest,
+                        claim.claim_id == continuation.claim_id,
+                        claim.generation == continuation.claim_generation,
+                        claim.claim_digest == continuation.claim_digest,
+                        reservation.receipt_id == receipt.receipt_id,
+                        reservation.receipt_digest == receipt.receipt_digest,
+                        reservation.claim_id == claim.claim_id,
+                        reservation.claim_generation == claim.generation,
+                        reservation.claim_digest == claim.claim_digest,
+                        reservation.reservation_id == continuation.reservation_id,
+                        (
+                            reservation.reservation_digest == continuation.reservation_digest
+                            if outcome is None
+                            else outcome.reservation_id == reservation.reservation_id
+                            and outcome.terminal_reservation_digest
+                            == reservation.reservation_digest
+                            and outcome.continuation_id == continuation.continuation_id
+                            and outcome.continuation_digest == continuation.continuation_digest
+                        ),
+                        reservation.invocation_key == invocation.invocation_id,
+                        reservation.max_tokens == continuation.max_tokens,
+                        reservation.max_cost_microunits == continuation.max_cost_microunits,
+                    )
+                    if not all(lineage_exact):
+                        raise AgentRuntimeProviderExecutionBlocked(
+                            "agent health continuation lineage is not exact"
+                        )
                     milestone = "continuation_prepared"
                     record_digest = continuation.continuation_digest
                     progress_at = continuation.created_at
-                outcome = SQLiteAgentRuntimeProviderOutcomeStore.get_in_transaction(
-                    conn,
-                    invocation_id=invocation_id,
-                )
                 if outcome is not None:
                     if continuation is None or (
                         outcome.continuation_id != continuation.continuation_id

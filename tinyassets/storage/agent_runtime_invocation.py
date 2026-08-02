@@ -26,6 +26,7 @@ from tinyassets.agent_runtime_invocation import (
     AgentInvocationConflict,
     AgentInvocationExternalAuthorityFenceSource,
     AgentInvocationExternalAuthoritySnapshot,
+    _admission_witness_digest,
     _AgentInvocationStoreGrant,
     _consume_store_grant,
     _digest,
@@ -60,7 +61,29 @@ from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
 
-_SCHEMA = _COMMAND_SCHEMA + _ROOT_SCHEMA
+_ADMISSION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_runtime_invocation_admission_witnesses (
+    admission_witness_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    authorizing_subject_id TEXT NOT NULL,
+    invocation_id TEXT NOT NULL UNIQUE,
+    command_id TEXT NOT NULL UNIQUE,
+    request_boundary_digest TEXT NOT NULL,
+    witness_digest TEXT NOT NULL UNIQUE,
+    record_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_agent_runtime_admission_witness_no_update
+BEFORE UPDATE ON agent_runtime_invocation_admission_witnesses BEGIN
+    SELECT RAISE(ABORT, 'agent invocation admission witnesses are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_agent_runtime_admission_witness_no_delete
+BEFORE DELETE ON agent_runtime_invocation_admission_witnesses BEGIN
+    SELECT RAISE(ABORT, 'agent invocation admission witnesses are immutable');
+END;
+"""
+
+_SCHEMA = _COMMAND_SCHEMA + _ROOT_SCHEMA + _ADMISSION_SCHEMA
 
 
 class SQLiteAgentInvocationExternalAuthorityFenceSource:
@@ -159,6 +182,65 @@ def _record_json(record: object) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _witness_json(record: dict[str, object]) -> str:
+    return json.dumps(
+        record,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+
+
+def _validated_witness_row(row: sqlite3.Row) -> dict[str, object]:
+    try:
+        record = json.loads(str(row["record_json"]))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("persisted admission witness is invalid") from exc
+    fields = {
+        "schema_version",
+        "admission_witness_id",
+        "generation",
+        "authorizing_subject_id",
+        "invocation_id",
+        "command_id",
+        "universe_id",
+        "agent_binding_id",
+        "request_boundary_digest",
+        "request_digest",
+        "provider_work_binding_id",
+        "provider_work_binding_generation",
+        "provider_work_binding_digest",
+        "created_at",
+        "witness_digest",
+    }
+    if not isinstance(record, dict) or set(record) != fields:
+        raise ValueError("persisted admission witness fields are invalid")
+    content = dict(record)
+    witness_digest = content.pop("witness_digest")
+    try:
+        expected_witness_digest = _admission_witness_digest(content)
+    except AgentInvocationAdmissionBlocked as exc:
+        raise ValueError("admission witness seal is unavailable") from exc
+    exact = (
+        record["schema_version"] == 1,
+        record["generation"] == 1,
+        row["admission_witness_id"] == record["admission_witness_id"],
+        row["generation"] == record["generation"],
+        row["authorizing_subject_id"] == record["authorizing_subject_id"],
+        row["invocation_id"] == record["invocation_id"],
+        row["command_id"] == record["command_id"],
+        row["request_boundary_digest"] == record["request_boundary_digest"],
+        row["witness_digest"] == witness_digest,
+        row["created_at"] == record["created_at"],
+        str(row["record_json"]) == _witness_json(record),
+        witness_digest == expected_witness_digest,
+    )
+    if not all(exact):
+        raise ValueError("persisted admission witness failed integrity validation")
+    return record
 
 
 def _current_event(
@@ -293,7 +375,7 @@ class SQLiteAgentRuntimeInvocationStore:
                     {
                         "schema_version": 1,
                         "authorizing_subject_id": payload.owner_user_id,
-                        "authorizing_grant_generation": payload.authorizing_grant_generation,
+                        "authorizing_grant_generation": 1,
                         "universe_id": manifest_content["universe_id"],
                         "agent_binding_id": manifest_content["agent_binding_id"],
                         "binding_revision": manifest_content["binding_revision"],
@@ -359,6 +441,28 @@ class SQLiteAgentRuntimeInvocationStore:
                     )
 
                 invocation_id = f"agent_invocation_{new_ulid()}"
+                command_id = f"agent_invocation_command_{new_ulid()}"
+                witness_id = f"agent_invocation_admission_{new_ulid()}"
+                witness_content: dict[str, object] = {
+                    "schema_version": 1,
+                    "admission_witness_id": witness_id,
+                    "generation": 1,
+                    "authorizing_subject_id": payload.owner_user_id,
+                    "invocation_id": invocation_id,
+                    "command_id": command_id,
+                    "universe_id": str(manifest_content["universe_id"]),
+                    "agent_binding_id": str(manifest_content["agent_binding_id"]),
+                    "request_boundary_digest": payload.request_boundary_digest,
+                    "request_digest": request_digest,
+                    "provider_work_binding_id": binding.binding_id,
+                    "provider_work_binding_generation": binding.generation,
+                    "provider_work_binding_digest": binding.binding_digest,
+                    "created_at": created_at,
+                }
+                witness = {
+                    **witness_content,
+                    "witness_digest": _admission_witness_digest(witness_content),
+                }
                 budget = AgentInvocationBudgetEnvelope.build(
                     max_invocations=1,
                     max_tokens=payload.max_tokens,
@@ -368,11 +472,11 @@ class SQLiteAgentRuntimeInvocationStore:
                 )
                 command = AgentInvocationCommand.build(
                     schema_version=1,
-                    command_id=f"agent_invocation_command_{new_ulid()}",
+                    command_id=command_id,
                     generation=1,
                     invocation_id=invocation_id,
                     authorizing_subject_id=payload.owner_user_id,
-                    authorizing_grant_generation=payload.authorizing_grant_generation,
+                    authorizing_grant_generation=1,
                     universe_id=str(manifest_content["universe_id"]),
                     agent_binding_id=str(manifest_content["agent_binding_id"]),
                     binding_revision=int(manifest_content["binding_revision"]),
@@ -388,8 +492,8 @@ class SQLiteAgentRuntimeInvocationStore:
                     idempotency_key_digest=key_digest,
                     request_digest=request_digest,
                     budget=budget,
-                    admission_witness_id=payload.admission_witness_id,
-                    admission_witness_digest=payload.admission_witness_digest,
+                    admission_witness_id=witness_id,
+                    admission_witness_digest=str(witness["witness_digest"]),
                     created_at=created_at,
                 )
                 invocation = AgentInvocationRoot.build(
@@ -429,6 +533,26 @@ class SQLiteAgentRuntimeInvocationStore:
                     root_digest=invocation.root_digest,
                     reason_code=None,
                     occurred_at=created_at,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO agent_runtime_invocation_admission_witnesses (
+                        admission_witness_id, generation, authorizing_subject_id,
+                        invocation_id, command_id, request_boundary_digest,
+                        witness_digest, record_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        witness_id,
+                        1,
+                        payload.owner_user_id,
+                        invocation_id,
+                        command_id,
+                        payload.request_boundary_digest,
+                        witness["witness_digest"],
+                        _witness_json(witness),
+                        created_at,
+                    ),
                 )
                 conn.execute(
                     """
@@ -564,6 +688,32 @@ class SQLiteAgentRuntimeInvocationStore:
         )
         if not all(exact):
             raise ValueError("persisted agent invocation aggregate failed linkage validation")
+        witness_row = conn.execute(
+            """
+            SELECT * FROM agent_runtime_invocation_admission_witnesses
+            WHERE admission_witness_id = ?
+            """,
+            (command.admission_witness_id,),
+        ).fetchone()
+        if witness_row is None:
+            raise ValueError("persisted agent invocation admission witness is missing")
+        witness = _validated_witness_row(witness_row)
+        witness_exact = (
+            witness["generation"] == command.authorizing_grant_generation,
+            witness["authorizing_subject_id"] == command.authorizing_subject_id,
+            witness["invocation_id"] == invocation.invocation_id,
+            witness["command_id"] == command.command_id,
+            witness["universe_id"] == command.universe_id,
+            witness["agent_binding_id"] == command.agent_binding_id,
+            witness["request_digest"] == command.request_digest,
+            witness["provider_work_binding_id"] == command.provider_work_binding_id,
+            witness["provider_work_binding_generation"] == command.provider_work_binding_generation,
+            witness["provider_work_binding_digest"] == command.provider_work_binding_digest,
+            witness["witness_digest"] == command.admission_witness_digest,
+            witness["created_at"] == command.created_at,
+        )
+        if not all(witness_exact):
+            raise ValueError("persisted admission witness lineage is not exact")
         return command, invocation, event
 
     def resolve_current(

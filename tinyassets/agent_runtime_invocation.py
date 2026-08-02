@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import weakref
@@ -35,7 +36,11 @@ from tinyassets.agent_runtime_grants import (
     AgentRuntimeGrantResolution,
     AgentRuntimeGrantResolver,
 )
-from tinyassets.auth.middleware import current_bearer_present, current_identity
+from tinyassets.auth.middleware import (
+    current_bearer_present,
+    current_identity,
+    current_request_boundary_id,
+)
 from tinyassets.execution_subject import (
     ExecutionSubject,
     ExecutionSubjectKind,
@@ -57,6 +62,7 @@ from tinyassets.storage.automation_activations import (
 AGENT_INVOCATION_OPERATION = "agent_invocation"
 AGENT_INVOCATION_ROLE = "agent_runtime"
 _MAX_INPUT_BYTES = 256 * 1024
+_ADMISSION_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 
 
 def _text(value: object, name: str, *, maximum: int = 256) -> str:
@@ -82,6 +88,30 @@ def _digest(value: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _admission_witness_digest(value: Mapping[str, object]) -> str:
+    """Seal one durable admission witness with server-only key material."""
+
+    secret = os.environ.get(_ADMISSION_HMAC_ENV, "").encode("utf-8")
+    if len(secret) < 32:
+        raise AgentInvocationAdmissionBlocked(
+            "admission_seal_unavailable",
+            "agent invocation admission seal is not configured",
+        )
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    sealed = hmac.new(
+        secret,
+        b"agent-invocation-admission-v1\0" + encoded,
+        hashlib.sha256,
+    ).hexdigest()
+    return f"sha256:{sealed}"
 
 
 def _digest_value(value: object, name: str) -> str:
@@ -269,6 +299,7 @@ class _DraftPayload:
     activation: AutomationActivation
     grants: AgentRuntimeGrantResolution
     provider_seed: ProviderWorkBindingSeed
+    request_boundary_id: str
 
 
 class LiveProviderWorkBindingDraft:
@@ -297,9 +328,7 @@ class _StoreAdmissionPayload:
     idempotency_key: str
     max_tokens: int
     max_cost_microunits: int
-    authorizing_grant_generation: int
-    admission_witness_id: str
-    admission_witness_digest: str
+    request_boundary_digest: str
     external_authority_snapshot: AgentInvocationExternalAuthoritySnapshot
 
 
@@ -565,7 +594,13 @@ class AgentInvocationAdmissionService:
             )
         return target, grants, provider_seed
 
-    def _resolve(self, *, owner: str, binding: str) -> _DraftPayload:
+    def _resolve(
+        self,
+        *,
+        owner: str,
+        binding: str,
+        request_boundary_id: str,
+    ) -> _DraftPayload:
         target, grants, provider_seed = self._resolve_external(
             owner=owner,
             binding=binding,
@@ -596,6 +631,7 @@ class AgentInvocationAdmissionService:
             activation=activation,
             grants=grants,
             provider_seed=provider_seed,
+            request_boundary_id=request_boundary_id,
         )
 
     def capture_live_provider_binding_draft(
@@ -606,12 +642,19 @@ class AgentInvocationAdmissionService:
         binding = _text(agent_binding_id, "agent_binding_id")
         identity = current_identity()
         owner = (getattr(identity, "user_id", "") or "").strip()
-        if not current_bearer_present() or not owner or owner == "anonymous":
+        boundary_id = current_request_boundary_id()
+        if not current_bearer_present() or not owner or owner == "anonymous" or boundary_id is None:
             raise AgentInvocationAdmissionBlocked(
                 "authentication_required",
                 "a live authenticated request is required",
             )
-        return _mint_draft(self._resolve(owner=owner, binding=binding))
+        return _mint_draft(
+            self._resolve(
+                owner=owner,
+                binding=binding,
+                request_boundary_id=boundary_id,
+            )
+        )
 
     def admit(
         self,
@@ -623,7 +666,12 @@ class AgentInvocationAdmissionService:
         payload = _consume_draft(draft, service_id=self._service_id)
         identity = current_identity()
         current_owner = (getattr(identity, "user_id", "") or "").strip()
-        if not current_bearer_present() or current_owner != payload.owner_user_id:
+        boundary_id = current_request_boundary_id()
+        if (
+            not current_bearer_present()
+            or current_owner != payload.owner_user_id
+            or boundary_id != payload.request_boundary_id
+        ):
             raise AgentInvocationAdmissionBlocked(
                 "live_request_ended",
                 "the live request boundary ended before admission",
@@ -631,6 +679,7 @@ class AgentInvocationAdmissionService:
         current = self._resolve(
             owner=payload.owner_user_id,
             binding=payload.agent_binding_id,
+            request_boundary_id=payload.request_boundary_id,
         )
         unchanged = (
             current.target == payload.target,
@@ -657,27 +706,6 @@ class AgentInvocationAdmissionService:
                 "the requested invocation budget exceeds a current budget envelope",
             )
         snapshot = _external_authority_snapshot(current)
-        witness_id = f"agent_invocation_admission_{secrets.token_hex(32)}"
-        witness_digest = _digest(
-            {
-                "schema_version": 1,
-                "admission_witness_id": witness_id,
-                "authorizing_subject_id": payload.owner_user_id,
-                "authorizing_grant_generation": 1,
-                "universe_id": snapshot.universe_id,
-                "agent_binding_id": snapshot.agent_binding_id,
-                "manifest_id": snapshot.manifest_id,
-                "manifest_digest": snapshot.manifest_digest,
-                "activation_epoch": current.activation.epoch,
-                "lease_id": current.activation.lease_id,
-                "typed_input_digest": request.typed_input_digest,
-                "idempotency_key": request.idempotency_key,
-                "max_tokens": request.max_tokens,
-                "max_cost_microunits": request.max_cost_microunits,
-                "provider_assignment_generation": snapshot.assignment_generation,
-                "provider_assignment_digest": snapshot.assignment_digest,
-            }
-        )
         grant = _issue_store_grant(
             _StoreAdmissionPayload(
                 owner_user_id=payload.owner_user_id,
@@ -689,12 +717,9 @@ class AgentInvocationAdmissionService:
                 idempotency_key=request.idempotency_key,
                 max_tokens=request.max_tokens,
                 max_cost_microunits=request.max_cost_microunits,
-                # This is generation one of the one-use, authenticated
-                # admission grant. Runtime capability generations remain live
-                # evidence and are deliberately not frozen into the command.
-                authorizing_grant_generation=1,
-                admission_witness_id=witness_id,
-                admission_witness_digest=witness_digest,
+                request_boundary_digest=_digest(
+                    {"request_boundary_id": payload.request_boundary_id}
+                ),
                 external_authority_snapshot=snapshot,
             )
         )

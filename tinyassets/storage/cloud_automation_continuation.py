@@ -467,16 +467,73 @@ class SQLiteCloudAutomationContinuationStore:
         ).fetchone()
         if row is not None:
             current = _agent_record(row)
-            replayed = current.matches_preparation(record) or (
+            current_content = current.to_dict()
+            requested_content = record.to_dict()
+            for payload in (current_content, requested_content):
+                for field in (
+                    "continuation_digest",
+                    "generation",
+                    "created_at",
+                    "updated_at",
+                ):
+                    del payload[field]
+            replayed = current_content == requested_content or (
                 expected_reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED
                 and current.matches_armed_reconciliation(record)
             )
+            if replayed:
+                return CloudContinuationWriteResult(
+                    CloudContinuationWriteOutcome.REPLAYED,
+                    current,
+                )
+            takeover_current = dict(current_content)
+            takeover_requested = dict(requested_content)
+            for payload in (takeover_current, takeover_requested):
+                for field in (
+                    "claim_generation",
+                    "claim_digest",
+                    "reservation_digest",
+                ):
+                    del payload[field]
+            if (
+                expected_reservation.state is ProviderInvocationReservationState.RESERVED
+                and takeover_current == takeover_requested
+                and record.claim_generation > current.claim_generation
+            ):
+                values = {
+                    name: getattr(record, name)
+                    for name in AgentInvocationCloudContinuation._FIELDS
+                    if name != "continuation_digest"
+                }
+                values["generation"] = current.generation + 1
+                renewed = AgentInvocationCloudContinuation.build(
+                    **values,
+                )
+                cursor = conn.execute(
+                    """
+                    UPDATE cloud_execution_continuations
+                    SET generation = ?, continuation_digest = ?, record_json = ?
+                    WHERE continuation_id = ? AND continuation_digest = ?
+                    """,
+                    (
+                        renewed.generation,
+                        renewed.continuation_digest,
+                        _agent_json(renewed),
+                        current.continuation_id,
+                        current.continuation_digest,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return CloudContinuationWriteResult(
+                        CloudContinuationWriteOutcome.CONFLICT,
+                        current,
+                    )
+                return CloudContinuationWriteResult(
+                    CloudContinuationWriteOutcome.APPLIED,
+                    renewed,
+                )
             return CloudContinuationWriteResult(
-                (
-                    CloudContinuationWriteOutcome.REPLAYED
-                    if replayed
-                    else CloudContinuationWriteOutcome.CONFLICT
-                ),
+                CloudContinuationWriteOutcome.CONFLICT,
                 current,
             )
         conn.execute(

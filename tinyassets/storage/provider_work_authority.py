@@ -33,6 +33,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkBindingWriteResult,
     ProviderWorkExecutionClaim,
     ProviderWorkExecutionClaimRequest,
+    ProviderWorkExecutionClaimState,
     ProviderWorkExecutionClaimWriteResult,
     ProviderWorkReceiptState,
     ProviderWorkReceiptWriteResult,
@@ -51,6 +52,7 @@ from tinyassets.storage import db_path
 
 _PROVIDER_INVOCATION_STORE_MINT_LOCK = threading.Lock()
 _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS: dict[str, tuple[str, int]] = {}
+_PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
 
 
 def _reset_provider_invocation_store_mint_state_after_fork() -> None:
@@ -362,6 +364,7 @@ def _same_claim_intent(
     right = candidate.to_dict()
     for payload in (left, right):
         del payload["claim_digest"]
+        del payload["generation"]
         del payload["lease_expires_at"]
         del payload["created_at"]
     return left == right
@@ -843,10 +846,8 @@ class _Transaction:
         agent_store_grant: object | None = None,
     ) -> ProviderInvocationReservationWriteResult:
         if agent_store_grant is not None:
-            agent_authority = (
-                SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
-                    agent_store_grant
-                )
+            agent_authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                agent_store_grant
             )
             receipt = _agent_receipt_for_authority(self._conn, agent_authority)
             if (
@@ -1080,9 +1081,7 @@ class SQLiteProviderWorkAuthorityStore:
         if not isinstance(authority, ProviderUniverseWorkAuthority):
             raise ValueError("authority must be a ProviderUniverseWorkAuthority")
         if authority.root.work_item_kind == "agent_invocation":
-            raise PermissionError(
-                "agent receipts require the canonical runtime authority fence"
-            )
+            raise PermissionError("agent receipts require the canonical runtime authority fence")
         now = self._now()
         candidate = _receipt_from_authority(
             authority,
@@ -1109,9 +1108,7 @@ class SQLiteProviderWorkAuthorityStore:
         )
 
         if type(store_grant) is not _AgentProviderReceiptStoreGrant:
-            raise PermissionError(
-                "provider receipt transaction requires a service-issued grant"
-            )
+            raise PermissionError("provider receipt transaction requires a service-issued grant")
         authority = store_grant._consume()
         now = self._now()
         candidate = _receipt_from_authority(
@@ -1133,9 +1130,7 @@ class SQLiteProviderWorkAuthorityStore:
         )
 
         if type(store_grant) is not _AgentProviderReceiptStoreGrant:
-            raise PermissionError(
-                "agent provider transition requires a service-issued grant"
-            )
+            raise PermissionError("agent provider transition requires a service-issued grant")
         return store_grant._consume()
 
     @staticmethod
@@ -1147,9 +1142,7 @@ class SQLiteProviderWorkAuthorityStore:
         )
 
         if type(store_grant) is not _AgentProviderReceiptStoreGrant:
-            raise PermissionError(
-                "agent provider transition requires a service-issued grant"
-            )
+            raise PermissionError("agent provider transition requires a service-issued grant")
         return store_grant._peek()
 
     @staticmethod
@@ -1159,9 +1152,7 @@ class SQLiteProviderWorkAuthorityStore:
         )
 
         if type(store_grant) is not _AgentProviderReceiptStoreGrant:
-            raise PermissionError(
-                "agent provider transition requires a service-issued grant"
-            )
+            raise PermissionError("agent provider transition requires a service-issued grant")
         store_grant._discard()
 
     @contextmanager
@@ -1187,12 +1178,8 @@ class SQLiteProviderWorkAuthorityStore:
             now = self._now()
             remaining_seconds = int(
                 (
-                    datetime.fromisoformat(
-                        receipt.expires_at.removesuffix("Z") + "+00:00"
-                    )
-                    - now
-                )
-                .total_seconds()
+                    datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00") - now
+                ).total_seconds()
             )
             if remaining_seconds < 1:
                 return ProviderWorkExecutionClaimWriteResult(
@@ -1210,15 +1197,99 @@ class SQLiteProviderWorkAuthorityStore:
             candidate = _claim_from_request(
                 request,
                 created_at=self._timestamp(now),
-                lease_expires_at=self._timestamp(
-                    now + timedelta(seconds=request.lease_seconds)
-                ),
+                lease_expires_at=self._timestamp(now + timedelta(seconds=request.lease_seconds)),
             )
-            return _Transaction(conn).claim_receipt(
+            result = _Transaction(conn).claim_receipt(
                 request,
                 candidate,
                 now=now,
                 agent_store_grant=store_grant,
+            )
+            if (
+                result.outcome is not ProviderWorkAuthorityWriteOutcome.STALE
+                or result.record is None
+            ):
+                return result
+            current = result.record
+            if (
+                current.state is not ProviderWorkExecutionClaimState.ACTIVE
+                or datetime.fromisoformat(current.lease_expires_at.removesuffix("Z") + "+00:00")
+                > now
+            ):
+                return result
+            reservation_row = conn.execute(
+                "SELECT * FROM provider_invocation_reservations WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            ).fetchone()
+            reservation = (
+                _reservation_record(reservation_row) if reservation_row is not None else None
+            )
+            if (
+                reservation is not None
+                and reservation.state is not ProviderInvocationReservationState.RESERVED
+            ):
+                return result
+            renewed = replace(
+                current,
+                claim_digest=_PLACEHOLDER_DIGEST,
+                generation=current.generation + 1,
+                lease_expires_at=candidate.lease_expires_at,
+                created_at=candidate.created_at,
+            )
+            renewed = replace(renewed, claim_digest=renewed.expected_digest())
+            conn.execute(
+                """
+                UPDATE provider_work_execution_claims
+                SET claim_digest = ?, generation = ?, state = ?,
+                    lease_expires_at = ?, record_json = ?
+                WHERE claim_id = ? AND generation = ? AND claim_digest = ?
+                """,
+                (
+                    renewed.claim_digest,
+                    renewed.generation,
+                    renewed.state.value,
+                    renewed.lease_expires_at,
+                    _json_record(renewed),
+                    current.claim_id,
+                    current.generation,
+                    current.claim_digest,
+                ),
+            )
+            if conn.total_changes < 1:
+                return ProviderWorkExecutionClaimWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                    current,
+                )
+            if reservation is not None:
+                rebound = replace(
+                    reservation,
+                    reservation_digest=_PLACEHOLDER_DIGEST,
+                    claim_generation=renewed.generation,
+                    claim_digest=renewed.claim_digest,
+                )
+                rebound = replace(
+                    rebound,
+                    reservation_digest=rebound.expected_digest(),
+                )
+                conn.execute(
+                    """
+                    UPDATE provider_invocation_reservations
+                    SET reservation_digest = ?, claim_digest = ?,
+                        claim_generation = ?, record_json = ?
+                    WHERE reservation_id = ? AND reservation_digest = ?
+                    """,
+                    (
+                        rebound.reservation_digest,
+                        rebound.claim_digest,
+                        rebound.claim_generation,
+                        _json_record(rebound),
+                        reservation.reservation_id,
+                        reservation.reservation_digest,
+                    ),
+                )
+            return ProviderWorkExecutionClaimWriteResult(
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                renewed,
             )
 
     def _reserve_agent_in_transaction(
@@ -1303,9 +1374,7 @@ class SQLiteProviderWorkAuthorityStore:
             proof = object.__new__(_ProviderInvocationStoreMintProof)
             object.__setattr__(proof, "_proof_id", proof_id)
             object.__setattr__(proof, "_issuer_pid", issuer_pid)
-            object.__setattr__(
-                proof, "_reservation_digest", result.record.reservation_digest
-            )
+            object.__setattr__(proof, "_reservation_digest", result.record.reservation_digest)
             weakref.finalize(
                 proof,
                 _discard_provider_invocation_store_mint_proof,
@@ -1429,8 +1498,7 @@ class SQLiteProviderWorkAuthorityStore:
             raise ValueError("reservation_id must be non-empty")
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT * FROM provider_invocation_reservations "
-                "WHERE reservation_id = ?",
+                "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
                 (reservation_id,),
             ).fetchone()
         return _reservation_record(row) if row is not None else None

@@ -1452,3 +1452,8 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include the workflow path touch and the
   release-critical declaration in the first PR increment so exact CI evidence
   and the scope guard start together.
+# Canonical agent admission rejection repair (2026-08-02)
+
+- Surprised: structural digest/link validation still let raw database rows reach a real provider carrier; a witness must be server-sealed, not merely self-consistent.
+- Pattern: bind ephemeral drafts to an exact request nonce, persist a keyed admission witness atomically, and revalidate it on every durable authority read.
+- Differently: test claim expiry with an advanced restart clock from the first recovery slice; same-time restart tests hid the pre-launch dead-end.

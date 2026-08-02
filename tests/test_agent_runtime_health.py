@@ -31,9 +31,7 @@ def test_private_health_reports_admission_as_useful_progress(
 ) -> None:
     from tinyassets.agent_runtime_health import AgentRuntimeHealthState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     monkeypatch.setattr(
         AgentRuntimeProviderExecutionService,
         "_validated_store_grant",
@@ -57,9 +55,7 @@ def test_heartbeat_churn_cannot_hide_stall_and_alarm_deduplicates(
 ) -> None:
     from tinyassets.agent_runtime_health import AgentRuntimeHealthState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     invocation_id = admitted.invocation.invocation_id
     service.issue_receipt(invocation_id)
     service.claim(invocation_id)
@@ -67,9 +63,7 @@ def test_heartbeat_churn_cannot_hide_stall_and_alarm_deduplicates(
     continuation = service.prepare_continuation(invocation_id).record
     assert continuation is not None
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        connection.execute(
-            "CREATE TABLE irrelevant_heartbeats (invocation_id TEXT, seen_at TEXT)"
-        )
+        connection.execute("CREATE TABLE irrelevant_heartbeats (invocation_id TEXT, seen_at TEXT)")
         connection.executemany(
             "INSERT INTO irrelevant_heartbeats VALUES (?, ?)",
             [(invocation_id, f"2026-08-02T12:00:{second:02d}Z") for second in range(10)],
@@ -88,12 +82,13 @@ def test_heartbeat_churn_cannot_hide_stall_and_alarm_deduplicates(
     assert all(item.useful_milestone == "continuation_prepared" for item in results)
     assert len({item.alarm.alarm_id for item in results if item.alarm}) == 1
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM agent_runtime_no_progress_alarms"
-        ).fetchone()[0] == 1
-    changed_threshold = _restarted(
-        service, tmp_path, seconds=61
-    ).project_useful_progress(
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_runtime_no_progress_alarms").fetchone()[
+                0
+            ]
+            == 1
+        )
+    changed_threshold = _restarted(service, tmp_path, seconds=61).project_useful_progress(
         invocation_id,
         no_progress_after_seconds=30,
     )
@@ -101,9 +96,12 @@ def test_heartbeat_churn_cannot_hide_stall_and_alarm_deduplicates(
     assert changed_threshold.alarm.threshold_seconds == 30
     assert changed_threshold.alarm.alarm_id != results[0].alarm.alarm_id
     with sqlite3.connect(db_path(tmp_path)) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM agent_runtime_no_progress_alarms"
-        ).fetchone()[0] == 2
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_runtime_no_progress_alarms").fetchone()[
+                0
+            ]
+            == 2
+        )
 
 
 def test_terminal_outcome_is_useful_progress_and_never_alarms(
@@ -111,9 +109,7 @@ def test_terminal_outcome_is_useful_progress_and_never_alarms(
 ) -> None:
     from tinyassets.agent_runtime_health import AgentRuntimeHealthState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     result = service.execute_provider_call(
         admitted.invocation.invocation_id,
         typed_input=_request().typed_input,
@@ -131,14 +127,38 @@ def test_terminal_outcome_is_useful_progress_and_never_alarms(
     assert health.alarm is None
 
 
+def test_health_refuses_partial_continuation_lineage(tmp_path, authenticate_request) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionBlocked,
+    )
+
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+    service.claim(invocation_id)
+    reservation = service.reserve(invocation_id).record
+    assert reservation is not None
+    assert service.prepare_continuation(invocation_id).record is not None
+
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        connection.execute(
+            "DELETE FROM provider_invocation_reservations WHERE reservation_id = ?",
+            (reservation.reservation_id,),
+        )
+
+    with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="incomplete"):
+        service.project_useful_progress(
+            invocation_id,
+            no_progress_after_seconds=60,
+        )
+
+
 def test_stale_activation_is_visible_and_cannot_report_healthy(
     tmp_path, authenticate_request
 ) -> None:
     from tinyassets.agent_runtime_health import AgentRuntimeHealthState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     activation_store = AutomationActivationStore(tmp_path, clock=lambda: NOW)
     active = activation_store.get(
         admitted.command.universe_id,
@@ -157,14 +177,10 @@ def test_stale_activation_is_visible_and_cannot_report_healthy(
     assert health.alarm is None
 
 
-def test_stale_provider_budget_pin_is_visible_as_blocked(
-    tmp_path, authenticate_request
-) -> None:
+def test_stale_provider_budget_pin_is_visible_as_blocked(tmp_path, authenticate_request) -> None:
     from tinyassets.agent_runtime_health import AgentRuntimeHealthState
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     service.provider_binding_resolver.revoke()
 
     health = service.project_useful_progress(
@@ -176,16 +192,12 @@ def test_stale_provider_budget_pin_is_visible_as_blocked(
     assert health.authority_current is False
 
 
-def test_future_useful_progress_timestamp_fails_closed(
-    tmp_path, authenticate_request
-) -> None:
+def test_future_useful_progress_timestamp_fails_closed(tmp_path, authenticate_request) -> None:
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionBlocked,
     )
 
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     observer = AgentRuntimeProviderExecutionService(
         tmp_path,
         grant_resolver=service.grant_resolver,
@@ -200,12 +212,8 @@ def test_future_useful_progress_timestamp_fails_closed(
         )
 
 
-def test_forged_alarm_payload_fails_integrity_replay(
-    tmp_path, authenticate_request
-) -> None:
-    service, admitted, _universe_dir, _manifest = _execution_service(
-        tmp_path, authenticate_request
-    )
+def test_forged_alarm_payload_fails_integrity_replay(tmp_path, authenticate_request) -> None:
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
     invocation_id = admitted.invocation.invocation_id
     observer = _restarted(service, tmp_path, seconds=61)
     first = observer.project_useful_progress(
