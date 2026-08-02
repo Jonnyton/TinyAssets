@@ -1425,3 +1425,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** make each restart test construct a fresh
   service from the beginning; reusing the original object proves replay but
   does not prove restart recovery.
+
+## 2026-08-02 — no-mint useful-progress health
+
+- **What surprised me:** reusing the transition validator from an observation
+  path briefly registered a spend-capable grant even though the caller never
+  received it. Read-only projections need validation factored below minting.
+- **Pattern worth capturing:** progress is the newest exact canonical owner
+  transition, not liveness noise. Bind alarm identity to that record digest
+  plus the configured threshold, and derive alarm time from the milestone so
+  concurrent observers converge byte-for-byte.
+- **What I would do differently:** design observation APIs around a pure
+  authority validator first, then let mutation paths wrap that result in
+  one-shot capabilities.
