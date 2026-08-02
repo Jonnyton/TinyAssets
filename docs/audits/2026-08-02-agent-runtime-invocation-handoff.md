@@ -70,8 +70,14 @@ replaying a used draft grants no authority and produces no writes.
 - `python scripts/openspec_flow.py audit --ref origin/main` — passed with zero
   complete-unarchived exceptions and no broad collision atoms; the claimed
   cloud-drain lane remains visible as the integration path.
-- Before implementation: independent exact-head architecture/security review
-  must approve this handoff.
+- Independent exact-head architecture/security review: APPROVED on
+  `e63822120de4651e80f3d47b30c4a9a2b0b5b685` by a read-only Codex peer on
+  2026-08-02. The reviewer confirmed atomicity, live-boundary authority,
+  replay/concurrency, bearer-free recovery provenance, Branch isolation, and
+  the absence of drain-specific platform logic. Claude and the first broad
+  Codex attempt hit bounded provider timeouts without verdicts; the
+  user-approved same-provider fallback returned in 38 seconds when narrowed
+  to the decision artifact and normative spec.
 - Before completion: focused failure-first tests must prove exact replay,
   changed-input conflict, concurrent single winner, missed-boundary rollback,
   bearer-free recovery evidence, forged-record refusal, and Branch-ledger

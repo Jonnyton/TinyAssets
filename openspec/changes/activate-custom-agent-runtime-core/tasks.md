@@ -1,6 +1,6 @@
 ## 1. Review and Exact Owner Handoff
 
-- [ ] 1.1 Run strict OpenSpec and bounded-flow checks, fold an independent exact-head architecture/security review, then obtain exact current-main activation, provider-work, continuation, grant-resolver, health, packaged-mirror, and test handoffs before broadening STATUS Files; explicitly fence the Branch-only background-attempt owner out of agent invocation.
+- [x] 1.1 Run strict OpenSpec and bounded-flow checks, fold an independent exact-head architecture/security review, then obtain exact current-main activation, provider-work, continuation, grant-resolver, health, packaged-mirror, and test handoffs before broadening STATUS Files; explicitly fence the Branch-only background-attempt owner out of agent invocation. Completed 2026-08-02 in `docs/audits/2026-08-02-agent-runtime-invocation-handoff.md`: both changes strict-valid, bounded-flow audit clean, exact current owners and missing invocation/health seams recorded, Branch-only attempt owner fenced out, and independent exact-head Codex architecture/security review approved `e6382212` after the Claude and first Codex attempts hit bounded provider timeouts.
 
 ## 2. Immutable Subject, Manifest, and Compilation
 
