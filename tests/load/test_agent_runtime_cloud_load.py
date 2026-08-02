@@ -11,6 +11,7 @@ Run directly with:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -20,12 +21,49 @@ from pathlib import Path
 
 from tests.test_agent_runtime_invocation import NOW, _ProviderResolver, _request
 from tests.test_agent_runtime_provider_call import _execution_service, _RecordingProvider
+from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage import db_path
 
 PROCESS_WORKERS = 8
 PROCESS_REQUESTS = 64
 THREAD_WORKERS = 64
+_CONCURRENT_BLOCKERS = {
+    "agent provider execution is owned by a concurrent launch",
+    "agent provider launch requires uncertain-call reconciliation",
+}
+
+
+class _ProcessRecordingProvider(BaseProvider):
+    name = "codex"
+    family = "gpt"
+
+    def __init__(self, marker_dir: Path, release_path: Path) -> None:
+        self.marker_dir = marker_dir
+        self.release_path = release_path
+
+    async def complete(
+        self,
+        prompt: str,
+        system: str,
+        config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
+    ) -> ProviderResponse:
+        marker = self.marker_dir / f"{os.getpid()}-{time.time_ns()}.call"
+        marker.write_text("provider boundary crossed", encoding="utf-8")
+        deadline = time.monotonic() + 20
+        while not self.release_path.exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("load-test provider release was not observed")
+            time.sleep(0.01)
+        return ProviderResponse(
+            text="approved patch",
+            provider=self.name,
+            model="gpt-load-test",
+            family=self.family,
+            latency_ms=10.0,
+        )
 
 
 def _prepare_in_fresh_process(
@@ -68,6 +106,49 @@ def _prepare_in_fresh_process(
         "continuation_id": continuation.continuation_id,
         "continuation_generation": continuation.generation,
     }
+
+
+def _launch_in_fresh_process(
+    base_path: str,
+    invocation_id: str,
+    marker_dir: str,
+    release_path: str,
+) -> dict[str, str]:
+    from tinyassets.agent_runtime_grants import (
+        AccountCapabilityGrantSource,
+        AgentRuntimeGrantResolver,
+    )
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionBlocked,
+        AgentRuntimeProviderExecutionService,
+    )
+
+    root = Path(base_path)
+    service = AgentRuntimeProviderExecutionService(
+        root,
+        grant_resolver=AgentRuntimeGrantResolver(
+            capability_source=AccountCapabilityGrantSource(root),
+            clock=lambda: NOW.timestamp(),
+        ),
+        provider_binding_resolver=_ProviderResolver(),
+        clock=lambda: NOW,
+    )
+    try:
+        outcome = service.execute_provider_call(
+            invocation_id,
+            typed_input=_request().typed_input,
+            router=ProviderRouter(
+                {
+                    "codex": _ProcessRecordingProvider(
+                        Path(marker_dir),
+                        Path(release_path),
+                    )
+                }
+            ),
+        )
+    except AgentRuntimeProviderExecutionBlocked as exc:
+        return {"kind": "blocked", "detail": str(exc)}
+    return {"kind": "outcome", "detail": outcome.outcome_digest}
 
 
 def _run_process_wave(
@@ -190,8 +271,8 @@ def test_concurrent_launch_has_one_provider_call_then_exact_replay(
                 typed_input=_request().typed_input,
                 router=router,
             )
-        except AgentRuntimeProviderExecutionBlocked:
-            return None
+        except AgentRuntimeProviderExecutionBlocked as exc:
+            return str(exc)
 
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=THREAD_WORKERS) as pool:
@@ -203,9 +284,11 @@ def test_concurrent_launch_has_one_provider_call_then_exact_replay(
         first_wave = [future.result(timeout=20) for future in futures]
     launch_seconds = time.perf_counter() - started
 
-    visible_outcomes = [result for result in first_wave if result is not None]
+    blocked = [result for result in first_wave if isinstance(result, str)]
+    visible_outcomes = [result for result in first_wave if not isinstance(result, str)]
     assert visible_outcomes
-    assert first_wave.count(None) > 0
+    assert blocked
+    assert set(blocked) <= _CONCURRENT_BLOCKERS
     assert len({result.outcome_digest for result in visible_outcomes}) == 1
     outcome = visible_outcomes[0]
 
@@ -234,7 +317,7 @@ def test_concurrent_launch_has_one_provider_call_then_exact_replay(
 
     evidence = {
         "classification": "shaped-local-sqlite-with-provider-test-double",
-        "blocked_during_uncertain_window": first_wave.count(None),
+        "blocked_during_uncertain_window": len(blocked),
         "launch_contenders": len(first_wave),
         "launch_wall_seconds": launch_seconds,
         "provider_calls": len(provider.calls),
@@ -249,3 +332,66 @@ def test_concurrent_launch_has_one_provider_call_then_exact_replay(
     assert integrity == "ok"
     assert launch_seconds < 30
     assert replay_seconds < 30
+
+
+def test_cross_process_launch_has_one_provider_call_and_typed_losers(
+    tmp_path, authenticate_request
+) -> None:
+    _service, admitted, _universe_dir, _manifest = _execution_service(
+        tmp_path, authenticate_request
+    )
+    invocation_id = admitted.invocation.invocation_id
+    marker_dir = tmp_path / "provider-call-markers"
+    marker_dir.mkdir()
+    release_path = tmp_path / "provider-call-release"
+
+    started = time.perf_counter()
+    with ProcessPoolExecutor(max_workers=PROCESS_WORKERS) as pool:
+        futures = [
+            pool.submit(
+                _launch_in_fresh_process,
+                str(tmp_path),
+                invocation_id,
+                str(marker_dir),
+                str(release_path),
+            )
+            for _index in range(PROCESS_REQUESTS)
+        ]
+        deadline = time.monotonic() + 20
+        while not list(marker_dir.glob("*.call")):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        time.sleep(0.25)
+        assert len(list(marker_dir.glob("*.call"))) == 1
+        release_path.touch()
+        results = [future.result(timeout=30) for future in futures]
+    wall_seconds = time.perf_counter() - started
+
+    markers = list(marker_dir.glob("*.call"))
+    blockers = [result["detail"] for result in results if result["kind"] == "blocked"]
+    outcomes = [result["detail"] for result in results if result["kind"] == "outcome"]
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        outcome_count = connection.execute(
+            "SELECT COUNT(*) FROM agent_invocation_provider_outcomes"
+        ).fetchone()[0]
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+
+    evidence = {
+        "classification": "shaped-local-sqlite-with-provider-test-double",
+        "blocked_during_uncertain_window": len(blockers),
+        "process_requests": len(results),
+        "process_workers": PROCESS_WORKERS,
+        "provider_call_markers": len(markers),
+        "terminal_replays": len(outcomes),
+        "wall_seconds": wall_seconds,
+    }
+    print(json.dumps(evidence, sort_keys=True))
+
+    assert len(markers) == 1
+    assert blockers
+    assert set(blockers) <= _CONCURRENT_BLOCKERS
+    assert outcomes
+    assert len(set(outcomes)) == 1
+    assert outcome_count == 1
+    assert integrity == "ok"
+    assert wall_seconds < 30
