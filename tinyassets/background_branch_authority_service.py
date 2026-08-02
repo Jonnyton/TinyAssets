@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
@@ -492,6 +492,89 @@ class BackgroundBranchAuthorityOwnerRecord:
             raise ValueError("attempt must be a typed fence")
         if self.attempt is not None and self.binding is None:
             raise ValueError("attempt requires a binding fence")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "owner_kind": self.owner_kind.value,
+            "owner_id": self.owner_id,
+            "universe_id": self.universe_id,
+            "authorizing_principal_id": self.authorizing_principal_id,
+            "source_generation": self.source_generation,
+            "transition_generation": self.transition_generation,
+            "state": self.state.value,
+            "binding": (
+                self.binding.expected_record.to_dict()
+                if self.binding is not None
+                else None
+            ),
+            "attempt": (
+                self.attempt.expected_record.to_dict()
+                if self.attempt is not None
+                else None
+            ),
+            "hold_reason": (
+                self.hold_reason.value if self.hold_reason is not None else None
+            ),
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> BackgroundBranchAuthorityOwnerRecord:
+        expected = {
+            "owner_kind",
+            "owner_id",
+            "universe_id",
+            "authorizing_principal_id",
+            "source_generation",
+            "transition_generation",
+            "state",
+            "binding",
+            "attempt",
+            "hold_reason",
+            "updated_at",
+        }
+        if not isinstance(data, dict) or set(data) != expected:
+            raise ValueError("owner record fields are invalid")
+        try:
+            owner_kind = BackgroundBranchAuthorityOwnerKind(data["owner_kind"])
+            state = BackgroundBranchAuthorityOwnerState(data["state"])
+            hold_reason = (
+                BackgroundBranchHoldReason(data["hold_reason"])
+                if data["hold_reason"] is not None
+                else None
+            )
+            binding = (
+                BackgroundBranchBindingFence(
+                    BackgroundBranchBinding.from_dict(data["binding"])
+                )
+                if data["binding"] is not None
+                else None
+            )
+            attempt = (
+                BackgroundBranchAttemptFence(
+                    BackgroundBranchAttempt.from_dict(data["attempt"])
+                )
+                if data["attempt"] is not None
+                else None
+            )
+            return cls(
+                owner_kind=owner_kind,
+                owner_id=data["owner_id"],
+                universe_id=data["universe_id"],
+                authorizing_principal_id=data["authorizing_principal_id"],
+                source_generation=data["source_generation"],
+                transition_generation=data["transition_generation"],
+                state=state,
+                binding=binding,
+                attempt=attempt,
+                hold_reason=hold_reason,
+                updated_at=data["updated_at"],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("owner record is invalid") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1665,7 +1748,9 @@ class BackgroundBranchAuthorityHoldService:
         replacement = replace(
             current,
             source_generation=(
-                attempt.source_generation if attempt is not None else current.source_generation
+                attempt.source_generation
+                if attempt is not None
+                else int(binding.source_revision)
             ),
             transition_generation=current.transition_generation + 1,
             state=self._resume_state(current.owner_kind),
