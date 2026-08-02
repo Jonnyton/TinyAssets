@@ -23,6 +23,12 @@ window for that attempt contained no sanitized token-rejection category. This
 attempt therefore failed before the instrumented bearer validator; it is not
 evidence for relaxing or changing JWT validation.
 
+A third rendered attempt on 2026-08-02 reattached TinyAssets successfully
+through the same-tab OAuth return. The original call did not resume, and an
+explicit retry with TinyAssets visibly attached produced no rendered assistant
+or tool result before the 120-second driver timeout. This again fails before an
+accepted authenticated call and does not authorize a JWT change.
+
 ## Rendered reproduction
 
 In a one-tab ChatGPT Temporary Chat, the user completed `Reconnect TinyAssets`
@@ -56,6 +62,16 @@ picker, and an explicit post-return identity prompt produced neither a tool
 call nor an assistant response. The custom-agent read therefore did not run.
 Exact prompts, rendered results, and main-pane screenshots are in
 `output/user_sim_session.md`.
+
+The 2026-08-02 follow-up used ChatGPT Pro, Temporary Chat, Instant, and one
+host-visible tab. The first connector call rendered `Reconnect TinyAssets`.
+Reconnect and Connect completed in the same tab and returned
+`link_success=true`; returning to the exact conversation preserved the user
+turn. The original call ended without a tool result. TinyAssets was then
+explicitly attached again and the user asked for the connector check to retry.
+That second turn also produced no rendered assistant or tool result before the
+120-second driver timeout. No principal fingerprint was rendered, so neither
+turn is authenticated-call acceptance evidence.
 
 ## Public and deployed configuration parity
 
@@ -171,3 +187,9 @@ next repair boundary. Only implement the smallest evidence-backed correction.
 Final acceptance requires both an immediate authenticated call and a later
 continued/refreshed call to the same owner/universe from a rendered chatbot,
 with no personal computer dependency.
+
+Freshness check 2026-08-02 16:32 PDT against `origin/main`
+`9f8975ea51b063d868b89f25b080fe03606feb8b`: the available repository issue,
+PR, session, and audit evidence contains no independent post-fix clean ChatGPT
+OAuth use. Keep an explicit monitoring watch; do not count this synthetic,
+failed acceptance traffic as organic use.
