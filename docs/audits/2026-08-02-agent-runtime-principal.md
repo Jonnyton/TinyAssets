@@ -1,6 +1,6 @@
 # Custom-agent runtime principal foundation
 
-Freshness: 2026-08-02 UTC, Windows local worktree, stacked on PR #2082 head `f6af17ee`.
+Freshness: 2026-08-02 UTC, Windows local worktree, exact-restacked on `origin/main` base `ad001d99` after prerequisite PR #2082 landed.
 
 ## Outcome
 
@@ -27,13 +27,13 @@ Typed safe blockers distinguish missing/current-state, identity, fence, source, 
 - RED: an activation rebound during grant resolution incorrectly returned a principal before the final activation recheck was added.
 - RED: an invocation revoked during grant resolution incorrectly returned a principal before the final invocation re-read was added.
 - GREEN: `python -m pytest tests/test_agent_runtime_principal.py -q` — 11 passed.
-- Regression: 299 agent-runtime, compiler, activation, execution-subject, continuation, provider-authority, queue, and admission tests passed in 20.89 seconds.
-- Ruff lint/format and `py_compile` passed.
-- Both affected OpenSpec changes passed strict validation; full tree passed 67/67 on the stacked parent.
+- Exact-restack regression: 331 agent-runtime, compiler, activation, execution-subject, continuation, provider-authority, queue, and admission tests passed in 31.50 seconds.
+- Ruff lint and `py_compile` passed.
+- Both affected OpenSpec changes passed strict validation.
 - Canonical/plugin mirror parity passed, and the packaged principal imported in a fresh process.
 
 ## Explicit remaining work
 
 This is a partial foundation for `activate-custom-agent-runtime-core` task 3.1; its checkbox stays open. The canonical `AgentInvocation` store/admission owner does not exist yet, so this slice defines its narrow read protocol but does not mint invocation evidence. It also does not activate agents, reserve provider work, launch models, resume continuations, expose public controls, connect Slack/apps, run workflows, mutate graphs, or perform effects.
 
-PR #2082 remains the required typed `ExecutionSubject` and reserved activation-key parent. The stacked principal PR must not be retargeted to `main` until that dependency lands or is restacked exactly.
+PR #2082 supplied the required typed `ExecutionSubject` and reserved activation-key prerequisite and is now landed. The runtime-principal implementation was cherry-picked alone onto current `main`; its stable patch ID matches reviewed commit `d5ca5e3b`, and PR #2114 must expose only the four files named in this audit.
