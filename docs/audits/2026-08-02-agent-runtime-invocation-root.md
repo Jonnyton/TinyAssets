@@ -1,6 +1,6 @@
 # Custom-agent invocation authority source foundation
 
-Freshness: 2026-08-02, Windows local worktree, restacked on `origin/main` at `4d57c540` before the final exact-head review.
+Freshness: 2026-08-02, Windows local worktree, restacked on `origin/main` at `d6e6a105` before the final exact-head review.
 
 ## Outcome
 
