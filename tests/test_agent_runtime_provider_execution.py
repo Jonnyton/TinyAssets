@@ -409,6 +409,112 @@ def test_agent_transition_grant_cannot_be_reused(
     assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
 
 
+@pytest.mark.parametrize("transition_name", ("claim", "reserve", "arm_launch"))
+def test_agent_transition_grant_is_discarded_when_receipt_lookup_raises(
+    tmp_path, authenticate_request, monkeypatch, transition_name
+) -> None:
+    from tinyassets import agent_runtime_provider_execution as execution_module
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+    from tinyassets.storage import provider_work_authority as provider_store_module
+
+    _manifest, grant_resolver, provider_resolver, _admission, admitted = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+
+    def fail_receipt_lookup(*_args, **_kwargs):
+        raise RuntimeError("receipt lookup failed")
+
+    monkeypatch.setattr(
+        provider_store_module,
+        "_agent_receipt_for_authority",
+        fail_receipt_lookup,
+    )
+    with pytest.raises(RuntimeError, match="receipt lookup failed"):
+        getattr(service, transition_name)(invocation_id)
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
+
+
+def test_agent_launch_grant_cannot_probe_another_receipts_reservation(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets import agent_runtime_provider_execution as execution_module
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+    from tinyassets.storage import provider_work_authority as provider_store_module
+
+    _manifest, grant_resolver, provider_resolver, admission, admitted_a = (
+        _admitted_invocation(tmp_path, authenticate_request)
+    )
+    admitted_b = admission.admit(
+        _capture(admission),
+        _request(
+            idempotency_key="chat-turn-43",
+            typed_input={
+                "kind": "repository_patch_request",
+                "repository": "github:alice/example",
+                "request": "add the second approved validation",
+            },
+        ),
+    )
+    service = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=grant_resolver,
+        provider_binding_resolver=provider_resolver,
+        clock=lambda: NOW,
+    )
+    for invocation_id in (
+        admitted_a.invocation.invocation_id,
+        admitted_b.invocation.invocation_id,
+    ):
+        service.issue_receipt(invocation_id)
+        service.claim(invocation_id)
+    reservation_b = service.reserve(admitted_b.invocation.invocation_id).record
+    assert reservation_b is not None
+    request_b = ProviderInvocationLaunchRequest.from_reservation(reservation_b)
+    missing_request_b = ProviderInvocationLaunchRequest(
+        reservation_id="reservation_missing",
+        reserved_digest=request_b.reserved_digest,
+        receipt_id=request_b.receipt_id,
+        receipt_digest=request_b.receipt_digest,
+        claim_id=request_b.claim_id,
+        claim_digest=request_b.claim_digest,
+        claim_generation=request_b.claim_generation,
+        invocation_key=request_b.invocation_key,
+    )
+
+    for target_request in (request_b, missing_request_b):
+        with service.invocation_store.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            grant_a = service._validated_store_grant(
+                connection,
+                invocation_id=admitted_a.invocation.invocation_id,
+                evaluated_at=NOW.timestamp(),
+            )
+            with pytest.raises(PermissionError, match="does not match receipt"):
+                provider_store_module._Transaction(connection).arm_launch(
+                    target_request,
+                    now=NOW,
+                    agent_store_grant=grant_a,
+                )
+            connection.rollback()
+
+    assert service.provider_store.list_reservations(request_b.receipt_id) == (
+        reservation_b,
+    )
+    assert execution_module._ACTIVE_RECEIPT_GRANTS == {}
+
+
 def test_eight_agent_launchers_mint_one_carrier(
     tmp_path, authenticate_request
 ) -> None:

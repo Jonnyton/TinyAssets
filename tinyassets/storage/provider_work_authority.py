@@ -842,16 +842,38 @@ class _Transaction:
         now: datetime,
         agent_store_grant: object | None = None,
     ) -> ProviderInvocationReservationWriteResult:
-        agent_authority = (
-            SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
-                agent_store_grant
+        if agent_store_grant is not None:
+            agent_authority = (
+                SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                    agent_store_grant
+                )
             )
-            if agent_store_grant is not None
-            else None
-        )
+            receipt = _agent_receipt_for_authority(self._conn, agent_authority)
+            if (
+                request.receipt_id != receipt.receipt_id
+                or request.receipt_digest != receipt.receipt_digest
+            ):
+                raise PermissionError("agent launch authority does not match receipt")
+        else:
+            receipt_row = self._conn.execute(
+                "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                (request.receipt_id,),
+            ).fetchone()
+            if receipt_row is None:
+                return ProviderInvocationReservationWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.MISSING,
+                    None,
+                )
+            receipt = _receipt_record(receipt_row)
+            if receipt.work_item_kind == "agent_invocation":
+                SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(None)
+
         reservation_row = self._conn.execute(
-            "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
-            (request.reservation_id,),
+            """
+            SELECT * FROM provider_invocation_reservations
+            WHERE reservation_id = ? AND receipt_id = ?
+            """,
+            (request.reservation_id, receipt.receipt_id),
         ).fetchone()
         if reservation_row is None:
             return ProviderInvocationReservationWriteResult(
@@ -859,27 +881,6 @@ class _Transaction:
                 None,
             )
         reservation = _reservation_record(reservation_row)
-        receipt_row = self._conn.execute(
-            "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
-            (reservation.receipt_id,),
-        ).fetchone()
-        if receipt_row is None:
-            return ProviderInvocationReservationWriteResult(
-                ProviderWorkAuthorityWriteOutcome.STALE,
-                None,
-            )
-        receipt = _receipt_record(receipt_row)
-        if receipt.work_item_kind == "agent_invocation":
-            if agent_authority is None:
-                agent_authority = (
-                    SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
-                        None
-                    )
-                )
-            if _agent_receipt_for_authority(self._conn, agent_authority) != receipt:
-                raise PermissionError("agent launch authority does not match receipt")
-        elif agent_authority is not None:
-            raise PermissionError("agent transition grant cannot authorize Branch work")
         same_identity = (
             reservation.receipt_id == request.receipt_id,
             reservation.receipt_digest == request.receipt_digest,
@@ -1151,6 +1152,29 @@ class SQLiteProviderWorkAuthorityStore:
             )
         return store_grant._peek()
 
+    @staticmethod
+    def _discard_agent_transition_grant(store_grant: object) -> None:
+        from tinyassets.agent_runtime_provider_execution import (
+            _AgentProviderReceiptStoreGrant,
+        )
+
+        if type(store_grant) is not _AgentProviderReceiptStoreGrant:
+            raise PermissionError(
+                "agent provider transition requires a service-issued grant"
+            )
+        store_grant._discard()
+
+    @contextmanager
+    def _agent_transition_authority(
+        self,
+        store_grant: object,
+    ) -> Iterator[ProviderUniverseWorkAuthority]:
+        authority = self._peek_agent_transition_grant(store_grant)
+        try:
+            yield authority
+        finally:
+            self._discard_agent_transition_grant(store_grant)
+
     def _claim_agent_in_transaction(
         self,
         conn: sqlite3.Connection,
@@ -1158,44 +1182,44 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderWorkExecutionClaimWriteResult:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("agent claim requires an active transaction")
-        authority = self._peek_agent_transition_grant(store_grant)
-        receipt = _agent_receipt_for_authority(conn, authority)
-        now = self._now()
-        remaining_seconds = int(
-            (
-                datetime.fromisoformat(
-                    receipt.expires_at.removesuffix("Z") + "+00:00"
+        with self._agent_transition_authority(store_grant) as authority:
+            receipt = _agent_receipt_for_authority(conn, authority)
+            now = self._now()
+            remaining_seconds = int(
+                (
+                    datetime.fromisoformat(
+                        receipt.expires_at.removesuffix("Z") + "+00:00"
+                    )
+                    - now
                 )
-                - now
-            ).total_seconds()
-        )
-        if remaining_seconds < 1:
-            self._consume_agent_transition_grant(store_grant)
-            return ProviderWorkExecutionClaimWriteResult(
-                ProviderWorkAuthorityWriteOutcome.STALE,
-                None,
+                .total_seconds()
             )
-        request = ProviderWorkExecutionClaimRequest(
-            receipt_id=receipt.receipt_id,
-            receipt_digest=receipt.receipt_digest,
-            worker_id=authority.actor_id,
-            runtime_id=authority.execution_subject.ref,
-            claim_nonce_digest=_agent_claim_nonce_digest(receipt.receipt_digest),
-            lease_seconds=min(300, remaining_seconds),
-        )
-        candidate = _claim_from_request(
-            request,
-            created_at=self._timestamp(now),
-            lease_expires_at=self._timestamp(
-                now + timedelta(seconds=request.lease_seconds)
-            ),
-        )
-        return _Transaction(conn).claim_receipt(
-            request,
-            candidate,
-            now=now,
-            agent_store_grant=store_grant,
-        )
+            if remaining_seconds < 1:
+                return ProviderWorkExecutionClaimWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.STALE,
+                    None,
+                )
+            request = ProviderWorkExecutionClaimRequest(
+                receipt_id=receipt.receipt_id,
+                receipt_digest=receipt.receipt_digest,
+                worker_id=authority.actor_id,
+                runtime_id=authority.execution_subject.ref,
+                claim_nonce_digest=_agent_claim_nonce_digest(receipt.receipt_digest),
+                lease_seconds=min(300, remaining_seconds),
+            )
+            candidate = _claim_from_request(
+                request,
+                created_at=self._timestamp(now),
+                lease_expires_at=self._timestamp(
+                    now + timedelta(seconds=request.lease_seconds)
+                ),
+            )
+            return _Transaction(conn).claim_receipt(
+                request,
+                candidate,
+                now=now,
+                agent_store_grant=store_grant,
+            )
 
     def _reserve_agent_in_transaction(
         self,
@@ -1204,38 +1228,37 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderInvocationReservationWriteResult:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("agent reservation requires an active transaction")
-        authority = self._peek_agent_transition_grant(store_grant)
-        receipt = _agent_receipt_for_authority(conn, authority)
-        claim_row = conn.execute(
-            "SELECT * FROM provider_work_execution_claims WHERE receipt_id = ?",
-            (receipt.receipt_id,),
-        ).fetchone()
-        if claim_row is None:
-            self._consume_agent_transition_grant(store_grant)
-            return ProviderInvocationReservationWriteResult(
-                ProviderWorkAuthorityWriteOutcome.MISSING,
-                None,
+        with self._agent_transition_authority(store_grant) as authority:
+            receipt = _agent_receipt_for_authority(conn, authority)
+            claim_row = conn.execute(
+                "SELECT * FROM provider_work_execution_claims WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            ).fetchone()
+            if claim_row is None:
+                return ProviderInvocationReservationWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.MISSING,
+                    None,
+                )
+            claim = _claim_record(claim_row)
+            request = ProviderInvocationReservationRequest(
+                receipt_id=receipt.receipt_id,
+                receipt_digest=receipt.receipt_digest,
+                claim_id=claim.claim_id,
+                claim_digest=claim.claim_digest,
+                claim_generation=claim.generation,
+                invocation_key=authority.root.work_item_id,
+                operation=authority.operation,
+                role=authority.role,
+                max_tokens=authority.max_tokens,
+                max_cost_microunits=authority.max_cost_microunits,
             )
-        claim = _claim_record(claim_row)
-        request = ProviderInvocationReservationRequest(
-            receipt_id=receipt.receipt_id,
-            receipt_digest=receipt.receipt_digest,
-            claim_id=claim.claim_id,
-            claim_digest=claim.claim_digest,
-            claim_generation=claim.generation,
-            invocation_key=authority.root.work_item_id,
-            operation=authority.operation,
-            role=authority.role,
-            max_tokens=authority.max_tokens,
-            max_cost_microunits=authority.max_cost_microunits,
-        )
-        now = self._now()
-        return _Transaction(conn).reserve_invocation(
-            request,
-            now=now,
-            created_at=self._timestamp(now),
-            agent_store_grant=store_grant,
-        )
+            now = self._now()
+            return _Transaction(conn).reserve_invocation(
+                request,
+                now=now,
+                created_at=self._timestamp(now),
+                agent_store_grant=store_grant,
+            )
 
     def _arm_agent_launch_in_transaction(
         self,
@@ -1244,56 +1267,57 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderInvocationReservationWriteResult:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("agent launch requires an active transaction")
-        authority = self._peek_agent_transition_grant(store_grant)
-        receipt = _agent_receipt_for_authority(conn, authority)
-        reservation_row = conn.execute(
-            """
-            SELECT * FROM provider_invocation_reservations
-            WHERE receipt_id = ? AND invocation_key = ?
-            """,
-            (receipt.receipt_id, authority.root.work_item_id),
-        ).fetchone()
-        if reservation_row is None:
-            self._consume_agent_transition_grant(store_grant)
-            return ProviderInvocationReservationWriteResult(
-                ProviderWorkAuthorityWriteOutcome.MISSING,
-                None,
+        with self._agent_transition_authority(store_grant) as authority:
+            receipt = _agent_receipt_for_authority(conn, authority)
+            reservation_row = conn.execute(
+                """
+                SELECT * FROM provider_invocation_reservations
+                WHERE receipt_id = ? AND invocation_key = ?
+                """,
+                (receipt.receipt_id, authority.root.work_item_id),
+            ).fetchone()
+            if reservation_row is None:
+                return ProviderInvocationReservationWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.MISSING,
+                    None,
+                )
+            reservation = _reservation_record(reservation_row)
+            request = ProviderInvocationLaunchRequest.from_reservation(
+                _reservation_with_state(
+                    reservation,
+                    ProviderInvocationReservationState.RESERVED,
+                )
             )
-        reservation = _reservation_record(reservation_row)
-        request = ProviderInvocationLaunchRequest.from_reservation(
-            _reservation_with_state(
-                reservation,
-                ProviderInvocationReservationState.RESERVED,
+            result = _Transaction(conn).arm_launch(
+                request,
+                now=self._now(),
+                agent_store_grant=store_grant,
             )
-        )
-        result = _Transaction(conn).arm_launch(
-            request,
-            now=self._now(),
-            agent_store_grant=store_grant,
-        )
-        if (
-            result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
-            or result.record is None
-        ):
-            return result
-        proof_id = secrets.token_hex(32)
-        issuer_pid = os.getpid()
-        proof = object.__new__(_ProviderInvocationStoreMintProof)
-        object.__setattr__(proof, "_proof_id", proof_id)
-        object.__setattr__(proof, "_issuer_pid", issuer_pid)
-        object.__setattr__(proof, "_reservation_digest", result.record.reservation_digest)
-        weakref.finalize(
-            proof,
-            _discard_provider_invocation_store_mint_proof,
-            proof_id,
-            issuer_pid,
-        )
-        with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
-            _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[proof_id] = (
-                result.record.reservation_digest,
+            if (
+                result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+                or result.record is None
+            ):
+                return result
+            proof_id = secrets.token_hex(32)
+            issuer_pid = os.getpid()
+            proof = object.__new__(_ProviderInvocationStoreMintProof)
+            object.__setattr__(proof, "_proof_id", proof_id)
+            object.__setattr__(proof, "_issuer_pid", issuer_pid)
+            object.__setattr__(
+                proof, "_reservation_digest", result.record.reservation_digest
+            )
+            weakref.finalize(
+                proof,
+                _discard_provider_invocation_store_mint_proof,
+                proof_id,
                 issuer_pid,
             )
-        return replace(result, mint_proof=proof)
+            with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
+                _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[proof_id] = (
+                    result.record.reservation_digest,
+                    issuer_pid,
+                )
+            return replace(result, mint_proof=proof)
 
     def claim(
         self,

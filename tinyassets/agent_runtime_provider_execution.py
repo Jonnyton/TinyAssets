@@ -76,6 +76,11 @@ class _AgentProviderReceiptStoreGrant:
     def _consume(self) -> ProviderUniverseWorkAuthority:
         return self._resolve(consume=True)
 
+    def _discard(self) -> None:
+        if type(self) is not _AgentProviderReceiptStoreGrant:
+            raise PermissionError("agent provider receipt grant is not service-issued")
+        _discard_receipt_grant(self._grant_id, self._issuer_pid)
+
 
 _RECEIPT_GRANT_LOCK = threading.Lock()
 _ACTIVE_RECEIPT_GRANTS: dict[
