@@ -1,28 +1,16 @@
 # Worktree Inventory
 
-## 2026-08-02 - Data commons ordinary contribution recovery slice
-
-- Provider: `codex-gpt5-desktop-agent-runtime`
-- Branch: `codex/data-commons-contribution-impl-20260802`
-- Lane state: claimed tasks 1.1-1.5 only from the legacy oversized `data-commons-contribution` change
-- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim`
-- STATUS/Issue/PR: canonical contribution-entry metadata and ordinary commons discovery; no second catalog, index, or MCP handle
-- Purpose: make community-published designs discoverable and remixable through existing wiki/commons primitives, including future arbitrary agent definitions
-- Review gate: test-first exact-path authority/discovery coverage, packaged mirror parity, exact-seven canary, focused regressions, independent review
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim/_PURPOSE.md`
-- Ship/abandon: one bounded PR; leave all later data-commons tasks unchecked and unclaimed
-
 ## 2026-08-02 01:40 - Server-derived custom-agent runtime principal
 
 - Provider: `codex-gpt5-desktop-agent-runtime`
 - Branch: `codex/agent-runtime-principal-20260802`
-- Lane state: pending; PR #2114 is terminal-green at `d5ca5e3b`, cleanly stacked on PR #2082's exact typed ExecutionSubject/activation prerequisite
+- Lane state: resumed; prerequisite PR #2082 landed and PR #2114 is retargeted to `main` for exact-diff/CI verification
 - Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal`
-- STATUS/Issue/PR: https://github.com/Jonnyton/TinyAssets/pull/2114; keep open on the parent branch until #2082 lands or the stack is rebuilt exactly
+- STATUS/Issue/PR: https://github.com/Jonnyton/TinyAssets/pull/2114; verify the retargeted diff is still only the reviewed runtime-principal foundation
 - Purpose: derive a narrow non-bearer runtime principal from authoritative manifest, activation, invocation, and live grant identities without editing cloud/provider/continuation owners
 - Review gate: RED/GREEN authority tests, current-activation and invocation-source failure probes, grant revalidation, mirror parity, strict OpenSpec, exact-head independent security review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal/_PURPOSE.md`
-- Ship/abandon: retarget/fold back only after #2082 lands or is exact-restacked; dark contract, no public invocation/provider launch/app/effect path
+- Ship/abandon: merge after exact retarget verification and CI; dark contract, no public invocation/provider launch/app/effect path
 
 ## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
 
