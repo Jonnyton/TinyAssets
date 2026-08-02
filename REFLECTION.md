@@ -1351,3 +1351,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** define `Depends` from the first slice's
   start condition, then keep downstream proof in acceptance tasks; never derive
   admission from an umbrella change's entire completion checklist.
+
+## 2026-08-01 — durable drain continuation
+
+- **What surprised me:** preserving an identity in memory was insufficient;
+  the restart marker, cleared terminal timestamp, and consumed PR receipt each
+  needed their own crash-safe persistence point.
+- **Pattern worth capturing:** continuation authority is a durable receipt, not
+  a control-flow branch. Persist intent before external work, consume it only
+  after the successor exists, and deduplicate every merge-backed outcome.
+- **What I would do differently:** test abrupt exit at every persistence
+  boundary in the first restart matrix, including before recovery and during
+  process launch, instead of only interrupting before the next worker attempt.

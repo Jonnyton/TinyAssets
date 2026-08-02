@@ -1,5 +1,29 @@
 # Worktree Inventory
 
+## 2026-08-02 01:40 - Server-derived custom-agent runtime principal
+
+- Provider: `codex-gpt5-desktop-agent-runtime`
+- Branch: `codex/agent-runtime-principal-20260802`
+- Lane state: PR #2114 is terminal-green at `d5ca5e3b`, cleanly stacked on PR #2082's exact typed ExecutionSubject/activation prerequisite
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal`
+- STATUS/Issue/PR: https://github.com/Jonnyton/TinyAssets/pull/2114; keep open on the parent branch until #2082 lands or the stack is rebuilt exactly
+- Purpose: derive a narrow non-bearer runtime principal from authoritative manifest, activation, invocation, and live grant identities without editing cloud/provider/continuation owners
+- Review gate: RED/GREEN authority tests, current-activation and invocation-source failure probes, grant revalidation, mirror parity, strict OpenSpec, exact-head independent security review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal/_PURPOSE.md`
+- Ship/abandon: retarget/fold back only after #2082 lands or is exact-restacked; dark contract, no public invocation/provider launch/app/effect path
+
+## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
+
+- Provider: `codex-gpt5-desktop-installer`
+- Branch: `codex/windows-installer-bounded-recurrence-20260801`
+- Lane state: PR #2110 merged; exact-head run 30726851602 passed the supervised lifecycle in 47 seconds; OpenSpec synced/archived on the foldback branch
+- Worktree: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence`
+- STATUS/Issue/PR: PR #2110 merged; foldback restores the umbrella full-platform refinery row and retires the completed claim
+- Purpose: replace the failed PowerShell supervision attempt with a stdlib Python parent deadline, retain byte-capped phase diagnostics, and fail before GitHub cancellation begins
+- Review gate: RED/GREEN timeout regression, focused desktop tests, strict OpenSpec, exact-head independent review, and one fresh successful Windows lifecycle CI run
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence/_PURPOSE.md`
+- Ship/abandon: normal PR; do not claim signed clean-VM acceptance or published installer readiness
+
 ## 2026-07-31 19:20 - OAuth return reattachment acceptance
 
 - Provider: `codex-gpt5-desktop`

@@ -641,7 +641,7 @@ def duplicate_merge_rejection(
     state: dict[str, Any],
 ) -> str | None:
     """Reject a previously consumed merge receipt before it counts again."""
-    if result.status != "MERGED":
+    if result.status not in {"MERGED", "PARTIAL"}:
         return None
     receipt = canonical_pr_receipt(result.pr)
     consumed = {
@@ -1315,8 +1315,7 @@ def apply_result(
         state["resume_target"] = result.target
         state["status"] = "merge-verification-failed"
         return
-    if result.status == "MERGED":
-        state["completed_slices"] += 1
+    if result.status in {"MERGED", "PARTIAL"}:
         receipt = canonical_pr_receipt(result.pr)
         merged_prs = [
             canonical_pr_receipt(pr)
@@ -1324,26 +1323,37 @@ def apply_result(
             if isinstance(pr, str) and canonical_pr_receipt(pr) != receipt
         ]
         merged_prs.append(receipt)
-        # A run is already bounded by max_slices. Keep every successful
-        # receipt for that run so an old merge can never become replayable.
+        # A run is already bounded by max_slices. Keep every accepted
+        # merge-backed receipt so neither completed nor continuation work can
+        # become replayable later in the same run.
         state["merged_prs"] = merged_prs
+    if result.status == "MERGED":
+        state["completed_slices"] += 1
         state["consecutive_failures"] = 0
         state["consecutive_partial_target"] = None
         state["consecutive_partials"] = 0
         state["resume_target"] = None
         state["status"] = "merged"
     elif result.status == "PARTIAL":
-        repeated = state.get("consecutive_partial_target") == result.target
-        partials = state.get("consecutive_partials", 0) + 1 if repeated else 1
-        state["consecutive_partial_target"] = result.target
-        state["consecutive_partials"] = partials
         state["resume_target"] = result.target
-        if partials > 1:
-            state["consecutive_failures"] += 1
-            state["status"] = "partial-stalled"
-        else:
+        if state.get("attempt_kind") == "refinery":
             state["consecutive_failures"] = 0
+            state["consecutive_partial_target"] = None
+            state["consecutive_partials"] = 0
             state["status"] = "partial"
+        else:
+            repeated = state.get("consecutive_partial_target") == result.target
+            partials = (
+                state.get("consecutive_partials", 0) + 1 if repeated else 1
+            )
+            state["consecutive_partial_target"] = result.target
+            state["consecutive_partials"] = partials
+            if partials > 1:
+                state["consecutive_failures"] += 1
+                state["status"] = "partial-stalled"
+            else:
+                state["consecutive_failures"] = 0
+                state["status"] = "partial"
     elif result.status == "BLOCKED":
         blocked = [
             target
@@ -1391,7 +1401,8 @@ def apply_duplicate_merge_suppression(
 ) -> None:
     """Suppress a stale target whose merge receipt was already consumed."""
     state["consecutive_transients"] = 0
-    state["consecutive_failures"] = 0
+    if result.status == "MERGED":
+        state["consecutive_failures"] = 0
     consumed = [
         target
         for target in state.get("recent_consumed_targets", [])
@@ -1419,7 +1430,7 @@ def infer_legacy_merged_prs(
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
 ) -> list[str]:
-    """Reconstruct accepted verified receipts for pre-field run state."""
+    """Reconstruct accepted verified merge-backed receipts for old state."""
     try:
         last_consumed = max(0, int(state.get("last_consumed_attempt", 0)))
         completed_slices = max(0, int(state.get("completed_slices", 0)))
@@ -1433,6 +1444,15 @@ def infer_legacy_merged_prs(
         # Result text alone cannot prove that merge verification succeeded.
         return []
     ordinary_attempts = {
+        int(match.group("attempt"))
+        for match in re.finditer(
+            r"\bresult attempt=(?P<attempt>[1-9][0-9]*) "
+            r"status=(?:merged|partial|partial-stalled)\b",
+            log_text,
+        )
+        if int(match.group("attempt")) <= last_consumed
+    }
+    ordinary_merged_attempts = {
         int(match.group("attempt"))
         for match in re.finditer(
             r"\bresult attempt=(?P<attempt>[1-9][0-9]*) status=merged\b",
@@ -1451,12 +1471,12 @@ def infer_legacy_merged_prs(
             )
             if int(match.group("attempt")) <= last_consumed
         }
-        - ordinary_attempts
+        - ordinary_merged_attempts
     )
     # Legacy recovery logs recorded the worker marker but not the controller's
     # verification status. The completed-slice ledger bounds how many of those
     # ambiguous recovery events can have succeeded.
-    recovery_slots = max(0, completed_slices - len(ordinary_attempts))
+    recovery_slots = max(0, completed_slices - len(ordinary_merged_attempts))
     # If fewer recovery slots exist than recovery candidates, the legacy
     # artifacts prove how many succeeded but not which PRs succeeded. Trusting
     # any candidate could suppress a legitimate retry, so fail open to retry.
@@ -1478,7 +1498,7 @@ def infer_legacy_merged_prs(
         except (OSError, ValueError):
             continue
         receipt = canonical_pr_receipt(result.pr)
-        if result.status != "MERGED" or receipt in receipts:
+        if result.status not in {"MERGED", "PARTIAL"} or receipt in receipts:
             continue
         if not merge_verifier(
             result.pr,
@@ -1922,6 +1942,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "recent_blocked": [],
         "recent_consumed_targets": [],
         "merged_prs": [],
+        "merge_receipts_version": 2,
         "target_identity_version": TARGET_IDENTITY_VERSION,
         "status": "starting",
     }
@@ -2119,20 +2140,33 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("attempt_kind", None)
             state.setdefault("recent_consumed_targets", [])
             migrate_target_identities(state)
-            if "merged_prs" not in state:
-                state["merged_prs"] = infer_legacy_merged_prs(
+            if state["provider"] != args.provider or state.get("model") != args.model:
+                print("resume provider/model must match persisted state", file=sys.stderr)
+                return 2
+            state.pop("ended_at", None)
+            now = datetime.now().astimezone()
+            state["deadline_at"] = (now + timedelta(hours=args.hours)).isoformat(
+                timespec="seconds"
+            )
+            # Make the run discoverably unfinished before recovery can perform
+            # external merge verification or any other interruptible work.
+            atomic_write_json(state_path, state)
+            if int(state.get("merge_receipts_version", 0)) < 2:
+                existing_receipts = [
+                    canonical_pr_receipt(pr)
+                    for pr in state.get("merged_prs", [])
+                    if isinstance(pr, str)
+                ]
+                inferred_receipts = infer_legacy_merged_prs(
                     state=state,
                     results_dir=results_dir,
                     repo=args.repo,
                     merge_verifier=verify_merged,
                 )
-            if state["provider"] != args.provider or state.get("model") != args.model:
-                print("resume provider/model must match persisted state", file=sys.stderr)
-                return 2
-            now = datetime.now().astimezone()
-            state["deadline_at"] = (now + timedelta(hours=args.hours)).isoformat(
-                timespec="seconds"
-            )
+                state["merged_prs"] = list(
+                    dict.fromkeys(existing_receipts + inferred_receipts)
+                )
+                state["merge_receipts_version"] = 2
             recovery_attempt = _recorded_invalid_result_attempt(state)
             recovered_invalid_result = recover_invalid_result(
                 state,
@@ -2484,7 +2518,8 @@ def _run(args: argparse.Namespace) -> int:
                 atomic_write_json(state_path, state)
                 _log(
                     run_dir,
-                    f"reject attempt={attempt} MERGED {duplicate_rejection}",
+                    f"reject attempt={attempt} {result.status} "
+                    f"{duplicate_rejection}",
                 )
                 if args.once:
                     break

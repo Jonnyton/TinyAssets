@@ -81,6 +81,26 @@ def test_discovery_resumes_dead_unfinished_run_with_same_directory(
     assert decision.run_dir == interrupted
 
 
+def test_discovery_resumes_orderly_stop_requested_run_with_same_directory(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    stopped = _run(
+        output,
+        "openspec-drain-stopped",
+        status="stop-requested",
+        ended=True,
+    )
+
+    decision = watchdog.discover_decision(
+        output,
+        pid_alive=lambda _pid: False,
+    )
+
+    assert decision.action == "resume"
+    assert decision.run_dir == stopped
+
+
 def test_discovery_includes_supervisor_default_run_directory(tmp_path: Path) -> None:
     output = tmp_path / "output"
     default_run = _run(output, "openspec-drain", pid=42)
@@ -260,7 +280,7 @@ def test_resume_command_preserves_identity_and_finite_budgets(tmp_path: Path) ->
     assert command[command.index("--max-failures") + 1] == "2"
 
 
-def test_dry_run_writes_health_without_launching(
+def test_dry_run_writes_health_without_launching_or_consuming_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,7 +315,7 @@ def test_dry_run_writes_health_without_launching(
     assert exit_code == 0
     assert health["mode"] == "attach"
     assert health["active_run"].endswith("openspec-drain-live")
-    assert not (watchdog_dir / "restart.request").exists()
+    assert (watchdog_dir / "restart.request").exists()
 
 
 def test_graceful_restart_preserves_new_run_decision_after_terminal_exit(
@@ -358,6 +378,192 @@ def test_graceful_restart_preserves_new_run_decision_after_terminal_exit(
     assert new_run.name.startswith("openspec-drain-auto-")
     assert resume is False
     assert new_run != old_run
+
+
+def test_graceful_restart_resumes_same_identity_after_orderly_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    output = repo / "output"
+    old_run = _run(output, "openspec-drain-active", pid=42)
+    watchdog_dir = output / "openspec-drain-watchdog"
+    restart_request = watchdog_dir / "restart.request"
+    live_pids = {42}
+    launched: list[tuple[Path, bool]] = []
+    sleeps = 0
+
+    class StopLoop(Exception):
+        pass
+
+    class FakeProcess:
+        pid = 77
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def request_stop(_repo: Path, run_dir: Path) -> None:
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update(status="stop-requested", ended_at="now")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        live_pids.discard(42)
+
+    def launch_supervisor(**kwargs: object) -> FakeProcess:
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        launched.append((run_dir, bool(kwargs["resume"])))
+        live_pids.add(77)
+        return FakeProcess()
+
+    def advance_loop(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            restart_request.write_text("restart\n", encoding="utf-8")
+        elif launched or sleeps >= 4:
+            raise StopLoop
+
+    monkeypatch.setattr(watchdog, "_pid_is_alive", live_pids.__contains__)
+    monkeypatch.setattr(watchdog, "_request_supervisor_stop", request_stop)
+    monkeypatch.setattr(watchdog, "_launch_supervisor", launch_supervisor)
+    monkeypatch.setattr(watchdog.time, "sleep", advance_loop)
+
+    with pytest.raises(StopLoop):
+        watchdog.main(["run", "--repo", str(repo)])
+
+    assert launched == [(old_run, True)]
+
+
+def test_restart_resumes_same_identity_when_controller_dies_before_orderly_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    output = repo / "output"
+    old_run = _run(output, "openspec-drain-active", pid=42)
+    restart_request = output / "openspec-drain-watchdog" / "restart.request"
+    live_pids = {42}
+    launched: list[tuple[Path, bool]] = []
+    sleeps = 0
+
+    class StopLoop(Exception):
+        pass
+
+    class FakeProcess:
+        pid = 77
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def abrupt_stop(_repo: Path, _run_dir: Path) -> None:
+        live_pids.discard(42)
+
+    def launch_supervisor(**kwargs: object) -> FakeProcess:
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        launched.append((run_dir, bool(kwargs["resume"])))
+        live_pids.add(77)
+        return FakeProcess()
+
+    def advance_loop(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            restart_request.write_text("restart\n", encoding="utf-8")
+        elif launched or sleeps >= 4:
+            raise StopLoop
+
+    monkeypatch.setattr(watchdog, "_pid_is_alive", live_pids.__contains__)
+    monkeypatch.setattr(watchdog, "_request_supervisor_stop", abrupt_stop)
+    monkeypatch.setattr(watchdog, "_launch_supervisor", launch_supervisor)
+    monkeypatch.setattr(watchdog.time, "sleep", advance_loop)
+
+    with pytest.raises(StopLoop):
+        watchdog.main(["run", "--repo", str(repo)])
+
+    assert launched == [(old_run, True)]
+
+
+def test_pending_restart_preserves_discovered_unfinished_resume_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    output = repo / "output"
+    old_run = _run(output, "openspec-drain-interrupted", pid=42)
+    restart_request = output / "openspec-drain-watchdog" / "restart.request"
+    launched: list[tuple[Path, bool]] = []
+
+    class StopLoop(Exception):
+        pass
+
+    class FakeProcess:
+        pid = 77
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    real_discover = watchdog.discover_decision
+
+    def discover_with_restart(output_dir: Path) -> watchdog.Decision:
+        restart_request.write_text("restart\n", encoding="utf-8")
+        return real_discover(output_dir, pid_alive=lambda _pid: False)
+
+    def launch_supervisor(**kwargs: object) -> FakeProcess:
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        launched.append((run_dir, bool(kwargs["resume"])))
+        return FakeProcess()
+
+    monkeypatch.setattr(watchdog, "discover_decision", discover_with_restart)
+    monkeypatch.setattr(watchdog, "_launch_supervisor", launch_supervisor)
+    monkeypatch.setattr(watchdog, "_pid_is_alive", lambda pid: pid == 77)
+    monkeypatch.setattr(
+        watchdog.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(StopLoop),
+    )
+
+    with pytest.raises(StopLoop):
+        watchdog.main(["run", "--repo", str(repo)])
+
+    assert launched == [(old_run, True)]
+
+
+def test_restart_request_survives_supervisor_launch_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    output = repo / "output"
+    old_run = _run(output, "openspec-drain-interrupted", pid=42)
+    restart_request = output / "openspec-drain-watchdog" / "restart.request"
+    real_discover = watchdog.discover_decision
+
+    def discover_with_restart(output_dir: Path) -> watchdog.Decision:
+        restart_request.write_text("restart\n", encoding="utf-8")
+        return real_discover(output_dir, pid_alive=lambda _pid: False)
+
+    def fail_launch(**kwargs: object) -> object:
+        assert kwargs["run_dir"] == old_run
+        assert kwargs["resume"] is True
+        raise OSError("simulated launch failure")
+
+    monkeypatch.setattr(watchdog, "discover_decision", discover_with_restart)
+    monkeypatch.setattr(watchdog, "_launch_supervisor", fail_launch)
+
+    with pytest.raises(OSError, match="simulated launch failure"):
+        watchdog.main(["run", "--repo", str(repo)])
+
+    assert restart_request.exists()
 
 
 def test_atomic_health_write_retries_windows_sharing_violation(

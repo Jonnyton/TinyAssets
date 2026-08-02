@@ -133,6 +133,13 @@ def discover_decision(
             key=lambda record: str(record[1].get("started_at", "")),
         )
         status = str(state.get("status", "unknown"))
+        if status == "stop-requested":
+            return Decision(
+                "resume",
+                run_dir,
+                None,
+                "resuming orderly stopped drain",
+            )
         if status in FAILURE_STATUSES:
             return Decision(
                 "down",
@@ -437,7 +444,6 @@ def _watch(args: argparse.Namespace) -> int:
     launched_process: subprocess.Popen[str] | None = None
     sticky_failure: str | None = None
     stop_request.unlink(missing_ok=True)
-    restart_request.unlink(missing_ok=True)
 
     try:
         decision = discover_decision(output_dir)
@@ -464,6 +470,7 @@ def _watch(args: argparse.Namespace) -> int:
 
         while True:
             launch_decision: Decision | None = None
+            consume_restart_after_launch = False
             wants_stop = stop_request.exists()
             wants_restart = restart_request.exists()
             alive = bool(controller_pid and _pid_is_alive(controller_pid))
@@ -540,14 +547,36 @@ def _watch(args: argparse.Namespace) -> int:
                     )
                     return 0
                 if wants_restart or restart_after_stop:
-                    restart_request.unlink(missing_ok=True)
-                    stop_request.unlink(missing_ok=True)
-                    launch_decision = Decision(
-                        "new",
-                        None,
-                        None,
-                        "explicit restart requested",
+                    preserve_active_run = bool(
+                        state
+                        and (
+                            not state.get("ended_at")
+                            or state.get("status") == "stop-requested"
+                        )
                     )
+                    if preserve_active_run:
+                        launch_decision = Decision(
+                            "resume",
+                            active_run,
+                            None,
+                            "explicit restart resuming active drain",
+                        )
+                    else:
+                        discovered = discover_decision(output_dir)
+                        launch_decision = (
+                            Decision(
+                                "new",
+                                None,
+                                None,
+                                "explicit restart requested",
+                            )
+                            if discovered.action == "down"
+                            else discovered
+                        )
+                    consume_restart_after_launch = launch_decision.action in {
+                        "new",
+                        "resume",
+                    }
                     restart_after_stop = False
                     sticky_failure = None
                 else:
@@ -558,7 +587,9 @@ def _watch(args: argparse.Namespace) -> int:
                 stop_sent = False
 
             if active_run is None:
-                if stop_request.exists():
+                if stop_request.exists() and not (
+                    restart_request.exists() or consume_restart_after_launch
+                ):
                     _write_health(
                         health_path,
                         state=None,
@@ -570,9 +601,15 @@ def _watch(args: argparse.Namespace) -> int:
                     )
                     return 0
                 if restart_request.exists():
-                    restart_request.unlink(missing_ok=True)
-                    launch_decision = Decision(
-                        "new", None, None, "explicit restart"
+                    if launch_decision is None:
+                        discovered = discover_decision(output_dir)
+                        launch_decision = (
+                            Decision("new", None, None, "explicit restart")
+                            if discovered.action == "down"
+                            else discovered
+                        )
+                    consume_restart_after_launch = (
+                        launch_decision.action in {"new", "resume"}
                     )
                     sticky_failure = None
                 elif launch_decision is None:
@@ -635,6 +672,9 @@ def _watch(args: argparse.Namespace) -> int:
                         resume=decision.action == "resume",
                         watchdog_dir=watchdog_dir,
                     )
+                    if consume_restart_after_launch:
+                        restart_request.unlink(missing_ok=True)
+                        stop_request.unlink(missing_ok=True)
                     controller_pid = launched_process.pid
                     mode = (
                         "recovering"

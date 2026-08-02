@@ -24,6 +24,7 @@ function Invoke-BoundedProcess {
     $process = Start-Process -FilePath $FilePath `
         -ArgumentList $ArgumentList -PassThru
     try {
+        Write-Host "::notice title=Windows lifecycle phase::$Phase started; root PID $($process.Id)"
         if (-not $process.WaitForExit($PhaseTimeoutSeconds * 1000)) {
             $diagnostics = Get-Process -ErrorAction SilentlyContinue |
                 Where-Object {
@@ -41,7 +42,7 @@ function Invoke-BoundedProcess {
         if ($process.ExitCode -ne 0) {
             throw "$Phase failed with exit code $($process.ExitCode)"
         }
-        Write-Host "::notice title=Windows lifecycle phase::$Phase completed"
+        Write-Host "::notice title=Windows lifecycle phase::$Phase completed; root PID $($process.Id)"
     }
     finally {
         $process.Dispose()
