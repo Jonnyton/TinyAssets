@@ -13,6 +13,8 @@
 
 - [ ] 3.1 Test-first, derive the immutable agent runtime principal and live-check current delegated capability/resource/provider grants on activation, invocation, and resume without accepting caller-authored actors or owner/maintainer/ambient authority.
 - [ ] 3.2 Test-first, atomically consume a live authenticated provider-work binding draft into one linked `ProviderWorkBinding`, server-authored `AgentInvocationCommand`, and append-only invocation root; prove exact replay, changed-input conflict, concurrent single winner, missed-boundary/no-write behavior, bearer-free recovery provenance, and helper/dispatcher/queue bypass refusal.
+
+  Partial foundation 2026-08-02: the canonical principal and grant resolver now have a private, read-only, tamper-detecting invocation record source. It validates an immutable root plus `ADMITTED -> INVALIDATED` event chain but deliberately has no production writer or positive resolution path: every structurally valid row still returns no current evidence until the future atomic command/provider-binding owner can supply a sealed typed witness and revalidate it after the final invocation read. Tasks 3.1 and 3.2 remain open; see `docs/audits/2026-08-02-agent-runtime-invocation-root.md`.
 - [ ] 3.3 Test-first, admit only that command/invocation lineage into canonical provider-work reservation/claim/launch with requester-owned credential routing, conserved budgets, typed non-authoritative output, and unchanged Branch authority guards.
 
 ## 4. Single-Active Recovery and Health
