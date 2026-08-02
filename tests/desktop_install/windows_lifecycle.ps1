@@ -20,6 +20,7 @@ function Invoke-BoundedProcess {
         [Parameter(Mandatory = $true)][string]$Phase
     )
 
+    Write-Host "::notice title=Windows lifecycle phase::$Phase started; timeout=${PhaseTimeoutSeconds}s"
     $process = Start-Process -FilePath $FilePath `
         -ArgumentList $ArgumentList -PassThru
     try {
@@ -34,18 +35,13 @@ function Invoke-BoundedProcess {
                 Out-String
             Write-Host "::error title=Windows lifecycle timeout::$Phase timed out; root PID $($process.Id)"
             Write-Host $diagnostics
-            try {
-                $process.Kill($true)
-            }
-            catch {
-                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-            }
-            $process.WaitForExit(10000) | Out-Null
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             throw "$Phase timed out after $PhaseTimeoutSeconds seconds"
         }
         if ($process.ExitCode -ne 0) {
             throw "$Phase failed with exit code $($process.ExitCode)"
         }
+        Write-Host "::notice title=Windows lifecycle phase::$Phase completed"
     }
     finally {
         $process.Dispose()

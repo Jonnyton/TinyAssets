@@ -308,7 +308,8 @@ jobs:
             throw "expected exactly one Windows installer"
           }
           ./tests/desktop_install/windows_lifecycle.ps1 `
-            -Installer $installer.FullName
+            -Installer $installer.FullName `
+            -PhaseTimeoutSeconds 90
 
   sign-and-verify:
     needs: [plan, build, test-unsigned-windows-install]

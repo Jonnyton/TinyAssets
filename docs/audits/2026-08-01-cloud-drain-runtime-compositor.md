@@ -50,15 +50,28 @@ mutate GitHub, activate the queue consumer, or cut over from the tray.
   - all 300 canonical files matched.
 - `git diff --check`
   - passed.
+- Exact integrated head `9c33a053` (2026-08-01, Windows local): 685 focused
+  authority/runtime/controller tests passed; Ruff, both strict OpenSpec
+  changes, 306-file mirror parity, cross-provider drift, and diff check passed.
+- Opposite-provider Claude Fable 5 reviewed exact `9c33a053` read-only and
+  returned `VERDICT: APPROVE`; receipt is recorded on PR #2082.
 
 ## Remaining critical path
 
-Current main added `activate-custom-agent-runtime-core` after this slice began.
-Its task 2.1 upgrades the shared activation/continuation/provider owners from a
-bare Branch-version reference to one typed execution-subject
-kind/reference/digest. PR #2082 therefore remains draft and MUST rebase/adapt
-after that owner lands; merging it against the old activation shape would
-violate the newer canonical delta.
+The typed execution-subject, immutable manifest, component compiler, plan
+compiler, and live grant-resolver prerequisites have landed and PR #2082 has
+integrated them. The PR is ready and auto-merge enrolled.
+
+The exact-head desktop-release run exposed a separate CI blocker. Job
+`91434467418` entered the unsigned Windows lifecycle step at 00:14:12Z and was
+still reported in progress more than 18 minutes later despite a job-level
+`timeout-minutes: 15`. The lifecycle helper allowed four sequential 180-second
+phases and, on timeout, called process-tree `Kill($true)` plus another blocking
+wait. The corrected exact-head gate passes 90 seconds explicitly per phase,
+logs phase start/completion, and uses non-blocking forced root termination
+before throwing; the ephemeral runner owns descendant cleanup. The structural
+test failed RED before this correction and now passes with the PowerShell AST
+parse clean. Refreshed CI remains the acceptance evidence.
 
 The epoch-2 consumer is still dark. The next runtime slice must claim the
 admitted task, launch through the bounded provider receipt/reservation owner,
