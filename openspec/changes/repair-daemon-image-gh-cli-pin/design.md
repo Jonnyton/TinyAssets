@@ -7,7 +7,7 @@ The daemon runtime image installs GitHub CLI from GitHub's signed apt repository
 **Goals:**
 
 - Restore the image build with a currently served exact package pin.
-- Preserve signed-origin verification, reproducibility, and fail-loud behavior.
+- Preserve signed-origin verification, deterministic GitHub CLI selection, and fail-loud behavior.
 - Prove the complete build → deploy → public-canary chain before resuming rendered acceptance.
 
 **Non-Goals:**
@@ -20,7 +20,7 @@ The daemon runtime image installs GitHub CLI from GitHub's signed apt repository
 
 ### Pin the exact official package version
 
-Set `GH_VERSION=2.97.0`, the version returned by both the official GitHub CLI release API and the configured signed apt repository on 2026-08-01. An exact pin keeps builds reproducible. Floating the package would hide supply-chain drift and make rollback analysis ambiguous.
+Set `GH_VERSION=2.97.0`, the version returned by both the official GitHub CLI release API and the configured signed apt repository on 2026-08-01. An exact pin makes GitHub CLI selection deterministic while that version is available. Floating the package would hide supply-chain drift and make rollback analysis ambiguous.
 
 ### Keep the existing signed apt boundary
 

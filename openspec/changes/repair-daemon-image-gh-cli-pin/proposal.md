@@ -5,14 +5,14 @@ Every daemon image build is failing because the Dockerfile pins GitHub CLI packa
 ## What Changes
 
 - Replace the unavailable GitHub CLI package pin with the exact version currently published by GitHub's signed apt repository.
-- Retain exact-version installation, the existing signed repository/key boundary, and fail-loud build behavior.
+- Retain deterministic GitHub CLI selection, the existing signed repository/key boundary, and fail-loud build behavior.
 - Prove the repaired image through the normal build, deploy, and public-canary chain before resuming rendered V1 acceptance.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `daemon-image-build`: Exact, reproducible daemon-image dependency resolution and deployment admission.
+- `daemon-image-build`: Exact signed-repository selection and fail-loud expiry for the daemon image's GitHub CLI package.
 
 ### Modified Capabilities
 
