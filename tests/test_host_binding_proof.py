@@ -16,15 +16,20 @@ from tinyassets.auth.host_proof import (
     HOST_BINDING_REFUSAL,
     MAX_SUBMISSION_BYTES,
     POST_ENROLLMENT_NONCE_LIMITS,
-    REFUSAL_FLOOR_SECONDS,
+    REFUSAL_BUCKET_SECONDS,
     HostProofBindingV1,
     HostProofRefused,
+    HostProofTimingExceeded,
     canonical_b64u,
+    direct_account_revoke_policy,
     host_proof_signing_bytes,
     jwk_thumbprint,
     operation_policy,
+    parse_wire_dto,
     refuse_host_binding,
+    validate_route_path_id,
     verify_host_proof,
+    wire_contract,
 )
 
 ISSUER = "https://example.authkit.app"
@@ -78,7 +83,7 @@ def _submission(
     *,
     signing_input: bytes | None = None,
 ) -> bytes:
-    message = signing_input or host_proof_signing_bytes(binding)
+    message = signing_input if signing_input is not None else host_proof_signing_bytes(binding)
     return rfc8785.dumps(
         {
             "schema_version": "host-binding-v1",
@@ -105,10 +110,18 @@ def _verify(
     if sleeper is not None:
         timing["sleeper"] = sleeper
     verify_host_proof(
-        submission or _submission(binding, keys),
+        submission if submission is not None else _submission(binding, keys),
         binding=binding,
-        public_jwks=presented_jwks or {role: _jwk(key) for role, key in keys.items()},
-        signing_input_b64u=signing_input_b64u or _b64u(host_proof_signing_bytes(binding)),
+        public_jwks=(
+            presented_jwks
+            if presented_jwks is not None
+            else {role: _jwk(key) for role, key in keys.items()}
+        ),
+        signing_input_b64u=(
+            signing_input_b64u
+            if signing_input_b64u is not None
+            else _b64u(host_proof_signing_bytes(binding))
+        ),
         now=NOW,
         consume_once=consume_once,
         **timing,
@@ -117,45 +130,273 @@ def _verify(
 
 def test_closed_operation_route_scope_and_signature_role_matrix() -> None:
     expected = {
-        "enroll": ("POST", "/v1/host-principals", "host:enroll", frozenset({"new"})),
-        "inventory": ("GET", "/v1/host-principals", "host:manage", frozenset()),
-        "read": ("POST", "/v1/host-principals/{id}:read", "host:manage", frozenset({"current"})),
+        "enroll": (
+            "POST",
+            "/v1/host-principals",
+            "host:enroll",
+            {"new"},
+            "EnrollIntentV1",
+            "HostPrincipalResultV1",
+        ),
+        "inventory": (
+            "GET",
+            "/v1/host-principals",
+            "host:manage",
+            set(),
+            "HostInventoryQueryV1",
+            "HostInventoryPageV1",
+        ),
+        "read": (
+            "POST",
+            "/v1/host-principals/{id}:read",
+            "host:manage",
+            {"current"},
+            "PrincipalIntentV1",
+            "HostPrincipalDetailV1",
+        ),
         "revoke": (
             "POST",
             "/v1/host-principals/{id}:revoke",
             "host:manage",
-            frozenset({"current"}),
+            {"current"},
+            "RevokeIntentV1",
+            "HostPrincipalResultV1",
         ),
         "rotate": (
             "POST",
             "/v1/host-principals/{id}:rotate",
             "host:manage",
-            frozenset({"current", "new"}),
+            {"current", "new"},
+            "RotateIntentV1",
+            "HostPrincipalResultV1",
         ),
-        "renew": ("POST", "/v1/host-principals/{id}:renew", "host:manage", frozenset({"current"})),
-        "recover": ("POST", "/v1/host-principals/{id}:recover", "host:recover", frozenset({"new"})),
-        "session_register": ("POST", "/v1/host-sessions", "host:manage", frozenset({"current"})),
+        "renew": (
+            "POST",
+            "/v1/host-principals/{id}:renew",
+            "host:manage",
+            {"current"},
+            "RenewIntentV1",
+            "HostPrincipalResultV1",
+        ),
+        "recover": (
+            "POST",
+            "/v1/host-principals/{id}:recover",
+            "host:recover",
+            {"new"},
+            "RecoverIntentV1",
+            "HostRecoveryResultV1",
+        ),
+        "session_register": (
+            "POST",
+            "/v1/host-sessions",
+            "host:manage",
+            {"current"},
+            "SessionRegisterIntentV1",
+            "HostSessionResultV1",
+        ),
         "session_heartbeat": (
             "POST",
             "/v1/host-sessions/{id}:heartbeat",
             "host:manage",
-            frozenset({"current"}),
+            {"current"},
+            "SessionHeartbeatIntentV1",
+            "HostHeartbeatResultV1",
         ),
         "session_deregister": (
             "POST",
             "/v1/host-sessions/{id}:deregister",
             "host:manage",
-            frozenset({"current"}),
+            {"current"},
+            "SessionDeregisterIntentV1",
+            "HostSessionDeregisterResultV1",
         ),
     }
 
     assert {
-        name: (policy.method, policy.path, policy.permission, policy.signature_roles)
+        name: (
+            policy.method,
+            policy.path,
+            policy.permission,
+            set(policy.signature_roles),
+            policy.intent_dto,
+            policy.result_dto,
+        )
         for name in expected
         if (policy := operation_policy(name))
     } == expected
     with pytest.raises(HostProofRefused):
         operation_policy("owner_selected_admin")
+
+
+def test_direct_account_revoke_is_a_separate_recent_recovery_contract() -> None:
+    policy = direct_account_revoke_policy()
+    assert (
+        policy.method,
+        policy.path,
+        policy.permission,
+        set(policy.signature_roles),
+        policy.intent_dto,
+        policy.result_dto,
+    ) == (
+        "POST",
+        "/v1/host-principals/{id}:revoke",
+        "host:recover",
+        set(),
+        "AccountRevokeIntentV1",
+        "HostPrincipalResultV1",
+    )
+
+
+def test_normative_v1_wire_dto_field_sets_are_closed() -> None:
+    expected = {
+        "HostChallengeRequestV1": ({"schema_version", "operation", "intent"}, set()),
+        "HostChallengeV1": (
+            {
+                "schema_version",
+                "challenge_id_b64u",
+                "signing_input_b64u",
+                "expires_at",
+                "policy_version",
+            },
+            set(),
+        ),
+        "HostProofSubmissionV1": ({"schema_version", "challenge_id_b64u", "signatures"}, set()),
+        "EnrollIntentV1": ({"idempotency_key_b64u", "public_jwk"}, {"device_label"}),
+        "HostInventoryQueryV1": (set(), {"cursor", "limit"}),
+        "PrincipalIntentV1": ({"host_principal_id", "expected_generation"}, set()),
+        "RevokeIntentV1": (
+            {"host_principal_id", "expected_generation", "idempotency_key_b64u"},
+            {"reason_code"},
+        ),
+        "RotateIntentV1": (
+            {"host_principal_id", "expected_generation", "idempotency_key_b64u", "new_public_jwk"},
+            set(),
+        ),
+        "RenewIntentV1": (
+            {"host_principal_id", "expected_generation", "idempotency_key_b64u"},
+            set(),
+        ),
+        "RecoverIntentV1": (
+            {"host_principal_id", "expected_generation", "idempotency_key_b64u", "new_public_jwk"},
+            {"device_label"},
+        ),
+        "AccountRevokeIntentV1": (
+            {"schema_version", "host_principal_id", "expected_generation", "idempotency_key_b64u"},
+            {"reason_code"},
+        ),
+        "SessionRegisterIntentV1": (
+            {
+                "host_principal_id",
+                "expected_generation",
+                "provider",
+                "capability_id",
+                "visibility",
+                "price_floor",
+                "max_concurrent",
+                "always_active",
+                "idempotency_key_b64u",
+            },
+            set(),
+        ),
+        "SessionHeartbeatIntentV1": (
+            {"host_principal_id", "expected_generation", "host_session_id"},
+            set(),
+        ),
+        "SessionDeregisterIntentV1": (
+            {"host_principal_id", "expected_generation", "host_session_id", "idempotency_key_b64u"},
+            set(),
+        ),
+        "HostPrincipalResultV1": (
+            {
+                "schema_version",
+                "host_principal_id",
+                "host_principal_generation",
+                "status",
+                "expires_at",
+                "policy_version",
+            },
+            set(),
+        ),
+        "HostBindingErrorV1": ({"schema_version", "error", "retryable"}, set()),
+        "HostInventoryItemV1": (
+            {
+                "host_principal_id",
+                "status",
+                "generation",
+                "policy_version",
+                "issued_at",
+                "expires_at",
+            },
+            {"last_seen_bucket", "device_label"},
+        ),
+        "HostInventoryPageV1": ({"schema_version", "items"}, {"next_cursor"}),
+        "HostPrincipalDetailV1": (
+            {
+                "schema_version",
+                "host_principal_id",
+                "status",
+                "generation",
+                "policy_version",
+                "issued_at",
+                "expires_at",
+                "jwk_thumbprint",
+            },
+            {"last_seen_bucket", "device_label"},
+        ),
+        "HostRecoveryResultV1": ({"revoked", "replacement"}, set()),
+        "HostSessionResultV1": (
+            {"host_session_id", "host_principal_id", "host_principal_generation"},
+            set(),
+        ),
+        "HostHeartbeatResultV1": ({"host_session_id", "accepted_generation", "status"}, set()),
+        "HostSessionDeregisterResultV1": ({"host_session_id", "status"}, set()),
+    }
+
+    assert {
+        name: (set(wire_contract(name).required_fields), set(wire_contract(name).optional_fields))
+        for name in expected
+    } == expected
+
+
+def test_wire_dto_parser_rejects_missing_extra_duplicate_and_wrong_schema() -> None:
+    valid = {
+        "schema_version": "host-binding-v1",
+        "challenge_id_b64u": _b64u(b"c" * 32),
+        "signatures": {"new": _b64u(b"s" * 64)},
+    }
+    assert parse_wire_dto("HostProofSubmissionV1", rfc8785.dumps(valid)) == valid
+    for invalid in (
+        {key: value for key, value in valid.items() if key != "signatures"},
+        {**valid, "owner": "attacker"},
+        {**valid, "schema_version": "host-binding-v2"},
+    ):
+        with pytest.raises(HostProofRefused):
+            parse_wire_dto("HostProofSubmissionV1", rfc8785.dumps(invalid))
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto(
+            "HostProofSubmissionV1",
+            b'{"schema_version":"host-binding-v1","challenge_id_b64u":"x",'
+            b'"signatures":{},"signatures":{}}',
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "field"),
+    [
+        ("read", "host_principal_id"),
+        ("revoke", "host_principal_id"),
+        ("rotate", "host_principal_id"),
+        ("renew", "host_principal_id"),
+        ("recover", "host_principal_id"),
+        ("session_heartbeat", "host_session_id"),
+        ("session_deregister", "host_session_id"),
+    ],
+)
+def test_substituted_route_id_must_equal_the_typed_intent_id(operation: str, field: str) -> None:
+    intent = {field: "exact-id"}
+    validate_route_path_id(operation, intent=intent, path_id="exact-id")
+    with pytest.raises(HostProofRefused):
+        validate_route_path_id(operation, intent=intent, path_id="other-id")
 
 
 @pytest.mark.parametrize(
@@ -445,21 +686,30 @@ def test_refusal_work_is_size_bounded_and_has_one_non_enumerating_public_shape()
 
 
 @pytest.mark.parametrize(
-    "failure_class",
-    ["authentication", "rate_limit", "absence", "mismatch", "replay"],
+    ("failure_class", "elapsed"),
+    [
+        ("authentication", 0.001),
+        ("rate_limit", 0.002),
+        ("absence", 0.003),
+        ("mismatch", 0.004),
+        ("replay", 0.009),
+    ],
 )
-def test_shared_refusal_timing_class_is_reason_agnostic(failure_class: str) -> None:
-    del failure_class
+def test_shared_refusal_timing_class_is_reason_agnostic(
+    failure_class: str,
+    elapsed: float,
+) -> None:
+    assert failure_class
     slept: list[float] = []
 
     with pytest.raises(HostProofRefused):
         refuse_host_binding(
             started_at=10.0,
-            monotonic=lambda: 10.002,
+            monotonic=lambda: 10.0 + elapsed,
             sleeper=slept.append,
         )
 
-    assert slept == [pytest.approx(REFUSAL_FLOOR_SECONDS - 0.002)]
+    assert elapsed + slept[0] == pytest.approx(REFUSAL_BUCKET_SECONDS)
 
 
 @pytest.mark.parametrize("failure", ["mismatch", "replay"])
@@ -467,7 +717,8 @@ def test_verifier_uses_shared_refusal_timing_class(failure: str) -> None:
     key = _key(1)
     binding = _binding()
     slept: list[float] = []
-    clocks = iter([10.0, 10.003])
+    elapsed = 0.003 if failure == "mismatch" else 0.008
+    clocks = iter([10.0, 10.0 + elapsed])
     kwargs = (
         {"submission": _submission(replace(binding, subject="other"), {"new": key})}
         if failure == "mismatch"
@@ -483,7 +734,16 @@ def test_verifier_uses_shared_refusal_timing_class(failure: str) -> None:
             **kwargs,
         )
 
-    assert slept == [pytest.approx(REFUSAL_FLOOR_SECONDS - 0.003)]
+    assert elapsed + slept[0] == pytest.approx(REFUSAL_BUCKET_SECONDS)
+
+
+def test_over_budget_refusal_becomes_an_operational_timing_error() -> None:
+    with pytest.raises(HostProofTimingExceeded):
+        refuse_host_binding(
+            started_at=10.0,
+            monotonic=lambda: 10.0 + REFUSAL_BUCKET_SECONDS + 0.001,
+            sleeper=lambda _seconds: pytest.fail("over-budget refusal must not be padded"),
+        )
 
 
 def test_valid_enrollment_proof_verifies_before_one_use_consumption() -> None:

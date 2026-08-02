@@ -19,7 +19,7 @@ POLICY_VERSION = "host-binding-v1"
 DOMAIN_SEPARATOR = b"tinyassets.host-principal-proof.v1\0"
 MAX_PROOF_TTL_SECONDS = 300
 MAX_SUBMISSION_BYTES = 4096
-REFUSAL_FLOOR_SECONDS = 0.01
+REFUSAL_BUCKET_SECONDS = 0.01
 _MAX_SIGNING_INPUT_B64U = 8192
 _MAX_ISSUER_OR_AUDIENCE = 2048
 _MAX_SUBJECT = 512
@@ -44,6 +44,10 @@ class HostProofRefused(ValueError):
 
     def __init__(self) -> None:
         super().__init__("host binding refused")
+
+
+class HostProofTimingExceeded(RuntimeError):
+    """A refusal exceeded its public timing bucket and must become a server error."""
 
 
 @dataclass(frozen=True)
@@ -71,49 +75,167 @@ class HostProofOperationPolicy:
     path: str
     permission: str
     signature_roles: frozenset[str]
+    intent_dto: str
+    result_dto: str
+
+
+@dataclass(frozen=True)
+class HostProofWireContract:
+    required_fields: frozenset[str]
+    optional_fields: frozenset[str] = frozenset()
 
 
 _OPERATION_POLICIES = MappingProxyType(
     {
         "enroll": HostProofOperationPolicy(
-            "POST", "/v1/host-principals", "host:enroll", frozenset({"new"})
+            "POST",
+            "/v1/host-principals",
+            "host:enroll",
+            frozenset({"new"}),
+            "EnrollIntentV1",
+            "HostPrincipalResultV1",
         ),
         "inventory": HostProofOperationPolicy(
-            "GET", "/v1/host-principals", "host:manage", frozenset()
+            "GET",
+            "/v1/host-principals",
+            "host:manage",
+            frozenset(),
+            "HostInventoryQueryV1",
+            "HostInventoryPageV1",
         ),
         "read": HostProofOperationPolicy(
-            "POST", "/v1/host-principals/{id}:read", "host:manage", frozenset({"current"})
+            "POST",
+            "/v1/host-principals/{id}:read",
+            "host:manage",
+            frozenset({"current"}),
+            "PrincipalIntentV1",
+            "HostPrincipalDetailV1",
         ),
         "revoke": HostProofOperationPolicy(
-            "POST", "/v1/host-principals/{id}:revoke", "host:manage", frozenset({"current"})
+            "POST",
+            "/v1/host-principals/{id}:revoke",
+            "host:manage",
+            frozenset({"current"}),
+            "RevokeIntentV1",
+            "HostPrincipalResultV1",
         ),
         "rotate": HostProofOperationPolicy(
             "POST",
             "/v1/host-principals/{id}:rotate",
             "host:manage",
             frozenset({"current", "new"}),
+            "RotateIntentV1",
+            "HostPrincipalResultV1",
         ),
         "renew": HostProofOperationPolicy(
-            "POST", "/v1/host-principals/{id}:renew", "host:manage", frozenset({"current"})
+            "POST",
+            "/v1/host-principals/{id}:renew",
+            "host:manage",
+            frozenset({"current"}),
+            "RenewIntentV1",
+            "HostPrincipalResultV1",
         ),
         "recover": HostProofOperationPolicy(
-            "POST", "/v1/host-principals/{id}:recover", "host:recover", frozenset({"new"})
+            "POST",
+            "/v1/host-principals/{id}:recover",
+            "host:recover",
+            frozenset({"new"}),
+            "RecoverIntentV1",
+            "HostRecoveryResultV1",
         ),
         "session_register": HostProofOperationPolicy(
-            "POST", "/v1/host-sessions", "host:manage", frozenset({"current"})
+            "POST",
+            "/v1/host-sessions",
+            "host:manage",
+            frozenset({"current"}),
+            "SessionRegisterIntentV1",
+            "HostSessionResultV1",
         ),
         "session_heartbeat": HostProofOperationPolicy(
             "POST",
             "/v1/host-sessions/{id}:heartbeat",
             "host:manage",
             frozenset({"current"}),
+            "SessionHeartbeatIntentV1",
+            "HostHeartbeatResultV1",
         ),
         "session_deregister": HostProofOperationPolicy(
             "POST",
             "/v1/host-sessions/{id}:deregister",
             "host:manage",
             frozenset({"current"}),
+            "SessionDeregisterIntentV1",
+            "HostSessionDeregisterResultV1",
         ),
+    }
+)
+
+_DIRECT_ACCOUNT_REVOKE_POLICY = HostProofOperationPolicy(
+    "POST",
+    "/v1/host-principals/{id}:revoke",
+    "host:recover",
+    frozenset(),
+    "AccountRevokeIntentV1",
+    "HostPrincipalResultV1",
+)
+
+
+def _wire(required: str = "", optional: str = "") -> HostProofWireContract:
+    return HostProofWireContract(frozenset(required.split()), frozenset(optional.split()))
+
+
+_WIRE_CONTRACTS = MappingProxyType(
+    {
+        "HostChallengeRequestV1": _wire("schema_version operation intent"),
+        "HostChallengeV1": _wire(
+            "schema_version challenge_id_b64u signing_input_b64u expires_at policy_version"
+        ),
+        "HostProofSubmissionV1": _wire("schema_version challenge_id_b64u signatures"),
+        "EnrollIntentV1": _wire("idempotency_key_b64u public_jwk", "device_label"),
+        "HostInventoryQueryV1": _wire(optional="cursor limit"),
+        "PrincipalIntentV1": _wire("host_principal_id expected_generation"),
+        "RevokeIntentV1": _wire(
+            "host_principal_id expected_generation idempotency_key_b64u", "reason_code"
+        ),
+        "RotateIntentV1": _wire(
+            "host_principal_id expected_generation idempotency_key_b64u new_public_jwk"
+        ),
+        "RenewIntentV1": _wire("host_principal_id expected_generation idempotency_key_b64u"),
+        "RecoverIntentV1": _wire(
+            "host_principal_id expected_generation idempotency_key_b64u new_public_jwk",
+            "device_label",
+        ),
+        "AccountRevokeIntentV1": _wire(
+            "schema_version host_principal_id expected_generation idempotency_key_b64u",
+            "reason_code",
+        ),
+        "SessionRegisterIntentV1": _wire(
+            "host_principal_id expected_generation provider capability_id visibility "
+            "price_floor max_concurrent always_active idempotency_key_b64u"
+        ),
+        "SessionHeartbeatIntentV1": _wire("host_principal_id expected_generation host_session_id"),
+        "SessionDeregisterIntentV1": _wire(
+            "host_principal_id expected_generation host_session_id idempotency_key_b64u"
+        ),
+        "HostPrincipalResultV1": _wire(
+            "schema_version host_principal_id host_principal_generation status expires_at "
+            "policy_version"
+        ),
+        "HostBindingErrorV1": _wire("schema_version error retryable"),
+        "HostInventoryItemV1": _wire(
+            "host_principal_id status generation policy_version issued_at expires_at",
+            "last_seen_bucket device_label",
+        ),
+        "HostInventoryPageV1": _wire("schema_version items", "next_cursor"),
+        "HostPrincipalDetailV1": _wire(
+            "schema_version host_principal_id status generation policy_version "
+            "issued_at expires_at jwk_thumbprint",
+            "last_seen_bucket device_label",
+        ),
+        "HostRecoveryResultV1": _wire("revoked replacement"),
+        "HostSessionResultV1": _wire("host_session_id host_principal_id host_principal_generation"),
+        "HostHeartbeatResultV1": _wire("host_session_id accepted_generation status"),
+        "HostSessionDeregisterResultV1": _wire("host_session_id status"),
     }
 )
 
@@ -145,6 +267,61 @@ def operation_policy(operation: str) -> HostProofOperationPolicy:
         return _OPERATION_POLICIES[operation]
     except KeyError as exc:
         raise HostProofRefused from exc
+
+
+def direct_account_revoke_policy() -> HostProofOperationPolicy:
+    return _DIRECT_ACCOUNT_REVOKE_POLICY
+
+
+def wire_contract(dto_name: str) -> HostProofWireContract:
+    if type(dto_name) is not str:
+        raise HostProofRefused
+    try:
+        return _WIRE_CONTRACTS[dto_name]
+    except KeyError as exc:
+        raise HostProofRefused from exc
+
+
+def parse_wire_dto(dto_name: str, document: bytes | str) -> dict[str, Any]:
+    payload = _parse_json_object(document)
+    contract = wire_contract(dto_name)
+    fields = frozenset(payload)
+    if not contract.required_fields <= fields or not fields <= (
+        contract.required_fields | contract.optional_fields
+    ):
+        raise HostProofRefused
+    if (
+        "schema_version" in contract.required_fields
+        and payload.get("schema_version") != SCHEMA_VERSION
+    ):
+        raise HostProofRefused
+    return payload
+
+
+def validate_route_path_id(
+    operation: str,
+    *,
+    intent: Mapping[str, object],
+    path_id: str,
+) -> None:
+    field_by_operation = {
+        "read": "host_principal_id",
+        "revoke": "host_principal_id",
+        "rotate": "host_principal_id",
+        "renew": "host_principal_id",
+        "recover": "host_principal_id",
+        "session_heartbeat": "host_session_id",
+        "session_deregister": "host_session_id",
+    }
+    field = field_by_operation.get(operation)
+    if (
+        field is None
+        or type(intent) is not dict
+        or type(path_id) is not str
+        or type(intent.get(field)) is not str
+        or not hmac.compare_digest(intent[field], path_id)
+    ):
+        raise HostProofRefused
 
 
 def canonical_b64u(value: str, *, size: int | None = None) -> bytes:
@@ -259,10 +436,12 @@ def refuse_host_binding(
     monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> NoReturn:
-    """Pad all public host-binding refusals into one minimum timing class."""
+    """Pad public refusals to one bucket; over-budget work becomes operational failure."""
 
     elapsed = max(0.0, monotonic() - started_at)
-    remaining = REFUSAL_FLOOR_SECONDS - elapsed
+    if elapsed > REFUSAL_BUCKET_SECONDS:
+        raise HostProofTimingExceeded("host proof refusal exceeded its timing bucket")
+    remaining = REFUSAL_BUCKET_SECONDS - elapsed
     if remaining > 0:
         sleeper(remaining)
     raise HostProofRefused
@@ -361,28 +540,29 @@ def _public_key_bytes(jwk: Mapping[str, object]) -> bytes:
 
 
 def _parse_submission(submission_json: bytes | str) -> dict[str, Any]:
+    parsed = parse_wire_dto("HostProofSubmissionV1", submission_json)
+    if type(parsed["schema_version"]) is not str or type(parsed["challenge_id_b64u"]) is not str:
+        raise HostProofRefused
+    return parsed
+
+
+def _parse_json_object(document: bytes | str) -> dict[str, Any]:
     try:
-        if type(submission_json) is bytes:
-            if len(submission_json) > MAX_SUBMISSION_BYTES:
+        if type(document) is bytes:
+            if len(document) > MAX_SUBMISSION_BYTES:
                 raise HostProofRefused
-            text = submission_json.decode("utf-8", errors="strict")
-        elif type(submission_json) is str:
-            if len(submission_json.encode("utf-8", errors="strict")) > MAX_SUBMISSION_BYTES:
+            text = document.decode("utf-8", errors="strict")
+        elif type(document) is str:
+            if len(document.encode("utf-8", errors="strict")) > MAX_SUBMISSION_BYTES:
                 raise HostProofRefused
-            text = submission_json
+            text = document
         else:
             raise HostProofRefused
         parsed = json.loads(text, object_pairs_hook=_reject_duplicate_members)
         _validate_unicode(parsed)
     except (json.JSONDecodeError, UnicodeError, TypeError, ValueError) as exc:
         raise HostProofRefused from exc
-    if type(parsed) is not dict or frozenset(parsed) != {
-        "schema_version",
-        "challenge_id_b64u",
-        "signatures",
-    }:
-        raise HostProofRefused
-    if type(parsed["schema_version"]) is not str or type(parsed["challenge_id_b64u"]) is not str:
+    if type(parsed) is not dict:
         raise HostProofRefused
     return parsed
 
