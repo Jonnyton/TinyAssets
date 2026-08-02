@@ -897,6 +897,50 @@ def test_mint_grant_rejects_recomputed_reservation_identity(tmp_path) -> None:
         )
 
 
+def test_self_consistent_forged_reservation_cannot_mint_or_validate(tmp_path) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+    forged = replace(
+        armed,
+        reservation_id=provider_authority.provider_invocation_reservation_id(
+            receipt_id=receipt.receipt_id,
+            invocation_key="forged-unaccounted-invocation",
+        ),
+        invocation_key="forged-unaccounted-invocation",
+        reservation_digest=f"sha256:{'0' * 64}",
+    )
+    forged = replace(forged, reservation_digest=forged.expected_digest())
+
+    mint_attempts = [
+        lambda: provider_authority._mint_provider_invocation_carrier(
+            receipt,
+            claim,
+            forged,
+            object(),
+        )
+    ]
+    record_only_issuer = getattr(
+        provider_authority,
+        "_issue_provider_invocation_mint_grant",
+        None,
+    )
+    if record_only_issuer is not None:
+        mint_attempts.append(
+            lambda: provider_authority._mint_provider_invocation_carrier(
+                receipt,
+                claim,
+                forged,
+                record_only_issuer(forged),
+            ).validate_for_call(
+                role="writer",
+                operation="repository_spec_delivery",
+            )
+        )
+
+    for mint_attempt in mint_attempts:
+        with pytest.raises(PermissionError):
+            mint_attempt()
+
+
 def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
     carrier = _armed_carrier(tmp_path)
 
