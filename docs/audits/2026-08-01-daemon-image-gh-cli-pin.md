@@ -39,4 +39,15 @@ The first spec review rejected two overclaims: a false universal merged-main-onl
 
 ## Release evidence
 
-Pending implementation, exact-head review, merged-main image build, production deploy, public canary, and rendered connector acceptance.
+Local implementation evidence on Windows/Python 3.14:
+
+```text
+python -m pytest -q tests/test_dockerfile_shape.py
+41 passed
+openspec validate repair-daemon-image-gh-cli-pin --strict
+Change 'repair-daemon-image-gh-cli-pin' is valid
+git diff --check
+exit 0
+```
+
+The implementation changes only `ARG GH_VERSION=2.96.0` to `ARG GH_VERSION=2.97.0`. Local Docker Desktop was not running, so no local image-build success is claimed. Exact-head review, merged-main image build, production deploy, public canary, and rendered connector acceptance remain pending.
