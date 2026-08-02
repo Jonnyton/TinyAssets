@@ -1470,3 +1470,14 @@ fresh-host rollback edges found later.
 - Surprised: structural digest/link validation still let raw database rows reach a real provider carrier; a witness must be server-sealed, not merely self-consistent.
 - Pattern: bind ephemeral drafts to an exact request nonce, persist a keyed admission witness atomically, and revalidate it on every durable authority read.
 - Differently: test claim expiry with an advanced restart clock from the first recovery slice; same-time restart tests hid the pre-launch dead-end.
+## 2026-08-02 — cloud-agent shaped load
+
+- **What surprised me:** a 64-contender launch exposed a raw storage
+  `PermissionError` that every eight-way unit race had missed; increasing the
+  population changed which side of finalization losing workers observed.
+- **Pattern worth capturing:** load evidence needs both process-visible effect
+  markers and exact blocker assertions. Row-count convergence alone can be
+  green while the service leaks the wrong error or crosses a process boundary.
+- **What I would do differently:** start concurrency acceptance with spawned
+  process single-flight plus revocation-during-replay, then add thread load for
+  density, rather than treating thread contention as a proxy for worker loss.
