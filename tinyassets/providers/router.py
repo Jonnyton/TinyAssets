@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
@@ -20,6 +21,7 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import (
     DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
@@ -44,6 +46,23 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _provider_invocation_carrier(
+    universe_context: UniverseContext | None,
+    *,
+    role: str,
+    operation: str | None,
+) -> ProviderInvocationCarrier | None:
+    carrier = universe_context.provider_invocation if universe_context else None
+    if carrier is None:
+        return None
+    if operation is None:
+        raise PermissionError("armed provider invocation requires an operation")
+    if type(carrier) is not ProviderInvocationCarrier:
+        raise PermissionError("provider invocation carrier is not server-owned")
+    carrier.validate_for_call(role=role, operation=operation)
+    return carrier
 
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
@@ -281,6 +300,7 @@ class ProviderRouter:
         system: str,
         config: ModelConfig | None = None,
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
@@ -293,17 +313,37 @@ class ProviderRouter:
         preference + allowlist + vault-backed auth from an EXPLICIT argument
         instead of the process globals — the multi-universe seam.
         """
+        invocation_carrier = _provider_invocation_carrier(
+            universe_context,
+            role=role,
+            operation=operation,
+        )
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
-        chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
+        if invocation_carrier is not None:
+            if cfg.max_tokens is None:
+                cfg = replace(cfg, max_tokens=invocation_carrier.max_tokens)
+            elif (
+                isinstance(cfg.max_tokens, bool)
+                or not isinstance(cfg.max_tokens, int)
+                or cfg.max_tokens < 0
+                or cfg.max_tokens > invocation_carrier.max_tokens
+            ):
+                raise PermissionError("provider call exceeds armed token ceiling")
+            chain = [invocation_carrier.provider]
+        else:
+            chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
         # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
         # single provider for this call. No fallback — if the pinned
         # provider fails, the call fails loudly (hard rule #8).
         pin_writer = os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
         is_pinned_writer = role == "writer" and bool(pin_writer)
-        if is_pinned_writer:
+        if invocation_carrier is not None:
+            if is_pinned_writer and pin_writer != invocation_carrier.provider:
+                raise PermissionError("writer pin conflicts with armed provider")
+        elif is_pinned_writer:
             chain = [pin_writer]
         else:
             # Apply per-universe provider preference from the resolved config.
@@ -384,7 +424,7 @@ class ProviderRouter:
         # For normal fallback routing, remove unregistered providers before
         # iteration so the live chain does not advertise phantom first entries.
         attempts: list[ProviderAttemptDiagnostic] = []
-        if not is_pinned_writer:
+        if invocation_carrier is None and not is_pinned_writer:
             effective_chain, excluded = self.effective_chain(chain)
             if excluded:
                 logger.info(
@@ -518,6 +558,12 @@ class ProviderRouter:
             return resp
 
         # All providers exhausted.
+        if invocation_carrier is not None:
+            raise AllProvidersExhaustedError(
+                f"Armed provider {invocation_carrier.provider!r} exhausted; "
+                "provider authority forbids fallback widening.",
+                attempts=attempts,
+            )
         if is_pinned_writer:
             # Hard pin must fail loudly rather than silently falling through
             # to a different provider (hard rule #8).
@@ -592,6 +638,7 @@ class ProviderRouter:
         config: ModelConfig | None = None,
         difficulty: str = "",
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> tuple[str, str, dict]:
         """Route a call honouring an explicit llm_policy dict.
@@ -615,6 +662,17 @@ class ProviderRouter:
         method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
+        if universe_context is not None and universe_context.provider_invocation is not None:
+            resp = await self.call(
+                role,
+                prompt,
+                system,
+                config,
+                operation=operation,
+                universe_context=universe_context,
+            )
+            return resp.text, resp.provider, self._call_meta(resp, attempts=1)
+
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
@@ -756,6 +814,7 @@ class ProviderRouter:
         config: ModelConfig | None = None,
         difficulty: str = "",
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> tuple[str, str, dict]:
         """Synchronous wrapper for :meth:`call_with_policy`."""
@@ -771,6 +830,7 @@ class ProviderRouter:
                 return loop.run_until_complete(
                     self.call_with_policy(
                         role, prompt, system, policy, cfg, difficulty,
+                        operation=operation,
                         universe_context=universe_context,
                     )
                 )
@@ -805,6 +865,7 @@ class ProviderRouter:
         system: str,
         config: ModelConfig | None = None,
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
         """Synchronous version of :meth:`call` for use from sync code.
@@ -829,6 +890,7 @@ class ProviderRouter:
                 return loop.run_until_complete(
                     self.call(
                         role, prompt, system, cfg,
+                        operation=operation,
                         universe_context=universe_context,
                     )
                 )
@@ -857,6 +919,7 @@ class ProviderRouter:
         system: str,
         config: ModelConfig | None = None,
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> list[ProviderResponse]:
         """Fan out to ALL available judge providers in parallel.
@@ -865,6 +928,18 @@ class ProviderRouter:
         calls the same provider twice.  Returns 1-N responses
         depending on how many providers are healthy.
         """
+        if universe_context is not None and universe_context.provider_invocation is not None:
+            return [
+                await self.call(
+                    "judge",
+                    prompt,
+                    system,
+                    config,
+                    operation=operation,
+                    universe_context=universe_context,
+                )
+            ]
+
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)

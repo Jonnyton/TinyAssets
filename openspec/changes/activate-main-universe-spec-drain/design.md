@@ -25,11 +25,16 @@ in GitHub, and this change does not decide custody for unrelated user content.
 - Run one bounded repository-to-accepted-spec delivery slice at a time from a
   requester's private cloud universe while every user device is off, with
   Jonathan's OpenSpec drain as the first acceptance fixture.
+- Let an ordinary user supply a repository plus a spec or patch request through
+  the chatbot, create/import/remix the Branch composition, bind private
+  authority, and activate it without a maintainer-only setup step.
 - Use only requester-owned provider and destination-scoped GitHub authority.
 - Preserve current-main admission, isolated branch/worktree, independent
   review, CI, merge verification, and OpenSpec foldback.
 - Make ownership complete from a phone chatbot: inspect, control, repair,
   version, activate, and roll back the ordinary Branch composition.
+- Use a rendered connector conversation as final user-surface acceptance after
+  the generic input, execution, authority, and output boundaries are live.
 - Prove restart recovery, no duplicate claims, useful 24-hour progress, and
   single-active tray-to-cloud cutover.
 
