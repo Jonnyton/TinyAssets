@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, ContextManager, Mapping, Protocol, runtime_checkable
 
 from tinyassets.agent_runtime import AgentRuntimeManifest, AgentRuntimeManifestInput
 from tinyassets.agent_runtime_grants import (
@@ -144,6 +144,55 @@ class AgentInvocationTargetResolver(Protocol):
         owner_user_id: str,
         agent_binding_id: str,
     ) -> AgentInvocationTarget | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AgentInvocationExternalAuthoritySnapshot:
+    """Exact non-secret generations held stable through admission commit."""
+
+    owner_user_id: str
+    universe_id: str
+    agent_binding_id: str
+    manifest_id: str
+    manifest_digest: str
+    grant_evidence_set_digest: str
+    provider: str
+    assignment_generation: int
+    assignment_digest: str
+    credential_reference_digest: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "owner_user_id",
+            "universe_id",
+            "agent_binding_id",
+            "manifest_id",
+            "provider",
+        ):
+            _text(getattr(self, name), name)
+        for name in (
+            "manifest_digest",
+            "grant_evidence_set_digest",
+            "assignment_digest",
+            "credential_reference_digest",
+        ):
+            _digest_value(getattr(self, name), name)
+        _integer(self.assignment_generation, "assignment_generation", minimum=1)
+
+
+@runtime_checkable
+class AgentInvocationExternalAuthorityFenceSource(Protocol):
+    """Linearize external authority with the admission commit.
+
+    The trusted owner validates the exact snapshot on entry and prevents every
+    covered manifest/grant/provider-assignment mutation until context exit.
+    Implementations unable to provide that guarantee must yield ``False``.
+    """
+
+    def hold_current(
+        self,
+        snapshot: AgentInvocationExternalAuthoritySnapshot,
+    ) -> ContextManager[bool]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,7 +442,7 @@ class _StoreAdmissionPayload:
     idempotency_key: str
     max_tokens: int
     max_cost_microunits: int
-    revalidate_external_authority: Callable[[], bool] = field(
+    hold_external_authority: Callable[[], ContextManager[bool]] = field(
         repr=False,
         compare=False,
     )
@@ -573,6 +622,7 @@ class AgentInvocationAdmissionService:
         target_resolver: AgentInvocationTargetResolver,
         grant_resolver: AgentRuntimeGrantResolver,
         provider_binding_resolver: ProviderWorkBindingResolver,
+        external_authority_fence_source: AgentInvocationExternalAuthorityFenceSource,
         clock: Callable[[], datetime] | None = None,
         busy_timeout_ms: int = 30_000,
     ) -> None:
@@ -582,6 +632,11 @@ class AgentInvocationAdmissionService:
             raise ValueError("grant_resolver must be server-owned")
         if not isinstance(provider_binding_resolver, ProviderWorkBindingResolver):
             raise ValueError("provider_binding_resolver must be server-owned")
+        if not isinstance(
+            external_authority_fence_source,
+            AgentInvocationExternalAuthorityFenceSource,
+        ):
+            raise ValueError("external_authority_fence_source must be server-owned")
         from tinyassets.storage.agent_runtime_invocation import (
             SQLiteAgentRuntimeInvocationStore,
         )
@@ -590,6 +645,7 @@ class AgentInvocationAdmissionService:
         self._target_resolver = target_resolver
         self._grant_resolver = grant_resolver
         self._provider_binding_resolver = provider_binding_resolver
+        self._external_authority_fence_source = external_authority_fence_source
         self._activation_store = AutomationActivationStore(
             base_path,
             busy_timeout_ms=busy_timeout_ms,
@@ -750,28 +806,31 @@ class AgentInvocationAdmissionService:
                 idempotency_key=request.idempotency_key,
                 max_tokens=request.max_tokens,
                 max_cost_microunits=request.max_cost_microunits,
-                revalidate_external_authority=lambda: self._external_authority_matches(current),
+                hold_external_authority=lambda: self._external_authority_fence_source.hold_current(
+                    _external_authority_snapshot(current)
+                ),
             )
         )
         return self.store.admit(grant)
 
-    def _external_authority_matches(self, expected: _DraftPayload) -> bool:
-        """Re-read non-activation owners inside the persistence transaction."""
 
-        try:
-            target, grants, provider_seed = self._resolve_external(
-                owner=expected.owner_user_id,
-                binding=expected.agent_binding_id,
-            )
-        except Exception:
-            return False
-        return all(
-            (
-                target == expected.target,
-                _same_grants(grants, expected.grants),
-                provider_seed == expected.provider_seed,
-            )
-        )
+def _external_authority_snapshot(
+    payload: _DraftPayload,
+) -> AgentInvocationExternalAuthoritySnapshot:
+    content = payload.target.manifest.manifest_input.to_dict()
+    seed = payload.provider_seed
+    return AgentInvocationExternalAuthoritySnapshot(
+        owner_user_id=payload.owner_user_id,
+        universe_id=str(content["universe_id"]),
+        agent_binding_id=payload.agent_binding_id,
+        manifest_id=payload.target.manifest.manifest_id,
+        manifest_digest=payload.target.manifest.manifest_digest,
+        grant_evidence_set_digest=payload.grants.evidence_set_digest,
+        provider=seed.provider,
+        assignment_generation=seed.assignment_generation,
+        assignment_digest=seed.assignment_digest,
+        credential_reference_digest=seed.credential_reference_digest,
+    )
 
 
 __all__ = [
@@ -785,6 +844,8 @@ __all__ = [
     "AgentInvocationAdmissionService",
     "AgentInvocationCommand",
     "AgentInvocationConflict",
+    "AgentInvocationExternalAuthorityFenceSource",
+    "AgentInvocationExternalAuthoritySnapshot",
     "AgentInvocationState",
     "AgentInvocationTarget",
     "AgentInvocationTargetResolver",

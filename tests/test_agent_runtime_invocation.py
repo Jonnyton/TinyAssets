@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import pickle
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
@@ -97,29 +99,65 @@ class _ProviderResolver:
     def __init__(self) -> None:
         self.assignment_generation = 4
         self.calls = 0
+        self.lock = threading.RLock()
 
     def resolve(self, root: ProviderWorkBindingRoot):
-        self.calls += 1
-        return ProviderWorkBindingSeed(
-            owner_user_id=root.owner_user_id,
-            universe_id=root.universe_id,
-            provider=root.provider,
-            credential_reference_digest=f"sha256:{'e' * 64}",
-            allowed_operations=("agent_invocation",),
-            allowed_roles=("agent_runtime",),
-            assignment_generation=self.assignment_generation,
-            assignment_digest=f"sha256:{'f' * 64}",
-            max_invocations=8,
-            max_tokens=10_000,
-            max_cost_microunits=500_000,
-            expires_at="2026-08-03T00:00:00Z",
-        )
+        with self.lock:
+            self.calls += 1
+            return ProviderWorkBindingSeed(
+                owner_user_id=root.owner_user_id,
+                universe_id=root.universe_id,
+                provider=root.provider,
+                credential_reference_digest=f"sha256:{'e' * 64}",
+                allowed_operations=("agent_invocation",),
+                allowed_roles=("agent_runtime",),
+                assignment_generation=self.assignment_generation,
+                assignment_digest=f"sha256:{'f' * 64}",
+                max_invocations=8,
+                max_tokens=10_000,
+                max_cost_microunits=500_000,
+                expires_at="2026-08-03T00:00:00Z",
+            )
+
+    def revoke(self) -> None:
+        with self.lock:
+            self.assignment_generation += 1
+
+
+class _ExternalAuthorityFence:
+    def __init__(self, provider_resolver: _ProviderResolver) -> None:
+        self.provider_resolver = provider_resolver
+        self.active = False
+
+    @contextmanager
+    def hold_current(self, snapshot):
+        with self.provider_resolver.lock:
+            self.active = True
+            manifest = _manifest()
+            grants = AgentRuntimeGrantResolver(clock=lambda: NOW.timestamp()).resolve(manifest)
+            try:
+                yield (
+                    snapshot.owner_user_id == "user::alice"
+                    and snapshot.universe_id == "universe_alice"
+                    and snapshot.agent_binding_id == "agent_binding_alice"
+                    and snapshot.manifest_id == "agent_manifest_alice"
+                    and snapshot.manifest_digest == manifest.manifest_digest
+                    and snapshot.grant_evidence_set_digest == grants.evidence_set_digest
+                    and snapshot.provider == "codex"
+                    and snapshot.assignment_generation
+                    == self.provider_resolver.assignment_generation
+                    and snapshot.assignment_digest == f"sha256:{'f' * 64}"
+                    and snapshot.credential_reference_digest == f"sha256:{'e' * 64}"
+                )
+            finally:
+                self.active = False
 
 
 def _service(
     tmp_path,
     manifest: AgentRuntimeManifest | None = None,
     provider_resolver: _ProviderResolver | None = None,
+    external_fence: _ExternalAuthorityFence | None = None,
 ):
     from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionService
 
@@ -142,11 +180,14 @@ def _service(
         )
         assert active is not None
     target_resolver = _TargetResolver(current_manifest)
+    current_provider_resolver = provider_resolver or _ProviderResolver()
+    current_fence = external_fence or _ExternalAuthorityFence(current_provider_resolver)
     service = AgentInvocationAdmissionService(
         tmp_path,
         target_resolver=target_resolver,
         grant_resolver=AgentRuntimeGrantResolver(clock=lambda: NOW.timestamp()),
-        provider_binding_resolver=provider_resolver or _ProviderResolver(),
+        provider_binding_resolver=current_provider_resolver,
+        external_authority_fence_source=current_fence,
         clock=lambda: NOW,
     )
     return service, target_resolver
@@ -207,8 +248,6 @@ def test_live_admission_atomically_links_secret_free_server_records(
     assert result.invocation.generation == 1
     assert _counts(tmp_path) == (1, 1, 1, 1)
     assert target_resolver.calls == [
-        ("user::alice", "agent_binding_alice"),
-        ("user::alice", "agent_binding_alice"),
         ("user::alice", "agent_binding_alice"),
         ("user::alice", "agent_binding_alice"),
     ]
@@ -353,25 +392,49 @@ def test_lower_level_store_refuses_caller_built_or_forged_grants(
     assert _counts(tmp_path) == (0, 0, 0, 0)
 
 
-def test_provider_assignment_change_during_atomic_write_rolls_back_every_record(
-    tmp_path, authenticate_request
+def test_external_authority_fence_is_held_through_atomic_commit(
+    tmp_path, authenticate_request, monkeypatch
 ) -> None:
-    from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionBlocked
-
-    class _RevokingProviderResolver(_ProviderResolver):
-        def resolve(self, root: ProviderWorkBindingRoot):
-            if self.calls == 3:
-                self.assignment_generation += 1
-            return super().resolve(root)
-
     authenticate_request("user::alice")
-    resolver = _RevokingProviderResolver()
-    service, _target = _service(tmp_path, provider_resolver=resolver)
+    resolver = _ProviderResolver()
+    fence = _ExternalAuthorityFence(resolver)
+    service, _target = _service(
+        tmp_path,
+        provider_resolver=resolver,
+        external_fence=fence,
+    )
+    original = service.store._provider_store._issue_binding_in_transaction
+    mutation_started = threading.Event()
+    mutation_finished = threading.Event()
+    mutation_thread: list[threading.Thread] = []
 
-    with pytest.raises(AgentInvocationAdmissionBlocked, match="during atomic admission"):
-        service.admit(_capture(service), _request())
-    assert resolver.calls == 4
-    assert _counts(tmp_path) == (0, 0, 0, 0)
+    def issue_while_revocation_waits(conn, seed):
+        assert fence.active
+
+        def revoke() -> None:
+            mutation_started.set()
+            resolver.revoke()
+            mutation_finished.set()
+
+        thread = threading.Thread(target=revoke)
+        mutation_thread.append(thread)
+        thread.start()
+        assert mutation_started.wait(timeout=2)
+        assert not mutation_finished.is_set()
+        return original(conn, seed)
+
+    monkeypatch.setattr(
+        service.store._provider_store,
+        "_issue_binding_in_transaction",
+        issue_while_revocation_waits,
+    )
+    result = service.admit(_capture(service), _request())
+    mutation_thread[0].join(timeout=2)
+
+    assert result.outcome.value == "applied"
+    assert mutation_finished.is_set()
+    assert resolver.assignment_generation == 5
+    assert _counts(tmp_path) == (1, 1, 1, 1)
 
 
 def test_recovery_source_resolves_same_bearer_free_invocation_after_request_ends(

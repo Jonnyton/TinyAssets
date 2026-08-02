@@ -257,13 +257,16 @@ class SQLiteAgentRuntimeInvocationStore:
             }
         )
 
-        with self.connection() as conn:
+        with (
+            payload.hold_external_authority() as external_authority_current,
+            self.connection() as conn,
+        ):
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if not payload.revalidate_external_authority():
+                if not external_authority_current:
                     raise AgentInvocationAdmissionBlocked(
                         "authority_changed",
-                        "agent invocation authority changed before atomic admission",
+                        "agent invocation external authority is not current",
                     )
                 activation_current = AutomationActivationStore.validate_claim_in_transaction(
                     conn,
@@ -348,10 +351,10 @@ class SQLiteAgentRuntimeInvocationStore:
                             lease_id=activation.lease_id,
                         )
                     )
-                    if not final_activation_current or not payload.revalidate_external_authority():
+                    if not final_activation_current:
                         raise AgentInvocationAdmissionBlocked(
                             "authority_changed",
-                            "agent invocation authority changed during atomic replay",
+                            "agent invocation activation changed during atomic replay",
                         )
                     conn.commit()
                     return AgentInvocationAdmissionResult(
@@ -501,10 +504,10 @@ class SQLiteAgentRuntimeInvocationStore:
                     subject=activation.subject,
                     lease_id=activation.lease_id,
                 )
-                if not final_activation_current or not payload.revalidate_external_authority():
+                if not final_activation_current:
                     raise AgentInvocationAdmissionBlocked(
                         "authority_changed",
-                        "agent invocation authority changed during atomic admission",
+                        "agent invocation activation changed during atomic admission",
                     )
                 conn.commit()
             except Exception:
