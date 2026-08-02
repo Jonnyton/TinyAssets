@@ -197,6 +197,70 @@ def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
     assert "observed at least 2055 bytes" in warning
 
 
+def test_windows_lifecycle_capture_writer_is_bounded_while_draining(
+    tmp_path: Path,
+) -> None:
+    supervisor = _supervisor_module()
+    capture_path = tmp_path / "bounded.capture"
+    payload = b"x" * 200_000
+
+    with capture_path.open("w+b") as capture_writer:
+        observed = supervisor._drain_stream(
+            io.BytesIO(payload),
+            capture_writer=capture_writer,
+            max_bytes=4096,
+        )
+        capture_writer.flush()
+
+    assert observed == len(payload)
+    assert capture_path.stat().st_size == 4096
+
+
+def test_windows_lifecycle_cleanup_never_uses_run_timeout_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = _supervisor_module()
+
+    class TargetProcess:
+        pid = 424242
+        killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("target", timeout)
+
+    class CleanupProcess:
+        returncode = None
+        killed = False
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("taskkill.exe", timeout)
+
+        def kill(self):
+            self.killed = True
+
+    cleanup = CleanupProcess()
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail(
+            "subprocess.run timeout cleanup can wait without a second bound"
+        ),
+    )
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *args, **kwargs: cleanup)
+    target = TargetProcess()
+
+    supervisor._terminate_tree(target, cleanup_timeout_seconds=1)
+
+    assert cleanup.killed is True
+    assert target.killed is True
+
+
 @pytest.mark.skipif(
     sys.platform != "win32",
     reason="Windows inherited file-handle cursor contract",
@@ -309,6 +373,20 @@ while ($true) {
     assert "synthetic lifecycle phase began" in output
     assert "stdout capture truncated; replay cap 4096 bytes" in output
     assert "total lifecycle timed out after 2 seconds" in output
+    for stage in (
+        "child.wait.started",
+        "child.wait.timed_out",
+        "cleanup.started",
+        "cleanup.taskkill.started",
+        "cleanup.root_wait.started",
+        "cleanup.finished",
+        "capture.stdout.started",
+        "capture.stdout.finished",
+        "capture.stderr.started",
+        "capture.stderr.finished",
+        "supervisor.exiting",
+    ):
+        assert f"stage={stage}" in output
     assert len(output) < 20_000
 
 

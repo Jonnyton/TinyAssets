@@ -797,6 +797,63 @@ class ProviderInvocationReservationWriteResult:
     record: ProviderInvocationReservation | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderInvocationLaunchRequest:
+    reservation_id: str
+    reserved_digest: str
+    receipt_id: str
+    receipt_digest: str
+    claim_id: str
+    claim_digest: str
+    claim_generation: int
+    invocation_key: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "reservation_id",
+            "receipt_id",
+            "claim_id",
+            "invocation_key",
+        ):
+            _reference(getattr(self, name), name)
+        _digest(self.reserved_digest, "reserved_digest")
+        _digest(self.receipt_digest, "receipt_digest")
+        _digest(self.claim_digest, "claim_digest")
+        _integer(self.claim_generation, "claim_generation", minimum=1)
+
+    @classmethod
+    def from_reservation(
+        cls,
+        reservation: ProviderInvocationReservation,
+    ) -> ProviderInvocationLaunchRequest:
+        if not isinstance(reservation, ProviderInvocationReservation):
+            raise ValueError("reservation must be a ProviderInvocationReservation")
+        if reservation.state is not ProviderInvocationReservationState.RESERVED:
+            raise ValueError("reservation must be reserved")
+        return cls(
+            reservation_id=reservation.reservation_id,
+            reserved_digest=reservation.reservation_digest,
+            receipt_id=reservation.receipt_id,
+            receipt_digest=reservation.receipt_digest,
+            claim_id=reservation.claim_id,
+            claim_digest=reservation.claim_digest,
+            claim_generation=reservation.claim_generation,
+            invocation_key=reservation.invocation_key,
+        )
+
+
+def _reservation_with_state(
+    reservation: ProviderInvocationReservation,
+    state: ProviderInvocationReservationState,
+) -> ProviderInvocationReservation:
+    transitioned = replace(
+        reservation,
+        state=state,
+        reservation_digest=_PLACEHOLDER_DIGEST,
+    )
+    return replace(transitioned, reservation_digest=transitioned.expected_digest())
+
+
 def provider_work_receipt_id(
     *,
     universe_id: str,
@@ -947,6 +1004,11 @@ class ProviderWorkAuthorityStore(Protocol):
     def reserve(
         self,
         request: ProviderInvocationReservationRequest,
+    ) -> ProviderInvocationReservationWriteResult: ...
+
+    def arm_launch(
+        self,
+        request: ProviderInvocationLaunchRequest,
     ) -> ProviderInvocationReservationWriteResult: ...
 
 
@@ -1103,6 +1165,7 @@ class ProviderWorkReceiptService:
 
 __all__ = [
     "ProviderInvocationReservation",
+    "ProviderInvocationLaunchRequest",
     "ProviderInvocationReservationRequest",
     "ProviderInvocationReservationState",
     "ProviderInvocationReservationWriteResult",
