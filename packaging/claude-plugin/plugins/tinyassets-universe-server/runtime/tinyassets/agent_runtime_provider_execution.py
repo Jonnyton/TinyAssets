@@ -8,11 +8,17 @@ import secrets
 import sqlite3
 import threading
 import weakref
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal, Mapping
 
 from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
+from tinyassets.agent_runtime_health import (
+    AgentRuntimeHealthState,
+    AgentRuntimeNoProgressAlarm,
+    AgentRuntimeUsefulProgressHealth,
+    agent_runtime_alarm_id,
+)
 from tinyassets.agent_runtime_invocation import (
     AGENT_INVOCATION_OPERATION,
     AGENT_INVOCATION_ROLE,
@@ -49,6 +55,7 @@ from tinyassets.provider_work_authority import (
 from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
+from tinyassets.storage.agent_runtime_health import SQLiteAgentRuntimeHealthStore
 from tinyassets.storage.agent_runtime_invocation import (
     SQLiteAgentInvocationExternalAuthorityFenceSource,
     SQLiteAgentRuntimeInvocationStore,
@@ -192,6 +199,7 @@ class AgentRuntimeProviderExecutionService:
             pass
         with self.invocation_store.connection() as conn:
             SQLiteAgentRuntimeProviderOutcomeStore.ensure_schema(conn)
+            SQLiteAgentRuntimeHealthStore.ensure_schema(conn)
 
     def issue_receipt(self, invocation_id: str) -> ProviderWorkReceiptWriteResult:
         result = self._transition(invocation_id, transition="receipt")
@@ -224,6 +232,171 @@ class AgentRuntimeProviderExecutionService:
                 conn,
                 invocation_id=invocation_id,
             )
+
+    def project_useful_progress(
+        self,
+        invocation_id: str,
+        *,
+        no_progress_after_seconds: int,
+    ) -> AgentRuntimeUsefulProgressHealth:
+        """Project health only from canonical useful transitions, never heartbeats."""
+
+        if (
+            isinstance(no_progress_after_seconds, bool)
+            or not isinstance(no_progress_after_seconds, int)
+            or no_progress_after_seconds < 1
+        ):
+            raise ValueError("no_progress_after_seconds must be an integer >= 1")
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise AgentRuntimeProviderExecutionBlocked("server clock is unavailable")
+        now = now.astimezone(timezone.utc)
+        observed_at = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        with self.invocation_store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                aggregate = self.invocation_store.get_in_transaction(
+                    conn,
+                    invocation_id=invocation_id,
+                )
+                if aggregate is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent invocation is not current"
+                    )
+                command, invocation = aggregate
+                manifest = AgentRuntimeManifestStore.resolve_current_in_transaction(
+                    conn,
+                    owner_user_id=command.authorizing_subject_id,
+                    manifest_id=command.execution_subject.ref,
+                    manifest_digest=command.execution_subject.digest,
+                )
+                if manifest is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent manifest is not current"
+                    )
+                milestone = "invocation_admitted"
+                record_digest = invocation.invocation_digest
+                progress_at = invocation.created_at
+                continuation_row = conn.execute(
+                    "SELECT * FROM cloud_execution_continuations "
+                    "WHERE work_item_id = ?",
+                    (invocation_id,),
+                ).fetchone()
+                continuation = (
+                    _agent_record(continuation_row)
+                    if continuation_row is not None
+                    else None
+                )
+                if continuation is not None:
+                    if (
+                        continuation.command_id != command.command_id
+                        or continuation.command_digest != command.command_digest
+                        or continuation.invocation_digest != invocation.invocation_digest
+                    ):
+                        raise AgentRuntimeProviderExecutionBlocked(
+                            "agent health continuation lineage is not exact"
+                        )
+                    milestone = "continuation_prepared"
+                    record_digest = continuation.continuation_digest
+                    progress_at = continuation.created_at
+                outcome = SQLiteAgentRuntimeProviderOutcomeStore.get_in_transaction(
+                    conn,
+                    invocation_id=invocation_id,
+                )
+                if outcome is not None:
+                    if continuation is None or (
+                        outcome.continuation_id != continuation.continuation_id
+                        or outcome.continuation_digest
+                        != continuation.continuation_digest
+                    ):
+                        raise AgentRuntimeProviderExecutionBlocked(
+                            "agent health outcome lineage is not exact"
+                        )
+                    milestone = "provider_outcome_recorded"
+                    record_digest = outcome.outcome_digest
+                    progress_at = outcome.created_at
+                try:
+                    self._validated_authority(
+                        conn,
+                        invocation_id=invocation_id,
+                        evaluated_at=now.timestamp(),
+                    )
+                except AgentRuntimeProviderExecutionBlocked:
+                    authority_current = False
+                else:
+                    authority_current = True
+                progress_time = datetime.fromisoformat(
+                    progress_at.removesuffix("Z") + "+00:00"
+                )
+                if progress_time > now:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent useful progress timestamp is in the future"
+                    )
+                no_progress_seconds = max(
+                    0,
+                    int((now - progress_time).total_seconds()),
+                )
+                if outcome is not None:
+                    state = AgentRuntimeHealthState.TERMINAL
+                elif not authority_current:
+                    state = AgentRuntimeHealthState.BLOCKED
+                elif no_progress_seconds >= no_progress_after_seconds:
+                    state = AgentRuntimeHealthState.STALLED
+                else:
+                    state = AgentRuntimeHealthState.ACTIVE
+                health = AgentRuntimeUsefulProgressHealth.build(
+                    invocation_id=invocation_id,
+                    state=state,
+                    useful_milestone=milestone,
+                    useful_record_digest=record_digest,
+                    useful_progress_at=progress_at,
+                    observed_at=observed_at,
+                    no_progress_seconds=no_progress_seconds,
+                    authority_current=authority_current,
+                    terminal_outcome_state=(
+                        outcome.state.value if outcome is not None else None
+                    ),
+                    alarm=None,
+                )
+                if state is AgentRuntimeHealthState.STALLED:
+                    alarm = SQLiteAgentRuntimeHealthStore._raise_alarm_in_transaction(
+                        conn,
+                        AgentRuntimeNoProgressAlarm(
+                            alarm_id=agent_runtime_alarm_id(
+                                invocation_id,
+                                health.useful_progress_digest,
+                                no_progress_after_seconds,
+                            ),
+                            invocation_id=invocation_id,
+                            useful_progress_digest=health.useful_progress_digest,
+                            useful_milestone=milestone,
+                            useful_progress_at=progress_at,
+                            threshold_seconds=no_progress_after_seconds,
+                            raised_at=(
+                                progress_time
+                                + timedelta(seconds=no_progress_after_seconds)
+                            ).isoformat(timespec="microseconds").replace(
+                                "+00:00", "Z"
+                            ),
+                        ),
+                    )
+                    health = AgentRuntimeUsefulProgressHealth.build(
+                        invocation_id=invocation_id,
+                        state=state,
+                        useful_milestone=milestone,
+                        useful_record_digest=record_digest,
+                        useful_progress_at=progress_at,
+                        observed_at=observed_at,
+                        no_progress_seconds=no_progress_seconds,
+                        authority_current=authority_current,
+                        terminal_outcome_state=None,
+                        alarm=alarm,
+                    )
+                conn.commit()
+                return health
+            except Exception:
+                conn.rollback()
+                raise
 
     def reconcile_uncertain_provider_call(
         self,
@@ -806,13 +979,13 @@ class AgentRuntimeProviderExecutionService:
                 conn.rollback()
                 raise
 
-    def _validated_store_grant(
+    def _validated_authority(
         self,
         conn: sqlite3.Connection,
         *,
         invocation_id: str,
         evaluated_at: float,
-    ) -> _AgentProviderReceiptStoreGrant:
+    ) -> ProviderUniverseWorkAuthority:
         try:
             aggregate = self.invocation_store.get_in_transaction(
                 conn,
@@ -949,6 +1122,20 @@ class AgentRuntimeProviderExecutionService:
             agent_invocation_command_id=command.command_id,
             agent_invocation_command_digest=command.command_digest,
             agent_invocation_generation=invocation.generation,
+        )
+        return authority
+
+    def _validated_store_grant(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        invocation_id: str,
+        evaluated_at: float,
+    ) -> _AgentProviderReceiptStoreGrant:
+        authority = self._validated_authority(
+            conn,
+            invocation_id=invocation_id,
+            evaluated_at=evaluated_at,
         )
         # Keep minting inline after every authority check. A module-level or
         # store-level mint helper would let a lower-level caller launder a
