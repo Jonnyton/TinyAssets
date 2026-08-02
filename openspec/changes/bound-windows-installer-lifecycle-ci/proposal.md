@@ -1,6 +1,6 @@
 ## Why
 
-Three unsigned Windows installer verification jobs remained inside one lifecycle step until GitHub force-cancelled them after the configured 15-minute job timeout plus its five-minute cancellation grace, even though the lifecycle script was intended to bound each phase to 180 seconds. A release gate that can lose its logs and occupy a runner for twenty minutes is not reliable evidence for the Tier-2 desktop path.
+Four unsigned Windows installer verification jobs remained inside one lifecycle step until GitHub force-cancelled them after the configured 15-minute job timeout plus its five-minute cancellation grace, even though the lifecycle script was intended to bound each phase to 180 seconds. A release gate that can lose its logs and occupy a runner for twenty minutes is not reliable evidence for the Tier-2 desktop path.
 
 ## What Changes
 

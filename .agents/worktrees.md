@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop-installer`
 - Branch: `codex/windows-installer-bounded-recurrence-20260801`
-- Lane state: claimed from current main after three post-PR-2078 installer jobs escaped the in-process timeout and reached GitHub forced cancellation
+- Lane state: claimed from current main after four post-PR-2078 installer jobs escaped the in-process timeout and reached GitHub forced cancellation
 - Worktree: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence`
 - STATUS/Issue/PR: exact Windows installer lifecycle recovery slice claimed; umbrella full-platform refinery work remains outside this slice
 - Purpose: supervise the full lifecycle from outside the tested process, retain phase diagnostics, and fail before GitHub cancellation begins
