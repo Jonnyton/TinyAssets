@@ -113,6 +113,21 @@ def test_collect_outcomes_excludes_skipped_from_ran(tmp_path):
 # ---- the repo's real quarantine file ---------------------------------------
 
 
+def test_vacuity_floor_fails_small_runs():
+    # A mass skip/deselect/deletion must not produce a green gate.
+    msg = gate.vacuity_failure(10)
+    assert msg is not None and "vacuous" in msg
+
+
+def test_vacuity_floor_passes_full_runs():
+    assert gate.vacuity_failure(gate.MIN_RAN_FLOOR) is None
+
+
+def test_vacuity_floor_is_meaningfully_high():
+    # The floor only works if it sits far above any trivial subset run.
+    assert gate.MIN_RAN_FLOOR >= 5000
+
+
 def test_repo_quarantine_file_is_wellformed():
     """The committed list must always parse — a malformed line fails the gate."""
     _, _, problems = gate.parse_quarantine(gate.QUARANTINE)

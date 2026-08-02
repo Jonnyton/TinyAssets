@@ -44,8 +44,10 @@ concurrency:
 jobs:
   required-tests:
     # This exact string is the branch-protection context. Renaming the job
-    # silently detaches the requirement and every PR goes green on nothing —
-    # change it only together with the `gh api` update in
+    # ORPHANS the old required context: it stays "Expected — waiting for
+    # status" forever and every PR blocks indefinitely (it does NOT fail open;
+    # corrected 2026-08-02 per Codex review). Change the name only together
+    # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
     runs-on: ubuntu-latest

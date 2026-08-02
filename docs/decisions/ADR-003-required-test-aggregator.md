@@ -236,7 +236,13 @@ required context.
 - A PR that breaks a test can no longer auto-merge to production.
 - Repo test debt becomes a visible, counted, one-way-ratcheted number instead of
   an unknown.
-- Every PR pays ~3 minutes of CI. Acceptable — it was ~0 minutes of verification
-  before.
+- Every PR pays the serial suite: measured **~26 minutes** on 2026-08-02
+  (25:48 of tests; the original ~3-minute estimate predated the suite's growth
+  to ~9,100 tests and was wrong). Accepted trade: it was ~0 minutes of
+  verification before, and merges were median-3.7-minute review-less lands.
+  Follow-up if the latency bites: a curated fast-subset job becomes
+  `required-tests` and the full serial suite stays a non-required
+  post-merge/nightly tripwire — change it via the documented context-rename
+  procedure, never by weakening this gate in place.
 - The `known-failing-tests.txt` count is a standing cleanup backlog; each entry
   removed is a real regression the gate can newly catch.

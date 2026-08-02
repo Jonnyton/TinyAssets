@@ -39,6 +39,27 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 
+# The gate must never pass vacuously. Without a floor, a PR that mass-skips,
+# mass-deselects, or deletes most of the suite goes green on nothing — pytest
+# exits 0, no "new failures" exist, and only literal zero-collection trips
+# exit 5 (Codex gate review 2026-08-02, finding 3). The suite runs ~9,100
+# tests today; the floor sits far below natural variance and far above any
+# vacuous run. Ratchet it upward as the suite grows.
+MIN_RAN_FLOOR = 7500
+
+
+def vacuity_failure(ran_count: int, floor: int = MIN_RAN_FLOOR) -> str | None:
+    """Return a failure message if too few tests ran to trust a green result."""
+    if ran_count < floor:
+        return (
+            f"only {ran_count} tests ran; the floor is {floor}. A run this "
+            "small means mass skip/deselect/deletion or a collection collapse "
+            "- the gate must not go green on a vacuous run. If the suite "
+            "legitimately shrank, lower MIN_RAN_FLOOR in the same PR and say "
+            "why."
+        )
+    return None
+
 
 def parse_quarantine(path: Path) -> tuple[set[str], set[str], list[str]]:
     """Return (tolerated, flaky, problems).
@@ -287,6 +308,11 @@ def main() -> int:
     summarise(lines)
 
     if new_failures or stale or problems:
+        return 1
+
+    vacuous = vacuity_failure(len(ran))
+    if vacuous:
+        summarise(["", f"**FAILED — {vacuous}**"])
         return 1
 
     # Guard the inverse of a green check: pytest failed for a reason the

@@ -14,9 +14,15 @@ _ARTIFACT_RE = re.compile(
 )
 
 
-def review_allows_merge(*, branch: str, head: str, body: str) -> bool:
-    """Allow ordinary PRs, or drain PRs with one current approval receipt."""
-    if not branch.startswith("drain/"):
+def review_allows_merge(*, branch: str, head: str, body: str, force: bool = False) -> bool:
+    """Allow ordinary PRs; drain PRs — and force-flagged calls — need a receipt.
+
+    `force=True` is used by the scope guard for PRs that edit the files
+    DEFINING the required-tests gate: those can neuter the check from the
+    PR's own checkout, so a label (declaration) is not authorization — an
+    exact-head review receipt is required regardless of branch name.
+    """
+    if not force and not branch.startswith("drain/"):
         return True
     if not _SHA_RE.fullmatch(head):
         return False
@@ -38,6 +44,12 @@ def main() -> int:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--body-file", type=Path, required=True)
+    parser.add_argument(
+        "--require-receipt",
+        action="store_true",
+        help="Demand the exact-head review receipt regardless of branch name "
+        "(used for PRs touching gate-defining files).",
+    )
     args = parser.parse_args()
 
     try:
@@ -46,7 +58,9 @@ def main() -> int:
         print("deny")
         return 2
 
-    if review_allows_merge(branch=args.branch, head=args.head, body=body):
+    if review_allows_merge(
+        branch=args.branch, head=args.head, body=body, force=args.require_receipt
+    ):
         print("allow")
         return 0
     print("deny")

@@ -26,24 +26,23 @@ def _run_gate(
     branch: str,
     head: str = HEAD,
     body: str = "",
+    require_receipt: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     body_path = tmp_path / "body.md"
     body_path.write_text(body, encoding="utf-8")
-    return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--branch",
-            branch,
-            "--head",
-            head,
-            "--body-file",
-            str(body_path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    cmd = [
+        sys.executable,
+        str(SCRIPT),
+        "--branch",
+        branch,
+        "--head",
+        head,
+        "--body-file",
+        str(body_path),
+    ]
+    if require_receipt:
+        cmd.append("--require-receipt")
+    return subprocess.run(cmd, text=True, capture_output=True, check=False)
 
 
 def _valid_body(*, head: str = HEAD) -> str:
@@ -57,6 +56,23 @@ def _valid_body(*, head: str = HEAD) -> str:
 
 def test_non_drain_branch_preserves_existing_enrollment(tmp_path: Path) -> None:
     completed = _run_gate(tmp_path, branch="fix/ordinary")
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+def test_require_receipt_denies_ordinary_branch_without_receipt(tmp_path: Path) -> None:
+    # Gate-defining file edits force the receipt regardless of branch name.
+    completed = _run_gate(tmp_path, branch="fix/ordinary", require_receipt=True)
+
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "deny"
+
+
+def test_require_receipt_allows_ordinary_branch_with_receipt(tmp_path: Path) -> None:
+    completed = _run_gate(
+        tmp_path, branch="fix/ordinary", body=_valid_body(), require_receipt=True
+    )
 
     assert completed.returncode == 0
     assert completed.stdout.strip() == "allow"

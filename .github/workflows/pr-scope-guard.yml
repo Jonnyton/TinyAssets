@@ -70,6 +70,9 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         shell: bash
         run: |
           set -euo pipefail
@@ -88,7 +91,7 @@ jobs:
           # can rewrite the thing judging it while keeping the check name green.
           # Workflow files were already covered; without these two entries the
           # same neutering could be done one directory over, undeclared.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|deploy/|Dockerfile$|\.dockerignore$)'
+          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
@@ -121,6 +124,54 @@ jobs:
           fi
           HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          # The files below DEFINE the required-tests gate (and this guard's
+          # own receipt checker). The gate executes the PR's checkout, so a PR
+          # editing them can neuter the check while its name stays green. A
+          # label is a declaration, not authorization — editing these demands
+          # the same exact-head review receipt drain PRs carry (Codex gate
+          # review 2026-08-02, finding 2). This runs from the TRUSTED base
+          # checkout, so a PR cannot weaken the rule that judges it.
+          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
+          GATE_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$GATE_RE" || true)"
+
+          # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
+          # itself forces (stale quarantine entries fail the run) and only
+          # tightens the ratchet. ADDING a quarantine line is the bypass
+          # direction and keeps the receipt requirement. Fail closed if the
+          # patch cannot be read.
+          if [ "$GATE_HITS" = ".github/known-failing-tests.txt" ]; then
+            if LEDGER_PATCH="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
+                --jq '.[] | select(.filename==".github/known-failing-tests.txt") | .patch' 2>/dev/null)"; then
+              ADDED="$(printf '%s\n' "$LEDGER_PATCH" | grep -E '^\+[^+]' | grep -vE '^\+\s*(#|$)' || true)"
+              if [ -z "$ADDED" ]; then
+                echo "scope guard: ledger deletion-only edit — receipt not required"
+                GATE_HITS=""
+              fi
+            fi
+          fi
+
+          if [ -n "$GATE_HITS" ]; then
+            printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
+            if ! python scripts/drain_review_gate.py \
+                --branch "${HEAD_REF}" \
+                --head "${HEAD_OID}" \
+                --body-file "$RUNNER_TEMP/pr-body-gate.md" \
+                --require-receipt; then
+              {
+                echo "### PR scope guard"
+                echo ""
+                echo "**Blocked — this PR edits the required-tests gate itself:**"
+                printf '%s\n' "$GATE_HITS" | sed 's/^/- `/; s/$/`/'
+                echo ""
+                echo "Gate-defining files need an exact-head review receipt in the PR body"
+                echo "(Drain-Review-Verdict: APPROVE / Drain-Review-Head: <head sha> /"
+                echo "Drain-Review-Artifact: <path-or-url>). Re-stamp after every push."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "scope guard: BLOCKED — gate-defining files without exact-head review receipt"
+              exit 1
+            fi
+          fi
 
           echo "### PR scope guard" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
