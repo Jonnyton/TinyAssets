@@ -145,6 +145,26 @@ center of the first demonstration. Coding agents, OpenClaw-like operators,
 Hermes-like assistants, and foreign imports remain later community
 compositions over exactly the same pipeline.
 
+## Current-main owner audit
+
+Re-audited 2026-08-01 against base `11657461`. “Missing” means no admitted
+OpenSpec delivery owner or production API exists; this coordination root does
+not silently claim that surface.
+
+| Concern | Current owner / API | Current handoff state |
+|---|---|---|
+| Definition, N-parent remix, private binding | `universe-custom-agents`; `tinyassets/custom_agents.py`; `tinyassets/api/custom_agents.py` | Domain/API landed; final public, rendered, cross-user, and organic evidence remains. |
+| Canonical interchange/export | `agent-interchange-pipeline`; `tinyassets/agent_interchange.py` | Core and live single-user proof landed; real other-creator blend and organic evidence remain. |
+| Runtime manifest, component/plan compilation, grants, principal | `activate-custom-agent-runtime-core`; `tinyassets/agent_runtime.py`, `agent_runtime_compiler.py`, `agent_runtime_plan_compiler.py`, `agent_runtime_grants.py`, `agent_runtime_principal.py` | Immutable dark seams landed; delegated invocation, recovery, health, load, review, and foldback remain under the active cloud owner. |
+| Activation, continuation, provider authority | `activate-main-universe-spec-drain`, `harden-background-provider-execution-authority`, and runtime-core; `tinyassets/user_owned_cloud_automation.py`, `cloud_automation_continuation.py`, `provider_work_authority.py` plus their storage modules | Actively owned by `codex-gpt5-desktop-cloud`; no app/workflow successor may overlap or infer completion. |
+| Outbound connection/effect authority | `outbound-boundary-layer`; `ConnectionLedger` / `ScopedConnectionProxy` in `tinyassets/storage/outbound_connections.py`; `execute_replay_safe_effect` in `tinyassets/effectors/outbound_boundary.py` | Connection grants, caps, and replay-safe non-value effects are built dark; final verification/foldback remains. |
+| Authenticated app ingress/inbox | `outbound-boundary-layer` tasks 4.1-4.2 are the nearest declared owner | Durable generic webhook/email inbox admission is unbuilt; no Slack signature verifier, app-event envelope, or connected claim may be inferred. |
+| Slack organization/install/member mapping | **Missing owner and API** | Admit a narrow organization-authority change and exact handoff before `connect-custom-agent-app-conversations`. |
+| Interlocutor authorization and voice | `reconcile-universe-personification-relay`; `tinyassets/api/interlocutor.py` | Tier binding and pre-assembly filtering exist, but production conversation is founder-only and outbound speaking tasks 6.4/6.5/6.9 remain open. |
+| Private conversation custody | **Missing owner and store** | Select a user-chosen custody mode, retention/deletion contract, and narrow delivery owner before app conversation implementation. |
+| Workflow mutation/evaluation authority | `harden-branch-access-authority`; future run/evaluation/adjacent successors; `engine-os-sandbox` for tenant code | Branch repairs are incomplete; run/evaluation/adjacent successors are not admitted; tenant code remains blocked. |
+| Canonical control and integrated live proof | Future `expose-custom-agent-runtime-control` and `prove-custom-agent-runtime-live` | Not admitted until the underlying behavior slices land; they add no product semantics. |
+
 ## Risks / Trade-offs
 
 - **[A broad agent can become an authority amplifier]** → Derive a narrow runtime principal and re-check live grants at every privileged transition.
