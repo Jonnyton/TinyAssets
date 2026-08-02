@@ -6,7 +6,6 @@
   <url><loc>https://tinyassets.io/host</loc><priority>0.8</priority><changefreq>monthly</changefreq></url>
   <url><loc>https://tinyassets.io/wiki</loc><priority>0.8</priority><changefreq>daily</changefreq></url>
   <url><loc>https://tinyassets.io/graph</loc><priority>0.7</priority><changefreq>daily</changefreq></url>
-  <url><loc>https://tinyassets.io/patch-loop</loc><priority>0.7</priority><changefreq>daily</changefreq></url>
   <url><loc>https://tinyassets.io/soul</loc><priority>0.8</priority><changefreq>monthly</changefreq></url>
   <url><loc>https://tinyassets.io/fine-print</loc><priority>0.65</priority><changefreq>daily</changefreq></url>
   <url><loc>https://tinyassets.io/alliance</loc><priority>0.6</priority><changefreq>monthly</changefreq></url>

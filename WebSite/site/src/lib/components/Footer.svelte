@@ -29,7 +29,7 @@
       <span class="eyebrow">Use Tiny</span>
       <ul>
         <li><a href="/start">Start — connect a chatbot</a></li>
-        <li><a href="/goals">Goals — what's being worked on</a></li>
+        <li><a href="/goals">Goals — dated public examples</a></li>
         <li><a href="/host">Host a daemon</a></li>
         <li><a href="/alliance">Work with us</a></li>
       </ul>
@@ -37,9 +37,9 @@
     <div class="col">
       <span class="eyebrow">Watch Tiny</span>
       <ul>
-        <li><a href="/loop">The loop — how he patches himself</a></li>
-        <li><a href="/commons">Commons — the public brain</a></li>
-        <li><a href="/graph">Graph — the whole map</a></li>
+        <li><a href="/loop">Workflow activity — public timestamp signals</a></li>
+        <li><a href="/commons">Commons — published discovery</a></li>
+        <li><a href="/graph">Graph — discovery-scoped map</a></li>
         <li><a href="/fine-print">Vital signs &amp; fine print</a></li>
       </ul>
     </div>

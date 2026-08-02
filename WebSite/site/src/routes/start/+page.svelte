@@ -45,13 +45,13 @@
   onMount(() => { void refreshPulse(); });
 
   // ── Six persona starter prompts — each copyable, each works today
-  // via the universe / goals / wiki tools. ──
+  // through public discovery or user-authorized composition tools. ──
   type Prompt = { persona: string; flavor: string; text: string };
   const PROMPTS: Prompt[] = [
     {
       persona: 'The researcher',
       flavor: 'orient first',
-      text: 'Tiny: inspect my universe and show me what goals exist.'
+      text: 'Browse the public commons for research workflows I can inspect, copy, and remix.'
     },
     {
       persona: 'The maker',
@@ -141,8 +141,8 @@
             <span class="pulse__sub ev">deployed {fmtRel(vitals.deployedAt)}{#if vitals.gitSha}&nbsp;· {vitals.gitSha}{/if}</span>
           {/if}
           <span class="pulse__row pulse__row--quiet">
-            <span class="dot" class:live={vitals.loopAwake} class:idle={!vitals.loopAwake} aria-hidden="true"></span>
-            <span class="pulse__k">{vitals.loopAwake ? 'loop awake' : 'loop asleep'}</span>
+            <span class="dot" class:live={vitals.workflowActive} class:idle={!vitals.workflowActive} aria-hidden="true"></span>
+            <span class="pulse__k">{vitals.workflowActive ? 'recent workflow activity' : 'no recent workflow activity'}</span>
           </span>
           <span class="pulse__stamp ev">
             read {fmtRel(vitals.fetchedAt)}
@@ -264,8 +264,8 @@
     <h2 id="prompts-title">Bring a first sentence.</h2>
     <p class="prompts__lede voice">
       — connected and not sure what to ask? Here are six openers, one per
-      kind of visitor. Each works today through my universe, goals, and
-      commons tools. Swap the bracketed bits for your own.
+      kind of visitor. Each uses public discovery or asks you to compose
+      user-owned work. Swap the bracketed bits for your own.
     </p>
 
     <ul class="prompts">
@@ -288,9 +288,9 @@
       {/each}
     </ul>
     <p class="prompts__foot">
-      Wondering what a "goal" or the "commons" is? Open the live
-      <a href="/goals">goals board</a> — it reads the real list straight from
-      the engine.
+      Wondering what a "goal" or the "commons" is? The
+      <a href="/goals">goals board</a> shows explicitly public examples from a
+      dated checked-in snapshot.
     </p>
   </div>
 </section>
@@ -310,7 +310,7 @@
       <article class="oss__card">
         <h3 class="oss__h">Clone the repo</h3>
         <p class="oss__p">
-          Read the engine, the loop, and every workflow definition. It's all
+          Read the engine and its public workflow definitions. It's all
           public.
         </p>
         <pre class="oss__pre"><code>git clone {GH_REPO}.git</code></pre>
@@ -336,13 +336,13 @@
     <nav class="close__cards">
       <a class="close__card" href="/goals">
         <span class="close__k eyebrow">the goals board</span>
-        <strong>See what's already running →</strong>
-        <span class="close__sub">live public goals, each with its outcome ladder.</span>
+        <strong>Browse published goal examples →</strong>
+        <span class="close__sub">A dated public snapshot, with outcome ladders where evidence is included.</span>
       </a>
       <a class="close__card" href="/loop">
-        <span class="close__k eyebrow">the patch loop</span>
-        <strong>Watch how it maintains itself →</strong>
-        <span class="close__sub">friction becomes a patch request, a real PR, a release.</span>
+        <span class="close__k eyebrow">workflow activity</span>
+        <strong>See public user-authored work →</strong>
+        <span class="close__sub">live public signals, labelled with source and read time.</span>
       </a>
     </nav>
   </div>

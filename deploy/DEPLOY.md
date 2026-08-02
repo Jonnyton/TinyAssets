@@ -79,6 +79,7 @@ end-state is already reached. Expected output ends with:
 
 Next steps (host action required):
   1. Fill in secrets: sudo nano /etc/tinyassets/env
+  2. Generate the daemon-only agent interchange key (Step 3 below)
   ...
 ```
 
@@ -101,14 +102,28 @@ documents each):
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → TinyAssets → Client ID. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
 | `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
+| `BACKUP_DEST` | Optional until offsite backup is provisioned; a root-configured rclone destination such as `storagebox:tinyassets-backups`. |
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
+
+Generate a unique daemon-only agent interchange key without printing it to the
+terminal. This writes canonical single-line base64 for 48 random bytes:
+
+```bash
+sudo sh -c 'umask 027; key=$(openssl rand -base64 48 | tr -d "\n"); printf "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=%s\n" "$key" > /etc/tinyassets/agent-interchange.env; chown root:tinyassets /etc/tinyassets/agent-interchange.env; chmod 640 /etc/tinyassets/agent-interchange.env'
+```
+
+The separate file is injected only into the daemon container. Replace the key
+and restart to rotate it. Deleting a repository secret merely blocks automated
+deploys; normal revocation rotates and deploys, while emergency revocation
+stops the daemon before removing this protected file.
 
 Permissions check:
 
 ```bash
-ls -la /etc/tinyassets/env
+ls -la /etc/tinyassets/env /etc/tinyassets/agent-interchange.env
 # -rw-r----- 1 root tinyassets ... env
+# -rw-r----- 1 root tinyassets ... agent-interchange.env
 ```
 
 If ownership/mode differs, re-run the bootstrap — it resets to
@@ -307,22 +322,23 @@ Check next fire: `sudo systemctl list-timers tinyassets-watchdog.timer`.
 ## Row J — State backup (installed by bootstrap)
 
 `hetzner-bootstrap.sh` installs a nightly backup of the `tinyassets-data`
-named Docker volume to Hetzner Storage Box. Bootstrap enables the
-timer unconditionally; if Storage Box creds are blank, `backup.sh`
+named Docker volume to the configured remote destination. Bootstrap enables the
+timer unconditionally; if `BACKUP_DEST` is blank, `backup.sh`
 exits 1 with a clear message (so ops sees the wiring but can defer
-the Storage Box provisioning).
+remote provisioning).
 
 - **Timer:** `tinyassets-backup.timer` fires nightly at 03:00 UTC.
-- **Script:** `deploy/backup.sh` tars the volume → `zstd` → `rclone` to `storagebox:tinyassets-backups/tinyassets-data-<ts>.tar.zst`.
-- **Retention:** 7 daily + 4 weekly (override via `BACKUP_RETAIN_*` env vars).
-- **Host action needed:** provision a Hetzner Storage Box (BX11 recommended, ~€1/mo), create a dedicated subuser scoped to `/tinyassets-backups/`, fill `STORAGEBOX_HOST` / `STORAGEBOX_USER` / `STORAGEBOX_PASS` in `/etc/tinyassets/env`, `sudo systemctl restart tinyassets-backup.timer`.
+- **Script:** `deploy/backup.sh` creates strict brain and best-effort full-volume `.tar.gz` archives, then uploads them with `rclone`.
+- **Retention:** 7 daily + 4 weekly + 6 monthly (override via `BACKUP_RETAIN_*` env vars).
+- **Host action needed:** configure an rclone remote as root, set its destination in `/etc/tinyassets/env` as `BACKUP_DEST=<remote>:<path>`, then manually run the backup service once.
 
 Storage Box provisioning (host does this when ready):
 1. Hetzner Cloud console → Storage Boxes → Add → BX11 (100 GB, ~€1/mo).
 2. Create subuser scoped to `/tinyassets-backups/`. Copy the SFTP host + subuser credentials.
-3. `sudo nano /etc/tinyassets/env` → fill in the 3 STORAGEBOX_* vars.
-4. Manually trigger first backup to verify: `sudo systemctl start tinyassets-backup.service && sudo journalctl -u tinyassets-backup -n 50`.
-5. On success, 03:00 UTC nightly cadence takes over.
+3. Run `sudo rclone config` and create a remote named `storagebox` with those credentials.
+4. Set `BACKUP_DEST=storagebox:tinyassets-backups` in `/etc/tinyassets/env`.
+5. Manually trigger first backup to verify: `sudo systemctl start tinyassets-backup.service && sudo journalctl -u tinyassets-backup -n 50`.
+6. On success, 03:00 UTC nightly cadence takes over.
 
 **Restore runbook:** `deploy/RESTORE.md` covers full-volume restore
 from a specific tarball. Estimated 5-15 min depending on archive size.

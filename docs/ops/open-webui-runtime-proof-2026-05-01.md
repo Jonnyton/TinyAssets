@@ -1,5 +1,10 @@
 # Open WebUI Runtime Proof - TinyAssets MCP Directory
 
+> **SUPERSEDED / HISTORICAL — DO NOT REUSE THIS CONFIGURATION.** This proof
+> records the retired `/mcp-directory` product. New Open WebUI proof must use
+> exact name `TinyAssets` at `https://tinyassets.io/mcp`; do not use public
+> `get_status` until safe status projection lands.
+
 Date: 2026-05-01
 Host: Open WebUI
 Host version: 0.9.2

@@ -1,6 +1,6 @@
 ---
 name: peer-agents
-description: Dispatch a task to the Claude Code or Codex CLI as a subprocess peer agent on that subscription's budget. Use for opposite-provider (cross-family) review per AGENTS.md, second opinions from another model family, parallel independent tasks, or offloading a long grind (research, refactor, test-fixing) to Claude/Codex while you keep working. Works from any provider session (Kimi, Claude Code, Codex, Cursor).
+description: Use when dispatching a bounded task or independent cross-family review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use implementation-precedent-scout to define the research role and return contract.
 ---
 
 # peer-agents
@@ -47,6 +47,9 @@ Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|
 - **Cross-family review is the AGENTS.md rule:** research-derived findings and non-trivial changes need opposite-family review. If you are Kimi/Claude, dispatch review to codex; if you are Codex/OpenAI, dispatch to claude.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree. `--effort low` for small tasks.
+
+- **External implementation examples:** `implementation-precedent-scout` owns the focused brief, enforced read-only role, source map, and direct-to-coder return. `peer-agents` may run that role but does not replace its research contract.
+- **Internal repository localization:** use the harness's read-only codebase explorer or a focused read task; do not invoke the external precedent workflow.
 
 ## Notes
 

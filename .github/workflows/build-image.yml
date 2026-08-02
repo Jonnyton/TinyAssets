@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: build-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   REGISTRY: ghcr.io

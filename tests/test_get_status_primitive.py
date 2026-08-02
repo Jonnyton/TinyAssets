@@ -35,20 +35,32 @@ def test_get_status_tool_is_registered() -> None:
 def test_get_status_tool_is_safe_to_call() -> None:
     """#88: get_status stays safe to call on any turn without consent gates.
 
-    First-contact provisioning (host decision 2026-07-15) means it is no
-    longer strictly read-only — an authenticated founder's first call
-    auto-creates their home universe — so `readOnlyHint` is now False. But it
-    stays idempotent (repeated calls converge to the same home) and
-    non-destructive, so the chatbot/gateway can still call it freely. The
-    pure read-only path is `read_graph target=status`.
+    Status is observational evidence. First-contact provisioning belongs to
+    the authenticated conversation entry path, so the MCP metadata must be
+    genuinely read-only as well as idempotent and non-destructive.
     """
     tool = next(t for t in _list_tools() if t.name == "get_status")
     # FastMCP may surface ToolAnnotations via tool.annotations.
     ann = getattr(tool, "annotations", None)
     if ann is not None:
-        assert getattr(ann, "readOnlyHint", None) is False
+        assert getattr(ann, "readOnlyHint", None) is True
         assert getattr(ann, "idempotentHint", None) is True
         assert getattr(ann, "destructiveHint", None) is False
+
+
+def test_first_contact_tool_descriptions_match_the_opening_instruction() -> None:
+    tools = {tool.name: tool for tool in _list_tools()}
+    status_description = " ".join(
+        (tools["get_status"].description or "").lower().split()
+    )
+    converse_description = " ".join(
+        (tools["converse"].description or "").lower().split()
+    )
+
+    assert "pure, idempotent read" in status_description
+    assert "never creates or repairs" in status_description
+    assert "founder's home universe" in converse_description
+    assert "creates and binds a blank seed" in converse_description
 
 
 def test_get_status_returns_required_shape() -> None:
@@ -526,10 +538,10 @@ def test_llm_endpoint_bound_empty_xai_key_falls_through(monkeypatch) -> None:
 
 
 def test_get_status_schema_version_is_present() -> None:
-    """schema_version must be present and equal to 1 (first versioned contract)."""
+    """The token-safe request-identity contract is status schema version 2."""
     payload = json.loads(get_status())
     assert "schema_version" in payload
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
 
 
 def test_get_status_schema_contract() -> None:
@@ -547,6 +559,7 @@ def test_get_status_schema_contract() -> None:
         "evidence_caveats",
         "caveats",
         "actionable_next_steps",
+        "request_identity",
         "session_boundary",
         "storage_utilization",
         "per_provider_cooldown_remaining",
@@ -568,7 +581,7 @@ def test_get_status_schema_contract() -> None:
 
     required_session_boundary = {
         "prior_session_context_available",
-        "account_user",
+        "principal_fingerprint",
         "last_session_ts",
         "note",
     }
@@ -586,11 +599,15 @@ def test_get_status_session_boundary_no_prior_when_empty_log(tmp_path) -> None:
     sb = payload["session_boundary"]
     assert sb["prior_session_context_available"] is False
     assert sb["last_session_ts"] is None
-    assert "account_user" in sb and sb["account_user"]
+    assert sb["principal_fingerprint"] == payload["request_identity"][
+        "principal_fingerprint"
+    ]
 
 
-def test_get_status_session_boundary_prior_when_log_has_user(tmp_path, monkeypatch) -> None:
-    """Universe with activity for current user returns prior_session_context_available=true."""
+def test_get_status_session_boundary_does_not_use_environment_actor(
+    tmp_path, monkeypatch
+) -> None:
+    """Ambient host identity cannot become request or prior-session identity."""
     user = "test_session_user"
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -602,13 +619,17 @@ def test_get_status_session_boundary_prior_when_log_has_user(tmp_path, monkeypat
     )
     payload = json.loads(get_status(universe_id="active_sb_universe"))
     sb = payload["session_boundary"]
-    assert sb["prior_session_context_available"] is True
-    assert sb["last_session_ts"] is not None
-    assert sb["account_user"] == user
+    assert sb["prior_session_context_available"] is False
+    assert sb["last_session_ts"] is None
+    assert "account_user" not in sb
 
 
-def test_get_status_session_boundary_account_user_matches_env(monkeypatch) -> None:
-    """account_user field must reflect UNIVERSE_SERVER_USER env var."""
+def test_get_status_request_identity_ignores_environment_actor(monkeypatch) -> None:
+    """The status identity is request-local and never falls back to host env."""
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "my_user")
     payload = json.loads(get_status())
-    assert payload["session_boundary"]["account_user"] == "my_user"
+    assert payload["request_identity"]["bearer_present"] is False
+    assert payload["request_identity"]["principal_fingerprint"].startswith(
+        "v1:anonymous:"
+    )
+    assert "my_user" not in json.dumps(payload, sort_keys=True)

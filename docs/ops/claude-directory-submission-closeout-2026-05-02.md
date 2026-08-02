@@ -1,5 +1,11 @@
 # Claude Directory Submission Closeout - 2026-05-02
 
+> **SUPERSEDED / HISTORICAL — DO NOT EXECUTE.** This is a preserved
+> 2026-05-02 closeout snapshot. The sole remote endpoint is
+> `https://tinyassets.io/mcp`; `/mcp-directory*` is retired to an ordinary 404.
+> Rebuild and re-prove any Claude submission from the active
+> `reconcile-external-connector-manifests` OpenSpec change.
+
 Purpose: track what is ready for Anthropic's Connectors Directory review and
 what still requires live Claude/UI or host action-time approval.
 

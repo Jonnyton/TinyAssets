@@ -110,11 +110,8 @@ export default function BuildClient() {
             You can improve me without ever cloning a line of code — just talk to me
             through your chatbot and describe what&apos;s rough. Or you can go straight at
             the engine through the repository, with the tests and the architecture in
-            front of you. Both doors open onto the same room: a{" "}
-            <Term def="The self-patching cycle: a request becomes an investigation, runs through automated checks, and only ships after review.">loop</Term>
-            {" "}with evidence gates, a{" "}
-            <Term def="A second AI from a different model family re-checks the work, so no one model both writes and approves a change.">cross-family review</Term>,
-            and a <em>human key</em> that has to turn before anything merges.
+            front of you. Filing creates a public record; contributing code is an
+            explicit repository workflow with tests, review, and a human merge key.
           </p>
           <p className="cover__naming">
             The being is <strong>Tiny</strong>; the engine is <strong>TinyAssets</strong>.
@@ -157,16 +154,16 @@ export default function BuildClient() {
             <li className="step">
               <span className="step__n">04</span>
               <div className="step__body">
-                <h3 className="step__h">It enters the loop</h3>
-                <p className="step__p">Your request becomes an investigation, runs through evidence gates, and can surface as a real GitHub PR.</p>
-                <a className="step__cta" href="/loop">watch the loop →</a>
+                <h3 className="step__h">It becomes a public record</h3>
+                <p className="step__p">Filing records the request and its provenance. It does not silently start an investigation, writer, or release path.</p>
+                <a className="step__cta" href="/commons">browse the commons →</a>
               </div>
             </li>
             <li className="step">
               <span className="step__n">05</span>
               <div className="step__body">
-                <h3 className="step__h">Watch it become a change</h3>
-                <p className="step__p">From investigation to pull request to release, the whole trail is public — successes and failures alike.</p>
+                <h3 className="step__h">Choose the next action explicitly</h3>
+                <p className="step__p">Discuss it, open a pull request, or build a user-authored workflow. Each path has its own authority and evidence.</p>
               </div>
             </li>
           </ol>
@@ -184,7 +181,7 @@ export default function BuildClient() {
           <h2 id="door2-title">Build me through the repository.</h2>
           <p className="voice door__lede">
             Prefer to work in code directly? The engine is open source. Clone it,
-            install it, and the same gates apply to your branch as to mine.
+            install it, and use the repository&apos;s documented review gates.
           </p>
           <ol className="repo-steps">
             {REPO_STEPS.map((s) => (
@@ -281,9 +278,9 @@ export default function BuildClient() {
               <span className="close__sub">read the public brain — proposals, notes, and decisions, all forkable.</span>
             </a>
             <a className="close__card" href="/graph">
-              <span className="close__k eyebrow">the map of everything</span>
-              <strong>See the whole graph.</strong>
-              <span className="close__sub">how every goal, workflow, and commons page connects.</span>
+              <span className="close__k eyebrow">the public discovery map</span>
+              <strong>See the public graph.</strong>
+              <span className="close__sub">how published goals and discovery pages connect.</span>
             </a>
           </div>
         </div>

@@ -48,6 +48,99 @@ OUTCOME_TYPES = frozenset({
     "custom",
 })
 
+#: How strong the evidence behind an outcome claim is. This registry owns the
+#: vocabulary; ``tinyassets/handoffs/models.py`` imports it rather than keeping a
+#: parallel list, so the Python guard and the SQL CHECK below cannot drift.
+#:
+#: The values preserve the exact strength of the evidence: transport submission,
+#: destination acceptance, and later external verification are deliberately
+#: distinct. They do not silently mirror a handoff lifecycle row; each value is
+#: appended only from its own authenticated evidence source.
+OUTCOME_EVIDENCE_LEVELS = frozenset({
+    "user_attested",
+    "submitted",
+    "accepted",
+    "externally_verified",
+    "disputed",
+    "rejected",
+    "orphaned",
+    "retracted",
+})
+
+_EVIDENCE_LEVEL_SQL_LIST = ", ".join(
+    f"'{level}'" for level in sorted(OUTCOME_EVIDENCE_LEVELS)
+)
+
+# The CHECK lists are substituted rather than f-string interpolated: this DDL
+# contains JSON defaults like '{}' that an f-string would try to parse.
+_OUTCOME_EVIDENCE_SCHEMA_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS outcome_evidence (
+    outcome_id              TEXT PRIMARY KEY
+                                REFERENCES outcome_event(outcome_id),
+    account_id              TEXT NOT NULL,
+    branch_def_id           TEXT NOT NULL DEFAULT '',
+    branch_version_id       TEXT NOT NULL DEFAULT '',
+    content_hash            TEXT NOT NULL DEFAULT '',
+    run_id                  TEXT NOT NULL DEFAULT '',
+    output_field            TEXT NOT NULL DEFAULT '',
+    output_sha256           TEXT NOT NULL DEFAULT '',
+    handoff_id              TEXT NOT NULL DEFAULT '',
+    effect_key              TEXT NOT NULL DEFAULT '',
+    sink                    TEXT NOT NULL DEFAULT '',
+    outcome_kind            TEXT NOT NULL,
+    evidence_source         TEXT NOT NULL,
+    evidence_level          TEXT NOT NULL
+                                CHECK (evidence_level IN (--EVIDENCE-LEVELS--)),
+    external_id             TEXT NOT NULL DEFAULT '',
+    normalized_external_ref TEXT NOT NULL DEFAULT '',
+    attested_by             TEXT NOT NULL DEFAULT '',
+    recorded_at             TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_account
+    ON outcome_evidence(account_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_artifact
+    ON outcome_evidence(normalized_external_ref);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_handoff
+    ON outcome_evidence(handoff_id);
+CREATE INDEX IF NOT EXISTS idx_outcome_evidence_state
+    ON outcome_evidence(evidence_level, recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS outcome_evidence_transition (
+    transition_id   TEXT PRIMARY KEY,
+    outcome_id      TEXT NOT NULL REFERENCES outcome_evidence(outcome_id),
+    seq             INTEGER NOT NULL,
+    from_level      TEXT NOT NULL DEFAULT '',
+    to_level        TEXT NOT NULL
+                        CHECK (to_level IN (--EVIDENCE-LEVELS--)),
+    evidence_source TEXT NOT NULL,
+    actor_id        TEXT NOT NULL DEFAULT '',
+    evidence_json   TEXT NOT NULL DEFAULT '{}',
+    recorded_at     TEXT NOT NULL,
+    UNIQUE (outcome_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS outcome_artifact (
+    artifact_ref  TEXT PRIMARY KEY,
+    outcome_kind  TEXT NOT NULL,
+    external_id   TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS outcome_artifact_source (
+    artifact_ref   TEXT NOT NULL REFERENCES outcome_artifact(artifact_ref),
+    outcome_id     TEXT NOT NULL REFERENCES outcome_evidence(outcome_id),
+    contributed_by TEXT NOT NULL DEFAULT '',
+    recorded_at    TEXT NOT NULL,
+    PRIMARY KEY (artifact_ref, outcome_id)
+);
+"""
+
+OUTCOME_EVIDENCE_SCHEMA = _OUTCOME_EVIDENCE_SCHEMA_TEMPLATE.replace(
+    "--EVIDENCE-LEVELS--", _EVIDENCE_LEVEL_SQL_LIST
+)
+
 # ── Dataclass ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -94,6 +187,93 @@ class OutcomeEvent:
 
 # ── Migration ─────────────────────────────────────────────────────────────────
 
+def migrate_legacy_outcome_evidence(  # type: ignore[no-untyped-def]
+    conn, outcome_id: str | None = None
+) -> None:
+    """Give legacy outcome rows their append-only ``user_attested`` head."""
+    where = "WHERE outcome_id = ?" if outcome_id else ""
+    params = (outcome_id,) if outcome_id else ()
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO outcome_evidence (
+            outcome_id, account_id, run_id, outcome_kind, evidence_source,
+            evidence_level, attested_by, recorded_at, updated_at
+        )
+        SELECT
+            outcome_id, '', run_id, outcome_type, 'legacy_outcome_event',
+            'user_attested', '', recorded_at, recorded_at
+          FROM outcome_event
+          {where}
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO outcome_evidence_transition (
+            transition_id, outcome_id, seq, from_level, to_level,
+            evidence_source, actor_id, evidence_json, recorded_at
+        )
+        SELECT
+            'legacy:' || outcome_id || ':user_attested',
+            outcome_id, 1, '', 'user_attested', 'legacy_outcome_event',
+            '', '{{}}', recorded_at
+          FROM outcome_event
+          {where}
+        """,
+        params,
+    )
+
+
+def record_user_attested_outcome_evidence(  # type: ignore[no-untyped-def]
+    conn,
+    *,
+    outcome_id: str,
+    account_id: str,
+    actor_id: str,
+) -> None:
+    """Add the authenticated initial evidence head for a new outcome event."""
+    account_id = account_id.strip()
+    actor_id = actor_id.strip()
+    if not account_id or not actor_id:
+        raise ValueError("authenticated account and attesting actor are required")
+    conn.execute(
+        """
+        INSERT INTO outcome_evidence (
+            outcome_id, account_id, run_id, outcome_kind, evidence_source,
+            evidence_level, attested_by, recorded_at, updated_at
+        )
+        SELECT
+            outcome_id, ?, run_id, outcome_type, 'user_attestation',
+            'user_attested', ?, recorded_at, recorded_at
+          FROM outcome_event
+         WHERE outcome_id = ?
+        """,
+        (account_id, actor_id, outcome_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO outcome_evidence_transition (
+            transition_id, outcome_id, seq, from_level, to_level,
+            evidence_source, actor_id, evidence_json, recorded_at
+        )
+        SELECT
+            'attestation:' || outcome_id || ':user_attested',
+            outcome_id, 1, '', 'user_attested', 'user_attestation',
+            ?, '{}', recorded_at
+          FROM outcome_event
+         WHERE outcome_id = ?
+        """,
+        (actor_id, outcome_id),
+    )
+
+
 def migrate_outcome_schema(conn) -> None:  # type: ignore[no-untyped-def]
-    """Create outcome tables if absent. Idempotent."""
-    conn.executescript(OUTCOME_SCHEMA)
+    """Create the outcome registry and its evidence extension. Idempotent.
+
+    Existing rows retain their ids and payloads and gain a ``user_attested``
+    evidence head. Their historical schema did not persist the attester, so the
+    actor fields stay empty: ``verified_by`` names a verifier and must not be
+    repurposed as claimant authority.
+    """
+    conn.executescript(OUTCOME_SCHEMA + OUTCOME_EVIDENCE_SCHEMA)
+    migrate_legacy_outcome_evidence(conn)

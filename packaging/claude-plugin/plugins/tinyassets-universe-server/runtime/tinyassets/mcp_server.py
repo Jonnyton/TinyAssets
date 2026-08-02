@@ -426,7 +426,14 @@ _mcp_add_canon = _register_structured_tool(
 
 def main() -> None:
     """Run the MCP server."""
-    mcp.run()
+    from tinyassets.scoped_reset import prepare_service_writer_barrier
+    from tinyassets.storage import data_dir
+
+    writer_barrier = prepare_service_writer_barrier(data_dir())
+    try:
+        mcp.run()
+    finally:
+        writer_barrier.release()
 
 
 if __name__ == "__main__":

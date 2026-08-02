@@ -12,6 +12,14 @@ Each entry records the exact prompt, what it exercises, and the evidence of
 its validation. Use these as reference probes for cutover acceptance, regression
 checks, and new-connector verification.
 
+> **Public-status safety hold (2026-07-24).** Canonical `/mcp` currently
+> returns unredacted operator status. PROBE-002, PROBE-006, and PROBE-008 are
+> retained as historical/internal probe designs but are suspended for public
+> use. Do not run their `get_status`, `activity_log_tail`, or
+> `llm_endpoint_bound` calls through a public or anonymous connector. They may
+> resume only after the `public-status-v1` projection lands, or after an
+> authenticated operator-only replacement is specified and implemented.
+
 ---
 
 ## PROBE-001 — Full-stack smoke (cutover acceptance)
@@ -90,6 +98,9 @@ paper on deep space population — can you walk me through it?
 
 ## PROBE-002 — Layer-2 liveness (minimal)
 
+**Current disposition:** SUSPENDED for public/anonymous use as of 2026-07-24;
+the prompt below is historical and MUST NOT be executed against public `/mcp`.
+
 **Validated:** code-fix landed 2026-04-28 (`_real_browser_probe` reimplemented as `claude_chat ask` subprocess + trace-block parser); still awaits host `--once` smoke + Task Scheduler `TinyAssets-Canary-L2` activation for live status. Freshness check 2026-05-01: `Get-ScheduledTask -TaskName TinyAssets-Canary-L2` returned no task. Original implementation (`lead_browser.navigate` + `claude_chat.send_and_wait`) referenced symbols that never existed — see `docs/design-notes/2026-04-19-layer2-canary-scope.md §Wiring runbook` for the recovery + API contract.
 **Source script:** `scripts/uptime_canary_layer2.py` (canary) + `scripts/claude_chat.py` (subprocess driver — `cmd_ask` is the canonical entry point).
 **Persona:** `uptime_canary` (dedicated automated persona; CDP profile at `C:\Users\Jonathan\.claude-ai-profile`).
@@ -131,9 +142,9 @@ Layer-2 binds to host availability — the persona's CDP profile + browser run o
 
 ---
 
-## PROBE-003 — Wiki gate + read (auto-heal pipeline integrity)
+## PROBE-003 — Wiki write-roundtrip with gate fallback
 
-**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. Scheduled in CI 2026-04-26 — Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 min on the GHA cron alongside the other Layer-1 probes. **Reworked 2026-07-14** after the server-side anonymous-write gate (#1441): the anonymous write-then-read roundtrip is impossible by design, so the probe now asserts the gate itself plus the open read path.
+**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. The Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 minutes. **Upgraded 2026-07-25:** a scoped non-OAuth service token restores persisted write/read evidence for exactly `drafts/notes/uptime-probe.md`. If the CI secret is absent, the probe keeps the post-#1441 anonymous gate-plus-read assertion rather than going red for missing credentials.
 **Source script:** `scripts/wiki_canary.py`
 **Persona:** `wiki-canary` (automated; client name `wiki-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -146,38 +157,41 @@ python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --once --format=gha
 ```
 
-Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=optional`). A dev-mode server (`UNIVERSE_SERVER_AUTH=false`) leaves anonymous writes open by design, so the gate step reds with exit 6 there — that means "server is not auth-gated", not "wiki is down".
+Credentialed mode is selected by `TINYASSETS_WIKI_CANARY_TOKEN`. The same value (minimum 32 UTF-8 bytes) must be installed in the production server environment and the GitHub Actions secret. The credential is not OAuth and grants no identity; it can dispatch only the exact reserved `write_page` request.
+
+No-token fallback applies to auth-gated deployments. A dev-mode server leaves anonymous writes open by design, so the fallback gate assertion is red there.
 
 ### What it exercises
 
 | Layer | What's tested |
 |---|---|
 | System | MCP `initialize` handshake reaches the daemon. |
-| System | Anonymous `write_page` is REJECTED with the `status=rejected` / `auth_required=true` envelope (write gate active). |
-| System | `read_page` returns the persisted canary draft `drafts/notes/uptime-probe.md` verbatim (reads stay open; catches wiki-read / storage-mount breakage, e.g. the readonly-volume class). |
-| User-impact | Auth policy integrity — an anonymous write silently persisting is a security regression; wiki reads staying open keeps discovery/remix live. |
+| System | With the secret present, scoped `write_page` reports exactly `drafts/notes/uptime-probe.md`; the bearer is attached only to this write. |
+| System | Anonymous `read_page` returns the same fresh per-run content marker just written to the reserved draft. |
+| Security | Without the secret, anonymous `write_page` must return pre-dispatch HTTP 401 with a non-empty `WWW-Authenticate` challenge before the persisted read check. |
+| User-impact | Detects wiki write, storage, read, and scoped-auth regressions while preserving anonymous discovery/remix reads. |
 
 ### Green criteria
 
 - Exit code 0.
-- Anonymous `write_page` returns `status=rejected` with `auth_required=true` (no `isError`).
-- `read_page` returns content matching `_CANARY_CONTENT` byte-for-byte.
+- Credentialed mode: `write_page` returns `status=drafted|updated` and the exact reserved path, then anonymous `read_page` contains the same fresh per-run marker.
+- Fallback mode: anonymous `write_page` returns HTTP 401 with a non-empty OAuth challenge, then anonymous `read_page` contains the persisted `_CANARY_CONTENT`.
 
 ### Red signals
 
 - Exit 2 — MCP handshake failed (initialize or session establishment).
-- Exit 6 — write-gate probe failed: anonymous write ACCEPTED (gate regression), `isError=true`, unexpected envelope, or network error.
+- Exit 6 — scoped write rejected, wrong response path/status, present credential invalid, fallback challenge invalid, or write network failure.
 - Exit 7 — wiki read failed or canary draft content mismatched.
 - Exit 99 — unexpected error.
 
 ### Why this probe earns a catalog slot
 
-BUG-028 demonstrated that a slug-normalization bug could silently break bug filing while the Layer-1 MCP handshake stayed green — the read half keeps that class covered. Post-#1441 the write half guards the auth boundary instead: a regression that silently re-opens anonymous writes would otherwise be invisible to every other probe. Known gap: authenticated write-path persistence is NOT exercised — restoring that coverage needs a canary service credential (tracked in `STATUS.md`).
+BUG-028 demonstrated that a slug-normalization bug could silently break wiki writes while the MCP handshake stayed green. The scoped roundtrip now exercises persistence without reopening anonymous writes or minting a general service identity. The fallback still proves the anonymous-write challenge when credential availability is absent.
 
 ### When to use
 
 - After any change to wiki write/read tool handlers, slug normalization, or wiki storage backend.
-- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, or the auth gate (`writes_require_identity` / `write_gate_rejection`).
+- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, scoped canary authorization, or the anonymous-write gate.
 - As a continuous P0 canary alongside PROBE-002.
 
 ---
@@ -187,13 +201,13 @@ BUG-028 demonstrated that a slug-normalization bug could silently break bug fili
 **Validated:** mcp_tool_canary script live since 2026-04-22; closes the gap flagged in canary task #6.
 **Source script:** `scripts/mcp_tool_canary.py`
 **Persona:** `mcp-tool-canary` (automated; client name `mcp-tool-canary/1.0`)
-**Connector URLs under test:** `https://tinyassets.io/mcp` and `https://tinyassets.io/mcp-directory`
+**Connector URL under test:** `https://tinyassets.io/mcp`
 
 ### Invocation
 
 ```
 python scripts/mcp_tool_canary.py
-python scripts/mcp_tool_canary.py --url https://tinyassets.io/mcp-directory
+python scripts/mcp_tool_canary.py --url https://tinyassets.io/mcp
 python scripts/mcp_tool_canary.py --url http://127.0.0.1:8001/mcp
 python scripts/mcp_tool_canary.py --verbose --timeout 20
 ```
@@ -205,7 +219,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 | System | `initialize` handshake (same as PROBE-002). |
 | System | `notifications/initialized` (MCP-protocol mandatory before tool calls). |
 | System | `tools/list` returns a non-empty tools array. |
-| System | `tools/call` for the strongest advertised read-only probe returns valid JSON: legacy `universe action=inspect` requires `universe_id`; directory `get_workflow_status` requires `schema_version`. |
+| System | `tools/call` for the strongest advertised read-only probe returns valid JSON: canonical `read_graph target=status` requires `schema_version`. |
 
 ### Green criteria
 
@@ -225,7 +239,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 ### When to use
 
 - After any code change to `universe_server.py` tool registration or handler bodies.
-- After any deploy that adds/renames/removes MCP tools on either `/mcp` or `/mcp-directory`.
+- After any deploy that adds, renames, or removes MCP tools on canonical `/mcp`.
 - As a continuous Layer-1.5 canary between handshake-only and full chatbot probes.
 
 ---
@@ -280,6 +294,10 @@ PROBE-001/002 prove the daemon answers MCP. PROBE-004 proves a tool handler runs
 ---
 
 ## PROBE-006 — Revert-loop detection (busy-broken pathology)
+
+**Current disposition:** SUSPENDED against public `/mcp` as of 2026-07-24.
+The invocation below is historical/internal evidence only; restore it only
+through an authenticated operator surface or after safe status projection.
 
 **Validated:** registration 2026-04-26 — script live since revert-loop spec landed; spec at `docs/design-notes/2026-04-23-revert-loop-canary-spec.md`. Scheduled in CI as the `revert_loop_probe` step in `.github/workflows/uptime-canary.yml`, runs every 5 min on the GHA cron after handshake + tool canaries pass.
 **Source script:** `scripts/revert_loop_canary.py`
@@ -374,6 +392,10 @@ The 2026-04-19 P0 outage-postmortem (`docs/audits/2026-04-20-public-mcp-outage-p
 ---
 
 ## PROBE-008 — LLM binding freshness canary
+
+**Current disposition:** SUSPENDED against public `/mcp` as of 2026-07-24.
+The workflow description below records historical/internal behavior and is not
+authorization to retrieve operator evidence through an anonymous connector.
 
 **Validated:** registration 2026-04-27 — workflow live since `.github/workflows/llm-binding-canary.yml` landed; runs every 6h from GitHub Actions.
 **Source script:** `scripts/verify_llm_binding.py` (invoked from GHA workflow).

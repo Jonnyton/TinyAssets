@@ -1,7 +1,9 @@
 # LibreChat No-Hosted-Chatbot-Login Pack
 
-Date: 2026-05-01
-Status: verified local Docker proof on 2026-05-01
+Created: 2026-05-01
+Current contract checked: 2026-07-24
+Status: current anonymous-read-only guidance; canonical host proof pending;
+historical Docker proof retained below
 Owner: lead + available provider
 
 This pack is for users who do not want a Claude or ChatGPT account in the
@@ -13,16 +15,22 @@ the claim here is no hosted chatbot login.
 
 - LibreChat supports MCP servers in `librechat.yaml` and through its UI.
 - LibreChat supports `streamable-http` MCP servers by URL.
-- TinyAssets exposes a public Streamable HTTP MCP endpoint at
-  `https://tinyassets.io/mcp-directory`.
-- The full custom-connector endpoint remains `https://tinyassets.io/mcp`, but
-  the directory endpoint is the safer first proof surface because it exposes
-  only 11 narrow tools.
+- TinyAssets has one public Streamable HTTP MCP endpoint:
+  `https://tinyassets.io/mcp`.
+- The public name is exactly `TinyAssets`. Do not add `DEV`, `directory`, or
+  another lifecycle qualifier.
+- Canonical `/mcp` advertises exactly seven tools: `read_graph`, `write_graph`,
+  `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`.
+- A connection without OAuth is **anonymous-read-only**. It may call
+  `read_graph` and `read_page`. Do not expose `get_status` through this pack
+  until the versioned public-status projection is implemented and verified;
+  the current result is unredacted. Mutation, execution, and conversation
+  entry require OAuth and are unsupported by this no-login pack.
 
-Public claim scope: LibreChat `v0.8.5` local Docker proof is verified against
-TinyAssets' directory endpoint. Do not generalize that claim to every LibreChat
-version, hosted deployment, auth mode, model, or write/proposal flow without a
-host-specific proof update.
+Public claim scope: the 2026-05-01 LibreChat `v0.8.5` Docker observation below
+is historical evidence from the retired endpoint. Current support requires a
+fresh proof against canonical `/mcp`. Do not generalize it to another LibreChat
+version, hosted deployment, auth mode, model, or mutation flow.
 
 ## Recommended LibreChat YAML
 
@@ -34,16 +42,16 @@ mcpSettings:
     - "tinyassets.io"
 
 mcpServers:
-  workflow:
+  tinyassets:
     title: "TinyAssets"
-    description: "Directory-safe TinyAssets MCP endpoint"
+    description: "TinyAssets anonymous-read-only MCP endpoint"
     type: "streamable-http"
-    url: "https://tinyassets.io/mcp-directory"
+    url: "https://tinyassets.io/mcp"
     timeout: 30000
     initTimeout: 30000
     serverInstructions: |
-      Use TinyAssets for read-only daemon status, goals, wiki, universe, and run inspection.
-      Only use proposal/write tools when the user explicitly asks for a proposal.
+      Use TinyAssets only for anonymous reads through read_graph and read_page.
+      Do not call write_graph, run_graph, write_page, or converse in this no-login configuration.
 ```
 
 Restart LibreChat after changing `librechat.yaml`.
@@ -53,10 +61,6 @@ Restart LibreChat after changing `librechat.yaml`.
 Use read-only prompts first:
 
 ```text
-Use TinyAssets to check the daemon status and tell me any caveats.
-```
-
-```text
 Use TinyAssets to list available goals.
 ```
 
@@ -64,12 +68,13 @@ Use TinyAssets to list available goals.
 Use TinyAssets to search the TinyAssets wiki for launch risks and summarize the best match.
 ```
 
-Only test write/propose flows after read-only invocation is visible in the chat
-and LibreChat's tool-call behavior is understood for the selected model.
+Do not test write, run, or `converse` flows with this no-login configuration.
+Those calls require an OAuth-capable, authenticated host proof.
 
-## Runtime Proof Checklist
+## Historical Runtime Proof — 2026-05-01
 
-Record all values before claiming support:
+The following table and trace record what was observed on the retired endpoint
+on 2026-05-01. Preserve it as evidence; do not use it as current setup guidance.
 
 | Field | Value |
 |---|---|
@@ -86,11 +91,11 @@ Record all values before claiming support:
 | Screenshot/trace path | `docs/ops/librechat-runtime-proof-2026-05-01.md` |
 | Date/time | 2026-05-01 UTC |
 
-Acceptance criteria:
+Historical acceptance criteria used for that proof:
 
 - LibreChat starts with the TinyAssets MCP server configured.
-- LibreChat reports the TinyAssets MCP server as connected and not requiring
-  OAuth.
+- LibreChat reported the historical TinyAssets MCP server as connected and not
+  requiring OAuth.
 - LibreChat exposes all 11 directory-safe TinyAssets tools.
 - A chat/agent run invokes at least one read-only TinyAssets tool.
 - The visible response matches the tool result enough for a user to trust it.
@@ -107,23 +112,19 @@ Proof trace:
 Run these before and after the LibreChat proof:
 
 ```powershell
-python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp-directory --timeout 15 --verbose
-python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory tools
+python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --timeout 15 --verbose
+python scripts/mcp_probe.py --url https://tinyassets.io/mcp tools
 ```
 
-Expected directory tools:
+Expected canonical tools:
 
-- `get_workflow_status`
-- `list_workflow_universes`
-- `inspect_workflow_universe`
-- `list_workflow_goals`
-- `search_workflow_goals`
-- `get_workflow_goal`
-- `search_workflow_wiki`
-- `read_workflow_wiki_page`
-- `list_workflow_runs`
-- `propose_workflow_goal`
-- `submit_workflow_request`
+- Anonymous reads approved for this pack: `read_graph`, `read_page`
+- OAuth-required mutation/costly work: `write_graph`, `run_graph`,
+  `write_page`, `converse`
+
+The server advertises all seven. A no-login proof passes only through the two
+approved anonymous-read handles; it must not expose unredacted `get_status` or
+claim mutation parity.
 
 ## Troubleshooting Notes
 
@@ -131,7 +132,8 @@ Expected directory tools:
   `tinyassets.io`.
 - If chat answers from memory without a tool call, verify the chat request or
   selected UI state actually attaches the MCP server. The proof path used
-  `ephemeralAgent.mcp = ["workflow"]`; a raw request `tools` list alone did not
+  `ephemeralAgent.mcp = ["workflow"]`; that identifier is preserved here only
+  as historical evidence. A raw request `tools` list alone did not
   match the normal LibreChat UI path during this proof.
 - If the model writes a tool call in text instead of executing it, switch to a
   model with function/tool-call support and repeat the proof.
@@ -145,4 +147,5 @@ Fresh docs checked on 2026-05-01:
 
 - LibreChat MCP docs: `https://www.librechat.ai/docs/features/mcp`
 - TinyAssets proof registry: `docs/ops/mcp-host-proof-registry.md`
-- TinyAssets directory queue: `docs/ops/mcp-directory-rollout-action-queue.md`
+- Current connector reconciliation:
+  `openspec/changes/reconcile-external-connector-manifests/`

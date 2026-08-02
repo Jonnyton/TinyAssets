@@ -1,18 +1,17 @@
 # Deploy WebSite/site (SvelteKit static) to GitHub Pages.
 # Custom domain: tinyassets.io (via static/CNAME). Cloudflare fronts.
 #
-# AUTO-DEPLOY DISABLED at the React cutover (2026-06-24): the live site is now
-# the React build (WebSite/site-react via deploy-site-react.yml). The push and
-# 6h-cron triggers are removed so the Svelte build can never redeploy over React
-# (both share the `pages` concurrency group / github-pages environment).
-# Kept dispatch-only for ROLLBACK: run this manually to put the Svelte site back.
+# RETAINED SVELTE ROLLBACK ONLY; dispatch-only. The current production source is
+# WebSite/site-react and publishes manually through deploy-site-react.yml. Never
+# add push or schedule triggers here: both workflows share the `pages`
+# concurrency group / github-pages environment.
 name: deploy-site
 
 on:
   workflow_dispatch:
     inputs:
       refresh_snapshot:
-        description: 'Force re-bake the MCP snapshot before build'
+        description: 'Rollback only — DO NOT USE until read_page is full-scope/paginated and retired live records are dispositioned (retire-cheat-loop 5.3)'
         required: false
         default: 'false'
         type: choice
@@ -46,17 +45,17 @@ jobs:
       - name: Install
         run: npm ci
 
-      # Re-bake the snapshot on the 6h cron AND on manual dispatch with the toggle.
-      # CI always does a COMPLETE (full) bake — SNAPSHOT_FULL=1 — so the live snapshot
-      # is always complete and never accumulates incremental-merge drift. (~20-30 min,
-      # fine for CI; reads are public so it needs no secret.) Local `npm run snapshot`
-      # defaults to FAST incremental for dev iteration.
+      # Optional rollback snapshot refresh. This workflow has no cron or push
+      # trigger; production React deployments do not use this Svelte snapshot.
       - name: Refresh MCP snapshot (full)
-        if: github.event_name == 'schedule' || github.event.inputs.refresh_snapshot == 'true'
+        if: github.event.inputs.refresh_snapshot == 'true'
         env:
-          MCP_BEARER: ${{ secrets.MCP_BEARER }}
           SNAPSHOT_FULL: '1'
+          SNAPSHOT_REQUIRED: '1'
         run: npm run snapshot
+
+      - name: Test snapshot retirement invariants
+        run: npm test
 
       - name: Build
         run: npm run build

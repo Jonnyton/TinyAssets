@@ -247,6 +247,35 @@ def test_incremental_solving():
     assert results[1]["satisfiable"] is True
 
 
+def test_incremental_solving_accumulates_facts_but_does_not_reground_base_rules():
+    """Pin the current early-grounding under-validation limitation."""
+    engine = ASPEngine(base_rules_path="")
+    rules = """
+    :- character_at(C, L1, T), character_at(C, L2, T), L1 != L2.
+    """
+
+    results = engine.validate_incremental(
+        [
+            'character_at("Ryn", "Pass", 1).',
+            'character_at("Ryn", "Castle", 1).',
+        ],
+        world_rules=rules,
+    )
+
+    assert results[0]["satisfiable"] is True
+    assert results[1]["satisfiable"] is True
+    assert set(results[1]["atoms"]) == {
+        'character_at("Ryn","Pass",1)',
+        'character_at("Ryn","Castle",1)',
+    }
+
+
+def test_incremental_solving_empty_batch_returns_empty_results():
+    engine = ASPEngine(base_rules_path="")
+
+    assert engine.validate_incremental([]) == []
+
+
 # ------------------------------------------------------------------
 # Constraint surface scoring
 # ------------------------------------------------------------------

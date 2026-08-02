@@ -2,35 +2,43 @@
 /**
  * snapshot-mcp.mjs — pull live MCP data into src/lib/content/mcp-snapshot.json.
  *
- * Calls wiki/goals/universe on tinyassets.io/mcp via the official
- * @modelcontextprotocol/sdk client (StreamableHTTPClientTransport). Crawls
- * every promoted page to extract [[wiki-links]], YAML-frontmatter sources,
- * prose mentions of other pages' titles, and tags, so /graph can render real
- * cross-page connections.
+ * Calls the canonical read_page/read_graph handles on tinyassets.io/mcp via
+ * the official @modelcontextprotocol/sdk client
+ * (StreamableHTTPClientTransport). Crawls every promoted page to extract
+ * [[wiki-links]], YAML-frontmatter sources, prose mentions of other pages'
+ * titles, and tags, so /graph can render real cross-page connections.
  *
  * Fail-soft: connection failures keep the existing snapshot. Atomic write
  * (temp + rename) avoids FUSE chunked-write truncation.
  *
  * Run:    npm run snapshot
- * Env:    MCP_URL, MCP_BEARER (optional)
+ * Env:    MCP_URL
  */
 
 import { writeFileSync, readFileSync, existsSync, renameSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import {
+  assertAnonymousSnapshotUrl,
+  assertCompleteCrawl,
+  pageInventoryCall,
+  publicGraphCall,
+  publicPageCall,
+  requireCompleteCollection,
+  requirePageBody,
+  sanitizePublicUniverse,
+  splitFullPageInventory
+} from '../../shared/mcp/public-read-contract.js';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, '..');
 const SNAPSHOT_PATH = resolve(ROOT, 'src', 'lib', 'content', 'mcp-snapshot.json');
 const MCP_URL = process.env.MCP_URL ?? 'https://tinyassets.io/mcp';
-const BEARER = process.env.MCP_BEARER ?? '';
 const PAGE_FETCH_CONCURRENCY = Number(process.env.SNAPSHOT_CONCURRENCY ?? 8);
-// Crawl EVERY promoted page body for edge extraction by default. The old
-// tail-200 cap silently orphaned ~1,000 pages (their [[links]] were never
-// read), which is the #1 reason /graph looked unconnected. Set
-// SNAPSHOT_MAX_PAGES to a number only if you must trade completeness for a
-// faster CI crawl; default Infinity = all pages.
-const MAX_CRAWL_PAGES = Number(process.env.SNAPSHOT_MAX_PAGES ?? Infinity);
+// Crawl every page body for edge extraction. A caller-controlled cap would
+// silently create a complete-looking graph with missing links.
 // Incremental: when a prior snapshot exists, only re-crawl pages changed since
 // its fetched_at (plus any never-crawled) and merge. Keeps the 6h cron cheap.
 // Force a clean full rebuild with SNAPSHOT_FULL=1.
@@ -39,13 +47,28 @@ const FORCE_FULL = process.env.SNAPSHOT_FULL === '1';
 function log(msg) { console.log(`[snapshot] ${msg}`); }
 function warn(msg) { console.warn(`[snapshot] WARN: ${msg}`); }
 
+function assertBodyMatchesSourceHash(body) {
+  const expected = body.source_read_proof.sha256.toLowerCase();
+  const candidates = [body.content];
+  if (body.is_draft && body.content.startsWith('[DRAFT] ')) {
+    candidates.push(body.content.slice('[DRAFT] '.length));
+  }
+  const matches = candidates.some(
+    (candidate) =>
+      createHash('sha256').update(candidate, 'utf8').digest('hex') === expected
+  );
+  if (!matches) {
+    throw new Error('read_page content did not match its source-read proof');
+  }
+}
+
 async function loadSdk() {
   try {
     const mod = await import('@modelcontextprotocol/sdk/client/index.js');
     const transportMod = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
     return { Client: mod.Client, StreamableHTTPClientTransport: transportMod.StreamableHTTPClientTransport };
-  } catch (e) {
-    warn(`SDK not installed (${e.message}). Run \`npm install\` first.`);
+  } catch {
+    warn('MCP SDK is unavailable; install dependencies before refreshing.');
     return null;
   }
 }
@@ -186,13 +209,26 @@ function extractRefs(content) {
 }
 
 async function main() {
+  if (process.env.MCP_BEARER) {
+    warn('public snapshots must run anonymously; MCP_BEARER is forbidden');
+    process.exit(1);
+    return;
+  }
+  try {
+    assertAnonymousSnapshotUrl(MCP_URL);
+  } catch {
+    warn('public snapshots must run anonymously; MCP_URL credentials are forbidden');
+    process.exit(1);
+    return;
+  }
   const sdk = await loadSdk();
-  if (!sdk) { process.exit(0); return; }
+  if (!sdk) {
+    process.exit(process.env.SNAPSHOT_REQUIRED === '1' ? 1 : 0);
+    return;
+  }
 
   log(`fetching from ${MCP_URL} ...`);
-  const transport = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL), {
-    requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
-  });
+  const transport = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL));
   const client = new sdk.Client(
     { name: 'tinyassets-site-snapshot', version: '0.2.0' },
     { capabilities: {} }
@@ -210,29 +246,33 @@ async function main() {
         const r = await client.callTool({ name, arguments: args });
         return parseToolResponse(r);
       } catch (e) {
-        warn(`tool ${name}(${JSON.stringify(args)}) failed: ${e.message}`);
+        warn(`public snapshot tool ${name} failed`);
         return null;
       }
     }
 
-    log('listing wiki / goals / universes ...');
-    const [wikiList, goalsList, universesList] = await Promise.all([
-      tool('wiki', { action: 'list' }),
-      tool('goals', { action: 'list' }),
-      tool('universe', { action: 'list' })
-    ]);
+    log('listing pages / universes through canonical handles ...');
+    // A single SDK client/session owns these calls; keep failure order
+    // deterministic so a partial collection can never be mistaken for a bake.
+    const inventoryCall = pageInventoryCall();
+    const universesCall = publicGraphCall('graphs', 100);
+    const pageInventory = await tool(inventoryCall.name, inventoryCall.args);
+    const wikiList = splitFullPageInventory(pageInventory);
+    const universesList = await tool(universesCall.name, universesCall.args);
+    const universeRows = requireCompleteCollection(
+      universesList,
+      'universes',
+      'read_graph graphs',
+      100
+    ).map(sanitizePublicUniverse);
 
     // Shape data
-    const goals = (goalsList?.goals ?? []).map((g) => ({
-      id: g.goal_id ?? g.id,
-      name: g.name ?? '',
-      summary: g.description ?? '',
-      tags: typeof g.tags === 'string' ? g.tags.split(',').map((t) => t.trim()).filter(Boolean) : (g.tags ?? []),
-      author: g.author ?? 'anonymous',
-      visibility: g.visibility ?? 'public'
-    }));
+    // The current Goal projection does not enforce public visibility
+    // server-side. Never fetch it for a public artifact: even an anonymous
+    // caller can receive cross-user private goal descriptions.
+    const goals = [];
 
-    const universes = (universesList?.universes ?? []).map((u) => ({
+    const universes = universeRows.map((u) => ({
       id: u.id,
       phase: u.phase_human ?? u.phase ?? 'unknown',
       word_count: u.word_count ?? 0,
@@ -321,9 +361,12 @@ async function main() {
     let priorCrawled = new Set();
     let crawlSet;
     if (prior && prior.fetched_at) {
-      const since = await tool('wiki', { action: 'since', changed_since: prior.fetched_at });
+      const sinceCall = pageInventoryCall(prior.fetched_at);
+      const since = splitFullPageInventory(
+        await tool(sinceCall.name, sinceCall.args)
+      );
       const changed = new Set(
-        [...(since?.results ?? []), ...(since?.promoted ?? []), ...(since?.drafts ?? []), ...(since?.pages ?? []), ...(since?.items ?? [])]
+        [...since.promoted, ...since.drafts]
           .map((x) => x?.path)
           .filter(Boolean)
       );
@@ -340,8 +383,8 @@ async function main() {
       crawlSet = allPages.filter((pg) => changed.has(pg.path) || !priorCrawled.has(pg.path));
       log(`incremental: ${changed.size} changed since ${prior.fetched_at}; (re)crawling ${crawlSet.length} of ${allPages.length} pages (concurrency=${PAGE_FETCH_CONCURRENCY})`);
     } else {
-      crawlSet = Number.isFinite(MAX_CRAWL_PAGES) ? allPages.slice(-MAX_CRAWL_PAGES) : allPages;
-      log(`full crawl: ${crawlSet.length} of ${allPages.length} page bodies (promoted + drafts, cap ${MAX_CRAWL_PAGES}, concurrency=${PAGE_FETCH_CONCURRENCY})`);
+      crawlSet = allPages;
+      log(`full crawl: all ${crawlSet.length} page bodies (promoted + drafts, concurrency=${PAGE_FETCH_CONCURRENCY})`);
     }
     const pageMeta = {}; // path → { refs: [], tags: [], sources: [] }
     // Connection POOL: concurrent callTool on one MCP session stalls, so each
@@ -349,6 +392,7 @@ async function main() {
     // tens-of-minutes serial crawl into minutes.
     const queue = [...crawlSet];
     let done = 0;
+    let failed = 0;
     function extractFor(page, body) {
       if (!body?.content) return;
       const meta = extractRefs(body.content);
@@ -365,9 +409,7 @@ async function main() {
       pageMeta[page.path] = meta;
     }
     async function crawlWorker() {
-      const tr = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL), {
-        requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
-      });
+      const tr = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL));
       const cl = new sdk.Client({ name: 'tinyassets-site-snapshot-worker', version: '0.2.0' }, { capabilities: {} });
       try {
         await Promise.race([
@@ -381,13 +423,20 @@ async function main() {
         const page = queue.shift();
         if (!page) break;
         try {
+          const pageCall = publicPageCall(page.path, wikiList.validatedPaths);
           const r = await Promise.race([
-            cl.callTool({ name: 'wiki', arguments: { action: 'read', page: page.path.replace(/\.md$/, '') } }),
+            cl.callTool({ name: pageCall.name, arguments: pageCall.args }),
             new Promise((_, rej) => setTimeout(() => rej(new Error('read timeout')), 20000))
           ]);
-          extractFor(page, parseToolResponse(r));
+          const body = requirePageBody(
+            parseToolResponse(r),
+            'read_page page body',
+            page.path
+          );
+          assertBodyMatchesSourceHash(body);
+          extractFor(page, body);
         } catch {
-          /* skip a page that failed to read */
+          failed += 1;
         }
         done += 1;
         if (done % 25 === 0) log(`  ${done}/${crawlSet.length} pages crawled`);
@@ -395,6 +444,7 @@ async function main() {
       try { await cl.close(); } catch {}
     }
     await Promise.all(Array.from({ length: Math.max(1, PAGE_FETCH_CONCURRENCY) }, () => crawlWorker()));
+    assertCompleteCrawl(crawlSet.length, done, failed);
     log(`crawled ${done} pages. Resolving references ...`);
 
     // Build the edge list. Each edge: { from: nodeId, to: nodeId, kind: 'ref' | 'source' }.
@@ -482,12 +532,15 @@ async function main() {
     renameSync(tmpPath, SNAPSHOT_PATH);
     log(`wrote ${SNAPSHOT_PATH} (${promoted} promoted, ${wiki.drafts.length} drafts, ${goals.length} goals, ${universes.length} universes, ${edges.length} edges)`);
   } catch (err) {
-    warn(`refresh failed: ${err?.message ?? err}`);
+    warn('public snapshot refresh failed');
     if (existsSync(SNAPSHOT_PATH)) {
       try {
         const stat = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf-8'));
-        warn(`keeping existing snapshot from ${stat.fetched_at}`);
+        warn('keeping existing checked-in snapshot');
       } catch {}
+    }
+    if (process.env.SNAPSHOT_REQUIRED === '1') {
+      throw new Error('Required public snapshot refresh failed');
     }
   } finally {
     try { await client.close(); } catch {}
@@ -495,7 +548,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => {
-  warn(`unhandled: ${e?.message ?? e}`);
-  process.exit(0);
+main().catch(() => {
+  warn('public snapshot process failed');
+  process.exit(process.env.SNAPSHOT_REQUIRED === '1' ? 1 : 0);
 });

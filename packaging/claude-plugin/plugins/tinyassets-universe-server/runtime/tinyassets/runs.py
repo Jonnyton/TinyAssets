@@ -2404,8 +2404,8 @@ def _invoke_graph(
         msg = (
             f"Child invocation receipt gate timed out after "
             f"{exc.timeout_seconds}s while child run '{exc.run_id}' was "
-            f"still {exc.child_status}; parent is receipt-waiting and can be "
-            "reclaimed with attach_existing_child_run."
+            f"still {exc.child_status}; parent is receipt-waiting. Attaching "
+            "an existing child run is not exposed by the advertised handles."
         )
         output = {
             "parent_loop_status": "receipt_waiting",
@@ -2422,7 +2422,11 @@ def _invoke_graph(
                 "child_status": exc.child_status,
                 "child_branch_def_id": exc.child_branch_def_id,
                 "timeout_seconds": exc.timeout_seconds,
-                "reclaim_action": "attach_existing_child_run",
+                "reclaim_action": None,
+                "reclaim_gap": (
+                    "Attaching an existing child run is not exposed by the "
+                    "advertised handles."
+                ),
             },
         }
         update_run_status(
@@ -2445,7 +2449,8 @@ def _invoke_graph(
             if isinstance(exc, _GRE):
                 msg = (
                     f"GraphRecursionError: recursion limit {recursion_limit} reached. "
-                    f"Raise via recursion_limit_override on run_branch. Detail: {exc}"
+                    "Raise recursion_limit_override on the next run_graph call. "
+                    f"Detail: {exc}"
                 )
                 update_run_status(
                     base_path, run_id,
@@ -2814,11 +2819,20 @@ def execute_branch(
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
     )
+    enqueue_origin = (
+        str(_origin_branch_task_id or "").strip()
+        or str(_parent_branch_task_id or "").strip()
+    )
+    if _enqueue_universe_id and not enqueue_origin:
+        # A trusted non-queue root (for example a universe soul loop) has no
+        # parent BranchTask. Derive its lineage once from the prepared run so
+        # every sibling enqueue competes for the same lifetime budget.
+        enqueue_origin = f"run:{run_id}"
     enqueue_context = NodeEnqueueContext(
         universe_id=_enqueue_universe_id,
         actor=actor,
         parent_branch_task_id=_parent_branch_task_id,
-        origin_branch_task_id=_origin_branch_task_id,
+        origin_branch_task_id=enqueue_origin,
     )
     return _invoke_graph(
         base_path,
@@ -3280,7 +3294,8 @@ def resume_run(
         raise ResumeError(
             f"No SqliteSaver checkpoint found for run '{run_id}'. "
             "The run predates resume support or the checkpoint was evicted. "
-            "Rerun from scratch with run_branch using the same inputs.",
+            "Rerun from scratch with run_graph using the same branch_def_id and "
+            "inputs_json.",
             reason="no_checkpoint",
         )
 
@@ -4106,11 +4121,14 @@ def list_recent_runs(
         elif failure_class == "cancelled":
             suggested_action = "Run was cancelled by request."
         elif failure_class == "interrupted":
-            suggested_action = "Run was interrupted; use resume_run to continue."
+            suggested_action = (
+                "Run was interrupted. Resume is not exposed by the advertised "
+                "handles; rerun it with run_graph."
+            )
         elif failure_class == "child_receipt_waiting":
             suggested_action = (
-                "Wait for the child run to complete, then call "
-                "attach_existing_child_run with the recorded child_run_id."
+                "Wait for the child run to complete. Attaching an existing "
+                "child run is not exposed by the advertised handles."
             )
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."

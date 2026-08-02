@@ -259,7 +259,7 @@
       },
       {
         "channel": "MCP connector",
-        "purpose": "Use your chatbot to browse goals, file issues, and route work into the loop."
+        "purpose": "Use your chatbot to browse goals, file issues, and run or remix user-authored workflows."
       },
       {
         "channel": "Discord (TBD)",

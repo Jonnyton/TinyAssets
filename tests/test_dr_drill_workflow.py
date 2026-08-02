@@ -3,7 +3,8 @@
 Covers:
   (a) YAML parses without error
   (b) Only workflow_dispatch trigger (never auto-runs)
-  (c) Required inputs present (drill_droplet_size, backup_source, destroy_on_failure)
+  (c) Required inputs present (drill_droplet_size, backup_source,
+      destroy_on_failure, cleanup_droplet_id)
   (d) Required secrets referenced (DIGITALOCEAN_TOKEN, DO_SSH_KEY, DO_DROPLET_HOST, DO_SSH_USER)
   (e) Droplet provision step creates Droplet via DO API
   (f) Bootstrap step runs hetzner-bootstrap.sh
@@ -55,6 +56,13 @@ def _steps(wf: dict) -> list[dict]:
 
 def _step_names(wf: dict) -> list[str]:
     return [(s.get("name") or "").lower() for s in _steps(wf)]
+
+
+def _step(name: str) -> dict:
+    for step in _steps(_load()):
+        if step.get("name") == name:
+            return step
+    raise AssertionError(f"{name} step missing")
 
 
 def _dispatch_inputs(wf: dict) -> dict:
@@ -168,6 +176,47 @@ def test_provision_step_present():
     assert any("provision" in n or "droplet" in n for n in names), (
         "must have a provision/droplet creation step"
     )
+
+
+def test_provision_resolves_current_region_compatible_debian_image():
+    provision = _step("Provision drill Droplet")
+    run = provision["run"]
+
+    assert "scripts/select_do_image.py" in run
+    assert '--region "${DRILL_REGION}"' in run
+    assert "image_slug=$(" in run
+    assert 'echo "image_slug=${image_slug}" >> "$GITHUB_OUTPUT"' in run
+    selector_index = run.index("scripts/select_do_image.py")
+    post_indexes = [
+        match.start()
+        for match in re.finditer(r"--method POST", run)
+    ]
+    assert post_indexes
+    assert all(selector_index < post_index for post_index in post_indexes)
+    assert "debian-12-x64" not in _text()
+
+
+def test_resolved_image_is_preserved_in_terminal_evidence():
+    image_output = "steps.droplet.outputs.image_slug"
+    probe_failure = _step("Open dr-failed issue on failure")
+    success_log = _step("Append drill result to log")
+    delete_failure = _step("Escalate failed Droplet deletion")
+    summary = _step("Summary")
+
+    for evidence_step in (
+        probe_failure,
+        success_log,
+        delete_failure,
+        summary,
+    ):
+        assert image_output in str(evidence_step)
+        assert "Image" in str(evidence_step)
+
+
+def test_runbook_requires_digitalocean_image_read_scope():
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    assert "image:read" in runbook
+    assert "before any mutation" in runbook
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +411,12 @@ def test_default_drill_size_is_not_1gb():
 def test_mid_job_cleanup_step_exists():
     """A cleanup step must fire even when bootstrap/restore fail (before probe runs)."""
     names = _step_names(_load())
-    assert any("cleanup" in n or "mid-job" in n for n in names), (
+    assert any(
+        "cleanup" in name
+        or "mid-job" in name
+        or name == "destroy drill droplet when required"
+        for name in names
+    ), (
         "Must have a cleanup step that fires on mid-job failure (before probe color is set)"
     )
 
@@ -372,7 +426,9 @@ def test_mid_job_cleanup_fires_on_always():
     steps = _steps(_load())
     cleanup_steps = [s for s in steps
                      if "cleanup" in (s.get("name") or "").lower()
-                     or "mid-job" in (s.get("name") or "").lower()]
+                     or "mid-job" in (s.get("name") or "").lower()
+                     or (s.get("name") or "").lower()
+                     == "destroy drill droplet when required"]
     assert cleanup_steps, "no cleanup step found"
     for s in cleanup_steps:
         cond = s.get("if", "")
@@ -388,3 +444,299 @@ def test_mid_job_cleanup_checks_probe_color_empty():
     assert "drillprobe.outputs.color" in text and "''" in text, (
         "Mid-job cleanup must check that drillprobe.outputs.color is empty"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-23 — hardened archive, API, transfer, and deletion evidence
+# ---------------------------------------------------------------------------
+
+
+def test_primary_archive_preflight_precedes_droplet_provisioning():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    preflight_index = names.index("Validate selected backup on primary")
+    provision_index = names.index("Provision drill Droplet")
+    assert preflight_index < provision_index
+
+    run = steps[preflight_index]["run"]
+    assert "/var/backups/tinyassets" in run
+    assert "tinyassets-data-*.tar.gz" in run
+    assert "tarfile" in run
+    assert "archive_sha256" in run
+    assert '"path_b64"' in run
+    assert '"tarball_b64"' in run
+    assert "sample_path_b64" in run
+    assert "sample_sha256" in run
+    assert "printf '%q'" in run
+    assert "re.fullmatch" in run
+    assert r"\d{4}-\d{2}-\d{2}T" in run
+    output_keys = run[run.index('for key in ('):]
+    assert '"path",' not in output_keys
+    assert '"tarball",' not in output_keys
+
+
+def test_primary_archive_filename_grammar_rejects_output_protocol_injection():
+    run = _step("Validate selected backup on primary")["run"]
+    grammar_block = run[run.index("re.fullmatch("):run.index("selected.name,")]
+    fragments = re.findall(r'r"([^"]+)"', grammar_block)
+    grammar = "".join(fragments)
+
+    assert re.fullmatch(
+        grammar,
+        "tinyassets-data-2026-07-23T12-34-56Z.tar.gz",
+    )
+    for adversarial in (
+        "tinyassets-data-2026-07-23T12-34-56Z.tar.gz\nforged=value",
+        "tinyassets-data-2026-07-23T12-34-56Z.tar.gz\rforged=value",
+        "tinyassets-data-anything.tar.gz",
+    ):
+        assert re.fullmatch(grammar, adversarial) is None
+
+
+def test_every_digitalocean_request_uses_bounded_helper():
+    text = _text()
+    assert "scripts/do_api_request.py" in text
+    assert "curl -sf" not in text
+    assert "--fail-with-body" not in text
+    assert "|| echo ''" not in text
+
+
+def test_transfer_propagates_pipeline_failure_and_verifies_checksum():
+    run = _step("Transfer verified backup to drill Droplet")["run"]
+    assert "set -euo pipefail" in run
+    assert "printf '%q'" in run
+    assert "SOURCE_SHA256" in run
+    assert "sha256sum" in run
+    assert "checksum mismatch" in run.lower()
+
+
+def test_restore_uses_exact_transferred_backup_file():
+    restore = _step("Restore exact backup on drill Droplet")
+    run = restore["run"]
+    assert "BACKUP_FILE=" in run
+    assert "BACKUP_DEST=" not in run
+    assert "steps.backup.outputs.tarball" in str(restore.get("env", {}))
+
+
+def test_restored_state_proof_precedes_compose_and_probe():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    proof_index = names.index("Verify representative restored state")
+    compose_index = names.index("Start compose on drill Droplet")
+    probe_index = names.index("Probe drill Droplet directly")
+    assert proof_index < compose_index < probe_index
+
+    proof = steps[proof_index]
+    run = proof["run"]
+    assert "docker volume inspect tinyassets-data" in run
+    assert "sample_path_b64" in str(proof.get("env", {}))
+    assert "sample_sha256" in str(proof.get("env", {}))
+    assert "is_symlink" in run
+    assert "sha256" in run
+
+
+def test_success_log_records_archive_and_restored_member_evidence():
+    run = _append_log_step_run()
+    assert "archive_sha256" in run
+    assert "sample_path_b64" in run
+    assert "sample_sha256" in run
+    assert "git push || true" not in run
+
+
+def test_adversarial_member_name_remains_encoded_in_rendered_evidence():
+    proof_run = _step("Verify representative restored state")["run"]
+    assert "path_b64={sys.argv[2]}" in proof_run
+    assert "verified: {relative}" not in proof_run
+
+    log_run = _append_log_step_run()
+    assert "Representative member path (base64 UTF-8)" in log_run
+    assert "${sample_path_b64}" in log_run
+    assert "base64.b64decode(sys.argv[1]).decode()" not in log_run
+
+
+def test_success_log_requires_confirmed_destroy_and_runs_after_it():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    destroy_index = names.index("Destroy drill Droplet when required")
+    log_index = names.index("Append drill result to log")
+    assert destroy_index < log_index
+
+    log = steps[log_index]
+    condition = str(log.get("if", ""))
+    assert "steps.destroy.outcome == 'success'" in condition
+    assert "steps.drillprobe.outputs.color == 'green'" in condition
+
+
+def test_unified_destroy_runs_always_and_exposes_bounded_failure():
+    destroy = _step("Destroy drill Droplet when required")
+    assert destroy.get("id") == "destroy"
+    assert destroy.get("continue-on-error") is True
+    condition = str(destroy.get("if", ""))
+    assert "always()" in condition
+    assert "steps.droplet.outputs.droplet_id != ''" in condition
+    assert "steps.drillprobe.outputs.color == 'green'" in condition
+    assert "inputs.destroy_on_failure == 'true'" in condition
+    assert "steps.drillprobe.outputs.color == ''" in condition
+    assert "diagnostic" in destroy["run"]
+    assert "scripts/do_api_request.py" in destroy["run"]
+
+
+def test_failed_destroy_escalates_with_identity_then_forces_red():
+    escalation = _step("Escalate failed Droplet deletion")
+    assert "steps.destroy.outcome == 'failure'" in str(escalation.get("if", ""))
+    escalation_text = str(escalation)
+    assert "dr-failed" in escalation_text
+    assert "DROPLET_ID" in escalation_text
+    assert "GITHUB_RUN_ID" in escalation_text
+    assert "DELETE_DIAGNOSTIC" in escalation_text
+
+    terminal = _step("Fail after Droplet deletion failure")
+    assert "always()" in str(terminal.get("if", ""))
+    assert "steps.destroy.outcome == 'failure'" in str(terminal.get("if", ""))
+    assert "exit 1" in terminal["run"]
+
+
+# 2026-07-23 — immutable runtime image on the fresh drill host
+
+
+def test_runtime_image_is_resolved_and_validated_before_provisioning():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    resolve_index = names.index("Resolve immutable production daemon image")
+    provision_index = names.index("Provision drill Droplet")
+    assert resolve_index < provision_index
+
+    step = steps[resolve_index]
+    assert step.get("id") == "runtime-image"
+    run = step["run"]
+    assert "grep -E '^TINYASSETS_IMAGE='" in run
+    assert "cat /etc/tinyassets/env" not in run
+    assert "scp" not in run
+    assert "re.fullmatch" in run
+    assert (
+        r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}"
+        in run
+    )
+    assert 'echo "image=${runtime_image}" >> "$GITHUB_OUTPUT"' in run
+
+
+def test_runtime_image_grammar_rejects_tags_and_output_injection():
+    run = _step("Resolve immutable production daemon image")["run"]
+    match = re.search(r're\.fullmatch\(r"([^"]+)", runtime_image\)', run)
+    assert match, "runtime image must use one full-string Python regex"
+    grammar = match.group(1)
+
+    def normalize(raw: str) -> str:
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            return raw[1:-1]
+        return raw
+
+    assert "raw_runtime_image[0] == raw_runtime_image[-1]" in run
+    assert """raw_runtime_image[0] in {"'", '"'}""" in run
+    valid = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+    for accepted in (valid, f"'{valid}'", f'"{valid}"'):
+        assert re.fullmatch(grammar, normalize(accepted))
+    for adversarial in (
+        "ghcr.io/jonnyton/tinyassets-daemon:latest",
+        "other.example/tinyassets-daemon@sha256:" + "a" * 64,
+        valid + "\nforged=value",
+        valid + "\rforged=value",
+        "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "A" * 64,
+        f'"{valid}\nforged=value"',
+        f"'{valid}\rforged=value'",
+        f'"{valid}\'',
+        f'""{valid}""',
+    ):
+        assert re.fullmatch(grammar, normalize(adversarial)) is None
+
+
+def test_compose_uses_runtime_image_ephemerally_with_fresh_env():
+    step = _step("Start compose on drill Droplet")
+    env_text = str(step.get("env", {}))
+    assert "steps.runtime-image.outputs.image" in env_text
+
+    run = step["run"]
+    assert "printf '%q'" in run
+    assert "TINYASSETS_IMAGE=${quoted_runtime_image}" in run
+    assert "--env-file /etc/tinyassets/env" in run
+    assert "install-tinyassets-env.sh" not in run
+    assert "sed -i" not in run
+
+
+def test_validated_runtime_image_is_persisted_into_exactly_one_fresh_assignment():
+    step = _step("Persist validated runtime image in fresh env")
+    assert "steps.runtime-image.outputs.image" in str(step.get("env", {}))
+
+    run = step["run"]
+    assert "ghcr\\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}" in run
+    assert 'Path("/etc/tinyassets/env")' in run
+    assert "env_path.is_symlink()" in run
+    assert 'line.startswith("TINYASSETS_IMAGE=")' in run
+    assert "len(matches) != 1" in run
+    assert 'lines[index] = f"TINYASSETS_IMAGE={image}{newline}"' in run
+    assert 'env_path.write_text("".join(lines))' in run
+    assert "DO_DROPLET_HOST" not in run
+
+
+def test_cleanup_only_dispatch_is_identity_guarded_and_cannot_provision():
+    wf = _load()
+    inputs = _dispatch_inputs(wf)
+    assert inputs["cleanup_droplet_id"]["default"] == ""
+
+    jobs = wf["jobs"]
+    cleanup = jobs["cleanup_retained_droplet"]
+    assert cleanup["if"] == "inputs.cleanup_droplet_id != ''"
+    assert jobs["drill"]["if"] == "inputs.cleanup_droplet_id == ''"
+
+    steps = cleanup["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.index("Verify retained drill Droplet identity") < names.index(
+        "Delete retained drill Droplet"
+    )
+    assert "Provision drill Droplet" not in names
+    assert "Install SSH key" not in names
+    assert "Validate selected backup on primary" not in names
+
+    identity = next(
+        step for step in steps
+        if step.get("name") == "Verify retained drill Droplet identity"
+    )["run"]
+    assert "--method GET" in identity
+    assert 'droplet.get("name") != "tinyassets-dr-drill"' in identity
+    assert '{"dr-drill", "tinyassets"}.issubset(tags)' in identity
+
+    deletion = next(
+        step for step in steps
+        if step.get("name") == "Delete retained drill Droplet"
+    )["run"]
+    assert "--method DELETE" in deletion
+    assert "--method POST" not in deletion
+    assert "/v2/droplets/${DROPLET_ID}" in deletion
+
+
+def test_red_probe_always_records_issue_then_fails_the_run():
+    probe = _step("Probe drill Droplet directly")
+    assert "color=red" in probe["run"]
+    assert "exit 98" in probe["run"]
+
+    issue = _step("Open dr-failed issue on failure")
+    assert issue["if"] == "always() && steps.drillprobe.outputs.color == 'red'"
+
+    fail = _step("Fail after red probe")
+    assert fail["if"] == "always() && steps.drillprobe.outputs.color == 'red'"
+    assert fail["run"] == "exit 1"
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    [
+        "Open dr-failed issue on failure",
+        "Append drill result to log",
+        "Escalate failed Droplet deletion",
+        "Summary",
+    ],
+)
+def test_terminal_evidence_distinguishes_runtime_image(step_name):
+    step = _step(step_name)
+    assert "steps.runtime-image.outputs.image" in str(step.get("env", {}))
+    assert "Runtime Image" in str(step)

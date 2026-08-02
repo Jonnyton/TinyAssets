@@ -80,6 +80,7 @@ Design source: ``drafts/concepts/external-write-phase-2-authority.md``.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -90,6 +91,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -101,11 +103,23 @@ from tinyassets.effectors.authority import (
     effect_authority_key,
     resolve_soul_effect_authority,
 )
+from tinyassets.storage.outbound_connections import (
+    AmbiguousProxyOutcome,
+    ProxyRequestError,
+    ScopedConnectionProxy,
+)
 
 logger = logging.getLogger(__name__)
 
 
 EXTERNAL_WRITE_SINK_GITHUB_PR = "github_pull_request"
+DESTINATION_RECONCILIATION = {
+    "supported": False,
+    "reason": (
+        "the adapter has no stable destination lookup by system effect key; "
+        "stale intents require operator inspection"
+    ),
+}
 _ENABLE_ENV = "TINYASSETS_EXTERNAL_WRITE_ENABLED"
 # Round-3 P1 fix (Codex round-2 verdict on PR #969): this env is the
 # **operator panic-button kill switch**. When truthy, the effector
@@ -134,8 +148,295 @@ _PUSH_CAPABILITIES_ENV = "TINYASSETS_GITHUB_PUSH_CAPABILITIES"
 _CAPABILITIES_ENV = "TINYASSETS_GITHUB_PR_CAPABILITIES"
 _GH_PR_TIMEOUT_S = 60.0
 _GITHUB_API = "https://api.github.com"
+_GITHUB_PR_EFFECT_KIND = "github_pull_request"
+_GITHUB_PR_EFFECT_MARKER_FAMILY = "tinyassets-github-pr-effect:"
+_GITHUB_PR_EFFECT_MARKER_PREFIX = "tinyassets-github-pr-effect:v1:"
+_GITHUB_PR_EFFECT_MARKER_RE = re.compile(
+    r"<!-- tinyassets-github-pr-effect:v1:([0-9a-f]{64}) -->"
+)
+_GITHUB_REPOSITORY_RE = re.compile(r"[\w.-]+/[\w.-]+")
+_GITHUB_SHA_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+_MAX_IDENTITY_COMPONENT_LENGTH = 256
+_MAX_GITHUB_PR_BODY_LENGTH = 65_536
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+@dataclass(frozen=True)
+class GitHubPullRequestEffectIdentity:
+    """Closed server-authored identity for one repository PR effect.
+
+    This type is not constructed from a Branch packet. The automation owner
+    must derive every field from its existing authority records before handing
+    the identity to the outbound boundary.
+    """
+
+    universe_id: str
+    automation_id: str
+    claim_id: str
+    repository: str
+    intended_head_sha: str
+    effect_kind: str = _GITHUB_PR_EFFECT_KIND
+
+    def __post_init__(self) -> None:
+        for name in ("universe_id", "automation_id", "claim_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
+            if (
+                not value
+                or value != value.strip()
+                or len(value) > _MAX_IDENTITY_COMPONENT_LENGTH
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            ):
+                raise ValueError(f"{name} must be a bounded canonical identifier")
+
+        if not isinstance(self.repository, str):
+            raise ValueError("repository must be a string")
+        repository = self.repository.strip().lower()
+        repository_parts = repository.split("/")
+        if (
+            repository != self.repository.lower()
+            or len(repository) > _MAX_IDENTITY_COMPONENT_LENGTH
+            or _GITHUB_REPOSITORY_RE.fullmatch(repository) is None
+            or len(repository_parts) != 2
+            or any(part in {".", ".."} for part in repository_parts)
+        ):
+            raise ValueError("repository must be a canonical owner/repo")
+        object.__setattr__(self, "repository", repository)
+
+        if (
+            not isinstance(self.intended_head_sha, str)
+            or _GITHUB_SHA_RE.fullmatch(self.intended_head_sha) is None
+        ):
+            raise ValueError("intended_head_sha must be a full GitHub commit SHA")
+        object.__setattr__(
+            self,
+            "intended_head_sha",
+            self.intended_head_sha.lower(),
+        )
+        if self.effect_kind != _GITHUB_PR_EFFECT_KIND:
+            raise ValueError(
+                f"effect_kind must be {_GITHUB_PR_EFFECT_KIND!r}"
+            )
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            {
+                "automation_id": self.automation_id,
+                "claim_id": self.claim_id,
+                "effect_kind": self.effect_kind,
+                "intended_head_sha": self.intended_head_sha,
+                "repository": self.repository,
+                "universe_id": self.universe_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+
+def github_pr_effect_marker(identity: GitHubPullRequestEffectIdentity) -> str:
+    """Return the public digest-only marker for a typed PR effect."""
+    if not isinstance(identity, GitHubPullRequestEffectIdentity):
+        raise TypeError("identity must be a server-authored PR effect identity")
+    return f"<!-- {_GITHUB_PR_EFFECT_MARKER_PREFIX}{identity.digest} -->"
+
+
+def with_github_pr_effect_marker(
+    body: str,
+    identity: GitHubPullRequestEffectIdentity,
+) -> str:
+    """Append the exact marker once and reject a conflicting marker."""
+    if not isinstance(body, str):
+        raise ValueError("pull-request body must be a string")
+    marker = github_pr_effect_marker(identity)
+    existing_markers = _GITHUB_PR_EFFECT_MARKER_RE.findall(body)
+    marker_family_count = body.count(_GITHUB_PR_EFFECT_MARKER_FAMILY)
+    if marker_family_count != len(existing_markers):
+        raise ValueError("body contains a malformed TinyAssets effect marker")
+    if existing_markers:
+        if existing_markers != [identity.digest]:
+            raise ValueError("body contains a different TinyAssets effect marker")
+        return body
+    marked = f"{body.rstrip()}\n\n{marker}" if body.rstrip() else marker
+    if len(marked) > _MAX_GITHUB_PR_BODY_LENGTH:
+        raise ValueError("pull-request body exceeds GitHub's size limit")
+    return marked
+
+
+def _unknown_reconciliation(
+    identity: GitHubPullRequestEffectIdentity,
+    reason: str,
+    **evidence: Any,
+) -> dict[str, Any]:
+    return {
+        "status": "unknown",
+        "reason": reason,
+        "evidence": {
+            "repository": identity.repository,
+            "intended_head_sha": identity.intended_head_sha,
+            "effect_digest": identity.digest,
+            **evidence,
+        },
+    }
+
+
+def reconcile_github_pull_request_effect(
+    identity: GitHubPullRequestEffectIdentity,
+    *,
+    proxy: ScopedConnectionProxy,
+) -> dict[str, Any]:
+    """Read GitHub's commit-associated PRs and classify exact remote state.
+
+    The function performs one credential-blind read and never mutates GitHub.
+    It returns the status vocabulary consumed by the outbound journal:
+    ``succeeded`` for one exact match, ``failed`` for authoritative absence,
+    and ``unknown`` for every ambiguous or unavailable state.
+    """
+    if not isinstance(identity, GitHubPullRequestEffectIdentity):
+        raise TypeError("identity must be a server-authored PR effect identity")
+    if not isinstance(proxy, ScopedConnectionProxy):
+        raise TypeError("proxy must be a credential-blind scoped connection")
+    if proxy.provider != "github" or proxy.destination.lower() != identity.repository:
+        return _unknown_reconciliation(
+            identity,
+            "destination_authority_mismatch",
+        )
+    try:
+        response = proxy.request(
+            "pull_requests:read_for_commit",
+            {
+                "repository": identity.repository,
+                "intended_head_sha": identity.intended_head_sha,
+                "per_page": 100,
+            },
+        )
+    except (
+        AmbiguousProxyOutcome,
+        PermissionError,
+        ProxyRequestError,
+        RuntimeError,
+    ):
+        return _unknown_reconciliation(identity, "destination_unavailable")
+    if not isinstance(response, list) or len(response) > 100:
+        return _unknown_reconciliation(identity, "destination_malformed")
+    if len(response) == 100:
+        return _unknown_reconciliation(
+            identity,
+            "destination_result_truncated",
+            examined=100,
+        )
+
+    exact: list[dict[str, Any]] = []
+    partial_count = 0
+    malformed_count = 0
+    for pull in response:
+        if not isinstance(pull, dict):
+            malformed_count += 1
+            continue
+        head = pull.get("head")
+        base = pull.get("base")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        repository = (
+            base_repo.get("full_name")
+            if isinstance(base_repo, dict)
+            else None
+        )
+        body = pull.get("body")
+        number = pull.get("number")
+        url = pull.get("html_url")
+        state = pull.get("state")
+        if body is None:
+            body = ""
+        expected_url = (
+            f"https://github.com/{identity.repository}/pull/{number}"
+            if isinstance(number, int)
+            else ""
+        )
+        if (
+            not isinstance(head_sha, str)
+            or not isinstance(repository, str)
+            or not isinstance(body, str)
+            or not isinstance(number, int)
+            or number <= 0
+            or not isinstance(url, str)
+            or len(url) > 2_048
+            or url.lower() != expected_url
+            or state not in {"open", "closed"}
+        ):
+            malformed_count += 1
+            continue
+
+        sha_matches = head_sha.lower() == identity.intended_head_sha
+        repository_matches = repository.lower() == identity.repository
+        marker_digests = _GITHUB_PR_EFFECT_MARKER_RE.findall(body)
+        marker_family_count = body.count(_GITHUB_PR_EFFECT_MARKER_FAMILY)
+        marker_matches = (
+            marker_digests == [identity.digest]
+            and marker_family_count == 1
+        )
+        marker_present = marker_family_count > 0
+        if sha_matches and repository_matches and marker_matches:
+            exact.append(
+                {
+                    "pr_number": number,
+                    "pr_url": url,
+                    "pr_state": state,
+                }
+            )
+        elif sha_matches or repository_matches or marker_present:
+            partial_count += 1
+
+    if malformed_count:
+        return _unknown_reconciliation(
+            identity,
+            "destination_malformed",
+            examined=len(response),
+            malformed_matches=malformed_count,
+        )
+    if len(exact) > 1:
+        return _unknown_reconciliation(
+            identity,
+            "destination_multiple_matches",
+            examined=len(response),
+            exact_matches=len(exact),
+        )
+    if partial_count:
+        return _unknown_reconciliation(
+            identity,
+            "destination_partial_match",
+            examined=len(response),
+            exact_matches=len(exact),
+            partial_matches=partial_count,
+        )
+    if not exact:
+        return {
+            "status": "failed",
+            "reason": "destination_absent",
+            "evidence": {
+                "repository": identity.repository,
+                "intended_head_sha": identity.intended_head_sha,
+                "effect_digest": identity.digest,
+                "examined": len(response),
+                "exact_matches": 0,
+            },
+        }
+    return {
+        "status": "succeeded",
+        "evidence": {
+            "repository": identity.repository,
+            "intended_head_sha": identity.intended_head_sha,
+            "effect_digest": identity.digest,
+            **exact[0],
+        },
+    }
 
 
 def _env_truthy(name: str) -> bool:
@@ -348,8 +649,9 @@ def _release_reservation(
 
     Called after ``gh pr create`` returned an error. Best-effort —
     failure to release means the next retry under the same hint has
-    to wait for the stale-pending threshold (default 10 min) before
-    re-acquiring. Log loudly so the operator can spot stuck rows.
+    to reconcile with the destination or hold for remediation rather
+    than re-acquiring by elapsed time. Log loudly so the operator can
+    spot stuck rows.
     """
     if universe_dir is None or not idempotency_hint:
         return
@@ -1215,7 +1517,7 @@ def run_github_pr_effector(
     if isinstance(raw_hint, str):
         idempotency_hint = raw_hint.strip()
 
-    # â”€â”€ Phase 1 backward-compat path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Phase 1 backward-compat path.
     # A packet without ``destination`` is a Phase 1 packet by definition
     # — Phase 2 made the field part of the canonical shape. Preserve the
     # Phase-1 dry-run evidence shape exactly so existing tests + consumers
@@ -1238,8 +1540,15 @@ def run_github_pr_effector(
         }
 
     universe_dir = _resolve_universe_dir(base_path)
+    from tinyassets.idempotency import resolve_effector_identity
 
-    # â”€â”€ Gate 0: soul-scoped effect-authority â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    idempotency_hint = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+        universe_dir=universe_dir,
+    ).active_key
+
+    # Gate 0: soul-scoped effect authority.
     # The running universe's soul is the source of effect-authority (gap 1 of
     # the souled-universe self-maintenance model). A universe whose soul.md
     # declares effect_authority grants must include this sink:destination, or
@@ -1300,7 +1609,7 @@ def run_github_pr_effector(
             "matched_output_key": matched_key,
         }
 
-    # â”€â”€ Gate 2: consent grant â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 2: consent grant.
     if not _check_consent(universe_dir, destination):
         return {
             "dry_run": True,
@@ -1310,13 +1619,13 @@ def run_github_pr_effector(
             "intent": packet,
             "matched_output_key": matched_key,
             "hint": (
-                "Call extensions action=grant_effector_consent "
-                f"sink={EXTERNAL_WRITE_SINK_GITHUB_PR} "
-                f"destination={destination} to authorize this universe."
+                "Effector consent grants are not exposed by the advertised "
+                "handles; an operator must authorize this universe through "
+                "the internal consent surface."
             ),
         }
 
-    # â”€â”€ Gate 3: idempotency receipt (atomic reservation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 3: idempotency receipt (atomic reservation).
     # Round-2 P1.1: the round-1 sequence (lookup → invoke → record)
     # was non-atomic. Two concurrent threads could both observe "no
     # receipt" and both invoke ``gh pr create``. We now reserve the
@@ -1385,13 +1694,32 @@ def run_github_pr_effector(
             "hint": (
                 "Another worker is currently invoking gh pr create "
                 "under the same idempotency_hint. Retry after it "
-                "settles (or wait for the stale-pending threshold)."
+                "settles."
             ),
             "intent": packet,
         }
+    if reservation_status == "reconciliation_required":
+        from tinyassets.effectors.outbound_boundary import (
+            hold_unreconciled_pending,
+        )
+
+        hold = hold_unreconciled_pending(
+            universe_dir=universe_dir,
+            effect_key=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+            run_id=run_id,
+        )
+        return {
+            **hold,
+            "dry_run": True,
+            "phase": "phase_2",
+            "destination": destination,
+            "idempotency_hint": idempotency_hint,
+            "matched_output_key": matched_key,
+            "intent": packet,
+        }
     if reservation_status not in (
-        "reserved", "reserved_after_stale",
-        "reserved_after_failed", "no_hint",
+        "reserved", "reserved_after_failed", "no_hint",
     ):
         # Defensive — unknown reservation shape. Treat conservatively
         # as in-flight so we don't fire a duplicate.
@@ -1409,7 +1737,7 @@ def run_github_pr_effector(
     # We hold the reservation (or there was no hint so we proceed
     # without one). Invoke the side-effect.
 
-    # â”€â”€ Real write â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Real write.
     payload = packet.get("payload") or {}
     payload = payload if isinstance(payload, dict) else {}
 
@@ -1481,11 +1809,7 @@ def run_github_pr_effector(
         evidence["label_error"] = invocation["label_error"]
     if idempotency_hint:
         evidence["idempotency_hint"] = idempotency_hint
-    # Reservation status is surfaced so a downstream auditor can see
-    # whether this run reclaimed a stale row.
-    if reservation_status in (
-        "reserved_after_stale", "reserved_after_failed",
-    ):
+    if reservation_status == "reserved_after_failed":
         evidence["reservation_origin"] = reservation_status
     if idempotency_hint:
         finalized = _finalize_receipt(
@@ -1495,11 +1819,17 @@ def run_github_pr_effector(
             run_id=run_id,
         )
         if not finalized:
-            # The reservation row we held was rewritten by another
-            # writer between our reserve and our finalize. The PR
-            # already exists; flag the inconsistency so the operator
-            # can spot it without us masking the successful write.
-            evidence["receipt_finalize_failed"] = True
+            from tinyassets.effectors.outbound_boundary import (
+                hold_receipt_finalization_failure,
+            )
+
+            evidence = hold_receipt_finalization_failure(
+                universe_dir=universe_dir,
+                effect_key=idempotency_hint,
+                sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+                run_id=run_id,
+                destination_evidence=evidence,
+            )
     return evidence
 
 

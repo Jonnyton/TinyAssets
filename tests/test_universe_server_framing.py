@@ -91,7 +91,19 @@ def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
     assert "build_branch" in text
     assert "no simulation" not in text
     assert "affirmative consent" not in text
-    assert len(tool.description or "") < 900
+    # #1733 intentionally expanded the I/O contract to restore exact action
+    # catalog parity. Keep that replacement contract pinned instead of the
+    # superseded pre-catalog character budget.
+    assert "action groups:" in text
+    for action in (
+        "get_action_scope_status",
+        "list_run_receipts",
+        "schedule_branch",
+    ):
+        assert action in text
+    # The reconciled action catalog is 1,948 chars. This leaves about 33%
+    # growth headroom while staying under half the 6,000-char MCP ceiling.
+    assert len(tool.description or "") < 2600
 
 
 def test_wiki_tool_description_is_not_a_catchall() -> None:
@@ -150,9 +162,11 @@ def test_control_station_prompt_carries_the_rules() -> None:
         or "fully general" in text
         or "domain-agnostic" in text
     )
-    # Routing: extensions for workflow design, wiki for knowledge only.
-    assert "extensions" in text
-    assert "wiki" in text
+    # Routing: canonical graph handles for workflows, page handles for knowledge.
+    assert "write_graph" in text
+    assert "run_graph" in text
+    assert "read_page" in text
+    assert "write_page" in text
     # Never-simulate clause — rephrased; positive-phrased "say so plainly
     # and stop" carries the contract post-relocation.
     assert "say so plainly and stop" in text or "no simulation" in text or "fake output" in text
@@ -168,25 +182,19 @@ def test_control_station_promotes_chatbot_builder_behaviors_page() -> None:
     text = _CONTROL_STATION_PROMPT.lower()
     assert "chatbot-builder-behaviors.md" in text
     assert "canonical chatbot-builder behavior" in text
-    assert "wiki action=read" in text
+    assert 'read_page page="pages/plans/chatbot-builder-behaviors.md"' in text
     assert "stale memory" in text
 
 
-def test_control_station_routes_daemon_memory_actions() -> None:
-    """Daemon mini-brain actions must be discoverable from control_station."""
+def test_control_station_reports_daemon_memory_surface_gap() -> None:
+    """Daemon-memory capabilities must remain named as an explicit gap."""
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
-    for action in [
-        "daemon_memory_capture",
-        "daemon_memory_search",
-        "daemon_memory_review",
-        "daemon_memory_promote",
-        "daemon_memory_status",
-    ]:
-        assert action in text
-    assert "inputs_json" in text
-    assert "daemon_id" in text
+    for capability in ["capture", "search", "review", "promotion", "status"]:
+        assert capability in text
+    assert "daemon-memory" in text
+    assert "not exposed by the advertised" in text
 
 
 def test_universe_schema_exposes_daemon_id_for_daemon_memory_actions() -> None:
@@ -200,14 +208,14 @@ def test_universe_schema_exposes_daemon_id_for_daemon_memory_actions() -> None:
     assert "daemon_id" not in tool.parameters.get("required", [])
 
 
-def test_control_station_routes_treasury_status_as_read_only() -> None:
-    """Treasury/cost-ledger status must be discoverable as a read-only route."""
+def test_control_station_reports_treasury_status_surface_gap() -> None:
+    """Treasury status stays named without inventing a canonical route."""
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
     text = _CONTROL_STATION_PROMPT
-    assert "treasury_status" in text
-    assert "read-only" in text.lower()
-    assert "no autonomous spend" in text.lower()
+    assert "read-only treasury" in text.lower()
+    assert "not exposed by" in text.lower()
+    assert "never substitute a write" in text.lower()
 
 
 def test_extension_guide_prompt_points_to_control_station() -> None:
@@ -226,15 +234,11 @@ def test_extension_guide_prompt_points_to_control_station() -> None:
     assert "node" in text or "branch" in text
 
 
-def test_control_station_prompts_list_first_for_query_intent() -> None:
-    """#42 post-4ef0769: list_branches USE-THIS-FIRST guidance + user-
-    phrase enumeration moved from extensions tool description to
-    control_station prompt's canonical Intent-Disambiguation section.
-    """
+def test_control_station_prompts_canonical_read_first_for_query_intent() -> None:
+    """Query intent must route to a canonical read before any write."""
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
-    # list_branches is the query-intent routing target.
-    assert "list_branches" in text
+    assert 'read_graph target="graph"' in text
     # Query-intent cue phrases enumerated.
     user_phrases = [
         "what do i have",
@@ -274,11 +278,10 @@ def test_branch_design_guide_prompt_covers_branch_authoring() -> None:
     text = _BRANCH_DESIGN_GUIDE.lower()
     # Guide covers branches as the core concept.
     assert "branch" in text
-    # References run_branch so authors understand the runtime contract.
-    assert "run_branch" in text or "extensions" in text
+    assert "run_graph" in text
     assert "batch_receipt" in text
     assert "not an authorization grant" in text
-    assert "source_code approval" in text
+    assert "source_code" in text and "approval" in text
 
 
 def test_control_station_pins_register_explicit_ask_rule() -> None:
@@ -292,7 +295,7 @@ def test_control_station_pins_register_explicit_ask_rule() -> None:
     on orient, not in tool-metadata space.
     """
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-    text = _CONTROL_STATION_PROMPT.lower()
+    text = " ".join(_CONTROL_STATION_PROMPT.lower().split())
     # Intent-disambiguation section carries the rule.
     assert "intent disambiguation" in text or "explicit user" in text
     # register is named as a write that requires explicit ask.
@@ -318,8 +321,8 @@ def test_control_station_pins_build_branch_explicit_ask_rule() -> None:
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     assert "build_branch" in text or "build" in text
-    # list_branches as the query-intent alternative.
-    assert "list_branches" in text
+    assert 'read_graph target="graph"' in text
+    assert "new-workflow/node registration is currently unavailable" in text
     # Explicit-ask language at canonical site.
     assert "explicit" in text or "ambiguous" in text
 
@@ -348,8 +351,7 @@ def test_control_station_prompt_has_cross_universe_section() -> None:
     text = _CONTROL_STATION_PROMPT.lower()
     # Named section header.
     assert "cross-universe" in text
-    # The load-bearing header shape the bot must recognize.
-    assert "universe: <id>" in text or "universe:" in text
+    assert "universe identifier" in text
     # Transfer prohibition.
     assert "never carry facts" in text or "never transfer" in text
     # Ground-truth guidance — tool output over chat memory.
@@ -365,9 +367,9 @@ def test_control_station_prompt_has_intent_disambiguation() -> None:
     text = _CONTROL_STATION_PROMPT.lower()
     assert "intent disambiguation" in text
     # Each intent class must be present with at least one cue phrase.
-    assert "query" in text and "list_branches" in text
-    assert "build" in text and ("build_branch" in text or "register" in text)
-    assert "run" in text and "run_branch" in text
+    assert "query" in text and 'read_graph target="graph"' in text
+    assert "build" in text and "new-workflow/node registration" in text
+    assert "run" in text and "run_graph" in text
     # Ambiguity → ASK, not write.
     assert "ask" in text
     assert "never write state on ambiguous intent" in text or "do not write state" in text
@@ -394,9 +396,9 @@ def test_control_station_prompt_has_rule_7_assume_workflow() -> None:
     hard rules.
     """
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-    text = _CONTROL_STATION_PROMPT.lower()
+    text = re.sub(r"\s+", " ", _CONTROL_STATION_PROMPT.lower())
     # Aggressive-assume directive present.
-    assert "assume workflow" in text or "aggressive assumption is a feature" in text
+    assert "assume tinyassets" in text or "aggressive assumption is a feature" in text
     # Forbids disambiguation pickers on ambiguous references.
     assert "disambiguation picker" in text or "do not ask" in text
     # Enumerates at least two ambiguous user phrases the rule applies to.

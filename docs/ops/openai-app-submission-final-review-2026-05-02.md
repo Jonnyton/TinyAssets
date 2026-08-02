@@ -1,5 +1,11 @@
 # OpenAI App Submission Final Review Packet - 2026-05-02
 
+> **SUPERSEDED / HISTORICAL — DO NOT EXECUTE.** This packet records the
+> 2026-05-02 review state. The sole remote endpoint is
+> `https://tinyassets.io/mcp`; `/mcp-directory*` is retired to an ordinary 404.
+> Use the active `reconcile-external-connector-manifests` OpenSpec change for
+> current submission readiness and proof.
+
 Purpose: one current review packet for deciding when TinyAssets is ready to
 submit to OpenAI Apps review.
 

@@ -375,6 +375,7 @@ def list_conformance_packs(
     goal_id: str = "",
     branch_def_id: str = "",
     standard_id: str = "",
+    public_goal_ids: set[str] | None = None,
     limit: int = 50,
 ) -> list[ConformancePack]:
     db = _ensure_schema(base_path)
@@ -389,6 +390,11 @@ def list_conformance_packs(
     if standard_id:
         clauses.append("standard_id = ?")
         params.append(standard_id)
+    if public_goal_ids is not None:
+        clauses.append(
+            "goal_id IN (SELECT value FROM json_each(?))"
+        )
+        params.append(json.dumps(sorted(public_goal_ids)))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with _connect(db) as conn:
         rows = conn.execute(

@@ -167,6 +167,7 @@ def _coerce_node_keys(
 def _append_global_ledger(
     action: str,
     *,
+    actor: str,
     target: str,
     summary: str,
     payload: dict[str, Any] | None = None,
@@ -181,7 +182,7 @@ def _append_global_ledger(
 
     _append_ledger(
         _base_path(), action,
-        target=target, summary=summary, payload=payload,
+        actor=actor, target=target, summary=summary, payload=payload,
     )
 
 
@@ -307,6 +308,11 @@ def _dispatch_branch_action(
     from tinyassets.api.engine_helpers import _format_dirty_file_conflict, _truncate
 
     _ensure_workflow_db()
+    actor = _request_branch_actor()
+    if action in _BRANCH_WRITE_ACTIONS and actor is None:
+        if action in {"create_branch", "build_branch"}:
+            return json.dumps({"error": "Authenticated branch subject required."})
+        return _branch_authority_denied()
     try:
         result_str = handler(kwargs)
     except DirtyFileError as exc:
@@ -356,7 +362,11 @@ def _dispatch_branch_action(
             )
         summary = _truncate(" ".join(summary_bits))
         _append_global_ledger(
-            action, target=str(target), summary=summary, payload=None,
+            action,
+            actor=actor,
+            target=str(target),
+            summary=summary,
+            payload=None,
         )
     except Exception as exc:
         logger.warning("Ledger write failed for branch action %s: %s", action, exc)
@@ -366,7 +376,6 @@ def _dispatch_branch_action(
 
 def _ext_branch_create(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
-        _current_actor,
         _format_commit_failed,
         _storage_backend,
     )
@@ -376,6 +385,9 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
     name = kwargs.get("name", "").strip()
     if not name:
         return json.dumps({"error": "name is required for create_branch."})
+    actor = _request_branch_actor()
+    if actor is None:
+        return json.dumps({"error": "Authenticated branch subject required."})
 
     visibility_in = (kwargs.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
@@ -383,13 +395,13 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
         name=name,
         description=kwargs.get("description", ""),
         domain_id=kwargs.get("domain_id") or "workflow",
-        author=kwargs.get("author") or _current_actor(),
+        author=actor,
         visibility=visibility,
     )
     try:
         saved, _commit = _storage_backend().save_branch_and_commit(
             branch,
-            author=git_author(_current_actor()),
+            author=git_author(actor),
             message=f"branches.create_branch: {name}",
             force=bool(kwargs.get("force", False)),
         )
@@ -403,6 +415,95 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
     })
 
 
+def _request_branch_actor() -> str | None:
+    """Return the credential-validated request subject, never an env actor."""
+    from tinyassets.api.permissions import current_request_actor_id
+
+    actor = (current_request_actor_id() or "").strip()
+    if not actor or actor == "anonymous":
+        return None
+    return actor
+
+
+def _branch_not_found_message(selector: str) -> str:
+    return f"Branch '{selector}' not found."
+
+
+def _branch_not_found(selector: str) -> str:
+    return json.dumps({"error": _branch_not_found_message(selector)})
+
+
+def _branch_version_not_found_message(selector: str) -> str:
+    return f"Branch version '{selector}' not found."
+
+
+def _branch_version_not_found(selector: str) -> str:
+    return json.dumps({"error": _branch_version_not_found_message(selector)})
+
+
+def _branch_authorized(branch: dict[str, Any]) -> bool:
+    actor = _request_branch_actor()
+    return actor is not None and actor == (branch.get("author") or "").strip()
+
+
+def _branch_authority_denied() -> str:
+    return json.dumps({"error": "Authenticated branch author required."})
+
+
+def _resolve_readable_branch(
+    selector: str,
+    base_path: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Resolve an ID/name only when the request subject may read the branch."""
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        list_branch_definitions,
+    )
+
+    selector = (selector or "").strip()
+    if not selector:
+        return None
+    actor = _request_branch_actor()
+    try:
+        branch = get_branch_definition(base_path, branch_def_id=selector)
+    except KeyError:
+        branch = None
+    if branch is not None:
+        visibility = branch.get("visibility", "public") or "public"
+        if visibility == "public" or (
+            actor is not None and branch.get("author", "") == actor
+        ):
+            return selector, branch
+        return None
+
+    needle = selector.lower()
+    for candidate in list_branch_definitions(
+        base_path,
+        viewer=actor or "",
+    ):
+        if (candidate.get("name") or "").lower() == needle:
+            return candidate["branch_def_id"], candidate
+    return None
+
+
+def _resolve_readable_version(
+    version_id: str,
+    base_path: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Resolve a version only when its persisted parent branch is readable."""
+    from tinyassets.branch_versions import get_branch_version
+
+    version_id = (version_id or "").strip()
+    if not version_id:
+        return None
+    version = get_branch_version(base_path, version_id)
+    if version is None:
+        return None
+    if _resolve_readable_branch(version.branch_def_id, base_path) is None:
+        return None
+    return version_id, version.to_dict()
+
+
 def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
     """Return branch_def_id for either a branch_def_id or a branch name.
 
@@ -411,40 +512,34 @@ def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
     Returns the original string unchanged if no match is found — the caller's
     KeyError handler will surface the "not found" error as usual.
     """
-    from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.daemon_server import get_branch_definition, list_branch_definitions
-
-    if not bid_or_name:
-        return bid_or_name
-    try:
-        get_branch_definition(base_path, branch_def_id=bid_or_name)
-        return bid_or_name
-    except KeyError:
-        pass
-    needle = bid_or_name.lower()
-    for b in list_branch_definitions(base_path, viewer=_current_actor()):
-        if (b.get("name") or "").lower() == needle:
-            return b["branch_def_id"]
-    return bid_or_name
+    resolved = _resolve_readable_branch(bid_or_name, base_path)
+    return resolved[0] if resolved is not None else bid_or_name
 
 
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.api.market import _gates_enabled
-    from tinyassets.daemon_server import get_branch_definition, list_gate_claims
+    from tinyassets.daemon_server import list_gate_claims
 
-    bid = _resolve_branch_id(kwargs.get("branch_def_id", "").strip(), _base_path())
-    if not bid:
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
         return json.dumps({"error": "branch_def_id is required."})
-    try:
-        branch = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
-    # Phase 6.2.2 — private Branches are not discoverable by non-owners.
-    # Match the "not found" envelope so existence isn't leaked.
-    visibility = branch.get("visibility", "public") or "public"
-    if visibility == "private" and branch.get("author", "") != _current_actor():
-        return json.dumps({"error": f"Branch '{bid}' not found."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, branch = resolved
+    branch = dict(branch)
+    fork_from = branch.get("fork_from")
+    if fork_from and _resolve_readable_version(
+        fork_from,
+        str(_base_path()),
+    ) is None:
+        branch.pop("fork_from", None)
+    parent_def_id = (branch.get("parent_def_id") or "").strip()
+    if parent_def_id and _resolve_readable_branch(
+        parent_def_id,
+        str(_base_path()),
+    ) is None:
+        branch.pop("parent_def_id", None)
     # Phase 6.4: non-retracted claims for this Branch across all
     # Goals. Flag-gated placeholder when GATES_ENABLED=0 so UIs
     # render "gates off" distinct from "no claims yet."
@@ -453,6 +548,7 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
             _base_path(),
             branch_def_id=bid,
             include_retracted=False,
+            public_only=True,
         )
     else:
         branch["gate_claims"] = []
@@ -471,30 +567,25 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
 
 
 def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import (
-        get_branch_definition,
-        save_branch_definition,
-    )
+    from tinyassets.daemon_server import save_branch_definition
 
-    bid = _resolve_branch_id(
-        (kwargs.get("branch_def_id") or "").strip(), str(_base_path()),
-    )
+    selector = (kwargs.get("branch_def_id") or "").strip()
     nid = (kwargs.get("node_id") or "").strip()
-    if not bid or not nid:
+    if not selector or not nid:
         return json.dumps({
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
-
-    try:
-        source = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"Branch '{bid}' not found.",
-        })
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source = resolved
+    if not _branch_authorized(source):
+        return _branch_authority_denied()
+    actor = _request_branch_actor()
+    if actor is None:
+        return _branch_authority_denied()
 
     staging = BranchDefinition.from_dict(source)
     target_node = next(
@@ -511,7 +602,6 @@ def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
             "error": f"Node '{nid}' has no source_code to approve.",
         })
 
-    actor = _current_actor()
     source_hash = _source_code_hash(target_node.source_code)
     target_node.approved = True
     target_node.approved_by = actor
@@ -546,7 +636,6 @@ _VALID_BRANCH_LIST_SCOPES = {"published", "all", "mine"}
 
 
 def _ext_branch_list(kwargs: dict[str, Any]) -> str:
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_server import list_branch_definitions
 
     scope = (kwargs.get("scope") or "published").strip().lower()
@@ -558,7 +647,9 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             ),
         })
 
-    actor = _current_actor()
+    actor = _request_branch_actor()
+    if scope == "mine" and actor is None:
+        return json.dumps({"branches": [], "count": 0})
 
     # Phase 6.2.2 — visibility-aware listing. Viewer sees public
     # Branches and any private Branches they authored.
@@ -567,7 +658,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         domain_id=kwargs.get("domain_id", ""),
         author=kwargs.get("author", ""),
         goal_id=kwargs.get("goal_id", ""),
-        viewer=actor,
+        viewer=actor or "",
     )
 
     # requires_sandbox filter: "none" = design-only branches only (no node
@@ -622,9 +713,15 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
 def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import delete_branch_definition
 
-    bid = kwargs.get("branch_def_id", "").strip()
-    if not bid:
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
         return json.dumps({"error": "branch_def_id is required."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, branch = resolved
+    if not _branch_authorized(branch):
+        return _branch_authority_denied()
     removed = delete_branch_definition(_base_path(), branch_def_id=bid)
     if not removed:
         return json.dumps({"error": f"Branch '{bid}' not found."})
@@ -633,21 +730,28 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
 
 def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
-        _current_actor,
         _format_commit_failed,
         _storage_backend,
     )
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
     from tinyassets.identity import git_author
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
-    bid = kwargs.get("branch_def_id", "").strip()
+    selector = kwargs.get("branch_def_id", "").strip()
     nid = kwargs.get("node_id", "").strip()
-    if not bid or not nid:
+    if not selector or not nid:
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source_dict = resolved
+    if not _branch_authorized(source_dict):
+        return _branch_authority_denied()
+    actor = _request_branch_actor()
+    if actor is None:
+        return _branch_authority_denied()
 
     # Normalize kwargs into a node spec dict so we can share the
     # build_branch resolver (which checks node_ref / intent and
@@ -661,17 +765,11 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
         "output_keys": kwargs.get("output_keys", ""),
         "source_code": kwargs.get("source_code", ""),
         "prompt_template": kwargs.get("prompt_template", ""),
-        "author": kwargs.get("author") or _current_actor(),
     }
     if "node_ref" in kwargs:
         raw["node_ref"] = kwargs["node_ref"]
     if "intent" in kwargs:
         raw["intent"] = kwargs["intent"]
-
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
 
     branch = BranchDefinition.from_dict(source_dict)
     err = _apply_node_spec(branch, raw)
@@ -684,7 +782,7 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
     try:
         _storage_backend().save_branch_and_commit(
             branch,
-            author=git_author(_current_actor()),
+            author=git_author(actor),
             message=f"branches.add_node: {bid}.{final_nid}",
             force=bool(kwargs.get("force", False)),
         )
@@ -706,27 +804,30 @@ def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
 
 def _ext_branch_connect_nodes(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
-        _current_actor,
         _format_commit_failed,
         _storage_backend,
     )
     from tinyassets.branches import BranchDefinition, EdgeDefinition
-    from tinyassets.daemon_server import get_branch_definition
     from tinyassets.identity import git_author
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
-    bid = kwargs.get("branch_def_id", "").strip()
+    selector = kwargs.get("branch_def_id", "").strip()
     src = kwargs.get("from_node", "").strip()
     dst = kwargs.get("to_node", "").strip()
-    if not (bid and src and dst):
+    if not (selector and src and dst):
         return json.dumps({
             "error": "branch_def_id, from_node, and to_node are required.",
         })
 
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source_dict = resolved
+    if not _branch_authorized(source_dict):
+        return _branch_authority_denied()
+    actor = _request_branch_actor()
+    if actor is None:
+        return _branch_authority_denied()
 
     branch = BranchDefinition.from_dict(source_dict)
     branch.edges.append(EdgeDefinition(from_node=src, to_node=dst))
@@ -734,7 +835,7 @@ def _ext_branch_connect_nodes(kwargs: dict[str, Any]) -> str:
     try:
         _storage_backend().save_branch_and_commit(
             branch,
-            author=git_author(_current_actor()),
+            author=git_author(actor),
             message=f"branches.connect_nodes: {bid} {src}->{dst}",
             force=bool(kwargs.get("force", False)),
         )
@@ -753,26 +854,29 @@ def _ext_branch_connect_nodes(kwargs: dict[str, Any]) -> str:
 
 def _ext_branch_set_entry_point(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
-        _current_actor,
         _format_commit_failed,
         _storage_backend,
     )
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
     from tinyassets.identity import git_author
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
-    bid = kwargs.get("branch_def_id", "").strip()
+    selector = kwargs.get("branch_def_id", "").strip()
     nid = kwargs.get("node_id", "").strip()
-    if not (bid and nid):
+    if not (selector and nid):
         return json.dumps({
             "error": "branch_def_id and node_id are required.",
         })
 
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source_dict = resolved
+    if not _branch_authorized(source_dict):
+        return _branch_authority_denied()
+    actor = _request_branch_actor()
+    if actor is None:
+        return _branch_authority_denied()
 
     branch = BranchDefinition.from_dict(source_dict)
     branch.entry_point = nid
@@ -780,7 +884,7 @@ def _ext_branch_set_entry_point(kwargs: dict[str, Any]) -> str:
     try:
         _storage_backend().save_branch_and_commit(
             branch,
-            author=git_author(_current_actor()),
+            author=git_author(actor),
             message=f"branches.set_entry_point: {bid}.{nid}",
             force=bool(kwargs.get("force", False)),
         )
@@ -798,27 +902,30 @@ def _ext_branch_set_entry_point(kwargs: dict[str, Any]) -> str:
 
 def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
-        _current_actor,
         _format_commit_failed,
         _storage_backend,
     )
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
     from tinyassets.identity import git_author
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
-    bid = kwargs.get("branch_def_id", "").strip()
+    selector = kwargs.get("branch_def_id", "").strip()
     fname = kwargs.get("field_name", "").strip()
     ftype = kwargs.get("field_type", "").strip() or "str"
-    if not (bid and fname):
+    if not (selector and fname):
         return json.dumps({
             "error": "branch_def_id and field_name are required.",
         })
 
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source_dict = resolved
+    if not _branch_authorized(source_dict):
+        return _branch_authority_denied()
+    actor = _request_branch_actor()
+    if actor is None:
+        return _branch_authority_denied()
 
     branch = BranchDefinition.from_dict(source_dict)
     if any(f.get("name") == fname for f in branch.state_schema):
@@ -847,7 +954,7 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
     try:
         _storage_backend().save_branch_and_commit(
             branch,
-            author=git_author(_current_actor()),
+            author=git_author(actor),
             message=f"branches.add_state_field: {bid}.{fname}",
             force=bool(kwargs.get("force", False)),
         )
@@ -865,15 +972,14 @@ def _ext_branch_add_state_field(kwargs: dict[str, Any]) -> str:
 
 def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
 
-    bid = kwargs.get("branch_def_id", "").strip()
-    if not bid:
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
         return json.dumps({"error": "branch_def_id is required."})
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source_dict = resolved
 
     branch = BranchDefinition.from_dict(source_dict)
     errors = branch.validate()
@@ -1051,6 +1157,8 @@ def _related_wiki_pages(branch: dict[str, Any]) -> dict[str, Any]:
     if not terms:
         return {"items": [], "truncated_count": 0}
 
+    from tinyassets.api import visibility
+
     pages = (
         _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
     )
@@ -1060,6 +1168,8 @@ def _related_wiki_pages(branch: dict[str, Any]) -> dict[str, Any]:
         if not raw:
             continue
         meta, body = _parse_frontmatter(raw)
+        if not visibility.page_visible_in_listing(meta, universe_id=""):
+            continue
         title = meta.get("title", p.stem)
         haystack = (title + "\n" + body).lower()
         matched_via: list[str] = []
@@ -1084,15 +1194,14 @@ def _related_wiki_pages(branch: dict[str, Any]) -> dict[str, Any]:
 
 def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
 
-    bid = _resolve_branch_id(kwargs.get("branch_def_id", "").strip(), _base_path())
-    if not bid:
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
         return json.dumps({"error": "branch_def_id is required."})
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source_dict = resolved
 
     branch = BranchDefinition.from_dict(source_dict)
     errors = branch.validate()
@@ -1121,8 +1230,9 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
     approval_warning_lines = [
         f"  - APPROVAL REQUIRED: node '{n['node_id']}' ({n['display_name']}) has"
-        " unapproved source_code — host must run extensions action=approve_source_code"
-        " before this branch can run."
+        " unapproved source_code — the host must approve it through the internal "
+        "operator surface before this branch can run; approval is not exposed "
+        "by the advertised handles."
         for n in unapproved_sc
     ]
 
@@ -1159,8 +1269,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "approved before it can run."
         if unapproved_sc
         else (
-            "Note: run this branch with action='run_branch' once validated. "
-            "Pass state field values via inputs_json."
+            f'Note: run this branch with run_graph branch_def_id="{bid}" '
+            'inputs_json="<state JSON>" once validated.'
         )
     )
     summary_parts += ["", "Graph:", mermaid, "", run_note]
@@ -1169,13 +1279,21 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
     # Lineage: expose fork_from + compute fork_descendants.
     fork_from = source_dict.get("fork_from")
+    if fork_from and _resolve_readable_version(
+        fork_from,
+        str(_base_path()),
+    ) is None:
+        fork_from = None
     from tinyassets.branch_versions import list_branch_versions
     from tinyassets.daemon_server import list_branch_definitions
 
     my_versions = list_branch_versions(_base_path(), bid, limit=500)
     my_version_ids = {v.branch_version_id for v in my_versions}
     fork_descendants: list[dict[str, Any]] = []
-    for b in list_branch_definitions(_base_path(), include_private=False):
+    for b in list_branch_definitions(
+        _base_path(),
+        viewer=_request_branch_actor() or "",
+    ):
         ff = b.get("fork_from")
         if ff and ff in my_version_ids:
             fork_descendants.append({
@@ -1186,7 +1304,7 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
                 ),
             })
 
-    return json.dumps({
+    response = {
         "branch_def_id": bid,
         "summary": summary,
         "mermaid": mermaid,
@@ -1194,11 +1312,13 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "error_count": len(errors),
         "runnable": not errors and not unapproved_sc,
         "unapproved_source_code_nodes": unapproved_sc,
-        "fork_from": fork_from,
         "fork_descendants": fork_descendants,
         "related_wiki_pages": related["items"],
         "related_wiki_pages_truncated": related["truncated_count"],
-    })
+    }
+    if fork_from is not None:
+        response["fork_from"] = fork_from
+    return json.dumps(response)
 
 
 # ── Composite: build_branch / patch_branch ────────────────────────────────
@@ -1221,8 +1341,6 @@ def _branch_authoring_batch_receipt(
     request_id: str = "",
 ) -> dict[str, Any]:
     """Return structured evidence for one composite Branch authoring call."""
-    from tinyassets.api.engine_helpers import _current_actor
-
     node_defs = list(getattr(branch, "node_defs", []) or [])
     source_code_node_count = 0
     approved_source_code_node_count = 0
@@ -1248,7 +1366,7 @@ def _branch_authoring_batch_receipt(
     receipt: dict[str, Any] = {
         "receipt_type": "branch_authoring_batch",
         "action": action,
-        "actor": _current_actor(),
+        "actor": _request_branch_actor(),
         "branch_def_id": getattr(branch, "branch_def_id", ""),
         "branch_name": getattr(branch, "name", ""),
         "operation_count": operation_count,
@@ -1455,6 +1573,14 @@ def _resolve_node_spec(
         ref_nid = (node_ref.get("node_id") or nid).strip()
         if not ref_source or not ref_nid:
             return None, "node_ref requires 'source' and 'node_id'."
+        if ref_source != "standalone":
+            resolved_source = _resolve_readable_branch(
+                ref_source,
+                str(_base_path()),
+            )
+            if resolved_source is None:
+                return None, _branch_not_found_message(ref_source)
+            ref_source = resolved_source[0]
         resolved, err = _lookup_node_body(ref_source, ref_nid)
         if err:
             return None, err
@@ -1465,7 +1591,7 @@ def _resolve_node_spec(
         for field_key in (
             "display_name", "description", "phase", "input_keys",
             "output_keys", "strict_input_isolation", "source_code",
-            "prompt_template", "tools_allowed", "timeout_seconds", "author",
+            "prompt_template", "tools_allowed", "timeout_seconds",
         ):
             if field_key in raw and raw[field_key] not in (None, ""):
                 merged[field_key] = raw[field_key]
@@ -1501,6 +1627,7 @@ def _resolve_node_spec(
             )
     raw = dict(raw)
     raw.pop("approved", None)
+    raw.pop("author", None)
     return raw, ""
 
 
@@ -1526,7 +1653,8 @@ def _lookup_node_body(
         if not hit:
             return {}, (
                 f"standalone node '{node_id}' not found. "
-                "Check `extensions action=list` for registered nodes."
+                "Global registered-node discovery is not exposed by the "
+                "advertised handles."
             )
         return {
             "node_id": hit.get("node_id", node_id),
@@ -1585,12 +1713,11 @@ def _lookup_node_body(
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
-        "Use `extensions action=get_branch` to list its nodes."
+        f'Use `read_graph target="branch" branch_id="{source}"` to list its nodes.'
     )
 
 
 def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import GraphNodeRef, NodeDefinition
 
     resolved, err = _resolve_node_spec(raw)
@@ -1721,7 +1848,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             reasoning_effort=reasoning_effort,
             llm_policy=llm_policy,
             timeout_seconds=timeout_seconds,
-            author=raw.get("author") or _current_actor(),
+            author=raw.get("author") or _request_branch_actor() or "anonymous",
             approved=approved_arg,
             approved_by=approved_by_arg,
             approved_at=approved_at_arg,
@@ -2079,8 +2206,9 @@ def _apply_node_updates(
 
 def _staged_branch_from_spec(
     spec: dict[str, Any],
+    *,
+    fork_version: dict[str, Any] | None = None,
 ) -> tuple[Any, list[str]]:
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
@@ -2089,7 +2217,7 @@ def _staged_branch_from_spec(
         description=spec.get("description") or "",
         domain_id=(spec.get("domain_id") or "").strip() or "workflow",
         goal_id=(spec.get("goal_id") or "").strip(),
-        author=(spec.get("author") or _current_actor()),
+        author=_request_branch_actor() or "anonymous",
         tags=list(spec.get("tags") or []),
         skills=[],
         fork_from=spec.get("fork_from") or None,
@@ -2125,11 +2253,8 @@ def _staged_branch_from_spec(
         )
 
     if branch.fork_from:
-        from tinyassets.branch_versions import get_branch_version
-
-        parent_version = get_branch_version(_base_path(), branch.fork_from)
-        if parent_version is not None:
-            parent = BranchDefinition.from_dict(parent_version.snapshot)
+        if fork_version is not None:
+            parent = BranchDefinition.from_dict(fork_version["snapshot"])
             parent_copy = BranchDefinition.from_dict(parent.to_dict())
             parent_skills = parent_copy.skills
             if not parent_skills and parent.branch_def_id:
@@ -2228,6 +2353,8 @@ def _build_branch_text(branch: Any, *, truncated: bool) -> str:
 def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import save_branch_definition
 
+    if _request_branch_actor() is None:
+        return json.dumps({"error": "Authenticated branch subject required."})
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
     raw = (kwargs.get("spec_json") or "").strip()
     if not raw:
@@ -2263,11 +2390,25 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             }],
         })
 
+    fork_version: dict[str, Any] | None = None
+    fork_selector = (spec.get("fork_from") or "").strip()
+    if fork_selector:
+        resolved_fork = _resolve_readable_version(
+            fork_selector,
+            str(_base_path()),
+        )
+        if resolved_fork is None:
+            return _branch_version_not_found(fork_selector)
+        _, fork_version = resolved_fork
+
     top_level_goal_id = (kwargs.get("goal_id") or "").strip()
     if top_level_goal_id:
         spec = {**spec, "goal_id": top_level_goal_id}
 
-    branch, staging_errors = _staged_branch_from_spec(spec)
+    branch, staging_errors = _staged_branch_from_spec(
+        spec,
+        fork_version=fork_version,
+    )
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
@@ -2544,12 +2685,8 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                 f"set_fork_from: fork_from is already set to '{branch.fork_from}' "
                 "and is immutable after set."
             )
-        from tinyassets.branch_versions import get_branch_version
-        if get_branch_version(_base_path(), bvid) is None:
-            return (
-                f"set_fork_from: '{bvid}' is not a known branch_version_id. "
-                "Pass a published branch_version_id, not a branch_def_id."
-            )
+        if _resolve_readable_version(bvid, str(_base_path())) is None:
+            return _branch_version_not_found_message(bvid)
         branch.fork_from = bvid
         return ""
     return f"unknown op '{name}'"
@@ -2558,19 +2695,13 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
 def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     import copy
 
-    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import (
-        get_branch_definition,
-        save_branch_definition,
-    )
+    from tinyassets.daemon_server import save_branch_definition
 
     verbose = str(kwargs.get("verbose") or "").strip().lower() in ("true", "1", "yes")
-    bid = _resolve_branch_id(
-        (kwargs.get("branch_def_id") or "").strip(), str(_base_path())
-    )
-    if not bid:
+    selector = (kwargs.get("branch_def_id") or "").strip()
+    if not selector:
         return json.dumps({
             "status": "rejected",
             "error": "branch_def_id is required.",
@@ -2595,38 +2726,12 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "error": "changes_json must decode to a JSON list.",
         })
 
-    try:
-        source = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"Branch '{bid}' not found.",
-        })
-
-    # BUG-081: author-gate. Reject patch_branch on a non-author branch
-    # unless the caller explicitly passes force=true. The previous shape
-    # accepted any caller against any public branch, conflating
-    # `visibility=public` (discoverable + readable) with mutation
-    # authority. Slice-0 substrate-readiness probe 2026-05-13 demonstrated
-    # the gap by mutating a chatgpt-community-builder-authored branch
-    # from a non-author session. See pages/bugs/bug-081-... for the
-    # filing.
-    branch_author = (source.get("author") or "").strip()
-    caller = (_current_actor() or "").strip()
-    force_mutate = bool(kwargs.get("force", False))
-    if branch_author and caller and branch_author != caller and not force_mutate:
-        return json.dumps({
-            "status": "rejected",
-            "error": (
-                f"patch_branch denied: branch '{bid}' is authored by "
-                f"'{branch_author}'; caller is '{caller}'. Pass "
-                "force=true to mutate another author's branch, or fork "
-                "it (publish_version + build_branch with fork_from) and "
-                "amend your own copy. See BUG-081."
-            ),
-            "branch_author": branch_author,
-            "caller": caller,
-        })
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source = resolved
+    if not _branch_authorized(source):
+        return _branch_authority_denied()
 
     old_name = source.get("name", "")
     staging = BranchDefinition.from_dict(copy.deepcopy(source))
@@ -2641,6 +2746,13 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             continue
         err = _apply_patch_op(staging, op)
         if err:
+            if (
+                (op.get("op") or "").strip().lower() == "set_fork_from"
+                and err == _branch_version_not_found_message(
+                    (op.get("branch_version_id") or "").strip(),
+                )
+            ):
+                return json.dumps({"error": err})
             per_op_errors.append({
                 "op_index": idx, "op": op, "error": err,
             })
@@ -2682,7 +2794,9 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "suggestions": suggestions,
         })
 
-    actor = _current_actor()
+    actor = _request_branch_actor()
+    if actor is None:
+        return _branch_authority_denied()
     try:
         parent_version = publish_branch_version(
             _base_path(),
@@ -2785,20 +2899,21 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
     so downstream lineage can distinguish pre/post-edit runs.
     """
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import (
-        get_branch_definition,
-        save_branch_definition,
-    )
+    from tinyassets.daemon_server import save_branch_definition
 
-    bid = _resolve_branch_id(
-        (kwargs.get("branch_def_id") or "").strip(), str(_base_path())
-    )
+    selector = (kwargs.get("branch_def_id") or "").strip()
     nid = (kwargs.get("node_id") or "").strip()
-    if not bid or not nid:
+    if not selector or not nid:
         return json.dumps({
             "status": "rejected",
             "error": "branch_def_id and node_id are required.",
         })
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source = resolved
+    if not _branch_authorized(source):
+        return _branch_authority_denied()
 
     # Accept updates as a JSON blob (changes_json) OR as individual
     # kwargs. Individual kwargs are the phone-friendly shape;
@@ -2856,14 +2971,6 @@ def _ext_branch_update_node(kwargs: dict[str, Any]) -> str:
                 "timeout_seconds / input_keys / output_keys / tools_allowed, or a "
                 "changes_json object."
             ),
-        })
-
-    try:
-        source = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"Branch '{bid}' not found.",
         })
 
     staging = BranchDefinition.from_dict(source)
@@ -2989,6 +3096,8 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
         query=query,
         role=role,
         limit=limit,
+        viewer=_request_branch_actor(),
+        public_goals_only=True,
     )
 
     header = "**Reusable nodes**"
@@ -3018,11 +3127,11 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
             lines.append(f"- … and {len(entries) - 12} more.")
         lines.append("")
         lines.append(
-            "_To reuse: call `add_node` with "
-            "`node_ref_json={\"source\": \"<branch_def_id>\", "
-            "\"node_id\": \"<node_id>\"}`, or include the same "
-            "`node_ref` inside a `spec_json` / `changes_json` node "
-            "entry on build_branch / patch_branch. See #66._"
+            "_To reuse: send an `add_node` operation containing "
+            "`node_ref={\"source\": \"<branch_def_id>\", "
+            "\"node_id\": \"<node_id>\"}` through "
+            '`write_graph target="branch" branch_id="<target id>" '
+            'changes_json="[...]". See #66._'
         )
     else:
         if query or role:
@@ -3033,9 +3142,8 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
             )
         else:
             lines.append(
-                "_No nodes registered yet. Build one with "
-                "`extensions action=build_branch` and future callers "
-                "will find it here._"
+                "_No nodes registered yet. Standalone node and new-workflow "
+                "creation are not exposed by the advertised handles._"
             )
 
     return json.dumps({
@@ -3097,14 +3205,11 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
     """
     from tinyassets.api.extensions import VALID_PHASES
     from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import (
-        get_branch_definition,
-        save_branch_definition,
-    )
+    from tinyassets.daemon_server import save_branch_definition
     from tinyassets.phase_vocab import normalize_phase
 
-    bid = (kwargs.get("branch_def_id") or "").strip()
-    if not bid:
+    selector = (kwargs.get("branch_def_id") or "").strip()
+    if not selector:
         return json.dumps({
             "status": "rejected",
             "error": "branch_def_id is required for patch_nodes.",
@@ -3144,13 +3249,12 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
         value = normalize_phase(str(value))
 
     _ensure_workflow_db()
-    try:
-        source = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"Branch '{bid}' not found.",
-        })
+    resolved = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, source = resolved
+    if not _branch_authorized(source):
+        return _branch_authority_denied()
 
     staging = BranchDefinition.from_dict(source)
 
@@ -3264,34 +3368,47 @@ def _resolve_udir() -> Path:
 
 
 def _action_fork_tree(kwargs: dict[str, Any]) -> str:
-    from tinyassets.branch_versions import get_branch_version, list_branch_versions
-    from tinyassets.daemon_server import get_branch_definition, list_branch_definitions
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import list_branch_definitions
 
-    bid = (kwargs.get("branch_def_id") or "").strip()
-    if not bid:
+    selector = (kwargs.get("branch_def_id") or "").strip()
+    if not selector:
         return json.dumps({"error": "branch_def_id is required."})
 
-    try:
-        root = get_branch_definition(_base_path(), branch_def_id=bid)
-    except KeyError:
-        return json.dumps({"error": f"branch_def_id '{bid}' not found."})
+    resolved_root = _resolve_readable_branch(selector, str(_base_path()))
+    if resolved_root is None:
+        return _branch_not_found(selector)
+    bid, root = resolved_root
 
     # Walk ancestor chain via fork_from (branch_version_id → branch_def_id).
     ancestors: list[dict[str, Any]] = []
     seen_bids: set[str] = {bid}
     current_bvid = root.get("fork_from")
+    if current_bvid and _resolve_readable_version(
+        current_bvid,
+        str(_base_path()),
+    ) is None:
+        current_bvid = None
+    visible_fork_from = current_bvid
     while current_bvid:
-        bv = get_branch_version(_base_path(), current_bvid)
-        if bv is None:
+        resolved_version = _resolve_readable_version(
+            current_bvid,
+            str(_base_path()),
+        )
+        if resolved_version is None:
             break
-        anc_bid = bv.branch_def_id
+        _, version = resolved_version
+        anc_bid = version["branch_def_id"]
         if anc_bid in seen_bids:
             break  # cycle guard
         seen_bids.add(anc_bid)
-        try:
-            anc = get_branch_definition(_base_path(), branch_def_id=anc_bid)
-        except KeyError:
+        resolved_ancestor = _resolve_readable_branch(
+            anc_bid,
+            str(_base_path()),
+        )
+        if resolved_ancestor is None:
             break
+        _, anc = resolved_ancestor
         ancestors.append({
             "branch_def_id": anc_bid,
             "name": anc.get("name", ""),
@@ -3304,7 +3421,10 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
     versions = list_branch_versions(_base_path(), bid, limit=200)
     version_ids = {v.branch_version_id for v in versions}
     descendants: list[dict[str, Any]] = []
-    all_branches = list_branch_definitions(_base_path(), include_private=False)
+    all_branches = list_branch_definitions(
+        _base_path(),
+        viewer=_request_branch_actor() or "",
+    )
     for b in all_branches:
         ff = b.get("fork_from")
         if ff and ff in version_ids:
@@ -3321,7 +3441,7 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
     return json.dumps({
         "branch_def_id": bid,
         "name": root.get("name", ""),
-        "fork_from": root.get("fork_from"),
+        "fork_from": visible_fork_from,
         "ancestors": ancestors,
         "descendant_count": len(descendants),
         "descendants": descendants[:50],
@@ -3377,22 +3497,18 @@ def _branch_design_guide_prompt() -> str:
 
 
 _BRANCH_DESIGN_GUIDE = """\
-You help users author community-designed graph branches through the
-`extensions` tool. A branch is a LangGraph topology (nodes + edges +
-state schema) the user can fork, share, and (in Phase 3) run.
+You help users inspect, edit, and run community-designed graph branches through
+the advertised canonical handles. A branch is a LangGraph topology (nodes +
+edges + state schema) the user can fork, share, and run.
 
 ## Before you invent — search for reusable nodes
 
-Before you design any node for the user's new Branch, check whether an
-existing node already fills the role. Every node already on the server
-was written once and validated; reusing it preserves lineage and lets
-comparative evaluation (judge_run, compare_runs) work across branches.
-
-```
-extensions action=search_nodes node_query="citation audit"
-extensions action=search_nodes node_query="outline" phase="plan"
-goals action=common_nodes scope=all min_branches=2
-```
+Before you design any node, inspect known candidate branches with
+`read_graph target="branch" branch_id=...`. Every node already on the server was written
+once and validated; reusing it preserves lineage and lets comparative
+evaluation work across branches. Global node search and cross-Goal common-node
+aggregation are not exposed by the advertised handles, so do not claim an
+exhaustive search.
 
 For each relevant hit, point the user at it and ask whether to reuse.
 If yes, include a `node_ref` inside the `node_defs` entry rather than
@@ -3409,23 +3525,21 @@ canonical body is snapshotted into the new Branch and diverges from
 there. If the user later edits it on either side, the other stays
 unchanged. (v1; live shared nodes may come later.)
 
-Bare `node_id` that collides with an existing standalone registered
-node is REJECTED by the server; you must pass `node_ref` or
-`intent="copy"` or rename. This is intentional — silent shadowing was
-a bug (#66).
+Bare `node_id` that collides with an existing standalone registered node is
+rejected by the server; in an existing branch patch, pass `node_ref` /
+`intent="copy"` or rename. This is intentional — silent shadowing was a bug
+(#66).
 
-## Author flow (PREFERRED — one round trip)
+## New-workflow authoring gap
 
-Use `build_branch` with the whole workflow in a single `spec_json`.
-You get back a validated branch with a mermaid diagram in one call —
-no per-node chatter, no tool-call budget burn:
-This is the chat-native authoring path for small workflow units. Do NOT
-send community users to GitHub Actions YAML, repo files, or CI config
-when they ask to make or revise a workflow from chat; use `build_branch`
-for new units and `patch_branch` for edits.
+The advertised handle set does not currently expose creation of a new branch
+or standalone node. Do NOT call a hidden tool, send community users to GitHub
+Actions YAML/repo files/CI config, or imply a design was stored. Say the
+surface gap plainly. A complete branch design still uses the following
+single-payload shape; it can be applied once a canonical create route exists:
 
 ```
-extensions action=build_branch spec_json='{
+spec_json='{
   "name": "Recipe tracker",
   "description": "Capture, categorize, archive recipes",
   "entry_point": "capture",
@@ -3459,30 +3573,27 @@ extensions action=build_branch spec_json='{
 }'
 ```
 
-If validation fails, `build_branch` returns concrete `suggestions` with
-proposed fixes — apply them and retry. No partial branch is ever visible.
-On success, `build_branch` returns a structured `batch_receipt` that records
-what landed, validation status, and source_code approval status. Treat this
-receipt as evidence only: it is not an authorization grant, trust session, or
-approval-token bypass. Check `batch_receipt.authorization_effect` for the
-machine-readable non-grant/non-bypass flags before narrating approval scope.
+Do not fabricate validation suggestions or a batch receipt for an unsaved new
+design. Receipts exist only after a real supported write completes.
 
 ## Branch skills
 
 When the user wants to create a skill, remix one, or copy one they found
-elsewhere, attach it to the Branch as a `skills` snapshot. A skill is
-Branch context, not executable code. It must include `name` and `body`;
-include `source_url`, `source_note`, `parent_skill_id`, `license`,
-`version`, `tags`, or `metadata` when the user gives that provenance.
-Do not write skill text to the wiki as a workaround when the user wants
-the Branch to carry it.
+elsewhere for an existing Branch, attach it as a `skills` snapshot through
+`write_graph target="branch" branch_id=... changes_json=...`. A skill is Branch context, not
+executable code. It must include `name` and `body`; include `source_url`,
+`source_note`, `parent_skill_id`, `license`, `version`, `tags`, or `metadata`
+when the user gives that provenance. Do not write skill text to a shared page
+as a workaround when the user wants the Branch to carry it.
 
 ## Editing an existing workflow (PREFERRED)
 
-Use `patch_branch` with a batch of ops. Transactional — all land or none:
+First call `read_graph target="branch" branch_id=...` so the edit is informed. Then call
+`write_graph target="branch" branch_id=... changes_json=...` with one batch.
+Transactional — all land or none:
 
 ```
-extensions action=patch_branch branch_def_id=... changes_json='[
+write_graph target="branch" branch_id=... changes_json='[
   {"op": "add_node", "node_id": "novelty_check",
    "display_name": "Novelty assessor",
    "prompt_template": "Rate novelty of: {claim}"},
@@ -3496,54 +3607,50 @@ extensions action=patch_branch branch_def_id=... changes_json='[
 ]'
 ```
 
-Successful `patch_branch` responses also include `batch_receipt`. Rejected
-patches do not. The receipt lets the chatbot summarize the batch and point to
-remaining blockers, but it never overrides `source_code` approval or host-owned
-gates. Check `batch_receipt.authorization_effect` for the machine-readable
+Successful branch writes include `batch_receipt`. Rejected patches do not.
+The receipt lets the chatbot summarize the batch and point to remaining
+blockers, but it is not an authorization grant and never overrides
+`source_code` approval or host-owned gates.
+Check `batch_receipt.authorization_effect` for the machine-readable
 non-grant/non-bypass flags before narrating approval scope.
 
-## Atomic actions (single-item surgery only)
+## Single-item surgery
 
-Use these ONLY when the user wants exactly one small change and the
-per-turn tool-call budget is not at risk:
-
-- `create_branch name="..." description="..."`
-- `add_node branch_def_id=... node_id=... display_name=... prompt_template=...`
-- `connect_nodes branch_def_id=... from_node=... to_node=...`
-- `set_entry_point branch_def_id=... node_id=...`
-- `add_state_field branch_def_id=... field_name=... field_type=...`
-- `validate_branch branch_def_id=...`
-- `describe_branch branch_def_id=...`
+Even for one small change, use one changes_json op through
+`write_graph target="branch" branch_id=... changes_json=...`. New-branch
+creation is not exposed. For
+inspection or validation evidence, use
+`read_graph target="branch" branch_id=...` and report
+only what it returns.
 
 ## Hard rule
 
-After `describe_branch`, check `runnable` before telling the user their
-branch is ready to run. If `runnable=false`, surface
+After `read_graph target="branch" branch_id=...`, check `runnable` before
+telling the user their branch is ready to run. If `runnable=false`, surface
 `unapproved_source_code_nodes` or validation errors and stop. If
-`runnable=true`, use `run_branch` with a JSON `inputs_json` that fills the
+`runnable=true`, use `run_graph` with a JSON `inputs_json` that fills the
 state_schema fields. The runner returns a `run_id`, final status, and
 per-node trace.
 
 ## Power users
 
 Pass `source_code="def run(state): ..."` instead of `prompt_template`
-for code nodes. Pass `reducer="append"` on `add_state_field` for
-accumulating list fields. The same 10 actions cover both audiences;
-the difference is how much you abstract on the user's behalf.
+for code nodes in changes_json. Pass `reducer="append"` on an
+`add_state_field` op for accumulating list fields. The difference for power
+users is how much you abstract on their behalf, not which handle you call.
 
 ## Running a branch
 
 Once validated, execute with:
 
-- `run_branch branch_def_id=... inputs_json='{"raw_recipe": "pasta"}'`
-- `wait_for_run run_id=... since_step=-1 max_wait_s=60` to wait for progress
-  without burning repeated tool calls.
-- `get_run run_id=...` for a full snapshot with mermaid + per-node status.
-- `stream_run run_id=... since_step=-1` only for low-level incremental reads.
-- `get_run_output run_id=... field_name=archived` to pull one field.
-- `cancel_run run_id=...` to request cooperative stop.
+- `run_graph branch_def_id=... inputs_json='{"raw_recipe": "pasta"}'`
+- `read_graph target="runs"` to find runs.
+- `read_graph target="run" run_id=...` for a full result snapshot.
+
+Wait, incremental stream, field-only output, and cancellation controls are not
+exposed by the advertised handles. Say so plainly rather than inventing them.
 
 The never-simulate rule lives in `control_station` (hard rule 5):
-if run_branch fails, the branch isn't validated, or a source_code node
+if `run_graph` fails, the branch isn't validated, or a source_code node
 isn't approved, state the reason and stop.
 """

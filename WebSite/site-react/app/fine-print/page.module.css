@@ -118,7 +118,7 @@
   .page :global(.receipt__refresh--inline) { padding: 3px 10px; }
   .page :global(.receipt__refresh:hover) { border-color: var(--live-600); background: var(--live-100); }
 
-  /* ── Public watchdogs ── */
+  /* ── Public uptime checks ── */
   .page :global(.watch__lede) { font-size: 15px; line-height: 1.6; color: var(--fg-2); max-width: 64ch; margin: 0 0 8px; }
   .page :global(.watch) { list-style: none; margin: 24px 0 0; padding: 0; display: grid; gap: 12px; }
   .page :global(.watch__item) {

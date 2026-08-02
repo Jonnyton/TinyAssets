@@ -1,0 +1,12 @@
+{
+  "name": "Agent Village",
+  "short_name": "Village",
+  "description": "Watch every AI agent working your project as sprites on a living village map.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1026",
+  "theme_color": "#0b1026",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

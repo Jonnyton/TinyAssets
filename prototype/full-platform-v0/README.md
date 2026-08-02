@@ -12,11 +12,12 @@
 
 ## Running
 
-**One-command startup** — migrations auto-apply via Postgres's `docker-entrypoint-initdb.d` convention on first container start:
+**One-command startup** — the `migrate` service applies every pending fixture
+migration through `schema_migrations` before the gateway starts:
 
 ```bash
 cd prototype/full-platform-v0
-docker compose up -d          # starts postgres + gateway; migrations run automatically
+docker compose up -d          # starts postgres, migrates, then starts gateway
 ```
 
 Gateway exposes FastMCP streamable-HTTP at `http://localhost:8001/mcp`. Postgres at `localhost:5433` (non-default to avoid host clashes).
@@ -29,12 +30,18 @@ pip install -r requirements.txt
 pytest tests/ -v                                   # talks to docker-compose postgres on :5433
 ```
 
-### Manual migration re-apply (if SQL changes)
+### Migration replay and fixture baselining
 
 ```bash
-# Nuke the volume + restart to re-run migrations cleanly:
-docker compose down -v && docker compose up -d
+python migrate.py
+# Only for an exact verified pre-runner fixture:
+python migrate.py --baseline-existing
 ```
+
+The runner hashes exact SQL bytes, holds a bounded PostgreSQL advisory lock,
+requires unique gap-free migration IDs, and commits each SQL file with its
+history row in one transaction. Checksum drift, gaps, ambiguous pre-existing
+schemas, and lock timeout fail closed.
 
 ## Structure
 
@@ -45,9 +52,10 @@ prototype/full-platform-v0/
 ├── requirements.txt
 ├── migrations/
 │   ├── 001_core_tables.sql      # users, nodes, artifact_field_visibility (subset of #25 §1)
-│   ├── 002_flags.sql … 008_market_ledger.sql   # applied lexicographically (see attic/README.md)
-│   ├── 003_discover_nodes.sql   # the RPC from #25 §3 (requires pgvector)
+│   ├── 002_flags.sql … 009_market_ledger.sql   # replay-safe fixture chain
+│   ├── 006_discover_nodes.sql   # the RPC from #25 §3 (establishes pgvector)
 │   └── attic/                   # retired migrations that must not auto-apply (002_rls.sql)
+├── migrate.py                   # checksums, history, locking, replay/resume
 ├── gateway.py                    # FastMCP skeleton per #27
 ├── tests/
 │   ├── conftest.py               # fixtures: fresh DB state per test
@@ -79,22 +87,8 @@ See inline comments in SQL + Python files. Consolidated list:
 5. **v0 skips Realtime entirely** — not a v0 concern; gateway is pure HTTP. Real build adds Realtime channels per #27 §1 + #30 §3.
 6. **Gateway `bearer_token == user_id`** — stub for v0. Real build decodes Supabase JWT + pulls `sub` claim.
 
-## Environmental blocker encountered
+## Fixture-only authority
 
-**Docker Desktop was not running when I tried `docker compose up -d` (2026-04-19)**. Got:
-
-```
-unable to get image 'pgvector/pgvector:pg15': failed to connect to the docker API
-at npipe:////./pipe/dockerDesktopLinuxEngine; check if the path is correct
-and if the daemon is running
-```
-
-Scaffolding is complete + ruff-clean + ready to run. **When Docker Desktop is running**, the full 5-file test suite should exercise end-to-end:
-
-1. `docker compose up -d`
-2. `docker exec -i tinyassets_v0_postgres psql -U tinyassets -d tinyassets_v0 < migrations/001_core_tables.sql` (repeat for 002, 003)
-3. `pytest tests/ -v`
-
-Tests expected green when DB is live: 10 tests across 5 files (schema×3, rls×3, discover×2, cas×2 — test_gateway has 2). Any failure = spec discrepancy worth flagging.
-
-If Docker remains unavailable, the prototype is still valuable as **syntactically-verified SQL + ruff-clean Python** — the track-A coder can pick this up as a starting scaffold without redesigning.
+This runner and SQL remain a throwaway local fixture. They are not a production
+migration home, do not prove the deployed Supabase baseline, and must never be
+used as wallet-funding or chain-settlement authority.

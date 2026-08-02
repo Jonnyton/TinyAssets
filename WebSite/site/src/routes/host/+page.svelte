@@ -11,7 +11,7 @@
    - stale Apr-30 stamps → all live values carry read-stamps, baked first
      paint is stamped "snapshot 10 Jun 2026" and upgraded on mount.
    - "0 words / idle" universes undercutting the pitch → the live section is
-     framed as "the public engine right now", honest about quiet universes,
+     framed as shared-engine discovery, honest about quiet universes,
      and is NOT the hosting pitch (hosting is your own private universes).
 
   Honesty rails: no baked number presented as live; public-commons only;
@@ -19,7 +19,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchLive, type LiveResult } from '$lib/mcp/live';
+  import { fetchPublicUniverses } from '$lib/mcp/live';
   import { initialMcpSnapshot } from '$lib/live/project';
   import { fmtRel } from '$lib/fmt';
   import Tick from '$lib/components/Tick.svelte';
@@ -33,13 +33,17 @@
   const SNAPSHOT_DATE = '10 Jun 2026';
   const bakedUniverses = (initialMcpSnapshot.universes ?? []) as any[];
 
-  let live = $state<LiveResult | null>(null);
+  type UniverseRead = { universes: any[]; fetchedAt: string };
+  let live = $state<UniverseRead | null>(null);
   let liveErr = $state<string | null>(null);
   let reading = $state(false);
   async function refreshUniverses() {
     reading = true;
     try {
-      live = await fetchLive();
+      live = {
+        universes: await fetchPublicUniverses(),
+        fetchedAt: new Date().toISOString()
+      };
       liveErr = null;
     } catch (e: any) {
       liveErr = e?.message ?? String(e);
@@ -51,11 +55,11 @@
 
   // Public-commons only: drop private + any SUPERSEDED/RETRACTED/smoke rows.
   function isPublicUniverse(u: any): boolean {
-    if ((u?.visibility ?? 'public') === 'private') return false;
+    if (!['public', 'metadata_only'].includes(u?.visibility)) return false;
     return !/SUPERSEDED|RETRACTED|smoke/i.test(String(u?.id ?? ''));
   }
 
-  // Shape a live universe (live.ts hands us raw `universe action=list` rows)
+  // Shape a live universe (live.ts hands us raw `read_graph target=graphs` rows)
   // or a baked one (already normalised) into one display shape.
   type Row = { id: string; phase: string; words: number; lastAt: string | null };
   function toRow(u: any, fromLive: boolean): Row {
@@ -143,7 +147,7 @@
   <title>Host — run Tiny on your own machine</title>
   <meta
     name="description"
-    content="You don't have to host anything to use Tiny — the public engine runs 24/7. Hosting is for your own private universes on your own machine: your keys, your data, the same loop pattern pointed at your projects."
+    content="You don't have to host anything to use Tiny — the public engine runs 24/7. Hosting is for private universes and user-authored workflows on your own machine: your keys, your data, your choices."
   />
 </svelte:head>
 
@@ -158,8 +162,8 @@
       installing a thing. <em>Hosting is for when you want your own.</em>
       Your own private
       <Term def="A universe: a tailored container for one body of work — its canon, goals, workflows, and run history. The public ones are listed below; private ones live on your machine.">universes</Term>
-      on your own machine, your own keys and data, the same loop pattern
-      pointed at your projects.
+      on your own machine, your own keys and data, and workflows you choose
+      for your projects.
     </p>
     <div class="cover__actions">
       <a class="btn btn--primary" href="/start">Just use the public engine →</a>
@@ -201,13 +205,12 @@
       </li>
       <li class="get">
         <span class="get__n">03</span>
-        <h3 class="get__h">The same loop, on your projects</h3>
+        <h3 class="get__h">Your workflows, on your projects</h3>
         <p class="get__p">
-          The self-patching
-          <Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real change, and ships. Tiny uses it on himself; you can point it at your own repo.">loop</Term>
-          pattern isn't special-cased to me — it's a workflow bound to a goal.
-          Fork the pattern, swap the goal for your project, and your instance
-          maintains itself the way I maintain mine.
+          A recurring <Term def="A user-authored graph of steps, state, checks, and effects bound to a goal.">workflow</Term>
+          is not special-cased into the platform. Start from a public pattern
+          or design your own, bind it to your goal, and run it with the
+          authority you explicitly grant.
         </p>
         <a class="get__cta" href="/build">how the pattern forks →</a>
       </li>
@@ -278,8 +281,8 @@
       Honest version: there's no hosted-cloud signup, waitlist, or pricing
       today, and I won't fake one. <em>If you want it, the useful thing is to
       say so</em> — a request through chat or a GitHub issue is a real signal
-      that shapes what gets built, and it enters the same patch loop everything
-      else does.
+      that shapes what gets built. Filing it records the request; a maintainer
+      still chooses what happens next.
     </p>
     <div class="cloud__paths">
       <a class="cloud__path" href="/start">
@@ -296,11 +299,11 @@
   </div>
 </section>
 
-<!-- 5 · What's running on the public engine right now ────────────────────── -->
+<!-- 5 · Public universes hosted on the shared engine ────────────────────── -->
 <section class="ch ch--rooms" aria-labelledby="rooms-title">
   <div class="container">
-    <p class="eyebrow">entry five · the public engine right now</p>
-    <h2 id="rooms-title">These are running on the box you'd be opting out of.</h2>
+    <p class="eyebrow">entry five · shared-engine discovery</p>
+    <h2 id="rooms-title">These public universes are hosted on the shared engine.</h2>
     <p class="voice rooms__lede">
       Your hosted universes would be private and wouldn't appear anywhere like
       this. But it's worth seeing what the shared engine carries — public
@@ -315,10 +318,14 @@
     <div class="rooms" aria-live="polite">
       {#if rows.length === 0 && reading}
         <p class="rooms__state ev">reading the live universe list…</p>
+      {:else if rows.length === 0 && liveErr && !live}
+        <p class="rooms__state ev">Public universe discovery is unavailable. The checked-in snapshot carries no independently published universe rows.</p>
+      {:else if rows.length === 0 && liveErr && live}
+        <p class="rooms__state ev">The latest refresh failed. The most recent successful read contained no public universes.</p>
       {:else if rows.length === 0 && live}
         <p class="rooms__state ev">quiet right now — no public universes visible at this read ({rel(live.fetchedAt)}).</p>
       {:else if rows.length === 0}
-        <p class="rooms__state ev">no public universes in view.</p>
+        <p class="rooms__state ev">The checked-in snapshot carries no independently published universe rows; live discovery is pending.</p>
       {:else}
         <ul class="rooms__list">
           {#each rows as r (r.id)}
@@ -346,7 +353,7 @@
             {rows.length} public universes · snapshot {SNAPSHOT_DATE} (baked, upgrading to live…) ·
             <button class="rooms__refresh" onclick={refreshUniverses} disabled={reading}>{reading ? 'reading…' : 'Refresh MCP'}</button>
           {/if}
-          · <Tick href="/goals" label="universe action=list" />
+          · <Tick href="/goals" label="read_graph target=graphs" />
         </p>
         {#if liveErr && live}
           <p class="rooms__state ev">last live read failed — {liveErr} · showing the most recent good read.</p>
@@ -505,7 +512,7 @@
   .cloud__path strong { font-family: var(--font-display); font-size: 20px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.18; color: var(--fg-1); }
   .cloud__sub { font-size: 13px; color: var(--fg-2); }
 
-  /* ── Rooms (public engine right now) ── */
+  /* ── Rooms (shared-engine discovery) ── */
   .rooms__lede { margin: 0 0 8px; }
   .rooms__quietnote { font-size: 12px; margin: 0 0 4px; max-width: 60ch; }
   .rooms { margin-top: 24px; }

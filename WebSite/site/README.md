@@ -1,6 +1,12 @@
-# tinyassets.io — TinyAssets site (Track B Phase 1)
+# TinyAssets retained Svelte rollback site
 
-Landing-first SvelteKit static site for the TinyAssets platform, deploying to GitHub Pages with `tinyassets.io` as a custom domain. Replaces the legacy crypto-investor homepage with the TinyAssets positioning per spec `docs/specs/2026-04-18-web-app-landing-and-catalog.md`.
+This SvelteKit static site is retained as the rollback implementation for
+`tinyassets.io`. The current production source is the React/Next tree at
+`WebSite/site-react/`, deployed manually by `deploy-site-react.yml`.
+
+For production changes, edit and build React first, then mirror the intended
+user-visible behavior here and verify parity. This tree deploys only through an
+explicit rollback dispatch of `deploy-site.yml`; it has no push or cron deploy.
 
 **Phase 1 polished:** `/`, `/connect`, `/legal`.
 **Phase 1 stubbed:** `/catalog`, `/host`, `/contribute`, `/status`, `/account`, `/economy`.
@@ -34,17 +40,18 @@ npm run lint         # eslint + prettier check
 npm run test:e2e     # playwright tests (placeholder)
 ```
 
-## Deploy to GitHub Pages
+## Rollback deploy to GitHub Pages
 
 `static/CNAME` is set to `tinyassets.io` for custom-domain hosting. `static/.nojekyll` disables Jekyll processing on GitHub.
 
-The build outputs to `build/`. The CI workflow at `.github/workflows/deploy-site.yml` runs on every push to `main`, builds with `npm run build`, and deploys to the `gh-pages` branch via `peaceiris/actions-gh-pages`. Cloudflare fronts the apex domain per the architecture docs.
-
-Manual deploy if you want to bypass CI:
+The build outputs to `build/`. The workflow at
+`.github/workflows/deploy-site.yml` is dispatch-only and exists solely to
+restore this Svelte build during an explicit rollback. Normal production
+publishing uses the manual React workflow.
 
 ```powershell
 npm run build
-# upload contents of build/ to your gh-pages branch
+# after review, dispatch deploy-site only when a Svelte rollback is required
 ```
 
 ## Layout
@@ -74,8 +81,7 @@ src/
 │   │   ├── TinyAssetsMark.svelte        TinyAssets brand mark
 │   │   ├── TopNav.svelte                sticky-translucent nav
 │   │   ├── Footer.svelte                footer chrome + contact
-│   │   ├── ChatDemo.svelte              faux Claude.ai transcript (hero showcase)
-│   │   ├── Hero.svelte                  landing hero (copy + ChatDemo)
+│   │   ├── Hero.svelte                  landing hero
 │   │   ├── ThreeLayer.svelte            Goal · Branch · Daemon trinity
 │   │   └── TokenStrip.svelte            tinyassets economy + 3-chain addresses
 │   ├── content/
@@ -112,24 +118,25 @@ The Cowork sandbox mounts this folder over FUSE. Two known quirks:
 See `WebSite/HOOKS_FUSE_QUIRKS.md` for details.
 
 
-## Refreshing the MCP snapshot
+## MCP snapshot safety
 
-`/wiki` and `/graph` are baked from `src/lib/content/mcp-snapshot.json`. To pull fresh data:
+`/wiki` and `/graph` use the checked-in, independently vetted
+`src/lib/content/mcp-snapshot.json`. Full snapshot regeneration is
+intentionally unavailable until an audience-safe publication manifest can
+prove every included record is public. `npm run snapshot` validates the
+anonymous source boundary but refuses to replace the artifact; with
+`SNAPSHOT_REQUIRED=1`, that refusal fails the command.
 
-```powershell
-npm run snapshot   # calls tinyassets.io/mcp, rewrites the JSON
-git add src/lib/content/mcp-snapshot.json
-git commit -m "snapshot: refresh MCP"
-git push           # CI rebuilds + redeploys
-```
-
-The script is `scripts/snapshot-mcp.mjs`. It uses `@modelcontextprotocol/sdk` and fails soft — if the MCP is unreachable, the existing snapshot is kept and the build still ships. If the MCP endpoint requires auth, set `MCP_BEARER` in your shell env (or as a repo secret named the same in CI).
-
-**CI cadence:** the GH Action runs every 6h on cron *and* on every push touching `WebSite/site/**`. By default the cron just rebuilds with whatever snapshot is checked in. To make CI also refresh from MCP, dispatch the workflow manually with `refresh_snapshot=true` — requires `MCP_BEARER` repo secret.
+The validator is `scripts/snapshot-mcp.mjs` and uses
+`@modelcontextprotocol/sdk`. Snapshot refreshes run anonymously, and
+`MCP_BEARER` is forbidden. Keep the existing vetted snapshot during a Svelte
+rollback and leave the dispatch-only `refresh_snapshot` input set to `false`.
+Production React deployment does not use this snapshot step.
 
 ## Open TODOs
 
-1. **CI deploy** — `.github/workflows/deploy-site.yml` is set up but verify the workflow runs on first push.
+1. **Rollback readiness** — keep focused checks and parity green; verify the
+   dispatch-only workflow only when a rollback is deliberately exercised.
 2. **OG image** — add `static/og-image.png` for social previews.
 3. **Phase 1.5 component ports** — Diagrams, Economy (full), AgentTeams, Showcase, Catalog (full), Host (full with mode-fork), Contribute (full).
 4. **Real Supabase wiring** — `src/lib/supabase.ts` (Phase 2 swap to dual-adapter for SSR routes).

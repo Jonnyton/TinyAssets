@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 import tinyassets.api.universe as us
+from tinyassets.auth.provider import Identity
+from tinyassets.daemon_server import grant_universe_access
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -75,6 +77,28 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return uid
 
 
+def _authenticate_ledger_submitter(
+    uid: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = Identity(
+        user_id="test-user",
+        username="test-user",
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
+    grant_universe_access(
+        us._base_path(),
+        universe_id=uid,
+        actor_id=identity.user_id,
+        permission="write",
+        granted_by=identity.user_id,
+    )
+
+
 def _ledger(uid: str) -> list[dict]:
     data = json.loads((us._base_path() / uid / "ledger.json").read_text(encoding="utf-8"))
     assert isinstance(data, list)
@@ -95,6 +119,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",
         "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
+        "set_engine", "offer_engine",
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         "daemon_create", "daemon_summon", "daemon_banish",
         "daemon_pause", "daemon_resume", "daemon_restart",
@@ -156,7 +181,11 @@ def test_give_direction_accepts_line_anchor(universe: str) -> None:
     assert entries[0]["payload"]["anchor"] == anchor
 
 
-def test_submit_request_appends_ledger(universe: str) -> None:
+def test_submit_request_appends_ledger(
+    universe: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_ledger_submitter(universe, monkeypatch)
     (us._base_path() / universe / "PROGRAM.md").write_text(
         "A legacy fantasy premise.",
         encoding="utf-8",
@@ -173,6 +202,35 @@ def test_submit_request_appends_ledger(universe: str) -> None:
     assert entries[0]["payload"]["loop_dispatch"]["source"] == (
         "legacy_program_fantasy_compat"
     )
+
+
+def test_idempotent_request_replay_is_access_only_not_a_second_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_calls = []
+    monkeypatch.setattr(
+        "tinyassets.api.engine_helpers._append_ledger",
+        lambda *args, **kwargs: ledger_calls.append((args, kwargs)),
+    )
+    result = {
+        "universe_id": "test-uni",
+        "request_id": "req_existing",
+        "idempotent_replay": True,
+    }
+
+    raw = us._dispatch_with_ledger(
+        "submit_request",
+        lambda **_kwargs: json.dumps(result),
+        {
+            "universe_id": "test-uni",
+            "text": "same request",
+            "request_type": "general",
+        },
+        scope_response=False,
+    )
+
+    assert json.loads(raw) == result
+    assert ledger_calls == []
 
 
 def test_add_canon_appends_ledger(universe: str) -> None:
@@ -251,8 +309,8 @@ def test_create_universe_surfaces_synthesis_first_run_checklist(
     assert checklist["steps"][0]["complete"] is True
     assert checklist["steps"][1]["complete"] is False
     assert checklist["next_action"] == (
-        "Upload canon with add_canon or add_canon_from_path, then wait for "
-        "the daemon to process the synthesize_source signal."
+        "Canon-source upload and synthesis waiting are not exposed by the "
+        "advertised handles."
     )
 
 
@@ -267,9 +325,13 @@ def test_get_ledger_returns_appended_entries(universe: str) -> None:
     assert out["entries"][1]["summary"] == "First."
 
 
-def test_ledger_survives_across_mixed_writes(universe: str) -> None:
+def test_ledger_survives_across_mixed_writes(
+    universe: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from tinyassets.universe_soul import ensure_universe_soul
 
+    _authenticate_ledger_submitter(universe, monkeypatch)
     _call("set_premise", text="Premise.")
     _call("give_direction", text="Direction.")
     ensure_universe_soul(

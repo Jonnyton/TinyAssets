@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import (
-    _default_universe,
     _find_all_pages,
     _read_text,
     _scoped_wiki_root,
@@ -69,13 +68,26 @@ _STOP_WORDS = frozenset(
 )
 
 _WIKI_SEARCH_COMPLETENESS_WARNING = (
-    "wiki action=search is lexical best-effort, not a complete discovery or "
-    "change-feed proof. For recent changes use wiki action=since with "
+    "read_page query search is lexical best-effort, not a complete discovery "
+    "or change-feed proof. For recent changes use read_page "
     "changed_since=<ISO timestamp>; for authoritative content read candidate "
-    "pages with action=read."
+    "pages with read_page page=<path>."
 )
 _WIKI_READ_DEFAULT_MAX_CHARS = 128_000
 _WIKI_READ_MAX_CHARS = 256_000
+_WIKI_SCOPES = ("discovery", "coordination", "all")
+_WIKI_COORDINATION_CATEGORIES = frozenset({
+    "notes",
+    "plans",
+    "bugs",
+    "feature-requests",
+    "design-proposals",
+    "patch-requests",
+})
+_WIKI_SCOPE_NOTE = (
+    "Default discovery scope omitted coordination pages. In-process callers "
+    "can request scope=coordination or scope=all."
+)
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
@@ -91,6 +103,30 @@ def _wiki_index_path() -> Path:
 
 def _wiki_log_path() -> Path:
     return _wiki_root() / "log.md"
+
+
+def _write_reserved_wiki_canary(content: str) -> str:
+    """Write only the reserved uptime draft, with no other wiki mutation."""
+    from tinyassets.auth.wiki_canary import WIKI_CANARY_RELATIVE_PATH
+
+    if not content:
+        return json.dumps({"error": "content is required."})
+    draft_path = _wiki_root() / WIKI_CANARY_RELATIVE_PATH
+    try:
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        is_new = not draft_path.exists()
+        draft_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to write reserved canary draft: {exc}"})
+    return json.dumps({
+        "path": WIKI_CANARY_RELATIVE_PATH,
+        "status": "drafted" if is_new else "updated",
+        "note": (
+            "Drafted reserved uptime canary page."
+            if is_new
+            else "Updated reserved uptime canary page."
+        ),
+    })
 
 
 def _ensure_wiki_scaffold(wiki_root: Path) -> None:
@@ -131,8 +167,8 @@ def _ensure_wiki_scaffold(wiki_root: Path) -> None:
         "WIKI.md": (
             f"---\ntitle: Wiki Schema\ntype: schema\nupdated: {today}\n---\n\n"
             "# Wiki Schema\n\nCategories, frontmatter conventions, and "
-            "lint rules. See AGENTS.md + the wiki tool docstring for the "
-            "live contract.\n"
+            "lint rules. See AGENTS.md plus the advertised read_page and "
+            "write_page descriptions for the live contract.\n"
         ),
         "log.md": (
             "# Wiki Log\n\n"
@@ -181,6 +217,22 @@ def _page_rel_path(filepath: Path) -> str:
 
 def _resolve_page(name: str) -> Path | None:
     """Find a page by name across pages/ and drafts/ subdirectories."""
+    requested_path = name.strip().replace("\\", "/")
+    if "/" in requested_path:
+        relative = Path(requested_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return None
+        if relative.suffix.lower() != ".md":
+            return None
+        candidate = (_wiki_root() / relative).resolve()
+        for public_root in (_wiki_pages_dir(), _wiki_drafts_dir()):
+            try:
+                candidate.relative_to(public_root.resolve())
+            except ValueError:
+                continue
+            return candidate if candidate.is_file() else None
+        return None
+
     clean = name.removesuffix(".md")
     specials = {
         "index": _wiki_index_path(),
@@ -327,6 +379,54 @@ def _coerce_read_max_chars(value: Any) -> int:
     return max(1, min(raw, _WIKI_READ_MAX_CHARS))
 
 
+def _normalize_wiki_scope(
+    scope: str,
+    *,
+    default: str,
+) -> tuple[str | None, bool]:
+    normalized = scope.strip()
+    if not normalized:
+        return default, True
+    if normalized not in _WIKI_SCOPES:
+        return None, False
+    return normalized, False
+
+
+def _normalize_read_category(category: str) -> tuple[str | None, str | None]:
+    if category == "":
+        return None, None
+    requested = category.strip()
+    normalized = _sanitize_slug(requested)
+    if not normalized:
+        return None, (
+            "category must resolve to a non-empty slug; valid custom "
+            "categories are accepted."
+        )
+    return normalized, None
+
+
+def _wiki_page_category(path: Path) -> str:
+    parts = Path(_page_rel_path(path)).parts
+    if len(parts) >= 3 and parts[0] in {"pages", "drafts"}:
+        return parts[1].casefold()
+    return ""
+
+
+def _wiki_page_audience(meta: dict[str, str], path: Path) -> str:
+    audience = meta.get("audience", "").strip().casefold()
+    if audience in {"discovery", "coordination"}:
+        return audience
+    if audience:
+        return "coordination"
+    if _wiki_page_category(path) in _WIKI_COORDINATION_CATEGORIES:
+        return "coordination"
+    return "discovery"
+
+
+def _wiki_scope_includes(scope: str, audience: str) -> bool:
+    return scope == "all" or scope == audience
+
+
 def _ambient_relevance_feed(
     *,
     source: Path,
@@ -336,16 +436,45 @@ def _ambient_relevance_feed(
     max_results: int,
     source_meta: dict[str, str],
     source_body: str,
+    scope: str = "",
+    category: str = "",
+    universe_id: str = "",
 ) -> dict[str, Any]:
+    applied_scope, scope_omitted = _normalize_wiki_scope(
+        scope,
+        default=_wiki_page_audience(source_meta, source),
+    )
     terms = _wiki_read_terms(
         page=page,
         query=query,
         meta=source_meta,
         body=source_body,
     )
+    base_response: dict[str, Any] = {
+        "source_path": _page_rel_path(source),
+        "query_terms": sorted(terms)[:20],
+        "changed_since": changed_since.strip(),
+        "items": [],
+        "truncated_count": 0,
+    }
+    if applied_scope is None:
+        base_response["error"] = (
+            "scope must be one of: discovery, coordination, all."
+        )
+        return base_response
+
+    normalized_category, category_error = _normalize_read_category(category)
+    if category_error:
+        base_response["scope"] = applied_scope
+        base_response["error"] = category_error
+        return base_response
+
+    from tinyassets.api import visibility
+
     since = _parse_wiki_timestamp(changed_since)
     limit = _coerce_feed_limit(max_results)
     candidates: list[dict[str, Any]] = []
+    scope_filtered = False
     for candidate in (
         _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
     ):
@@ -355,6 +484,34 @@ def _ambient_relevance_feed(
         if not raw:
             continue
         meta, body = _parse_frontmatter(raw)
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
+        candidate_category = _wiki_page_category(candidate)
+        audience = _wiki_page_audience(meta, candidate)
+        if not _wiki_scope_includes(applied_scope, audience):
+            haystack = " ".join(
+                part for part in (
+                    meta.get("title", ""),
+                    meta.get("tags", ""),
+                    meta.get("type", ""),
+                    body,
+                ) if part
+            ).lower()
+            updated_at = _page_updated_at(candidate, meta)
+            if (
+                scope_omitted
+                and (normalized_category is None
+                     or candidate_category == normalized_category)
+                and (since is None or updated_at > since)
+                and any(term in haystack for term in terms)
+            ):
+                scope_filtered = True
+            continue
+        if (
+            normalized_category is not None
+            and candidate_category != normalized_category
+        ):
+            continue
         updated_at = _page_updated_at(candidate, meta)
         if since is not None and updated_at <= since:
             continue
@@ -382,13 +539,12 @@ def _ambient_relevance_feed(
 
     candidates.sort(key=lambda item: (-item["score"], item["path"]))
     items = candidates[:limit]
-    return {
-        "source_path": _page_rel_path(source),
-        "query_terms": sorted(terms)[:20],
-        "changed_since": changed_since.strip(),
-        "items": items,
-        "truncated_count": max(0, len(candidates) - len(items)),
-    }
+    base_response["scope"] = applied_scope
+    base_response["items"] = items
+    base_response["truncated_count"] = max(0, len(candidates) - len(items))
+    if scope_filtered:
+        base_response["scope_note"] = _WIKI_SCOPE_NOTE
+    return base_response
 
 
 def _add_to_index(category: str, slug: str, title: str) -> None:
@@ -555,10 +711,13 @@ def _resolve_filed_page_canonical(parent: Path, slug: str, *, category: str) -> 
 def _wiki_read(
     page: str = "",
     query: str = "",
+    category: str = "",
+    scope: str = "",
     changed_since: str = "",
     max_results: int = 10,
     offset: int = 0,
     max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
+    universe_id: str = "",
     **_kwargs: Any,
 ) -> str:
     if not page:
@@ -572,6 +731,23 @@ def _wiki_read(
     is_draft = _wiki_drafts_dir() in resolved.parents
     rel = _page_rel_path(resolved)
     meta, body = _parse_frontmatter(text)
+
+    # Per-page visibility narrows — never widens — the universe content grant:
+    # a page marked restrictive stays restricted from any non-granted reader
+    # (authenticated or not) even inside an openly-readable universe (spec Req 3).
+    from tinyassets.api import visibility
+
+    if not visibility.page_content_permitted(meta, universe_id):
+        return json.dumps({
+            "error": "page_content_restricted",
+            "path": rel,
+            "required_permission": "read",
+            "detail": (
+                "This page's declared visibility withholds its content from a "
+                "reader without a grant on this universe."
+            ),
+        })
+
     updated_at = _page_updated_at(resolved, meta)
     content = _draft_read_content(text, is_draft=is_draft)
     source_read_proof = {
@@ -589,6 +765,9 @@ def _wiki_read(
         max_results=max_results,
         source_meta=meta,
         source_body=body,
+        scope=scope,
+        category=category,
+        universe_id=universe_id,
     )
 
     read_start = _coerce_read_offset(offset)
@@ -604,9 +783,8 @@ def _wiki_read(
     if truncated:
         marker = (
             "\n\n[WIKI READ TRUNCATED: showing chars "
-            f"{read_start}-{read_end} of {total_chars}. Continue with "
-            f"wiki(action=\"read\", page=\"{page}\", offset={read_end}, "
-            f"max_chars={read_limit}).]"
+            f"{read_start}-{read_end} of {total_chars}. Reading additional "
+            "chunks is not exposed by the advertised handles.]"
         )
         return json.dumps({
             "path": rel,
@@ -642,15 +820,38 @@ def _draft_read_content(text: str, *, is_draft: bool) -> str:
     return "[DRAFT] " + text
 
 
-def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
+def _wiki_search(
+    query: str = "",
+    max_results: int = 10,
+    universe_id: str = "",
+    scope: str = "",
+    category: str = "",
+    **_kwargs: Any,
+) -> str:
     if not query:
         return json.dumps({"error": "query parameter is required."})
+
+    from tinyassets.api import visibility
+
+    applied_scope, scope_omitted = _normalize_wiki_scope(
+        scope,
+        default="discovery",
+    )
+    if applied_scope is None:
+        return json.dumps({
+            "error": "scope must be one of: discovery, coordination, all.",
+            "results": [],
+        })
+    normalized_category, category_error = _normalize_read_category(category)
+    if category_error:
+        return json.dumps({"error": category_error, "results": []})
 
     all_pages = (
         _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
     )
     terms = query.lower().split()
     scored: list[dict[str, Any]] = []
+    scope_filtered = False
 
     for p in all_pages:
         raw = _read_text(p)
@@ -658,6 +859,26 @@ def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
             continue
         lower = raw.lower()
         meta, body = _parse_frontmatter(raw)
+        # A restricted page's title/excerpt/path are disclosure — withhold the
+        # whole result from a non-granted reader (spec Req 3).
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
+        candidate_category = _wiki_page_category(p)
+        audience = _wiki_page_audience(meta, p)
+        if not _wiki_scope_includes(applied_scope, audience):
+            if (
+                scope_omitted
+                and (normalized_category is None
+                     or candidate_category == normalized_category)
+                and any(term in lower for term in terms)
+            ):
+                scope_filtered = True
+            continue
+        if (
+            normalized_category is not None
+            and candidate_category != normalized_category
+        ):
+            continue
         title = meta.get("title", p.stem)
         is_draft = _wiki_drafts_dir() in p.parents
 
@@ -688,19 +909,27 @@ def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
     top = scored[:max_results]
 
     if not top:
-        return json.dumps({
+        response: dict[str, Any] = {
             "results": [],
             "note": f"No results for: {query}",
+            "scope": applied_scope,
             "search_complete": False,
             "completeness_warning": _WIKI_SEARCH_COMPLETENESS_WARNING,
-        })
-    return json.dumps({
+        }
+        if scope_filtered:
+            response["scope_note"] = _WIKI_SCOPE_NOTE
+        return json.dumps(response)
+    response = {
         "query": query,
         "results": top,
         "count": len(top),
+        "scope": applied_scope,
         "search_complete": False,
         "completeness_warning": _WIKI_SEARCH_COMPLETENESS_WARNING,
-    })
+    }
+    if scope_filtered:
+        response["scope_note"] = _WIKI_SCOPE_NOTE
+    return json.dumps(response)
 
 
 def _wiki_result_item(path: Path, *, is_draft: bool) -> dict[str, Any]:
@@ -720,6 +949,9 @@ def _wiki_result_item(path: Path, *, is_draft: bool) -> dict[str, Any]:
 def _wiki_since(
     changed_since: str = "",
     max_results: int = 10,
+    universe_id: str = "",
+    scope: str = "",
+    category: str = "",
     **_kwargs: Any,
 ) -> str:
     if not changed_since.strip():
@@ -734,14 +966,51 @@ def _wiki_since(
             "changed_since": changed_since,
         })
 
+    from tinyassets.api import visibility
+
+    applied_scope, scope_omitted = _normalize_wiki_scope(
+        scope,
+        default="discovery",
+    )
+    if applied_scope is None:
+        return json.dumps({
+            "error": "scope must be one of: discovery, coordination, all.",
+            "results": [],
+        })
+    normalized_category, category_error = _normalize_read_category(category)
+    if category_error:
+        return json.dumps({"error": category_error, "results": []})
+
     candidates: list[dict[str, Any]] = []
-    for path in _find_all_pages(_wiki_pages_dir()):
-        item = _wiki_result_item(path, is_draft=False)
-        updated_at = _parse_wiki_timestamp(item["updated"])
-        if updated_at is not None and updated_at > since:
-            candidates.append(item)
-    for path in _find_all_pages(_wiki_drafts_dir()):
-        item = _wiki_result_item(path, is_draft=True)
+    scope_filtered = False
+    all_pages = (
+        ((path, False) for path in _find_all_pages(_wiki_pages_dir()))
+    )
+    all_drafts = (
+        ((path, True) for path in _find_all_pages(_wiki_drafts_dir()))
+    )
+    for path, is_draft in (*all_pages, *all_drafts):
+        meta, _ = _parse_frontmatter(_read_text(path))
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
+        candidate_category = _wiki_page_category(path)
+        audience = _wiki_page_audience(meta, path)
+        updated_at = _page_updated_at(path, meta)
+        if not _wiki_scope_includes(applied_scope, audience):
+            if (
+                scope_omitted
+                and (normalized_category is None
+                     or candidate_category == normalized_category)
+                and updated_at > since
+            ):
+                scope_filtered = True
+            continue
+        if (
+            normalized_category is not None
+            and candidate_category != normalized_category
+        ):
+            continue
+        item = _wiki_result_item(path, is_draft=is_draft)
         updated_at = _parse_wiki_timestamp(item["updated"])
         if updated_at is not None and updated_at > since:
             candidates.append(item)
@@ -749,16 +1018,22 @@ def _wiki_since(
     candidates.sort(key=lambda item: (item["updated"], item["path"]), reverse=True)
     limit = _coerce_result_limit(max_results)
     results = candidates[:limit]
-    return json.dumps({
+    response: dict[str, Any] = {
         "changed_since": changed_since.strip(),
         "results": results,
         "count": len(results),
         "total_matches": len(candidates),
         "truncated_count": max(0, len(candidates) - len(results)),
-    })
+        "scope": applied_scope,
+    }
+    if scope_filtered:
+        response["scope_note"] = _WIKI_SCOPE_NOTE
+    return json.dumps(response)
 
 
-def _wiki_list(**_kwargs: Any) -> str:
+def _wiki_list(universe_id: str = "", **_kwargs: Any) -> str:
+    from tinyassets.api import visibility
+
     promoted = _find_all_pages(_wiki_pages_dir())
     drafts = _find_all_pages(_wiki_drafts_dir())
 
@@ -766,6 +1041,9 @@ def _wiki_list(**_kwargs: Any) -> str:
     for p in promoted:
         raw = _read_text(p)
         meta, _ = _parse_frontmatter(raw)
+        # A restricted page's path/title is disclosure — omit for non-granted.
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
         pages_list.append({
             "path": _page_rel_path(p),
             "title": meta.get("title", p.stem),
@@ -778,6 +1056,8 @@ def _wiki_list(**_kwargs: Any) -> str:
     for p in drafts:
         raw = _read_text(p)
         meta, _ = _parse_frontmatter(raw)
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
         drafts_list.append({
             "path": _page_rel_path(p),
             "title": meta.get("title", p.stem),
@@ -879,7 +1159,7 @@ def _wiki_write(
             "status": "drafted" if is_new else "updated",
             "note": (
                 f"{'Drafted' if is_new else 'Updated draft'}: "
-                "call wiki promote to move to pages/."
+                "promotion to pages/ is not exposed by the advertised handles."
             ),
         })
     except OSError as exc:
@@ -1165,7 +1445,10 @@ def _wiki_promote(
     if not draft_path:
         return json.dumps({
             "error": f"Draft not found: {slug}.",
-            "hint": "Use wiki list to see available drafts.",
+            "hint": (
+                "Draft enumeration and promotion are not exposed by the "
+                "advertised handles."
+            ),
         })
 
     content = _read_text(draft_path)
@@ -1219,7 +1502,10 @@ def _wiki_ingest(
         return json.dumps({
             "path": f"raw/{target.name}",
             "status": "saved",
-            "note": "Saved to raw/. Now call wiki write to create a synthesis page in drafts/.",
+            "note": (
+                "Saved to raw/. Create a synthesis draft with write_page; "
+                "promotion to pages/ is not exposed by the advertised handles."
+            ),
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to ingest: {exc}"})
@@ -1257,7 +1543,10 @@ def _wiki_supersede(
     if not new_exists:
         return json.dumps({
             "error": f"Replacement draft not found in drafts/: {new_slug}.",
-            "hint": "Write the replacement first with wiki write.",
+            "hint": (
+                "Creating replacement drafts and superseding pages are not "
+                "exposed by the advertised handles."
+            ),
         })
 
     try:
@@ -1297,7 +1586,10 @@ def _wiki_supersede(
             "status": "superseded",
             "old_page": old_slug,
             "new_draft": new_slug,
-            "note": f"Superseded {old_slug}. Now call wiki promote on {new_slug}.",
+            "note": (
+                f"Superseded {old_slug}. Promotion of {new_slug} is not exposed "
+                "by the advertised handles."
+            ),
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to supersede: {exc}"})
@@ -1994,9 +2286,8 @@ def _wiki_file_bug(
     """File a bug, feature request, design proposal, or patch request.
 
     ``kind`` defaults to "bug"; set to "feature", "design", or
-    "patch_request" for non-bug filings. All kinds use the same request
-    pipeline — navigator vets before dev implements (design-participation
-    rule).
+    "patch_request" for non-bug filings. All kinds use the same typed-filing
+    path.
 
     Bypasses the draft-gate — filings land in pages/ immediately
     for host triage. ID is server-assigned via _next_bug_id. Atomic
@@ -2019,8 +2310,9 @@ def _wiki_file_bug(
                 "(repro, observed, expected, workaround); content/body are not supported here."
             ),
             "hint": (
-                "Use wiki(action=\"file_bug\", title=..., component=..., severity=...) "
-                "and optionally repro/observed/expected/workaround."
+                "Use write_page kind=\"bug\" title=... component=... "
+                "severity=... and optionally "
+                "repro/observed/expected/workaround."
             ),
         })
     dropped_kwargs = sorted(
@@ -2108,9 +2400,9 @@ def _wiki_file_bug(
                 "effort_classification": effort_classification,
                 "effort_dispatch_route": effort_dispatch_route,
                 "hint": (
-                    "Similar filings exist. Use cosign_bug to add your context "
-                    "to the top match, or set force_new=true if the symptom is "
-                    "materially different."
+                    "Similar filings exist. Bug cosigning is not exposed by "
+                    "the advertised handles; set force_new=true only if the "
+                    "symptom is materially different."
                 ),
             })
 
@@ -2151,138 +2443,6 @@ def _wiki_file_bug(
     _append_wiki_log(
         f"file_bug | {rel_path} | {bug_id} {title} [{severity}] kind={effective_kind}"
     )
-    # FEAT-004: per-request-id traceable trigger receipt. Created BEFORE the
-    # enqueue so a crash in the trigger helper still leaves a durable record
-    # showing a trigger was expected. Backward-compatible: the existing
-    # ``investigation`` block in the response is preserved verbatim, and the
-    # new ``trigger`` block is additive.
-    investigation: dict[str, Any] = {"status": "skipped"}
-    trigger_block: dict[str, Any] | None = None
-    _receipt = None
-    try:
-        from tinyassets import bug_investigation
-        from tinyassets.wiki import trigger_receipts as _tr
-
-        frontmatter = {
-            "bug_id": bug_id,
-            "title": title,
-            "type": effective_kind,
-            "kind": effective_kind,
-            "effort_class": effort_classification["effort_class"],
-            "effort_attention": effort_classification["attention"],
-            "effort_dispatch_lane": effort_dispatch_route["lane"],
-            "effort_classification": effort_classification,
-            "effort_dispatch_route": effort_dispatch_route,
-            "component": component,
-            "severity": severity,
-            "status": "open",
-            "observed": observed,
-            "expected": expected,
-            "repro": repro,
-            "workaround": workaround,
-        }
-        target_universe_id = universe_id.strip() or _default_universe()
-        universe_path = _universe_dir(target_universe_id)
-        # Pre-write trigger receipt (status=pending). Read canonical branch_def_id
-        # from env so the receipt records what we *expected* to invoke even if the
-        # enqueue helper rejects.
-        import os as _os
-        canonical_branch_def_id = _os.environ.get(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
-        ).strip() or None
-        try:
-            _receipt = _tr.create_pending(
-                request_id=bug_id,
-                request_kind=effective_kind,
-                request_page=rel_path,
-                branch_def_id=canonical_branch_def_id,
-            )
-        except Exception as _rcpt_exc:  # noqa: BLE001 - filing must survive receipt-store outage.
-            _logger_wiki.warning(
-                "file_bug trigger_receipt create failed for %s: %s", bug_id, _rcpt_exc,
-            )
-            _receipt = None
-
-        try:
-            request_id = bug_investigation._maybe_enqueue_investigation(
-                bug_id=bug_id,
-                frontmatter=frontmatter,
-                base_path=universe_path,
-                universe_id=target_universe_id,
-            )
-        except Exception as _enq_exc:
-            # Trigger helper raised. Update receipt then re-raise into the outer
-            # except so the existing investigation = {"status": "error"} branch
-            # behavior is preserved.
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_failed(_receipt, error=_enq_exc)
-                    trigger_block = _receipt.to_response()
-                except Exception:  # noqa: BLE001 - last-resort, don't break filing.
-                    pass
-            raise
-
-        if request_id:
-            investigation_section = bug_investigation.format_investigation_comment(
-                request_id=request_id,
-                status="queued",
-            )
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(investigation_section)
-            investigation = {
-                "status": "queued",
-                "dispatcher_request_id": request_id,
-            }
-            # Default response shape is compact — callers needing the
-            # full BranchTask mirror pass verbose=True. Cuts the typical
-            # file_bug response from ~3.7 KB to ~600 bytes (no 23-field
-            # BranchTask dump that mirrors inputs.request_text). The
-            # trigger_attempt_id + dispatcher_request_id below are already
-            # enough for chatbots/canaries to join request -> run; the full
-            # mirror is operator-only and can be fetched on-demand via
-            # ``universe action=queue_list`` with the branch_task_id.
-            if verbose:
-                try:
-                    from tinyassets.branch_tasks import read_queue
-
-                    task = next(
-                        (
-                            t for t in read_queue(universe_path)
-                            if t.branch_task_id == request_id
-                        ),
-                        None,
-                    )
-                    if task is not None:
-                        investigation["branch_task"] = task.to_dict()
-                except Exception as _queue_exc:  # noqa: BLE001
-                    _logger_wiki.warning(
-                        "file_bug investigation task read failed for %s: %s",
-                        bug_id,
-                        _queue_exc,
-                    )
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_queued(
-                        _receipt, dispatcher_request_id=request_id,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            # Skipped because no canonical branch configured (env var empty
-            # or filing without bug_id). Record on the receipt for audit.
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_skipped(
-                        _receipt, reason="no_canonical_branch",
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-
-        if _receipt is not None:
-            trigger_block = _receipt.to_response()
-    except Exception as exc:  # noqa: BLE001 - bug filing itself must survive trigger failure.
-        _logger_wiki.warning("file_bug investigation trigger failed for %s: %s", bug_id, exc)
-        investigation = {"status": "error", "error": str(exc)}
 
     response_body: dict[str, Any] = {
         "path": rel_path,
@@ -2293,9 +2453,7 @@ def _wiki_file_bug(
         "component": component,
         "effort_classification": effort_classification,
         "effort_dispatch_route": effort_dispatch_route,
-        "investigation": investigation,
-        "note": "Filing sent to navigator triage pipeline. "
-                f"Use `wiki action=list category={category_dir}` to view.",
+        "note": f'Filing created. Use `read_page category="{category_dir}"` to view.',
     }
     if dropped_kwargs:
         response_body["warning"] = (
@@ -2304,11 +2462,6 @@ def _wiki_file_bug(
             + ". Use repro, observed, expected, and workaround for the filing body; "
               "content is only for wiki write/patch actions."
         )
-    if trigger_block is not None:
-        # FEAT-004: surface the structured trigger receipt so callers (canaries
-        # / chatbots / operators) have a per-request-id join key without log
-        # scraping. ``investigation`` is preserved above for backward compat.
-        response_body["trigger"] = trigger_block
     return json.dumps(response_body)
 
 
@@ -2461,6 +2614,7 @@ def wiki(
     reporter_context: str = "",
     verbose: bool = False,
     changed_since: str = "",
+    scope: str = "",
     universe_id: str = "",
 ) -> str:
     """Dispatch entry for the wiki MCP tool. See universe_server.py for the
@@ -2495,7 +2649,18 @@ def wiki(
         )
 
         _wiki_write = action in WIKI_WRITE_ACTIONS
-        if not universe_access_allows(target_universe_id, write=_wiki_write):
+        if _wiki_write:
+            _wiki_allowed = universe_access_allows(target_universe_id, write=True)
+        else:
+            # Content is a separately-granted capability: a `metadata_only`
+            # universe is discoverable/describable yet withholds its page bodies
+            # from a non-granted reader.
+            from tinyassets.api import visibility
+
+            _wiki_allowed = visibility.visibility_permits(
+                target_universe_id, "read_content"
+            )
+        if not _wiki_allowed:
             return _stamp_universe_id(json.dumps(universe_access_error(
                 universe_id=target_universe_id,
                 write=_wiki_write,
@@ -2577,6 +2742,7 @@ def wiki(
             "reporter_context": reporter_context,
             "verbose": verbose,
             "changed_since": changed_since,
+            "scope": scope,
             "universe_id": target_universe_id,
         }
 

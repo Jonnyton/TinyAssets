@@ -3,8 +3,8 @@
   Canonical replacement for /contribute (which becomes an alias later).
 
   Two doors into building Tiny: through a chatbot (no clone), or through
-  the repo (clone the engine). Both end in the same loop — evidence gates,
-  cross-family review, a human key. Honesty rails: live GitHub pulse is
+  the repo (clone the engine). Both leave the workflow and review choices
+  explicit. Honesty rails: live GitHub pulse is
   fetched client-side with a read-stamp, the unauthenticated rate-limit
   failure is named plainly, no income promises near "what contribution
   earns", every link goes somewhere real.
@@ -84,7 +84,7 @@
   <title>Build me — two doors into contributing to Tiny</title>
   <meta
     name="description"
-    content="Two doors into building TinyAssets: improve Tiny through your chatbot without ever cloning code, or clone the TinyAssets GitHub repository and work on it directly. Both end in the same loop — evidence gates, cross-family review, a human merge key."
+    content="Two doors into building TinyAssets: file ordinary feedback through your chatbot, or clone the TinyAssets GitHub repository and work on it directly. Workflow and review choices remain explicit."
   />
 </svelte:head>
 
@@ -97,11 +97,8 @@
       You can improve me without ever cloning a line of code — just talk to me
       through your chatbot and describe what's rough. Or you can go straight at
       the engine through the repository, with the tests and the architecture in
-      front of you. Both doors open onto the same room: a
-      <Term def="The self-patching cycle: a request becomes an investigation, runs through automated checks, and only ships after review.">loop</Term>
-      with evidence gates, a
-      <Term def="A second AI from a different model family re-checks the work, so no one model both writes and approves a change.">cross-family review</Term>,
-      and a <em>human key</em> that has to turn before anything merges.
+      front of you. In either case, people explicitly choose the workflow and
+      review path, and a <em>human key</em> has to turn before anything merges.
     </p>
     <p class="cover__naming">
       The platform is <strong>TinyAssets</strong>; the being is <strong>Tiny</strong>.
@@ -145,9 +142,9 @@
       <li class="step">
         <span class="step__n">04</span>
         <div class="step__body">
-          <h3 class="step__h">It enters the loop</h3>
-          <p class="step__p">Your request becomes an investigation, runs through evidence gates, and can surface as a real GitHub PR.</p>
-          <a class="step__cta" href="/loop">watch the loop →</a>
+          <h3 class="step__h">Choose what happens next</h3>
+          <p class="step__p">The filing is a durable record. A maintainer can handle it directly or select a user-authored workflow; nothing launches silently.</p>
+          <a class="step__cta" href="/patterns">browse workflow patterns →</a>
         </div>
       </li>
       <li class="step">
@@ -267,9 +264,9 @@
         <span class="close__sub">read the public brain — proposals, notes, and decisions, all forkable.</span>
       </a>
       <a class="close__card" href="/graph">
-        <span class="close__k eyebrow">the map of everything</span>
-        <strong>See the whole graph.</strong>
-        <span class="close__sub">how every goal, workflow, and commons page connects.</span>
+        <span class="close__k eyebrow">the public discovery map</span>
+        <strong>See the public graph.</strong>
+        <span class="close__sub">how published goals and discovery pages connect.</span>
       </a>
     </div>
   </div>

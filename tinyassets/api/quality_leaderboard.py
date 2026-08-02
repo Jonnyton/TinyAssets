@@ -425,9 +425,8 @@ def recommend_parent_for_fork(
             "goal_id": goal_id,
             "recommended_parent": None,
             "rationale": (
-                "No Branch is bound to this Goal yet. Create the first "
-                "Branch via extensions action=build_branch goal_id=… or "
-                "fork from a peer Goal's leaderboard."
+                "No Branch is bound to this Goal yet. New-workflow creation "
+                "and Goal binding are not exposed by the advertised handles."
             ),
             "leaderboard_size": 0,
             "selector": board.get("selector") or {},

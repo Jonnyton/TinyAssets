@@ -13,9 +13,11 @@ adapt the ideas, not the file layouts.
 
 ## Project Conventions
 
-- Canonical source: `.agents/skills/<skill-name>/`. Mirrors in
-  `.claude/skills/` and `.codex/skills/`, refreshed by
-  `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1`.
+- Canonical source: `.agents/skills/<skill-name>/`. The Claude Code mirror in
+  `.claude/skills/` is refreshed by
+  `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1`. Codex and
+  other project-visible agents read `.agents/skills/` directly; do not create a
+  separate `.codex/skills/` mirror.
 - Default to a single `SKILL.md`. Add `references/` or `scripts/` only when
   repeated detail or deterministic logic justifies it.
 - Frontmatter is **only** `name` + `description`. Names lowercase-hyphenated;

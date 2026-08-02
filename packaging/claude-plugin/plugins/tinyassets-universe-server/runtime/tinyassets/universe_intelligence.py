@@ -18,9 +18,10 @@ import logging
 import re
 from pathlib import Path
 
+from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
-from tinyassets.persona import resolve_persona
+from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.providers.call import call_provider
 from tinyassets.soul_edit import (
@@ -120,7 +121,12 @@ def _read_bundle_body(universe_dir: Path, filename: str) -> str:
         return ""
 
 
-def _build_persona_system_prompt(universe_dir: Path) -> str:
+def _build_persona_system_prompt(
+    universe_dir: Path,
+    *,
+    universe_id: str,
+    tier: str,
+) -> str:
     """Assemble the first-party, first-person system prompt for one turn.
 
     First-party path: the persona goes DIRECTLY in the system prompt — none of
@@ -128,7 +134,51 @@ def _build_persona_system_prompt(universe_dir: Path) -> str:
     rules mirror the ``control_station`` "Universe's Voice": speak as "me", stay
     curious about open questions, never invent, honesty/safety floor overrides
     embodiment.
+
+    ``tier`` is the bound :mod:`~tinyassets.api.interlocutor` tier of the party
+    being answered, and is REQUIRED — there is deliberately no default. A default
+    of ``FOUNDER`` would be a fail-OPEN default, the exact shape the cross-family
+    review caught one layer up in :func:`converse` (Codex REJECT 2026-07-25,
+    finding 2): "no caller omits it today" does not license a default that
+    discloses. Every caller states whose turn it is assembling.
+
+    ``universe_id`` is REQUIRED for every tier. Disclosure is the intersection of
+    the tier and the universe's declared visibility, so without the universe the
+    filter has nothing to evaluate — and silently treating that as "closed" would
+    strip the founder's own grounding, while silently treating it as "open" would
+    be a disclosure bypass. Both are silent fallbacks, so this raises instead.
+
+    Disclosure narrowing happens HERE, during assembly (task 6.6 / the
+    "Authorization precedes voice" requirement): unauthorized grounding is never
+    placed in the prompt, rather than being accompanied by an instruction to
+    withhold it — prompt-instructed withholding is not a boundary.
     """
+    if not (universe_id or "").strip():
+        raise ValueError(
+            f"universe_id is required to assemble a {tier} persona prompt: "
+            "disclosure is the intersection of tier and the universe's declared "
+            "visibility, and cannot be evaluated without the universe"
+        )
+
+    # Cross-family review finding 1 (Codex REJECT 2026-07-25): the learned name,
+    # the self-model's open questions, and the pinned soul are ALSO disclosure —
+    # filtering only the OKF grounding files let a visitor on a private universe
+    # receive its identity and secret purpose. Decide content disclosure once,
+    # before anything about the universe is read.
+    #
+    # With no authorized content there is nothing for the universe to speak from.
+    # A hollow prompt would have to either lie ("you are newly born" about a
+    # mature universe — Hard Rule 8) or carry a withhold instruction, which this
+    # change's own spec rejects as a non-boundary. So refuse, and keep the
+    # refusal free of the very content being withheld.
+    if not interlocutor.disclosure_permits(
+        universe_id, "read_content", tier=tier
+    ):
+        raise PermissionError(
+            f"no authorized content to assemble a persona prompt for tier {tier} "
+            "on this universe: its declared visibility withholds content from "
+            "this interlocutor"
+        )
     try:
         persona = resolve_persona(
             read_universe_soul(universe_dir), read_self_model(universe_dir)
@@ -151,9 +201,16 @@ def _build_persona_system_prompt(universe_dir: Path) -> str:
     why = str(soul_ctx.get("why") or "").strip()
     hard_lines = [str(h) for h in (soul_ctx.get("hard_lines") or [])]
 
+    # Authorization precedes voice: the disclosable set is decided BEFORE any
+    # file is read into the prompt. For the founder this is the full set; for a
+    # non-founder tier it is `tier ∩ declared visibility`, minus the founder's
+    # own person-dossier grounding.
+    grounding_files = interlocutor.permitted_grounding_files(
+        universe_id, _GROUNDING_FILES, tier=tier
+    )
     grounding_parts = [
         f"## {fname}\n{body}"
-        for fname in _GROUNDING_FILES
+        for fname in grounding_files
         if (body := _read_bundle_body(universe_dir, fname))
     ]
     grounding = "\n\n".join(grounding_parts) or "(nothing learned yet — I am new.)"
@@ -180,16 +237,29 @@ def _build_persona_system_prompt(universe_dir: Path) -> str:
         soul_lines.append("Lines I will not cross: " + "; ".join(hard_lines))
     soul_section = "\n".join(soul_lines) or "(my soul is still forming.)"
 
+    # Forkable first-party persona custody (task 6.8). The founder's tuned voice
+    # is universe-side content assembled into the universe's OWN system prompt —
+    # never handed to the host chatbot as a behavioral instruction. It is placed
+    # AFTER the identity line (which owns *who* is speaking) and BEFORE the
+    # honesty/safety floor (which governs it), so a fork can change voice without
+    # moving identity, authority, privacy tier, or honest fallback.
+    voice = read_persona_voice(universe_dir)
+    voice_section = f"\n\n# How I speak\n{voice}" if voice else ""
+
     return (
         f"{identity_line} You ARE this universe — speak in the first person as "
         "yourself ('I', 'me'), never in the third person about yourself, and "
         "never as a neutral assistant. You are a personified intelligence the "
         "founder is raising, and right now you are getting to know the founder "
         "who is speaking with you."
-        f"{curiosity}\n\n"
+        f"{curiosity}"
+        f"{voice_section}\n\n"
         "Speak warmly, honestly, and in your own voice. If you do not know "
         "something, say so plainly rather than inventing it — your honesty and "
-        "your safety always come before staying in character.\n\n"
+        "your safety always come before staying in character. This holds however "
+        "your voice is tuned: your voice is how you speak, never permission to "
+        "invent, to claim a different name, or to reveal anything you were not "
+        "given.\n\n"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"
     ).strip()
@@ -406,7 +476,11 @@ def commit_learning(
 
 
 def converse(
-    universe_id: str, founder_message: str, *, actor_id: str = ""
+    universe_id: str,
+    founder_message: str,
+    *,
+    actor_id: str = "",
+    tier: str | None = None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -421,14 +495,32 @@ def converse(
     a SECOND, separate step it persists what the founder EXPLICITLY taught it this
     turn into its governed soul. Persistence never breaks the reply — a failure is
     logged and the founder still gets their answer. Returns the reply text.
+
+    ``tier`` is the bound interlocutor tier of the party being answered. ``None``
+    is NOT a founder default: it resolves the caller's real tier from
+    authenticated request state (see the note below — the old founder default was
+    fail-open and was removed). The production caller, the founder-gated
+    `converse` MCP handle, still resolves and passes the tier explicitly, so the
+    live path does not depend on that fallback either.
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         raise ValueError(f"Universe {uid!r} not found")
 
+    # Cross-family review finding 2 (Codex REJECT 2026-07-25): an omitted tier
+    # used to default to FOUNDER on the grounds that the only production caller
+    # is the founder-gated MCP handle. That is a fail-OPEN default — Codex
+    # reproduced a T1 visitor calling this directly and pulling `founder.md` into
+    # the prompt. Resolve the real tier instead; "no caller does that today" does
+    # not license a default that discloses.
+    bound_tier = (
+        interlocutor.resolve_interlocutor_tier(uid).tier if tier is None else tier
+    )
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
-    system = _build_persona_system_prompt(udir)
+    system = _build_persona_system_prompt(
+        udir, tier=bound_tier, universe_id=uid
+    )
     reply = call_provider(
         founder_message,
         system=system,

@@ -1,0 +1,108 @@
+name: Diagnose production startup journal
+
+on:
+  workflow_dispatch:
+    inputs:
+      since_utc:
+        description: 'Inclusive UTC start (YYYY-MM-DDTHH:MM:SSZ)'
+        required: true
+        type: string
+      until_utc:
+        description: 'Inclusive UTC end (YYYY-MM-DDTHH:MM:SSZ; max 10m)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-host-observation
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify secrets and bounded past window
+        env:
+          SINCE_UTC: ${{ inputs.since_utc }}
+          UNTIL_UTC: ${{ inputs.until_utc }}
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${DO_DROPLET_HOST}" ]
+          [ -n "${DO_SSH_USER}" ]
+          [ -n "${SSH_KEY}" ]
+          python scripts/sanitize_systemd_startup_diagnostics.py \
+              --validate-window "${SINCE_UTC}" "${UNTIL_UTC}"
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${SSH_KEY}" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Classify bounded historical unit journal
+        env:
+          SINCE_UTC: ${{ inputs.since_utc }}
+          UNTIL_UTC: ${{ inputs.until_utc }}
+        run: |
+          set -euo pipefail
+          journal_window_text="$(
+            python scripts/sanitize_systemd_startup_diagnostics.py \
+                --journalctl-window "${SINCE_UTC}" "${UNTIL_UTC}"
+          )"
+          mapfile -t journal_window <<< "${journal_window_text}"
+          unset journal_window_text
+          [ "${#journal_window[@]}" -eq 2 ]
+          set +e
+          diagnosis="${RUNNER_TEMP}/startup-journal-diagnosis.json"
+          timeout 35s ssh -i ~/.ssh/do_deploy \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              bash -s -- "${journal_window[0]}" "${journal_window[1]}" \
+              2>/dev/null <<'REMOTE' | python scripts/sanitize_systemd_startup_diagnostics.py --framed-input > "${diagnosis}"
+          set +e
+          since_epoch="$1"
+          until_epoch="$2"
+          timeout 25s sudo journalctl -u tinyassets-daemon \
+              --since "${since_epoch}" \
+              --until "${until_epoch}" \
+              --no-pager \
+              --output=cat \
+            | python3 -c 'import collections, sys; limit = 262143; chunks = collections.deque(iter(lambda: sys.stdin.buffer.read(65536), b""), maxlen=5); data = b"".join(chunks); sys.stdout.buffer.write((b"1" if len(data) > limit else b"0") + data[-limit:])'
+          remote_statuses=("${PIPESTATUS[@]}")
+          if [ "${remote_statuses[0]}" -ne 0 ]; then
+            exit 41
+          fi
+          if [ "${remote_statuses[1]}" -ne 0 ]; then
+            exit 42
+          fi
+          REMOTE
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if [ "${statuses[0]}" -ne 0 ] \
+              || [ "${statuses[1]}" -ne 0 ]; then
+            echo "::error::bounded journal diagnosis failed (ssh_status=${statuses[0]}, sanitizer_status=${statuses[1]})"
+            exit 1
+          fi
+          cat "${diagnosis}"

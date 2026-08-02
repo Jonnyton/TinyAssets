@@ -31,6 +31,7 @@ from tinyassets.paid_market.forwards import (
     MIN_COLLATERAL_PCT,
     PPM,
     ForwardError,
+    canonical_fee_micros,
 )
 
 __all__ = [
@@ -153,7 +154,7 @@ def settle_training_window(
     seller_gross = (total * (checkpoints_contracted - unserved)) // (
         checkpoints_contracted
     )
-    treasury_fee = (seller_gross * fee_ppm) // PPM
+    treasury_fee = canonical_fee_micros(seller_gross, fee_ppm)
     seller_net = seller_gross - treasury_fee
     buyer_refund = total - seller_gross
 

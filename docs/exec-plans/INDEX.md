@@ -13,7 +13,6 @@ row but should still be driven to a shipped outcome.
 - [active/2026-04-19-sporemarch-c16-s3-diagnostic-plan.md](active/2026-04-19-sporemarch-c16-s3-diagnostic-plan.md) — Pre-staged diagnostic for the C16-S3 score-plateau. Dispatch-ready when Sporemarch resumes post-Fix-E migration.
 - [active/2026-04-20-selfhost-uptime-migration.md](active/2026-04-20-selfhost-uptime-migration.md) — Move MCP + tunnel origin off the host machine (cloud provider) so full uptime no longer depends on host's computer. Post-P0 host directive 2026-04-19.
 - [active/2026-04-20-track-e-paid-market-wave-1.md](active/2026-04-20-track-e-paid-market-wave-1.md) — Track E Wave 1: first-draft paid-market flow on top of Track A schema (commit `98055aa`) + Track D Wave 1 host_pool client (commit `72e86a2`).
-- [active/2026-04-25-file-bug-wiring.md](active/2026-04-25-file-bug-wiring.md) — `file_bug` → `bug_investigation` 3-trigger contract (forward + startup-backfill + safety-net). Helper landed; forward call site UNWIRED (verifier-2 territory); backfill + safety-net unwired.
 - [active/2026-04-30-live-community-reiteration-loop.md](active/2026-04-30-live-community-reiteration-loop.md) — Wire wiki bugs -> community branches -> patch packets -> PRs -> CI/deploy -> live observation, without redesigning user-made branches.
 - [active/2026-04-26-decomp-arc-c-prep.md](active/2026-04-26-decomp-arc-c-prep.md) — Arc C prep: env-var deprecation alias deletion (UNIVERSE_SERVER_BASE, WIKI_PATH). STATUS Work #24. Arc B complete; execution remains blocked on #18 shared-file locks.
 - [active/2026-04-26-engine-domain-coupling-inventory.md](active/2026-04-26-engine-domain-coupling-inventory.md) — Read-only inventory of every `tinyassets/` import that reaches into `domains.fantasy_*`. Input for Task #11/#28/#29 host-review queue.
@@ -28,6 +27,7 @@ row but should still be driven to a shipped outcome.
 ## Completed
 
 - [completed/README.md](completed/README.md)
+- [completed/2026-04-25-file-bug-wiring.md](completed/2026-04-25-file-bug-wiring.md) — Retired platform-owned `file_bug` investigation trigger; recurring automation belongs in user-buildable/remixable workflows.
 - [completed/2026-04-15-author-to-daemon-rename.md](completed/2026-04-15-author-to-daemon-rename.md) — Original 5-phase rename plan with shim-based back-compat. **Superseded** by `active/2026-04-19-rename-end-state.md` (Path A, atomic) per host's Foundation-vs-Feature rule.
 - [completed/2026-04-16-memory-scope-stage-2b.md](completed/2026-04-16-memory-scope-stage-2b.md) — Stage 2b 1/2/3 all shipped (commits `5944ca1`, `d053468`, `e25bd3b`). STATUS now tracks Stage 2c flag flip.
 - [completed/2026-04-17-author-rename-phase0-audit.md](completed/2026-04-17-author-rename-phase0-audit.md) — Phase 0 preflight DONE (commit `07b75d8`). Companion to the parent rename plan.

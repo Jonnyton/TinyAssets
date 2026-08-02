@@ -86,6 +86,8 @@ from tinyassets.api.runtime_ops import (
     _PROJECT_MEMORY_WRITE_ACTIONS,
     _SCHEDULER_ACTIONS,
 )
+from tinyassets.authoring.service import _AUTHORING_ACTIONS
+from tinyassets.handoffs.service import _HANDOFF_ACTIONS
 from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
@@ -260,6 +262,83 @@ def _dispatch_scope_error(tool: str, action: str) -> str | None:
     return None
 
 
+def _public_goal_read_rejection(action: str, goal_id: str) -> str | None:
+    """Fail closed when a read action names a Goal that is not public."""
+    goal_id = goal_id.strip()
+    if not goal_id:
+        return None
+    if action in _LEADERBOARD_ACTIONS:
+        # These handlers already apply the same exact-public check and retain
+        # their established ``goal=None`` / ``entries=[]`` response envelope.
+        return None
+
+    from tinyassets.auth.provider import action_scope_for
+    from tinyassets.daemon_server import get_goal
+
+    action_scope = action_scope_for("extensions", action)
+    if action_scope is None or action_scope.effect != "read":
+        return None
+
+    try:
+        goal = get_goal(_base_path(), goal_id=goal_id)
+    except KeyError:
+        goal = None
+    if goal is not None and goal.get("visibility") == "public":
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": f"Goal '{goal_id}' not found.",
+    })
+
+
+def _public_goal_ids() -> set[str]:
+    """Return the complete exactly-public Goal ID set for record filtering."""
+    from tinyassets.daemon_server import public_goal_ids
+
+    return public_goal_ids(_base_path())
+
+
+def _filter_branch_goal_records(action: str, result: str) -> str:
+    """Remove non-public Goal attachments from public Branch reads."""
+    if action not in {"get_branch", "list_branches"}:
+        return result
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return result
+    if not isinstance(payload, dict) or payload.get("error"):
+        return result
+
+    public_ids = _public_goal_ids()
+    if action == "list_branches":
+        rows = payload.get("branches")
+        if not isinstance(rows, list):
+            return result
+        kept = [
+            row for row in rows
+            if isinstance(row, dict)
+            and (
+                not (row.get("goal_id") or "")
+                or row.get("goal_id") in public_ids
+            )
+        ]
+        payload["branches"] = kept
+        payload["count"] = len(kept)
+        return json.dumps(payload, default=str)
+
+    goal_id = str(payload.get("goal_id") or "")
+    if goal_id and goal_id not in public_ids:
+        payload.pop("goal_id", None)
+    claims = payload.get("gate_claims")
+    if isinstance(claims, list):
+        payload["gate_claims"] = [
+            claim for claim in claims
+            if isinstance(claim, dict)
+            and (claim.get("goal_id") or "") in public_ids
+        ]
+    return json.dumps(payload, default=str)
+
+
 def _extensions_impl(
     action: str,
     node_id: str = "",
@@ -400,6 +479,10 @@ def _extensions_impl(
     if scope_error is not None:
         return scope_error
 
+    goal_rejection = _public_goal_read_rejection(action, goal_id)
+    if goal_rejection is not None:
+        return goal_rejection
+
     if action == "register":
         return _ext_register(
             node_id, display_name, description, phase,
@@ -457,7 +540,8 @@ def _extensions_impl(
         branch_kwargs["node_ref"] = parsed_ref
     branch_handler = _BRANCH_ACTIONS.get(action)
     if branch_handler is not None:
-        return _dispatch_branch_action(action, branch_handler, branch_kwargs)
+        result = _dispatch_branch_action(action, branch_handler, branch_kwargs)
+        return _filter_branch_goal_records(action, result)
 
     # ── Phase 3: Graph Runner ──────────────────────────────────────────────
     run_kwargs: dict[str, Any] = {
@@ -666,7 +750,17 @@ def _extensions_impl(
     # ── Outcome events ─────────────────────────────────────────────────────
     outcome_handler = _OUTCOME_ACTIONS.get(action)
     if outcome_handler is not None:
+        actor_id = ""
+        if action == "record_outcome":
+            from tinyassets.handoffs.authority import request_subject
+            from tinyassets.handoffs.models import HandoffAuthorityError
+
+            try:
+                actor_id = request_subject()
+            except HandoffAuthorityError as exc:
+                return json.dumps({"error": str(exc), "code": exc.code})
         oc_kwargs: dict[str, Any] = {
+            "actor_id": actor_id,
             "branch_def_id": branch_def_id,
             "run_id": run_id,
             "outcome_id": outcome_id,
@@ -708,6 +802,83 @@ def _extensions_impl(
             "actor_id": _current_actor(),
         }
         return attribution_handler(attr_kwargs)
+
+    # ── Node / evaluator authoring sessions (target 4.3) ───────────────────
+    # Authoring composes under this canonical router: no new advertised MCP
+    # handle, and the ``extensions`` tool signature is NOT widened. Each
+    # authoring parameter reuses an existing kwarg (same technique as the
+    # effector-consent actions above), which is also why a chatbot can reach
+    # these without a connector-surface change:
+    #   key                → session_id          field_type   → artifact_kind
+    #   intent             → sketch / effect name resume_from  → draft to resume
+    #   branch_version_id  → base published ver.  select       → view
+    #   since              → diff anchor event_id changes_json → edit operations
+    #   expected_version   → reviewed draft ver.  notes        → change message
+    #   value              → test mode            request_id   → confirmation token
+    #   payload_json       → action body (test inputs, visibility, risk acks)
+    authoring_handler = _AUTHORING_ACTIONS.get(action)
+    if authoring_handler is not None:
+        from tinyassets.api.engine_helpers import _current_actor
+
+        return authoring_handler({
+            "actor_id": _current_actor(),
+            "session_id": key,
+            "artifact_kind": field_type,
+            "sketch": intent,
+            "effect_name": intent,
+            "base_version_id": branch_version_id,
+            "resume_session_id": resume_from,
+            "view": select,
+            "anchor": since,
+            "operations_json": changes_json,
+            "expected_version": expected_version,
+            "change_message": notes,
+            "mode": value,
+            "confirmation": request_id,
+            "payload_json": payload_json,
+            "limit": limit,
+        })
+
+    # ── Real-world handoffs and outcomes (target 5.2/5.4) ──────────────────
+    # Handoffs compose under this canonical router: no new advertised MCP handle
+    # and the ``extensions`` tool signature is NOT widened. Each parameter reuses
+    # an existing kwarg (same technique as the effector-consent and authoring
+    # actions), so a chatbot reaches these without a connector-surface change:
+    #   key            → handoff_id        field_name  → declared output field
+    #   project_id     → destination check request_id  → confirmation token
+    #   event_type     → outcome_kind      status      → target state / filter
+    #   notes          → attestation note  payload_json→ external_id + evidence
+    # Authority is NOT taken from any of them: the acting subject is resolved
+    # server-side from the credential-validated request, and source ownership
+    # comes from the persisted run + immutable version.
+    handoff_handler = _HANDOFF_ACTIONS.get(action)
+    if handoff_handler is not None:
+        from tinyassets.api.helpers import _request_universe, _universe_dir
+        from tinyassets.handoffs.authority import request_subject
+        from tinyassets.handoffs.models import HandoffAuthorityError
+
+        try:
+            subject = request_subject()
+        except HandoffAuthorityError as exc:
+            return json.dumps({"error": str(exc), "code": exc.code})
+        return handoff_handler({
+            "actor_id": subject,
+            "base_path": _base_path(),
+            "universe_dir": _universe_dir(_request_universe(universe_id)),
+            "handoff_id": key,
+            "run_id": run_id,
+            "branch_version_id": branch_version_id,
+            "output_field": field_name,
+            "destination": project_id,
+            "confirmation": request_id,
+            "outcome_kind": event_type,
+            "state": status,
+            "evidence_url": evidence_url,
+            "outcome_id": outcome_id,
+            "note": notes,
+            "payload_json": payload_json,
+            "limit": limit,
+        })
 
     # ── Quality leaderboard / parent selection (PR-123 substrate M2) ───────
     leaderboard_handler = _LEADERBOARD_ACTIONS.get(action)
@@ -758,6 +929,13 @@ def _extensions_impl(
             "quality_leaderboard", "recommended_parent_for_fork",
             "grant_effector_consent", "revoke_effector_consent",
             "list_effector_consents",
+            "authoring_start", "authoring_inspect", "authoring_edit",
+            "authoring_test", "authoring_confirm_effect", "authoring_publish",
+            "authoring_list",
+            "handoff_declarations", "handoff_dry_run", "handoff_prepare",
+            "handoff_execute", "handoff_get", "handoff_list",
+            "handoff_record_evidence", "handoff_attest_outcome",
+            "handoff_outcome_evidence",
         ],
     })
 

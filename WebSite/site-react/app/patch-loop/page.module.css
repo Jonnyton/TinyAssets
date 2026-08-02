@@ -1,0 +1,55 @@
+.page {
+  min-height: 70vh;
+}
+
+.landing {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: clamp(72px, 14vw, 140px) clamp(18px, 4vw, 32px);
+}
+
+.title {
+  margin: 14px 0 20px;
+  font-size: clamp(38px, 6vw, 64px);
+  font-weight: 500;
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+}
+
+.lede {
+  max-width: 42ch;
+  margin: 0;
+  color: var(--fg-2);
+  font-family: var(--font-voice);
+  font-size: clamp(19px, 2.5vw, 24px);
+  line-height: 1.48;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 30px;
+}
+
+.link {
+  display: inline-flex;
+  padding: 11px 20px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-pill);
+  color: var(--fg-1);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.link:first-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--fg-on-ember);
+}
+
+.link:hover {
+  border-color: var(--ink-text-900);
+  text-decoration: none;
+}

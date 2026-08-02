@@ -28,6 +28,7 @@ Task arrives
     |
     |-- Unfamiliar area / need a bigger map? --------> improve-codebase-architecture
     |-- Outside repo, paper, project implications? --> external-research-implications
+    |-- Need external implementation examples? -----> implementation-precedent-scout
     |-- Vague idea / design not approved yet? -------> idea-refine
     |-- Domain terms drifting / concept integrity? --> domain-model
     |-- New feature / change with no spec? ----------> spec-driven-development
@@ -54,7 +55,6 @@ Task arrives
     |-- Committing / branching / worktrees / merge? -> git-workflow-and-versioning
     |-- CI gates / deploy / launch / rollout? -------> shipping-and-launch
     |-- Cloudflare / GoDaddy / DNS / domain ops? ----> infra-ops
-    |-- Loop cannot self-heal its own break? --------> loop-uptime-maintenance
     |-- Writing docs or rationale? ------------------> documentation-and-adrs
     |-- Create/update a skill? ----------------------> skill-authoring
     `-- Recurring agent failure / tune the team? ----> auto-iterate
@@ -103,6 +103,7 @@ code-review-and-quality`.
 |-------|-------|------------------|
 | Orient | improve-codebase-architecture | Map an area, then audit module boundaries and coupling |
 | Orient | external-research-implications | Turn outside repos/papers into TinyAssets implications |
+| Orient | implementation-precedent-scout | Isolate bounded external implementation search and return a compact source map |
 | Orient | peer-agents | Dispatch work to the Claude or Codex CLI on that subscription's budget |
 | Define | idea-refine | Refine an idea into an approved design before building |
 | Define | domain-model | Stress-test concepts/invariants and harden terminology |
@@ -131,6 +132,5 @@ code-review-and-quality`.
 | Ship | shipping-and-launch | CI gates, staged rollout, monitoring, rollback |
 | Ship | documentation-and-adrs | Record durable design context and rationale |
 | Ops | infra-ops | Cloudflare/GoDaddy DNS, domains, Workers, SSL |
-| Ops | loop-uptime-maintenance | Handle loop outages that can't self-heal via the loop |
 | Meta | skill-authoring | Create/update project skills correctly |
 | Meta | auto-iterate | Ratchet recurring failures into guards; tune the agent team |

@@ -13,7 +13,7 @@
   <p class="eyebrow">this page moved</p>
   <p class="moved__line">
     The notebook is now the front page — <em>meet Tiny</em>, the small living
-    engine, with every page a live reading from inside him.
+    engine. Published entries carry source labels; discovery says what it omits.
   </p>
   <a class="moved__cta" href="/">Go to the front page →</a>
   <p class="moved__sub ev">/notebook → / · taking you there in a moment</p>

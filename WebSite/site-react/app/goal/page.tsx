@@ -6,7 +6,7 @@ import styles from "./page.module.css";
 export const metadata: Metadata = {
   title: "Goal — Tiny",
   description:
-    "A single goal on Tiny — its outcome, tags, and evidence-gated ladder, read live from the same MCP endpoint your chatbot uses.",
+    "A goal from Tiny's dated, checked-in public snapshot — its outcome, tags, and evidence-gated ladder.",
 };
 
 // Query-param route (`/goal/?id=<id>`): one statically-exported page that renders

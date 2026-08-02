@@ -6,7 +6,7 @@ import { fmtRel } from "../lib/fmt";
 import { Tick } from "./Tick";
 import styles from "./VitalSigns.module.css";
 
-/** Tiny's pulse, read live from the same MCP endpoint visitors paste into a chatbot. */
+/** Server and generic workflow readings from the public MCP endpoint. */
 export function VitalSigns({ variant = "strip" }: { variant?: "hero" | "strip" }) {
   const [vitals, setVitals] = React.useState<Vitals | null>(null);
   const [reading, setReading] = React.useState(true);
@@ -57,19 +57,17 @@ export function VitalSigns({ variant = "strip" }: { variant?: "hero" | "strip" }
             )}
           </span>
           <span className={styles.cell}>
-            <span className={`dot ${vitals.loopAwake ? "live" : "idle"}`} aria-hidden="true" />
-            {vitals.loopAwake && vitals.activeRun ? (
-              <span className={styles.k}>loop awake · a run is moving</span>
-            ) : vitals.loopAwake ? (
+            <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true" />
+            {vitals.workflowActive ? (
               <>
-                <span className={styles.k}>loop awake</span>
+                <span className={styles.k}>recent workflow activity</span>
                 {vitals.lastMovedAt && (
                   <span className={styles.ev}>last signal {fmtRel(vitals.lastMovedAt)}</span>
                 )}
               </>
             ) : (
               <>
-                <span className={styles.k}>loop asleep</span>
+                <span className={styles.k}>no recent workflow activity</span>
                 {vitals.lastMovedAt && (
                   <span className={styles.ev}>last signal {fmtRel(vitals.lastMovedAt)}</span>
                 )}

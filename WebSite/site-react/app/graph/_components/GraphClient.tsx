@@ -1,17 +1,20 @@
 /*
   /graph — the living map. Obsidian-style force graph, 2026-06-10 rebuild.
 
-  Every wiki page is its own dot (1,200+), clustered around category hubs
-  the way Obsidian notes cluster around tags. Goals and universes are their
-  own constellations. The layout is a real physics settle (d3-force), not a
-  designed diagram — you watch it breathe into place, then pan, zoom, hover
-  to focus a neighbourhood, and drag nodes around.
+  Each page included in the dated or discovery-scoped view is a dot,
+  clustered around category hubs the way Obsidian notes cluster around tags.
+  Checked-in Goals and discoverable universes form their own constellations.
+  The layout is a real physics settle (d3-force), not a designed diagram —
+  you watch it breathe into place, then pan, zoom, hover to focus a
+  neighbourhood, and drag nodes around.
 
   Honesty rails:
     - bright lines are REAL page→page references from the snapshot;
     - the faintest spokes are filing (page→its category) — metadata,
       labelled as such in the legend, never dressed up as citations;
-    - first paint is the baked snapshot, stamped; Refresh MCP re-reads live;
+    - first paint is the baked snapshot, stamped; Refresh MCP updates only
+      discovery-scoped pages and public-universe timestamps;
+    - Goal and edge evidence stays tied to the checked-in snapshot;
     - dot size = how often a page is actually referenced.
 
   Interaction: hover = focus neighbourhood · click hub = newest pages panel
@@ -25,7 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Simulation } from "d3-force";
 import baked from "../../../lib/mcp-snapshot.json";
-import { fetchLive, liveToSnapshotShape } from "../../../lib/live";
+import { fetchLive, liveToSnapshotShape, type LiveResult } from "../../../lib/live";
 import type { Snapshot } from "../../../lib/types";
 import { fmtCount, fmtRel, fmtStamp, fmtStampStable } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
@@ -78,14 +81,19 @@ export default function GraphClient() {
   const router = useRouter();
   const mounted = useMounted();
 
-  // First paint from the baked snapshot; Refresh MCP swaps in a live re-read
-  // of the exact same shape, so the whole sky rebuilds against fresh data.
+  // First paint comes from the baked snapshot. Refresh MCP replaces only the
+  // discovery-scoped page/universe layer; Goal and edge evidence stays baked.
   const [snapshot, setSnapshot] = useState<Snapshot>(baked as unknown as Snapshot);
   const [liveStamp, setLiveStamp] = useState<string | null>(null);
+  const [liveDiscovery, setLiveDiscovery] = useState<LiveResult["pageDiscovery"] | null>(null);
   const [reading, setReading] = useState(false);
   const [liveErr, setLiveErr] = useState<string | null>(null);
 
   const atlas = useMemo(() => buildAtlas(snapshot as unknown as Snapshotish), [snapshot]);
+  const bakedEvidenceAtlas = useMemo(
+    () => buildAtlas(baked as unknown as Snapshotish),
+    [],
+  );
   const [refCount, setRefCount] = useState(0);
   const [dotCount, setDotCount] = useState(0);
 
@@ -111,6 +119,7 @@ export default function GraphClient() {
       const live = await fetchLive();
       setSnapshot(liveToSnapshotShape(live, baked as unknown as Snapshot));
       setLiveStamp(live.fetchedAt);
+      setLiveDiscovery(live.pageDiscovery);
       setLiveErr(null);
     } catch (e: any) {
       setLiveErr(e?.message ?? String(e));
@@ -143,9 +152,13 @@ export default function GraphClient() {
 
   const wikiTotal =
     atlas.counts.patch + atlas.counts.plans + atlas.counts.notes + atlas.counts.concepts + atlas.counts.drafts;
-  const stampLabel = liveStamp
-    ? `live read ${fmtRel(liveStamp)}`
-    : `baked snapshot ${mounted ? fmtStamp(snapshot.fetched_at) : fmtStampStable(snapshot.fetched_at)}`;
+  const discoveryStampLabel = liveStamp
+    ? `live discovery read ${fmtRel(liveStamp)}`
+    : `checked-in page and universe snapshot ${mounted ? fmtStamp(snapshot.fetched_at) : fmtStampStable(snapshot.fetched_at)}`;
+  const checkedInEvidenceStamp = mounted
+    ? fmtStamp((baked as unknown as Snapshot).fetched_at)
+    : fmtStampStable((baked as unknown as Snapshot).fetched_at);
+  const checkedInEdgeCount = (baked as unknown as Snapshot).edges?.length ?? 0;
   const universesList = snapshot.universes ?? [];
 
   /* ─────────────────── the canvas force graph ─────────────────── */
@@ -574,22 +587,37 @@ export default function GraphClient() {
         <div className="container">
           <p className="eyebrow">field notes · the living map</p>
           <h1 className="cover__title">
-            My head, <em>seen from above</em>.
+            A published map, <em>seen from above</em>.
           </h1>
           <p className="voice cover__lede">
-            Every one of the {fmtCount(wikiTotal)} pages in my memory is a dot in here, settling around its
-            category the way notes cluster around tags. Goals burn ember; universes drift violet. The bright lines are
-            real page-to-page references — {refCount} of them; the faintest spokes are filing and shared-tag clusters,
-            and I'll never dress either up as a citation. Hover to light up a neighbourhood, scroll to zoom, drag
-            anything that bothers you.
+            Each of the {fmtCount(wikiTotal)} pages in this view is a dot, settling
+            around its category the way notes cluster around tags. The checked-in
+            first view is a dated snapshot; a refresh replaces its page set and
+            public-universe timestamps with a discovery-scoped result, not a
+            complete inventory. Goal and edge evidence stays tied to the
+            checked-in snapshot. Goals burn ember; universes drift violet. The
+            bright lines are recorded page-to-page references; the faintest
+            spokes are filing and shared-tag clusters, and I'll never dress
+            either up as a citation.
           </p>
-          <p className="cover__stamp ev" aria-live="polite">
+          <p className="cover__stamp ev" aria-live="polite" data-source-layer="live-discovery">
             <span className={liveStamp ? "dot live" : "dot"}></span>
-            {stampLabel} · {fmtCount(dotCount)} page dots · {atlas.publicGoalCount} goals ·{" "}
-            {atlas.universeCount} universes · {refCount} cross-references
+            {discoveryStampLabel} · {fmtCount(dotCount)} page dots ·{" "}
+            {atlas.universeCount} universes
             <button type="button" className="refresh" onClick={refresh} disabled={reading} aria-busy={reading}>
               {reading ? "reading…" : "Refresh MCP"}
             </button>
+            {liveDiscovery && (
+              <span>
+                page {liveDiscovery.scope} scope · {liveDiscovery.scopeNote} · not a complete inventory
+              </span>
+            )}
+          </p>
+          <p className="cover__stamp ev" data-source-layer="checked-in-evidence">
+            checked-in snapshot {checkedInEvidenceStamp} ·{" "}
+            {bakedEvidenceAtlas.publicGoalCount} public goals ·{" "}
+            {fmtCount(checkedInEdgeCount)} recorded cross-references · Goal and
+            edge evidence does not refresh in the browser
           </p>
           {liveErr && (
             <p className="cover__err ev">
@@ -605,7 +633,7 @@ export default function GraphClient() {
         <div className="container atlas__shell">
           <figure
             className="map"
-            aria-label="Force-directed map: every wiki page, goal, and universe as a dot; lines are real references"
+            aria-label="Force-directed map of discovery-scoped public pages and universes plus checked-in Goal evidence; recorded references appear as lines"
           >
             <div className="map__wrap" ref={wrapRef}>
               <canvas
@@ -637,7 +665,7 @@ export default function GraphClient() {
                 </header>
                 {categoryPages.length === 0 ? (
                   <p className="panel__empty ev">
-                    this category read as empty at {stampLabel}. A loose end, not a hidden link.
+                    this category read as empty at {discoveryStampLabel}. A loose end, not a hidden link.
                   </p>
                 ) : (
                   <ul className="rows">
@@ -706,9 +734,9 @@ export default function GraphClient() {
                   <li>
                     <span className="swatch swatch--page"></span>
                     <span>
-                      <strong>pages</strong> — one dot per wiki page, {fmtCount(dotCount)} of them, sized by how
-                      often other pages actually reference them. Hover one to see its title; zoom in and titles appear
-                      on their own.
+                      <strong>pages</strong> — one dot for each page included in this view, {fmtCount(dotCount)} in
+                      total, sized by how often other included pages reference it. Hover one to see its title; zoom in
+                      and titles appear on their own.
                     </span>
                   </li>
                   <li>
@@ -734,15 +762,16 @@ export default function GraphClient() {
                   </li>
                 </ul>
                 <p className="panel__note voice">
-                  Three kinds of lines, honestly drawn: the bright ones are the {refCount} real page-to-page references
-                  in my memory; the faint spokes are filing (a page to its category) and shared-tag clusters (pages
-                  carrying the same tag). Filing and tags aren't citations, so they're drawn like they barely exist.
+                  Three kinds of lines, honestly drawn: the bright ones are the {refCount} recorded page-to-page
+                  references in the checked-in snapshot; the faint spokes are filing (a page to its category) and
+                  shared-tag clusters (pages carrying the same tag). Filing and tags aren't citations, so they're
+                  drawn like they barely exist.
                 </p>
                 <p className="panel__foot">
-                  <Tick href="/commons" label="browse every page in the commons" />
+                  <Tick href="/commons" label="browse the discovery view of the commons" />
                 </p>
                 <p className="panel__foot">
-                  <Tick href={REPO_URL} label="the repo behind all of it" external />
+                  <Tick href={REPO_URL} label="the repository behind this public site" external />
                 </p>
               </>
             )}

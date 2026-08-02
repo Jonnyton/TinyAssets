@@ -51,7 +51,7 @@ redesign, do NOT "improve" copy.
 7. **Already-ported shared components** (import from `../../components/...`):
    `VitalSigns` (`variant?:"hero"|"strip"`), `Ladder` (`rungs,start,compact`),
    `Tick` (`href,label,external`), `Term` (`def,children`), `TinyAssetsMark` (`size`).
-8. **Other shared components** the source imports (ChatDemo, Playground, LiveBadge,
+8. **Other shared components** the source imports (Playground, LiveBadge,
    LiveSourceBar, MoodPill, ChapterFolio, TokenDisclaimer, etc.): to avoid collisions
    with other parallel porters, port them **co-located** under `app/<route>/_components/`
    (route-local). Do NOT create files in the shared `components/` dir. Slight duplication

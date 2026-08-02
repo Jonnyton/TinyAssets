@@ -26,7 +26,7 @@
         name: 'TinyAssets',
         alternateName: 'Tiny',
         description:
-          'TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the personified intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.',
+          'TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the personified intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and workflows users can author, publish, copy, and remix.',
         publisher: { '@id': 'https://tinyassets.io/#org' }
       },
       {
@@ -53,7 +53,7 @@
   <meta property="og:url" content="https://tinyassets.io/" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="TinyAssets — the engine that shows its work" />
-  <meta name="twitter:description" content="Live, verifiable state on every page: the same MCP endpoint you paste into your chatbot renders this site's numbers." />
+  <meta name="twitter:description" content="Provenance-labelled public discovery and dated snapshots: live signals say exactly what they measure." />
   <meta name="twitter:image" content="https://tinyassets.io/og-image.png" />
   {@html `<script type="application/ld+json">${JSON.stringify(jsonLd)}<\/script>`}
 </svelte:head>

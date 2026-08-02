@@ -1,5 +1,0 @@
-{
-  "version": 1,
-  "status": "waiting-for-community-loop-watch",
-  "note": "Placeholder to keep the public site from 404ing before the GitHub loop monitor starts publishing status JSON."
-}

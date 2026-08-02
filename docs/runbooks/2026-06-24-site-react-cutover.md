@@ -1,57 +1,77 @@
-# Runbook — cut tinyassets.io over from Svelte to the React/Next site
+# Runbook — deploy the current React/Next production site
 
-**Status:** READY, host-gated. Nothing here has run. The live site is still the
-SvelteKit build (`WebSite/site/`, `deploy-site.yml`). This documents the
-deliberate switch to the React migration (`WebSite/site-react/`).
+**Status (2026-07-26):** the cutover is complete. `WebSite/site-react/` is the
+current production source for `tinyassets.io`. It is published manually through
+`.github/workflows/deploy-site-react.yml`. `WebSite/site/` is retained only as
+the dispatch-only Svelte rollback source through
+`.github/workflows/deploy-site.yml`.
 
-## Why a runbook (not automatic)
+Both workflows deploy to the same `github-pages` environment and share the
+`pages` concurrency group. Never run them concurrently, and never add an
+automatic push or schedule trigger to the Svelte rollback workflow.
 
-The site is a live public surface (Forever rule: 24/7 uptime). The React deploy
-workflow (`deploy-site-react.yml`) is **workflow_dispatch only** with a typed
-`confirm: deploy` guard, so it can never auto-fire. Both site workflows share the
-`pages` concurrency group, so they must not both be live-triggering at once.
+## Production change order
 
-## Pre-cutover checklist
+1. Make every production website edit in `WebSite/site-react/` first.
+2. Build the React/Next site locally:
 
-- [ ] React branch merged to `main` (`WebSite/site-react/`, `WebSite/design-system/`).
-- [ ] `WebSite/site-react`: `npm ci && npm run build` is green locally (28 static pages).
-- [ ] Visual parity spot-checked vs the live Svelte site on key routes
-      (home, graph, loop, goals, fine-print, soul). Screenshot pass done 2026-06-24
-      caught + fixed the home 404-on-hydration; re-verify after any further edits.
-- [ ] `WebSite/site-react/public/CNAME` = `tinyassets.io` and `.nojekyll` present
-      (both ship into `out/`).
-- [ ] Live-data note: the React site fetches `/mcp` same-origin in prod (the
-      Cloudflare Worker route is preserved); confirm the Worker route still answers.
-- [ ] TinyBot, VitalSigns, goals/commons/loop/graph live reads confirmed against
-      the prod `/mcp` (they degrade gracefully to "reading…/asleep" if unreachable).
+   ```powershell
+   cd WebSite/site-react
+   npm ci
+   npm run build
+   ```
 
-## Cutover steps
+3. Mirror the intended user-visible behavior into `WebSite/site/` so the
+   rollback remains credible, then run its focused checks:
 
-1. **Deploy React once to verify** — run `deploy-site-react.yml` (Actions →
-   Run workflow → `confirm: deploy`). It builds the design system, then the site,
-   uploads `WebSite/site-react/out`, and deploys to the `github-pages` environment.
-2. **Probe the public surface** (AGENTS.md hard rule #11):
-   `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` and a
-   browser load of `https://tinyassets.io/` — confirm green + the React site renders.
-3. **Stop the Svelte deploy from fighting** — in `deploy-site.yml` remove the
-   `push:` and `schedule:` triggers (leave `workflow_dispatch` for rollback), or
-   delete the workflow. This prevents the next `WebSite/site/**` push or the 6h
-   cron from redeploying the Svelte build over the React one.
-4. **Snapshot freshness** — the Svelte deploy re-baked the MCP snapshot every 6h
-   (`/graph`, `/commons`). Port that to the React workflow if you want the same
-   auto-refresh: add a `Refresh MCP snapshot` step + a `schedule` trigger, baking
-   into `WebSite/site-react/lib/mcp-snapshot.json` before build. (Left out of the
-   manual workflow on purpose — the cutover deploy uses the committed snapshot.)
+   ```powershell
+   cd WebSite/site
+   npm ci
+   npm run check
+   npm run build
+   ```
 
-## Rollback
+4. Review both previews. React is the production candidate; Svelte parity is
+   rollback readiness, not an alternate production lane.
+5. Merge the approved source. A merge does not publish the website.
 
-Re-enable `deploy-site.yml`'s `workflow_dispatch` (or its `push` trigger) and run
-it; it redeploys the Svelte build to the same Pages environment. The Svelte source
-is untouched by the migration.
+## Manual production deployment
 
-## Known follow-ups (not blockers)
+1. In GitHub Actions, run `deploy-site-react`.
+2. Enter `deploy` in the confirmation input.
+3. Confirm the workflow builds `WebSite/design-system/`, builds the Next static
+   export in `WebSite/site-react/out`, and deploys it to `github-pages`.
+4. Verify the public surface:
 
-- `goals/[id]` static export prerenders only the 3 home-page ids; other ids rely
-  on SPA-fallback (same as the original `ssr=false` page).
-- Consider porting the 6h snapshot re-bake (above) before relying on `/graph`,
-  `/commons` freshness.
+   ```powershell
+   python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
+   ```
+
+5. Load `https://tinyassets.io/` in a browser and verify the production routes
+   affected by the change. Record the deployed source identity before claiming
+   the change shipped; merged is not deployed.
+
+## Rollback to Svelte
+
+Use rollback only for a production regression that requires restoring the
+retained Svelte build.
+
+1. Confirm the Svelte source at the selected revision contains the required
+   parity and passes `npm run check` plus `npm run build`.
+2. Run the dispatch-only `deploy-site` workflow with
+   `refresh_snapshot=false`. Full snapshot regeneration remains disabled until
+   an audience-safe publication manifest exists; use the checked-in vetted
+   snapshot during rollback.
+3. Re-run the public MCP canary and browser checks.
+4. Repair the production React source first, restore parity in Svelte, and
+   manually redeploy React through `deploy-site-react`.
+
+Do not re-enable Svelte push or cron triggers. Svelte is a rollback artifact,
+not a competing deployment owner.
+
+## Evidence boundary
+
+Deployment proof comes from the React workflow result, the deployed source
+identity, the public MCP canary, and rendered browser checks. Platform uptime
+evidence must be labeled separately from user-workflow activity. There is no
+community-watch fallback for deployment truth.

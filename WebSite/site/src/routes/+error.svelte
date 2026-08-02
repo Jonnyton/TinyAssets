@@ -20,7 +20,7 @@
       {#if page.status === 404}
         The path <code>{page.url.pathname}</code> doesn't resolve to any page in my brain. It was renamed, never shipped, or you followed a link that has gone stale.
       {:else}
-        The server returned <code>{page.status}</code>{#if page.error?.message}: <code>{page.error.message}</code>{/if}. If it keeps happening, file it through your chatbot and I'll pick it up.
+        The server returned <code>{page.status}</code>{#if page.error?.message}: <code>{page.error.message}</code>{/if}. If it keeps happening, file it through your chatbot. Filing records the report; any follow-up workflow is an explicit user choice.
       {/if}
     </p>
     <div class="ctas">

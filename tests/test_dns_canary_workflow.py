@@ -15,7 +15,10 @@ Covers:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -161,6 +164,57 @@ def test_alarm_sink_fires_always():
     cond = alarm_job.get("if", "")
     assert "always()" in str(cond).lower(), (
         f"alarm-sink must have if: always(), got: {cond!r}"
+    )
+
+
+def test_dns_check_propagates_published_red_as_job_failure():
+    wf = _load(_DNS_WF)
+    job = _jobs(wf)["dns-check"]
+    steps = job["steps"]
+    probe_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "dns"
+    )
+    probe = steps[probe_index]
+    terminal = steps[-1]
+
+    assert probe.get("continue-on-error") is True
+    assert job["outputs"]["overall"] == "${{ steps.dns.outputs.overall }}"
+    assert probe_index < len(steps) - 1
+    assert terminal.get("env", {}).get("OVERALL") == (
+        "${{ steps.dns.outputs.overall }}"
+    )
+    assert '"$OVERALL" = "red"' in terminal.get("run", "")
+    assert "exit 1" in terminal.get("run", "")
+    assert terminal.get("continue-on-error", False) is False
+
+    if os.name == "nt":
+        shell = shutil.which("wsl")
+        shell_command = [shell, "--exec", "bash", "-c"] if shell else []
+    else:
+        shell = shutil.which("bash")
+        shell_command = [shell, "-c"] if shell else []
+    if not shell_command:
+        pytest.skip("bash is required to exercise the propagation script")
+    green = subprocess.run(
+        shell_command + ["export OVERALL=green\n" + terminal["run"]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    red = subprocess.run(
+        shell_command + ["export OVERALL=red\n" + terminal["run"]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert green.returncode == 0, green.stderr
+    assert red.returncode != 0, red.stderr
+
+    sink = _jobs(wf)["alarm-sink"]
+    assert sink["needs"] == "dns-check"
+    assert sink.get("if", "").strip().lower() == "always()"
+    assert sink["steps"][0]["env"]["OVERALL"] == (
+        "${{ needs.dns-check.outputs.overall }}"
     )
 
 

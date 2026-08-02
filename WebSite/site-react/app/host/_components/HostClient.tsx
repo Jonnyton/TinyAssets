@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { fetchLive, type LiveResult } from "../../../lib/live";
+import { fetchPublicUniverses } from "../../../lib/live";
 import baked from "../../../lib/mcp-snapshot.json";
 import { fmtCount, fmtRel, fmtStampStable } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
@@ -19,11 +19,11 @@ const bakedUniverses = ((baked as any).universes ?? []) as any[];
 
 // Public-commons only: drop private + any SUPERSEDED/RETRACTED/smoke rows.
 function isPublicUniverse(u: any): boolean {
-  if ((u?.visibility ?? "public") === "private") return false;
+  if (!["public", "metadata_only"].includes(u?.visibility)) return false;
   return !/SUPERSEDED|RETRACTED|smoke/i.test(String(u?.id ?? ""));
 }
 
-// Shape a live universe (live.ts hands us raw `universe action=list` rows)
+// Shape a live universe (live.ts hands us raw `read_graph target=graphs` rows)
 // or a baked one (already normalised) into one display shape.
 type Row = { id: string; phase: string; words: number; lastAt: string | null };
 function toRow(u: any, fromLive: boolean): Row {
@@ -67,15 +67,17 @@ function quiet(r: Row, mounted: boolean): boolean {
 
 export default function HostClient() {
   const mounted = useMounted();
-  const [live, setLive] = React.useState<LiveResult | null>(null);
+  const [live, setLive] = React.useState<{ universes: any[]; fetchedAt: string } | null>(null);
   const [liveErr, setLiveErr] = React.useState<string | null>(null);
   const [reading, setReading] = React.useState(false);
 
   const refreshUniverses = React.useCallback(async () => {
     setReading(true);
     try {
-      const r = await fetchLive();
-      setLive(r);
+      setLive({
+        universes: await fetchPublicUniverses(),
+        fetchedAt: new Date().toISOString(),
+      });
       setLiveErr(null);
     } catch (e: any) {
       setLiveErr(e?.message ?? String(e));
@@ -141,8 +143,8 @@ export default function HostClient() {
             installing a thing. <em>Hosting is for when you want your own.</em>
             Your own private
             {" "}<Term def="A universe: a tailored container for one body of work — its canon, goals, workflows, and run history. The public ones are listed below; private ones live on your machine.">universes</Term>
-            {" "}on your own machine, your own keys and data, the same loop pattern
-            pointed at your projects.
+            {" "}on your own machine, with your own keys, data, and user-authored
+            workflows.
           </p>
           <div className="cover__actions">
             <a className="btn btn--primary" href="/start">Just use the public engine →</a>
@@ -183,13 +185,11 @@ export default function HostClient() {
             </li>
             <li className="get">
               <span className="get__n">03</span>
-              <h3 className="get__h">The same loop, on your projects</h3>
+              <h3 className="get__h">Your workflows, on your projects</h3>
               <p className="get__p">
-                The self-patching
-                {" "}<Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real change, and ships. Tiny uses it on himself; you can point it at your own repo.">loop</Term>
-                {" "}pattern isn&apos;t special-cased to me — it&apos;s a workflow bound to a goal.
-                Fork the pattern, swap the goal for your project, and your instance
-                maintains itself the way I maintain mine.
+                Build or remix ordinary workflows bound to your goals. Your instance
+                runs only the designs you choose, under the authority and schedule
+                you configure.
               </p>
               <a className="get__cta" href="/build">how the pattern forks →</a>
             </li>
@@ -260,8 +260,8 @@ export default function HostClient() {
             Honest version: there&apos;s no hosted-cloud signup, waitlist, or pricing
             today, and I won&apos;t fake one. <em>If you want it, the useful thing is to
             say so</em> — a request through chat or a GitHub issue is a real signal
-            that shapes what gets built, and it enters the same patch loop everything
-            else does.
+            that shapes what gets built. Filing records the request; it does not
+            start hidden follow-up work.
           </p>
           <div className="cloud__paths">
             <a className="cloud__path" href="/start">
@@ -278,11 +278,11 @@ export default function HostClient() {
         </div>
       </section>
 
-      {/* 5 · What's running on the public engine right now */}
+      {/* 5 · Public universes hosted on the shared engine */}
       <section className="ch ch--rooms" aria-labelledby="rooms-title">
         <div className="container">
-          <p className="eyebrow">entry five · the public engine right now</p>
-          <h2 id="rooms-title">These are running on the box you&apos;d be opting out of.</h2>
+          <p className="eyebrow">entry five · shared-engine discovery</p>
+          <h2 id="rooms-title">These public universes are hosted on the shared engine.</h2>
           <p className="voice rooms__lede">
             Your hosted universes would be private and wouldn&apos;t appear anywhere like
             this. But it&apos;s worth seeing what the shared engine carries — public
@@ -297,10 +297,14 @@ export default function HostClient() {
           <div className="rooms" aria-live="polite">
             {rows.length === 0 && reading ? (
               <p className="rooms__state ev">reading the live universe list…</p>
+            ) : rows.length === 0 && liveErr && !live ? (
+              <p className="rooms__state ev">Public universe discovery is unavailable. The checked-in snapshot carries no independently published universe rows.</p>
+            ) : rows.length === 0 && liveErr && live ? (
+              <p className="rooms__state ev">The latest refresh failed. The most recent successful read contained no public universes.</p>
             ) : rows.length === 0 && live ? (
               <p className="rooms__state ev">quiet right now — no public universes visible at this read ({rel(live.fetchedAt, mounted)}).</p>
             ) : rows.length === 0 ? (
-              <p className="rooms__state ev">no public universes in view.</p>
+              <p className="rooms__state ev">The checked-in snapshot carries no independently published universe rows; live discovery is pending.</p>
             ) : (
               <>
                 <ul className="rooms__list">
@@ -336,7 +340,7 @@ export default function HostClient() {
                       {" "}<button className="rooms__refresh" onClick={refreshUniverses} disabled={reading}>{reading ? "reading…" : "Refresh MCP"}</button>
                     </>
                   )}
-                  {" "}· <Tick href="/goals" label="universe action=list" />
+                  {" "}· <Tick href="/goals" label="read_graph target=graphs" />
                 </p>
                 {liveErr && live ? (
                   <p className="rooms__state ev">last live read failed — {liveErr} · showing the most recent good read.</p>

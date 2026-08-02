@@ -82,6 +82,7 @@ def _force_utf8_stdio() -> None:
                         buffer,
                         encoding="utf-8",
                         errors="replace",
+                        newline="\n",
                         line_buffering=True,
                     ),
                 )
@@ -190,6 +191,16 @@ def collect_worktrees(repo: Path) -> list[WorktreeEntry]:
     if result.returncode != 0:
         raise SystemExit(result.stderr.strip() or "git worktree list failed")
     return parse_porcelain(result.stdout)
+
+
+def matches_provider(entry: WorktreeEntry, provider: str) -> bool:
+    """Return whether an inventory entry matches the existing provider filter."""
+    needle = provider.lower()
+    return (
+        needle in entry.slug.lower()
+        or needle in entry.branch.lower()
+        or needle in entry.path.lower()
+    )
 
 
 def build_status(
@@ -587,17 +598,17 @@ def main(argv: list[str]) -> int:
 
     repo = Path.cwd()
     status_text = _read_status_text(repo)
+    entries = collect_worktrees(repo)
+    if args.provider:
+        entries = [
+            entry
+            for entry in entries
+            if matches_provider(entry, args.provider)
+        ]
     statuses = [
         build_status(entry, repo=repo, status_text=status_text)
-        for entry in collect_worktrees(repo)
+        for entry in entries
     ]
-    if args.provider:
-        needle = args.provider.lower()
-        statuses = [
-            s
-            for s in statuses
-            if needle in s.slug.lower() or needle in s.branch.lower() or needle in s.path.lower()
-        ]
     statuses.sort(key=lambda s: (STATE_PRIORITY.get(s.state, 99), s.slug))
 
     if args.json:

@@ -23,11 +23,13 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import (
     DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
     ModelConfig,
     ProviderResponse,
+    UniverseContext,
 )
 from tinyassets.providers.quota import QuotaTracker
 from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
@@ -53,6 +55,7 @@ class FakeProvider(BaseProvider):
         self._response_text = response_text
         self._fail_with = fail_with
         self.call_count = 0
+        self.last_config: ModelConfig | None = None
 
     async def complete(
         self,
@@ -63,6 +66,7 @@ class FakeProvider(BaseProvider):
         universe_dir=None,
     ) -> ProviderResponse:
         self.call_count += 1
+        self.last_config = config
         if self._fail_with is not None:
             raise self._fail_with
         return ProviderResponse(
@@ -172,6 +176,172 @@ class TestQuotaTracker:
 
 
 class TestProviderRouterCall:
+    @staticmethod
+    def _carrier(
+        *, provider: str = "codex", role: str = "writer",
+        operation: str = "repository_spec_delivery", max_tokens: int = 77,
+    ):
+        carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier.provider = provider
+        carrier.role = role
+        carrier.operation = operation
+        carrier.max_tokens = max_tokens
+        carrier.validate_for_call.return_value = provider
+        return carrier
+
+    @staticmethod
+    def _carrier_resolver(carrier):
+        def resolve(_context, *, role, operation):
+            carrier.validate_for_call(role=role, operation=operation)
+            return carrier
+        return resolve
+
+    @pytest.mark.asyncio
+    async def test_armed_carrier_narrows_provider_and_token_ceiling(self):
+        providers = _make_providers()
+        health = MagicMock()
+        router = ProviderRouter(providers=providers, auth_health=health)
+        carrier = self._carrier()
+
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(carrier),
+        ):
+            response = await router.call(
+                "writer", "prompt", "system", ModelConfig(max_tokens=None),
+                operation="repository_spec_delivery",
+                universe_context=UniverseContext(provider_invocation=carrier),
+            )
+
+        assert response.provider == "codex"
+        assert providers["codex"].call_count == 1
+        assert providers["codex"].last_config is not None
+        assert providers["codex"].last_config.max_tokens == 77
+        assert providers["claude-code"].call_count == 0
+        health.assert_not_called()
+        carrier.validate_for_call.assert_called_once_with(
+            role="writer", operation="repository_spec_delivery",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("max_tokens", [-1, 78])
+    async def test_armed_carrier_rejects_invalid_or_wider_token_cap(self, max_tokens):
+        providers = _make_providers()
+        router = ProviderRouter(providers=providers)
+
+        carrier = self._carrier(max_tokens=77)
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(carrier),
+        ):
+            with pytest.raises(PermissionError, match="token ceiling"):
+                await router.call(
+                    "writer", "prompt", "system", ModelConfig(max_tokens=max_tokens),
+                    operation="repository_spec_delivery",
+                    universe_context=UniverseContext(provider_invocation=carrier),
+                )
+
+        assert all(provider.call_count == 0 for provider in providers.values())
+
+    @pytest.mark.asyncio
+    async def test_armed_carrier_never_falls_back_to_another_provider(self):
+        providers = _make_providers(
+            codex=FakeProvider(
+                "codex",
+                "openai",
+                fail_with=ProviderUnavailableError("down"),
+            )
+        )
+        router = ProviderRouter(providers=providers)
+
+        carrier = self._carrier(max_tokens=10)
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(carrier),
+        ):
+            with pytest.raises(AllProvidersExhaustedError):
+                await router.call(
+                    "writer", "prompt", "system", ModelConfig(max_tokens=10),
+                    operation="repository_spec_delivery",
+                    universe_context=UniverseContext(provider_invocation=carrier),
+                )
+
+        assert providers["codex"].call_count == 1
+        assert providers["claude-code"].call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_invalid_carrier_holds_before_health_quota_or_provider(self):
+        providers = _make_providers()
+        health = MagicMock()
+        quota = MagicMock()
+        carrier = self._carrier()
+        carrier.validate_for_call.side_effect = PermissionError("stale carrier")
+        router = ProviderRouter(providers=providers, quota=quota, auth_health=health)
+
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(carrier),
+        ):
+            with pytest.raises(PermissionError, match="stale carrier"):
+                await router.call(
+                    "writer", "prompt", "system",
+                    operation="repository_spec_delivery",
+                    universe_context=UniverseContext(provider_invocation=carrier),
+                )
+
+        health.assert_not_called()
+        quota.available.assert_not_called()
+        assert all(provider.call_count == 0 for provider in providers.values())
+
+    @pytest.mark.asyncio
+    async def test_nonexact_or_operationless_carrier_holds_before_provider_access(self):
+        providers = _make_providers()
+        router = ProviderRouter(providers=providers)
+        context = UniverseContext(provider_invocation=self._carrier())
+
+        with pytest.raises(PermissionError, match="requires an operation"):
+            await router.call("writer", "prompt", "system", universe_context=context)
+        with pytest.raises(PermissionError, match="server-owned"):
+            await router.call(
+                "writer", "prompt", "system",
+                operation="repository_spec_delivery", universe_context=context,
+            )
+
+        assert all(provider.call_count == 0 for provider in providers.values())
+
+    @pytest.mark.asyncio
+    async def test_armed_carrier_bypasses_policy_fallback_and_ensemble_fanout(self):
+        providers = _make_providers()
+        router = ProviderRouter(providers=providers)
+        policy_carrier = self._carrier(role="judge")
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(policy_carrier),
+        ):
+            text, provider, _meta = await router.call_with_policy(
+                "judge", "prompt", "system",
+                {"preferred": {"provider": "claude-code"}},
+                ModelConfig(max_tokens=10),
+                operation="repository_spec_delivery",
+                universe_context=UniverseContext(provider_invocation=policy_carrier),
+            )
+        ensemble_carrier = self._carrier(role="judge")
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(ensemble_carrier),
+        ):
+            ensemble = await router.call_judge_ensemble(
+                "prompt", "system", ModelConfig(max_tokens=10),
+                operation="repository_spec_delivery",
+                universe_context=UniverseContext(provider_invocation=ensemble_carrier),
+            )
+
+        assert text == "codex-resp"
+        assert provider == "codex"
+        assert [response.provider for response in ensemble] == ["codex"]
+        assert providers["codex"].call_count == 2
+        assert providers["claude-code"].call_count == 0
+
     @pytest.mark.asyncio
     async def test_writer_uses_first_available(self):
         providers = _make_providers()

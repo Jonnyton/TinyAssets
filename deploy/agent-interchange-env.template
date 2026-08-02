@@ -1,0 +1,15 @@
+# TinyAssets daemon-only agent interchange secret.
+#
+# Install this as /etc/tinyassets/agent-interchange.env with owner
+# root:tinyassets and mode 0640. deploy/compose.yml injects it only into the
+# daemon container; tunnel, logging, and worker containers must not receive it.
+#
+# Generate at least 32 random bytes and store their canonical single-line
+# standard-base64 encoding. Never commit a filled value or reuse an example.
+# Production installs the repository secret of the same name.
+#
+# Rotation: replace the secret and deploy. Image rollback intentionally keeps
+# the new key so a rotated-away key is never resurrected. Deleting the
+# repository secret only blocks deploys; to revoke safely, rotate and deploy,
+# or stop the daemon before removing this protected file.
+TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=

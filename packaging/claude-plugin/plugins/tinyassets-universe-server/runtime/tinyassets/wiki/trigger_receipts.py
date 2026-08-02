@@ -1,33 +1,11 @@
-"""Trigger receipt / outbox primitive for wiki-filed bug investigations
-(FEAT-004).
+"""Historical receipt store for the retired wiki investigation trigger.
 
-Per-request-id traceable record of what happened when a wiki page filing
-attempted to auto-trigger the canonical investigation branch. Closes the
-silent-enqueue-failure gap discovered after PR #176 wired the in-process
-trigger call-site: the page write could succeed and the response could
-look healthy while the trigger silently failed to enqueue, leaving an
-opaque "filing succeeded, no run exists" state.
-
-Storage: a tiny sqlite table at $TINYASSETS_DATA_DIR/wiki_trigger_attempts.db.
-One row per filed-page trigger attempt. Append-only via this module's
-helpers — the write is in the same logical commit as the page metadata
-write so an enqueue failure cannot erase the fact that a trigger was
-expected.
-
-Status lifecycle:
-
-    pending  -> queued (dispatcher returned a request_id)
-    pending  -> failed (dispatcher raised; error_class/error_message recorded)
-    pending  -> skipped (no canonical branch configured; recorded for audit)
-
-Surface: the file_bug response payload includes a ``trigger`` block
-containing the receipt fields. Operators and canaries can also query
-the table directly via ``recent_attempts(limit)`` and
-``orphan_attempts(stale_minutes)`` for periodic health checks.
-
-Backward compatibility: the existing ``investigation`` block in the
-file_bug response is preserved verbatim. The new ``trigger`` block is
-additive.
+The public ``file_bug`` path no longer creates or returns these receipts.
+Readers and persisted rows remain temporarily available for collision-safe
+inventory and migration under ``retire-cheat-loop`` task 2.5. No new runtime
+caller should use the mutation helpers below; they remain only until the locked
+retirement migration proves all older writers drained and all retained evidence
+accounted for.
 """
 
 from __future__ import annotations
@@ -60,11 +38,9 @@ STATUS_SKIPPED = "skipped"
 
 @dataclass
 class TriggerReceipt:
-    """One trigger attempt for a wiki-filed request.
+    """One historical trigger attempt retained for retirement migration.
 
-    Mirrors the ``wiki_trigger_attempts`` table schema. Use ``to_response``
-    to produce the dict that lands in the file_bug response payload's
-    ``trigger`` block.
+    Mirrors the ``wiki_trigger_attempts`` table schema.
     """
 
     trigger_attempt_id: str
@@ -82,7 +58,7 @@ class TriggerReceipt:
     error_message: str | None = None
 
     def to_response(self) -> dict[str, Any]:
-        """Build the ``trigger`` block for the file_bug response payload."""
+        """Serialize the former response shape for historical tooling only."""
         out: dict[str, Any] = {
             "attempted": True,
             "trigger_attempt_id": self.trigger_attempt_id,
@@ -182,7 +158,7 @@ def _conn(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 # ---------------------------------------------------------------------------
-# Public API — called by tinyassets/api/wiki.py:_wiki_file_bug
+# Historical mutation API — no current runtime caller; remove after task 2.5
 # ---------------------------------------------------------------------------
 
 
@@ -195,12 +171,11 @@ def create_pending(
     branch_def_id: str | None = None,
     db_path: Path | None = None,
 ) -> TriggerReceipt:
-    """Insert a new pending receipt and return it.
+    """Insert a pending receipt for compatibility with pre-retirement callers.
 
-    Called BEFORE the trigger helper runs so the attempt is durable even
-    if the helper crashes before reporting. The returned object carries
-    the freshly-minted ``trigger_attempt_id`` which the caller threads
-    into ``mark_queued`` / ``mark_failed`` / ``mark_skipped``.
+    Current runtime paths must not call this helper. The returned object carries
+    the historical ``trigger_attempt_id`` used by the remaining transition
+    helpers.
     """
     receipt = TriggerReceipt(
         trigger_attempt_id=str(uuid.uuid4()),
@@ -388,9 +363,9 @@ def orphan_attempts(
 ) -> list[TriggerReceipt]:
     """Receipts stuck in pending/queued past ``stale_minutes``.
 
-    Orphan = `pending` for too long (trigger helper crashed without
-    update) OR `queued` for too long with no observed run completion.
-    Canaries call this periodically to detect silent failures.
+    An orphan is a historical `pending` row without an update or a historical
+    `queued` row without observed completion. This reader remains for retirement
+    inventory; current runtime canaries do not call it.
 
     NOTE: SQLite text-column timestamp comparison only works because
     we always write ISO-8601 UTC strings (lex order = chrono order).

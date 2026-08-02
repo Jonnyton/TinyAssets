@@ -1,6 +1,6 @@
 ---
 title: Backup and restore runbook
-date: 2026-04-21
+date: 2026-07-23
 row: J — self-host migration
 ---
 
@@ -15,7 +15,9 @@ State backup for the DO Droplet's `/data` volume. Row J per
 
 - **Script:** `deploy/backup.sh` — two archives per run (see "Two-tier design"), uploaded to any
   rclone-compatible remote.
-- **Restore:** `deploy/backup-restore.sh` — pulls a snapshot and restores it in-place.
+- **Restore:** `deploy/backup-restore.sh` — validates and stages a full snapshot,
+  stops every running container mounting the selected volume, then swaps directories.
+  It does not start services.
 - **Schedule:** `deploy/tinyassets-backup.timer` (systemd) — fires nightly at **03:00 UTC**.
 - **Offsite options:** DO Spaces (`s3://`), Hetzner Storage Box (`sftp://`), AWS S3, etc. — any
   rclone remote works. `BACKUP_DEST` is the single config variable.
@@ -30,7 +32,7 @@ pre-2026-06-10 script treated that as fatal — every nightly run from
 
 | Tier | Archive | Contents | Consistency | Failure policy |
 |------|---------|----------|-------------|----------------|
-| **Brain** | `workflow-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
+| **Brain** | `tinyassets-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
 | **Full** | `tinyassets-data-<ts>.tar.gz` (GBs) | whole volume incl. rebuildable per-universe `lancedb/` indexes + universe canon/output | Best-effort — tarred live; tar rc=1 tolerated, rc≥2 fatal | Upload failure fatal (exit 3) |
 
 The brain tier is the irreplaceable knowledge state and must always land.
@@ -39,22 +41,81 @@ indexes are rebuildable from canon, and run state is resumable. Retention is
 applied **per tier prefix** by `scripts/backup_prune.py`; unrecognized
 filenames at the destination are never pruned.
 
-### Current droplet reality (verified 2026-06-10, updated same day)
+### Production history and current contract
 
 Until 2026-06-10 the droplet had `BACKUP_DEST=/var/backups/workflow` — a
 local directory on the same disk as the data — and GitHub releases were the
-only true offsite copy. **Fixed 2026-06-10:** DO Spaces provisioned from the
-droplet's own `DO_API_TOKEN` (no human in the loop):
+only true offsite copy. On 2026-06-10, DO Spaces was provisioned as the primary:
 
-- `BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups`
-- Spaces key `tinyassets-backup-shipper-v3` (account-wide `fullaccess` grant —
-  keys created with `grants: []` or per-nonexistent-bucket grants get 403;
-  use `[{"permission": "fullaccess"}]` with no bucket field).
-- rclone config at `/app/.config/rclone/rclone.conf` (the systemd unit runs
-  with `HOME=/app` from `/etc/tinyassets/env`).
+- `BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
+- A dedicated Spaces access key.
+- rclone config at `/root/.config/rclone/rclone.conf` (the systemd unit runs
+  as root and does not override `HOME`).
 - Verified end-to-end: `Result=success`, both tiers listed in the bucket.
 
-Offsite is now: **DO Spaces (primary) + GitHub releases (secondary)**.
+An exact-SHA production exercise on 2026-07-24 found that subsequent
+application deploys had deleted `BACKUP_DEST`, and the replacement host lacked
+root's rclone file. Releases after the preservation repair keep
+`BACKUP_DEST`; the exact-source host-service workflow treats a working
+destination as a no-op, transactionally creates a bucket-scoped `readwrite`
+key when both configuration halves are absent, and fails closed on partial or
+invalid existing configuration. Newly created credentials receive a bounded
+95-second worst-case data-plane propagation window before transactional
+rollback. That bound includes 65 seconds of backoff plus five probes hard-capped
+at five seconds with one second of kill grace each.
+
+The Space is an external resource created before the product rename. Its
+provider identity remains `workflow-backups-jonnyton-sfo3`; Spaces buckets
+cannot be renamed. A mechanical repository rename temporarily documented the
+nonexistent `tinyassets-backups-jonnyton-sfo3` name. Read-only provider probes
+on 2026-07-23 returned HTTP 403 for the private pre-rename bucket and HTTP 404
+for the nonexistent renamed bucket. Do not rename external resource
+identifiers during product terminology migrations.
+
+Exact-merge installer run `30070438676` on 2026-07-23 proved the corrected
+bucket accepts scoped key creation. Its immediate object-list probe returned
+HTTP 403, after which the workflow removed the temporary host configuration and
+deleted the new key. This is treated as provider credential propagation unless
+the bounded retry window also expires; it is not authority to use a full-access
+key.
+
+Exact-merge run `30071110351` then exposed an ordering bug: S3 has no empty
+directories, but the pre-probe `rclone mkdir` still made a data-plane request
+and received HTTP 403 before the bounded retry loop. Rollback again removed the
+host configuration and new key. The installer no longer calls `mkdir`; its
+bounded non-mutating list probe is the only data-plane gate.
+
+Exact-merge installer run `30071496671` completed successfully on 2026-07-23:
+the scoped key passed the bounded data-plane gate and the five uptime timers
+were converged from merge `37698cadd7c3ec7072120fe466e85436aec80386`.
+
+To collect fresh backup evidence without making every deploy run a backup,
+dispatch `install-host-services.yml` at an exact merge ref with
+`run_backup=true`. The default is false. The exercise requires a successful
+oneshot result, new brain/full archive names at the Spaces destination, exactly
+two GitHub release upload markers, and `backup complete.` All journal markers
+must carry the new service run's exact systemd invocation ID; time-window
+queries are insufficient because they can mix adjacent runs. The exercise never
+prints the environment file or rclone credentials.
+
+Final exact-merge proof on 2026-07-24 used merge
+`a18751dc3b8544d048a745304b1823dfdd9fbb11`:
+
+- Backup run `30075565479` reused the verified configuration, converged five
+  timers, produced fresh `2026-07-24T07-28-29Z` brain/full archives at both
+  tiers, and emitted no invocation warning/error.
+- The private release repository converged to 30 recognized backup releases
+  plus one permanent audit release.
+- Both downloaded assets matched GitHub's SHA-256 digests, passed tar/path
+  validation, and the full archive extracted outside production. All 14
+  SQLite databases passed read-only `PRAGMA integrity_check`; `ledger.json`
+  parsed.
+- Deploy run `30076034679` passed health and public canaries. Its automatic
+  host-service run `30076156783` then reported the off-host configuration
+  already verified and reconverged all five timers.
+
+The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
+(secondary)**.
 Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,
 remove the bucket. Cost: Spaces subscription ~$5/mo on the existing DO
 account. Local retention stays tight (`BACKUP_RETAIN_DAILY=3 / WEEKLY=2 /
@@ -79,6 +140,12 @@ deleted at the end of every run.
 
 Install rclone on the Droplet and configure a named remote for your offsite target.
 
+For the canonical production host, dispatching `Install host services`
+performs this setup automatically only when both `BACKUP_DEST` and root's
+rclone configuration are absent. Operators must inspect and deliberately
+rotate partial or failing existing configuration; the workflow does not
+overwrite it.
+
 **DO Spaces (recommended — same provider, cheapest):**
 
 ```bash
@@ -86,7 +153,7 @@ apt-get install -y rclone
 
 # Create a DO Spaces bucket (once) via DO console or API.
 # Then configure rclone:
-rclone config create spaces s3 \
+sudo rclone config create spaces s3 \
   provider DigitalOcean \
   endpoint nyc3.digitaloceanspaces.com \
   access_key_id "$DO_SPACES_KEY" \
@@ -96,7 +163,7 @@ rclone config create spaces s3 \
 **Hetzner Storage Box (SFTP):**
 
 ```bash
-rclone config create storagebox sftp \
+sudo rclone config create storagebox sftp \
   host u123456.your-storagebox.de \
   user u123456 \
   pass "$(rclone obscure "$STORAGEBOX_PASS")"
@@ -178,7 +245,7 @@ state over an existing volume:
 
 ```bash
 systemctl stop tinyassets-daemon   # or: docker compose -f /opt/tinyassets/deploy/compose.yml stop daemon
-tar -xzf /tmp/workflow-brain-<ts>.tar.gz -C /var/lib/docker/volumes/tinyassets-data/_data
+tar -xzf /tmp/tinyassets-brain-<ts>.tar.gz -C /var/lib/docker/volumes/tinyassets-data/_data
 systemctl start tinyassets-daemon
 ```
 
@@ -197,8 +264,29 @@ sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --timestamp=2026-04-20T02-00-00Z
 ```
 
-The script stops `tinyassets-daemon`, extracts the archive into the Docker volume, then restarts the
-daemon. Downtime is ~30–90 seconds for a typical volume.
+The script first rejects corrupt archives, paths outside `_data`, links, and
+special files; it then extracts into a unique sibling directory. Only after
+staging succeeds does it stop every running container mounting `tinyassets-data` and
+swap the staged directory into place. It deliberately does **not** start any
+service. The pre-restore directory is retained at the path printed by the
+script.
+
+Start only the intended service, prove it healthy, and then remove the retained
+directory:
+
+```bash
+sudo systemctl start tinyassets-daemon
+python3 /opt/tinyassets/scripts/mcp_public_canary.py \
+  --url http://127.0.0.1:8001/mcp
+
+```
+
+Only after the canary is green, use the guarded `OLD_DIR` cleanup procedure in
+`deploy/RESTORE.md` with the exact retained path printed by the restore.
+
+If the canary is red, stop the service and swap the retained directory back
+before further diagnosis. Never delete the retained directory before the
+post-restore canary passes.
 
 ---
 
@@ -220,14 +308,17 @@ Use this when the original Droplet is gone or unrecoverable.
    source /etc/tinyassets/env
    sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
    ```
-5. Bring up the full stack:
+5. Start only the daemon:
    ```bash
-   docker compose -f /opt/tinyassets/deploy/compose.yml up -d
+   docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon
    ```
 6. Verify:
    ```bash
    python scripts/mcp_public_canary.py --url http://127.0.0.1:8001/mcp
    ```
+7. After the canary is green, remove the exact retained pre-restore directory
+   printed by `backup-restore.sh`. If it is red, keep that directory and the
+   failed host as recovery evidence.
 
 ---
 
@@ -254,9 +345,10 @@ Expected healthy output ends with `backup complete.`
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `BACKUP_DEST is not set` | Env file missing the variable | Add `BACKUP_DEST=...` to `/etc/tinyassets/env` |
-| `volume tinyassets-data not found` | Docker volume not yet created | Run `docker compose up -d` first |
-| `rclone upload failed` | Network/auth error | Check rclone config: `rclone lsd $BACKUP_DEST` |
-| `tar failed` | Volume data corrupted | Check `docker logs tinyassets-daemon`; may need full restore |
+| `restore already in progress` | Another restore holds this volume's lock | Wait for it to finish; restores of other volume directories remain independent |
+| `archive member validation failed` | Corrupt or unsafe archive (wrong root, traversal, link, or special file) | Leave the live volume untouched and select another full archive |
+| `rclone upload failed` | Network/auth error | Check root's rclone config: `sudo rclone lsd $BACKUP_DEST` |
+| `failed to install staged volume` | The second same-parent rename failed | The script attempts automatic rollback; confirm the old live data is back before retrying |
 | Timer never fires | Unit not enabled | `systemctl enable --now backup.timer` |
 
 ---
@@ -277,8 +369,9 @@ gh release list --repo Jonnyton/tinyassets-backups
 # Download a specific release asset.
 gh release download <tag> --repo Jonnyton/tinyassets-backups --dir /tmp
 
-# Restore (same as rclone path — feed the tarball to backup-restore.sh).
-BACKUP_FILE=/tmp/tinyassets-data-<tag>.tar.gz sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+# Restore from an absolute caller-owned path; this bypasses rclone.
+sudo -E env BACKUP_FILE=/tmp/tinyassets-data-<timestamp>.tar.gz \
+  bash /opt/tinyassets/deploy/backup-restore.sh
 ```
 
 Or via raw API (no gh CLI):
@@ -290,10 +383,17 @@ curl -sL -H "Authorization: Bearer $GH_TOKEN" \
 # Then curl -L <url> > /tmp/backup.tar.gz
 ```
 
-**Retention:** 30 releases kept by default (`BACKUP_GH_RETAIN`). Oldest pruned
-on each successful upload.
+**Retention:** 30 recognized backup releases are kept by default
+(`BACKUP_GH_RETAIN`). Retention waits boundedly until GitHub's list endpoint
+contains the just-created release; an already-deleted victim in a stale view
+forces another bounded reconciliation pass. Each API request has a 15-second
+transport timeout, and one shared wall-clock budget across listing, release
+deletion, best-effort tag cleanup, and retry sleeps caps the complete
+reconciliation at two minutes. The oldest recognized backup releases are then
+pruned after each successful upload. Unrecognized parked/audit releases are
+permanent and do not count toward this limit, so the repository's total
+release count can be higher.
 
 **Setup:** create `Jonnyton/tinyassets-backups` as a private repo once (or let
 `backup_ship_gh.py` create it automatically on first run).  Add `GH_TOKEN` to
 `/etc/tinyassets/env` with `repo` scope.
-

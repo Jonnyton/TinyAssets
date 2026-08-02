@@ -28,8 +28,8 @@ permissions:
   issues: write
 
 concurrency:
-  # One triage run per issue — prevents concurrent restarts on the same box.
-  group: p0-triage-${{ github.event.issue.number }}
+  # Serialize every workflow that mutates the production host.
+  group: production-host-mutation
   cancel-in-progress: false
 
 env:
@@ -71,6 +71,15 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Refuse host mutation during stop-writer cutover
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              scripts/retire_cheat_loop_deploy_fence.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py --state-path /var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json guard-host-mutation"
 
       - name: Capture pre-restart diag
         id: prediag
@@ -153,15 +162,19 @@ jobs:
       - name: Repair — ENV-UNREADABLE (chown + chmod)
         id: repair_env
         if: steps.classify.outputs.class == 'env_unreadable'
+        continue-on-error: true
         run: |
           echo "::notice::ENV-UNREADABLE detected — applying perm repair"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo chown root:tinyassets /etc/tinyassets/env && \
-               sudo chmod 640 /etc/tinyassets/env && \
-               sudo -u tinyassets test -r /etc/tinyassets/env && \
-               echo 'env perms repaired' && \
-               sudo ls -l /etc/tinyassets/env"
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -se" <<'REPAIR_ENV'
+          set -euo pipefail
+          chown root:tinyassets /etc/tinyassets/env
+          chmod 640 /etc/tinyassets/env
+          sudo -u tinyassets test -r /etc/tinyassets/env
+          echo 'env perms repaired'
+          ls -l /etc/tinyassets/env
+          REPAIR_ENV
 
       # --- Repair branch 2: OOM ----------------------------------------
       # Narrow repair: compose restart, no memory-cap ratchet. Infinite
@@ -172,13 +185,17 @@ jobs:
       - name: Repair — OOM (compose restart; memory cap NOT auto-bumped)
         id: repair_oom
         if: steps.classify.outputs.class == 'oom'
+        continue-on-error: true
         run: |
           echo "::notice::OOM detected — compose restart (no memory ratchet)"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "docker compose -f /opt/tinyassets/compose.yml \
-                 --env-file /etc/tinyassets/env \
-                 restart daemon" 2>&1
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_OOM'
+          set -euo pipefail
+          docker compose -f /opt/tinyassets/compose.yml \
+            --env-file /etc/tinyassets/env \
+            restart daemon
+          REPAIR_OOM
 
       # --- Repair branch 3: disk full ----------------------------------
       # docker system prune -af reclaims dangling images/containers/cache.
@@ -187,13 +204,17 @@ jobs:
       - name: Repair — disk full (docker prune + journalctl vacuum)
         id: repair_disk
         if: steps.classify.outputs.class == 'disk_full'
+        continue-on-error: true
         run: |
           echo "::notice::disk-full detected — emergency prune"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker system prune -af 2>&1 | tail -20; \
-               sudo journalctl --vacuum-time=3d 2>&1 | tail -5; \
-               df -h / /var/lib/docker 2>&1" 2>&1
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_DISK'
+          set -euo pipefail
+          docker system prune -af 2>&1 | tail -20
+          journalctl --vacuum-time=3d 2>&1 | tail -5
+          df -h / /var/lib/docker 2>&1
+          REPAIR_DISK
 
       # --- Repair branch 4: image pull failure -------------------------
       # Roll back to the immutable release-state rollback_target. Do not
@@ -207,6 +228,7 @@ jobs:
       - name: Repair — image pull failure (release-state rollback target)
         id: repair_pull
         if: steps.classify.outputs.class == 'image_pull_failure'
+        continue-on-error: true
         run: |
           echo "::warning::image-pull failed — rolling back to recorded immutable release-state target"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -214,8 +236,9 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'set -euo pipefail
-               rollback_target="$(sudo python3 - <<'"'"'PY'"'"'
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 300 -- /bin/bash -se" <<'REPAIR_PULL'
+          set -euo pipefail
+          rollback_target="$(python3 - <<'PY'
           import json
           from pathlib import Path
 
@@ -226,18 +249,19 @@ jobs:
               value = ""
           print(value)
           PY
-               )"
-               if [ -z "${rollback_target}" ]; then
-                 echo "::error::No release-state rollback_target found; refusing mutable image fallback" >&2
-                 exit 1
-               fi
-               case "${rollback_target}" in
-                 *@sha256:*) ;;
-                 *) echo "::error::rollback_target is not digest-pinned: ${rollback_target}" >&2; exit 1 ;;
-               esac
-               printf "%s" "${rollback_target}" | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE
-               sudo docker pull "${rollback_target}"
-               sudo systemctl restart tinyassets-daemon'
+          )"
+          if [ -z "${rollback_target}" ]; then
+            echo "::error::No release-state rollback_target found; refusing mutable image fallback" >&2
+            exit 1
+          fi
+          case "${rollback_target}" in
+            *@sha256:*) ;;
+            *) echo "::error::rollback_target is not digest-pinned: ${rollback_target}" >&2; exit 1 ;;
+          esac
+          printf "%s" "${rollback_target}" | bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE
+          docker pull "${rollback_target}"
+          systemctl restart tinyassets-daemon
+          REPAIR_PULL
 
       # --- Repair branch 5: watchdog hot-loop --------------------------
       # stop → sleep 60 → start lets the systemd start-limit counter
@@ -248,14 +272,18 @@ jobs:
       - name: Repair — watchdog hot-loop (stop + sleep 60 + start)
         id: repair_watchdog
         if: steps.classify.outputs.class == 'watchdog_hotloop'
+        continue-on-error: true
         run: |
           echo "::notice::watchdog hot-loop detected — stop+sleep+start"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemctl stop tinyassets-daemon && \
-               sleep 60 && \
-               sudo systemctl reset-failed tinyassets-daemon && \
-               sudo systemctl start tinyassets-daemon" 2>&1
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_WATCHDOG'
+          set -euo pipefail
+          systemctl stop tinyassets-daemon
+          sleep 60
+          systemctl reset-failed tinyassets-daemon
+          systemctl start tinyassets-daemon
+          REPAIR_WATCHDOG
 
       # --- Repair branch 6: provider_exhaustion (Lane 4b) --------------
       # Daemon alive + writing, but every scene terminates as REVERT —
@@ -294,42 +322,41 @@ jobs:
         if: >
           steps.classify.outputs.class == 'provider_exhaustion' &&
           steps.repair_provider_exhaustion_gate.outputs.auto_repair_enabled == 'true'
+        continue-on-error: true
         run: |
           echo "::warning::provider_exhaustion — halting worker + pausing universe"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "docker stop tinyassets-worker 2>&1 || true; \
-               for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/; do \
-                 [ -d \"\$udir\" ] && touch \"\$udir.pause\" && \
-                   echo \"paused \$udir\"; \
-               done; \
-               ls -la /var/lib/docker/volumes/tinyassets-data/_data/*/.pause 2>&1" 2>&1
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_PROVIDER'
+          set -euo pipefail
+          docker stop tinyassets-worker 2>&1 || true
+          for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/; do
+            [ -d "$udir" ] && touch "$udir.pause" && echo "paused $udir"
+          done
+          ls -la /var/lib/docker/volumes/tinyassets-data/_data/*/.pause 2>&1
+          REPAIR_PROVIDER
 
       # Priority=2 page regardless of auto-repair gate — host needs to
       # know even in WARN-only mode so they can act manually. Matches
       # spec §Q6 repair-branch YAML.
       - name: Page — provider_exhaustion (Pushover priority=2)
         if: steps.classify.outputs.class == 'provider_exhaustion'
+        continue-on-error: true
         env:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
-          AUTO_REPAIR: ${{ steps.repair_provider_exhaustion_gate.outputs.auto_repair_enabled }}
         run: |
           if [ -z "$PUSHOVER_USER_KEY" ] || [ -z "$PUSHOVER_APP_TOKEN" ]; then
             echo "::warning::Pushover secrets unset — cannot page for provider_exhaustion"
             exit 0
           fi
-          if [ "$AUTO_REPAIR" = "true" ]; then
-            title="P0 provider_exhaustion — worker halted"
-            message="Revert-loop canary fired CRITICAL. Worker stopped + .pause set. Fix provider stack before resume."
-          else
-            title="P0 provider_exhaustion — WARN only (auto-repair gated off)"
-            message="Revert-loop canary fired. Auto-repair NOT enabled (TINYASSETS_REVERT_AUTO_REPAIR unset). Manual intervention required."
-          fi
           python scripts/pushover_page.py \
-              --title "$title" \
-              --message "$message" \
-              --priority 2 || echo "::warning::Pushover paging failed"
+              --issue-number "${{ github.event.issue.number }}" \
+              --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              --probe-url "${CANARY_URL}" \
+              --probe-exit 3 \
+              --kind PROVIDER_EXHAUSTION \
+              --first-alarm
 
       # --- Manual-only branch: tunnel token ----------------------------
       # Detection only — we can't auto-rotate the Cloudflare tunnel token
@@ -394,12 +421,16 @@ jobs:
           steps.classify.outputs.class != 'watchdog_hotloop' &&
           steps.classify.outputs.class != 'tunnel_token' &&
           steps.classify.outputs.class != 'provider_exhaustion'
+        continue-on-error: true
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "docker compose -f /opt/tinyassets/compose.yml \
-                 --env-file /etc/tinyassets/env \
-                 up -d --force-recreate daemon" 2>&1
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'RESTART_DAEMON'
+          set -euo pipefail
+          docker compose -f /opt/tinyassets/compose.yml \
+            --env-file /etc/tinyassets/env \
+            up -d --force-recreate daemon
+          RESTART_DAEMON
           echo "restart_attempted=true" >> "$GITHUB_OUTPUT"
 
       - name: Wait for daemon startup

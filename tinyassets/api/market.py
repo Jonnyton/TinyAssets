@@ -743,8 +743,13 @@ def _outcome_connect(base_path: "Path") -> Any:
     return conn
 
 
-def _outcome_row_to_dict(row: Any) -> dict:
-    return {
+def _outcome_row_to_dict(
+    row: Any,
+    *,
+    evidence: Any | None = None,
+    transitions: list[Any] | None = None,
+) -> dict:
+    result = {
         "outcome_id": row["outcome_id"],
         "run_id": row["run_id"],
         "outcome_type": row["outcome_type"],
@@ -756,15 +761,76 @@ def _outcome_row_to_dict(row: Any) -> dict:
         "recorded_at": row["recorded_at"],
         "note": row["note"] or "",
     }
+    if evidence is not None:
+        result.update({
+            "account_id": evidence["account_id"],
+            "branch_def_id": evidence["branch_def_id"],
+            "branch_version_id": evidence["branch_version_id"],
+            "content_hash": evidence["content_hash"],
+            "output_field": evidence["output_field"],
+            "output_sha256": evidence["output_sha256"],
+            "handoff_id": evidence["handoff_id"],
+            "effect_key": evidence["effect_key"],
+            "sink": evidence["sink"],
+            "evidence_source": evidence["evidence_source"],
+            "evidence_level": evidence["evidence_level"],
+            "external_id": evidence["external_id"],
+            "normalized_external_ref": evidence["normalized_external_ref"],
+            "attested_by": evidence["attested_by"],
+            "evidence_updated_at": evidence["updated_at"],
+            "evidence_transitions": [
+                {
+                    "seq": item["seq"],
+                    "from_level": item["from_level"],
+                    "to_level": item["to_level"],
+                    "evidence_source": item["evidence_source"],
+                    "actor_id": item["actor_id"],
+                    "evidence": json.loads(item["evidence_json"] or "{}"),
+                    "recorded_at": item["recorded_at"],
+                }
+                for item in (transitions or [])
+            ],
+        })
+    return result
+
+
+def _outcome_lifecycle(conn: Any, outcome_id: str) -> tuple[Any | None, list[Any]]:
+    evidence = conn.execute(
+        "SELECT * FROM outcome_evidence WHERE outcome_id = ?",
+        (outcome_id,),
+    ).fetchone()
+    transitions = conn.execute(
+        """
+        SELECT *
+          FROM outcome_evidence_transition
+         WHERE outcome_id = ?
+         ORDER BY seq
+        """,
+        (outcome_id,),
+    ).fetchall()
+    return evidence, transitions
+
+
+def _outcome_run_owner(run: dict[str, Any]) -> str:
+    owner = str(run.get("owner_user_id") or "").strip()
+    if owner:
+        return owner
+    actor = str(run.get("actor") or "").strip()
+    return "" if actor == "anonymous" else actor
 
 
 def _action_record_outcome(kwargs: dict[str, Any]) -> str:
     import uuid as _uuid
     from datetime import datetime, timezone
 
-    from tinyassets.outcomes.schema import OUTCOME_TYPES
+    from tinyassets.outcomes.schema import (
+        OUTCOME_TYPES,
+        record_user_attested_outcome_evidence,
+    )
+    from tinyassets.runs import get_run
 
     run_id = (kwargs.get("run_id") or "").strip()
+    actor_id = (kwargs.get("actor_id") or "").strip()
     outcome_type = (kwargs.get("outcome_type") or "").strip()
     if not run_id:
         return json.dumps({"error": "run_id is required."})
@@ -774,6 +840,16 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": f"Unknown outcome_type '{outcome_type}'.",
             "valid": sorted(OUTCOME_TYPES),
+        })
+    source_run = get_run(_base_path(), run_id)
+    if (
+        not actor_id
+        or source_run is None
+        or _outcome_run_owner(source_run) != actor_id
+    ):
+        return json.dumps({
+            "error": f"run {run_id!r} is not available to this account",
+            "code": "handoff_authority_required",
         })
     evidence_url = (kwargs.get("evidence_url") or "").strip() or None
     gate_event_id = (kwargs.get("gate_event_id") or "").strip() or None
@@ -799,6 +875,12 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
             (outcome_id, run_id, outcome_type, evidence_url,
              gate_event_id, payload, recorded_at, note),
         )
+        record_user_attested_outcome_evidence(
+            conn,
+            outcome_id=outcome_id,
+            account_id=actor_id,
+            actor_id=actor_id,
+        )
     return json.dumps({
         "status": "recorded",
         "outcome_id": outcome_id,
@@ -813,7 +895,7 @@ def _action_list_outcomes(kwargs: dict[str, Any]) -> str:
     run_id = (kwargs.get("run_id") or "").strip()
     outcome_type = (kwargs.get("outcome_type") or "").strip()
     try:
-        limit = min(int(kwargs.get("limit") or 50), 200)
+        limit = max(1, min(int(kwargs.get("limit") or 50), 200))
     except (TypeError, ValueError):
         limit = 50
 
@@ -849,7 +931,16 @@ def _action_list_outcomes(kwargs: dict[str, Any]) -> str:
             f"SELECT * FROM outcome_event {where} ORDER BY recorded_at DESC LIMIT ?",
             params,
         ).fetchall()
-    outcomes = [_outcome_row_to_dict(r) for r in rows]
+        outcomes = []
+        for row in rows:
+            evidence, transitions = _outcome_lifecycle(conn, row["outcome_id"])
+            outcomes.append(
+                _outcome_row_to_dict(
+                    row,
+                    evidence=evidence,
+                    transitions=transitions,
+                )
+            )
     return json.dumps({"outcomes": outcomes, "count": len(outcomes)})
 
 
@@ -863,9 +954,16 @@ def _action_get_outcome(kwargs: dict[str, Any]) -> str:
             "SELECT * FROM outcome_event WHERE outcome_id = ?",
             (outcome_id,),
         ).fetchone()
+        evidence, transitions = (
+            _outcome_lifecycle(conn, outcome_id)
+            if row is not None
+            else (None, [])
+        )
     if row is None:
         return json.dumps({"error": f"outcome_id '{outcome_id}' not found."})
-    return json.dumps(_outcome_row_to_dict(row))
+    return json.dumps(
+        _outcome_row_to_dict(row, evidence=evidence, transitions=transitions)
+    )
 
 
 _OUTCOME_ACTIONS: dict[str, Any] = {
@@ -1154,7 +1252,8 @@ def _action_goal_propose(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 "visibility must be 'public' or 'private' at propose "
-                "time. Use the `delete_goal` action to soft-delete."
+                "time. Goal soft-deletion is not exposed by the advertised "
+                "handles."
             ),
         })
     goal_dict = {
@@ -1175,9 +1274,8 @@ def _action_goal_propose(kwargs: dict[str, Any]) -> str:
         return json.dumps(_format_commit_failed(exc))
     text = (
         f"**Proposed Goal: {saved['name']}.**\n\n"
-        "Bind existing workflows to this Goal with the `goals` action "
-        "`bind` (pass the Goal name and workflow name). Search for "
-        "related intent with `goals action=search query=...`."
+        "Goal binding is not exposed by the advertised handles. Search for "
+        'related intent with read_graph target="goals" query="<terms>".'
     )
     return json.dumps({
         "text": text,
@@ -1357,7 +1455,7 @@ def _action_goal_bind(kwargs: dict[str, Any]) -> str:
         text = (
             f"**Bound** workflow '{branch['name']}' to "
             f"Goal '{goal['name']}'. Inspect the Goal with "
-            "`goals action=get` (Goal name or id in structuredContent)."
+            f'`read_graph target="goal" goal_id="{gid}"`.'
         )
         status = "bound"
     else:
@@ -1406,7 +1504,10 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
             )
         text = "\n".join(lines)
     else:
-        text = "No Goals match the filter yet. Propose one with `goals action=propose name=...`."
+        text = (
+            "No Goals match the filter yet. Propose one with "
+            'write_graph target="goal" name="<name>".'
+        )
     return json.dumps({
         "text": text,
         "goals": rows,
@@ -1414,6 +1515,23 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
         "production_only": production_only,
         "excluded_count": unfiltered_count - len(rows),
     }, default=str)
+
+
+def _get_public_goal(goal_id: str) -> dict[str, Any]:
+    """Resolve a Goal for a public read action, failing closed otherwise."""
+    from tinyassets.daemon_server import get_goal
+
+    goal = get_goal(_base_path(), goal_id=goal_id)
+    if goal.get("visibility") != "public":
+        raise KeyError(goal_id)
+    return goal
+
+
+def _public_goal_ids() -> set[str]:
+    """Return the complete exactly-public Goal ID set for record filtering."""
+    from tinyassets.daemon_server import public_goal_ids
+
+    return public_goal_ids(_base_path())
 
 
 def _action_goal_get(kwargs: dict[str, Any]) -> str:
@@ -1424,8 +1542,8 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.market import _gates_enabled
     from tinyassets.daemon_server import (
         branches_for_goal,
-        get_goal,
         goal_gate_summary,
+        resolve_goal_canonical,
     )
 
     gid = (kwargs.get("goal_id") or "").strip()
@@ -1436,7 +1554,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
         })
     _ensure_workflow_db()
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = _get_public_goal(gid)
     except KeyError:
         return json.dumps({
             "status": "rejected",
@@ -1445,12 +1563,17 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
 
     # Phase 6.2.2 — viewer-aware. Private Branches owned by other
     # actors are excluded from this Goal's published Branch list.
+    actor = _current_actor()
+    scope_actor = "" if actor == "anonymous" else actor
     branches = branches_for_goal(
-        _base_path(), goal_id=gid, viewer=_current_actor(),
+        _base_path(), goal_id=gid, viewer=actor,
     )
-    is_deleted = goal.get("visibility") == "deleted"
-
-    # Phase 6.4: gate_summary rides alongside branches/is_deleted.
+    actor_canonical_branch_version_id = resolve_goal_canonical(
+        _base_path(),
+        goal_id=gid,
+        scope_actor=scope_actor,
+    )
+    # Phase 6.4: gate_summary rides alongside branches.
     # When GATES_ENABLED=0, return a flag-gated placeholder so the
     # UI can render "gates off" without mistaking it for "no claims".
     if _gates_enabled():
@@ -1484,8 +1607,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
             )
         if len(protocol) > 12:
             lines.append(
-                f"- … and {len(protocol) - 12} more. Use "
-                f"`goals action=get_protocol goal_id={gid}`."
+                f"- … and {len(protocol) - 12} more in the structured result."
             )
         lines.append("")
     if branches:
@@ -1500,25 +1622,21 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
             )
         if len(branches) > 12:
             lines.append(
-                f"- … and {len(branches) - 12} more. Filter with "
-                f"`extensions action=list_branches goal_id={gid}`."
+                f"- … and {len(branches) - 12} more in the structured result."
             )
     else:
         lines.append(
-            "_No Branches yet. Bind an existing Branch with "
-            f"`goals action=bind branch_def_id=... goal_id={gid}`._"
+            "_No Branches yet. Goal binding is not exposed by the "
+            "advertised handles._"
         )
-    if is_deleted:
-        lines.append("")
-        lines.append(
-            "_Note: this Goal is soft-deleted. Existing binds remain "
-            "resolvable but new binds are rejected._"
-        )
-
     return json.dumps({
         "text": "\n".join(lines),
         "goal": goal,
-        "is_deleted": is_deleted,
+        "scope_actor": scope_actor,
+        "actor_canonical_branch_version_id": (
+            actor_canonical_branch_version_id
+        ),
+        "is_deleted": False,
         "branches": branches,
         "branch_count": len(branches),
         "gate_summary": gate_summary,
@@ -1620,7 +1738,6 @@ def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.branches import _ensure_workflow_db
     from tinyassets.daemon_server import (
         current_goal_protocol_step,
-        get_goal,
         get_goal_branch_protocol,
     )
 
@@ -1632,7 +1749,7 @@ def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
         })
     _ensure_workflow_db()
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = _get_public_goal(gid)
         protocol = get_goal_branch_protocol(_base_path(), goal_id=gid)
     except KeyError:
         return json.dumps({
@@ -1652,7 +1769,7 @@ def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
     else:
         lines = [
             f"Goal '{goal['name']}' has no Branch protocol yet.",
-            "Define one with `goals action=define_protocol protocol_json=...`.",
+            "Protocol definition is not exposed by the advertised handles.",
         ]
     return json.dumps({
         "text": "\n".join(lines),
@@ -1712,7 +1829,6 @@ def _action_goal_leaderboard(kwargs: dict[str, Any]) -> str:
     )
     from tinyassets.api.market import _gates_enabled
     from tinyassets.daemon_server import (
-        get_goal,
         goal_leaderboard,
     )
 
@@ -1725,7 +1841,7 @@ def _action_goal_leaderboard(kwargs: dict[str, Any]) -> str:
     metric = (kwargs.get("metric") or "run_count").strip().lower()
     _ensure_workflow_db()
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = _get_public_goal(gid)
     except KeyError:
         return json.dumps({
             "status": "rejected",
@@ -1829,14 +1945,13 @@ def _action_goal_leaderboard(kwargs: dict[str, Any]) -> str:
                 )
     elif metric == "outcome":
         lines.append(
-            "_No gate claims yet. Define a ladder with "
-            "`gates action=define_ladder` and have Branches submit "
-            "`gates action=claim`._"
+            "_No gate claims yet. Ladder definition and gate claiming are "
+            "not exposed by the advertised handles._"
         )
     else:
         lines.append(
-            "_No workflows bound to this Goal yet. Use "
-            "`goals action=bind` with the workflow name and Goal name._"
+            "_No workflows bound to this Goal yet. Goal binding is not "
+            "exposed by the advertised handles._"
         )
 
     return json.dumps({
@@ -1853,7 +1968,6 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
         _current_actor,
     )
     from tinyassets.daemon_server import (
-        get_goal,
         goal_common_nodes,
         goal_common_nodes_all,
     )
@@ -1880,6 +1994,7 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
             min_branches=min_branches,
             limit=limit,
             viewer=_current_actor(),
+            public_goals_only=True,
         )
         lines = [
             "**Common nodes across ALL Goals** "
@@ -1904,8 +2019,10 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
                 lines.append(f"- … and {len(entries) - 12} more.")
             lines.append("")
             lines.append(
-                "_Reuse an existing node via `node_ref={source, "
-                "node_id}` in build_branch / add_node (#66)._"
+                "_Reuse an existing node with write_graph target=\"branch\" "
+                "branch_id=\"<branch_id>\" changes_json='[{\"op\":"
+                "\"add_node\",\"node_ref\":{\"source\":\"<source>\","
+                "\"node_id\":\"<node_id>\"}}]' (#66)._"
             )
         else:
             lines.append(
@@ -1930,7 +2047,7 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
             ),
         })
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = _get_public_goal(gid)
     except KeyError:
         return json.dumps({
             "status": "rejected",
@@ -1979,7 +2096,7 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
 def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.branches import _ensure_workflow_db
     from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.daemon_server import get_goal, goal_archive_consultation
+    from tinyassets.daemon_server import goal_archive_consultation
 
     gid = (kwargs.get("goal_id") or "").strip()
     if not gid:
@@ -1989,7 +2106,7 @@ def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
         })
     _ensure_workflow_db()
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = _get_public_goal(gid)
     except KeyError:
         return json.dumps({
             "status": "rejected",
@@ -2030,8 +2147,8 @@ def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
             lines.append("_No bound Branches match that archive query._")
         else:
             lines.append(
-                "_No Branches are bound to this Goal yet. Bind existing "
-                "Branches before selecting fork parents._"
+                "_No Branches are bound to this Goal yet. Goal-to-branch "
+                "binding is not exposed by the advertised handles._"
             )
 
     return json.dumps({
@@ -2129,9 +2246,10 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
     if branch_version_id:
         text = (
             f"Selector branch for Goal '{goal['name']}' set to "
-            f"`{branch_version_id}`. Future "
-            "`quality_leaderboard` / `recommend_parent_for_fork` "
-            "calls dispatch this branch to rank candidates."
+            f"`{branch_version_id}`. Future internal leaderboard and "
+            "recommended-parent operations dispatch this branch to rank "
+            "candidates; those operations are not exposed by the advertised "
+            "handles."
         )
     else:
         text = (
@@ -2159,6 +2277,7 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         CAP_SET_CANONICAL_BRANCH,
         get_goal,
         set_canonical_branch,
+        set_goal_canonical,
     )
 
     gid = (kwargs.get("goal_id") or "").strip()
@@ -2173,8 +2292,21 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
     actor = _current_actor()
-    if actor != goal["author"] and not _current_actor_has_capability(
-        CAP_SET_CANONICAL_BRANCH,
+    scope_actor = (kwargs.get("scope") or "").strip()
+    if scope_actor and actor == "anonymous":
+        return json.dumps({
+            "status": "rejected",
+            "error": "Authentication is required for a personal canonical.",
+        })
+    if scope_actor and scope_actor != actor:
+        return json.dumps({
+            "status": "rejected",
+            "error": "Cannot set a personal canonical for another actor.",
+        })
+    if (
+        not scope_actor
+        and actor != goal["author"]
+        and not _current_actor_has_capability(CAP_SET_CANONICAL_BRANCH)
     ):
         return json.dumps({
             "status": "rejected",
@@ -2186,30 +2318,60 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         })
 
     try:
-        updated = set_canonical_branch(
-            _base_path(), goal_id=gid,
-            branch_version_id=branch_version_id, set_by=actor,
-        )
+        if scope_actor:
+            updated = set_goal_canonical(
+                _base_path(),
+                goal_id=gid,
+                scope_actor=scope_actor,
+                branch_version_id=branch_version_id,
+                set_by=actor,
+            )
+        else:
+            updated = set_canonical_branch(
+                _base_path(),
+                goal_id=gid,
+                branch_version_id=branch_version_id,
+                set_by=actor,
+            )
     except ValueError as exc:
         return json.dumps({"status": "rejected", "error": str(exc)})
 
     if branch_version_id:
-        text = (
-            f"Canonical branch for Goal '{goal['name']}' set to "
-            f"`{branch_version_id}`. New users forking this Goal will "
-            f"start from this version."
-        )
+        if scope_actor:
+            text = (
+                f"Your canonical branch for Goal '{goal['name']}' is now "
+                f"`{branch_version_id}`. Your canonical runs prefer this "
+                "immutable version."
+            )
+        else:
+            text = (
+                f"Canonical branch for Goal '{goal['name']}' set to "
+                f"`{branch_version_id}`. New users forking this Goal will "
+                f"start from this version."
+            )
     else:
-        text = (
-            f"Canonical branch for Goal '{goal['name']}' unset. "
-            f"No starter branch is currently designated."
-        )
+        if scope_actor:
+            text = (
+                f"Your personal canonical for Goal '{goal['name']}' is unset. "
+                "Your canonical runs now fall back to the Goal default."
+            )
+        else:
+            text = (
+                f"Canonical branch for Goal '{goal['name']}' unset. "
+                f"No starter branch is currently designated."
+            )
 
+    canonical_branch_version_id = (
+        updated.get("branch_version_id")
+        if scope_actor
+        else updated.get("canonical_branch_version_id")
+    )
     return json.dumps({
         "status": "ok",
         "text": text,
         "goal_id": gid,
-        "canonical_branch_version_id": updated.get("canonical_branch_version_id"),
+        "scope_actor": scope_actor,
+        "canonical_branch_version_id": canonical_branch_version_id,
     }, default=str)
 
 
@@ -2311,6 +2473,7 @@ def _action_goal_run_canonical(kwargs: dict[str, Any]) -> str:
     dispatch_result.setdefault("goal_id", gid)
     dispatch_result["branch_version_id_used"] = bvid
     dispatch_result.setdefault("branch_def_id", bdid)
+    dispatch_result["scope_actor"] = resolution.get("scope_actor", "")
     dispatch_result["source"] = resolution.get("source")
     if resolution.get("refresh_attempted"):
         dispatch_result["refresh_attempted"] = True
@@ -2368,8 +2531,8 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "set_selector": _action_goal_set_selector,
 }
 
-# Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
-# names but dispatch them through the legacy `Goals` wrapper.
+# Provider-routing compatibility: older clients can render legacy goal tool
+# names but dispatch them through the canonical `Goals` wrapper.
 _GOAL_ACTION_ALIASES: dict[str, str] = {
     "list_workflow_goals": "list",
     "search_workflow_goals": "search",
@@ -2382,6 +2545,9 @@ _GOAL_WRITE_ACTIONS: frozenset[str] = frozenset({
     # DESIGN-008 — selector branch binding writes to goals row.
     "set_selector",
 })
+_GOAL_NON_READ_ACTIONS: frozenset[str] = (
+    _GOAL_WRITE_ACTIONS | frozenset({"run_canonical"})
+)
 
 
 def _canonical_goal_action(action: str) -> str:
@@ -2406,6 +2572,16 @@ def _dispatch_goal_action(
         _format_dirty_file_conflict,
         _truncate,
     )
+
+    gid = (kwargs.get("goal_id") or "").strip()
+    if action not in _GOAL_NON_READ_ACTIONS and gid:
+        try:
+            _get_public_goal(gid)
+        except KeyError:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Goal '{gid}' not found.",
+            })
 
     try:
         result_str = handler(kwargs)
@@ -2490,8 +2666,10 @@ def goals(
       get_protocol Read a Goal's ordered Branch protocol/runbook.
                    Needs goal_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
-                   (best-known) branch. Author-only or host-only.
-                   Pass branch_version_id="" to unset.
+                   (best-known) branch. Author/capability-only by
+                   default. Pass scope=<your actor id> to set only
+                   your personal canonical. Pass branch_version_id=""
+                   to unset the selected scope.
       set_selector Bind the Goal's selector branch_version — the
                    published TinyAssets branch the substrate dispatches
                    to rank this Goal's bound branches on the
@@ -2545,8 +2723,9 @@ def goals(
       query: search query.
       metric: leaderboard metric (run_count/forks/outcome).
       min_branches: common_nodes cutoff (default 2).
-      scope: common_nodes aggregation. 'this_goal' (default) restricts
-        to one Goal; 'all' aggregates cross-Goal.
+      scope: for set_canonical, the current actor ID selects a personal
+        canonical. For common_nodes, 'this_goal' (default) restricts to
+        one Goal and 'all' aggregates cross-Goal.
       production_only: list filter for fresh-user discovery. Keeps
         public Goals and filters RETRACTED/smoke/disposable entries.
       protocol_json: JSON list for define_protocol.
@@ -2882,7 +3061,7 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 "Branch is not bound to a Goal. "
-                "Bind it via `goals action=bind` before claiming."
+                "Goal binding is not exposed by the advertised handles."
             ),
         })
     try:
@@ -3058,8 +3237,9 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
             "run_id": rid,
             "run_status": run.get("status"),
             "hint": (
-                "Only runs in 'completed' status can claim a rung. "
-                "Re-run the branch or `wait_for_run` before claiming."
+                "Only runs in 'completed' status can claim a rung. Re-run the "
+                "branch or check it later with read_graph target=\"run\" "
+                f'run_id="{rid}" before claiming.'
             ),
         })
 
@@ -3088,8 +3268,8 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
             "error": "branch_not_bound_to_goal",
             "branch_def_id": bid,
             "hint": (
-                "Bind the branch to a Goal via "
-                "`goals action=bind` before claiming a rung from a run."
+                "Goal binding is not exposed by the advertised handles; ask "
+                "an operator to bind the branch before claiming a rung."
             ),
         })
 
@@ -3109,8 +3289,8 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
                 "The branch must emit a non-empty string field named "
                 "'recommended_rung_claim' in the run's final output. "
                 "The value must match a rung_key in the bound Goal's "
-                "ladder (read it via `goals action=get goal_id=...` "
-                "or `gates action=get_ladder goal_id=...`)."
+                "ladder; inspect the Goal with read_graph target=\"goal\" "
+                f'goal_id="{goal_id}".'
             ),
         })
 
@@ -3125,7 +3305,7 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
             "goal_id": goal_id,
             "hint": (
                 "Branch references a Goal that no longer exists. "
-                "Rebind via `goals action=bind`."
+                "Goal rebinding is not exposed by the advertised handles."
             ),
         })
     available_rungs = [
@@ -3350,6 +3530,7 @@ def _action_gates_list_claims(kwargs: dict[str, Any]) -> str:
             branch_def_id=bid,
             goal_id=gid,
             include_retracted=include_retracted,
+            public_only=True,
             limit=limit,
         )
     except ValueError as exc:
@@ -3378,7 +3559,6 @@ def _action_gates_leaderboard(kwargs: dict[str, Any]) -> str:
     )
     from tinyassets.daemon_server import (
         gates_leaderboard,
-        get_goal,
         get_goal_ladder,
     )
 
@@ -3390,7 +3570,7 @@ def _action_gates_leaderboard(kwargs: dict[str, Any]) -> str:
         })
     _ensure_workflow_db()
     try:
-        goal = get_goal(_base_path(), goal_id=gid)
+        goal = _get_public_goal(gid)
     except KeyError:
         return json.dumps({
             "status": "rejected",
@@ -3740,6 +3920,10 @@ def _action_get_gate_event(kwargs: dict[str, Any]) -> str:
     evt = get_gate_event(_base_path(), event_id)
     if evt is None:
         return json.dumps({"error": f"event_id '{event_id}' not found."})
+    try:
+        _get_public_goal(evt.goal_id)
+    except KeyError:
+        return json.dumps({"error": f"event_id '{event_id}' not found."})
     return json.dumps({
         "event_id": evt.event_id,
         "goal_id": evt.goal_id,
@@ -3765,11 +3949,13 @@ def _action_list_gate_events(kwargs: dict[str, Any]) -> str:
     bvid = (kwargs.get("branch_version_id") or "").strip()
     limit = min(max(1, int(kwargs.get("limit") or 50)), 500)
     include_retracted = bool(kwargs.get("include_retracted", True))
+    public_goal_ids = _public_goal_ids()
     events = list_gate_events(
         _base_path(),
         goal_id=goal_id,
         branch_version_id=bvid,
         include_retracted=include_retracted,
+        public_goal_ids=public_goal_ids,
         limit=limit,
     )
     return json.dumps({
@@ -3868,6 +4054,14 @@ def _action_get_conformance_pack(kwargs: dict[str, Any]) -> str:
             "error": "conformance_pack_not_found",
             "conformance_pack_id": pack_id,
         })
+    try:
+        _get_public_goal(pack.goal_id)
+    except KeyError:
+        return json.dumps({
+            "status": "rejected",
+            "error": "conformance_pack_not_found",
+            "conformance_pack_id": pack_id,
+        })
     return json.dumps({
         "status": "ok",
         "conformance_pack": pack.to_dict(),
@@ -3877,12 +4071,15 @@ def _action_get_conformance_pack(kwargs: dict[str, Any]) -> str:
 def _action_list_conformance_packs(kwargs: dict[str, Any]) -> str:
     from tinyassets.conformance_packs import list_conformance_packs
 
+    requested_limit = min(max(1, int(kwargs.get("limit") or 50)), 500)
+    public_goal_ids = _public_goal_ids()
     records = list_conformance_packs(
         _base_path(),
         goal_id=(kwargs.get("goal_id") or "").strip(),
         branch_def_id=(kwargs.get("branch_def_id") or "").strip(),
         standard_id=(kwargs.get("standard_id") or "").strip(),
-        limit=int(kwargs.get("limit") or 50),
+        public_goal_ids=public_goal_ids,
+        limit=requested_limit,
     )
     return json.dumps({
         "status": "ok",
@@ -3926,6 +4123,16 @@ _GATES_ACTIONS: dict[str, Any] = {
     "unstake_bonus": _action_gates_unstake_bonus,
     "release_bonus": _action_gates_release_bonus,
 }
+_GATES_WRITE_ACTIONS: frozenset[str] = frozenset({
+    "define_ladder",
+    "claim",
+    "claim_from_branch_run",
+    "record_conformance_pack",
+    "retract",
+    "stake_bonus",
+    "unstake_bonus",
+    "release_bonus",
+})
 
 
 def _gates_scope_error(action: str) -> str | None:
@@ -4090,6 +4297,14 @@ def gates(
     scope_error = _gates_scope_error(action)
     if scope_error is not None:
         return scope_error
+    if action not in _GATES_WRITE_ACTIONS and goal_id:
+        try:
+            _get_public_goal(goal_id)
+        except KeyError:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Goal '{goal_id}' not found.",
+            })
     kwargs: dict[str, Any] = {
         "goal_id": goal_id,
         "branch_def_id": branch_def_id,

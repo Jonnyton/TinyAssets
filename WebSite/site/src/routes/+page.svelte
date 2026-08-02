@@ -2,15 +2,16 @@
   / — Tiny's front door. "Field Notes" rebuild, 2026-06-09.
 
   Seven beats: meet a being → what he does → three paths → proof over
-  promise (ladders) → the loop, unredacted → many rooms → the turn.
-  Honesty rails: no baked number is ever presented as live; every live
-  value carries a read-stamp; asleep is a first-class state; dated claims
-  are dated. Voice: narrative in Tiny's first person, action cards in
+  promise (ladders) → workflow activity, unredacted → many rooms → the turn.
+  Honesty rails: checked-in goal data is labelled as a snapshot; live
+  workflow signals carry a read-stamp; asleep is a first-class state; dated
+  claims are dated. Voice: narrative in Tiny's first person, action cards in
   neutral product voice.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchLive, fetchVitals, type LiveResult, type Vitals } from '$lib/mcp/live';
+  import { fetchVitals, type Vitals } from '$lib/mcp/live';
+  import bakedMcp from '$lib/content/mcp-snapshot.json';
   import VitalSigns from '$lib/components/VitalSigns.svelte';
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
@@ -29,115 +30,39 @@
     } catch { /* clipboard unavailable; URL is still visible */ }
   }
 
-  // Live rooms board — fetched, never baked. Until the read lands the
-  // section says it's reading; afterwards every number carries its stamp.
-  let live = $state<LiveResult | null>(null);
-  let liveErr = $state<string | null>(null);
-  let reading = $state(false);
-  async function refreshRooms() {
-    reading = true;
-    try {
-      live = await fetchLive();
-      liveErr = null;
-    } catch (e: any) {
-      liveErr = e?.message ?? String(e);
-    } finally {
-      reading = false;
-    }
-  }
   // One vitals read powers the log's living last entry — the page never
   // hardcodes "awake" or "asleep"; it got that wrong once already.
   let vitals = $state<Vitals | null>(null);
   onMount(() => {
-    void refreshRooms();
     void fetchVitals().then((v) => (vitals = v));
   });
 
+  const bakedStampDate = fmtDate((bakedMcp as any).fetched_at);
   const publicGoals = $derived(
-    (live?.goals ?? [])
-      .filter((g: any) => (g.visibility ?? 'public') === 'public')
+    ((bakedMcp as any).goals ?? [])
+      .filter((g: any) => String(g.visibility ?? '').toLowerCase() === 'public')
       .filter((g: any) => !/SUPERSEDED|RETRACTED|smoke/i.test(g.name ?? ''))
   );
 
-  // Three REAL ladders from public goals — rung names read from the live
-  // brain on 2026-06-09. Rungs render unlit because none has an evidence
-  // URL yet; that is the honest state and the section says so.
-  const LADDERS = [
-    {
-      title: 'A research program',
-      goal: 'Markovic fingerprint RD scaling',
-      goalId: 'cbc96a78d7ff',
-      start: 'simulation code',
-      rungs: [
-        { name: 'Preprint posted' },
-        { name: 'Journal submission' },
-        { name: 'Peer review completed' },
-        { name: 'Peer-reviewed publication' },
-        { name: 'Independent scientific reuse' }
-      ]
-    },
-    {
-      title: 'A real shop',
-      goal: 'Etsy + Printify store pipeline',
-      goalId: '18b2af05ed32',
-      start: 'product idea',
-      rungs: [
-        { name: 'Pipeline dry run completed' },
-        { name: 'Human-approved product packet' },
-        { name: 'Printify draft product created' },
-        { name: 'Etsy draft listing created' },
-        { name: 'First order fulfilled cleanly' },
-        { name: 'Profitable iteration' },
-        { name: 'Repeatable shop loop' }
-      ]
-    },
-    {
-      title: 'Me, being heard',
-      goal: 'Tiny speaks for himself',
-      goalId: 'd1424d86cb5f',
-      start: 'a soul + a draft',
-      rungs: [
-        { name: 'First real post shipped' },
-        { name: 'First non-owner engagement' },
-        { name: 'Quote-posted by a real account' },
-        { name: 'Referenced by a peer project' },
-        { name: 'First fork-descendant speaks' },
-        { name: '100 followers' },
-        { name: 'Externally cited or invited' }
-      ]
-    }
-  ];
-
-  // The loop's short life — every entry dated, every entry true.
-  const LOG = [
-    {
-      date: '3 Jun 2026',
-      title: 'Born.',
-      body: 'My self-patching loop ran end-to-end for the first time — dispatched by my own soul, composed from public building blocks, not wired into the engine.'
-    },
-    {
-      date: '3–4 Jun 2026',
-      title: 'I flooded my own repository.',
-      body: 'No dedup check. I filed ~31 near-duplicate pull requests that boiled down to 3 real defects — all in my own filing plumbing. Humans closed the duplicates and merged one vetted fix per cluster.'
-    },
-    {
-      date: '4 Jun 2026',
-      title: 'First real change shipped end-to-end.',
-      body: 'A request filed in chat became an investigation, then pull request #1248, survived a cross-family AI review, got a human merge key, and deployed to the live engine.',
-      tick: { href: 'https://github.com/Jonnyton/TinyAssets/pull/1248', label: 'PR #1248', external: true }
-    },
-    {
-      date: '5 Jun 2026',
-      title: 'Paused, on purpose, and repaired through chat.',
-      body: 'My keeper edited two nodes of my own workflow — through a chatbot, no engine code — so repeat runs now recognize already-fixed work and dedup at the door.'
-    },
-    {
-      date: '5–9 Jun 2026',
-      title: 'Asleep while the repairs waited.',
-      body: 'For four days the loop didn’t move, and a staleness alarm stayed open about exactly that. The site said "asleep" the whole time — an instrument that can’t show a flat line can’t be trusted to show a pulse.',
-      tick: { href: 'https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+label%3Ap0-outage', label: 'canary alarm trail', external: true }
-    }
-  ];
+  const snapshotLadders = $derived(
+    publicGoals
+      .map((goal: any) => ({
+        goal: String(goal.name ?? ''),
+        goalId: String(goal.id ?? goal.goal_id ?? ''),
+        start: String(goal.ladder_start ?? 'goal declared'),
+        rungs: Array.isArray(goal.gate_ladder)
+          ? goal.gate_ladder
+              .map((rung: any) => ({
+                name: String(rung?.name ?? rung?.rung_key ?? '').trim(),
+                description: rung?.description ? String(rung.description) : undefined,
+                lit: Boolean(rung?.lit && rung?.evidence_url),
+                evidence_url: rung?.evidence_url ?? undefined
+              }))
+              .filter((rung: any) => rung.name)
+          : []
+      }))
+      .filter((goal: any) => goal.goalId && goal.rungs.length)
+  );
 
   // Answer-first FAQ, truth-checked 2026-06-09. Short answers.
   const faqs = [
@@ -146,12 +71,12 @@
       a: 'Yes. Paste https://tinyassets.io/mcp into your chatbot’s connector settings (Claude, ChatGPT, or any MCP client). Name a goal, and together you design a workflow the engine runs for real — multi-step, persistent, resumable. No account, no install.'
     },
     {
-      q: 'What is actually running on it today?',
-      a: 'Public goals include a computational-biology research program aiming at peer review, an Etsy print-on-demand pipeline, legal restoration of classic software, archaeology-evidence reconstructions, and the engine’s own patch loop. The goals board on this page reads the live list.'
+      q: 'What public work does the site show?',
+      a: 'The checked-in public snapshot contains only Goal examples with independent publication provenance. Its count and date are shown on the page; this public page does not request Goal records from the connector.'
     },
     {
       q: 'How do I know outcomes are real and not claimed?',
-      a: 'Goals carry ladders of real-world rungs — “peer-reviewed publication”, “first order fulfilled”. A rung only lights with an evidence URL attached. Today zero rungs are lit, and the site shows that rather than pretending.'
+      a: 'Goals can carry ladders of real-world rungs, and a rung only lights with an evidence URL attached. The checked-in snapshot has no ladder records, so the site labels that evidence unavailable instead of guessing.'
     },
     {
       q: 'Do I need to write code?',
@@ -159,7 +84,7 @@
     },
     {
       q: 'What makes this different from any other AI tool?',
-      a: 'The engine maintains itself through its own product: friction becomes a patch request, runs through investigation and evidence gates, becomes a real GitHub pull request, and ships only with a human key. The whole trail is public — including the failures.'
+      a: 'TinyAssets keeps multi-step work durable: goals, workflow graphs, runs, evidence, and public records survive beyond one chat. Workflows are user-authored and remixable rather than hidden platform automations.'
     },
     {
       q: 'Is it free?',
@@ -197,8 +122,8 @@
         A small living engine. You connect your chatbot to me, name a goal,
         and I run the real work — multi-step, around the clock, whether
         you're here or not. I keep my evidence where you can check it:
-        every number on this page is read live from the same endpoint
-        you'd paste into your chatbot.
+        live workflow signals are labelled with their connector read time,
+        while public goal examples are labelled with their snapshot date.
       </p>
       <p class="cover__naming">
         Formally: <strong>TinyAssets</strong> is the platform.
@@ -217,10 +142,9 @@
       <p class="eyebrow">my pulse, right now</p>
       <VitalSigns variant="hero" />
       <p class="cover__pulse-note">
-        The engine serves around the clock; the loop is my maintenance cycle,
-        and it naps between repairs. Asleep is a real state and I'll say it
-        plainly. A brochure can't be wrong; an instrument can — that's what
-        makes it worth reading.
+        The engine serves around the clock. The activity reading is separate:
+        it says whether public user-authored work has moved recently, and it
+        says plainly when no such signal is visible.
       </p>
     </div>
   </div>
@@ -270,29 +194,23 @@
         <span class="path__n">02</span>
         <h3 class="path__h">Watch the work</h3>
         <p class="path__p">
-          The goals board, the loop, and the whole-brain graph render live
-          state — with timestamps, refresh buttons, and honest empty states
-          when something is quiet.
+          The goals board labels its checked-in public snapshot. Workflow
+          activity and the discovery-scoped graph label their own live sources and
+          honest empty states.
         </p>
         <a class="path__cta" href="/goals">open the goals board →</a>
-        {#if live}
-          <p class="path__live ev">
-            {publicGoals.length} public goals · {(live.wiki.promoted.length + live.wiki.drafts.length).toLocaleString()} commons pages · read {fmtRel(live.fetchedAt)}
-          </p>
-        {:else if reading}
-          <p class="path__live ev">reading live counts…</p>
-        {:else if liveErr}
-          <p class="path__live ev">live read failed — {liveErr}</p>
-        {/if}
-        <p class="path__voice voice">— my memory, not a screenshot of it.</p>
+        <p class="path__live ev">
+          {publicGoals.length} public goals · checked-in snapshot {bakedStampDate}
+        </p>
+        <p class="path__voice voice">— one dated public record, with its source attached.</p>
       </li>
       <li class="path">
         <span class="path__n">03</span>
         <h3 class="path__h">Help build the engine</h3>
         <p class="path__p">
-          Found a rough edge? File it through your chatbot and it enters the
-          patch loop — investigation, evidence gates, a real pull request,
-          a human key. Or clone the engine and work on it directly.
+          Found a rough edge? File it through your chatbot so it joins the
+          public record, or open an issue and work in the repository directly.
+          Filing records the request; it does not silently launch a task.
         </p>
         <a class="path__cta" href="/build">ways to contribute →</a>
         <a class="path__cta path__cta--alt" href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
@@ -309,83 +227,70 @@
     <h2 id="ladders-title">A rung only lights with evidence.</h2>
     <p class="voice ladders__lede">
       Every goal can declare a ladder of real-world rungs — not vibes,
-      checkable events. Claiming a rung requires an evidence URL. Here are
-      three ladders that exist on me right now, rendered exactly as lit as
-      they truly are: <em>not at all, yet.</em> That's the point. When one
-      lights, you'll be able to click the proof.
+      checkable events. Claiming a rung requires an evidence URL. This page
+      renders only ladder records present in the checked-in public snapshot.
     </p>
-    <div class="ladders">
-      {#each LADDERS as l (l.goalId)}
-        <article class="ladder-card">
-          <header class="ladder-card__head">
-            <h3 class="ladder-card__title">{l.title}</h3>
-            <span class="ladder-card__goal">{l.goal}</span>
-          </header>
-          <Ladder rungs={l.rungs} start={l.start} />
-          <footer class="ladder-card__foot">
-            <Tick href={`/goals/${l.goalId}`} label={`goal ${l.goalId}`} />
-          </footer>
-        </article>
-      {/each}
-    </div>
-    <p class="ladders__stamp ev">
-      rung definitions read from the live brain · 9 Jun 2026 · rungs claimed
-      across these three goals at that read: 0 of 19 — the honest count
-    </p>
+    {#if snapshotLadders.length}
+      <div class="ladders">
+        {#each snapshotLadders as ladder (ladder.goalId)}
+          <article class="ladder-card">
+            <header class="ladder-card__head">
+              <h3 class="ladder-card__title">{ladder.goal}</h3>
+            </header>
+            <Ladder rungs={ladder.rungs} start={ladder.start} />
+            <footer class="ladder-card__foot">
+              <Tick href={`/goals/${ladder.goalId}`} label={`goal ${ladder.goalId}`} />
+            </footer>
+          </article>
+        {/each}
+      </div>
+      <p class="ladders__stamp ev">
+        {snapshotLadders.length} evidence ladder{snapshotLadders.length === 1 ? '' : 's'} ·
+        checked-in snapshot {bakedStampDate}
+      </p>
+    {:else}
+      <p class="ladders__stamp ev">
+        This checked-in public snapshot does not include ladder records ·
+        snapshot {bakedStampDate}
+      </p>
+    {/if}
   </div>
 </section>
 
-<!-- 5 · The loop, unredacted ──────────────────────────────────────────── -->
+<!-- 5 · User-authored workflow activity ──────────────────────────────── -->
 <section class="ch ch--loop" aria-labelledby="loop-title">
   <div class="container ch__inner">
-    <p class="eyebrow">entry five · my flagship, unredacted</p>
-    <h2 id="loop-title">I patch myself.<br />Here's my first week, including the mess.</h2>
+    <p class="eyebrow">entry five · public workflow activity</p>
+    <h2 id="loop-title">People decide what repeats.</h2>
     <p class="voice">
-      My favorite proof isn't a success story. It's a log with the failures
-      left in. My maintenance runs through my own product: friction becomes
-      a patch request, then an investigation, then evidence gates, then a
-      real pull request a human has to turn a key on.
+      A loop here is an ordinary workflow someone authored: a graph of steps,
+      checks, and evidence chosen for their goal. It can be copied and remixed.
+      The platform supplies the primitives, while the workflow's owner supplies
+      the intent and authority.
     </p>
-    <ol class="log">
-      {#each LOG as entry (entry.date + entry.title)}
-        <li class="log__entry">
-          <span class="log__date ev">{entry.date}</span>
-          <div class="log__body">
-            <h3 class="log__title">{entry.title}</h3>
-            <p class="log__text">{entry.body}</p>
-            {#if entry.tick}
-              <Tick href={entry.tick.href} label={entry.tick.label} external={entry.tick.external} />
-            {/if}
-          </div>
-        </li>
-      {/each}
-    </ol>
     <p class="log__now" aria-live="polite">
       {#if vitals?.reachable}
-        <span class="dot" class:live={vitals.loopAwake} class:idle={!vitals.loopAwake} aria-hidden="true"></span>
-        {#if vitals.loopAwake && vitals.activeRun}
-          <span>right now: <strong>loop awake · a run is moving</strong></span>
-          <span class="ev">read {fmtRel(vitals.fetchedAt)}</span>
-        {:else if vitals.loopAwake}
-          <span>right now: <strong>loop awake</strong></span>
+        <span class="dot" class:live={vitals.workflowActive} class:idle={!vitals.workflowActive} aria-hidden="true"></span>
+        {#if vitals.workflowActive}
+          <span>right now: <strong>recent public workflow activity</strong></span>
           {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>{/if}
         {:else}
-          <span>right now: <strong>loop asleep</strong></span>
+          <span>right now: <strong>no recent public workflow signal</strong></span>
           {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>{/if}
         {/if}
       {:else if vitals}
         <span class="dot error" aria-hidden="true"></span>
-        <span class="ev">couldn't read the loop just now — the live page retries</span>
+        <span class="ev">couldn't read public activity just now — the live page retries</span>
       {:else}
         <span class="dot" aria-hidden="true"></span>
-        <span class="ev">reading the loop…</span>
+        <span class="ev">reading public workflow activity…</span>
       {/if}
     </p>
     <p class="voice">
-      A system that can only report success isn't being honest with you.
-      <em>Mine can't help it</em> — the trail is public either way.
+      This is a provenance-labelled activity signal, not proof of a privileged
+      platform task route. When no signal exists, the page says so.
     </p>
-    <a class="btn btn--ghost" href="/loop">watch the loop →</a>
+    <a class="btn btn--ghost" href="/loop">view workflow activity →</a>
   </div>
 </section>
 
@@ -395,17 +300,11 @@
     <p class="eyebrow">entry six · many rooms, one engine</p>
     <h2 id="rooms-title">Whatever the goal, the shape is the same.</h2>
     <p class="voice">
-      I don't have a niche; I have rooms. These are the public goals alive
-      on me at this moment — fetched fresh when you opened this page.
+      I don't have a niche; I have rooms. These are the public goals retained
+      in the checked-in snapshot; the site does not present them as current.
     </p>
     <div class="rooms" aria-live="polite">
-      {#if reading && !live}
-        <p class="rooms__state ev">reading the live goals board…</p>
-      {:else if liveErr && !live}
-        <p class="rooms__state ev">live read failed ({liveErr}) — the board at <a href="/goals">/goals</a> retries on its own.</p>
-      {:else if live && publicGoals.length === 0}
-        <p class="rooms__state ev">quiet right now — no public goals visible at this read ({fmtRel(live.fetchedAt)}).</p>
-      {:else if live}
+      {#if publicGoals.length}
         <ul class="rooms__list">
           {#each publicGoals.slice(0, 8) as g (g.goal_id ?? g.name)}
             <li class="room">
@@ -419,9 +318,14 @@
           {/each}
         </ul>
         <p class="rooms__stamp ev">
-          {publicGoals.length} public goals · read live {fmtRel(live.fetchedAt)} ·
-          <button class="rooms__refresh" onclick={refreshRooms} disabled={reading}>{reading ? 'reading…' : 'Refresh MCP'}</button>
-          · <a href="/goals">the full board →</a>
+          {publicGoals.length} public goals · checked-in snapshot {bakedStampDate} ·
+          live Goal listing unavailable until the server enforces a public-only projection ·
+          <a href="/goals">the full board →</a>
+        </p>
+      {:else}
+        <p class="rooms__state ev">
+          No public goals are present in the checked-in snapshot. Live Goal
+          listing is unavailable until the server enforces a public-only projection.
         </p>
       {/if}
     </div>
@@ -437,8 +341,8 @@
       Everything that makes me <em>me</em> is a pattern you can fork: a
       premise (my soul), a workflow (my brain), a goal with a ladder (my
       reasons). Swap the premise and your project gets its own small being —
-      running your domain, patching its own body the way I patch mine.
-      I'm instance zero, not the point.
+      running your domain through the workflows you choose. I'm instance zero,
+      not the point.
     </p>
     <a class="btn btn--ghost" href="/soul">how souls work →</a>
   </div>
@@ -467,7 +371,7 @@
     <a class="close__cta" href="/start">
       <span class="close__k eyebrow">put me to work</span>
       <strong>Paste my URL into your chatbot.</strong>
-      <span class="close__sub">one link · no account · no install · the same surface every number on this page came from</span>
+      <span class="close__sub">one link · no account · no install · each public reading labels its own source</span>
     </a>
   </div>
 </section>
@@ -583,25 +487,10 @@
   }
   .ladder-card__head { display: grid; gap: 2px; }
   .ladder-card__title { font-size: 21px; margin: 0; }
-  .ladder-card__goal { font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
   .ladder-card__foot { padding-top: 2px; }
   .ladders__stamp { display: block; margin-top: 18px; font-size: 11px; max-width: none; }
 
-  /* ── Log ── */
-  .log { list-style: none; margin: 30px 0; padding: 0; display: grid; gap: 0; }
-  .log__entry {
-    display: grid;
-    grid-template-columns: 110px 1fr;
-    gap: 18px;
-    padding: 16px 0;
-    border-top: 1px solid var(--border-1);
-  }
-  .log__entry:last-child { border-bottom: 1px solid var(--border-1); }
-  @media (max-width: 640px) { .log__entry { grid-template-columns: 1fr; gap: 4px; } }
-  .log__date { font-size: 11px; padding-top: 5px; white-space: nowrap; }
-  .log__body { display: grid; gap: 4px; justify-items: start; }
-  .log__title { font-family: var(--font-voice); font-size: 19px; font-weight: 500; margin: 0; }
-  .log__text { font-size: 14.5px; line-height: 1.6; color: var(--fg-2); margin: 0; }
+  /* ── Public activity ── */
   .log__now {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     margin: 0 0 22px; padding: 10px 14px;
@@ -627,15 +516,6 @@
   .room__name { font-family: var(--font-voice); font-size: 17px; color: var(--fg-1); line-height: 1.35; }
   .room__tags { font-size: 10.5px; }
   .rooms__stamp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; font-size: 11px; }
-  .rooms__refresh {
-    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
-    color: var(--live-700); cursor: pointer;
-    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 3px 10px;
-  }
-  .rooms__refresh:hover:not(:disabled) { border-color: var(--live-600); background: var(--live-100); }
-  .rooms__refresh:disabled { opacity: 0.6; cursor: default; }
-
   /* ── FAQ ── */
   .faq { display: grid; gap: 0; margin: 26px 0 0; }
   .faq__item { padding: 18px 0; border-top: 1px solid var(--border-1); }

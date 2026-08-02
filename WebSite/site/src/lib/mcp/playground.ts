@@ -10,6 +10,11 @@
  * Prod: hits /mcp (same-origin Cloudflare worker).
  */
 
+import {
+  assertPublicPlaygroundCall,
+  sanitizePublicPlaygroundResponse
+} from '../../../../shared/mcp/public-read-contract.js';
+
 const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
 
 let initialized = false;
@@ -46,6 +51,53 @@ function headersToObject(h: Headers): Record<string, string> {
     out[k] = v;
   });
   return out;
+}
+
+function safeTrace(trace: WireTrace, responseBody: unknown): WireTrace {
+  const contentType = trace.response.contentType.includes('text/event-stream')
+    ? 'text/event-stream'
+    : trace.response.contentType.includes('json')
+      ? 'application/json'
+      : 'other';
+  return {
+    request: {
+      ...trace.request,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream'
+      }
+    },
+    response: {
+      ...trace.response,
+      statusText: trace.response.status >= 200 && trace.response.status < 300
+        ? 'OK'
+        : 'Request failed',
+      headers: contentType === 'other' ? {} : { 'content-type': contentType },
+      body: responseBody,
+      contentType
+    }
+  };
+}
+
+function safeToolTrace(trace: WireTrace, parsed: Record<string, any>): WireTrace {
+  const envelope = trace.request.body;
+  const safeEnvelope: Record<string, any> = {
+    jsonrpc: '2.0',
+    result: { structuredContent: parsed }
+  };
+  if (
+    envelope &&
+    typeof envelope === 'object' &&
+    !Array.isArray(envelope) &&
+    (typeof (envelope as any).id === 'number' || typeof (envelope as any).id === 'string')
+  ) {
+    safeEnvelope.id = (envelope as any).id;
+  }
+  return safeTrace(trace, safeEnvelope);
+}
+
+function withheldTrace(trace: WireTrace): WireTrace {
+  return safeTrace(trace, 'Response body withheld because it failed public validation.');
 }
 
 async function rpcWithTrace(method: string, params: unknown): Promise<{ result: any; trace: WireTrace }> {
@@ -120,47 +172,70 @@ async function ensureInit(): Promise<WireTrace | undefined> {
         Accept: 'application/json, text/event-stream',
         ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {})
       },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      credentials: 'omit'
     });
   } catch {
     /* ignore */
   }
   initialized = true;
-  return init.trace;
+  return safeTrace(init.trace, {
+    jsonrpc: '2.0',
+    result: { protocolVersion: '2025-06-18', initialized: true }
+  });
 }
 
 export async function callTool(name: string, args: Record<string, unknown>): Promise<CallResult> {
-  const initTrace = await ensureInit();
-  const { result, trace } = await rpcWithTrace('tools/call', { name, arguments: args });
+  assertPublicPlaygroundCall(name, args);
+  try {
+    const initTrace = await ensureInit();
+    const { result, trace } = await rpcWithTrace('tools/call', { name, arguments: args });
 
-  // The server moved canonical tool output into `structuredContent`; the
-  // text content is now often just a summary or a pointer. Prefer the
-  // structured payload, falling back to parsing the text blob. `raw` still
-  // carries the full envelope so the wire/JSON views show everything.
-  let parsed: any = null;
-  if (result && typeof result === 'object' && result.structuredContent && typeof result.structuredContent === 'object') {
-    parsed = result.structuredContent;
-  } else if (result && typeof result === 'object' && Array.isArray(result.content)) {
-    const textPart = result.content.find((c: any) => c?.type === 'text');
-    if (textPart?.text) {
-      try {
-        parsed = JSON.parse(textPart.text);
-        if (parsed && typeof parsed.result === 'string') {
-          try {
-            parsed = JSON.parse(parsed.result);
-          } catch {
-            /* keep parsed.result string */
+    // Canonical tool output lives in `structuredContent`; older servers may
+    // still return JSON in their text item. Nothing crosses into the UI until
+    // the fixed public response contract validates and reduces it.
+    let parsed: any = null;
+    if (result && typeof result === 'object' && result.structuredContent && typeof result.structuredContent === 'object') {
+      parsed = result.structuredContent;
+    } else if (result && typeof result === 'object' && Array.isArray(result.content)) {
+      const textPart = result.content.find((c: any) => c?.type === 'text');
+      if (textPart?.text) {
+        try {
+          parsed = JSON.parse(textPart.text);
+          if (parsed && typeof parsed.result === 'string') {
+            try {
+              parsed = JSON.parse(parsed.result);
+            } catch {
+              /* invalid nested JSON will fail the public response validator */
+            }
           }
+        } catch {
+          parsed = null;
         }
-      } catch {
-        parsed = textPart.text;
       }
+    } else {
+      parsed = result;
     }
-  } else {
-    parsed = result;
-  }
 
-  return { parsed, raw: result, trace, initTrace };
+    try {
+      const validated = sanitizePublicPlaygroundResponse(name, args, parsed);
+      const publicTrace = safeToolTrace(trace, validated);
+      return {
+        parsed: validated,
+        raw: { structuredContent: validated },
+        trace: publicTrace,
+        initTrace
+      };
+    } catch {
+      throw Object.assign(new Error('MCP response failed public validation.'), { trace });
+    }
+  } catch (error: any) {
+    const trace = error?.trace ? withheldTrace(error.trace) : undefined;
+    throw Object.assign(
+      new Error('MCP response failed public validation or the request could not complete.'),
+      trace ? { trace } : {}
+    );
+  }
 }
 
 // ============ Input parser ============
@@ -169,21 +244,27 @@ export type ParsedInput =
   | { ok: true; tool: string; args: Record<string, unknown>; canonical: string }
   | { ok: false; error: string };
 
+const PUBLIC_READ_TOOLS = new Set(['read_graph', 'read_page']);
+
 /**
  * Parse playground input like:
- *   wiki action=list
- *   extensions action=get_run run_id=abc123
- *   wiki action=read page=pages/bugs/bug-052
- *   universe action=queue_list limit=5
+ *   read_page changed_since=1970-01-01T00:00:00Z max_results=100
+ *   read_graph target=graphs limit=5
  */
 export function parseInput(text: string): ParsedInput {
   const trimmed = text.trim();
-  if (!trimmed) return { ok: false, error: 'Type a tool call (e.g. `wiki action=list`).' };
+  if (!trimmed) return { ok: false, error: 'Type a tool call (e.g. `read_graph target=graphs`).' };
   const tokens = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
   if (!tokens.length) return { ok: false, error: 'No tool name found.' };
-  const tool = tokens[0];
+  const tool = tokens[0]!;
   if (!/^[a-zA-Z_][\w-]*$/.test(tool)) {
     return { ok: false, error: `Tool name "${tool}" looks malformed.` };
+  }
+  if (!PUBLIC_READ_TOOLS.has(tool)) {
+    return {
+      ok: false,
+      error: `The public Playground only runs read_graph and bounded read_page discovery.`
+    };
   }
   const args: Record<string, unknown> = {};
   const canonicalParts: string[] = [tool];
@@ -204,110 +285,15 @@ export function parseInput(text: string): ParsedInput {
     args[key] = val;
     canonicalParts.push(`${key}=${rawVal}`);
   }
+  try {
+    assertPublicPlaygroundCall(tool, args);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'That call is not available in the public Playground.'
+    };
+  }
   return { ok: true, tool, args, canonical: canonicalParts.join(' ') };
-}
-
-// ============ Loop voice harvest ============
-
-export type LoopVoiceQuote = {
-  text: string;
-  branch: string;
-  runId: string;
-  nodeId?: string;
-  field: string;
-  at?: string;
-};
-
-const QUOTE_FIELDS: Array<[string, (ev: any, run: any) => unknown]> = [
-  ['reason_for_downgrade', (ev) => ev?.coding_packet?.reason_for_downgrade ?? ev?.reason_for_downgrade],
-  ['release_gate_reason', (ev) => ev?.release_gate_result?.reason ?? ev?.gate_reason],
-  ['evolution_notes', (ev) => ev?.evolution_notes],
-  ['lab_log_entry', (ev) => ev?.lab_log_entry ?? ev?.lab_log],
-  ['rationale', (ev) => ev?.output_summary ?? ev?.rationale],
-  ['suggested_action', (ev, run) => ev?.suggested_action ?? run?.suggested_action]
-];
-
-function looksLikeQuote(s: unknown): s is string {
-  return typeof s === 'string' && s.length >= 30 && s.length <= 800 && /\s/.test(s);
-}
-
-export async function harvestVoiceQuotes(maxRuns = 6): Promise<{ quotes: LoopVoiceQuote[]; warnings: string[] }> {
-  const warnings: string[] = [];
-  const quotes: LoopVoiceQuote[] = [];
-  try {
-    const list = await callTool('extensions', { action: 'list_runs', limit: maxRuns });
-    const runs: any[] = (list.parsed?.runs as any[]) ?? [];
-    if (!runs.length) warnings.push('extensions.list_runs returned no runs');
-
-    for (const run of runs.slice(0, maxRuns)) {
-      try {
-        const detail = await callTool('extensions', { action: 'get_run', run_id: run.run_id });
-        const events: any[] =
-          (detail.parsed?.events as any[]) ??
-          (detail.parsed?.timeline as any[]) ??
-          (detail.parsed?.steps as any[]) ??
-          [];
-        for (const ev of events) {
-          for (const [field, picker] of QUOTE_FIELDS) {
-            const val = picker(ev, run);
-            if (looksLikeQuote(val)) {
-              quotes.push({
-                text: val.trim(),
-                branch: run.branch_def_id ?? run.workflow ?? run.name ?? 'change_loop_v1',
-                runId: run.run_id ?? 'unknown',
-                nodeId: ev?.node_id,
-                field,
-                at: ev?.created_at ?? ev?.timestamp ?? run?.finished_at ?? run?.started_at
-              });
-            }
-          }
-        }
-      } catch (err) {
-        warnings.push(`get_run ${run?.run_id}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (quotes.length >= 12) break;
-    }
-  } catch (err) {
-    warnings.push(`list_runs: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  // Dedupe by text prefix.
-  const seen = new Set<string>();
-  const deduped: LoopVoiceQuote[] = [];
-  for (const q of quotes) {
-    const key = q.text.slice(0, 80);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(q);
-  }
-  return { quotes: deduped, warnings };
-}
-
-// ============ Recent runs (run picker) ============
-
-export type RecentRun = {
-  run_id: string;
-  name?: string;
-  branch_def_id?: string;
-  status: string;
-  started_at?: string;
-  finished_at?: string;
-};
-
-export async function listRecentRuns(limit = 10): Promise<RecentRun[]> {
-  try {
-    const list = await callTool('extensions', { action: 'list_runs', limit });
-    const runs: any[] = (list.parsed?.runs as any[]) ?? [];
-    return runs.map((r) => ({
-      run_id: r.run_id ?? r.id ?? 'unknown',
-      name: r.name ?? r.run_name,
-      branch_def_id: r.branch_def_id ?? r.workflow,
-      status: (r.status ?? 'unknown').toString(),
-      started_at: r.started_at,
-      finished_at: r.finished_at
-    }));
-  } catch {
-    return [];
-  }
 }
 
 // ============ Pretty summarizer ============
@@ -319,12 +305,12 @@ export async function listRecentRuns(limit = 10): Promise<RecentRun[]> {
 export function summarize(tool: string, parsed: any): string | null {
   if (parsed === null || parsed === undefined) return null;
 
-  if (tool === 'wiki') {
-    if (Array.isArray(parsed?.promoted) || Array.isArray(parsed?.drafts)) {
-      const promoted = parsed.promoted?.length ?? 0;
-      const drafts = parsed.drafts?.length ?? 0;
+  if (tool === 'read_page') {
+    if (Array.isArray(parsed?.results)) {
+      const promoted = parsed.results.filter((page: any) => !page?.is_draft).length;
+      const drafts = parsed.results.filter((page: any) => Boolean(page?.is_draft)).length;
       const buckets: Record<string, number> = {};
-      for (const p of parsed.promoted ?? []) {
+      for (const p of parsed.results.filter((page: any) => !page?.is_draft)) {
         const path: string = p.path ?? '';
         const cat =
           path.includes('/bugs/') ? 'bugs'
@@ -338,7 +324,13 @@ export function summarize(tool: string, parsed: any): string | null {
         .sort((a, b) => b[1] - a[1])
         .map(([k, v]) => `${v} ${k}`)
         .join(', ');
-      return `The wiki has ${promoted} promoted page${promoted === 1 ? '' : 's'} (${breakdown}) and ${drafts} draft${drafts === 1 ? '' : 's'}.`;
+      const scope = typeof parsed.scope === 'string' ? `${parsed.scope}-scope ` : '';
+      const truncated = Number(parsed.truncated_count);
+      const truncation =
+        Number.isInteger(truncated) && truncated > 0
+          ? ` This read is incomplete: ${truncated} additional page${truncated === 1 ? ' was' : 's were'} truncated.`
+          : '';
+      return `The wiki returned ${promoted} ${scope}promoted page${promoted === 1 ? '' : 's'} (${breakdown}) and ${drafts} draft${drafts === 1 ? '' : 's'}.${truncation}`;
     }
     if (typeof parsed?.content === 'string') {
       const lines = parsed.content.split('\n').filter((l: string) => l.trim()).length;
@@ -347,15 +339,7 @@ export function summarize(tool: string, parsed: any): string | null {
     }
   }
 
-  if (tool === 'goals') {
-    if (Array.isArray(parsed?.goals)) {
-      const n = parsed.goals.length;
-      const names = parsed.goals.slice(0, 3).map((g: any) => g.name ?? g.id).filter(Boolean).join(', ');
-      return `${n} active goal${n === 1 ? '' : 's'}${names ? `: ${names}${n > 3 ? ', …' : ''}` : ''}.`;
-    }
-  }
-
-  if (tool === 'universe') {
+  if (tool === 'read_graph') {
     if (Array.isArray(parsed?.universes)) {
       const n = parsed.universes.length;
       const phases = parsed.universes.slice(0, 3).map((u: any) => `${u.id} (${u.phase ?? u.phase_human ?? '?'})`).join(', ');
@@ -367,18 +351,6 @@ export function summarize(tool: string, parsed: any): string | null {
     }
     if (parsed?.alive !== undefined) {
       return `Daemon ${parsed.alive ? 'alive' : 'inactive'}${parsed.last_activity_at ? `, last activity ${parsed.last_activity_at}` : ''}.`;
-    }
-  }
-
-  if (tool === 'extensions') {
-    if (Array.isArray(parsed?.runs)) {
-      const n = parsed.runs.length;
-      const recent = parsed.runs[0];
-      const stamp = recent?.finished_at ?? recent?.started_at ?? 'unknown';
-      return `${n} run${n === 1 ? '' : 's'} returned. Most recent: ${recent?.run_id ?? '?'} — ${recent?.status ?? '?'} at ${stamp}.`;
-    }
-    if (Array.isArray(parsed?.events)) {
-      return `${parsed.events.length} event${parsed.events.length === 1 ? '' : 's'} for run ${parsed?.run_id ?? '(unspecified)'}.`;
     }
   }
 

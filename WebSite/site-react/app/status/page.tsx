@@ -4,7 +4,7 @@ import { Moved } from "../_components/Moved";
 export const metadata: Metadata = {
   title: "Fine print — Tiny",
   description:
-    "Live status, deploy receipts, and the legal links now live in the Fine print — Tiny's ops room.",
+    "Public reachability and timestamp signals, explicitly unavailable operator fields, and legal links now live in Tiny's Fine print.",
   alternates: { canonical: "https://tinyassets.io/fine-print" },
 };
 
@@ -15,8 +15,9 @@ export default function StatusPage() {
       eyebrow="this page moved"
       line={
         <>
-          Live status now lives in the <em>Fine print</em> — Tiny's ops room,
-          with deploy receipts and the legal links alongside it.
+          Public reachability and timestamp signals now live in the{" "}
+          <em>Fine print</em>, with unavailable operator fields and legal links
+          labelled plainly.
         </>
       }
       cta="Open the Fine print →"

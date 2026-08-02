@@ -512,6 +512,16 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     )
     from tinyassets.api.universe import UNIVERSE_ACTIONS, WRITE_ACTIONS
     from tinyassets.api.wiki import WIKI_ACTIONS, WIKI_WRITE_ACTIONS
+    from tinyassets.authoring.service import (
+        _AUTHORING_ACTIONS,
+        _AUTHORING_COSTLY_ACTIONS,
+        _AUTHORING_WRITE_ACTIONS,
+    )
+    from tinyassets.handoffs.service import (
+        _HANDOFF_ACTIONS,
+        _HANDOFF_COSTLY_ACTIONS,
+        _HANDOFF_WRITE_ACTIONS,
+    )
 
     _extend_scope_rows(
         rows,
@@ -548,6 +558,8 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _EFFECTOR_CONSENT_ACTIONS,
         _ATTRIBUTION_ACTIONS,
         _LEADERBOARD_ACTIONS,
+        _AUTHORING_ACTIONS,
+        _HANDOFF_ACTIONS,
     ):
         extension_actions.update(action_map)
     extension_writes.update(_BRANCH_WRITE_ACTIONS)
@@ -577,13 +589,25 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     extension_writes.update({
         "grant_effector_consent", "revoke_effector_consent",
     })
+    # Authoring drafts: start/edit/publish mutate owner-scoped state, and a test
+    # run spends execution/model budget, so it derives costly like run_branch.
+    extension_writes.update(_AUTHORING_WRITE_ACTIONS)
+    # Handoffs: prepare mints a single-use confirmation, execute performs a real
+    # external effect, and record_evidence/attest_outcome mutate the durable
+    # lifecycle and outcome registry. Omitting these would derive read scope for
+    # a mutating action — the fail-OPEN direction.
+    extension_writes.update(_HANDOFF_WRITE_ACTIONS)
     _extend_scope_rows(
         rows,
         tool="extensions",
         actions=extension_actions,
         source="tinyassets.api.extensions internal dispatch tables",
         write_actions=extension_writes,
-        costly_actions=_EXTENSIONS_COSTLY_ACTIONS,
+        costly_actions=(
+            _EXTENSIONS_COSTLY_ACTIONS
+            | _AUTHORING_COSTLY_ACTIONS
+            | _HANDOFF_COSTLY_ACTIONS
+        ),
         admin_actions=_EXTENSIONS_ADMIN_ACTIONS,
     )
 

@@ -52,6 +52,24 @@ def _resolve_caller_viewer() -> str:
         return ""
 
 
+def _public_goal_read_rejection(goal_id: str) -> str | None:
+    """Return a non-disclosing rejection unless the Goal is public."""
+    from tinyassets.daemon_server import get_goal
+
+    try:
+        goal = get_goal(_base_universe_dir(), goal_id=goal_id)
+    except KeyError:
+        goal = None
+    if goal is not None and goal.get("visibility") == "public":
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": f"Goal '{goal_id}' not found.",
+        "goal": None,
+        "entries": [],
+    })
+
+
 def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
     """Return the ranked leaderboard for a Goal.
 
@@ -69,6 +87,9 @@ def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_goal_id",
             "actionable_by": "chatbot",
         })
+    rejection = _public_goal_read_rejection(goal_id)
+    if rejection is not None:
+        return rejection
     viewer = _resolve_caller_viewer()
 
     try:
@@ -103,6 +124,9 @@ def _action_recommended_parent_for_fork(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_goal_id",
             "actionable_by": "chatbot",
         })
+    rejection = _public_goal_read_rejection(goal_id)
+    if rejection is not None:
+        return rejection
     viewer = _resolve_caller_viewer()
 
     try:
@@ -142,15 +166,15 @@ def _render_leaderboard_text(board: dict[str, Any]) -> str:
         err = board.get("error", "")
         return (
             f"Selector failed for {goal_label} (`{err_kind}`): {err}. "
-            "Operator action: rebind a working selector via "
-            "`goals action=set_selector branch_version_id=…` or "
-            "unbind to fall back to the platform default."
+            "Selector binding is not exposed by the advertised handles; an "
+            "operator must rebind or unbind it through the internal admin "
+            "surface."
         )
     if not entries:
         return (
             f"No Branches are currently bound to {goal_label}. "
-            "Use `extensions action=build_branch goal_id=...` to "
-            "create the first entry."
+            "New-workflow creation and Goal binding are not exposed by the "
+            "advertised handles."
         )
 
     lines: list[str] = [
@@ -186,9 +210,8 @@ def _render_leaderboard_text(board: dict[str, Any]) -> str:
         lines.append(f"… and {len(entries) - 15} more entries.")
     lines.append("")
     lines.append(
-        "_Best-effort v1 ranking. Use "
-        "`extensions action=recommended_parent_for_fork goal_id=…` "
-        "for the top entry plus a rationale._"
+        "_Best-effort v1 ranking. Recommended-parent lookup is not exposed "
+        "by the advertised handles._"
     )
     return "\n".join(lines)
 

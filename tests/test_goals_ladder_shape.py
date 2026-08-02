@@ -23,12 +23,20 @@ import pytest
 
 
 @pytest.fixture
-def us_env(tmp_path, monkeypatch):
+def us_env(tmp_path, monkeypatch, authenticate_request):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "output"))
     (tmp_path / "output").mkdir()
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("GATES_ENABLED", "1")
     monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
+    authenticate_request("tester")
+    from tinyassets.auth.middleware import current_identity
+    current_identity().capabilities.extend([
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+        "tinyassets.gates.read",
+        "tinyassets.gates.admin",
+    ])
     from tinyassets.catalog import backend as backend_mod
     backend_mod.invalidate_backend_cache()
     from tinyassets import universe_server as us

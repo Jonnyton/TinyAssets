@@ -8,15 +8,140 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
 # Force mock provider responses in all tests to avoid real API calls
 from tinyassets.providers import call as _provider_call
 
 _provider_call.set_force_mock(True)
+
+
+class _CredentialSubjectProvider(AuthProvider):
+    """Resolve only issued test credentials to persisted subjects."""
+
+    def __init__(self) -> None:
+        self._identities_by_token: dict[str, Identity] = {}
+
+    def issue_credential(self, subject: str) -> str:
+        token = f"pytest-credential::{subject}"
+        self._identities_by_token[token] = Identity(
+            user_id=subject,
+            username=f"{subject}-display",
+            capabilities=[
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+                "tinyassets.extensions.admin",
+            ],
+        )
+        return token
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self._identities_by_token.get(token)
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return {"client_id": "pytest-credential-subject", **metadata}
+
+    def create_authorization(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> str:
+        return "pytest-credential-subject-code"
+
+    def exchange_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+    ) -> dict[str, Any] | None:
+        return None
+
+
+@pytest.fixture
+def authenticate_request() -> Callable[[str | None], None]:
+    """Bind branch-authority tests to a credential-derived request subject."""
+    provider = _CredentialSubjectProvider()
+    set_provider(provider)
+    auth_middleware(None)
+
+    def authenticate(subject: str | None) -> None:
+        token = provider.issue_credential(subject) if subject else None
+        auth_middleware(token)
+
+    yield authenticate
+    auth_middleware(None)
+    set_provider(DevAuthProvider())
+
+
+@pytest.fixture(autouse=True)
+def _emulate_deployed_visibility_backfill(request, monkeypatch):
+    """Emulate the deployed ``backfill_universe_visibility`` for legacy modules.
+
+    The universe-visibility contract fails closed on an *undeclared* universe
+    (openspec/changes/universe-visibility). In production the one-time
+    ``backfill_universe_visibility`` migration declares every pre-existing
+    universe from its ``public_read`` bit, after which undeclared only ever means
+    forged/corrupt. The hundreds of pre-visibility tests create bare universes
+    and were written against that post-backfill world (undeclared == public).
+
+    This fixture reproduces the deployed backfill state in the harness so those
+    tests keep asserting their own concern (status shape, word count, telemetry)
+    without each re-declaring visibility: for an *undeclared* universe it derives
+    the level from ``public_read`` exactly as the backfill does, while an explicit
+    (or forged) declaration, a corrupt store, and a blank id all defer to the real
+    strict resolver. Production code ships fully strict; the true pre-backfill
+    fail-closed behavior is exercised un-emulated by ``test_universe_visibility``.
+    """
+    module_name = getattr(request.node.module, "__name__", "")
+    if module_name.endswith("test_universe_visibility"):
+        return  # this module tests the real, un-backfilled strict resolver.
+
+    from tinyassets.api import visibility as _vis
+
+    _real = _vis.universe_visibility
+
+    def _post_backfill(universe_id: str):
+        if not (universe_id or "").strip():
+            return _vis.CLOSED
+        rules = _vis._read_rules(universe_id)
+        if rules is _vis._CORRUPT:
+            return _vis.CLOSED
+        if rules is _vis._MISSING:
+            # A bare universe: backfill would create a rules row (public_read
+            # defaults True) and declare it public.
+            return _vis.PUBLIC
+        if not isinstance(rules, dict):
+            return _vis.CLOSED
+        meta = rules.get("metadata")
+        if isinstance(meta, dict) and _vis.LEVEL_METADATA_KEY in meta:
+            return _real(universe_id)  # explicit/forged -> real strict resolver.
+        return _vis.PUBLIC if bool(rules.get("public_read", True)) else _vis.PRIVATE
+
+    monkeypatch.setattr(_vis, "universe_visibility", _post_backfill)
+
+
+@pytest.fixture(autouse=True)
+def _identity_fingerprint_key(monkeypatch):
+    """Give tests an explicit dedicated status-fingerprint key."""
+    monkeypatch.setenv(
+        "TINYASSETS_IDENTITY_FINGERPRINT_KEY",
+        "pytest-only-identity-fingerprint-key-32-bytes",
+    )
+    monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
 
 
 @pytest.fixture(autouse=True)

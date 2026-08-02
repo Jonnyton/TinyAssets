@@ -78,7 +78,19 @@ def _make_universe(
             conn.commit()
         finally:
             conn.close()
+    # Declare the universe explicitly public: under the universe-visibility
+    # contract an undeclared universe is withheld from list/inspect/status
+    # (fail closed). These telemetry tests assert public-universe behavior.
+    _declare_public(base, uid, udir)
     return udir
+
+
+def _declare_public(base: Path, uid: str, udir: Path) -> None:
+    from tinyassets.api.visibility import set_universe_visibility
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    set_universe_visibility(uid, "public")
 
 
 # ---------------------------------------------------------------------------

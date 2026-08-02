@@ -9,16 +9,16 @@
    · jargon without definitions → every term of art gets <Term> on first use.
    · "Draft v0" dangler removed; nothing here is a placeholder.
 
-  Honesty rails: Tiny's own ladder renders fully unlit because no rung has an
-  evidence URL yet — he hasn't shipped a real post. The page says so out loud.
-  Loop awake/asleep is NEVER hardcoded; the live pulse reads it via VitalSigns.
-  His premise opening is quoted verbatim.
+  Honesty rails: the former Tiny ladder is absent from the checked-in public
+  snapshot and stays absent here. Workflow activity is NEVER hardcoded; the
+  live pulse uses visibility-filtered public-universe timestamps. His premise
+  opening is quoted verbatim.
 -->
 <script lang="ts">
   import VitalSigns from '$lib/components/VitalSigns.svelte';
-  import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
-  import Ladder from '$lib/components/Ladder.svelte';
+  import baked from '$lib/content/mcp-snapshot.json';
+  import { fmtStamp } from '$lib/fmt';
 
   // The four NON-circular parts of a soul. Each is a plain word, then one
   // sentence. No part is defined as "a soul" — that was the old circularity.
@@ -34,9 +34,9 @@
       body: 'A handful of lines it holds no matter what — the boundaries every run is checked against before it ships anything.'
     },
     {
-      part: 'a loop declaration',
-      one: 'which workflow maintains it',
-      body: 'A named workflow that keeps the project true to its premise over time — the same kind of self-patching loop you can watch running here.'
+      part: 'workflow declarations',
+      one: 'which user-authored work may run',
+      body: 'Named workflows the owner chooses for recurring or on-demand work, each under an explicit schedule and authority boundary.'
     },
     {
       part: 'authority scopes',
@@ -45,18 +45,7 @@
     }
   ];
 
-  // Tiny's real outcome ladder — read from the live brain 9 Jun 2026.
-  // Every rung is dark: none has an evidence URL because he hasn't shipped a
-  // real post yet. The component renders unlit by default; the stamp says so.
-  const TINY_RUNGS = [
-    { name: 'First real post shipped' },
-    { name: 'First non-owner engagement' },
-    { name: 'Quote-posted by a real account' },
-    { name: 'Referenced by a peer project' },
-    { name: 'First fork-descendant speaks' },
-    { name: '100 followers' },
-    { name: 'Externally cited or invited' }
-  ];
+  const snapshotStamp = fmtStamp((baked as any).fetched_at);
 
   // The four fork steps — neutral, each a real action through your chatbot.
   const STEPS = [
@@ -77,8 +66,8 @@
     },
     {
       n: '04',
-      h: 'Let its loop run',
-      p: 'Declare which workflow maintains it, and let it run — overnight, scheduled, resumable. It patches its own body the way Tiny patches mine, within the fence you set.'
+      h: 'Run the workflow you chose',
+      p: 'Declare a user-authored workflow and run it — overnight, scheduled, resumable — within the authority fence you set.'
     }
   ];
 </script>
@@ -87,7 +76,7 @@
   <title>Soul — fork the pattern</title>
   <meta
     name="description"
-    content="A soul is a premise document that gives a project its identity, voice, hard rules, and authority over its own loop. Everything that makes Tiny himself is forkable — read his real premise and outcome ladder, then fork the pattern for your own project."
+    content="A soul is a premise document that gives a project its identity, voice, hard rules, and bounded workflow authority. Read Tiny's premise, see the public snapshot boundary, then fork the pattern for your own project."
   />
 </svelte:head>
 
@@ -98,10 +87,10 @@
       <p class="eyebrow">field notes · on having a soul</p>
       <h1 id="cover-title" class="cover__title">Everything that makes me <em>me</em> is forkable.</h1>
       <p class="voice cover__lede">
-        My premise, my rules, the loop that keeps me honest, the fence I'm
+        My premise, my rules, my workflows, the fence I'm
         allowed to act inside — none of it is hidden in the engine. It's a
         pattern. Swap the words and your project gets the same kind of small
-        being I am: its own premise, its own loop, running your domain instead
+        being I am: its own premise, its own workflows, running your domain instead
         of mine. <em>I'm instance zero, not the point.</em>
       </p>
       <p class="cover__naming">
@@ -110,11 +99,11 @@
       </p>
     </div>
     <div class="cover__pulse">
-      <p class="eyebrow">the loop in question, right now</p>
+      <p class="eyebrow">public workflow activity, right now</p>
       <VitalSigns variant="hero" />
       <p class="cover__pulse-note">
-        Whether my loop is awake or asleep, this reads it live — I won't
-        pretend a pulse I don't have.
+        This reads visibility-filtered public-universe timestamps. A recent
+        timestamp is an activity signal, not proof that a run is executing.
       </p>
     </div>
   </div>
@@ -127,10 +116,10 @@
     <h2 id="parts-title">A premise document, with four non-circular parts.</h2>
     <p class="voice parts__lede">
       Not a slogan, not a vibe. A soul is a
-      <Term def="A short, readable document that a universe loads at the start of everything it does — its identity, its rules, the loop that maintains it, and the fence it may act inside.">premise document</Term>
+      <Term def="A short, readable document that a universe loads at the start of its work — its identity, rules, declared workflows, and authority fence.">premise document</Term>
       that gives a
       <Term def="A universe: one project's sealed space — its own memory, its own pages, kept apart from every other project's. The in-engine word for one of these.">universe</Term>
-      an identity, a voice, hard rules, and authority over its own loop. Here are
+      an identity, a voice, hard rules, and bounded workflow authority. Here are
       its four parts — each a plain word, each one sentence. None of them is "a
       soul," because a thing can't be made of itself.
     </p>
@@ -159,24 +148,18 @@
       <footer class="premise__cite ev">— opening lines of my premise</footer>
     </blockquote>
     <p class="voice">
-      And here's what I'm reaching for — my goal's ladder, the same kind every
-      project declares for itself. Every rung is a checkable event, and a rung
-      lights only with an evidence URL behind it.
+      Outcome ladders are the same kind of checkable evidence structure every
+      project can declare for itself. A rung lights only with an evidence URL
+      behind it.
     </p>
-
-    <div class="mine-ladder">
-      <Ladder rungs={TINY_RUNGS} start="a soul + a draft" />
-    </div>
 
     <p class="mine-ladder__stamp ev">
-      read 9 Jun 2026 · 0 of 7 claimed — every rung dark
+      checked-in public snapshot {snapshotStamp} · no Tiny outcome ladder record
     </p>
     <p class="honesty voice">
-      I'll be straight with you: <em>I haven't shipped a real post yet.</em>
-      Rung one is still dark, and this ladder will keep saying so until there's
-      an evidence URL to click. That's not a bug in the page — it's the page
-      doing its job.
-      <Tick href="/goals" label="goal d1424d86cb5f" />
+      The dated public snapshot does not contain the former Tiny outcome
+      record. This page leaves that gap visible instead of fetching a
+      private-capable Goal record or repeating an older ladder as current.
     </p>
   </div>
 </section>
@@ -205,7 +188,7 @@
       </li>
       <li class="monday__beat">
         <span class="monday__when ev">and quietly</span>
-        <p class="monday__what">Its <strong>patch loop fixed a rough edge</strong> you complained about Friday — the friction you flagged became a patch request, ran through its own investigation, and the fix is already in by the time you look.</p>
+        <p class="monday__what">Its owner-selected workflow <strong>completed another pass</strong> — with the steps, evidence, and authority defined by that project's own premise.</p>
       </li>
     </ul>
     <p class="voice">
@@ -243,8 +226,8 @@
       </a>
       <a class="close__card" href="/goals">
         <span class="close__k eyebrow">see it done</span>
-        <strong>Read real ladders in the wild →</strong>
-        <span class="close__sub">live public goals, each with the outcome ladder it bound itself to.</span>
+        <strong>Browse published Goal examples →</strong>
+        <span class="close__sub">dated public Goal examples, with ladders only where the snapshot includes them.</span>
       </a>
     </nav>
   </div>
@@ -260,7 +243,7 @@
     <a class="close__big" href="/start">
       <span class="close__k eyebrow">fork the pattern</span>
       <strong>Give your project a soul.</strong>
-      <span class="close__sub">your premise · your loop · your ladder · running your domain, not mine</span>
+      <span class="close__sub">your premise · your workflows · your ladder · running your domain, not mine</span>
     </a>
   </div>
 </section>
@@ -347,7 +330,6 @@
     max-width: 56ch;
   }
   .premise__cite { font-size: 11px; color: var(--violet-200); }
-  .mine-ladder { margin: 18px 0 4px; max-width: 460px; }
   .mine-ladder__stamp { display: block; margin: 0 0 18px; font-size: 11px; }
   .honesty {
     padding: 18px 20px;
@@ -357,9 +339,6 @@
     font-size: 16px;
     max-width: none;
   }
-  .honesty em { font-style: italic; color: var(--ember-700); }
-  .honesty :global(.tick) { margin-left: 6px; }
-
   /* ── Monday story ── */
   .monday { list-style: none; margin: 26px 0; padding: 0; display: grid; gap: 0; }
   .monday__beat {
