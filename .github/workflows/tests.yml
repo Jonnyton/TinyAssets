@@ -51,7 +51,11 @@ jobs:
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was measured against the 2026-07-22 suite (25:48) and the suite has
+    # since outgrown it — run 30766011005 was killed at exactly 30:15 with the
+    # tests still going. 50 buys headroom for one honest full measurement; the
+    # ADR documents the fast-subset escape hatch if the latency bites.
+    timeout-minutes: 50
 
     steps:
       - uses: actions/checkout@v4

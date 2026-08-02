@@ -162,6 +162,7 @@ jobs:
                 echo "### PR scope guard"
                 echo ""
                 echo "**Blocked — this PR edits the required-tests gate itself:**"
+                # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
                 printf '%s\n' "$GATE_HITS" | sed 's/^/- `/; s/$/`/'
                 echo ""
                 echo "Gate-defining files need an exact-head review receipt in the PR body"
