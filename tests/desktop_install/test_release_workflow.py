@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -12,6 +14,14 @@ import pytest
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "desktop-release.yml"
 SUPERVISOR = Path(__file__).with_name("windows_lifecycle_supervisor.py")
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _supervisor_module():
+    spec = importlib.util.spec_from_file_location("windows_lifecycle_supervisor", SUPERVISOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _workflow_text() -> str:
@@ -141,6 +151,52 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "taskkill" in supervisor
 
 
+def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    supervisor = _supervisor_module()
+    capture_path = tmp_path / "capture.bin"
+
+    with capture_path.open("w+b") as capture:
+        capture.write(b"before\n")
+        capture.flush()
+
+        class AppendDuringSeek:
+            def __init__(self) -> None:
+                self.appended = False
+
+            def fileno(self) -> int:
+                return capture.fileno()
+
+            def flush(self) -> None:
+                capture.flush()
+
+            def seek(self, offset: int) -> int:
+                if offset == 0 and not self.appended:
+                    self.appended = True
+                    capture.seek(0, os.SEEK_END)
+                    capture.write(b"x" * 2048)
+                    capture.flush()
+                return capture.seek(offset)
+
+            def read(self, size: int) -> bytes:
+                return capture.read(size)
+
+        destination = io.StringIO()
+        supervisor._replay_capture(
+            AppendDuringSeek(),
+            name="stdout",
+            destination=destination,
+            max_bytes=1024,
+        )
+
+    assert destination.getvalue() == "before\n"
+    warning = capsys.readouterr().out
+    assert "stdout capture truncated; replay cap 1024 bytes" in warning
+    assert "observed at least 2055 bytes" in warning
+
+
 @pytest.mark.skipif(
     sys.platform != "win32" or PWSH is None,
     reason="Windows PowerShell process-tree contract",
@@ -199,7 +255,7 @@ while ($true) {
     assert result.returncode != 0
     assert elapsed < 15
     assert "synthetic lifecycle phase began" in output
-    assert "stdout truncated at 4096 bytes" in output
+    assert "stdout capture truncated; replay cap 4096 bytes" in output
     assert "total lifecycle timed out after 2 seconds" in output
     assert len(output) < 20_000
 

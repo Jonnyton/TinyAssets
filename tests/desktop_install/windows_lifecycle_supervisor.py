@@ -56,15 +56,20 @@ def _replay_capture(
     max_bytes: int,
 ) -> None:
     capture.flush()
-    observed_bytes = os.fstat(capture.fileno()).st_size
+    initial_observed_bytes = os.fstat(capture.fileno()).st_size
+    replay_bytes = min(initial_observed_bytes, max_bytes)
     capture.seek(0)
-    data = capture.read(max_bytes)
+    data = capture.read(replay_bytes)
+    observed_bytes = max(
+        initial_observed_bytes,
+        os.fstat(capture.fileno()).st_size,
+    )
     destination.write(data.decode("utf-8", errors="replace"))
     destination.flush()
     if observed_bytes > len(data):
         print(
             "::warning title=Windows lifecycle capture::"
-            f"{name} truncated at {max_bytes} bytes; "
+            f"{name} capture truncated; replay cap {max_bytes} bytes; "
             f"observed at least {observed_bytes} bytes",
             flush=True,
         )
