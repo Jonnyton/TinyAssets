@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
@@ -9,18 +10,31 @@ import threading
 import weakref
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, Mapping
 
 from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
-from tinyassets.agent_runtime_invocation import AgentInvocationState
+from tinyassets.agent_runtime_invocation import (
+    AGENT_INVOCATION_OPERATION,
+    AGENT_INVOCATION_ROLE,
+    AgentInvocationState,
+    canonical_agent_invocation_input,
+)
 from tinyassets.agent_runtime_principal import AgentRuntimePrincipal
+from tinyassets.agent_runtime_provider_outcome import (
+    MAX_AGENT_PROVIDER_OUTPUT_BYTES,
+    AgentInvocationProviderOutcome,
+    AgentProviderOutcomeState,
+)
 from tinyassets.cloud_automation_continuation import (
     AgentInvocationCloudContinuation,
     CloudContinuationState,
     CloudContinuationWriteResult,
 )
+from tinyassets.config import load_universe_config
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
+    ProviderInvocationReservation,
+    ProviderInvocationReservationState,
     ProviderInvocationReservationWriteResult,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
@@ -32,10 +46,15 @@ from tinyassets.provider_work_authority import (
     ProviderWorkTransactionalBindingResolver,
     _mint_provider_invocation_carrier,
 )
+from tinyassets.providers.base import ModelConfig, UniverseContext
+from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
 from tinyassets.storage.agent_runtime_invocation import (
     SQLiteAgentInvocationExternalAuthorityFenceSource,
     SQLiteAgentRuntimeInvocationStore,
+)
+from tinyassets.storage.agent_runtime_provider_outcome import (
+    SQLiteAgentRuntimeProviderOutcomeStore,
 )
 from tinyassets.storage.automation_activations import AutomationActivationStore
 from tinyassets.storage.automation_activations import _record as _activation_record
@@ -46,6 +65,7 @@ from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
     _claim_record,
     _receipt_record,
+    _reservation_record,
 )
 
 
@@ -169,6 +189,8 @@ class AgentRuntimeProviderExecutionService:
         )
         with self.continuation_store.connection():
             pass
+        with self.invocation_store.connection() as conn:
+            SQLiteAgentRuntimeProviderOutcomeStore.ensure_schema(conn)
 
     def issue_receipt(self, invocation_id: str) -> ProviderWorkReceiptWriteResult:
         result = self._transition(invocation_id, transition="receipt")
@@ -190,6 +212,298 @@ class AgentRuntimeProviderExecutionService:
         invocation_id: str,
     ) -> AgentInvocationCloudContinuation | None:
         return self.continuation_store.get_agent(invocation_id)
+
+    def get_provider_outcome(
+        self,
+        invocation_id: str,
+    ) -> AgentInvocationProviderOutcome | None:
+        with self.invocation_store.connection() as conn:
+            SQLiteAgentRuntimeProviderOutcomeStore.ensure_schema(conn)
+            return SQLiteAgentRuntimeProviderOutcomeStore.get_in_transaction(
+                conn,
+                invocation_id=invocation_id,
+            )
+
+    def execute_provider_call(
+        self,
+        invocation_id: str,
+        *,
+        typed_input: Mapping[str, object],
+        router: ProviderRouter,
+    ) -> AgentInvocationProviderOutcome:
+        """Execute one bounded governed turn under the already-admitted identity."""
+
+        if type(router) is not ProviderRouter:
+            raise ValueError("router must be the canonical ProviderRouter")
+        detached_input, input_digest = canonical_agent_invocation_input(typed_input)
+        system, prompt, universe_dir = self._resolve_provider_call_material(
+            invocation_id,
+            typed_input=detached_input,
+            typed_input_digest=input_digest,
+        )
+        existing = self.get_provider_outcome(invocation_id)
+        if existing is not None:
+            return existing
+        self.issue_receipt(invocation_id)
+        self.claim(invocation_id)
+        self.reserve(invocation_id)
+        prepared = self.prepare_continuation(invocation_id).record
+        if type(prepared) is not AgentInvocationCloudContinuation:
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent provider continuation is not current"
+            )
+        carrier = self.arm_launch(invocation_id)
+        launched = self.provider_store.get_reservation(prepared.reservation_id)
+        if (
+            launched is None
+            or launched.state is not ProviderInvocationReservationState.LAUNCH_STARTED
+        ):
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent provider launch reservation is not current"
+            )
+        universe_config = load_universe_config(universe_dir)
+        config = ModelConfig(
+            timeout=universe_config.timeout,
+            max_tokens=prepared.max_tokens,
+            temperature=universe_config.temperature,
+            sandbox_workspace=True,
+            allowed_tools=("WebFetch", "WebSearch"),
+            disallowed_tools=("Bash", "Write", "Edit", "NotebookEdit"),
+        )
+        try:
+            response = router.call_sync(
+                AGENT_INVOCATION_ROLE,
+                prompt,
+                system,
+                config,
+                operation=AGENT_INVOCATION_OPERATION,
+                universe_context=UniverseContext(
+                    universe_dir=universe_dir,
+                    config=universe_config,
+                    provider_invocation=carrier,
+                ),
+            )
+        except Exception:
+            return self._finalize_provider_outcome(
+                prepared,
+                launched,
+                state=AgentProviderOutcomeState.INDETERMINATE,
+                provider=carrier.provider,
+                model="",
+                family="",
+                latency_ms=None,
+                typed_output=None,
+                blocker_code="provider_call_indeterminate",
+                blocker_detail="provider call did not return a confirmed result",
+            )
+
+        typed_output: dict[str, object] = {
+            "kind": "provider_text",
+            "text": response.text,
+        }
+        encoded_output = json.dumps(
+            typed_output,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if response.provider != carrier.provider:
+            return self._finalize_provider_outcome(
+                prepared,
+                launched,
+                state=AgentProviderOutcomeState.FAILED,
+                provider=carrier.provider,
+                model="",
+                family="",
+                latency_ms=None,
+                typed_output=None,
+                blocker_code="provider_identity_mismatch",
+                blocker_detail="provider response did not match the armed provider",
+            )
+        if len(encoded_output) > MAX_AGENT_PROVIDER_OUTPUT_BYTES:
+            return self._finalize_provider_outcome(
+                prepared,
+                launched,
+                state=AgentProviderOutcomeState.FAILED,
+                provider=carrier.provider,
+                model="",
+                family="",
+                latency_ms=None,
+                typed_output=None,
+                blocker_code="provider_output_too_large",
+                blocker_detail="provider output exceeded the bounded result size",
+            )
+        return self._finalize_provider_outcome(
+            prepared,
+            launched,
+            state=AgentProviderOutcomeState.SUCCEEDED,
+            provider=carrier.provider,
+            model=response.model,
+            family=response.family,
+            latency_ms=response.latency_ms,
+            typed_output=typed_output,
+            blocker_code=None,
+            blocker_detail=None,
+        )
+
+    def _resolve_provider_call_material(
+        self,
+        invocation_id: str,
+        *,
+        typed_input: dict[str, object],
+        typed_input_digest: str,
+    ) -> tuple[str, str, Path]:
+        with self.invocation_store.connection() as conn:
+            conn.execute("BEGIN")
+            aggregate = self.invocation_store.get_in_transaction(
+                conn,
+                invocation_id=invocation_id,
+            )
+            if aggregate is None:
+                raise AgentRuntimeProviderExecutionBlocked(
+                    "agent invocation is not current"
+                )
+            command, invocation = aggregate
+            if (
+                invocation.state is not AgentInvocationState.ADMITTED
+                or command.typed_input_digest != typed_input_digest
+            ):
+                raise AgentRuntimeProviderExecutionBlocked(
+                    "agent typed input does not match admission"
+                )
+            manifest = AgentRuntimeManifestStore.resolve_current_in_transaction(
+                conn,
+                owner_user_id=command.authorizing_subject_id,
+                manifest_id=command.execution_subject.ref,
+                manifest_digest=command.execution_subject.digest,
+            )
+            universe_row = conn.execute(
+                "SELECT host_path FROM universes WHERE universe_id = ?",
+                (command.universe_id,),
+            ).fetchone()
+            conn.commit()
+        if manifest is None or universe_row is None:
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent manifest or registered universe is unavailable"
+            )
+        registered_universe_dir = Path(str(universe_row["host_path"])).expanduser()
+        if not registered_universe_dir.is_absolute():
+            raise AgentRuntimeProviderExecutionBlocked(
+                "registered universe directory must be absolute"
+            )
+        universe_dir = registered_universe_dir.resolve(strict=False)
+        if not universe_dir.is_dir():
+            raise AgentRuntimeProviderExecutionBlocked(
+                "registered universe directory is unavailable"
+            )
+        content = manifest.manifest_input.to_dict()
+        plan = content["execution_plan"]
+        plan_adapter = content["plan_adapter"]
+        if (
+            not isinstance(plan, dict)
+            or not isinstance(plan_adapter, dict)
+            or plan.get("plan_class") != "single_provider_turn"
+            or plan_adapter.get("adapter_ref") != "builtin:single-provider-turn"
+        ):
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent plan adapter is not executable by this runtime"
+            )
+        component_key = plan.get("entry_component")
+        components = content["components"]
+        component = components.get(component_key) if isinstance(components, dict) else None
+        if not isinstance(component, dict) or component.get("runtime_mode") != "execute":
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent entry component is not executable"
+            )
+        adapter = component.get("adapter")
+        configuration = component.get("configuration")
+        instructions = (
+            configuration.get("instructions")
+            if isinstance(configuration, dict)
+            else None
+        )
+        if (
+            not isinstance(adapter, dict)
+            or adapter.get("adapter_ref") != "builtin:prompt-component"
+            or not isinstance(instructions, str)
+            or not instructions.strip()
+        ):
+            raise AgentRuntimeProviderExecutionBlocked(
+                "agent prompt component is not executable"
+            )
+        prompt = json.dumps(
+            typed_input,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return instructions, prompt, universe_dir
+
+    def _finalize_provider_outcome(
+        self,
+        continuation: AgentInvocationCloudContinuation,
+        launched_reservation: ProviderInvocationReservation,
+        *,
+        state: AgentProviderOutcomeState,
+        provider: str,
+        model: str,
+        family: str,
+        latency_ms: float | None,
+        typed_output: dict[str, object] | None,
+        blocker_code: str | None,
+        blocker_detail: str | None,
+    ) -> AgentInvocationProviderOutcome:
+        with self.invocation_store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if state is AgentProviderOutcomeState.SUCCEEDED:
+                    try:
+                        grant = self._validated_store_grant(
+                            conn,
+                            invocation_id=continuation.invocation_id,
+                            evaluated_at=self._clock().timestamp(),
+                        )
+                    except AgentRuntimeProviderExecutionBlocked:
+                        state = AgentProviderOutcomeState.INDETERMINATE
+                        model = ""
+                        family = ""
+                        latency_ms = None
+                        typed_output = None
+                        blocker_code = "provider_authority_lost_after_call"
+                        blocker_detail = (
+                            "current provider authority was lost before output finalization"
+                        )
+                    else:
+                        grant._discard()
+                row = conn.execute(
+                    "SELECT * FROM provider_invocation_reservations "
+                    "WHERE reservation_id = ?",
+                    (continuation.reservation_id,),
+                ).fetchone()
+                current = _reservation_record(row) if row is not None else None
+                if current != launched_reservation:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider finalization lost its reservation fence"
+                    )
+                outcome = SQLiteAgentRuntimeProviderOutcomeStore.finalize_in_transaction(
+                    conn,
+                    continuation=continuation,
+                    launched_reservation=current,
+                    state=state,
+                    provider=provider,
+                    model=model,
+                    family=family,
+                    latency_ms=latency_ms,
+                    typed_output=typed_output,
+                    blocker_code=blocker_code,
+                    blocker_detail=blocker_detail,
+                    created_at=self._clock(),
+                )
+                conn.commit()
+                return outcome
+            except Exception:
+                conn.rollback()
+                raise
 
     def prepare_continuation(
         self,
@@ -539,6 +853,8 @@ class AgentRuntimeProviderExecutionService:
 
 
 __all__ = [
+    "AgentInvocationProviderOutcome",
+    "AgentProviderOutcomeState",
     "AgentRuntimeProviderExecutionBlocked",
     "AgentRuntimeProviderExecutionService",
 ]

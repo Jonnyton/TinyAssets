@@ -113,6 +113,14 @@ def _canonical_input(value: Mapping[str, object]) -> tuple[dict[str, Any], str]:
     return detached, f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def canonical_agent_invocation_input(
+    value: Mapping[str, object],
+) -> tuple[dict[str, Any], str]:
+    """Detach and digest private typed input using the admission contract."""
+
+    return _canonical_input(value)
+
+
 class AgentInvocationAdmissionOutcome(str, Enum):
     APPLIED = "applied"
     REPLAYED = "replayed"
@@ -868,6 +876,7 @@ __all__ = [
     "AgentInvocationAdmissionResult",
     "AgentInvocationAdmissionService",
     "AgentInvocationCommand",
+    "canonical_agent_invocation_input",
     "AgentInvocationConflict",
     "AgentInvocationExternalAuthorityFenceSource",
     "AgentInvocationExternalAuthoritySnapshot",

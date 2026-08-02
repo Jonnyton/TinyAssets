@@ -1421,6 +1421,20 @@ class SQLiteProviderWorkAuthorityStore:
             ).fetchall()
         return tuple(_reservation_record(row) for row in rows)
 
+    def get_reservation(
+        self,
+        reservation_id: str,
+    ) -> ProviderInvocationReservation | None:
+        if not isinstance(reservation_id, str) or not reservation_id.strip():
+            raise ValueError("reservation_id must be non-empty")
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM provider_invocation_reservations "
+                "WHERE reservation_id = ?",
+                (reservation_id,),
+            ).fetchone()
+        return _reservation_record(row) if row is not None else None
+
     def _issue_binding(
         self,
         seed: ProviderWorkBindingSeed,
