@@ -5,14 +5,16 @@ import pickle
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
 import pytest
 
 from tinyassets.agent_runtime import AgentRuntimeManifest, AgentRuntimeManifestInput
-from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
+from tinyassets.agent_runtime_grants import (
+    AccountCapabilityGrantSource,
+    AgentRuntimeGrantResolver,
+)
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
     ProviderWorkBindingRoot,
@@ -83,6 +85,62 @@ def _manifest() -> AgentRuntimeManifest:
     )
 
 
+def _manifest_with_capability() -> AgentRuntimeManifest:
+    payload = _manifest().manifest_input.to_dict()
+    payload["requested_references"]["capability_ids"] = ["provider.invoke"]
+    manifest_input = AgentRuntimeManifestInput.from_dict(payload)
+    return AgentRuntimeManifest(
+        manifest_id="agent_manifest_alice",
+        manifest_digest=manifest_input.input_digest,
+        manifest_input=manifest_input,
+        created_at="2026-08-02T00:00:00Z",
+    )
+
+
+def _persist_manifest(tmp_path, manifest: AgentRuntimeManifest) -> None:
+    from tinyassets.storage.agent_runtime import (
+        AgentRuntimeManifestStore,
+        _key_digest,
+        _record_json,
+        _request_digest,
+    )
+
+    key = "test-runtime-manifest"
+    request_digest = _request_digest(manifest, key)
+    content = manifest.manifest_input.to_dict()
+    store = AgentRuntimeManifestStore(tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO agent_runtime_manifests (
+                manifest_id, manifest_digest, owner_user_id, universe_id,
+                agent_binding_id, binding_revision, agent_definition_id,
+                definition_fingerprint, idempotency_key,
+                idempotency_key_digest, request_digest, record_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                manifest.manifest_id,
+                manifest.manifest_digest,
+                content["owner_user_id"],
+                content["universe_id"],
+                content["agent_binding_id"],
+                content["binding_revision"],
+                content["agent_definition_id"],
+                content["definition_fingerprint"],
+                key,
+                _key_digest(key),
+                request_digest,
+                _record_json(
+                    manifest,
+                    idempotency_key=key,
+                    request_digest=request_digest,
+                ),
+                manifest.created_at,
+            ),
+        )
+
+
 class _TargetResolver:
     def __init__(self, manifest: AgentRuntimeManifest) -> None:
         self.manifest = manifest
@@ -127,30 +185,29 @@ class _ProviderResolver:
 class _ExternalAuthorityFence:
     def __init__(self, provider_resolver: _ProviderResolver) -> None:
         self.provider_resolver = provider_resolver
-        self.active = False
+        self.checked_transaction = False
 
-    @contextmanager
-    def hold_current(self, snapshot):
+    def validate_current_in_transaction(self, connection, snapshot, binding):
         with self.provider_resolver.lock:
-            self.active = True
+            self.checked_transaction = bool(connection.in_transaction)
             manifest = _manifest()
             grants = AgentRuntimeGrantResolver(clock=lambda: NOW.timestamp()).resolve(manifest)
-            try:
-                yield (
-                    snapshot.owner_user_id == "user::alice"
-                    and snapshot.universe_id == "universe_alice"
-                    and snapshot.agent_binding_id == "agent_binding_alice"
-                    and snapshot.manifest_id == "agent_manifest_alice"
-                    and snapshot.manifest_digest == manifest.manifest_digest
-                    and snapshot.grant_evidence_set_digest == grants.evidence_set_digest
-                    and snapshot.provider == "codex"
-                    and snapshot.assignment_generation
-                    == self.provider_resolver.assignment_generation
-                    and snapshot.assignment_digest == f"sha256:{'f' * 64}"
-                    and snapshot.credential_reference_digest == f"sha256:{'e' * 64}"
-                )
-            finally:
-                self.active = False
+            return (
+                snapshot.owner_user_id == "user::alice"
+                and snapshot.universe_id == "universe_alice"
+                and snapshot.agent_binding_id == "agent_binding_alice"
+                and snapshot.manifest_id == "agent_manifest_alice"
+                and snapshot.manifest_digest == manifest.manifest_digest
+                and snapshot.grant_evidence == grants.evidence
+                and snapshot.grant_evidence_set_digest == grants.evidence_set_digest
+                and snapshot.provider == "codex"
+                and snapshot.assignment_generation == self.provider_resolver.assignment_generation
+                and snapshot.assignment_generation == binding.assignment_generation
+                and snapshot.assignment_digest == f"sha256:{'f' * 64}"
+                and snapshot.assignment_digest == binding.assignment_digest
+                and snapshot.credential_reference_digest == f"sha256:{'e' * 64}"
+                and snapshot.credential_reference_digest == binding.credential_reference_digest
+            )
 
 
 def _service(
@@ -158,6 +215,8 @@ def _service(
     manifest: AgentRuntimeManifest | None = None,
     provider_resolver: _ProviderResolver | None = None,
     external_fence: _ExternalAuthorityFence | None = None,
+    grant_resolver: AgentRuntimeGrantResolver | None = None,
+    use_production_fence: bool = False,
 ):
     from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionService
 
@@ -181,14 +240,21 @@ def _service(
         assert active is not None
     target_resolver = _TargetResolver(current_manifest)
     current_provider_resolver = provider_resolver or _ProviderResolver()
-    current_fence = external_fence or _ExternalAuthorityFence(current_provider_resolver)
+    current_grant_resolver = grant_resolver or AgentRuntimeGrantResolver(
+        clock=lambda: NOW.timestamp()
+    )
+    kwargs = {}
+    if not use_production_fence:
+        kwargs["external_authority_fence_source"] = external_fence or _ExternalAuthorityFence(
+            current_provider_resolver
+        )
     service = AgentInvocationAdmissionService(
         tmp_path,
         target_resolver=target_resolver,
-        grant_resolver=AgentRuntimeGrantResolver(clock=lambda: NOW.timestamp()),
+        grant_resolver=current_grant_resolver,
         provider_binding_resolver=current_provider_resolver,
-        external_authority_fence_source=current_fence,
         clock=lambda: NOW,
+        **kwargs,
     )
     return service, target_resolver
 
@@ -392,8 +458,8 @@ def test_lower_level_store_refuses_caller_built_or_forged_grants(
     assert _counts(tmp_path) == (0, 0, 0, 0)
 
 
-def test_external_authority_fence_is_held_through_atomic_commit(
-    tmp_path, authenticate_request, monkeypatch
+def test_external_authority_fence_validates_inside_atomic_commit(
+    tmp_path, authenticate_request
 ) -> None:
     authenticate_request("user::alice")
     resolver = _ProviderResolver()
@@ -403,38 +469,104 @@ def test_external_authority_fence_is_held_through_atomic_commit(
         provider_resolver=resolver,
         external_fence=fence,
     )
-    original = service.store._provider_store._issue_binding_in_transaction
-    mutation_started = threading.Event()
-    mutation_finished = threading.Event()
-    mutation_thread: list[threading.Thread] = []
-
-    def issue_while_revocation_waits(conn, seed):
-        assert fence.active
-
-        def revoke() -> None:
-            mutation_started.set()
-            resolver.revoke()
-            mutation_finished.set()
-
-        thread = threading.Thread(target=revoke)
-        mutation_thread.append(thread)
-        thread.start()
-        assert mutation_started.wait(timeout=2)
-        assert not mutation_finished.is_set()
-        return original(conn, seed)
-
-    monkeypatch.setattr(
-        service.store._provider_store,
-        "_issue_binding_in_transaction",
-        issue_while_revocation_waits,
-    )
     result = service.admit(_capture(service), _request())
-    mutation_thread[0].join(timeout=2)
 
     assert result.outcome.value == "applied"
-    assert mutation_finished.is_set()
-    assert resolver.assignment_generation == 5
+    assert fence.checked_transaction is True
     assert _counts(tmp_path) == (1, 1, 1, 1)
+
+
+def test_production_fence_excludes_manifest_grant_and_provider_mutations(
+    tmp_path, authenticate_request, monkeypatch
+) -> None:
+    from tinyassets.storage.accounts import grant_capabilities
+    from tinyassets.storage.agent_runtime_invocation import (
+        SQLiteAgentInvocationExternalAuthorityFenceSource,
+    )
+
+    manifest = _manifest_with_capability()
+    _persist_manifest(tmp_path, manifest)
+    grant_capabilities(
+        tmp_path,
+        user_id="user::alice",
+        capabilities=["provider.invoke"],
+        granted_by="user::alice",
+        universe_id="universe_alice",
+    )
+    grant_resolver = AgentRuntimeGrantResolver(
+        capability_source=AccountCapabilityGrantSource(tmp_path),
+        clock=lambda: NOW.timestamp(),
+    )
+    authenticate_request("user::alice")
+    service, _target = _service(
+        tmp_path,
+        manifest=manifest,
+        grant_resolver=grant_resolver,
+        use_production_fence=True,
+    )
+    fence = service.store._external_authority_fence_source
+    assert isinstance(fence, SQLiteAgentInvocationExternalAuthorityFenceSource)
+    original = fence.validate_current_in_transaction
+    started = [threading.Event() for _ in range(3)]
+    finished = [threading.Event() for _ in range(3)]
+    statements = (
+        (
+            "UPDATE agent_runtime_manifests SET manifest_digest = ? WHERE manifest_id = ?",
+            (f"sha256:{'9' * 64}", manifest.manifest_id),
+        ),
+        (
+            "UPDATE capability_grants SET revoked_at = ? WHERE user_id = ? AND capability = ?",
+            (NOW.timestamp(), "user::alice", "provider.invoke"),
+        ),
+        (
+            "UPDATE provider_work_bindings SET state = 'revoked' "
+            "WHERE owner_user_id = ? AND universe_id = ?",
+            ("user::alice", "universe_alice"),
+        ),
+    )
+    threads: list[threading.Thread] = []
+
+    def mutate(index: int) -> None:
+        started[index].set()
+        with sqlite3.connect(db_path(tmp_path), timeout=5) as connection:
+            connection.execute(*statements[index])
+        finished[index].set()
+
+    def validate_while_mutations_wait(connection, snapshot, binding):
+        for index in range(3):
+            thread = threading.Thread(target=mutate, args=(index,))
+            threads.append(thread)
+            thread.start()
+        assert all(event.wait(timeout=2) for event in started)
+        assert not any(event.wait(timeout=0.05) for event in finished)
+        return original(connection, snapshot, binding)
+
+    monkeypatch.setattr(
+        fence,
+        "validate_current_in_transaction",
+        validate_while_mutations_wait,
+    )
+    result = service.admit(_capture(service), _request())
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert result.outcome.value == "applied"
+    assert all(event.is_set() for event in finished)
+    assert _counts(tmp_path) == (1, 1, 1, 1)
+
+
+def test_production_fence_fails_closed_without_canonical_manifest(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_invocation import AgentInvocationAdmissionBlocked
+
+    authenticate_request("user::alice")
+    service, _target = _service(tmp_path, use_production_fence=True)
+
+    with pytest.raises(AgentInvocationAdmissionBlocked, match="external authority"):
+        service.admit(_capture(service), _request())
+
+    assert _counts(tmp_path) == (0, 0, 0, 0)
 
 
 def test_recovery_source_resolves_same_bearer_free_invocation_after_request_ends(

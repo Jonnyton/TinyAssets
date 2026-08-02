@@ -322,6 +322,33 @@ class AgentRuntimeManifestStore:
         return int(row["count"])
 
     @staticmethod
+    def resolve_current_in_transaction(
+        conn: sqlite3.Connection,
+        *,
+        owner_user_id: str,
+        manifest_id: str,
+        manifest_digest: str,
+    ) -> AgentRuntimeManifest | None:
+        """Resolve one exact immutable manifest inside an admission fence."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            return None
+        try:
+            row = conn.execute(
+                """
+                SELECT * FROM agent_runtime_manifests
+                WHERE owner_user_id = ? AND manifest_id = ?
+                """,
+                (owner_user_id, manifest_id),
+            ).fetchone()
+            if row is None:
+                return None
+            record = _record(row)
+        except (AgentRuntimeManifestIntegrityError, sqlite3.Error, ValueError):
+            return None
+        return record if record.manifest_digest == manifest_digest else None
+
+    @staticmethod
     def _require_current_sources(
         conn: sqlite3.Connection,
         manifest_input: AgentRuntimeManifestInput,

@@ -17,10 +17,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 from tinyassets.agent_runtime import AgentRuntimeManifest, AgentRuntimeManifestInput
 from tinyassets.agent_runtime_grants import (
+    AgentRuntimeGrantEvidence,
     AgentRuntimeGrantResolution,
     AgentRuntimeGrantResolver,
 )
@@ -155,6 +156,8 @@ class AgentInvocationExternalAuthoritySnapshot:
     agent_binding_id: str
     manifest_id: str
     manifest_digest: str
+    grant_evaluated_at: float
+    grant_evidence: tuple[AgentRuntimeGrantEvidence, ...]
     grant_evidence_set_digest: str
     provider: str
     assignment_generation: int
@@ -177,6 +180,14 @@ class AgentInvocationExternalAuthoritySnapshot:
             "credential_reference_digest",
         ):
             _digest_value(getattr(self, name), name)
+        if isinstance(self.grant_evaluated_at, bool) or not isinstance(
+            self.grant_evaluated_at, (int, float)
+        ):
+            raise ValueError("grant_evaluated_at must be a timestamp")
+        if not isinstance(self.grant_evidence, tuple) or any(
+            type(item) is not AgentRuntimeGrantEvidence for item in self.grant_evidence
+        ):
+            raise ValueError("grant_evidence must be detached typed evidence")
         _integer(self.assignment_generation, "assignment_generation", minimum=1)
 
 
@@ -184,15 +195,17 @@ class AgentInvocationExternalAuthoritySnapshot:
 class AgentInvocationExternalAuthorityFenceSource(Protocol):
     """Linearize external authority with the admission commit.
 
-    The trusted owner validates the exact snapshot on entry and prevents every
-    covered manifest/grant/provider-assignment mutation until context exit.
-    Implementations unable to provide that guarantee must yield ``False``.
+    The trusted owner validates the exact snapshot inside the same SQLite write
+    transaction that commits admission. Implementations unable to provide that
+    guarantee must return ``False``.
     """
 
-    def hold_current(
+    def validate_current_in_transaction(
         self,
+        connection: object,
         snapshot: AgentInvocationExternalAuthoritySnapshot,
-    ) -> ContextManager[bool]: ...
+        binding: ProviderWorkBinding,
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,10 +455,7 @@ class _StoreAdmissionPayload:
     idempotency_key: str
     max_tokens: int
     max_cost_microunits: int
-    hold_external_authority: Callable[[], ContextManager[bool]] = field(
-        repr=False,
-        compare=False,
-    )
+    external_authority_snapshot: AgentInvocationExternalAuthoritySnapshot
 
 
 class _AgentInvocationStoreGrant:
@@ -622,7 +632,7 @@ class AgentInvocationAdmissionService:
         target_resolver: AgentInvocationTargetResolver,
         grant_resolver: AgentRuntimeGrantResolver,
         provider_binding_resolver: ProviderWorkBindingResolver,
-        external_authority_fence_source: AgentInvocationExternalAuthorityFenceSource,
+        external_authority_fence_source: AgentInvocationExternalAuthorityFenceSource | None = None,
         clock: Callable[[], datetime] | None = None,
         busy_timeout_ms: int = 30_000,
     ) -> None:
@@ -632,20 +642,25 @@ class AgentInvocationAdmissionService:
             raise ValueError("grant_resolver must be server-owned")
         if not isinstance(provider_binding_resolver, ProviderWorkBindingResolver):
             raise ValueError("provider_binding_resolver must be server-owned")
-        if not isinstance(
-            external_authority_fence_source,
-            AgentInvocationExternalAuthorityFenceSource,
-        ):
-            raise ValueError("external_authority_fence_source must be server-owned")
         from tinyassets.storage.agent_runtime_invocation import (
+            SQLiteAgentInvocationExternalAuthorityFenceSource,
             SQLiteAgentRuntimeInvocationStore,
         )
+
+        fence_source = external_authority_fence_source or (
+            SQLiteAgentInvocationExternalAuthorityFenceSource(
+                base_path,
+                grant_resolver=grant_resolver,
+                clock=clock,
+            )
+        )
+        if not isinstance(fence_source, AgentInvocationExternalAuthorityFenceSource):
+            raise ValueError("external_authority_fence_source must be server-owned")
 
         self._service_id = secrets.token_hex(32)
         self._target_resolver = target_resolver
         self._grant_resolver = grant_resolver
         self._provider_binding_resolver = provider_binding_resolver
-        self._external_authority_fence_source = external_authority_fence_source
         self._activation_store = AutomationActivationStore(
             base_path,
             busy_timeout_ms=busy_timeout_ms,
@@ -653,6 +668,7 @@ class AgentInvocationAdmissionService:
         )
         self.store = SQLiteAgentRuntimeInvocationStore(
             base_path,
+            external_authority_fence_source=fence_source,
             busy_timeout_ms=busy_timeout_ms,
             clock=clock,
         )
@@ -806,9 +822,7 @@ class AgentInvocationAdmissionService:
                 idempotency_key=request.idempotency_key,
                 max_tokens=request.max_tokens,
                 max_cost_microunits=request.max_cost_microunits,
-                hold_external_authority=lambda: self._external_authority_fence_source.hold_current(
-                    _external_authority_snapshot(current)
-                ),
+                external_authority_snapshot=_external_authority_snapshot(current),
             )
         )
         return self.store.admit(grant)
@@ -825,6 +839,8 @@ def _external_authority_snapshot(
         agent_binding_id=payload.agent_binding_id,
         manifest_id=payload.target.manifest.manifest_id,
         manifest_digest=payload.target.manifest.manifest_digest,
+        grant_evaluated_at=payload.grants.evaluated_at,
+        grant_evidence=tuple(payload.grants.evidence),
         grant_evidence_set_digest=payload.grants.evidence_set_digest,
         provider=seed.provider,
         assignment_generation=seed.assignment_generation,

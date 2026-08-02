@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
+from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
 from tinyassets.agent_runtime_invocation import (
     AgentInvocation,
     AgentInvocationAdmissionBlocked,
@@ -17,6 +18,8 @@ from tinyassets.agent_runtime_invocation import (
     AgentInvocationAdmissionResult,
     AgentInvocationCommand,
     AgentInvocationConflict,
+    AgentInvocationExternalAuthorityFenceSource,
+    AgentInvocationExternalAuthoritySnapshot,
     AgentInvocationState,
     _AgentInvocationStoreGrant,
     _consume_store_grant,
@@ -27,7 +30,11 @@ from tinyassets.agent_runtime_principal import (
     AgentRuntimePrincipal,
 )
 from tinyassets.ids import new_ulid
-from tinyassets.provider_work_authority import ProviderWorkAuthorityWriteOutcome
+from tinyassets.provider_work_authority import (
+    ProviderWorkAuthorityWriteOutcome,
+    ProviderWorkBinding,
+)
+from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
 from tinyassets.storage.automation_activations import AutomationActivationStore
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
@@ -103,6 +110,81 @@ BEFORE DELETE ON agent_invocation_events BEGIN
     SELECT RAISE(ABORT, 'agent invocation events are append-only');
 END;
 """
+
+
+class SQLiteAgentInvocationExternalAuthorityFenceSource:
+    """Validate every canonical external authority in the admission write lock."""
+
+    def __init__(
+        self,
+        base_path: str | Path,
+        *,
+        grant_resolver: AgentRuntimeGrantResolver,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if not isinstance(grant_resolver, AgentRuntimeGrantResolver):
+            raise ValueError("grant_resolver must be server-owned")
+        self._grant_resolver = grant_resolver
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._manifest_store = AgentRuntimeManifestStore(base_path)
+        self._provider_store = SQLiteProviderWorkAuthorityStore(
+            base_path,
+            clock=self._clock,
+        )
+        with self._manifest_store.connection():
+            pass
+
+    def validate_current_in_transaction(
+        self,
+        connection: object,
+        snapshot: AgentInvocationExternalAuthoritySnapshot,
+        binding: ProviderWorkBinding,
+    ) -> bool:
+        if not isinstance(connection, sqlite3.Connection) or not connection.in_transaction:
+            return False
+        try:
+            manifest = AgentRuntimeManifestStore.resolve_current_in_transaction(
+                connection,
+                owner_user_id=snapshot.owner_user_id,
+                manifest_id=snapshot.manifest_id,
+                manifest_digest=snapshot.manifest_digest,
+            )
+            if manifest is None:
+                return False
+            content = manifest.manifest_input.to_dict()
+            now = self._clock()
+            if now.tzinfo is None or now.utcoffset() is None:
+                return False
+            grants = self._grant_resolver.resolve_in_transaction(
+                manifest,
+                connection,
+                evaluated_at=now.timestamp(),
+            )
+        except Exception:
+            return False
+        return all(
+            (
+                content["universe_id"] == snapshot.universe_id,
+                content["agent_binding_id"] == snapshot.agent_binding_id,
+                grants.ready,
+                grants.evidence == snapshot.grant_evidence,
+                grants.evidence_set_digest == snapshot.grant_evidence_set_digest,
+                self._provider_store.validate_in_transaction(
+                    connection,
+                    binding_id=binding.binding_id,
+                    binding_generation=binding.generation,
+                    binding_digest=binding.binding_digest,
+                    owner_user_id=snapshot.owner_user_id,
+                    universe_id=snapshot.universe_id,
+                    provider=snapshot.provider,
+                    operation="agent_invocation",
+                    role="agent_runtime",
+                ),
+                binding.assignment_generation == snapshot.assignment_generation,
+                binding.assignment_digest == snapshot.assignment_digest,
+                binding.credential_reference_digest == snapshot.credential_reference_digest,
+            )
+        )
 
 
 def _timestamp(value: datetime) -> str:
@@ -202,6 +284,7 @@ class SQLiteAgentRuntimeInvocationStore:
         self,
         base_path: str | Path,
         *,
+        external_authority_fence_source: AgentInvocationExternalAuthorityFenceSource,
         busy_timeout_ms: int = 30_000,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -210,6 +293,12 @@ class SQLiteAgentRuntimeInvocationStore:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         if self._busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
+        if not isinstance(
+            external_authority_fence_source,
+            AgentInvocationExternalAuthorityFenceSource,
+        ):
+            raise ValueError("external_authority_fence_source must be server-owned")
+        self._external_authority_fence_source = external_authority_fence_source
         self._provider_store = SQLiteProviderWorkAuthorityStore(
             base_path,
             busy_timeout_ms=busy_timeout_ms,
@@ -257,17 +346,9 @@ class SQLiteAgentRuntimeInvocationStore:
             }
         )
 
-        with (
-            payload.hold_external_authority() as external_authority_current,
-            self.connection() as conn,
-        ):
+        with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if not external_authority_current:
-                    raise AgentInvocationAdmissionBlocked(
-                        "authority_changed",
-                        "agent invocation external authority is not current",
-                    )
                 activation_current = AutomationActivationStore.validate_claim_in_transaction(
                     conn,
                     universe_id=activation.universe_id,
@@ -299,6 +380,15 @@ class SQLiteAgentRuntimeInvocationStore:
                         "the requester-owned provider binding could not be linked",
                     )
                 binding = binding_result.record
+                if not self._external_authority_fence_source.validate_current_in_transaction(
+                    conn,
+                    payload.external_authority_snapshot,
+                    binding,
+                ):
+                    raise AgentInvocationAdmissionBlocked(
+                        "authority_changed",
+                        "agent invocation external authority is not current",
+                    )
                 request_digest = _digest(
                     {
                         "authorizing_subject_id": payload.owner_user_id,
@@ -572,4 +662,7 @@ class SQLiteAgentRuntimeInvocationStore:
         )
 
 
-__all__ = ["SQLiteAgentRuntimeInvocationStore"]
+__all__ = [
+    "SQLiteAgentInvocationExternalAuthorityFenceSource",
+    "SQLiteAgentRuntimeInvocationStore",
+]
