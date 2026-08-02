@@ -1413,3 +1413,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include transaction-liveness and
   authority-loss-during-call tests in the first test batch, alongside timeout
   and oversized-output cases.
+
+## 2026-08-02 — uncertain provider-call restart fence
+
+- **What surprised me:** the persisted `launch_started` state is enough to
+  prevent remint, but not enough to decide when a previous process has really
+  stopped; the original durable claim expiry supplies that missing time fence.
+- **Pattern worth capturing:** pre-launch recovery may resume the same IDs,
+  while post-launch recovery must first refuse normal execution, wait out the
+  original claim window, and then close the same reservation as indeterminate.
+- **What I would do differently:** make each restart test construct a fresh
+  service from the beginning; reusing the original object proves replay but
+  does not prove restart recovery.
