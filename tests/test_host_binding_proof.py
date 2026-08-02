@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import base64
+import copy
+import hashlib
 import json
+import threading
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -17,6 +21,13 @@ from tinyassets.auth.host_proof import (
     MAX_SUBMISSION_BYTES,
     POST_ENROLLMENT_NONCE_LIMITS,
     REFUSAL_BUCKET_SECONDS,
+    HostEnrollmentCoordinator,
+    HostEnrollmentIdempotencyConflict,
+    HostEnrollmentRefused,
+    HostEnrollmentTransactionOutcome,
+    HostEnrollmentTransactionRequest,
+    HostEnrollmentWritersDisabled,
+    HostPrincipalResultV1,
     HostProofBindingV1,
     HostProofRefused,
     HostProofTimingExceeded,
@@ -952,3 +963,240 @@ def test_valid_enrollment_proof_verifies_before_one_use_consumption() -> None:
     )
 
     assert observed == [binding.challenge_id_b64u]
+
+
+class _ResponseLost(RuntimeError):
+    pass
+
+
+class _EnrollmentContractStore:
+    """Atomic shared-store model; production persistence remains task 3.2."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._consumed: set[str] = set()
+        self._receipts: dict[str, tuple[str, HostPrincipalResultV1, int]] = {}
+        self._principals: dict[tuple[str, str, str], HostPrincipalResultV1] = {}
+        self._key_owners: dict[tuple[str, str], str] = {}
+        self.mutation_count = 0
+        self.requests: list[HostEnrollmentTransactionRequest] = []
+        self.fail_before_commit_once = False
+        self.lose_response_after_commit_once = False
+
+    def commit_enrollment(
+        self, request: HostEnrollmentTransactionRequest
+    ) -> HostEnrollmentTransactionOutcome:
+        lose_response = False
+        with self._lock:
+            self.requests.append(request)
+            if request.challenge_id_b64u in self._consumed:
+                return HostEnrollmentTransactionOutcome("replayed")
+
+            consumed = set(self._consumed)
+            receipts = copy.copy(self._receipts)
+            principals = copy.copy(self._principals)
+            key_owners = copy.copy(self._key_owners)
+            mutation_count = self.mutation_count
+            consumed.add(request.challenge_id_b64u)
+
+            receipt = receipts.get(request.idempotency_lookup_hash)
+            if receipt is not None and receipt[2] > request.transaction_time:
+                binding_hash, result, _expiry = receipt
+                self._consumed = consumed
+                if binding_hash != request.idempotency_binding_hash:
+                    return HostEnrollmentTransactionOutcome("idempotency_conflict")
+                return HostEnrollmentTransactionOutcome("committed", result)
+            receipts.pop(request.idempotency_lookup_hash, None)
+
+            key_owner = key_owners.get((request.issuer, request.key_thumbprint))
+            if key_owner is not None and key_owner != request.subject:
+                self._consumed = consumed
+                return HostEnrollmentTransactionOutcome("refused")
+
+            principal_key = (request.issuer, request.subject, request.key_thumbprint)
+            result = principals.get(principal_key)
+            if result is None:
+                result = request.candidate_result
+                principals[principal_key] = result
+                key_owners[(request.issuer, request.key_thumbprint)] = request.subject
+                mutation_count += 1
+            receipts[request.idempotency_lookup_hash] = (
+                request.idempotency_binding_hash,
+                result,
+                request.idempotency_expires_at,
+            )
+            if self.fail_before_commit_once:
+                self.fail_before_commit_once = False
+                raise RuntimeError("injected pre-commit crash")
+
+            self._consumed = consumed
+            self._receipts = receipts
+            self._principals = principals
+            self._key_owners = key_owners
+            self.mutation_count = mutation_count
+            if self.lose_response_after_commit_once:
+                self.lose_response_after_commit_once = False
+                lose_response = True
+
+        if lose_response:
+            raise _ResponseLost("injected response loss after commit")
+        return HostEnrollmentTransactionOutcome("committed", result)
+
+
+def _enrollment(
+    store: _EnrollmentContractStore,
+    *,
+    principal_id: str = "hp_winner",
+    enabled: bool = True,
+) -> HostEnrollmentCoordinator:
+    return HostEnrollmentCoordinator(
+        store=store,
+        idempotency_hmac_key=b"k" * 32,
+        writers_enabled=enabled,
+        new_principal_id=lambda: principal_id,
+    )
+
+
+def _complete_enrollment(
+    coordinator: HostEnrollmentCoordinator,
+    key: Ed25519PrivateKey,
+    *,
+    subject: str = "user_01HOSTOWNER",
+    challenge_seed: int = 1,
+    idempotency_seed: int = 9,
+    device_label: str | None = None,
+    now: int = NOW,
+) -> HostPrincipalResultV1:
+    intent: dict[str, object] = {
+        "idempotency_key_b64u": _b64u(bytes([idempotency_seed]) * 32),
+        "public_jwk": _jwk(key),
+    }
+    if device_label is not None:
+        intent["device_label"] = device_label
+    canonical_intent = rfc8785.dumps(intent)
+    policy = operation_policy("enroll")
+    binding = HostProofBindingV1(
+        schema_version="host-binding-v1",
+        policy_version="host-binding-v1",
+        operation="enroll",
+        permission=policy.permission,
+        issuer=ISSUER,
+        subject=subject,
+        audience=AUDIENCE,
+        method=policy.method,
+        path=policy.path,
+        body_sha256="sha256:" + hashlib.sha256(canonical_intent).hexdigest(),
+        key_thumbprints={"new": jwk_thumbprint(_jwk(key))},
+        host_principal_id=None,
+        expected_generation=None,
+        challenge_id_b64u=_b64u(bytes([challenge_seed]) * 32),
+        issued_at=now - 30,
+        expires_at=now + 270,
+    )
+    return coordinator.complete_enrollment(
+        submission_json=_submission(binding, {"new": key}),
+        binding=binding,
+        enroll_intent=intent,
+        signing_input_b64u=_b64u(host_proof_signing_bytes(binding)),
+        now=now,
+    )
+
+
+def test_enrollment_writers_default_dark_and_scrub_raw_idempotency_material() -> None:
+    store = _EnrollmentContractStore()
+    key = _key(1)
+    with pytest.raises(HostEnrollmentWritersDisabled):
+        _complete_enrollment(_enrollment(store, enabled=False), key)
+    assert store.requests == []
+
+    _complete_enrollment(_enrollment(store), key)
+    request_text = repr(store.requests[-1])
+    assert _b64u(bytes([9]) * 32) not in request_text
+    assert repr(b"k" * 32) not in request_text
+
+
+def test_enrollment_crash_and_response_loss_converge_with_fresh_challenge() -> None:
+    store = _EnrollmentContractStore()
+    coordinator = _enrollment(store)
+    key = _key(1)
+    store.fail_before_commit_once = True
+    with pytest.raises(RuntimeError, match="pre-commit"):
+        _complete_enrollment(coordinator, key, challenge_seed=1)
+    assert store.mutation_count == 0
+
+    store.lose_response_after_commit_once = True
+    with pytest.raises(_ResponseLost):
+        _complete_enrollment(coordinator, key, challenge_seed=1)
+    assert store.mutation_count == 1
+    with pytest.raises(HostProofRefused):
+        _complete_enrollment(coordinator, key, challenge_seed=1)
+
+    recovered = _complete_enrollment(coordinator, key, challenge_seed=2)
+    assert recovered.host_principal_id == "hp_winner"
+    assert recovered.host_principal_generation == 1
+    assert store.mutation_count == 1
+
+
+def test_enrollment_changed_body_conflicts_until_receipt_expires() -> None:
+    store = _EnrollmentContractStore()
+    coordinator = _enrollment(store)
+    key = _key(1)
+    original = _complete_enrollment(coordinator, key, challenge_seed=1)
+    with pytest.raises(HostEnrollmentIdempotencyConflict):
+        _complete_enrollment(
+            coordinator, key, challenge_seed=2, device_label="changed", now=NOW + 86_399
+        )
+
+    after_expiry = _complete_enrollment(
+        coordinator, key, challenge_seed=3, device_label="changed", now=NOW + 86_400
+    )
+    assert after_expiry == original
+    assert store.mutation_count == 1
+
+
+def test_enrollment_concurrency_has_one_winner_but_distinct_devices_do_not_merge() -> None:
+    store = _EnrollmentContractStore()
+    key = _key(1)
+    servers = (_enrollment(store, principal_id="hp_a"), _enrollment(store, principal_id="hp_b"))
+    barrier = threading.Barrier(16)
+
+    def enroll(index: int) -> HostPrincipalResultV1:
+        barrier.wait()
+        return _complete_enrollment(
+            servers[index % 2],
+            key,
+            challenge_seed=index + 1,
+            idempotency_seed=index + 1,
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(enroll, range(16)))
+    assert len({result.host_principal_id for result in results}) == 1
+    assert {result.host_principal_generation for result in results} == {1}
+    assert store.mutation_count == 1
+
+    other = _complete_enrollment(
+        _enrollment(store, principal_id="hp_other"),
+        _key(2),
+        challenge_seed=20,
+        idempotency_seed=20,
+    )
+    assert other.host_principal_id not in {result.host_principal_id for result in results}
+    assert store.mutation_count == 2
+
+
+def test_cross_subject_key_reuse_is_non_enumerating() -> None:
+    store = _EnrollmentContractStore()
+    key = _key(1)
+    first = _complete_enrollment(_enrollment(store, principal_id="hp_private"), key)
+    with pytest.raises(HostEnrollmentRefused) as refusal:
+        _complete_enrollment(
+            _enrollment(store, principal_id="hp_attacker"),
+            key,
+            subject="user_01OTHER",
+            challenge_seed=2,
+            idempotency_seed=2,
+        )
+    assert refusal.value.public_error == HOST_BINDING_REFUSAL
+    assert first.host_principal_id not in repr(refusal.value)
+    assert "user_01HOSTOWNER" not in repr(refusal.value)
