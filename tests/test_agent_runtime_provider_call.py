@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -245,3 +247,129 @@ def test_authority_lost_during_call_records_indeterminate_not_output(
     reservation = service.provider_store.get_reservation(result.reservation_id)
     assert reservation is not None
     assert reservation.state is ProviderInvocationReservationState.INDETERMINATE
+
+
+@pytest.mark.parametrize("stage", ["admitted", "reserved", "prepared"])
+def test_restart_before_launch_resumes_same_reservation_and_spends_once(
+    tmp_path, authenticate_request, stage
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionService,
+    )
+
+    service, admitted, _universe_dir, _manifest = _execution_service(
+        tmp_path, authenticate_request
+    )
+    invocation_id = admitted.invocation.invocation_id
+    original = None
+    original_continuation = None
+    if stage in {"reserved", "prepared"}:
+        service.issue_receipt(invocation_id)
+        service.claim(invocation_id)
+        original = service.reserve(invocation_id).record
+        assert original is not None
+    if stage == "prepared":
+        original_continuation = service.prepare_continuation(invocation_id).record
+
+    restarted = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=service.grant_resolver,
+        provider_binding_resolver=service.provider_binding_resolver,
+        clock=lambda: NOW,
+    )
+
+    provider = _RecordingProvider()
+    result = restarted.execute_provider_call(
+        invocation_id,
+        typed_input=_request().typed_input,
+        router=ProviderRouter({"codex": provider}),
+    )
+
+    assert result.state.value == "succeeded"
+    if original is not None:
+        assert result.reservation_id == original.reservation_id
+    if original_continuation is not None:
+        assert result.continuation_id == original_continuation.continuation_id
+    assert len(provider.calls) == 1
+
+
+def test_uncertain_launch_waits_for_original_claim_then_blocks_without_remint(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentProviderOutcomeState,
+        AgentRuntimeProviderExecutionBlocked,
+        AgentRuntimeProviderExecutionService,
+    )
+
+    service, admitted, _universe_dir, _manifest = _execution_service(
+        tmp_path, authenticate_request
+    )
+    invocation_id = admitted.invocation.invocation_id
+    service.issue_receipt(invocation_id)
+    service.claim(invocation_id)
+    service.reserve(invocation_id)
+    continuation = service.prepare_continuation(invocation_id).record
+    assert continuation is not None
+    service.arm_launch(invocation_id)
+    launched = service.provider_store.get_reservation(continuation.reservation_id)
+    assert launched is not None
+
+    provider = _RecordingProvider()
+    restarted_before_expiry = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=service.grant_resolver,
+        provider_binding_resolver=service.provider_binding_resolver,
+        clock=lambda: NOW,
+    )
+    with pytest.raises(
+        AgentRuntimeProviderExecutionBlocked,
+        match="requires uncertain-call reconciliation",
+    ):
+        restarted_before_expiry.execute_provider_call(
+            invocation_id,
+            typed_input=_request().typed_input,
+            router=ProviderRouter({"codex": provider}),
+        )
+    assert provider.calls == []
+    assert service.provider_store.get_reservation(launched.reservation_id) == launched
+
+    with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="may still be active"):
+        service.reconcile_uncertain_provider_call(invocation_id)
+
+    def recover(_index: int):
+        return AgentRuntimeProviderExecutionService(
+            tmp_path,
+            grant_resolver=service.grant_resolver,
+            provider_binding_resolver=service.provider_binding_resolver,
+            clock=lambda: NOW + timedelta(seconds=301),
+        ).reconcile_uncertain_provider_call(invocation_id)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(recover, range(8)))
+    result = results[0]
+    assert len({item.outcome_digest for item in results}) == 1
+    recovered = AgentRuntimeProviderExecutionService(
+        tmp_path,
+        grant_resolver=service.grant_resolver,
+        provider_binding_resolver=service.provider_binding_resolver,
+        clock=lambda: NOW + timedelta(seconds=301),
+    )
+
+    assert result.state is AgentProviderOutcomeState.INDETERMINATE
+    assert result.blocker_code == "provider_call_lost_after_launch"
+    assert result.invocation_id == invocation_id
+    assert result.continuation_id == continuation.continuation_id
+    assert result.reservation_id == launched.reservation_id
+    assert result.launch_reservation_digest == launched.reservation_digest
+    assert recovered.reconcile_uncertain_provider_call(invocation_id) == result
+    terminal = recovered.provider_store.get_reservation(launched.reservation_id)
+    assert terminal is not None
+    assert terminal.state is ProviderInvocationReservationState.INDETERMINATE
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM agent_invocation_provider_outcomes"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM provider_invocation_reservations"
+        ).fetchone()[0] == 1

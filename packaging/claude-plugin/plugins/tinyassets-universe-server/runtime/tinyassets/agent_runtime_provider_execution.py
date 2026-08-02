@@ -60,6 +60,7 @@ from tinyassets.storage.automation_activations import AutomationActivationStore
 from tinyassets.storage.automation_activations import _record as _activation_record
 from tinyassets.storage.cloud_automation_continuation import (
     SQLiteCloudAutomationContinuationStore,
+    _agent_record,
 )
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
@@ -224,6 +225,113 @@ class AgentRuntimeProviderExecutionService:
                 invocation_id=invocation_id,
             )
 
+    def reconcile_uncertain_provider_call(
+        self,
+        invocation_id: str,
+    ) -> AgentInvocationProviderOutcome:
+        """Fence a lost post-launch call after its original claim window ends."""
+
+        with self.invocation_store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = SQLiteAgentRuntimeProviderOutcomeStore.get_in_transaction(
+                    conn,
+                    invocation_id=invocation_id,
+                )
+                if existing is not None:
+                    conn.commit()
+                    return existing
+                continuation_row = conn.execute(
+                    "SELECT * FROM cloud_execution_continuations "
+                    "WHERE work_item_id = ?",
+                    (invocation_id,),
+                ).fetchone()
+                if continuation_row is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider continuation is missing"
+                    )
+                continuation = _agent_record(continuation_row)
+                reservation_row = conn.execute(
+                    "SELECT * FROM provider_invocation_reservations "
+                    "WHERE reservation_id = ?",
+                    (continuation.reservation_id,),
+                ).fetchone()
+                claim_row = conn.execute(
+                    "SELECT * FROM provider_work_execution_claims "
+                    "WHERE claim_id = ?",
+                    (continuation.claim_id,),
+                ).fetchone()
+                receipt_row = conn.execute(
+                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                    (continuation.receipt_id,),
+                ).fetchone()
+                if reservation_row is None or claim_row is None or receipt_row is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider launch lineage is incomplete"
+                    )
+                reservation = _reservation_record(reservation_row)
+                claim = _claim_record(claim_row)
+                receipt = _receipt_record(receipt_row)
+                exact = (
+                    reservation.invocation_key == invocation_id,
+                    reservation.receipt_id == continuation.receipt_id,
+                    reservation.claim_id == continuation.claim_id,
+                    reservation.claim_digest == continuation.claim_digest,
+                    reservation.claim_generation == continuation.claim_generation,
+                    claim.claim_id == continuation.claim_id,
+                    claim.claim_digest == continuation.claim_digest,
+                    claim.generation == continuation.claim_generation,
+                    receipt.receipt_id == continuation.receipt_id,
+                    receipt.receipt_digest == continuation.receipt_digest,
+                    receipt.work_item_kind == "agent_invocation",
+                    receipt.work_item_id == invocation_id,
+                )
+                if not all(exact):
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider launch lineage is not exact"
+                    )
+                if reservation.state is ProviderInvocationReservationState.RESERVED:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider call has not launched and is safe to resume"
+                    )
+                if reservation.state is not ProviderInvocationReservationState.LAUNCH_STARTED:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider terminal reservation has no outcome"
+                    )
+                now = self._clock()
+                if now.tzinfo is None or now.utcoffset() is None:
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "server clock is unavailable"
+                    )
+                claim_expires = datetime.fromisoformat(
+                    claim.lease_expires_at.removesuffix("Z") + "+00:00"
+                )
+                if claim_expires > now.astimezone(timezone.utc):
+                    raise AgentRuntimeProviderExecutionBlocked(
+                        "agent provider call may still be active"
+                    )
+                outcome = SQLiteAgentRuntimeProviderOutcomeStore.finalize_in_transaction(
+                    conn,
+                    continuation=continuation,
+                    launched_reservation=reservation,
+                    state=AgentProviderOutcomeState.INDETERMINATE,
+                    provider=receipt.provider,
+                    model="",
+                    family="",
+                    latency_ms=None,
+                    typed_output=None,
+                    blocker_code="provider_call_lost_after_launch",
+                    blocker_detail=(
+                        "worker recovery found an expired claim after provider launch"
+                    ),
+                    created_at=now,
+                )
+                conn.commit()
+                return outcome
+            except Exception:
+                conn.rollback()
+                raise
+
     def execute_provider_call(
         self,
         invocation_id: str,
@@ -244,6 +352,19 @@ class AgentRuntimeProviderExecutionService:
         existing = self.get_provider_outcome(invocation_id)
         if existing is not None:
             return existing
+        existing_continuation = self.get_continuation(invocation_id)
+        if existing_continuation is not None:
+            existing_reservation = self.provider_store.get_reservation(
+                existing_continuation.reservation_id
+            )
+            if (
+                existing_reservation is not None
+                and existing_reservation.state
+                is ProviderInvocationReservationState.LAUNCH_STARTED
+            ):
+                raise AgentRuntimeProviderExecutionBlocked(
+                    "agent provider launch requires uncertain-call reconciliation"
+                )
         self.issue_receipt(invocation_id)
         self.claim(invocation_id)
         self.reserve(invocation_id)
