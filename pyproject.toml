@@ -86,6 +86,10 @@ dev = [
     # Declared here rather than pip-installed ad hoc in the workflow so the
     # gate's own dependency is pinned and reproducible locally.
     "pytest-xdist>=3.5",
+    # tests/test_tests_workflow.py imports yaml hard (no skipif) because its
+    # invariants guard against silent CI failures, and skipping is itself a
+    # silent failure. Available transitively today; declared so it stays so.
+    "pyyaml>=6.0",
     "ruff>=0.5",
     "pytest-cov>=5.0",
     "httpx>=0.24",
