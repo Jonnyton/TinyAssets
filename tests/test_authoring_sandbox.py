@@ -250,10 +250,21 @@ def test_isolation_report_never_claims_os_isolation_without_a_probe(monkeypatch)
     assert report["os_isolated"] is False
     assert report["reason"] == "no bwrap"
 
+
+def test_positive_host_probe_cannot_admit_authoring_os_isolation(monkeypatch):
+    from tinyassets.authoring import sandbox
+    from tinyassets.authoring.models import SandboxDenied
+
     monkeypatch.setattr(
         sandbox, "_probe_sandbox", lambda: {"bwrap_available": True, "reason": ""}
     )
-    assert sandbox.isolation_report()["os_isolated"] is True
+    report = sandbox.isolation_report()
+    assert report["level"] == "in_process_confined"
+    assert report["os_isolated"] is False
+
+    policy, _ = sandbox.policy_from_declaration({"requires_os_isolation": True})
+    with pytest.raises(SandboxDenied, match="os_isolation_unavailable"):
+        sandbox.require_isolation(policy)
 
 
 def test_policy_demanding_os_isolation_fails_closed(monkeypatch):
