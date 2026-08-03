@@ -10,7 +10,7 @@ useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
 Implementation commit before the final current-main reconciliation:
-`297398a1`. The
+`13885b0a`. The
 immutable PR comment records the final exact PR head, including this evidence
 document.
 
