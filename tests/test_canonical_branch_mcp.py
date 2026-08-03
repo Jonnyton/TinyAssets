@@ -44,25 +44,32 @@ def _seed_goal(us, name="Set-canonical test Goal"):
 
 def _seed_published_branch(us, base, name="canonical-target"):
     """Build a minimal branch and publish it. Returns branch_version_id."""
-    bid = _call(us, "extensions", "create_branch", name=name)["branch_def_id"]
-    _call(us, "extensions", "add_node",
-          branch_def_id=bid, node_id="n1",
-          display_name="N1", prompt_template="echo {x}",
-          output_keys="result")
-    for src, dst in (("START", "n1"), ("n1", "END")):
-        _call(us, "extensions", "connect_nodes",
-              branch_def_id=bid, from_node=src, to_node=dst)
-    _call(us, "extensions", "set_entry_point", branch_def_id=bid, node_id="n1")
-    for field in ("x", "result"):
-        _call(us, "extensions", "add_state_field",
-              branch_def_id=bid, field_name=field, field_type="str")
-    # Publish via the storage-layer helper directly; the MCP `publish_version`
-    # action exists but goes through extensions(), so use the lower-level
-    # function for a deterministic version_id without depending on extension
-    # plumbing for the seed step.
     from tinyassets.branch_versions import publish_branch_version
-    from tinyassets.daemon_server import get_branch_definition
-    branch_dict = get_branch_definition(base, branch_def_id=bid)
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.daemon_server import save_branch_definition
+
+    node = NodeDefinition(
+        node_id="n1",
+        display_name="N1",
+        prompt_template="echo {x}",
+        output_keys=["result"],
+    )
+    branch = BranchDefinition(
+        branch_def_id=name,
+        name=name,
+        graph_nodes=[GraphNodeRef(id="n1", node_def_id="n1")],
+        edges=[EdgeDefinition(from_node="n1", to_node="END")],
+        entry_point="n1",
+        node_defs=[node],
+        state_schema=[],
+    )
+    branch_dict = branch.to_dict()
+    save_branch_definition(base, branch_def=branch_dict)
     version = publish_branch_version(base, branch_dict, publisher="alice")
     return version.branch_version_id
 
@@ -109,6 +116,24 @@ class TestSetCanonicalResponseShape:
             "branch_version_id should default to empty string; "
             "the handler interprets '' as 'unset' (None)."
         )
+
+    def test_canonical_handles_advertise_goal_routing_parameters(self):
+        from tinyassets.universe_server import run_graph, write_graph
+
+        write_params = inspect.signature(write_graph).parameters
+        assert write_params["goal_id"].default == ""
+        assert write_params["branch_version_id"].default == ""
+        assert write_params["scope"].default == ""
+
+        run_params = inspect.signature(run_graph).parameters
+        assert run_params["branch_def_id"].default == ""
+        assert run_params["goal_id"].default == ""
+
+    def test_run_graph_rejects_ambiguous_branch_and_goal_targets(self):
+        from tinyassets.universe_server import run_graph
+
+        result = json.loads(run_graph(branch_def_id="branch-1", goal_id="goal-1"))
+        assert result["error"] == "run_target_ambiguous"
 
 
 class TestRunBranchVersionWiring:
@@ -197,3 +222,61 @@ class TestSetCanonicalAction:
                        goal_id="", branch_version_id="bv_anything")
         assert result["status"] == "rejected"
         assert "goal_id" in result.get("error", "").lower()
+
+    def test_write_graph_sets_only_the_callers_personal_canonical(self, env):
+        us, base = env
+        gid = _seed_goal(us)
+        bvid = _seed_published_branch(us, base)
+
+        result = json.loads(us.write_graph(
+            target="goal",
+            operation="set_canonical",
+            goal_id=gid,
+            branch_version_id=bvid,
+            scope="alice",
+        ))
+
+        assert result["status"] == "ok", result
+        assert result["scope_actor"] == "alice"
+        assert result["canonical_branch_version_id"] == bvid
+        observed = json.loads(us.read_graph(target="goal", goal_id=gid))
+        assert observed["scope_actor"] == "alice"
+        assert observed["actor_canonical_branch_version_id"] == bvid
+        assert observed["goal"]["canonical_branch_version_id"] is None
+
+    def test_run_graph_dispatches_the_callers_personal_canonical(
+        self,
+        env,
+        monkeypatch,
+    ):
+        us, base = env
+        gid = _seed_goal(us)
+        bvid = _seed_published_branch(us, base)
+        json.loads(us.write_graph(
+            target="goal",
+            operation="set_canonical",
+            goal_id=gid,
+            branch_version_id=bvid,
+            scope="alice",
+        ))
+        seen = {}
+
+        def _run_version(kwargs):
+            seen.update(kwargs)
+            return json.dumps({"status": "queued", "run_id": "run-personal"})
+
+        from tinyassets.api import runs
+
+        monkeypatch.setattr(runs, "_action_run_branch_version", _run_version)
+        result = json.loads(us.run_graph(
+            goal_id=gid,
+            inputs_json='{"request":"use my canonical"}',
+            run_name="Personal canonical",
+        ))
+
+        assert seen["branch_version_id"] == bvid
+        assert seen["inputs_json"] == '{"request":"use my canonical"}'
+        assert result["status"] == "queued"
+        assert result["scope_actor"] == "alice"
+        assert result["source"] == "actor_canonical"
+        assert result["branch_version_id_used"] == bvid

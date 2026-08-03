@@ -231,7 +231,7 @@ chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"
 chmod 640 "${ENV_DIR}/agent-interchange.env"
 
 if [[ ! -f "${ENV_DIR}/request-idempotency.env" ]]; then
-    log "creating ${ENV_DIR}/request-idempotency.env from daemon+worker template..."
+    log "creating ${ENV_DIR}/request-idempotency.env from daemon-only template..."
     cp "${TINYASSETS_HOME}/deploy/request-idempotency-env.template" \
         "${ENV_DIR}/request-idempotency.env"
     log "  → fill ${ENV_DIR}/request-idempotency.env once with a distinct canonical-base64 key before starting the service"
@@ -318,7 +318,7 @@ Next steps (host action required):
   2. Generate the daemon-only agent interchange key:
        follow Step 3 in deploy/DEPLOY.md for ${ENV_DIR}/agent-interchange.env
 
-  3. Generate the immutable daemon+worker request-admission key:
+  3. Generate the daemon-only request-admission key (immutable by default):
        follow Step 3 in deploy/DEPLOY.md for ${ENV_DIR}/request-idempotency.env
 
   4. Start the service:

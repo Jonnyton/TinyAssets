@@ -70,6 +70,28 @@ ENV_MODE="${TINYASSETS_ENV_MODE-640}"
 ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
+ACTIVE_BUILDER_PID=""
+
+stop_content_builder() {
+    if [ -n "${ACTIVE_BUILDER_PID}" ]; then
+        kill -TERM "${ACTIVE_BUILDER_PID}" 2>/dev/null || true
+        wait "${ACTIVE_BUILDER_PID}" 2>/dev/null || true
+        ACTIVE_BUILDER_PID=""
+    fi
+    return 0
+}
+
+handle_signal() {
+    local signal="$1"
+    stop_content_builder
+    trap - "${signal}"
+    kill -s "${signal}" "$$"
+}
+
+trap stop_content_builder EXIT
+trap 'handle_signal HUP' HUP
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
 
 usage() {
     cat >&2 <<'EOF'
@@ -285,34 +307,46 @@ cmd_set() {
         fi
     fi
 
-    # Build new content: replace the existing KEY= line, or append if
-    # absent. The secret goes through a mode-600 temporary file rather than
-    # awk's argv, so it is not exposed in the process list. Awk reconstructs
+    # Build new content: replace the existing KEY= line, or append if absent.
+    # Pass the protected value through an inherited pipe on fd 3 rather than
+    # awk argv, environment, or a named plaintext file. Awk reconstructs
     # multi-line values to preserve the existing `set` behavior.
-    local value_file
-    value_file="$(mktemp "${ENV_FILE}.value.XXXXXX")"
-    chmod 600 "${value_file}"
-    printf '%s' "${value}" > "${value_file}"
-    local new_content
-    if ! new_content="$(awk -v k="${key}" -v vf="${value_file}" '
+    local new_content=""
+    local builder_fd
+    local builder_status
+    coproc CONTENT_BUILDER {
+        exec awk -v k="${key}" '
         BEGIN {
             found = 0
             value_seen = 0
-            while ((getline value_line < vf) > 0) {
+            while ((getline value_line < "/dev/fd/3") > 0) {
                 v = v (value_seen ? ORS : "") value_line
                 value_seen = 1
             }
-            close(vf)
+            close("/dev/fd/3")
         }
         $0 ~ "^" k "=" { print k "=" v; found = 1; next }
         { print }
         END { if (!found) print k "=" v }
-    ' "${ENV_FILE}")"; then
-        rm -f -- "${value_file}"
+        ' "${ENV_FILE}" 3< <(printf '%s' "${value}")
+    }
+    ACTIVE_BUILDER_PID="${CONTENT_BUILDER_PID}"
+    builder_fd="${CONTENT_BUILDER[0]}"
+    IFS= read -r -d '' new_content <&"${builder_fd}" || true
+    exec {builder_fd}<&-
+    while [[ "${new_content}" == *$'\n' ]]; do
+        new_content="${new_content%$'\n'}"
+    done
+    if wait "${ACTIVE_BUILDER_PID}"; then
+        builder_status=0
+    else
+        builder_status=$?
+    fi
+    ACTIVE_BUILDER_PID=""
+    if [ "${builder_status}" -ne 0 ]; then
         echo "::error::failed constructing updated ${ENV_FILE}" >&2
         exit 3
     fi
-    rm -f -- "${value_file}"
 
     atomic_install "${new_content}"$'\n'
     assert_readable
