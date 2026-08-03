@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import pickle
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import tinyassets.cloud_automation_continuation as cloud_continuation
 import tinyassets.provider_work_authority as provider_authority
 import tinyassets.storage.provider_work_authority as provider_store
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
@@ -1249,6 +1251,60 @@ def test_launch_arm_fails_closed_after_binding_revocation(tmp_path) -> None:
     assert result.record is None
     persisted = store.list_reservations(receipt.receipt_id)[0]
     assert persisted.state is ProviderInvocationReservationState.RESERVED
+
+
+def test_cloud_branch_store_rejects_object_new_authority_fence(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_forgery",
+            runtime_id="runtime_cloud_forgery",
+            claim_nonce_digest=f"sha256:{'9' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    request = ProviderInvocationReservationRequest(
+        receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest,
+        claim_id=claim.claim_id,
+        claim_digest=claim.claim_digest,
+        claim_generation=claim.generation,
+        invocation_key="forged-cloud-branch-fence",
+        operation="repository_spec_delivery",
+        role="writer",
+        max_tokens=1,
+        max_cost_microunits=1,
+    )
+    fence_type = cloud_continuation._CloudBranchInvocationAuthorityFence
+    forged = object.__new__(fence_type)
+    forged_values = {
+        "_request": request,
+        "_consumed": False,
+        "_fence_id": "forged-cloud-branch-fence",
+        "_issuer_pid": os.getpid(),
+    }
+    for slot in fence_type.__slots__:
+        if slot != "__weakref__":
+            object.__setattr__(forged, slot, forged_values[slot])
+
+    with store.connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            with pytest.raises(PermissionError, match="revalidated|invalid"):
+                store._reserve_and_arm_cloud_branch_carrier_in_transaction(
+                    conn,
+                    request,
+                    forged,
+                )
+        finally:
+            conn.rollback()
+
+    assert store.list_reservations(receipt.receipt_id) == ()
 
 
 def test_expired_claim_cannot_replay_or_reserve(tmp_path) -> None:

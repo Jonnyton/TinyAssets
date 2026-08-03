@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import secrets
 import sqlite3
 import threading
+import weakref
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -1825,10 +1828,42 @@ class PreparedCloudContinuationProviderResolver:
         )
 
 
+_CLOUD_BRANCH_INVOCATION_FENCE_LOCK = threading.Lock()
+_ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES: dict[
+    str,
+    tuple[
+        weakref.ReferenceType["_CloudBranchInvocationAuthorityFence"],
+        ProviderInvocationReservationRequest,
+        int,
+    ],
+] = {}
+
+
+def _reset_cloud_branch_invocation_fences_after_fork() -> None:
+    global _CLOUD_BRANCH_INVOCATION_FENCE_LOCK
+    global _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES
+    _CLOUD_BRANCH_INVOCATION_FENCE_LOCK = threading.Lock()
+    _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES = {}
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_cloud_branch_invocation_fences_after_fork)
+
+
+def _discard_cloud_branch_invocation_fence(
+    fence_id: str,
+    issuer_pid: int,
+) -> None:
+    if issuer_pid != os.getpid():
+        return
+    with _CLOUD_BRANCH_INVOCATION_FENCE_LOCK:
+        _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES.pop(fence_id, None)
+
+
 class _CloudBranchInvocationAuthorityFence:
     """One-use proof that Branch authority passed under the launch transaction."""
 
-    __slots__ = ("_consumed", "_request")
+    __slots__ = ("_fence_id", "_issuer_pid", "__weakref__")
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError("cloud Branch invocation fences are service-issued")
@@ -1842,18 +1877,19 @@ class _CloudBranchInvocationAuthorityFence:
     def _consume(self, request: ProviderInvocationReservationRequest) -> None:
         if type(self) is not _CloudBranchInvocationAuthorityFence:
             raise PermissionError("cloud Branch invocation fence is not service-issued")
-        if self._consumed or request != self._request:
-            raise PermissionError("cloud Branch invocation fence is invalid or consumed")
-        object.__setattr__(self, "_consumed", True)
-
-
-def _cloud_branch_invocation_authority_fence(
-    request: ProviderInvocationReservationRequest,
-) -> _CloudBranchInvocationAuthorityFence:
-    fence = object.__new__(_CloudBranchInvocationAuthorityFence)
-    object.__setattr__(fence, "_request", request)
-    object.__setattr__(fence, "_consumed", False)
-    return fence
+        current_pid = os.getpid()
+        if self._issuer_pid != current_pid:
+            raise PermissionError("cloud Branch invocation fence belongs to another process")
+        with _CLOUD_BRANCH_INVOCATION_FENCE_LOCK:
+            entry = _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES.get(self._fence_id)
+            if (
+                entry is None
+                or entry[0]() is not self
+                or entry[1] != request
+                or entry[2] != current_pid
+            ):
+                raise PermissionError("cloud Branch invocation fence is invalid or consumed")
+            del _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES[self._fence_id]
 
 
 class _ClaimedCloudProviderSession:
@@ -2384,7 +2420,27 @@ def prepare_claimed_cloud_provider_call(
             )
         ):
             raise PermissionError("cloud provider authority is no longer current")
-        return _cloud_branch_invocation_authority_fence(request)
+        # Mint inline after every authority check. A module-level mint helper
+        # would let another control-plane caller bypass this sole validation
+        # owner with an otherwise well-formed live request.
+        fence_id = secrets.token_hex(32)
+        issuer_pid = os.getpid()
+        fence = object.__new__(_CloudBranchInvocationAuthorityFence)
+        object.__setattr__(fence, "_fence_id", fence_id)
+        object.__setattr__(fence, "_issuer_pid", issuer_pid)
+        weakref.finalize(
+            fence,
+            _discard_cloud_branch_invocation_fence,
+            fence_id,
+            issuer_pid,
+        )
+        with _CLOUD_BRANCH_INVOCATION_FENCE_LOCK:
+            _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES[fence_id] = (
+                weakref.ref(fence),
+                request,
+                issuer_pid,
+            )
+        return fence
 
     return _ClaimedCloudProviderSession(
         base_path=root_path,
