@@ -12,7 +12,7 @@ The same deploy slice also writes protected stdin to a plaintext temporary file 
 
 - Restrict request/admission minting authority to the daemon service after the fully resolved Compose merge.
 - Provide a deliberate, manual-only path for rotating the exposed production key during the corrective cutover while preserving immutable `set-once` behavior on ordinary deploys.
-- Remove the protected-stdin value file on success, command failure, and termination signals without revealing its value.
+- Avoid a named protected-stdin plaintext value file on every path without revealing its value.
 - Retain offsite logs for the complete deployed daemon, tunnel, and four-worker fleet and make the runbook match current identities.
 - Gate redeployment on focused tests and exact-head independent security/deploy review.
 
@@ -25,9 +25,9 @@ The same deploy slice also writes protected stdin to a plaintext temporary file 
 
 ## Decisions
 
-### Keep the minting file only on the daemon
+### Keep all minting-key sources only on the daemon
 
-`daemon.env_file` retains `/etc/tinyassets/request-idempotency.env`; the shared worker anchor drops it, which also removes it from all inherited worker services. A regression loads the actual YAML and checks every service after anchor resolution. This is preferred over subprocess environment scrubbing because source nodes execute in-process before a subprocess boundary and workers have no current request-admission responsibility.
+`daemon.env_file` retains `/etc/tinyassets/request-idempotency.env`; the shared worker anchor drops it, which also removes it from all inherited worker services. While the deploy fleet is fenced, the correction also deletes any stale duplicate from `/etc/tinyassets/env`, fails closed if the shared file is unreadable or still contains the key, and checks each running worker's actual environment without printing it. Regressions load the actual YAML and inspect the deploy script. This is preferred over subprocess environment scrubbing because source nodes execute in-process before a subprocess boundary and workers have no current request-admission responsibility.
 
 ### Rotate through an explicit manual deploy input
 
@@ -35,11 +35,11 @@ Ordinary automatic and manual deploys continue using `set-once`. A boolean workf
 
 Alternatives considered were deleting the host file by hand and adding a permanent multi-key ring. Manual deletion creates an untracked mutation window, while a verification ring expands runtime/security scope and preserves trust in witnesses minted under an exposed key.
 
-### Use one process-wide cleanup owner for the plaintext value file
+### Never create a named plaintext value file
 
-The installer tracks the active value-file path outside `cmd_set`, registers an EXIT cleanup trap, and gives HUP/INT/TERM handlers cleanup ownership before re-raising the original signal. The normal and error paths clear the tracked file through the same helper. This preserves the existing no-secret-in-argv design while closing interruption residue.
+The installer passes the protected shell value to awk through an inherited pipe on file descriptor 3. The key is not placed in awk argv, the child environment, or a named filesystem object, so a parent-only signal cannot strand plaintext while Bash defers a trap waiting for awk.
 
-Avoiding a temporary file entirely was considered, but the existing multiline-preserving awk path and deployment portability make a small auditable cleanup primitive lower risk for this emergency correction.
+An EXIT/signal cleanup trap around the prior `mktemp` design was implemented first and rejected by independent review: Bash defers the trap while a foreground command substitution blocks. Tracking and killing the child would add more signal-state machinery while retaining a named secret file; a pipe removes the custody hazard instead and preserves multiline reconstruction.
 
 ### Archive explicit production container identities
 
@@ -48,7 +48,7 @@ Avoiding a temporary file entirely was considered, but the existing multiline-pr
 ## Risks / Trade-offs
 
 - **[Rotation invalidates witnesses signed by the exposed key]** -> Accept fail-closed invalidation because the runtime is dark and trusting an exposed issuer is worse; verify daemon health and canonical canaries after cutover.
-- **[A signal arrives between temporary-file creation and path registration]** -> Assign the `mktemp` result directly to the tracked global and register traps before any value file can be created.
+- **[`/dev/fd/3` is unavailable on a target shell]** -> The deploy helper requires Bash on supported Linux/macOS hosts; POSIX tests execute the real fd handoff and deployment shell syntax is gated before merge.
 - **[Compose inheritance changes later]** -> Parse the actual compose document in regression tests and assert the secret file is absent from every non-daemon service, not only the base worker.
 - **[Automatic deploy races the secret update]** -> Merge only after exact-head review, replace the repository secret immediately before a manual rotation deploy, and use the production mutation concurrency group.
 - **[Log collection names drift with fleet topology]** -> Keep the expected identities in one default string and assert the complete current fleet in tests.
@@ -59,7 +59,7 @@ Avoiding a temporary file entirely was considered, but the existing multiline-pr
 2. Confirm no production mutation workflow is in progress.
 3. Replace the repository request-idempotency HMAC secret with a newly generated canonical-base64 value without printing or persisting it locally.
 4. Manually dispatch the correction image with the rotation input enabled. The deploy replaces the host key before syncing and recreating the corrected Compose fleet.
-5. Verify daemon health, exact public MCP handles, resolved worker environments, and production release receipt. Confirm workers do not contain the key name or value.
+5. Verify the shared env lacks the key, daemon health, exact public MCP handles, resolved worker environments, and production release receipt. Confirm workers do not contain the key name or value.
 6. Preserve custom-agent execution as dark; resume the V1 app/workflow lane only after the security gate closes.
 
 Rollback uses the prior image only after fencing workers. Because the prior image reintroduces worker access, it MUST NOT be restored with the rotated key mounted; an emergency rollback must keep workers stopped or use a corrected Compose override until a safe image is available.

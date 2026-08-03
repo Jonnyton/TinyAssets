@@ -241,12 +241,13 @@ def test_log_runbook_uses_current_production_identities():
     text = RUNBOOK.read_text(encoding="utf-8")
     for stale in (
         "docker-compose@workflow",
+        "docker-compose@tinyassets",
         '.service = "workflow"',
         "workflow-logs-",
         "docker logs workflow-logs",
     ):
         assert stale not in text
-    assert "docker-compose@tinyassets" in text
+    assert "journalctl -u tinyassets-daemon" in text
     assert '.service = "tinyassets"' in text
     assert "tinyassets-logs-" in text
     assert "docker logs tinyassets-logs" in text

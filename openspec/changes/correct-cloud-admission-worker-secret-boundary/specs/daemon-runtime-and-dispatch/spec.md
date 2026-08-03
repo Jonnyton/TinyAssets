@@ -1,12 +1,22 @@
 ## ADDED Requirements
 
 ### Requirement: Production admission minting authority is daemon-only
-The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` only to the daemon service, and MUST exclude its dedicated environment file and value from every worker and sidecar after Compose inheritance is resolved.
+The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` only to the daemon service, and MUST exclude its dedicated environment file and value from the shared host environment and every worker or sidecar after Compose inheritance is resolved.
 
 #### Scenario: resolved worker fleet has no minting secret
 - **WHEN** the production Compose document is parsed with its worker anchors and inherited service values resolved
 - **THEN** the daemon includes `/etc/tinyassets/request-idempotency.env`
 - **AND** every worker, tunnel, and logging service excludes that file
+
+#### Scenario: stale shared duplicate fails closed
+- **WHEN** the fenced deploy prepares `/etc/tinyassets/env` before recreating the fleet
+- **THEN** it deletes any request-idempotency HMAC entry from the shared file
+- **AND** it fails before Compose synchronization if the shared file is unreadable or still contains that key
+
+#### Scenario: running workers prove the boundary
+- **WHEN** the corrected production worker fleet reports running
+- **THEN** the deploy inspects every worker process environment without printing it
+- **AND** deployment fails if any worker contains `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`
 
 #### Scenario: ordinary execution remains dark
 - **WHEN** the corrected deployment starts the daemon and legacy worker fleet
@@ -24,18 +34,17 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 - **THEN** the workflow replaces the host request-idempotency HMAC before recreating the corrected fleet
 - **AND** the rotation path is visible in workflow inputs and run history without exposing the key
 
-### Requirement: Protected-stdin installation leaves no plaintext value file
-The environment installer SHALL remove its mode-600 protected-stdin value file on successful completion, construction failure, shell exit, and HUP, INT, or TERM termination, and MUST NOT print the protected value.
+### Requirement: Protected-stdin installation creates no named plaintext value file
+The environment installer SHALL pass its protected-stdin value to the content builder without placing it in process arguments, child environment, or a named plaintext filesystem object, and MUST NOT print the protected value.
 
-#### Scenario: normal and error exits clean up
-- **WHEN** protected-stdin installation succeeds or fails after creating its value file
-- **THEN** no matching value file remains beside the target environment file
+#### Scenario: normal and error exits create no residue
+- **WHEN** protected-stdin installation succeeds or its content builder fails
+- **THEN** no matching value file exists beside the target environment file
 - **AND** stdout and stderr contain no protected value
 
-#### Scenario: termination cleans up and preserves signal semantics
-- **WHEN** HUP, INT, or TERM arrives after the protected value file is created
-- **THEN** the file is removed before the process terminates
-- **AND** the script re-raises the original signal rather than reporting success
+#### Scenario: parent-only termination cannot strand plaintext
+- **WHEN** TERM reaches the installer while the content-builder child remains blocked
+- **THEN** no named plaintext value file exists while the child is still running or after the process group terminates
 
 ### Requirement: Offsite production logs cover the complete runtime fleet
 The default offsite archive SHALL collect the daemon, tunnel, and every fixed production worker container, and the operator runbook MUST use the deployed TinyAssets service, container, metadata, and archive identities.

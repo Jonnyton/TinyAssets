@@ -86,11 +86,8 @@ docker logs tinyassets-logs -f
 ### Query via journald (compose captures Vector's stdout)
 
 ```bash
-# All TinyAssets containers via compose labels
-journalctl -u docker -t tinyassets-daemon --since today
-
-# Or via the compose project (if started via systemd)
-journalctl -u docker-compose@tinyassets --since "1 hour ago"
+# The shipped systemd unit owns the attached Compose process and Vector stdout
+journalctl -u tinyassets-daemon --since "1 hour ago"
 ```
 
 ### Query from Better Stack
