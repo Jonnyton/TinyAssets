@@ -15,6 +15,20 @@ from pathlib import Path
 
 import pytest
 
+# Why these two tests are Windows-only rather than "simulated" with a faked
+# os.name: monkeypatching os.name to "nt" on POSIX poisons pathlib globally.
+# Path() then dispatches to WindowsPath, which raises NotImplementedError on
+# Linux — and it raises again inside pytest's own failure reporting
+# (`Path(os.getcwd())` in nodes._repr_failure_py), which turns an ordinary test
+# failure into an xdist INTERNALERROR that kills the worker and aborts the whole
+# session. That is not hypothetical: it silently stopped this entire file from
+# running in CI while the summary still reported thousands of passes.
+_NT_FAKE_UNSAFE = (
+    "Must run on real Windows: faking os.name='nt' on POSIX poisons pathlib "
+    "globally and crashes the pytest worker mid-report, silently dropping "
+    "unrelated tests from the run."
+)
+
 
 @pytest.fixture
 def clean_env(monkeypatch):
@@ -81,24 +95,22 @@ def test_linux_mac_default_dot_workflow_under_home(clean_env):
     assert result == (Path.home() / ".workflow").resolve()
 
 
+@pytest.mark.skipif(os.name != "nt", reason=_NT_FAKE_UNSAFE)
 def test_windows_default_uses_appdata(clean_env, monkeypatch):
     """On Windows with APPDATA, default is %APPDATA%\\TinyAssets."""
     from tinyassets.storage import data_dir
 
-    # Simulate Windows even when tests run on Linux CI. We patch os.name
-    # + APPDATA to prove the branch is correct.
-    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setenv("APPDATA", "/fake/appdata")
 
     result = data_dir()
     assert result == Path("/fake/appdata/TinyAssets").resolve()
 
 
+@pytest.mark.skipif(os.name != "nt", reason=_NT_FAKE_UNSAFE)
 def test_windows_default_without_appdata_falls_back(clean_env, monkeypatch):
     """Windows without APPDATA uses Path.home() / AppData / Roaming / TinyAssets."""
     from tinyassets.storage import data_dir
 
-    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.delenv("APPDATA", raising=False)
 
     result = data_dir()

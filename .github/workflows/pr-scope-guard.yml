@@ -70,6 +70,9 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         shell: bash
         run: |
           set -euo pipefail
@@ -82,7 +85,13 @@ jobs:
           # tinyassets/* PRs, and it already has its own parity check. Including it
           # flagged 4 of 5 sampled real PRs, which would have trained everyone to
           # rubber-stamp the infra-change label and defeated the guard.
-          SENSITIVE_RE='^(\.github/workflows/|deploy/|Dockerfile$|\.dockerignore$)'
+          # scripts/ci_required_tests.py and .github/known-failing-tests.txt are
+          # here because they ARE the `required-tests` gate. That gate runs from
+          # the PR's own checkout (it must — it executes the PR's code), so a PR
+          # can rewrite the thing judging it while keeping the check name green.
+          # Workflow files were already covered; without these two entries the
+          # same neutering could be done one directory over, undeclared.
+          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
@@ -115,6 +124,92 @@ jobs:
           fi
           HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          # The files below DEFINE the required-tests gate (and this guard's
+          # own receipt checker). The gate executes the PR's checkout, so a PR
+          # editing them can neuter the check while its name stays green. A
+          # label is a declaration, not authorization — editing these demands
+          # the same exact-head review receipt drain PRs carry (Codex gate
+          # review 2026-08-02, finding 2). This runs from the TRUSTED base
+          # checkout, so a PR cannot weaken the rule that judges it.
+          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
+          GATE_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$GATE_RE" || true)"
+
+          # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
+          # itself forces (stale quarantine entries fail the run) and only
+          # tightens the ratchet. ADDING a quarantine line is the bypass
+          # direction and keeps the receipt requirement.
+          #
+          # Decided on the `additions` COUNT, never on `.patch`: GitHub omits
+          # `patch` for binary files and drops it entirely on large diffs, so a
+          # patch-grep silently sees "no additions" and waves the edit through
+          # (Codex review 2026-08-02, finding 1 — this exact fail-open). The
+          # count is trusted metadata and is always present. Anything that is
+          # not a clean numeric 0 keeps the receipt requirement.
+          if [ "$GATE_HITS" = ".github/known-failing-tests.txt" ]; then
+            # Compare CONTENT, not diff metadata. GitHub reports additions: 0
+            # for binary files and for pure renames alike, so a NUL-poisoned
+            # ledger or a pre-planted file renamed into place both read as
+            # "no additions" (verified on PRs #2041/#2172).
+            #
+            # Read through the GIT TREE, not the Contents API: that API
+            # DEREFERENCES symlinks, so swapping the ledger for a link to
+            # identical content reads as a no-op — and the link target is not
+            # a gate-protected path, so a later PR edits it freely. The tree
+            # gives the true blob mode and size; the blob endpoint gives the
+            # bytes of that exact blob. Every failure below leaves GATE_HITS
+            # intact, i.e. requires a receipt.
+            HEAD_LEDGER="$RUNNER_TEMP/head-ledger.txt"
+            : > "$HEAD_LEDGER"
+            LEDGER_MODE=""; LEDGER_SIZE=""
+            if TREE_ROW="$(gh api "repos/${REPO}/git/trees/${HEAD_OID}:.github" \
+                --jq '.tree[] | select(.path=="known-failing-tests.txt") | "\(.mode) \(.size) \(.sha)"' \
+                2>/dev/null)" && [ "$(printf '%s\n' "$TREE_ROW" | wc -l)" -eq 1 ]; then
+              LEDGER_MODE="$(printf '%s' "$TREE_ROW" | cut -d' ' -f1)"
+              LEDGER_SIZE="$(printf '%s' "$TREE_ROW" | cut -d' ' -f2)"
+              LEDGER_SHA="$(printf '%s' "$TREE_ROW" | cut -d' ' -f3)"
+              if ! gh api "repos/${REPO}/git/blobs/${LEDGER_SHA}" --jq '.content' 2>/dev/null \
+                  | tr -d '\n' | base64 -d > "$HEAD_LEDGER" 2>/dev/null; then
+                : > "$HEAD_LEDGER"   # partial decode must not read as a deletion
+              fi
+            fi
+            # The decision (mode/size trust + entry comparison) lives in the
+            # policy script so every branch of it is unit tested.
+            if python scripts/drain_review_gate.py \
+                --ledger-base-file .github/known-failing-tests.txt \
+                --ledger-head-file "$HEAD_LEDGER" \
+                --ledger-head-mode "${LEDGER_MODE}" \
+                --ledger-head-size "${LEDGER_SIZE}" \
+                --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file "$HEAD_LEDGER"; then
+              echo "scope guard: ledger edit removes entries only — receipt not required"
+              GATE_HITS=""
+            else
+              echo "ledger edit adds entries, or the head blob was not a trustworthy regular file — receipt required"
+            fi
+          fi
+
+          if [ -n "$GATE_HITS" ]; then
+            printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
+            if ! python scripts/drain_review_gate.py \
+                --branch "${HEAD_REF}" \
+                --head "${HEAD_OID}" \
+                --body-file "$RUNNER_TEMP/pr-body-gate.md" \
+                --require-receipt; then
+              {
+                echo "### PR scope guard"
+                echo ""
+                echo "**Blocked — this PR edits the required-tests gate itself:**"
+                # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
+                printf '%s\n' "$GATE_HITS" | sed 's/^/- `/; s/$/`/'
+                echo ""
+                echo "Gate-defining files need an exact-head review receipt in the PR body"
+                echo "(Drain-Review-Verdict: APPROVE / Drain-Review-Head: <head sha> /"
+                echo "Drain-Review-Artifact: <path-or-url>). Re-stamp after every push."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "scope guard: BLOCKED — gate-defining files without exact-head review receipt"
+              exit 1
+            fi
+          fi
 
           echo "### PR scope guard" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
