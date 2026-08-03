@@ -2330,3 +2330,14 @@ Notes:
 - Remaining: deployed first-attempt rendered proof, a public definition from another authenticated creator, and post-fix organic-use evidence.
 - Publish/cleanup: coordination-only PR, then remove the implementation and foldback worktrees after merge.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-cross-user-remix-foldback-20260802/_PURPOSE.md`
+
+## 2026-08-03 - Correct sandbox admission handoff
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `fix/sandbox-admission-contract-20260803`.
+- Lane state: Active; exact STATUS claim for the three blocking post-#2202 contract findings.
+- Worktree: `C:/Users/Jonathan/Projects/wf-correct-sandbox-admission-contract-20260803`.
+- Purpose: bind the full frozen inner request, split fresh preflight from release policy, and make launch evidence implementable and anti-replay.
+- Review gate: all-change strict OpenSpec, semantic presence checks, exact-head security review, required CI.
+- Publish/cleanup: one spec-only corrective PR; no runtime/deploy/authority mutation; remove after verified merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-correct-sandbox-admission-contract-20260803/_PURPOSE.md`.

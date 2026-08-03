@@ -298,11 +298,14 @@ Canonical spec sync and archive happen only with the implementation landing. Dep
 ## Remaining Owner Questions
 
 The logical admission invariants are closed here. The outer-capsule handoff is
-also resolved: `distributed-execution` owns the purpose-separated M1-signed
-`ExecutionAdmissionCapsuleV1`, the M1-signed `BackendBindingV1`, and the
-reviewed-verifier `BackendLaunchEvidenceV1` contract, bound outside the frozen
-inner `runner/v1` wire by `job_id`. These owner-native integrations remain
-open and blocking:
+also resolved: `distributed-execution` owns the M1-signed static
+`BackendProfileBindingV1`, fresh admission- and full-request-bound
+`BackendPreflightEvidenceV1`, purpose-separated M1-signed
+`ExecutionAdmissionCapsuleV1`, and authenticated exact-property
+`BackendLaunchEvidenceV1`. They bind the complete canonical inner request,
+planned/actual configuration, authority generation, result, and cleanup while
+remaining outside the frozen `runner/v1` wire. These owner-native integrations
+remain open and blocking:
 
 1. Which credential-vault and outbound-boundary reference/digest pairs are
    compatible with each execution profile?
