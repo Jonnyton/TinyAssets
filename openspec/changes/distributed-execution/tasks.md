@@ -245,8 +245,11 @@ Recovered D0 provenance and current-main replacement evidence are recorded in
   full inner request's schema, `job_id`, idempotency, owner, capability/actions,
   payload, workspace, and credential-reference ties; reject stale, revoked,
   replayed, cross-admission, or request-mismatched preflight and launch evidence;
-  mutate producer/verifier/property/result/cleanup bindings; and preserve
-  `runner-job/v1`, `runner-result/v1`, and `JobCapability` byte-for-byte.
+  reject JCS numeric aliases (`1`/`1.0`, `0`/`0.0`/`-0.0`) and unsafe integers
+  that fail the type-and-bit-strict round trip; prove only the hashed canonical
+  byte carrier is executed; mutate producer/verifier/property/result/cleanup
+  bindings; and preserve `runner-job/v1`, `runner-result/v1`, and
+  `JobCapability` byte-for-byte.
 - [ ] 5.29 B29 - implement the model broker's session binding, scoped
   credential, per-call fence, cost/budget, cancellation, and framing.
 - [ ] 5.30 B30 - implement exact-source staging/extraction, isolated

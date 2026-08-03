@@ -438,24 +438,34 @@ The exact serialized `os_isolated` property identifiers are
 owned by `engine-os-sandbox`; unknown identifiers deny, and labels are derived
 only after property-set inclusion.
 
-Trusted code canonicalizes the complete existing
-`SandboxJobRequest.to_wire()` object with RFC 8785/JCS and hashes the schema,
-`job_id`, `idempotency_key`, `owner_scope`, `capability`, derived `actions`,
-`payload`, `workspace_ref`, and `credential_grant_ref`. It creates a fresh
-unguessable `admission_id`, resolves the active profile binding and every
-owner-defined requirement reference/digest, derives the exact planned launch
-configuration, and obtains authenticated `BackendPreflightEvidenceV1` bound to
-that admission ID, job, full request digest, binding, backend release, and
-planned configuration. The record includes observation/expiry and the exact
-revocation generation; it cannot be reused after expiry, revocation, binding
-replacement, request mutation, or for another admission.
+Trusted code converts the complete existing `SandboxJobRequest.to_wire()`
+object to RFC 8785/JCS bytes and hashes those exact bytes. Before admission it
+decodes the bytes and recursively compares the decoded value to the source
+with JSON-type strictness, safe-integer bounds, and IEEE-754 bit identity;
+values that do not round-trip losslessly (including `1.0`, `0.0`, `-0.0`,
+non-finite numbers, or unsafe integers) are rejected rather than aliased to a
+different value. The canonical bytes cover schema, `job_id`,
+`idempotency_key`, `owner_scope`, `capability`, derived `actions`, `payload`,
+`workspace_ref`, and `credential_grant_ref`; they are the only dispatched
+request representation. The backend verifies the digest before decoding and
+executes only the value decoded from those same bytes, never the caller's
+original Python object or a separately reserialized request.
+
+Trusted code then creates a fresh unguessable `admission_id`, resolves the
+active profile binding and every owner-defined requirement reference/digest,
+derives the exact planned launch configuration, and obtains authenticated
+`BackendPreflightEvidenceV1` bound to that admission ID, job, full request
+digest, binding, backend release, and planned configuration. The record
+includes observation/expiry and the exact revocation generation; it cannot be
+reused after expiry, revocation, binding replacement, request mutation, or for
+another admission.
 
 The complete execution-authority composition root then seals the final
 `ExecutionAdmissionCapsuleV1` under its purpose-separated M1 domain. Sharing
 `admission_id` avoids a circular digest: preflight binds the admission ID and
 request facts; the later capsule binds the same ID plus the preflight digest.
-Both the dispatcher and backend independently recompute the full inner request
-digest and compare every field before launch. The capsule expiry is no later
+Both dispatcher and backend independently hash the identical canonical byte
+carrier and compare every field before launch. The capsule expiry is no later
 than the profile, preflight, or authority evidence expiry.
 
 The capsule authenticates admission facts only. Dispatch re-verifies the

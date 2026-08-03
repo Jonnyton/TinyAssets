@@ -304,13 +304,21 @@ frozen runner wire:
   `(property_id, evidence_kind, ref, digest)` tuple per property, start/finish
   times, and cleanup subject/reference/digest/observation time.
 
-Trusted code SHALL canonicalize the complete existing
-`SandboxJobRequest.to_wire()` value with RFC 8785/JCS before hashing. The
-digest SHALL cover schema, `job_id`, `idempotency_key`, `owner_scope`,
-`capability`, derived `actions`, `payload`, `workspace_ref`, and
-`credential_grant_ref`. The dispatcher and backend SHALL independently
-recompute it. Any mutation of a covered field SHALL invalidate the capsule,
-preflight evidence, and launch evidence even when `job_id` is unchanged.
+Trusted code SHALL encode the complete existing `SandboxJobRequest.to_wire()`
+value as RFC 8785/JCS bytes and hash those exact bytes. Before admission it
+SHALL decode those bytes and recursively compare the decoded value with the
+source using JSON-type strictness, safe-integer bounds, and IEEE-754 bit
+identity. A value that does not round-trip losslessly—including integral or
+signed-zero floats such as `1.0`, `0.0`, and `-0.0`, a non-finite number, or an
+unsafe integer—SHALL be rejected rather than aliased. The canonical bytes
+SHALL cover schema, `job_id`, `idempotency_key`, `owner_scope`, `capability`,
+derived `actions`, `payload`, `workspace_ref`, and `credential_grant_ref` and
+SHALL be the only dispatched request representation. The backend SHALL verify
+the digest before decoding and SHALL execute only the value decoded from those
+same bytes, never the original Python object or a separately reserialized
+request. Any mutation of the accepted canonical bytes SHALL invalidate the
+capsule, preflight evidence, and launch evidence even when `job_id` is
+unchanged.
 
 The exact `os_isolated` property identifiers SHALL be
 `kernel_process_boundary`, `filesystem_default_deny`,
@@ -385,6 +393,15 @@ fall back to test, generated, unsigned, or caller-supplied keys or evidence.
   `workspace_ref`, or `credential_grant_ref`
 - **THEN** the recomputed full inner-request digest differs
 - **AND** the preflight record, capsule, and launch evidence all fail closed
+
+#### Scenario: canonical numeric aliases cannot preserve a digest
+
+- **WHEN** a caller uses `1` versus `1.0`, `0` versus `0.0` or `-0.0`, an
+  unsafe integer, or another value that JCS cannot round-trip with identical
+  JSON type and numeric bits
+- **THEN** the non-lossless request is rejected before admission
+- **AND** execution receives only the exact verified canonical bytes decoded
+  after the digest check, never the original or a separately encoded object
 
 #### Scenario: volatile readiness cannot hide in static policy
 
