@@ -88,15 +88,21 @@ association for the evidence's universe and custody-selection generation.
 The registered path and each existing ancestor up to its filesystem anchor are
 checked with `lstat`; POSIX symbolic links and Windows reparse points are
 refused. The final resolved path must equal the registered canonical path and
-must not equal the trusted platform data root bound into the grant evidence. The store
-opens `<registered-universe>/.tinyassets.db` and refuses another universe. A
-caller-supplied directory is never accepted.
+must not equal the trusted platform data root bound into the grant evidence.
 
-These checks prevent accidental or unprivileged path substitution. They do not
-claim containment against a host administrator capable of mutating the
-filesystem between checks; that actor is inside the trust boundary of this
-custody mode. Vault custody remains the alternative for a different threat
-model.
+Before and immediately after SQLite opens or creates `.tinyassets.db`, the
+provider `lstat`s the database and any present `-wal`/`-shm` sidecars. Each must
+be a regular file with one hard-link count and no symbolic-link or Windows
+reparse attribute; an existing primary's device/file identity must be unchanged
+across open. The same checks run before cleanup/checkpoint completion. A caller
+cannot supply any of these paths.
+
+These checks reject request-layer path substitution and stable filesystem
+aliases. They cannot make Python's pathname-based SQLite API race-free against
+another process running as the same OS account. Same-account mutation between
+validation and open, privileged host administration, filesystem snapshots, and
+storage-media behavior are explicitly inside this mode's host trust boundary.
+Vault custody remains the alternative for a different threat model.
 
 ### 3. Threads are immutable; messages have explicit identity and lineage
 
@@ -121,18 +127,60 @@ non-string keys and accepts only null, booleans, NFC-normalized strings,
 signed-64-bit integers, lists, and mappings. Floats, bytes, custom objects, and
 non-NFC strings are rejected rather than coerced.
 
-The structural bounds are: maximum depth 16, 128 members per mapping, 256 items
-per list, 4,096 total nodes, 256 UTF-8 bytes per key, 32,768 UTF-8 bytes per
-string, and 65,536 canonical UTF-8 bytes for the complete payload. Unknown
-member names within those limits are preserved.
+The structural bounds are: maximum node depth 16, 128 members per mapping, 256
+items per list, 4,096 total value nodes, 256 UTF-8 bytes per key, 32,768 UTF-8
+bytes per string, and 65,536 canonical UTF-8 bytes for the complete payload.
+The root mapping is one value node at depth 0. Every mapping value and list item
+is one child node at its parent's depth plus one. Mapping keys are not nodes.
+No node may have depth above 16. Unknown member names within those limits are
+preserved.
 
-Canonical bytes use UTF-8, NFC strings, object keys sorted by Unicode code
-point, no insignificant whitespace, lowercase JSON literals, base-10 integers
-without leading zeroes, unescaped non-ASCII text, and JSON escapes only for
-quotation mark, reverse solidus, and required control characters. The payload
-digest is lowercase `sha256:<64 hex>` over those exact bytes. Export uses the
-same algorithm and includes no export-time timestamp, so unchanged exports are
-byte-for-byte stable.
+Strings and keys must contain Unicode scalar values; surrogate code points
+U+D800 through U+DFFF are rejected. Canonical bytes use UTF-8, NFC strings,
+object keys sorted by Unicode code point, no insignificant whitespace,
+lowercase JSON literals, base-10 integers without leading zeroes, and unescaped
+solidus/non-ASCII text. Quotation mark encodes as `\"`, reverse solidus as
+`\\`, U+0008/0009/000A/000C/000D as `\b`/`\t`/`\n`/`\f`/`\r`, and every
+other U+0000 through U+001F scalar as six ASCII bytes `\u00xx` with lowercase
+hexadecimal digits. No alternative escape spelling is canonical.
+
+The payload digest is lowercase `sha256:<64 hex>` over those exact bytes.
+`conversation-custody/v1` export is the same canonical encoding of exactly:
+
+```text
+{
+  "canonical_json": "tinyassets-canonical-json/v1",
+  "custody_mode": "private_universe",
+  "messages": [
+    {
+      "created_at": <RFC3339 UTC string>,
+      "kind": <string>,
+      "message_id": <string>,
+      "ordinal": <integer>,
+      "participant_ref": <string>,
+      "payload": <canonical mapping>,
+      "payload_digest": <sha256 string>,
+      "reply_to_message_id": <string or null>,
+      "source_event_ref": <string>
+    }
+  ],
+  "schema": "conversation-custody/v1",
+  "thread": {
+    "agent_binding_id": <string>,
+    "conversation_id": <string>,
+    "created_at": <RFC3339 UTC string>,
+    "interlocutor_ref": <string>,
+    "owner_user_id": <string>,
+    "retention_until": <RFC3339 UTC string or null>,
+    "universe_id": <string>
+  }
+}
+```
+
+No other top-level/thread/message member is accepted in this version. Messages
+are ordered by ordinal. The export result returns these canonical bytes plus a
+separate SHA-256 digest; the digest is not embedded recursively. There is no
+export-time timestamp, so unchanged exports are byte-for-byte stable.
 
 ### 5. Idempotency has an exact namespace and an explicit deletion transition
 
@@ -155,11 +203,19 @@ high-entropy key digest remain. Any post-deletion reuse of such a key returns
 never recreates content. A fresh create key may create a new thread; any append
 to the deleted conversation fails.
 
-Delete keys retain a request digest derived only from scope, conversation,
-reason, and retention boundary. Same-key changed deletion requests conflict. A
-different delete key for the same target and reason is linked to and returns the
-first receipt; a different reason conflicts. This makes competing deletion
-requests deterministic without retaining message-derived material.
+The deletion-reason domain is exactly `owner_request` or `retention_expired`.
+The caller never supplies a retention boundary: `retention_expired` reads and
+checks the immutable stored boundary. The store retains a
+`deleted_target_digest`, computed as SHA-256 over the canonical
+owner/universe/binding/conversation-ID tuple, under a unique index. It contains
+no message/content-derived value and supplies target-only correlation after the
+active rows are gone.
+
+Delete keys retain a request digest derived only from that target digest and
+reason. Same-key changed requests conflict. A different delete key for the same
+target and reason is linked to and returns the first receipt; a different reason
+for the same target conflicts. This makes competing deletion requests
+deterministic without retaining message-derived material.
 
 ### 6. All operations have a SQLite serialization point
 

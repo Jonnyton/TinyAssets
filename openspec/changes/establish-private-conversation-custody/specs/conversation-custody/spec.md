@@ -7,9 +7,13 @@ The system SHALL represent private conversation custody with a versioned open pr
 - **WHEN** a valid operation grant resolves an active `private_universe` selection and registered universe path
 - **THEN** the provider derives storage only from that registered path and labels records and exports with the selected mode
 
-#### Scenario: Caller-selected or substituted path is refused
-- **WHEN** a path is caller-supplied, relative, the platform data root, not the current registered association, nonexistent, symlinked, or a Windows reparse point
-- **THEN** the system refuses the operation before opening or writing conversation storage
+#### Scenario: Caller-selected or stable substituted path is refused
+- **WHEN** a directory/database/sidecar path is caller-supplied, relative, the platform data root, not the current registered association, nonexistent, non-regular, symlinked, a Windows reparse point, hard-linked, or changes device/file identity across open
+- **THEN** the system refuses the operation before returning private state or completing a write
+
+#### Scenario: Same-account mutation is inside this mode's trust boundary
+- **WHEN** another process running as the same OS account races pathname validation and SQLite open
+- **THEN** `private_universe` makes no race-free containment claim; the user must select a vault provider for a threat model that distrusts that host account
 
 #### Scenario: Unsupported mode does not fall back
 - **WHEN** a grant names a mode for which no provider is installed
@@ -50,7 +54,7 @@ The system SHALL create an immutable thread with a server-generated identifier, 
 - **THEN** its identity, scope, interlocutor, custody mode, and retention boundary cannot be updated
 
 ### Requirement: Payload canonicalization is portable and bounded
-The system SHALL canonicalize message payload mappings with `tinyassets-canonical-json/v1`: only null, booleans, NFC strings, signed-64-bit integers, lists, and string-keyed mappings are accepted; canonical UTF-8 bytes and SHA-256 digests SHALL follow the exact versioned representation.
+The system SHALL canonicalize message payload mappings with `tinyassets-canonical-json/v1`: only null, booleans, NFC Unicode-scalar strings, signed-64-bit integers, lists, and string-keyed mappings are accepted; canonical UTF-8 bytes and SHA-256 digests SHALL follow the exact versioned representation.
 
 #### Scenario: Unknown bounded members round-trip
 - **WHEN** a payload contains unknown member names but satisfies the canonical type and structural limits
@@ -58,10 +62,14 @@ The system SHALL canonicalize message payload mappings with `tinyassets-canonica
 
 #### Scenario: Representation is deterministic
 - **WHEN** semantically identical accepted mappings have different insertion order
-- **THEN** they produce identical UTF-8 bytes and lowercase `sha256:<64 hex>` digests using code-point key order, compact JSON, NFC text, base-10 integers, and the specified escaping rules
+- **THEN** they produce identical UTF-8 bytes and lowercase `sha256:<64 hex>` digests using code-point key order, compact JSON, NFC text, base-10 integers, `\"`/`\\`, short `\b`/`\t`/`\n`/`\f`/`\r`, lowercase `\u00xx` for other controls, and no alternative escapes
+
+#### Scenario: Depth and node counting are exact
+- **WHEN** structural bounds are evaluated
+- **THEN** the root mapping is one node at depth 0, every mapping value/list item is one child node at parent depth plus one, keys are not nodes, total nodes include the root, and no node may exceed depth 16
 
 #### Scenario: Ambiguous or pathological input is atomic
-- **WHEN** input is raw JSON text, has non-string/duplicate keys, floats, bytes, custom objects, non-NFC text, integers outside signed 64-bit, depth above 16, more than 128 members per mapping, more than 256 list items, more than 4,096 nodes, a key above 256 UTF-8 bytes, a string above 32,768 UTF-8 bytes, or canonical payload size above 65,536 bytes
+- **WHEN** input is raw JSON text, has non-string/duplicate keys, floats, bytes, custom objects, non-NFC text, surrogate code points, integers outside signed 64-bit, a node above depth 16, more than 128 members per mapping, more than 256 list items, more than 4,096 value nodes including the root, a key above 256 UTF-8 bytes, a string above 32,768 UTF-8 bytes, or canonical payload size above 65,536 bytes
 - **THEN** the system rejects it before grant consumption or storage
 
 ### Requirement: Messages are identified, ordered, and append-only
@@ -99,7 +107,7 @@ The system SHALL serialize exact read/export with writes, require fresh action a
 - **THEN** the system raises an integrity failure and returns no partial conversation
 
 ### Requirement: Private export is deterministic and isolated from the commons
-The system SHALL export an exact intact thread as deterministic canonical `conversation-custody/v1` content and SHALL NOT publish it, add it to agent definitions/lineage/bindings, or include credentials, app authority, provider responses, runtime/workflow state, or effects.
+The system SHALL export an exact intact thread as deterministic canonical `conversation-custody/v1` content whose only top-level members are `canonical_json`, `custody_mode`, `messages`, `schema`, and `thread`; the exact thread/message members SHALL match the design schema, and the system SHALL NOT publish it, add it to agent definitions/lineage/bindings, or include credentials, app authority, provider responses, runtime/workflow state, or effects.
 
 #### Scenario: Repeated export is byte-stable
 - **WHEN** the same intact thread is exported repeatedly without an intervening append
@@ -142,6 +150,10 @@ The system SHALL logically delete a thread and messages atomically, clear all co
 #### Scenario: Competing and changed deletion retries are deterministic
 - **WHEN** delete requests race or retry
 - **THEN** the same key and request returns the exact receipt, another key with the same target/reason links to that receipt, and the same key or target with a changed reason conflicts
+
+#### Scenario: Deleted target correlation is content-independent
+- **WHEN** active rows are removed
+- **THEN** a unique SHA-256 digest of the canonical owner/universe/binding/conversation-ID tuple remains for target-only correlation, while the allowed reason is exactly `owner_request` or `retention_expired` and the immutable retention boundary is read from storage rather than caller input
 
 #### Scenario: Post-deletion create or append key reuse cannot resurrect content
 - **WHEN** a deleted conversation's prior create/append key is reused with identical or changed input
