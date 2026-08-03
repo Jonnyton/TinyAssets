@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -21,9 +22,10 @@ import sys
 import threading
 import time
 import warnings
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from tinyassets import idle_cycle
 from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
@@ -408,6 +410,11 @@ def _try_dispatcher_pick(
     """
     try:
         from tinyassets.branch_tasks import claim_task, reclaim_expired_leases
+        from tinyassets.branch_tasks_v2 import (
+            EPOCH2_QUEUE_CONSUMER_READY,
+            Epoch2BranchTaskAdapter,
+            read_worker_claim_descriptor,
+        )
         from tinyassets.dispatcher import (
             dispatcher_enabled,
             load_dispatcher_config,
@@ -435,10 +442,148 @@ def _try_dispatcher_pick(
                 reclaimed,
             )
         cfg = load_dispatcher_config(universe_path)
-        picked = select_next_task(universe_path, config=cfg)
+        epoch2_adapter = None
+        epoch2_context = None
+        worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+        runtime_instance_id = os.environ.get(
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
+        ).strip()
+        if (
+            EPOCH2_QUEUE_CONSUMER_READY is True
+            and worker_id
+            and runtime_instance_id
+        ):
+            from tinyassets.storage import data_dir
+
+            canonical_root = data_dir().resolve(strict=False)
+            resolved_universe = universe_path.resolve(strict=False)
+            if resolved_universe.parent == canonical_root:
+                candidate_adapter = Epoch2BranchTaskAdapter(canonical_root)
+                candidate_context = candidate_adapter.worker_claim_context(
+                    worker_id=worker_id,
+                    runtime_instance_id=runtime_instance_id,
+                    universe_id=resolved_universe.name,
+                )
+                if (
+                    candidate_context is not None
+                    and candidate_context.daemon_id == daemon_id
+                ):
+                    epoch2_adapter = candidate_adapter
+                    epoch2_context = candidate_context
+                    cfg = replace(
+                        cfg,
+                        active_daemon_id=candidate_context.daemon_id,
+                    )
+                elif candidate_context is not None:
+                    logger.error(
+                        "dispatcher_pick: epoch2 daemon mismatch "
+                        "runtime=%s loop=%s",
+                        candidate_context.daemon_id,
+                        daemon_id,
+                    )
+
+        if epoch2_adapter is not None and epoch2_context is not None:
+            live = epoch2_adapter.list_worker_active_tasks(
+                universe_id=universe_path.name,
+                worker_id=worker_id,
+                limit=2,
+            )
+            if len(live) > 1:
+                logger.error(
+                    "dispatcher_pick: multiple live epoch2 claims for %s",
+                    worker_id,
+                )
+                return None, {}
+            if live:
+                active_task = live[0]
+                if active_task.status == "cancel_requested":
+                    epoch2_adapter.finish(
+                        active_task.branch_task_id,
+                        worker_id=worker_id,
+                        status="cancelled",
+                        detail={"reason": "cancel_reconciled_on_restart"},
+                    )
+                    return None, {}
+                resumed = epoch2_adapter.resume(
+                    active_task.branch_task_id,
+                    descriptor=epoch2_context.descriptor,
+                    descriptor_reader=read_worker_claim_descriptor,
+                )
+                if resumed is None:
+                    epoch2_adapter.finish(
+                        active_task.branch_task_id,
+                        worker_id=worker_id,
+                        status="failed",
+                        detail={"error": "resume_authority_invalid"},
+                    )
+                    logger.error(
+                        "dispatcher_pick: refused invalid epoch2 resume %s",
+                        active_task.branch_task_id,
+                    )
+                    return None, {}
+                _bind_epoch2_executor(resumed, epoch2_context)
+                logger.info(
+                    "dispatcher_pick: resumed epoch2 %s worker=%s",
+                    resumed.branch_task_id,
+                    worker_id,
+                )
+                return resumed, dict(resumed.inputs or {})
+
+            # Recovery is queue-owner maintenance over the canonical store.
+            # It grants no execution authority; each recovered task must still
+            # pass the exact worker + activation claim transaction below.
+            recovered = epoch2_adapter.recover_expired()
+            for recovered_task in recovered:
+                if (
+                    recovered_task.universe_id != universe_path.name
+                    or recovered_task.status != "pending"
+                ):
+                    continue
+                claimed = epoch2_adapter.claim(
+                    recovered_task.branch_task_id,
+                    descriptor=epoch2_context.descriptor,
+                    descriptor_reader=read_worker_claim_descriptor,
+                )
+                if claimed is not None:
+                    _bind_epoch2_executor(claimed, epoch2_context)
+                    logger.info(
+                        "dispatcher_pick: recovered epoch2 %s worker=%s",
+                        claimed.branch_task_id,
+                        worker_id,
+                    )
+                    return claimed, dict(claimed.inputs or {})
+
+        picked = select_next_task(
+            universe_path,
+            config=cfg,
+            epoch2_adapter=epoch2_adapter,
+        )
         if picked is None:
             return None, {}
-        executor_worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+        if int(getattr(picked, "queue_epoch", 1)) == 2:
+            if epoch2_adapter is None or epoch2_context is None:
+                return None, {}
+            claimed = epoch2_adapter.claim(
+                picked.branch_task_id,
+                descriptor=epoch2_context.descriptor,
+                descriptor_reader=read_worker_claim_descriptor,
+            )
+            if claimed is None:
+                logger.info(
+                    "dispatcher_pick: epoch2 claim lost %s",
+                    picked.branch_task_id,
+                )
+                return None, {}
+            _bind_epoch2_executor(claimed, epoch2_context)
+            logger.info(
+                "dispatcher_pick: claimed epoch2 %s branch=%s worker=%s",
+                claimed.branch_task_id,
+                claimed.branch_def_id,
+                worker_id,
+            )
+            return claimed, dict(claimed.inputs or {})
+        executor_worker_id = worker_id
         executor_runtime_id = os.environ.get(
             "TINYASSETS_RUNTIME_INSTANCE_ID", "",
         ).strip()
@@ -474,6 +619,33 @@ def _branch_task_owner_id(claimed_task: Any) -> str:
     )
 
 
+def _bind_epoch2_executor(claimed_task: Any, context: Any) -> None:
+    """Attach trusted runtime identity to the in-memory execution read model."""
+    descriptor = context.descriptor
+    claimed_task.executor_worker_id = descriptor.worker_id
+    claimed_task.executor_runtime_id = descriptor.runtime_instance_id
+
+
+def _is_epoch2_branch_task(claimed_task: Any) -> bool:
+    return int(getattr(claimed_task, "queue_epoch", 1)) == 2
+
+
+def _epoch2_adapter_for_universe(
+    universe_path: Path,
+) -> Any | None:
+    from tinyassets import branch_tasks_v2
+
+    if branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is not True:
+        return None
+    from tinyassets.storage import data_dir
+
+    canonical_root = data_dir().resolve(strict=False)
+    resolved_universe = universe_path.resolve(strict=False)
+    if resolved_universe.parent != canonical_root:
+        return None
+    return branch_tasks_v2.Epoch2BranchTaskAdapter(canonical_root)
+
+
 def _branch_task_heartbeat_interval_seconds() -> float:
     raw = (
         os.environ.get("TINYASSETS_BRANCH_TASK_HEARTBEAT_INTERVAL_S")
@@ -491,6 +663,77 @@ def _branch_task_heartbeat_interval_seconds() -> float:
         return _DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S
 
 
+@contextlib.contextmanager
+def _continuous_branch_task_heartbeat(
+    heartbeat: Callable[..., None],
+    *,
+    interval_seconds: float | None = None,
+) -> Iterator[Callable[[], None]]:
+    """Renew execution authority while a provider node blocks.
+
+    The queue lease is an authority boundary, not telemetry.  Any renewal
+    failure is retained and raised on the execution thread so a run cannot be
+    reported successful after its worker stopped owning the task.
+    """
+    from tinyassets.runs import RunCancelledError, RunExecutionAuthorityLost
+
+    interval = max(
+        0.001,
+        interval_seconds
+        if interval_seconds is not None
+        else _branch_task_heartbeat_interval_seconds(),
+    )
+    stop = threading.Event()
+    failure: list[Exception] = []
+    failure_lock = threading.Lock()
+
+    def as_execution_stop(exc: Exception) -> Exception:
+        if isinstance(exc, (RunCancelledError, RunExecutionAuthorityLost)):
+            return exc
+        return RunExecutionAuthorityLost(str(exc) or type(exc).__name__)
+
+    def assert_authority() -> None:
+        with failure_lock:
+            lost = failure[0] if failure else None
+        if lost is not None:
+            raise lost
+
+    def renew_loop() -> None:
+        while not stop.wait(interval):
+            try:
+                heartbeat(force=True)
+            except Exception as exc:  # noqa: BLE001
+                with failure_lock:
+                    if not failure:
+                        failure.append(as_execution_stop(exc))
+                stop.set()
+                return
+
+    try:
+        heartbeat(force=True)
+    except Exception as exc:  # noqa: BLE001
+        raise as_execution_stop(exc) from exc
+    thread = threading.Thread(
+        target=renew_loop,
+        name="branch-task-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield assert_authority
+    finally:
+        stop.set()
+        thread.join(timeout=max(1.0, interval * 2))
+        if thread.is_alive():
+            with failure_lock:
+                if not failure:
+                    failure.append(RunExecutionAuthorityLost(
+                        "heartbeat renewal did not terminate cleanly"
+                    ))
+        if sys.exc_info()[0] is None:
+            assert_authority()
+
+
 def _build_branch_task_observers(
     universe_path: Path, claimed_task: Any,
 ) -> tuple[Callable[..., None], Callable[[str, str], None]]:
@@ -501,11 +744,43 @@ def _build_branch_task_observers(
 
     def refresh_heartbeat(*, force: bool = False) -> None:
         nonlocal last_heartbeat
+        from tinyassets.runs import RunCancelledError, RunExecutionAuthorityLost
+
         if not task_id:
             return
         now_mono = time.monotonic()
         if not force and (now_mono - last_heartbeat) < interval:
             return
+        if _is_epoch2_branch_task(claimed_task):
+            try:
+                adapter = _epoch2_adapter_for_universe(universe_path)
+                if adapter is None:
+                    raise RuntimeError("epoch2 adapter unavailable")
+                refreshed = adapter.heartbeat(
+                    task_id,
+                    worker_id=owner_id,
+                )
+                if refreshed is None:
+                    raise RuntimeError("lease is no longer owned by this worker")
+                last_heartbeat = now_mono
+                if refreshed.status == "cancel_requested":
+                    raise RunCancelledError(
+                        f"BranchTask {task_id} cancellation requested"
+                    )
+                return
+            except RunCancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "epoch2 branch_task lease renewal failed for %s owner=%s",
+                    task_id,
+                    owner_id,
+                )
+                if isinstance(exc, RunExecutionAuthorityLost):
+                    raise
+                raise RunExecutionAuthorityLost(
+                    f"BranchTask {task_id} lost lease authority: {exc}"
+                ) from exc
         try:
             from tinyassets.branch_tasks import refresh_task_heartbeat
 
@@ -525,6 +800,9 @@ def _build_branch_task_observers(
 
     def mark_node_status(node_id: str, status: str) -> None:
         if not task_id:
+            return
+        if _is_epoch2_branch_task(claimed_task):
+            refresh_heartbeat()
             return
         try:
             from tinyassets.branch_tasks import mark_task_progress
@@ -548,7 +826,7 @@ def _finalize_claimed_task(
     *,
     success: bool,
     error: str = "",
-) -> None:
+) -> str:
     """Mark a claimed BranchTask ``succeeded`` or ``failed``.
 
     Invoked after the graph stream completes (or errors out). A crash
@@ -557,23 +835,115 @@ def _finalize_claimed_task(
     pending on next daemon boot.
     """
     if claimed is None:
-        return
-    try:
-        from tinyassets.branch_tasks import mark_status
-
-        mark_status(
-            universe_path,
+        return ""
+    requested_status = "succeeded" if success else "failed"
+    if _is_epoch2_branch_task(claimed):
+        adapter = _epoch2_adapter_for_universe(universe_path)
+        if adapter is None:
+            raise RuntimeError("epoch2 adapter unavailable")
+        detail = {"error": str(error)[:2000]} if error else None
+        settled = adapter.finish(
             claimed.branch_task_id,
-            status="succeeded" if success else "failed",
-            error=error,
+            worker_id=_branch_task_owner_id(claimed),
+            status=requested_status,
+            detail=detail,
         )
         logger.info(
-            "dispatcher_pick: finalized %s -> %s",
+            "dispatcher_pick: finalized epoch2 %s -> %s",
             claimed.branch_task_id,
-            "succeeded" if success else "failed",
+            settled.status,
         )
-    except Exception:  # noqa: BLE001
-        logger.exception("_finalize_claimed_task failed")
+        return settled.status
+    from tinyassets.branch_tasks import mark_status
+
+    mark_status(
+        universe_path,
+        claimed.branch_task_id,
+        status=requested_status,
+        error=error,
+    )
+    logger.info(
+        "dispatcher_pick: finalized %s -> %s",
+        claimed.branch_task_id,
+        requested_status,
+    )
+    return requested_status
+
+
+def _branch_task_cancel_requested(
+    universe_path: Path,
+    claimed: Any,
+) -> bool:
+    if claimed is None:
+        return False
+    try:
+        if _is_epoch2_branch_task(claimed):
+            adapter = _epoch2_adapter_for_universe(universe_path)
+            if adapter is None:
+                return True
+            current = adapter.get(claimed.branch_task_id)
+            return current is None or current.status == "cancel_requested"
+        from tinyassets.branch_tasks import is_task_cancel_requested
+
+        return is_task_cancel_requested(
+            universe_path,
+            claimed.branch_task_id,
+        )
+    except Exception:  # noqa: BLE001 - uncertainty must stop material work
+        logger.exception(
+            "branch_task cancel check failed for %s",
+            getattr(claimed, "branch_task_id", ""),
+        )
+        return True
+
+
+def _cancel_claimed_task(universe_path: Path, claimed: Any) -> None:
+    if _is_epoch2_branch_task(claimed):
+        adapter = _epoch2_adapter_for_universe(universe_path)
+        if adapter is None:
+            raise RuntimeError("epoch2 adapter unavailable")
+        adapter.finish(
+            claimed.branch_task_id,
+            worker_id=_branch_task_owner_id(claimed),
+            status="cancelled",
+            detail={"reason": "cancel_requested"},
+        )
+        return
+    from tinyassets.branch_tasks import mark_status
+
+    mark_status(
+        universe_path,
+        claimed.branch_task_id,
+        status="cancelled",
+    )
+
+
+def _settle_claimed_direct_branch_task(
+    universe_path: Path,
+    claimed: Any,
+    *,
+    success: bool,
+    error: str,
+) -> tuple[bool, str]:
+    """Settle direct execution without ever attesting canceled work."""
+    if error == "branch_task_cancel_requested":
+        _cancel_claimed_task(universe_path, claimed)
+        return False, "branch_task_cancel_requested"
+    if not _is_epoch2_branch_task(claimed) and _branch_task_cancel_requested(
+        universe_path,
+        claimed,
+    ):
+        _cancel_claimed_task(universe_path, claimed)
+        return False, "branch_task_cancel_requested"
+    settled_status = _finalize_claimed_task(
+        universe_path,
+        claimed,
+        success=success,
+        error=error,
+    )
+    if settled_status == "cancelled":
+        return False, "branch_task_cancel_requested"
+    return success, error
 
 
 def _node_bid_lookup_factory(repo_root: Path):
@@ -786,7 +1156,7 @@ def _should_execute_claimed_branch_directly(claimed_task: Any) -> bool:
     if not branch_def_id or branch_def_id in _UNIVERSE_CYCLE_BRANCH_IDS:
         return False
     request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
-    return request_type in {"branch_run", "bug_investigation"}
+    return request_type in {"branch_run", "run_branch", "bug_investigation"}
 
 
 def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
@@ -871,6 +1241,7 @@ def _try_execute_claimed_branch_task(
     claimed_task: Any,
     daemon_id: str,
     on_node_status: Callable[[str, str], None] | None = None,
+    branch_task_heartbeat: Callable[..., None] | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Execute a claimed BranchTask's requested branch.
 
@@ -897,39 +1268,117 @@ def _try_execute_claimed_branch_task(
         from tinyassets.daemon_server import get_branch_definition
         from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
+            BranchTaskRunReservationConflict,
+            RunCancelledError,
+            RunExecutionAuthorityLost,
             execute_branch,
+            execute_branch_version,
+            get_run_by_branch_task_id,
             latest_run_by_name,
         )
         from tinyassets.storage import data_dir
 
         base_path = data_dir()
         requested = str(getattr(claimed_task, "branch_def_id", "") or "")
-        branch_def_id = _resolve_branch_id(requested, base_path)
-        if not branch_def_id:
-            return False, f"branch_not_found: {requested}", {
-                "requested_branch_def_id": requested,
-            }
-        try:
-            source_dict = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        except KeyError:
-            return False, f"branch_not_found: {branch_def_id}", {
-                "branch_def_id": branch_def_id,
-            }
-        branch = BranchDefinition.from_dict(source_dict)
-        errors = branch.validate()
-        if errors:
-            return False, "branch_validation_failed", {
-                "branch_def_id": branch_def_id,
-                "validation_errors": errors,
-            }
+        is_epoch2 = _is_epoch2_branch_task(claimed_task)
+        branch_version_id = str(
+            getattr(claimed_task, "automation_branch_version", "") or ""
+        ).strip()
+        branch = None
+        if is_epoch2:
+            if not branch_version_id:
+                return False, "missing_immutable_branch_version", {
+                    "requested_branch_def_id": requested,
+                }
+            # The transactional admission already bound this task to an exact
+            # published snapshot.  Never resolve the mutable branch head for
+            # epoch 2 execution.
+            branch_def_id = requested
+        else:
+            branch_def_id = _resolve_branch_id(requested, base_path)
+            if not branch_def_id:
+                return False, f"branch_not_found: {requested}", {
+                    "requested_branch_def_id": requested,
+                }
+            try:
+                source_dict = get_branch_definition(
+                    base_path,
+                    branch_def_id=branch_def_id,
+                )
+            except KeyError:
+                return False, f"branch_not_found: {branch_def_id}", {
+                    "branch_def_id": branch_def_id,
+                }
+            branch = BranchDefinition.from_dict(source_dict)
+            errors = branch.validate()
+            if errors:
+                return False, "branch_validation_failed", {
+                    "branch_def_id": branch_def_id,
+                    "validation_errors": errors,
+                }
 
         run_name = f"branch-task-{claimed_task.branch_task_id}"
-        existing_run = latest_run_by_name(
-            base_path,
-            run_name=run_name,
-            branch_def_id=branch_def_id,
+        if is_epoch2:
+            actor = str(getattr(claimed_task, "actor_id", "") or "").strip()
+            if not actor:
+                return False, "missing_admission_actor", {
+                    "branch_task_id": str(claimed_task.branch_task_id),
+                }
+        else:
+            actor = (
+                os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+                or "anonymous"
+            )
+        executor_worker_id = str(
+            getattr(claimed_task, "executor_worker_id", "") or "",
         )
-        if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
+        executor_runtime_id = str(
+            getattr(claimed_task, "executor_runtime_id", "") or "",
+        )
+        expected_epoch2_identity = {
+            "run_name": run_name,
+            "branch_task_id": str(claimed_task.branch_task_id),
+            "branch_def_id": branch_def_id,
+            "branch_version_id": branch_version_id,
+            "queue_universe_id": physical_universe_id,
+            "actor": actor,
+            "daemon_id": daemon_id,
+            "runtime_instance_id": executor_runtime_id,
+            "worker_id": executor_worker_id,
+        }
+
+        def reconcile_existing_run(
+            existing_run: dict[str, Any],
+        ) -> tuple[bool, str, dict[str, Any]]:
+            if is_epoch2:
+                mismatches = [
+                    field
+                    for field, expected in expected_epoch2_identity.items()
+                    if str(existing_run.get(field) or "") != str(expected or "")
+                ]
+                if mismatches:
+                    return False, "existing_run_identity_mismatch", {
+                        "branch_def_id": branch_def_id,
+                        "branch_version_id": branch_version_id,
+                        "run_id": existing_run.get("run_id") or "",
+                        "run_status": existing_run.get("status") or "unknown",
+                        "identity_mismatches": mismatches,
+                        "reused_existing_run": False,
+                    }
+            if existing_run.get("status") != RUN_STATUS_COMPLETED:
+                existing_status = str(existing_run.get("status") or "unknown")
+                return (
+                    False,
+                    f"existing_run_requires_reconciliation:{existing_status}",
+                    {
+                        "branch_def_id": branch_def_id,
+                        "branch_version_id": branch_version_id,
+                        "run_id": existing_run.get("run_id") or "",
+                        "run_status": existing_status,
+                        "actor": existing_run.get("actor") or "",
+                        "reused_existing_run": True,
+                    },
+                )
             output = existing_run.get("output", {})
             metadata = {
                 "branch_def_id": branch_def_id,
@@ -938,6 +1387,8 @@ def _try_execute_claimed_branch_task(
                 "actor": existing_run.get("actor") or "",
                 "reused_existing_run": True,
             }
+            if is_epoch2:
+                metadata["branch_version_id"] = branch_version_id
             attach_result = _maybe_attach_bug_investigation_patch_packet(
                 claimed_task,
                 existing_run["status"],
@@ -954,6 +1405,20 @@ def _try_execute_claimed_branch_task(
             )
             return True, "", metadata
 
+        if is_epoch2:
+            existing_run = get_run_by_branch_task_id(
+                base_path,
+                branch_task_id=str(claimed_task.branch_task_id),
+            )
+        else:
+            existing_run = latest_run_by_name(
+                base_path,
+                run_name=run_name,
+                branch_def_id=branch_def_id,
+            )
+        if existing_run:
+            return reconcile_existing_run(existing_run)
+
         provider_call: Any = None
         try:
             from domains.fantasy_daemon.phases._provider_stub import (
@@ -962,45 +1427,102 @@ def _try_execute_claimed_branch_task(
         except ImportError:
             provider_call = None
 
-        actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
-        executor_worker_id = str(
-            getattr(claimed_task, "executor_worker_id", "") or "",
-        )
-        executor_runtime_id = str(
-            getattr(claimed_task, "executor_runtime_id", "") or "",
-        )
-        outcome = execute_branch(
-            base_path,
-            branch=branch,
-            inputs=_branch_task_inputs_for_execution(claimed_task),
-            run_name=run_name,
-            actor=actor,
-            daemon_id=daemon_id,
-            runtime_instance_id=executor_runtime_id,
-            worker_id=executor_worker_id,
-            provider_call=provider_call,
-            on_node_status=on_node_status,
+        execution_kwargs = {
+            "inputs": _branch_task_inputs_for_execution(claimed_task),
+            "run_name": run_name,
+            "actor": actor,
+            "daemon_id": daemon_id,
+            "runtime_instance_id": executor_runtime_id,
+            "worker_id": executor_worker_id,
+            "provider_call": provider_call,
+            "on_node_status": on_node_status,
             # Carry spawn depth across the queue boundary so an in-node enqueue
             # from this run is depth+1 and the depth cap can bound the chain.
-            _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
+            "_invocation_depth": int(getattr(claimed_task, "depth", 0) or 0),
             # Trusted enqueue context: universe authority comes from the
             # physical queue directory after its persisted row value matched;
             # lineage comes from the claimed task. A source node cannot
             # redirect descendants by editing task metadata or inputs.
-            _enqueue_universe_id=physical_universe_id,
-            _parent_branch_task_id=str(
+            "_enqueue_universe_id": physical_universe_id,
+            "_parent_branch_task_id": str(
                 getattr(claimed_task, "branch_task_id", "") or ""
             ),
-            _origin_branch_task_id=str(
+            "_origin_branch_task_id": str(
                 getattr(claimed_task, "origin_branch_task_id", "") or ""
             ),
-        )
+        }
+        try:
+            if is_epoch2:
+                execution_kwargs["_queue_branch_task_id"] = str(
+                    claimed_task.branch_task_id
+                )
+                if branch_task_heartbeat is not None:
+                    with _continuous_branch_task_heartbeat(
+                        branch_task_heartbeat,
+                    ) as assert_authority:
+                        def authority_checked_node_status(
+                            node_id: str,
+                            status: str,
+                        ) -> None:
+                            assert_authority()
+                            if on_node_status is not None:
+                                on_node_status(node_id, status)
+                            assert_authority()
+
+                        execution_kwargs["on_node_status"] = (
+                            authority_checked_node_status
+                        )
+                        outcome = execute_branch_version(
+                            base_path,
+                            branch_version_id=branch_version_id,
+                            **execution_kwargs,
+                        )
+                        assert_authority()
+                else:
+                    outcome = execute_branch_version(
+                        base_path,
+                        branch_version_id=branch_version_id,
+                        **execution_kwargs,
+                    )
+            else:
+                assert branch is not None
+                outcome = execute_branch(
+                    base_path,
+                    branch=branch,
+                    **execution_kwargs,
+                )
+        except BranchTaskRunReservationConflict:
+            reserved_run = get_run_by_branch_task_id(
+                base_path,
+                branch_task_id=str(claimed_task.branch_task_id),
+            )
+            if reserved_run is None:
+                return False, "run_reservation_conflict_missing", {
+                    "branch_def_id": branch_def_id,
+                    "branch_version_id": branch_version_id,
+                }
+            return reconcile_existing_run(reserved_run)
+        except RunCancelledError as exc:
+            return False, "branch_task_cancel_requested", {
+                "branch_def_id": branch_def_id,
+                "branch_version_id": branch_version_id,
+                "cancel_requested": True,
+                "cancel_detail": str(exc),
+            }
+        except RunExecutionAuthorityLost as exc:
+            return False, "branch_task_authority_lost", {
+                "branch_def_id": branch_def_id,
+                "branch_version_id": branch_version_id,
+                "authority_error": str(exc),
+            }
         metadata = {
             "branch_def_id": branch_def_id,
             "run_id": outcome.run_id,
             "run_status": outcome.status,
             "actor": actor,
         }
+        if is_epoch2:
+            metadata["branch_version_id"] = branch_version_id
         attach_result = _maybe_attach_bug_investigation_patch_packet(
             claimed_task,
             outcome.status,
@@ -1765,9 +2287,19 @@ class DaemonController:
                         claimed_task,
                         daemon_id,
                         on_node_status=branch_task_node_status,
+                        branch_task_heartbeat=branch_task_heartbeat,
                     )
                 )
-                branch_task_heartbeat(force=True)
+                if not _is_epoch2_branch_task(claimed_task):
+                    branch_task_heartbeat(force=True)
+                branch_success, branch_error = (
+                    _settle_claimed_direct_branch_task(
+                        output_dir,
+                        claimed_task,
+                        success=branch_success,
+                        error=branch_error,
+                    )
+                )
                 _record_loop_daemon_signal(
                     loop_daemon_context,
                     universe_path=output_dir,
@@ -1784,10 +2316,6 @@ class DaemonController:
                         "trigger_source": claimed_task.trigger_source,
                         **branch_metadata,
                     },
-                )
-                _finalize_claimed_task(
-                    output_dir, claimed_task,
-                    success=branch_success, error=branch_error,
                 )
                 claimed_task = None  # prevent wrapper finalization
                 self._cleanup()
@@ -1841,11 +2369,9 @@ class DaemonController:
                     # "failed") via the claimed_failed_reason=""
                     # branch in the finally block.
                     if claimed_task is not None:
-                        from tinyassets.branch_tasks import (
-                            is_task_cancel_requested,
-                        )
-                        if is_task_cancel_requested(
-                            output_dir, claimed_task.branch_task_id,
+                        if _branch_task_cancel_requested(
+                            output_dir,
+                            claimed_task,
                         ):
                             logger.info(
                                 "queue_cancel observed on running task %s",
@@ -1911,12 +2437,7 @@ class DaemonController:
                 if claimed_task is not None:
                     if cancel_requested_during_run:
                         try:
-                            from tinyassets.branch_tasks import mark_status
-                            mark_status(
-                                output_dir,
-                                claimed_task.branch_task_id,
-                                status="cancelled",
-                            )
+                            _cancel_claimed_task(output_dir, claimed_task)
                             logger.info(
                                 "dispatcher_pick: finalized %s -> cancelled",
                                 claimed_task.branch_task_id,
