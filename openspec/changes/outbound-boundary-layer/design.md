@@ -83,6 +83,37 @@ are indeterminate and MUST NOT authorize a retry. This typed adapter remains
 dark until the automation owner passes the server-authored identity directly;
 legacy Branch packets cannot opt into it by adding fields.
 
+### B9 — Execution admission consumes opaque owner bindings
+
+The Engine OS logical `ExecutionRequirement` carries an
+`egress_requirement_ref` plus digest and a `credential_requirement_ref` plus
+digest. Both pairs are opaque to the engine caller. This change owns resolution
+of the egress pair at the trusted outbound boundary; the active credential
+custody owner resolves the credential pair. A caller, graph, provider, backend,
+or adapter cannot choose the resolved objects, replace either digest, or treat
+a grant or proxy handle as satisfying the requirement by itself.
+
+For `source_exec/runner_source_exec`, any admissible owner-published pairing
+must resolve to deny-all egress and no credential available to the workload.
+For `inference_only/provider_cli`, any admissible pairing must resolve to a
+credential-blind provider transport: model-controlled work receives no raw
+key, token, auth file, native-store locator, or other recoverable credential,
+and remote HTTP can use only the non-serializable scoped proxy after its grant
+and the credential owner's requirement both validate. The proxy may resolve a
+requester-owned provider reference only on the same attested
+requester-controlled host as native custody; it never resolves a retiring
+`credential-vault` `llm_api_key` record.
+
+Compatibility is fail-closed and jointly owned. Before a profile can run, the
+outbound and credential owners must publish an exact compatible pairing whose
+resolved objects and digests match the trusted requirement. This decision does
+not publish a complete egress taxonomy, credential taxonomy, or compatibility
+matrix, and it does not classify provider model calls under the action-cap,
+request-lineage idempotency, reconciliation, receipt, or batch contracts. Those
+provider-call questions remain open under the credential-custody handoff; an
+absent answer cannot be replaced by the goal/schedule/item identity used for
+ordinary effects or by a second outbound authority system.
+
 ## Risks / Trade-offs
 
 - [Risk] System-derived idempotency identity breaks existing callers that rely on hint-based dedup. → The implementation lane must migrate existing effectors and keep the caller-hint path working until every effector is converted, then modify the canonical requirement in one lane.
