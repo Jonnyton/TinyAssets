@@ -7,6 +7,7 @@ tests run the helper against tmp_path files and never touch /etc.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -19,6 +20,46 @@ import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "deploy" / "install-tinyassets-env.sh"
+_COMPOSE_UNICODE_SPACES = (
+    "\u0085",
+    "\u00a0",
+    "\u1680",
+    "\u2000",
+    "\u2001",
+    "\u2002",
+    "\u2003",
+    "\u2004",
+    "\u2005",
+    "\u2006",
+    "\u2007",
+    "\u2008",
+    "\u2009",
+    "\u200a",
+    "\u2028",
+    "\u2029",
+    "\u202f",
+    "\u205f",
+    "\u3000",
+)
+_COMPOSE_UNICODE_CASES = (
+    *((space, "leading") for space in _COMPOSE_UNICODE_SPACES),
+    *((space, "leading-export") for space in _COMPOSE_UNICODE_SPACES),
+    *((space, "delimiter") for space in _COMPOSE_UNICODE_SPACES[:2]),
+    *((space, "export-delimiter") for space in _COMPOSE_UNICODE_SPACES[:2]),
+)
+
+
+def _docker_compose_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    return (
+        subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def test_helper_knows_renamed_env_can_bootstrap_from_legacy_file():
@@ -135,40 +176,315 @@ def test_set_once_same_value_still_uses_permission_repair_path():
     assert "atomic_install" in text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
 
 
-def test_protected_value_never_uses_a_named_plaintext_file():
+def test_set_once_has_duplicate_assignment_guard_before_write():
     text = _SCRIPT.read_text(encoding="utf-8")
     set_body = text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
-    assert "mktemp" not in set_body
-    assert "VALUE_FILE" not in set_body
-    assert "/dev/fd/3" in set_body
-    assert '3< <(printf \'%s\' "${value}")' in set_body
-    assert "ACTIVE_BUILDER_PID" in text
-    assert "stop_content_builder" in text
-    assert "trap 'handle_signal TERM' TERM" in text
+    immutable_block = text.split('if [ "${immutable}" = "true" ]', 1)[1].split(
+        "# Build new content", 1
+    )[0]
+    assert "assignment_count" in immutable_block
+    assert "duplicate assignments" in immutable_block
+    assert set_body.index("duplicate assignments") < set_body.index("atomic_install")
 
 
 @pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None,
     reason="shell helper is exercised on POSIX CI; Windows test stays structural",
 )
-@pytest.mark.parametrize("exit_kind", ["failure", "term"])
-def test_protected_value_file_is_removed_on_failure_or_signal(
-    tmp_path, exit_kind: str
+@pytest.mark.parametrize(
+    "first_assignment",
+    [
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret",
+        "export TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret",
+        "  TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret",
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY =old-secret",
+        "\texport\tTINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\t=old-secret",
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: old-secret",
+        "  export TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY : old-secret",
+    ],
+)
+def test_set_once_rejects_duplicate_assignments_before_mutation(
+    tmp_path, first_assignment: str
+):
+    env_file = tmp_path / "tinyassets" / "request-idempotency.env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    original = first_assignment + "\nTINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=\n"
+    env_file.write_text(original, encoding="utf-8")
+    replacement = "replacement-secret"
+
+    result = _run_helper(
+        tmp_path,
+        ["set-once", "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"],
+        stdin=replacement,
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert result.returncode == 5
+    assert env_file.read_text(encoding="utf-8") == original
+    assert "old-secret" not in result.stdout + result.stderr
+    assert replacement not in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+def test_delete_removes_every_compose_recognized_assignment_shape(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "KEEP=1\n"
+        "export TARGET=one\n"
+        "  TARGET=two\n"
+        "TARGET =three\n"
+        "\texport\tTARGET\t=four\n"
+        "TARGET: five\n"
+        "  export TARGET : six\n",
+        encoding="utf-8",
+    )
+
+    result = _run_helper(
+        tmp_path,
+        ["delete", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "TARGET=secret",
+        "export TARGET=secret",
+        "  TARGET =secret",
+        "TARGET: secret",
+        "  export TARGET : secret",
+    ],
+)
+def test_assert_absent_rejects_every_compose_assignment_shape(
+    tmp_path, assignment: str
 ):
     env_file = tmp_path / "tinyassets" / "env"
     legacy_file = tmp_path / "never" / "legacy"
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    marker = tmp_path / "awk-started"
-    fake_awk = fake_bin / "awk"
-    if exit_kind == "failure":
-        fake_awk.write_text("#!/usr/bin/env bash\nexit 19\n", encoding="utf-8")
-    else:
-        fake_awk.write_text(
-            '#!/usr/bin/env bash\n: > "${AWK_MARKER}"\nexec sleep 30\n',
-            encoding="utf-8",
-        )
-    fake_awk.chmod(0o755)
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(f"KEEP=1\n{assignment}\n", encoding="utf-8")
+
+    result = _run_helper(
+        tmp_path,
+        ["assert-absent", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert result.returncode == 6
+    assert "secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+def test_utf8_bom_first_assignment_cannot_bypass_protected_key_operations(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    bom_only = "\ufeffTARGET: old-secret\nKEEP=1\n"
+    env_file.write_text(bom_only, encoding="utf-8")
+
+    absent = _run_helper(
+        tmp_path,
+        ["assert-absent", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert absent.returncode == 6
+    assert env_file.read_text(encoding="utf-8") == bom_only
+
+    duplicate = "\ufeffTARGET: old-secret\nTARGET=\nKEEP=1\n"
+    env_file.write_text(duplicate, encoding="utf-8")
+    immutable = _run_helper(
+        tmp_path,
+        ["set-once", "TARGET"],
+        stdin="replacement-secret",
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert immutable.returncode == 5
+    assert env_file.read_text(encoding="utf-8") == duplicate
+    combined = absent.stdout + absent.stderr + immutable.stdout + immutable.stderr
+    assert "old-secret" not in combined
+    assert "replacement-secret" not in combined
+
+    env_file.write_text(bom_only, encoding="utf-8")
+    deleted = _run_helper(
+        tmp_path,
+        ["delete", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert deleted.returncode == 0, deleted.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+@pytest.mark.parametrize(("compose_space", "shape"), _COMPOSE_UNICODE_CASES)
+def test_compose_unicode_space_cannot_bypass_protected_key_operations(
+    tmp_path, compose_space: str, shape: str
+):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    prefix = compose_space if shape == "leading" else ""
+    if shape == "leading-export":
+        prefix = f"{compose_space}export "
+    elif shape == "export-delimiter":
+        prefix = "export "
+    delimiter_space = compose_space if shape.endswith("delimiter") else ""
+    original = f"{prefix}TARGET{delimiter_space}=old-secret\nKEEP=1\n"
+
+    env_file.write_text(original, encoding="utf-8")
+    absent = _run_helper(
+        tmp_path,
+        ["assert-absent", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert absent.returncode == 6
+
+    immutable = _run_helper(
+        tmp_path,
+        ["set-once", "TARGET"],
+        stdin="replacement-secret",
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert immutable.returncode == 5
+    assert env_file.read_text(encoding="utf-8") == original
+
+    deleted = _run_helper(
+        tmp_path,
+        ["delete", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert deleted.returncode == 0, deleted.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+    combined = absent.stdout + absent.stderr + immutable.stdout + immutable.stderr
+    assert "old-secret" not in combined
+    assert "replacement-secret" not in combined
+
+
+@pytest.mark.skipif(
+    not _docker_compose_available(),
+    reason="requires the installed Docker Compose CLI grammar",
+)
+@pytest.mark.parametrize(("compose_space", "shape"), _COMPOSE_UNICODE_CASES)
+def test_installed_compose_resolves_unicode_space_assignment(
+    tmp_path, compose_space: str, shape: str
+):
+    compose_file = tmp_path / "compose.yml"
+    env_file = tmp_path / "probe.env"
+    compose_file.write_text(
+        "services:\n"
+        "  probe:\n"
+        "    image: alpine:3.20\n"
+        "    env_file:\n"
+        "      - ./probe.env\n",
+        encoding="utf-8",
+    )
+    prefix = compose_space if shape == "leading" else ""
+    if shape == "leading-export":
+        prefix = f"{compose_space}export "
+    elif shape == "export-delimiter":
+        prefix = "export "
+    delimiter_space = compose_space if shape.endswith("delimiter") else ""
+    env_file.write_text(
+        f"{prefix}TARGET{delimiter_space}=secret\n", encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "config",
+            "--format",
+            "json",
+        ],
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    model = json.loads(result.stdout)
+    assert model["services"]["probe"]["environment"]["TARGET"] == "secret"
+
+
+@pytest.mark.skipif(
+    not _docker_compose_available(),
+    reason="requires the installed Docker Compose CLI grammar",
+)
+def test_installed_compose_resolves_bom_prefixed_colon_assignment(tmp_path):
+    compose_file = tmp_path / "compose.yml"
+    env_file = tmp_path / "probe.env"
+    compose_file.write_text(
+        "services:\n"
+        "  probe:\n"
+        "    image: alpine:3.20\n"
+        "    env_file:\n"
+        "      - ./probe.env\n",
+        encoding="utf-8",
+    )
+    env_file.write_bytes(b"\xef\xbb\xbfTARGET: secret\n")
+
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "config",
+            "--format",
+            "json",
+        ],
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    model = json.loads(result.stdout)
+    assert model["services"]["probe"]["environment"]["TARGET"] == "secret"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="requires a POSIX file-size limit and real shell write failure",
+)
+def test_atomic_write_failure_preserves_original_file(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    original = "KEEP=" + ("a" * 4096) + "\n"
+    env_file.write_text(original, encoding="utf-8")
 
     env = os.environ.copy()
     env.update(
@@ -177,49 +493,97 @@ def test_protected_value_file_is_removed_on_failure_or_signal(
             "TINYASSETS_LEGACY_ENV_FILE": str(legacy_file),
             "TINYASSETS_ENV_OWNER": "",
             "TINYASSETS_ENV_READ_USER": "",
-            "AWK_MARKER": str(marker),
-            "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
         }
     )
-    protected = "never-print-this-protected-value"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'ulimit -f 1; exec bash "$@"',
+            "bash",
+            str(_SCRIPT),
+            "set",
+            "TARGET",
+        ],
+        input="b" * 4096,
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert env_file.read_text(encoding="utf-8") == original
+    assert not list(env_file.parent.glob(".env.tmp.*"))
+
+
+def test_protected_value_never_uses_a_secret_only_plaintext_file():
+    text = _SCRIPT.read_text(encoding="utf-8")
+    set_body = text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
+    assert "VALUE_FILE" not in set_body
+    assert "awk" not in set_body
+    assert "coproc" not in set_body
+    assert '$(cat)' not in set_body
+    assert "read -r -d '' value" in set_body
+    assert "compose_line_assigns_key" in set_body
+    assert 'new_content+="${key}=${value}"' in set_body
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="requires Linux /proc child inspection and POSIX signals",
+)
+def test_parent_only_term_while_stdin_open_leaves_no_secret_reader(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("KEEP=1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "TINYASSETS_ENV_FILE": str(env_file),
+            "TINYASSETS_LEGACY_ENV_FILE": str(legacy_file),
+            "TINYASSETS_ENV_OWNER": "",
+            "TINYASSETS_ENV_READ_USER": "",
+        }
+    )
     process = subprocess.Popen(
-        ["bash", str(_SCRIPT), "set", "SECRET_VALUE"],
+        ["bash", str(_SCRIPT), "set", "TARGET"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         cwd=tmp_path,
         env=env,
-        start_new_session=True,
     )
-    assert process.stdin is not None
-    process.stdin.write(protected)
-    process.stdin.close()
+    children = Path(f"/proc/{process.pid}/task/{process.pid}/children")
+    deadline = time.monotonic() + 5
+    while not children.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert children.exists()
+    time.sleep(0.05)
+    child_pids = children.read_text(encoding="utf-8").strip().split()
 
-    if exit_kind == "term":
-        for _ in range(100):
-            if marker.exists():
-                break
-            time.sleep(0.02)
-        assert marker.exists(), "fake awk did not start after protected-value handoff"
-        os.kill(process.pid, signal.SIGTERM)
-        time.sleep(0.25)
-        assert not list(env_file.parent.glob("env.value.*")), (
-            "installer PID signal must not leave a plaintext value file while "
-            "its child is still blocked"
-        )
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
+    os.kill(process.pid, signal.SIGTERM)
     process.wait(timeout=5)
-    stdout = process.stdout.read() if process.stdout else ""
-    stderr = process.stderr.read() if process.stderr else ""
-    assert process.returncode != 0
-    assert not list(env_file.parent.glob("env.value.*"))
-    assert protected not in stdout
-    assert protected not in stderr
+    if process.stdin:
+        process.stdin.close()
+
+    assert child_pids == []
+    assert process.returncode == -signal.SIGTERM
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+def test_atomic_install_uses_sibling_transaction_and_rename():
+    text = _SCRIPT.read_text(encoding="utf-8")
+    transaction_body = text.split("prepare_atomic_temp()", 1)[1].split(
+        "cmd_set()", 1
+    )[0]
+    assert "mktemp" in transaction_body
+    assert "trap" in transaction_body
+    assert "mv " in transaction_body
+    assert "install_env_file /dev/stdin" not in transaction_body
 
 
 def _run_helper(

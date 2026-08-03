@@ -527,6 +527,58 @@ jobs:
           fi
           SH
 
+      - name: Prove request HMAC rotation boundary before quiescence
+        id: rotation-boundary
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac }}
+        env:
+          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/verify-request-hmac-rotation-fleet.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/verify-request-hmac-rotation-fleet.sh"
+          expected_compose_sha="$(sha256sum deploy/compose.yml | cut -d ' ' -f 1)"
+          actual_compose_sha="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo sha256sum /opt/tinyassets/compose.yml 2>/dev/null | cut -d ' ' -f 1" || true)"
+          if [ -z "${actual_compose_sha}" ] || [ "${actual_compose_sha}" != "${expected_compose_sha}" ]; then
+            echo "::error::rotation requires the corrected Compose file to be deployed first"
+            exit 1
+          fi
+          if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"; then
+            echo "::error::rotation prerequisite failed: shared env exposes request admission authority"
+            exit 1
+          fi
+          fleet_ids="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'")" || {
+            echo "::error::rotation prerequisite failed: runtime fleet is absent, uses another image, or exposes request admission authority"
+            exit 1
+          }
+          mapfile -t expected_ids <<< "${fleet_ids}"
+          if [ "${#expected_ids[@]}" -ne 4 ]; then
+            echo "::error::rotation prerequisite returned an incomplete worker identity set"
+            exit 1
+          fi
+          for container_id in "${expected_ids[@]}"; do
+            if [[ ! "${container_id}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::rotation prerequisite returned a malformed worker identity"
+              exit 1
+            fi
+          done
+          {
+            echo 'fleet_ids<<EOF'
+            printf '%s\n' "${expected_ids[@]}"
+            echo 'EOF'
+            echo "proved_image_ref=${TARGET_IMAGE}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "rotation running-fleet boundary and exact correction image proved before quiescence"
+
       # TRANSITIONAL retire-cheat-loop task 2.1 fence. Remove the helper and
       # these orchestration steps after task 2.5's locked migration.
       - name: Transitional task 2.1 stop-writer preflight
@@ -621,6 +673,9 @@ jobs:
         env:
           TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
           REQUEST_HMAC_INSTALL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac && 'set' || 'set-once' }}
+          ROTATION_FLEET_IDS: ${{ steps.rotation-boundary.outputs.fleet_ids }}
+          ROTATION_PROVED_IMAGE_REF: ${{ steps.rotation-boundary.outputs.proved_image_ref }}
+          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
         run: |
           case "${REQUEST_HMAC_INSTALL_MODE}" in
             set-once|set) ;;
@@ -636,6 +691,50 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/verify-request-hmac-rotation-fleet.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/verify-request-hmac-rotation-fleet.sh"
+          if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ]; then
+            if [ -z "${ROTATION_PROVED_IMAGE_REF}" ] \
+                || [ "${ROTATION_PROVED_IMAGE_REF}" != "${TARGET_IMAGE}" ]; then
+              echo "::error::rotation target image differs from the pre-proved correction image"
+              exit 1
+            fi
+            expected_compose_sha="$(sha256sum deploy/compose.yml | cut -d ' ' -f 1)"
+            actual_compose_sha="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo sha256sum /opt/tinyassets/compose.yml 2>/dev/null | cut -d ' ' -f 1" || true)"
+            if [ -z "${actual_compose_sha}" ] || [ "${actual_compose_sha}" != "${expected_compose_sha}" ]; then
+              echo "::error::rotation requires the corrected Compose file to be deployed first"
+              exit 1
+            fi
+            if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"; then
+              echo "::error::rotation prerequisite failed: shared env exposes request admission authority"
+              exit 1
+            fi
+            mapfile -t expected_ids <<< "${ROTATION_FLEET_IDS}"
+            if [ "${#expected_ids[@]}" -ne 4 ]; then
+              echo "::error::rotation prerequisite is missing the pre-quiescence worker identity set"
+              exit 1
+            fi
+            for container_id in "${expected_ids[@]}"; do
+              if [[ ! "${container_id}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::rotation prerequisite contains a malformed worker identity"
+                exit 1
+              fi
+            done
+            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                sudo bash /tmp/verify-request-hmac-rotation-fleet.sh assert-quiesced "${expected_ids[@]}"
+            then
+              echo "rotation exact fleet is quiesced before key transmission"
+            else
+              echo "::error::rotation prerequisite failed: pre-proved worker identity is not exactly quiesced"
+              exit 1
+            fi
+          fi
           printf '%s' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}" | \
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -658,8 +757,9 @@ jobs:
 
       # INVARIANT — /etc/tinyassets/env must stay root:tinyassets 640.
       # All env mutations route through `deploy/install-tinyassets-env.sh`
-      # which uses `install -m 640 -o root -g tinyassets` for an atomic
-      # write. The legacy `sed -i + chown + chmod` chain (root cause of
+      # which writes a protected sibling transaction, applies mode/owner,
+      # syncs, and atomically renames it. The legacy `sed -i + chown + chmod`
+      # chain (root cause of
       # the 2026-04-21 P0 outage — see RC-1 in
       # docs/audits/2026-04-25-etc-workflow-env-mode-flip.md) is gone.
       # The helper asserts post-write readability by user=tinyassets, so
@@ -675,32 +775,24 @@ jobs:
       # different universe than the public MCP default.
       # Hard rename cutover: /etc/tinyassets/env may have been bootstrapped
       # from /etc/workflow/env on first deploy. Strip every legacy
-      # WORKFLOW_* override and workflow-named backup/log target so the
+      # WORKFLOW_* override and workflow-named backup target so the
       # container environment no longer exposes retired product surfaces.
-      # BACKUP_DEST is canonical host-owned backup configuration and must
-      # survive application deploys.
+      # BACKUP_DEST and LOG_DEST are canonical host-owned backup/log-shipping
+      # configuration and must survive application deploys.
       - name: Scrub stale cloud env overrides
         id: production_mutation
         run: |
           echo "production_mutation_started=true" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_GH_REPO LOG_DEST" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_GH_REPO" \
               < deploy/install-tinyassets-env.sh
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo bash -s' <<'SH'
-          set -euo pipefail
-          shared_env=/etc/tinyassets/env
-          if ! test -r "${shared_env}"; then
-            echo "::error::cannot validate request admission authority boundary: ${shared_env} is unreadable"
-            exit 1
-          fi
-          if grep -q '^TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=' "${shared_env}"; then
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" || {
             echo "::error::shared env still contains request admission minting authority"
             exit 1
-          fi
-          SH
+          }
 
       - name: Sync runtime deploy files
         run: |
@@ -1274,6 +1366,8 @@ jobs:
           exit 0
 
       - name: Verify cloud worker is running
+        env:
+          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
         run: |
           worker_containers="tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2"
           for container in ${worker_containers}; do
@@ -1301,16 +1395,16 @@ jobs:
               echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
               exit 1
             fi
-            if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker exec ${container} python -c 'import os, sys; sys.exit(1 if \"TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\" in os.environ else 0)'"; then
-              echo "::error::${container} inherited request admission minting authority"
-              exit 1
-            fi
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
           done
+          if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}' >/dev/null"; then
+            echo "::error::running workers expose request admission minting authority or could not be verified from host-controlled Docker metadata"
+            exit 1
+          fi
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               'sudo docker exec -i tinyassets-worker python -' <<'PY'

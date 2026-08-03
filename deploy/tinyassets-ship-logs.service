@@ -30,7 +30,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/tinyassets/env
-ExecStart=/bin/bash /opt/tinyassets/deploy/ship-logs.sh
+ExecStart=/bin/bash /opt/tinyassets-host-uptime/current/deploy/ship-logs.sh
 TimeoutStartSec=15min
 # Don't kill mid-upload — ship-logs.sh uses rclone which manages its
 # own retry/timeout internally.
