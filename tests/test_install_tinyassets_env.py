@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "deploy" / "install-tinyassets-env.sh"
 
@@ -28,6 +27,8 @@ def test_helper_knows_renamed_env_can_bootstrap_from_legacy_file():
     assert "useradd" in text
     assert "usermod -aG docker" in text
     assert "missing — bootstrap should have created it" not in text
+    assert '-v v="${value}"' not in text
+    assert "set-once" in text
 
 
 @pytest.mark.skipif(
@@ -74,6 +75,41 @@ def test_set_creates_empty_env_when_no_legacy_file_exists(tmp_path):
         == "TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon@sha256:abc\n"
     )
     assert "creating empty env file" in result.stderr
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+def test_set_once_refuses_secret_rotation_without_exposing_values(tmp_path):
+    env_file = tmp_path / "tinyassets" / "request-idempotency.env"
+    legacy_file = tmp_path / "never" / "legacy"
+    original = "first-secret-value"
+    replacement = "different-secret-value"
+
+    first = _run_helper(
+        tmp_path,
+        ["set-once", "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"],
+        stdin=original,
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    second = _run_helper(
+        tmp_path,
+        ["set-once", "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"],
+        stdin=replacement,
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode != 0
+    assert env_file.read_text(encoding="utf-8") == (
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=first-secret-value\n"
+    )
+    combined = second.stdout + second.stderr
+    assert original not in combined
+    assert replacement not in combined
 
 
 def _run_helper(

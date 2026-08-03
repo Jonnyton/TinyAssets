@@ -28,17 +28,6 @@
 
 
 # ---------------------------------------------------------------------
-# Shared request admission + idempotency seal
-# ---------------------------------------------------------------------
-
-# Canonical base64 for at least 32 random bytes. This key must be identical
-# for the public daemon and every cloud worker so admission witnesses remain
-# verifiable across process boundaries and restarts. Generate 48 random bytes;
-# never reuse the daemon-only agent-interchange key.
-TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=
-
-
-# ---------------------------------------------------------------------
 # Daemon image + version pinning
 # ---------------------------------------------------------------------
 

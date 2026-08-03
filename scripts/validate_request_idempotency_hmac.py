@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import os
 
 ENV_NAME = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+COMPANION_ENV_NAME = "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
 MIN_KEY_BYTES = 32
 
 
@@ -27,7 +29,10 @@ def validate_secret(value: str) -> bytes:
 
 def main() -> int:
     try:
-        validate_secret(os.environ.get(ENV_NAME, ""))
+        decoded = validate_secret(os.environ.get(ENV_NAME, ""))
+        companion = os.environ.get(COMPANION_ENV_NAME, "")
+        if companion and hmac.compare_digest(decoded, validate_secret(companion)):
+            raise ValueError(f"must differ from {COMPANION_ENV_NAME}")
     except ValueError as exc:
         print(f"::error::{ENV_NAME} {exc}")
         return 1

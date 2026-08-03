@@ -81,6 +81,15 @@ jobs:
           test -n "$DO_DROPLET_HOST"
           test -n "$DO_SSH_USER"
           test -n "${{ secrets.DO_SSH_KEY }}"
+      - name: Validate recovery agent interchange HMAC
+        env:
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: python scripts/validate_agent_interchange_hmac.py
+      - name: Validate recovery request idempotency HMAC
+        env:
+          TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: python scripts/validate_request_idempotency_hmac.py
       - name: Install recovery SSH key
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -348,6 +357,7 @@ jobs:
       - name: Validate request idempotency HMAC prerequisite
         env:
           TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
         run: python scripts/validate_request_idempotency_hmac.py
 
       - name: Install SSH key
@@ -616,7 +626,7 @@ jobs:
           printf '%s' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}" | \
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh set TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 
       # INVARIANT — /etc/tinyassets/env must stay root:tinyassets 640.
       # All env mutations route through `deploy/install-tinyassets-env.sh`

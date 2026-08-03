@@ -32,10 +32,16 @@
 #   ssh "$DROPLET" 'sudo bash -s -- delete TINYASSETS_WIKI_PATH' \
 #     < deploy/install-tinyassets-env.sh
 #
+#   # Set an immutable key once; a different existing value fails closed:
+#   printf '%s' "$SECRET" | sudo bash install-tinyassets-env.sh set-once KEY
+#
 # Idempotency
 # -----------
 # `set` is idempotent — running twice with the same value is a no-op
 # from the file's perspective (same content, same mode, same owner).
+# `set-once` accepts an absent/empty key or the exact existing value and
+# refuses replacement. It is for persisted HMAC roots that require a
+# versioned migration before rotation.
 # `delete` is idempotent — deleting an already-absent key is a no-op.
 #
 # Required privilege
@@ -53,6 +59,7 @@
 #   2  env bootstrap failed before install(1).
 #   3  install(1) failed.
 #   4  post-write readability assert failed (tinyassets user cannot read).
+#   5  set-once refused replacement of an existing non-empty value.
 
 set -euo pipefail
 
@@ -68,6 +75,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   install-tinyassets-env.sh set <KEY>           # value on stdin
+  install-tinyassets-env.sh set-once <KEY>      # immutable value on stdin
   install-tinyassets-env.sh delete <KEY> [KEY...]
 EOF
     exit 1
@@ -129,7 +137,7 @@ ensure_group_exists() {
 }
 
 ensure_read_user_exists() {
-    [ -n "${ENV_READ_USER}" ] || return
+    [ -n "${ENV_READ_USER}" ] || return 0
     if id -u "${ENV_READ_USER}" >/dev/null 2>&1; then
         return
     fi
@@ -159,9 +167,9 @@ ensure_read_user_exists() {
 }
 
 ensure_docker_membership() {
-    [ -n "${ENV_READ_USER}" ] || return
-    id -u "${ENV_READ_USER}" >/dev/null 2>&1 || return
-    getent group docker >/dev/null 2>&1 || return
+    [ -n "${ENV_READ_USER}" ] || return 0
+    id -u "${ENV_READ_USER}" >/dev/null 2>&1 || return 0
+    getent group docker >/dev/null 2>&1 || return 0
     if id -nG "${ENV_READ_USER}" | grep -qw docker; then
         return
     fi
@@ -176,6 +184,7 @@ ensure_owner_principals() {
     fi
     ensure_read_user_exists
     ensure_docker_membership
+    return 0
 }
 
 # Confirm the tinyassets user can actually read the file. This is the
@@ -244,6 +253,7 @@ atomic_install() {
 
 cmd_set() {
     local key="$1"
+    local immutable="${2-false}"
     validate_key "${key}"
     ensure_env_file
 
@@ -255,16 +265,57 @@ cmd_set() {
     value="$(cat)"
     value="${value%$'\n'}"
 
+    if [ "${immutable}" = "true" ]; then
+        if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
+            echo "::error::set-once requires a single-line value for ${key}" >&2
+            exit 1
+        fi
+        local existing=""
+        local line
+        while IFS= read -r line || [ -n "${line}" ]; do
+            case "${line}" in
+                "${key}="*) existing="${line#*=}" ;;
+            esac
+        done < "${ENV_FILE}"
+        if [ -n "${existing}" ]; then
+            if [ "${existing}" != "${value}" ]; then
+                echo "::error::set-once refused rotation for ${key}; versioned migration required" >&2
+                exit 5
+            fi
+            assert_readable
+            echo "unchanged ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
+            return 0
+        fi
+    fi
+
     # Build new content: replace the existing KEY= line, or append if
-    # absent. Done in awk for correctness with values containing `|`,
-    # `&`, `\`, etc. that would break a `sed s|...|...|` expression.
+    # absent. The secret goes through a mode-600 temporary file rather than
+    # awk's argv, so it is not exposed in the process list. Awk reconstructs
+    # multi-line values to preserve the existing `set` behavior.
+    local value_file
+    value_file="$(mktemp "${ENV_FILE}.value.XXXXXX")"
+    chmod 600 "${value_file}"
+    printf '%s' "${value}" > "${value_file}"
     local new_content
-    new_content="$(awk -v k="${key}" -v v="${value}" '
-        BEGIN { found = 0 }
+    if ! new_content="$(awk -v k="${key}" -v vf="${value_file}" '
+        BEGIN {
+            found = 0
+            value_seen = 0
+            while ((getline value_line < vf) > 0) {
+                v = v (value_seen ? ORS : "") value_line
+                value_seen = 1
+            }
+            close(vf)
+        }
         $0 ~ "^" k "=" { print k "=" v; found = 1; next }
         { print }
         END { if (!found) print k "=" v }
-    ' "${ENV_FILE}")"
+    ' "${ENV_FILE}")"; then
+        rm -f -- "${value_file}"
+        echo "::error::failed constructing updated ${ENV_FILE}" >&2
+        exit 3
+    fi
+    rm -f -- "${value_file}"
 
     atomic_install "${new_content}"$'\n'
     assert_readable
@@ -300,6 +351,10 @@ case "${subcmd}" in
     set)
         [ $# -eq 1 ] || usage
         cmd_set "$1"
+        ;;
+    set-once)
+        [ $# -eq 1 ] || usage
+        cmd_set "$1" true
         ;;
     delete)
         [ $# -ge 1 ] || usage

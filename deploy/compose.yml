@@ -75,6 +75,7 @@ services:
     env_file:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env
+      - /etc/tinyassets/request-idempotency.env
     volumes:
       - tinyassets-data:/data
     healthcheck:
@@ -186,6 +187,7 @@ services:
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-1
     env_file:
       - /etc/tinyassets/env
+      - /etc/tinyassets/request-idempotency.env
     volumes:
       - tinyassets-data:/data
     depends_on:

@@ -1572,6 +1572,12 @@ def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
         )
     )
     assert "secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in validation_secret
+    validation_companion = str(
+        (validation.get("env") or {}).get(
+            "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", ""
+        )
+    )
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in validation_companion
     assert validation.get("run") == (
         "python scripts/validate_request_idempotency_hmac.py"
     )
@@ -1608,10 +1614,10 @@ def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
         r'\|\s*\\?\s*ssh',
         script,
     )
-    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/env" in script
+    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env" in script
     assert "no-request-idempotency-legacy" in script
     assert (
-        "install-tinyassets-env.sh set TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+        "install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
         in script
     )
     assert 'echo "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"' not in script
@@ -1622,14 +1628,28 @@ def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
     )
 
 
-def test_shared_request_idempotency_hmac_template_and_compose_contract():
+def test_request_idempotency_hmac_template_and_compose_contract():
     template = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=" in template
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=change" not in template
+    dedicated = Path("deploy/request-idempotency-env.template").read_text(
+        encoding="utf-8"
+    )
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" not in template
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=" in dedicated
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=change" not in dedicated
 
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
-    for name, service in compose["services"].items():
-        assert "/etc/tinyassets/env" in (service.get("env_file") or []), name
+    services = compose["services"]
+    dedicated_path = "/etc/tinyassets/request-idempotency.env"
+    for name in (
+        "daemon",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    ):
+        assert dedicated_path in (services[name].get("env_file") or []), name
+    for name in ("cloudflared", "logs"):
+        assert dedicated_path not in (services[name].get("env_file") or []), name
 
 
 @pytest.mark.parametrize(
@@ -1670,6 +1690,45 @@ def test_request_idempotency_hmac_validator_accepts_and_never_echoes_secret():
     assert rejected not in result.stdout
     assert "INJECTED_SETTING" not in result.stdout
     assert rejected not in result.stderr
+
+
+def test_request_idempotency_hmac_validator_rejects_agent_key_reuse():
+    encoded = base64.b64encode(bytes(range(48))).decode("ascii")
+    env = {
+        **os.environ,
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY": encoded,
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": encoded,
+    }
+    result = subprocess.run(
+        [sys.executable, "scripts/validate_request_idempotency_hmac.py"],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert encoded not in result.stdout
+    assert encoded not in result.stderr
+    assert "must differ" in result.stdout
+
+
+def test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation():
+    wf = _load()
+    steps = wf["jobs"]["recover-unsafe"]["steps"]
+    indexes = {step.get("name"): index for index, step in enumerate(steps)}
+    request = steps[indexes["Validate recovery request idempotency HMAC"]]
+    agent = steps[indexes["Validate recovery agent interchange HMAC"]]
+    assert request.get("run") == (
+        "python scripts/validate_request_idempotency_hmac.py"
+    )
+    assert agent.get("run") == "python scripts/validate_agent_interchange_hmac.py"
+    assert indexes["Validate recovery request idempotency HMAC"] < indexes[
+        "Pull recovery image on production host"
+    ]
+    assert indexes["Validate recovery agent interchange HMAC"] < indexes[
+        "Pull recovery image on production host"
+    ]
 
 
 def test_deploy_step_syncs_github_pr_capabilities_when_set():
