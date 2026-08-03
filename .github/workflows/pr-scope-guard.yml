@@ -91,7 +91,7 @@ jobs:
           # can rewrite the thing judging it while keeping the check name green.
           # Workflow files were already covered; without these two entries the
           # same neutering could be done one directory over, undeclared.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
+          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
@@ -132,7 +132,7 @@ jobs:
           # the same exact-head review receipt drain PRs carry (Codex gate
           # review 2026-08-02, finding 2). This runs from the TRUSTED base
           # checkout, so a PR cannot weaken the rule that judges it.
-          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/known-failing-tests\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
+          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
           GATE_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$GATE_RE" || true)"
 
           # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
