@@ -1449,7 +1449,10 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
     ) -> BackgroundBranchAttemptClaimResolution | None:
         if not isinstance(request, BackgroundBranchAttemptClaimRequest):
             raise ValueError("request must be a BackgroundBranchAttemptClaimRequest")
-        if request.action is not BackgroundBranchAttemptClaimAction.CLAIM:
+        if request.action not in {
+            BackgroundBranchAttemptClaimAction.CLAIM,
+            BackgroundBranchAttemptClaimAction.RENEW,
+        }:
             return None
         requested_lease = request.requested_lease_expires_at
         if requested_lease is None:
@@ -1542,6 +1545,9 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
             requested_lease_at = datetime.fromisoformat(
                 requested_lease.removesuffix("Z") + "+00:00"
             )
+            attempt_updated_at = datetime.fromisoformat(
+                attempt.updated_at.removesuffix("Z") + "+00:00"
+            ).astimezone(timezone.utc)
             expected_logical_key = build_request_task_attempt_key(
                 tenant_id=str(task["tenant_id"]),
                 request_id=str(task["request_id"]),
@@ -1556,6 +1562,24 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
         claimed_at = claimed_at.astimezone(timezone.utc)
         heartbeat_at = heartbeat_at.astimezone(timezone.utc)
         task_lease = task_lease.astimezone(timezone.utc)
+        attempt_action_exact = (
+            request.action is BackgroundBranchAttemptClaimAction.CLAIM
+            and attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED
+        ) or (
+            request.action is BackgroundBranchAttemptClaimAction.RENEW
+            and attempt.lifecycle
+            in {
+                BackgroundBranchAttemptLifecycle.CLAIMED,
+                BackgroundBranchAttemptLifecycle.RUNNING,
+            }
+            and attempt.executor_audience == audience
+            and claimed_at <= attempt_updated_at < heartbeat_at
+            and attempt.lease_expires_at is not None
+            and requested_lease_at
+            > datetime.fromisoformat(
+                attempt.lease_expires_at.removesuffix("Z") + "+00:00"
+            ).astimezone(timezone.utc)
+        )
         exact = (
             definition_exact,
             current_continuation == continuation,
@@ -1597,7 +1621,7 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
             binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
             binding.pinned_branch_version_id == continuation.branch_version_id,
             binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,),
-            attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
+            attempt_action_exact,
             attempt.binding_id == binding.binding_id,
             attempt.binding_generation == binding.generation,
             attempt.binding_digest == binding.binding_digest,
@@ -1809,7 +1833,6 @@ class PreparedCloudContinuationProviderResolver:
         if not all(exact):
             return None
         actor_id = attempt.executor_audience.daemon_id or attempt.executor_audience.worker_id
-        expires_at = lease_expires_at if lease_expiry <= provider_expiry else provider.expires_at
         return ProviderUniverseWorkAuthority(
             root=root,
             binding=provider,
@@ -1824,7 +1847,10 @@ class PreparedCloudContinuationProviderResolver:
             max_invocations=max_invocations,
             max_tokens=max_tokens,
             max_cost_microunits=max_cost_microunits,
-            expires_at=expires_at,
+            # The receipt is inert identity/budget state. It may survive a
+            # rotating queue/background lease only because every launch is
+            # transactionally revalidated against those current leases.
+            expires_at=provider.expires_at,
         )
 
 
@@ -1908,6 +1934,7 @@ class _ClaimedCloudProviderSession:
         claim: Any,
         provider_store: Any,
         provider_call: Callable[..., str],
+        refresh_background_authority: Callable[[], None],
         revalidate_in_transaction: Callable[
             [sqlite3.Connection, ProviderInvocationReservationRequest],
             _CloudBranchInvocationAuthorityFence,
@@ -1920,6 +1947,7 @@ class _ClaimedCloudProviderSession:
         self._claim = claim
         self._provider_store = provider_store
         self._provider_call = provider_call
+        self._refresh_background_authority = refresh_background_authority
         self._revalidate_in_transaction = revalidate_in_transaction
         self._call_ordinal = 0
         self._lock = threading.Lock()
@@ -1985,6 +2013,7 @@ class _ClaimedCloudProviderSession:
         if role != self._ROLE:
             raise PermissionError("cloud provider role is outside prepared authority")
         with self._lock:
+            self._refresh_background_authority()
             self._call_ordinal += 1
             ordinal = self._call_ordinal
         invocation_key = (
@@ -2195,28 +2224,104 @@ def prepare_claimed_cloud_provider_call(
         audience_resolver=_AudienceResolver(),
         clock=now_clock,
     )
+    attempt_claims = BackgroundBranchAttemptClaimService(
+        background_store,
+        claim_resolver,
+    )
     if attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED:
-        attempt = BackgroundBranchAttemptClaimService(
-            background_store,
-            claim_resolver,
-        ).claim(
+        attempt = attempt_claims.claim(
             expected=BackgroundBranchAttemptFence(attempt),
             executor_audience=audience,
             claimed_at=transitioned_at,
             lease_expires_at=lease_expires_at,
         ).record
-    elif not (
+    elif (
         attempt.lifecycle
         in {
             BackgroundBranchAttemptLifecycle.CLAIMED,
             BackgroundBranchAttemptLifecycle.RUNNING,
         }
         and attempt.executor_audience == audience
-        and attempt.lease_expires_at == lease_expires_at
     ):
+        if attempt.lease_expires_at != lease_expires_at:
+            renewed_attempt = attempt_claims.renew(
+                expected=BackgroundBranchAttemptFence(attempt),
+                executor_audience=audience,
+                renewed_at=transitioned_at,
+                lease_expires_at=lease_expires_at,
+            )
+            if (
+                renewed_attempt.outcome
+                not in {
+                    BackgroundBranchAuthorityWriteOutcome.APPLIED,
+                    BackgroundBranchAuthorityWriteOutcome.REPLAYED,
+                }
+                or renewed_attempt.record is None
+                or renewed_attempt.record.executor_audience != audience
+                or renewed_attempt.record.lease_expires_at != lease_expires_at
+            ):
+                raise PermissionError("cloud background attempt renewal failed")
+            attempt = renewed_attempt.record
+    else:
         raise PermissionError("cloud background attempt custody is stale")
     if attempt is None:
         raise PermissionError("cloud background attempt claim failed")
+
+    def refresh_background_authority() -> None:
+        with admission_store.connection() as conn:
+            task_row = conn.execute(
+                """
+                SELECT heartbeat_at, lease_expires_at
+                FROM branch_tasks_v2
+                WHERE branch_task_id = ? AND admission_id = ? AND request_id = ?
+                LIMIT 1
+                """,
+                (branch_task_id, admission_id, request_id),
+            ).fetchone()
+        if task_row is None:
+            raise PermissionError("cloud task lease is unavailable")
+        renewed_at = canonical_task_timestamp(
+            task_row["heartbeat_at"],
+            "heartbeat_at",
+        )
+        task_lease = canonical_task_timestamp(
+            task_row["lease_expires_at"],
+            "lease_expires_at",
+        )
+        current_attempt = background_store.get_attempt(attempt.attempt_id)
+        if (
+            current_attempt is None
+            or current_attempt.lifecycle
+            not in {
+                BackgroundBranchAttemptLifecycle.CLAIMED,
+                BackgroundBranchAttemptLifecycle.RUNNING,
+            }
+            or current_attempt.executor_audience != audience
+        ):
+            raise PermissionError("cloud background attempt custody is stale")
+        if current_attempt.lease_expires_at == task_lease:
+            return
+        renewal = attempt_claims.renew(
+            expected=BackgroundBranchAttemptFence(current_attempt),
+            executor_audience=audience,
+            renewed_at=renewed_at,
+            lease_expires_at=task_lease,
+        )
+        if (
+            renewal.outcome
+            not in {
+                BackgroundBranchAuthorityWriteOutcome.APPLIED,
+                BackgroundBranchAuthorityWriteOutcome.REPLAYED,
+            }
+            or renewal.record is None
+        ):
+            current_attempt = background_store.get_attempt(attempt.attempt_id)
+            if not (
+                current_attempt is not None
+                and current_attempt.executor_audience == audience
+                and current_attempt.lease_expires_at == task_lease
+            ):
+                raise PermissionError("cloud background attempt renewal failed")
     provider_store = SQLiteProviderWorkAuthorityStore(root_path, clock=now_clock)
     receipt = ProviderWorkReceiptService(
         provider_store,
@@ -2237,9 +2342,8 @@ def prepare_claimed_cloud_provider_call(
     ).record
     if receipt is None:
         raise PermissionError("cloud provider receipt is unavailable")
-    task_lease = datetime.fromisoformat(lease_expires_at.removesuffix("Z") + "+00:00")
     receipt_expiry = datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00")
-    lease_seconds = min(3600, int((min(task_lease, receipt_expiry) - now).total_seconds()))
+    lease_seconds = min(3600, int((receipt_expiry - now).total_seconds()))
     if lease_seconds < 1:
         raise PermissionError("cloud provider claim lease is expired")
     provider_claim = provider_store.claim(
@@ -2456,6 +2560,7 @@ def prepare_claimed_cloud_provider_call(
         claim=provider_claim.record,
         provider_store=provider_store,
         provider_call=provider_call,
+        refresh_background_authority=refresh_background_authority,
         revalidate_in_transaction=revalidate_in_transaction,
     )
 

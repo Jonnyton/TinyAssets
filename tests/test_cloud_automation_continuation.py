@@ -886,6 +886,73 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
     assert [row["state"] for row in reservation_states] == ["launch_started"] * 4
 
 
+def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    current = [NOW + timedelta(seconds=2)]
+
+    def provider_call(_prompt, _system="", *, role="writer", **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        return "authorized"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: current[0],
+    )
+    assert authorized_call is not None
+    claimed_attempt = fixture[3].get_attempt(attempt.attempt_id)
+    assert claimed_attempt is not None
+    initial_attempt_lease = datetime.fromisoformat(
+        claimed_attempt.lease_expires_at.replace("Z", "+00:00")
+    )
+
+    heartbeat_at = initial_attempt_lease - timedelta(seconds=1)
+    set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=audience.runtime_id,
+        descriptor={
+            "queue_protocol_version": 2,
+            "capabilities": ["operator_request_v1"],
+            "worker_id": audience.worker_id,
+            "runtime_instance_id": audience.runtime_id,
+            "boot_id": "boot_cloud_1",
+            "build_sha": "a" * 40,
+            "config_hash": "sha256:" + ("b" * 64),
+            "universe_id": "universe_alice",
+            "expires_at": (heartbeat_at + timedelta(minutes=10)).isoformat(),
+        },
+        expected_worker_id=audience.worker_id,
+    )
+    heartbeat = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: heartbeat_at,
+    ).heartbeat(BRANCH_TASK_ID, worker_id=audience.worker_id)
+    assert heartbeat is not None
+    current[0] = initial_attempt_lease + timedelta(seconds=1)
+
+    assert authorized_call("after original attempt lease") == "authorized"
+
+    renewed_attempt = fixture[3].get_attempt(attempt.attempt_id)
+    renewed_task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert renewed_attempt is not None
+    assert renewed_task is not None
+    assert renewed_attempt.lease_generation == claimed_attempt.lease_generation + 1
+    assert renewed_attempt.lease_expires_at == _background_timestamp(
+        renewed_task.lease_expires_at
+    )
+
+
 def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
     tmp_path: Path,
 ) -> None:
@@ -1734,7 +1801,9 @@ def test_claimed_cloud_attempt_resolves_one_restart_safe_provider_receipt(
     assert created.record.max_invocations == fixture[0].max_provider_invocations
     assert created.record.max_tokens == fixture[0].max_tokens
     assert created.record.max_cost_microunits == fixture[0].max_cost_microunits
-    assert created.record.expires_at == "2026-08-01T06:00:00Z"
+    # Receipt identity/budgets survive rotating task leases; every launch
+    # still revalidates the live task and background attempt transactionally.
+    assert created.record.expires_at == "2026-08-30T00:00:00Z"
 
 
 @pytest.mark.parametrize(
