@@ -27,6 +27,32 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
+  # The post-merge tripwire's ONLY reliable trigger on this repo.
+  #
+  # `push: branches: [main]` looks like it covers every merge. It does not:
+  # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
+  # GitHub performs the merge as `app/github-actions`, and events raised by
+  # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
+  # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
+  # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
+  # So `push` fires on the rare human merge and never on the normal path — the
+  # tripwire read as coverage while providing none, the same failure shape as the
+  # concurrency bug fixed above.
+  #
+  # `schedule` is used because it is the one trigger empirically proven to fire
+  # here (26 of the last 200 runs). Runners are free on a public repo, so the
+  # cadence is chosen for detection latency, not cost.
+  #
+  # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
+  # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
+  # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
+  # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read this as "a few times
+  # a day, unpredictably", not "every 3 hours". That is acceptable for a
+  # tripwire whose alternative is never running at all; it would NOT be
+  # acceptable for a merge gate, which is why `required-tests` stays on
+  # `pull_request` where the trigger is deterministic.
+  schedule:
+    - cron: '17 */3 * * *'
   workflow_dispatch:
 
 # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
@@ -97,7 +123,10 @@ jobs:
           #
           # Excluding them was VERIFIED safe, not assumed: every failure the
           # exclusion run reported was also failing in the same-tree full run.
-          # The excluded files still run in `full-tests` on every main push.
+          # The excluded files still run in `full-tests`, on a best-effort
+          # schedule of a few times a day — NOT "on every main push", which was
+          # the original claim here and was wrong: app-performed merges raise no
+          # push event. See the `schedule:` trigger comment.
           python scripts/ci_required_tests.py --junit junit.xml \
             --exclude-from .github/heavy-test-files.txt \
             --min-ran 10700
@@ -110,12 +139,16 @@ jobs:
           path: junit.xml
           if-no-files-found: warn
 
-  # The other half of the split: the COMPLETE surface, on every main push.
+  # The other half of the split: the COMPLETE surface, on a best-effort
+  # schedule (a few times a day — see the `schedule:` trigger comment).
   # NOT required — this is the post-merge tripwire, not the merge gate. It
   # exists because `required-tests` deliberately trades coverage for a wall
   # clock that fits main's commit cadence; without this the excluded files
   # would have no CI at all. Same quarantine ledger, so a failure here is a
   # real regression rather than baseline noise.
+  #
+  # `github.event_name != 'pull_request'` therefore admits schedule, push and
+  # workflow_dispatch — schedule is what actually carries it (see above).
   full-tests:
     name: full-tests
     if: github.event_name != 'pull_request'
