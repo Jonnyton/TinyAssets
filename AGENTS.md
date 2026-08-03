@@ -232,6 +232,18 @@ plus an independent review path before they count as landed. Self-review alone
 is never enough for public-surface, storage, auth, migration, concurrency, or
 data-loss-risk changes.
 
+**`main` enforces a behavioural test gate (live 2026-08-03).** Required contexts
+are `policy`, `Diff scope declared`, and `required-tests`, with `strict` on. So:
+a PR merges only if `required-tests` is green, and only while up to date with
+`main`. `required-tests` fails on any test failure not already listed in
+`.github/known-failing-tests.txt` — that ledger is a one-way ratchet, so adding
+a line to excuse a test you broke is a visible, reviewable edit on a
+scope-guarded path. It runs a ~5-minute subset; the excluded heavy files run in
+the non-required `full-tests` job on a best-effort schedule. Two consequences
+worth knowing before you plan work: falling behind `main` costs a re-run, and
+updating a drain PR's branch invalidates any exact-head review receipt.
+Details and rollback: `docs/decisions/ADR-003-required-test-aggregator.md`.
+
 **Review-provider limit fallback.** Opposite-provider review is first choice.
 If that provider hits a hard account/subscription/usage limit, record dated
 evidence, then dispatch a fresh-context independent reviewer from the

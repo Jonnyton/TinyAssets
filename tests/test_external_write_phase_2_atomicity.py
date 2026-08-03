@@ -518,26 +518,44 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         )
 
     def worker(run_id: str) -> None:
-        with patch(
-            "tinyassets.effectors.github_pr.subprocess.run",
-            side_effect=fake_run,
-        ):
-            results[run_id] = run_github_pr_effector(
-                node_id="emit",
-                output_keys=["pr_packet"],
-                run_state={"pr_packet": packet},
-                base_path=universe,
-                run_id=run_id,
-            )
+        results[run_id] = run_github_pr_effector(
+            node_id="emit",
+            output_keys=["pr_packet"],
+            run_state={"pr_packet": packet},
+            base_path=universe,
+            run_id=run_id,
+        )
 
-    threads = [
-        threading.Thread(target=worker, args=("run-A",)),
-        threading.Thread(target=worker, args=("run-B",)),
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=5.0)
+    # The patch is installed ONCE, on this thread, around the whole concurrent
+    # section — it must never be entered from inside `worker`.
+    #
+    # `patch` swaps a module attribute, which is process-global and not
+    # thread-local, and `tinyassets.effectors.github_pr.subprocess` IS the
+    # global `subprocess` module. Two threads entering the same patch can
+    # interleave so that the second saves the FIRST's mock as the "original"
+    # and restores that on exit, leaving the mock installed permanently for the
+    # rest of the pytest process.
+    #
+    # That is not hypothetical here: this test's canned stdout,
+    # "https://github.com/x/x/pull/99", was observed in CI as the output of
+    # `subprocess.run` in ~70 unrelated later tests across a dozen files
+    # (git, packaging, invariants, release-reconcile), which is how 111
+    # quarantine entries flipped state between two runs of near-identical trees
+    # (#2197). Hoisting it keeps exactly what this test asserts — that an
+    # already-finalized receipt dedups and no thread shells out to gh — while
+    # making the swap single-threaded and therefore correctly restored.
+    with patch(
+        "tinyassets.effectors.github_pr.subprocess.run",
+        side_effect=fake_run,
+    ):
+        threads = [
+            threading.Thread(target=worker, args=("run-A",)),
+            threading.Thread(target=worker, args=("run-B",)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
 
     assert call_count["n"] == 0, (
         "An already-finalized receipt must dedup-hit; no thread should "

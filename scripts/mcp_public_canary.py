@@ -25,6 +25,8 @@ Exit codes
     DNS/tunnel/Worker/connector change.
 5   ``--assert-handles`` status failure: ``tools/call get_status`` failed or
     omitted the uptime-critical ``active_host`` / ``release_state`` fields.
+6   ``--assert-handles`` continuity failure: ``converse`` did not reach the
+    unauthenticated Bearer challenge for this endpoint's protected resource.
 
 Usage
 -----
@@ -51,6 +53,9 @@ from typing import Any
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 10.0
+EXPECTED_AUTHORIZATION_SERVERS = (
+    "https://inventive-van-62-staging.authkit.app",
+)
 
 _INIT_PAYLOAD = {
     "jsonrpc": "2.0",
@@ -118,6 +123,7 @@ def _post(
     payload: dict[str, Any],
     timeout: float,
     session_id: str | None = None,
+    accepted_http_statuses: frozenset[int] = frozenset(),
 ) -> tuple[int, dict[str, str], bytes]:
     """POST one JSON-RPC frame. Return (status, headers, body). Raise on I/O.
 
@@ -142,6 +148,12 @@ def _post(
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
     except urllib.error.HTTPError as exc:
+        if exc.code in accepted_http_statuses:
+            return (
+                exc.code,
+                {k.lower(): v for k, v in exc.headers.items()},
+                exc.read(),
+            )
         raise CanaryError(2, f"HTTP {exc.code} from {url}: {exc.reason}") from exc
     except urllib.error.URLError as exc:
         raise CanaryError(2, f"unreachable {url}: {exc.reason}") from exc
@@ -151,6 +163,32 @@ def _post(
         raise CanaryError(2, f"TLS error {url}: {exc}") from exc
     except OSError as exc:
         raise CanaryError(2, f"socket error {url}: {exc}") from exc
+
+
+def _get_json(url: str, timeout: float) -> dict[str, Any]:
+    """GET one public JSON document used by the continuity probe."""
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "tinyassets-mcp-canary/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            req,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        ) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise CanaryError(6, f"protected resource metadata unavailable: {url}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CanaryError(6, f"protected resource metadata is not JSON: {url}") from exc
+    if not isinstance(payload, dict):
+        raise CanaryError(6, f"protected resource metadata is not an object: {url}")
+    return payload
 
 
 def advertised_tool_names(url: str, timeout: float) -> set[str]:
@@ -198,6 +236,64 @@ def assert_canonical_handles(url: str, timeout: float) -> None:
             f"handle drift on {url}: missing={sorted(missing)} "
             f"extra={sorted(extra)} advertised={sorted(names)}",
         )
+
+
+def assert_converse_auth_gate(url: str, timeout: float) -> None:
+    """Prove an anonymous ``converse`` call reaches the Bearer auth gate."""
+    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
+    if status != 200:
+        raise CanaryError(2, f"non-200 status {status} from {url}")
+    session_id = headers.get("mcp-session-id")
+    if session_id:
+        _post(
+            url,
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            timeout,
+            session_id,
+        )
+    status, response_headers, body = _post(
+        url,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "converse",
+                "arguments": {"message": "mcp-public-canary auth boundary probe"},
+            },
+        },
+        timeout,
+        session_id,
+        accepted_http_statuses=frozenset({401}),
+    )
+    if status != 401:
+        raise CanaryError(
+            6,
+            f"converse auth gate expected HTTP 401 from {url}, got {status}",
+        )
+    resource_url = url.rstrip("/")
+    metadata_url = f"{resource_url}/.well-known/oauth-protected-resource"
+    expected_metadata = f'resource_metadata="{metadata_url}"'
+    challenge = response_headers.get("www-authenticate", "")
+    if not challenge.startswith("Bearer ") or expected_metadata not in challenge:
+        raise CanaryError(
+            6,
+            f"converse auth gate resource metadata drift on {url}",
+        )
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CanaryError(6, f"non-JSON converse auth challenge from {url}") from exc
+    if payload != {"error": "authentication_required"}:
+        raise CanaryError(6, f"unexpected converse auth challenge from {url}")
+    metadata = _get_json(metadata_url, timeout)
+    authorization_servers = metadata.get("authorization_servers")
+    if (
+        metadata.get("resource") != resource_url
+        or not isinstance(authorization_servers, list)
+        or authorization_servers != list(EXPECTED_AUTHORIZATION_SERVERS)
+    ):
+        raise CanaryError(6, f"protected resource document drift on {url}")
 
 
 def assert_status_surface(url: str, timeout: float) -> str:
@@ -304,6 +400,7 @@ def assert_canonical_handles_with_retry(
     for attempt in range(1, attempts + 1):
         try:
             assert_canonical_handles(url, timeout)
+            assert_converse_auth_gate(url, timeout)
             return assert_status_surface(url, timeout)
         except CanaryError as exc:
             if attempt >= attempts:
@@ -428,7 +525,8 @@ def main(argv: list[str]) -> int:
 
     if args.verbose:
         suffix = (
-            " (canonical handle set advertised; get_status uptime fields present; "
+            " (canonical handle set advertised; converse auth gate reachable; "
+            "get_status uptime fields present; "
             f"identity_evidence={identity_state})"
             if args.assert_handles
             else ""

@@ -192,10 +192,17 @@ regression riding in on a green check.
 
 ## What the host must run
 
-**Not run by this PR — branch protection is a host decision.**
+**DONE — executed 2026-08-03T17:58Z.** Both preconditions below were met first:
+`required-tests` landed on `main` in #2188, and run `30838598270` on `6af2c859`
+went green in **4m54s**, matching the ~4-minute design target. Protection now
+reads `strict=true contexts=["policy","Diff scope declared","required-tests"]`,
+confirmed by an independent read-back. Verified engaging: PRs #2197 and #2194
+went to `mergeState=BLOCKED` pending the check.
 
-Add `required-tests` to the existing required contexts, preserving both current
-ones and `strict`:
+Kept below for the rollback command and for the next context change.
+
+The command that was run — note it preserves both existing contexts and
+`strict`, since PATCH replaces the whole list:
 
 ```bash
 gh api --method PATCH \
@@ -214,11 +221,25 @@ gh api repos/Jonnyton/TinyAssets/branches/main/protection \
 # expect: ["policy","Diff scope declared","required-tests"]
 ```
 
-**Preconditions before running it:**
+**Preconditions before running it** (both satisfied 2026-08-03):
 
 1. This PR is merged, so `required-tests` exists on `main`. Adding a context that
    no workflow produces hangs every open PR on "Expected".
 2. A green `required-tests` run exists on `main`.
+
+**Operational note — `strict` invalidates exact-head review receipts.** `strict`
+requires a PR to be up to date with `main` before it can merge, and bringing it
+up to date moves its head, which invalidates any `Drain-Review-Head:` receipt
+pinned to the old head. Observed 2026-08-03: backfilling #2194 with
+`gh pr update-branch` flipped its scope guard to `deny` for exactly this reason.
+
+This is the receipt system working, not a bug — but it means **a drain PR that
+falls behind needs its receipt re-established, not just its branch updated.**
+When only the base moved, that is cheap to prove rather than re-review: compare
+`git diff <merge-base>..<old-head>` against `git diff origin/main...<new-head>`
+and confirm the +/- content is identical (the blob `index` lines will differ;
+that is just the changed base). Publish that comparison as the new receipt
+artifact. If the content did change, it needs a real re-review.
 
 **Rollback** — remove just this context, leaving the others intact:
 
