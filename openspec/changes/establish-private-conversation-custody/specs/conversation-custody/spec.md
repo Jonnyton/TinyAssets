@@ -8,8 +8,12 @@ The system SHALL represent private conversation custody with a versioned open pr
 - **THEN** the provider derives storage only from that registered path and labels records and exports with the selected mode
 
 #### Scenario: Caller-selected or stable substituted path is refused
-- **WHEN** a directory/database/sidecar path is caller-supplied, relative, the platform data root, not the current registered association, nonexistent, non-regular, symlinked, a Windows reparse point, hard-linked, or changes device/file identity across open
+- **WHEN** a directory/database/sidecar path is caller-supplied, relative, the platform data root, not the current registered association, nonexistent, non-regular, symlinked, a Windows reparse point, or hard-linked, or an existing primary database changes device/file identity across open
 - **THEN** the system refuses the operation before returning private state or completing a write
+
+#### Scenario: SQLite sidecar lifecycle is explicit
+- **WHEN** WAL or SHM sidecars are created, deleted, or replaced during normal SQLite lifecycle
+- **THEN** identity continuity is not required for a sidecar, but every sidecar present at a pre-open, post-open, or pre-cleanup check must be regular, single-linked, non-symlink, and non-reparse
 
 #### Scenario: Same-account mutation is inside this mode's trust boundary
 - **WHEN** another process running as the same OS account races pathname validation and SQLite open
@@ -39,7 +43,7 @@ The system SHALL require and consume a one-use, unforgeable, action-bound grant 
 - **THEN** its authority owner mints normalized internal references and a grant; the custody store persists no app credential, installation grant, or raw provider authority object
 
 ### Requirement: Threads are immutable and request-bound
-The system SHALL create an immutable thread with a server-generated identifier, exact contract/mode, owner, universe, agent binding, normalized interlocutor reference, explicit retention boundary, and RFC 3339 UTC creation time under owner-and-operation-scoped idempotency.
+The system SHALL create an immutable thread with a server-generated identifier, exact contract/mode, owner, universe, agent binding, normalized interlocutor reference, explicit retention boundary, and canonical UTC creation time under owner-and-operation-scoped idempotency.
 
 #### Scenario: Concurrent identical create replay
 - **WHEN** identical valid create requests with the same server-issued key race or retry before deletion
@@ -71,6 +75,17 @@ The system SHALL canonicalize message payload mappings with `tinyassets-canonica
 #### Scenario: Ambiguous or pathological input is atomic
 - **WHEN** input is raw JSON text, has non-string/duplicate keys, floats, bytes, custom objects, non-NFC text, surrogate code points, integers outside signed 64-bit, a node above depth 16, more than 128 members per mapping, more than 256 list items, more than 4,096 value nodes including the root, a key above 256 UTF-8 bytes, a string above 32,768 UTF-8 bytes, or canonical payload size above 65,536 bytes
 - **THEN** the system rejects it before grant consumption or storage
+
+### Requirement: Metadata references and timestamps are exactly bounded
+The system SHALL accept every owner/universe/binding/conversation/message/interlocutor/participant/source-event ID or ref only as 1–256 ASCII bytes matching `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`, every message kind only as 1–64 lowercase ASCII bytes matching `^[a-z][a-z0-9_.:-]{0,63}$`, and every non-null time only as a valid UTC `YYYY-MM-DDTHH:MM:SS.ffffffZ` value.
+
+#### Scenario: Opaque refs preserve exact bytes
+- **WHEN** an internal ref matches its ASCII grammar
+- **THEN** the system stores and exports it byte-for-byte without trimming, case-folding, Unicode normalization, or interpreting it as authority
+
+#### Scenario: Unbounded or noncanonical metadata is atomic
+- **WHEN** an ID/ref/kind violates its byte limit or grammar, or a time uses an offset, missing/non-six-digit fraction, leap second, naive value, or invalid Gregorian date
+- **THEN** the system rejects the request before grant consumption or storage
 
 ### Requirement: Messages are identified, ordered, and append-only
 The system SHALL append messages with a globally unique server-generated message ID, contiguous store-assigned ordinal, bounded kind, normalized participant/source-event refs, optional valid reply ID, canonical payload/digest, and creation time, and SHALL expose no accepted-message update operation.
@@ -107,7 +122,7 @@ The system SHALL serialize exact read/export with writes, require fresh action a
 - **THEN** the system raises an integrity failure and returns no partial conversation
 
 ### Requirement: Private export is deterministic and isolated from the commons
-The system SHALL export an exact intact thread as deterministic canonical `conversation-custody/v1` content whose only top-level members are `canonical_json`, `custody_mode`, `messages`, `schema`, and `thread`; the exact thread/message members SHALL match the design schema, and the system SHALL NOT publish it, add it to agent definitions/lineage/bindings, or include credentials, app authority, provider responses, runtime/workflow state, or effects.
+The system SHALL export an exact intact thread as deterministic canonical `conversation-custody/v1` content whose only top-level members are `canonical_json`, `custody_mode`, `messages`, `schema`, and `thread`; the exact thread/message members, canonical six-fraction UTC timestamps, and separate lowercase `sha256:<64 hex>` digest over all and only the export bytes SHALL match the design schema, and the system SHALL NOT publish it, add it to agent definitions/lineage/bindings, or include credentials, app authority, provider responses, runtime/workflow state, or effects.
 
 #### Scenario: Repeated export is byte-stable
 - **WHEN** the same intact thread is exported repeatedly without an intervening append
@@ -153,7 +168,7 @@ The system SHALL logically delete a thread and messages atomically, clear all co
 
 #### Scenario: Deleted target correlation is content-independent
 - **WHEN** active rows are removed
-- **THEN** a unique SHA-256 digest of the canonical owner/universe/binding/conversation-ID tuple remains for target-only correlation, while the allowed reason is exactly `owner_request` or `retention_expired` and the immutable retention boundary is read from storage rather than caller input
+- **THEN** a unique lowercase SHA-256 digest remains over the exact `tinyassets-canonical-json/v1` mapping with fields/values `agent_binding_id`, `conversation_id`, domain `conversation-custody/deleted-target/v1`, `owner_user_id`, and `universe_id`; the normative sample digest is `sha256:1720128239c73ade4c587c137126e013dde5617751676294b5029815154cc1f5`, the allowed reason is exactly `owner_request` or `retention_expired`, and the immutable retention boundary is read from storage rather than caller input
 
 #### Scenario: Post-deletion create or append key reuse cannot resurrect content
 - **WHEN** a deleted conversation's prior create/append key is reused with identical or changed input

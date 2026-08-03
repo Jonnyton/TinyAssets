@@ -91,11 +91,14 @@ refused. The final resolved path must equal the registered canonical path and
 must not equal the trusted platform data root bound into the grant evidence.
 
 Before and immediately after SQLite opens or creates `.tinyassets.db`, the
-provider `lstat`s the database and any present `-wal`/`-shm` sidecars. Each must
-be a regular file with one hard-link count and no symbolic-link or Windows
-reparse attribute; an existing primary's device/file identity must be unchanged
-across open. The same checks run before cleanup/checkpoint completion. A caller
-cannot supply any of these paths.
+provider `lstat`s the database and any present `-wal`/`-shm` sidecars. Each path
+present at either check must be a regular file with one hard-link count and no
+symbolic-link or Windows reparse attribute. An existing primary database's
+device/file identity must be unchanged across open. WAL/SHM identity continuity
+is deliberately not required because SQLite may create, delete, or replace
+sidecars as part of normal WAL lifecycle; every sidecar that exists at a check
+must still pass the alias checks. The same alias checks run before
+cleanup/checkpoint completion. A caller cannot supply any of these paths.
 
 These checks reject request-layer path substitution and stable filesystem
 aliases. They cannot make Python's pathname-based SQLite API race-free against
@@ -108,7 +111,7 @@ Vault custody remains the alternative for a different threat model.
 
 A thread freezes a server-generated `conversation_id`, contract version/mode,
 owner, universe, agent binding, normalized interlocutor reference, retention
-boundary, and RFC 3339 UTC creation time. There is no update operation.
+boundary, and canonical UTC creation time. There is no update operation.
 
 Each message freezes a globally unique server-generated `message_id`, a
 store-assigned contiguous ordinal, bounded message kind, normalized participant
@@ -118,6 +121,21 @@ target an already-committed message in the same thread whose ordinal is lower
 than the new ordinal. Concurrent reply/target attempts resolve in transaction
 order: target-first succeeds; reply-first fails without consuming an ordinal.
 Accepted messages have no update operation.
+
+All owner, universe, binding, conversation, message, interlocutor,
+participant, and source-event identifiers/references are already-normalized
+opaque ASCII: 1 through 256 bytes, matching
+`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`. They are never trimmed, case-folded, or
+Unicode-normalized; input outside the grammar is rejected. Message kind is 1
+through 64 lowercase ASCII characters matching
+`^[a-z][a-z0-9_.:-]{0,63}$`. These grammars describe portable internal refs,
+not authorization and not raw transport IDs.
+
+Every stored/exported time uses exactly `YYYY-MM-DDTHH:MM:SS.ffffffZ`: a valid
+Gregorian UTC date/time, literal `T` and `Z`, and exactly six fractional-second
+digits. Offset spellings, omitted/shorter/longer fractions, leap seconds, and
+naive timestamps are rejected. `retention_until` is either that grammar or
+JSON null.
 
 ### 4. `tinyassets-canonical-json/v1` fixes portable payload and digest semantics
 
@@ -153,7 +171,7 @@ The payload digest is lowercase `sha256:<64 hex>` over those exact bytes.
   "custody_mode": "private_universe",
   "messages": [
     {
-      "created_at": <RFC3339 UTC string>,
+      "created_at": <canonical UTC timestamp>,
       "kind": <string>,
       "message_id": <string>,
       "ordinal": <integer>,
@@ -168,10 +186,10 @@ The payload digest is lowercase `sha256:<64 hex>` over those exact bytes.
   "thread": {
     "agent_binding_id": <string>,
     "conversation_id": <string>,
-    "created_at": <RFC3339 UTC string>,
+    "created_at": <canonical UTC timestamp>,
     "interlocutor_ref": <string>,
     "owner_user_id": <string>,
-    "retention_until": <RFC3339 UTC string or null>,
+    "retention_until": <canonical UTC timestamp or null>,
     "universe_id": <string>
   }
 }
@@ -179,7 +197,8 @@ The payload digest is lowercase `sha256:<64 hex>` over those exact bytes.
 
 No other top-level/thread/message member is accepted in this version. Messages
 are ordered by ordinal. The export result returns these canonical bytes plus a
-separate SHA-256 digest; the digest is not embedded recursively. There is no
+separate digest formatted exactly as lowercase `sha256:<64 hex>` over all and
+only those bytes; the digest is not embedded recursively. There is no
 export-time timestamp, so unchanged exports are byte-for-byte stable.
 
 ### 5. Idempotency has an exact namespace and an explicit deletion transition
@@ -206,10 +225,21 @@ to the deleted conversation fails.
 The deletion-reason domain is exactly `owner_request` or `retention_expired`.
 The caller never supplies a retention boundary: `retention_expired` reads and
 checks the immutable stored boundary. The store retains a
-`deleted_target_digest`, computed as SHA-256 over the canonical
-owner/universe/binding/conversation-ID tuple, under a unique index. It contains
-no message/content-derived value and supplies target-only correlation after the
-active rows are gone.
+`deleted_target_digest` under a unique index. Its preimage is exactly the
+`tinyassets-canonical-json/v1` bytes of this mapping and no other members:
+
+```json
+{"agent_binding_id":"<binding>","conversation_id":"<conversation>","domain":"conversation-custody/deleted-target/v1","owner_user_id":"<owner>","universe_id":"<universe>"}
+```
+
+The digest is lowercase `sha256:<64 hex>` over those bytes. Normative vector:
+with values `agent_binding_1`, `conversation_1`, `owner_1`, and `universe_1`,
+the exact preimage is
+`{"agent_binding_id":"agent_binding_1","conversation_id":"conversation_1","domain":"conversation-custody/deleted-target/v1","owner_user_id":"owner_1","universe_id":"universe_1"}`
+and the digest is
+`sha256:1720128239c73ade4c587c137126e013dde5617751676294b5029815154cc1f5`.
+It contains no message/content-derived value and supplies target-only
+correlation after active rows are gone.
 
 Delete keys retain a request digest derived only from that target digest and
 reason. Same-key changed requests conflict. A different delete key for the same

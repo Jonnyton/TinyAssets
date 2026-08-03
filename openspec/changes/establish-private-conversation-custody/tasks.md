@@ -4,8 +4,8 @@
 
 ## 2. Typed Authority and Custody Contract
 
-- [ ] 2.1 Test-first, add the one-use operation-grant consumer seam and detached evidence validation to `tinyassets/conversation_custody.py`. Acceptance: evidence binds action/request/key digest, exact scope, live selection generation, registered absolute path, and trusted platform root; missing/replayed/expired/revoked/mismatched grants, caller paths, platform-root placement, stable directory/database/sidecar symlinks, reparse points, hard links, and changed file identity fail before results; same-account races are explicitly inside this mode's host trust boundary; no production issuer/constructor ships. Verification: focused tests demonstrate RED then pass with only an explicit test issuer.
-- [ ] 2.2 Test-first, add immutable thread/message/receipt records plus `tinyassets-canonical-json/v1` validation, exact root/depth/node/type/Unicode-scalar/integer/escape/byte rules, normative vectors, IDs, request digests, reply rules, and the exact `conversation-custody/v1` export envelope. Acceptance: malformed/ambiguous/oversized inputs fail before grant consumption; insertion order canonicalizes identically; arbitrary bounded members round-trip; unsupported modes fail without fallback. Verification: focused domain tests demonstrate RED then pass.
+- [ ] 2.1 Test-first, add the one-use operation-grant consumer seam and detached evidence validation to `tinyassets/conversation_custody.py`. Acceptance: evidence binds action/request/key digest, exact scope, live selection generation, registered absolute path, and trusted platform root; missing/replayed/expired/revoked/mismatched grants and caller/platform-root paths fail; stable directory/database/sidecar aliases fail; existing-primary identity is stable while normal sidecar identity transitions remain permitted; same-account races are inside this mode's trust boundary; no production issuer/constructor ships. Verification: focused tests demonstrate RED then pass with only an explicit test issuer.
+- [ ] 2.2 Test-first, add immutable records plus canonical JSON, exact node/type/Unicode/integer/escape/byte rules and vectors, 256-byte ref/64-byte kind grammars, six-fraction UTC times, exact deleted-target preimage/vector, request digests, reply rules, and exact export envelope/digest. Acceptance: malformed/ambiguous/oversized inputs fail before grant consumption; insertion order canonicalizes identically; bounded members round-trip; unsupported modes fail without fallback. Verification: focused domain tests demonstrate RED then pass.
 
 ## 3. Private-Universe Persistence
 
@@ -14,7 +14,7 @@
 
 ## 4. Packaging and Dark Boundary
 
-- [ ] 4.1 Mirror both canonical modules into the packaged universe-server runtime and prove no public MCP handle, app/provider import, network call, binding mutation, definition/lineage mutation, credential field, or production construction path was added. Acceptance: canonical/package files are byte-identical and the existing exact-seven public-handle assertion is unchanged. Verification: `python scripts/invariants_run.py --check mirror-parity`, focused custom-agent/runtime regressions, and repository searches for forbidden integration paths pass.
+- [ ] 4.1 Mirror both canonical modules into the packaged universe-server runtime and prove no public MCP handle, app/provider import, network call, binding mutation, definition/lineage mutation, credential field, or production construction path was added. Acceptance: a focused test explicitly asserts both packaged paths exist and are byte-identical to their canonical files, and the exact-seven public-handle assertion is unchanged. Verification: `python scripts/invariants_run.py --check mirror-parity`, `python -m pytest tests/test_conversation_custody.py -k packaged_runtime_mirrors`, focused custom-agent/runtime regressions, and forbidden-integration searches pass.
 
 ## 5. Verification and Foldback
 
