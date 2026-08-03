@@ -81,15 +81,24 @@ mkdir -p "${LOG_DIR}"
 trap 'rm -rf "${LOG_DIR}"' EXIT
 
 echo "[ship-logs] collecting logs for containers: ${LOG_CONTAINERS}"
+manifest="${LOG_DIR}/fleet-manifest.tsv"
+printf 'container\tstatus\tlog_file\n' > "${manifest}"
+archive_files=("$(basename -- "${manifest}")")
 for container in ${LOG_CONTAINERS}; do
     log_file="${LOG_DIR}/${container}.log"
-    if docker ps --format '{{.Names}}' | grep -qx "${container}"; then
-        docker logs "${container}" --since "${LOG_SINCE}" >"${log_file}" 2>&1 || true
-        lines=$(wc -l <"${log_file}" || echo 0)
-        echo "[ship-logs] ${container}: ${lines} lines (since ${LOG_SINCE})"
-    else
-        echo "[ship-logs] ${container}: not running, skipping"
+    if ! status="$(docker inspect -f '{{.State.Status}}' "${container}" 2>/dev/null)"; then
+        echo "ERROR: required log container ${container} is missing" >&2
+        exit 1
     fi
+    if ! docker logs "${container}" --since "${LOG_SINCE}" >"${log_file}" 2>&1; then
+        echo "ERROR: logs for required container ${container} are unreadable" >&2
+        exit 1
+    fi
+    log_name="$(basename -- "${log_file}")"
+    printf '%s\t%s\t%s\n' "${container}" "${status}" "${log_name}" >> "${manifest}"
+    archive_files+=("${log_name}")
+    lines=$(wc -l <"${log_file}")
+    echo "[ship-logs] ${container}: status=${status}; ${lines} lines (since ${LOG_SINCE})"
 done
 
 # ---------------------------------------------------------------------------
@@ -98,7 +107,7 @@ done
 
 echo "[ship-logs] creating archive: ${ARCHIVE_NAME}"
 tar -czf "${LOG_DIR}/${ARCHIVE_NAME}" -C "${LOG_DIR}" \
-    $(ls "${LOG_DIR}"/*.log 2>/dev/null | xargs -n1 basename || true)
+    "${archive_files[@]}"
 
 # ---------------------------------------------------------------------------
 # Upload

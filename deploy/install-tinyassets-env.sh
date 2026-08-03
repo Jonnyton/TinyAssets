@@ -73,6 +73,7 @@ ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
 COMPOSE_ASSIGNMENT=""
+COMPOSE_TRIMMED=""
 ATOMIC_TEMP=""
 
 usage() {
@@ -97,23 +98,51 @@ validate_key() {
     fi
 }
 
-# Docker Compose accepts optional leading whitespace, an optional `export`
-# prefix, whitespace before the delimiter, either `=` or `:`, and an optional
-# UTF-8 BOM at the beginning of the file. Normalize only enough to identify the
-# declared key; preserve the original line for unrelated entries.
+# Match Docker Compose's accepted env-declaration whitespace. Bash [[:space:]]
+# under C.UTF-8 omits the Compose-recognized U+0085 and U+00A0 characters.
+strip_compose_leading_space() {
+    local input="$1"
+    while true; do
+        case "${input}" in
+            ' '*) input="${input# }" ;;
+            $'\t'*) input="${input#$'\t'}" ;;
+            $'\r'*) input="${input#$'\r'}" ;;
+            $'\v'*) input="${input#$'\v'}" ;;
+            $'\f'*) input="${input#$'\f'}" ;;
+            $'\u0085'*) input="${input#$'\u0085'}" ;;
+            $'\u00A0'*) input="${input#$'\u00A0'}" ;;
+            *) break ;;
+        esac
+    done
+    COMPOSE_TRIMMED="${input}"
+}
+
+# Docker Compose accepts optional leading Unicode whitespace, an optional
+# `export` prefix, whitespace before the delimiter, either `=` or `:`, and an
+# optional UTF-8 BOM at the beginning of the file. Normalize only enough to
+# identify the declared key; preserve the original line for unrelated entries.
 compose_line_assigns_key() {
     local line="$1"
     local key="$2"
     local normalized="${line}"
-    normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+    strip_compose_leading_space "${normalized}"
+    normalized="${COMPOSE_TRIMMED}"
     normalized="${normalized#$'\xEF\xBB\xBF'}"
-    normalized="${normalized#"${normalized%%[![:space:]]*}"}"
-    if [[ "${normalized}" =~ ^export[[:space:]]+ ]]; then
-        normalized="${normalized#export}"
-        normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+    strip_compose_leading_space "${normalized}"
+    normalized="${COMPOSE_TRIMMED}"
+    if [[ "${normalized}" == export* ]]; then
+        local after_export="${normalized#export}"
+        strip_compose_leading_space "${after_export}"
+        if [ "${COMPOSE_TRIMMED}" != "${after_export}" ]; then
+            normalized="${COMPOSE_TRIMMED}"
+        fi
     fi
-    COMPOSE_ASSIGNMENT="${normalized}"
-    [[ "${normalized}" =~ ^${key}[[:space:]]*([=:]|$) ]]
+    [[ "${normalized}" == "${key}"* ]] || return 1
+    local remainder="${normalized#"${key}"}"
+    strip_compose_leading_space "${remainder}"
+    remainder="${COMPOSE_TRIMMED}"
+    [[ -z "${remainder}" || "${remainder}" == =* || "${remainder}" == :* ]] || return 1
+    COMPOSE_ASSIGNMENT="${key}${remainder}"
 }
 
 env_owner_user() {
@@ -154,15 +183,19 @@ clear_atomic_traps() {
     trap - EXIT HUP INT TERM
 }
 
+install_atomic_traps() {
+    trap cleanup_atomic_temp EXIT
+    trap 'handle_atomic_signal HUP' HUP
+    trap 'handle_atomic_signal INT' INT
+    trap 'handle_atomic_signal TERM' TERM
+}
+
 prepare_atomic_temp() {
     local env_dir
     local env_name
     env_dir="$(dirname -- "${ENV_FILE}")"
     env_name="$(basename -- "${ENV_FILE}")"
-    trap cleanup_atomic_temp EXIT
-    trap 'handle_atomic_signal HUP' HUP
-    trap 'handle_atomic_signal INT' INT
-    trap 'handle_atomic_signal TERM' TERM
+    install_atomic_traps
     if ! ATOMIC_TEMP="$(umask 077; mktemp "${env_dir}/.${env_name}.tmp.XXXXXX")"; then
         clear_atomic_traps
         echo "::error::failed creating sibling transaction for ${ENV_FILE}" >&2
@@ -343,8 +376,12 @@ cmd_set() {
     # newline the caller piped in — but we strip a single trailing
     # newline so `echo "foo" | ...` produces `KEY=foo` not `KEY=foo\n`
     # appearing as `KEY=foo` followed by a blank entry line).
-    local value
-    value="$(cat)"
+    local value=""
+    install_atomic_traps
+    if IFS= read -r -d '' value; then
+        echo "::error::protected input cannot contain NUL for ${key}" >&2
+        exit 1
+    fi
     value="${value%$'\n'}"
 
     if [ "${immutable}" = "true" ]; then
@@ -363,12 +400,14 @@ cmd_set() {
                     exit 5
                 fi
                 local remainder="${COMPOSE_ASSIGNMENT#"${key}"}"
-                remainder="${remainder#"${remainder%%[![:space:]]*}"}"
+                strip_compose_leading_space "${remainder}"
+                remainder="${COMPOSE_TRIMMED}"
                 if [[ "${remainder}" == =* || "${remainder}" == :* ]]; then
                     local delimiter="${remainder:0:1}"
                     existing="${remainder:1}"
                     if [ "${delimiter}" = ":" ]; then
-                        existing="${existing#"${existing%%[![:space:]]*}"}"
+                        strip_compose_leading_space "${existing}"
+                        existing="${COMPOSE_TRIMMED}"
                     fi
                 else
                     existing=""

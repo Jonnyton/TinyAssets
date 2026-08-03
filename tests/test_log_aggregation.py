@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -237,6 +239,18 @@ def test_ship_logs_default_covers_complete_production_fleet():
         assert container in text
 
 
+def test_ship_logs_requires_a_complete_readable_fleet_archive():
+    text = SHIP_LOGS.read_text(encoding="utf-8")
+    collect = text.split("# Collect Docker container logs", 1)[1].split(
+        "# Archive", 1
+    )[0]
+    assert "docker ps" not in collect
+    assert "{{.State.Status}}" in collect
+    assert "fleet-manifest.tsv" in text
+    assert "docker logs" in collect
+    assert "|| true" not in collect
+
+
 def test_log_runbook_uses_current_production_identities():
     text = RUNBOOK.read_text(encoding="utf-8")
     for stale in (
@@ -310,3 +324,83 @@ def test_ship_logs_missing_log_dest_exits_1(tmp_path):
         text=True,
     )
     assert result.returncode != 0, "missing LOG_DEST should exit non-zero"
+
+
+@pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
+@pytest.mark.parametrize("failure", [None, "missing", "unreadable"])
+def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
+    bin_dir = tmp_path / "bin"
+    capture_dir = tmp_path / "capture"
+    bin_dir.mkdir()
+    capture_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "case \"$1\" in\n"
+        "  inspect)\n"
+        "    name=$4\n"
+        "    if [ \"${SHIP_LOG_FAILURE-}\" = missing ] "
+        "&& [ \"$name\" = worker-b ]; then exit 1; fi\n"
+        "    if [ \"$name\" = worker-b ]; then printf 'exited\\n'; else printf 'running\\n'; fi\n"
+        "    ;;\n"
+        "  logs)\n"
+        "    name=$2\n"
+        "    if [ \"${SHIP_LOG_FAILURE-}\" = unreadable ] "
+        "&& [ \"$name\" = worker-b ]; then exit 1; fi\n"
+        "    printf 'logs for %s\\n' \"$name\"\n"
+        "    ;;\n"
+        "  *) exit 90 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    rclone = bin_dir / "rclone"
+    rclone.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [ \"$1\" = copyto ]; then\n"
+        "  cp \"$2\" \"${SHIP_LOG_CAPTURE:?}/archive.tar.gz\"\n"
+        "  touch \"${SHIP_LOG_CAPTURE:?}/uploaded\"\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    rclone.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+            "LOG_DEST": "fake:logs",
+            "LOG_CONTAINERS": "worker-a worker-b",
+            "LOG_DIR": str(tmp_path / "scratch"),
+            "SHIP_LOG_CAPTURE": str(capture_dir),
+            "SHIP_LOG_FAILURE": failure or "",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(SHIP_LOGS)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if failure:
+        assert result.returncode != 0
+        assert not (capture_dir / "uploaded").exists()
+        return
+
+    assert result.returncode == 0, result.stderr
+    assert (capture_dir / "uploaded").exists()
+    with tarfile.open(capture_dir / "archive.tar.gz", "r:gz") as archive:
+        assert set(archive.getnames()) == {
+            "fleet-manifest.tsv",
+            "worker-a.log",
+            "worker-b.log",
+        }
+        manifest = archive.extractfile("fleet-manifest.tsv")
+        assert manifest is not None
+        contents = manifest.read().decode("utf-8")
+    assert "worker-a\trunning\tworker-a.log" in contents
+    assert "worker-b\texited\tworker-b.log" in contents

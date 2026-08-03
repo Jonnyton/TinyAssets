@@ -37,17 +37,17 @@ Alternatives considered were deleting the host file by hand and adding a permane
 
 ### Parse Docker Compose env declarations once and fail closed
 
-One Bash helper recognizes the production Compose grammar relevant to key identity: an optional UTF-8 BOM on the first declaration, optional leading whitespace, optional `export` plus whitespace, optional whitespace before the delimiter, and either `=` or `:`. `set`, `set-once`, `delete`, and the read-only `assert-absent` command all use that helper. `set-once` counts matching assignments and exits with the immutable-refusal code on the second match, without writing or printing either value. `delete` removes every recognized shape, and both scrub and rotation invoke `assert-absent` before any worker recreation or key transmission. A single empty assignment remains the documented bootstrap case.
+One Bash helper recognizes the production Compose grammar relevant to key identity: an optional UTF-8 BOM on the first declaration, optional Compose-recognized leading whitespace (including U+0085 and U+00A0, which Bash `[[:space:]]` misses under C.UTF-8), optional `export` plus that whitespace, optional whitespace before the delimiter, and either `=` or `:`. `set`, `set-once`, `delete`, and the read-only `assert-absent` command all use that helper. `set-once` counts matching assignments and exits with the immutable-refusal code on the second match, without writing or printing either value. `delete` removes every recognized shape, and both scrub and rotation invoke `assert-absent` before any worker recreation or key transmission. A single empty assignment remains the documented bootstrap case.
 
 ### Use a protected sibling transaction and atomic rename
 
-The installer reads and reconstructs the small environment file entirely in the current Bash process. The protected value is never placed in child argv/environment or a secret-only staging file. Before changing the live target, the helper creates a mode-0600 sibling transaction in the same directory, writes the complete candidate from the Bash buffer, applies final ownership/mode, syncs it, and atomically renames it over the target.
+The installer reads protected stdin with Bash's `read` builtin and reconstructs the small environment file entirely in the current Bash process. Signal traps are active before the read begins, and no secret-reading child exists to outlive a parent-only termination. The protected value is never placed in child argv/environment or a secret-only staging file. Before changing the live target, the helper creates a mode-0600 sibling transaction in the same directory, writes the complete candidate from the Bash buffer, applies final ownership/mode, syncs it, and atomically renames it over the target.
 
 EXIT/HUP/INT/TERM cleanup removes an incomplete transaction, and signal handling re-raises the original signal. Any write, metadata, sync, or rename failure occurs before replacement and leaves the live file byte-for-byte unchanged. This full-file transaction is necessary for atomic replacement and is distinct from the rejected prior design, which persisted the protected value alone in a broadly reusable temporary file before editing the live target.
 
 ### Archive explicit production container identities
 
-`ship-logs.sh` defaults to the daemon, tunnel, and four fixed worker container names. The runbook uses the current `tinyassets` systemd/project, `tinyassets-logs-*` archive prefix, and `tinyassets-logs` Vector container. Explicit names keep missing members visible in dry-run output and tests.
+`ship-logs.sh` defaults to the daemon, tunnel, and four fixed worker container names. It inspects every named container whether running or stopped, fails the entire archive before upload when a member is missing or its logs are unreadable, and includes a fleet manifest with each container's state and log filename. The runbook uses the current `tinyassets` systemd/project, `tinyassets-logs-*` archive prefix, and `tinyassets-logs` Vector container.
 
 ## Risks / Trade-offs
 
@@ -56,7 +56,7 @@ EXIT/HUP/INT/TERM cleanup removes an incomplete transaction, and signal handling
 - **[Transaction contains the complete environment briefly]** -> Create it beside the target under mode 0600, never stage the value alone, never pass it through child argv/environment, clean it on exits/signals, and rename only after the complete candidate is synced.
 - **[Compose inheritance changes later]** -> Parse the actual compose document in regression tests and assert the secret file is absent from every non-daemon service, not only the base worker.
 - **[Automatic deploy races the secret update]** -> Merge only after exact-head review, complete and verify the ordinary corrected-boundary deploy first, replace the repository secret immediately before the second manual rotation deploy, and use the production mutation concurrency group.
-- **[Log collection names drift with fleet topology]** -> Keep the expected identities in one default string and assert the complete current fleet in tests.
+- **[Log collection names drift with fleet topology]** -> Keep the expected identities in one default string, manifest every member, fail closed on omissions, and assert running/stopped/error behavior in invoked tests.
 
 ## Migration Plan
 

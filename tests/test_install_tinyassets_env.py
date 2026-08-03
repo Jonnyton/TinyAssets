@@ -10,14 +10,30 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "deploy" / "install-tinyassets-env.sh"
+_COMPOSE_UNICODE_SPACES = ("\u0085", "\u00a0")
+
+
+def _docker_compose_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    return (
+        subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def test_helper_knows_renamed_env_can_bootstrap_from_legacy_file():
@@ -296,7 +312,101 @@ def test_utf8_bom_first_assignment_cannot_bypass_protected_key_operations(tmp_pa
 
 
 @pytest.mark.skipif(
-    shutil.which("docker") is None,
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+@pytest.mark.parametrize("compose_space", _COMPOSE_UNICODE_SPACES)
+@pytest.mark.parametrize("shape", ["leading", "export"])
+def test_compose_unicode_space_cannot_bypass_protected_key_operations(
+    tmp_path, compose_space: str, shape: str
+):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    prefix = "export " if shape == "export" else compose_space
+    delimiter = "=" if shape == "export" else ": "
+    original = f"{prefix}TARGET{compose_space}{delimiter}old-secret\nKEEP=1\n"
+
+    env_file.write_text(original, encoding="utf-8")
+    absent = _run_helper(
+        tmp_path,
+        ["assert-absent", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert absent.returncode == 6
+
+    immutable = _run_helper(
+        tmp_path,
+        ["set-once", "TARGET"],
+        stdin="replacement-secret",
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert immutable.returncode == 5
+    assert env_file.read_text(encoding="utf-8") == original
+
+    deleted = _run_helper(
+        tmp_path,
+        ["delete", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert deleted.returncode == 0, deleted.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+    combined = absent.stdout + absent.stderr + immutable.stdout + immutable.stderr
+    assert "old-secret" not in combined
+    assert "replacement-secret" not in combined
+
+
+@pytest.mark.skipif(
+    not _docker_compose_available(),
+    reason="requires the installed Docker Compose CLI grammar",
+)
+@pytest.mark.parametrize("compose_space", _COMPOSE_UNICODE_SPACES)
+@pytest.mark.parametrize("shape", ["leading", "export"])
+def test_installed_compose_resolves_unicode_space_assignment(
+    tmp_path, compose_space: str, shape: str
+):
+    compose_file = tmp_path / "compose.yml"
+    env_file = tmp_path / "probe.env"
+    compose_file.write_text(
+        "services:\n"
+        "  probe:\n"
+        "    image: alpine:3.20\n"
+        "    env_file:\n"
+        "      - ./probe.env\n",
+        encoding="utf-8",
+    )
+    prefix = "export " if shape == "export" else compose_space
+    delimiter = "=" if shape == "export" else ": "
+    env_file.write_text(
+        f"{prefix}TARGET{compose_space}{delimiter}secret\n", encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "config",
+            "--format",
+            "json",
+        ],
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    model = json.loads(result.stdout)
+    assert model["services"]["probe"]["environment"]["TARGET"] == "secret"
+
+
+@pytest.mark.skipif(
+    not _docker_compose_available(),
     reason="requires the installed Docker Compose CLI grammar",
 )
 def test_installed_compose_resolves_bom_prefixed_colon_assignment(tmp_path):
@@ -382,8 +492,55 @@ def test_protected_value_never_uses_a_secret_only_plaintext_file():
     assert "VALUE_FILE" not in set_body
     assert "awk" not in set_body
     assert "coproc" not in set_body
+    assert '$(cat)' not in set_body
+    assert "read -r -d '' value" in set_body
     assert "compose_line_assigns_key" in set_body
     assert 'new_content+="${key}=${value}"' in set_body
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="requires Linux /proc child inspection and POSIX signals",
+)
+def test_parent_only_term_while_stdin_open_leaves_no_secret_reader(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("KEEP=1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "TINYASSETS_ENV_FILE": str(env_file),
+            "TINYASSETS_LEGACY_ENV_FILE": str(legacy_file),
+            "TINYASSETS_ENV_OWNER": "",
+            "TINYASSETS_ENV_READ_USER": "",
+        }
+    )
+    process = subprocess.Popen(
+        ["bash", str(_SCRIPT), "set", "TARGET"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    children = Path(f"/proc/{process.pid}/task/{process.pid}/children")
+    deadline = time.monotonic() + 5
+    while not children.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert children.exists()
+    time.sleep(0.05)
+    child_pids = children.read_text(encoding="utf-8").strip().split()
+
+    os.kill(process.pid, signal.SIGTERM)
+    process.wait(timeout=5)
+    if process.stdin:
+        process.stdin.close()
+
+    assert child_pids == []
+    assert process.returncode == -signal.SIGTERM
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
 
 
 def test_atomic_install_uses_sibling_transaction_and_rename():
