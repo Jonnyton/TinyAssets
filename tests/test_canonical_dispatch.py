@@ -45,6 +45,7 @@ from tinyassets.api.canonical_dispatch import (
     SOURCE_LEADERBOARD_SKIPPED_NO_PUBLISHED_VERSION,
     CanonicalArtifactMissing,
     NoCanonicalBound,
+    OriginatingRunMissing,
     RouteBackLoop,
     is_in_flight_for_version,
     resolve_canonical_for_run,
@@ -293,6 +294,16 @@ def _route_back_decision(
     )
 
 
+def _originating_run(base_path, actor: str) -> str:
+    return create_run(
+        base_path,
+        branch_def_id="originating-gate-series",
+        thread_id=f"origin-{actor}",
+        inputs={},
+        actor=actor,
+    )
+
+
 def test_route_back_prefers_actor_canonical_and_runs_version_synchronously(
     base_path,
     monkeypatch,
@@ -326,7 +337,7 @@ def test_route_back_prefers_actor_canonical_and_runs_version_synchronously(
     outcome = route_back_evaluation(
         base_path,
         evaluation=_route_back_decision(),
-        actor="alice",
+        originating_run_id=_originating_run(base_path, "alice"),
     )
 
     assert outcome.status == "completed", outcome.error
@@ -356,7 +367,7 @@ def test_route_back_falls_back_to_default_canonical(base_path, monkeypatch):
     route_back_evaluation(
         base_path,
         evaluation=_route_back_decision(),
-        actor="bob",
+        originating_run_id=_originating_run(base_path, "bob"),
     )
 
     assert seen["branch_version_id"] == default_version
@@ -407,7 +418,7 @@ def test_route_back_executes_real_immutable_version_to_terminal_state(base_path)
     outcome = route_back_evaluation(
         base_path,
         evaluation=_route_back_decision(),
-        actor="alice",
+        originating_run_id=_originating_run(base_path, "alice"),
     )
 
     assert outcome.status == "completed", outcome.error
@@ -434,7 +445,7 @@ def test_route_back_missing_canonical_fails_loudly(base_path, monkeypatch):
         route_back_evaluation(
             base_path,
             evaluation=_route_back_decision(),
-            actor="alice",
+            originating_run_id=_originating_run(base_path, "alice"),
         )
 
     assert exc_info.value.failure_class == "no_canonical_bound"
@@ -466,7 +477,7 @@ def test_route_back_repeated_or_fourth_hop_terminates_without_a_run(
         route_back_evaluation(
             base_path,
             evaluation=_route_back_decision(history=history),
-            actor="alice",
+            originating_run_id=_originating_run(base_path, "alice"),
         )
 
     assert exc_info.value.failure_class == "route_back_loop"
@@ -489,11 +500,44 @@ def test_route_back_classifies_missing_immutable_artifact(base_path, monkeypatch
         route_back_evaluation(
             base_path,
             evaluation=_route_back_decision(),
-            actor="alice",
+            originating_run_id=_originating_run(base_path, "alice"),
         )
 
     assert exc_info.value.failure_class == "canonical_artifact_missing"
     assert exc_info.value.details["branch_version_id"] == "missing@version"
+
+
+def test_route_back_rejects_caller_selected_actor_override(base_path):
+    with pytest.raises(TypeError, match="unexpected keyword argument 'actor'"):
+        route_back_evaluation(
+            base_path,
+            evaluation=_route_back_decision(),
+            originating_run_id=_originating_run(base_path, "alice"),
+            actor="mallory",  # type: ignore[call-arg]
+        )
+
+
+def test_route_back_missing_originating_run_fails_before_resolution(
+    base_path,
+    monkeypatch,
+):
+    resolved = False
+
+    def _resolve(*_args, **_kwargs):
+        nonlocal resolved
+        resolved = True
+
+    monkeypatch.setattr("tinyassets.daemon_server.resolve_goal_canonical", _resolve)
+
+    with pytest.raises(OriginatingRunMissing) as exc_info:
+        route_back_evaluation(
+            base_path,
+            evaluation=_route_back_decision(),
+            originating_run_id="missing-origin",
+        )
+
+    assert exc_info.value.failure_class == "originating_run_missing"
+    assert resolved is False
 
 
 # ---------------------------------------------------------------------------

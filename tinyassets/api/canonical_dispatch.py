@@ -106,11 +106,15 @@ class RouteBackLoop(RouteBackError):
     failure_class = "route_back_loop"
 
 
+class OriginatingRunMissing(RouteBackError):
+    failure_class = "originating_run_missing"
+
+
 def route_back_evaluation(
     base_path: str | Path,
     *,
     evaluation: EvalResult,
-    actor: str,
+    originating_run_id: str,
     provider_call: Callable[..., str] | None = None,
 ) -> RunOutcome:
     """Route a gate rejection to the originating actor's Goal canonical."""
@@ -120,7 +124,16 @@ def route_back_evaluation(
         raise ValueError("route_back evaluation is missing goal_id or PatchNotes")
 
     goal_id = evaluation.goal_id.strip()
-    run_actor = actor.strip() or "anonymous"
+    clean_run_id = originating_run_id.strip()
+    from tinyassets.runs import get_run
+
+    origin = get_run(base_path, clean_run_id) if clean_run_id else None
+    if origin is None:
+        raise OriginatingRunMissing(
+            f"Originating run {clean_run_id!r} does not exist",
+            details={"originating_run_id": clean_run_id},
+        )
+    run_actor = str(origin.get("actor") or "anonymous").strip() or "anonymous"
     scope_actor = "" if run_actor == "anonymous" else run_actor
     notes = PatchNotes.from_dict(evaluation.patch_notes.to_dict())
     hop = (goal_id, scope_actor)
@@ -807,6 +820,7 @@ __all__ = [
     "SOURCE_LEADERBOARD_SKIPPED_NO_PUBLISHED_VERSION",
     "SOURCE_LEADERBOARD_NO_ENTRIES",
     "NoCanonicalBound",
+    "OriginatingRunMissing",
     "RouteBackError",
     "RouteBackLoop",
     "resolve_canonical_for_run",
