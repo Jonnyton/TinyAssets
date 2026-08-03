@@ -1227,6 +1227,25 @@ def test_clean_host_bootstrap_provisions_agent_interchange_env():
     assert "Generate the daemon-only agent interchange key" in bootstrap
 
 
+def test_clean_host_bootstrap_provisions_request_idempotency_env():
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    service = (REPO / "deploy" / "tinyassets-daemon.service").read_text(
+        encoding="utf-8"
+    )
+    docs = (REPO / "deploy" / "DEPLOY.md").read_text(encoding="utf-8")
+
+    assert "deploy/request-idempotency-env.template" in bootstrap
+    assert '"${ENV_DIR}/request-idempotency.env"' in bootstrap
+    assert (
+        'chown "root:${TINYASSETS_USER}" "${ENV_DIR}/request-idempotency.env"'
+        in bootstrap
+    )
+    assert 'chmod 640 "${ENV_DIR}/request-idempotency.env"' in bootstrap
+    assert "test -r /etc/tinyassets/request-idempotency.env" in service
+    assert "REQUEST-IDEMPOTENCY-ENV-UNREADABLE" in service
+    assert "/etc/tinyassets/request-idempotency.env" in docs
+
+
 def test_restart_workflow_serializes_production_host_mutations():
     workflow = yaml.safe_load(RESTART_WORKFLOW.read_text(encoding="utf-8"))
 

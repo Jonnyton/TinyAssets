@@ -49,8 +49,12 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from tinyassets.evaluation import EvalResult, PatchNotes
+from tinyassets.runs import RunOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,110 @@ SOURCE_LEADERBOARD_SKIPPED_NO_PUBLISHED_VERSION = (
     "leaderboard_skipped_no_published_version"
 )
 SOURCE_LEADERBOARD_NO_ENTRIES = "leaderboard_no_entries"
+
+
+class RouteBackError(RuntimeError):
+    """Base class for fail-loud Goal route-back termination."""
+
+    failure_class = "route_back_error"
+
+    def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.details = details
+
+
+class NoCanonicalBound(RouteBackError):
+    failure_class = "no_canonical_bound"
+
+
+class CanonicalArtifactMissing(RouteBackError):
+    failure_class = "canonical_artifact_missing"
+
+
+class RouteBackLoop(RouteBackError):
+    failure_class = "route_back_loop"
+
+
+class OriginatingRunMissing(RouteBackError):
+    failure_class = "originating_run_missing"
+
+
+def route_back_evaluation(
+    base_path: str | Path,
+    *,
+    evaluation: EvalResult,
+    originating_run_id: str,
+    provider_call: Callable[..., str] | None = None,
+) -> RunOutcome:
+    """Route a gate rejection to the originating actor's Goal canonical."""
+    if evaluation.verdict != "route_back":
+        raise ValueError("route_back_evaluation requires verdict='route_back'")
+    if not evaluation.goal_id or not isinstance(evaluation.patch_notes, PatchNotes):
+        raise ValueError("route_back evaluation is missing goal_id or PatchNotes")
+
+    goal_id = evaluation.goal_id.strip()
+    clean_run_id = originating_run_id.strip()
+    from tinyassets.runs import get_run
+
+    origin = get_run(base_path, clean_run_id) if clean_run_id else None
+    if origin is None:
+        raise OriginatingRunMissing(
+            f"Originating run {clean_run_id!r} does not exist",
+            details={"originating_run_id": clean_run_id},
+        )
+    run_actor = str(origin.get("actor") or "anonymous").strip() or "anonymous"
+    scope_actor = "" if run_actor == "anonymous" else run_actor
+    notes = PatchNotes.from_dict(evaluation.patch_notes.to_dict())
+    hop = (goal_id, scope_actor)
+    if hop in notes.route_history or len(notes.route_history) >= 3:
+        raise RouteBackLoop(
+            f"route back to {hop!r} repeats a hop or exceeds three hops",
+            details={"history": notes.route_history, "cycle_detected_at": hop},
+        )
+    routed_notes = replace(notes, route_history=[*notes.route_history, hop])
+
+    from tinyassets.daemon_server import resolve_goal_canonical
+
+    try:
+        branch_version_id = resolve_goal_canonical(
+            base_path,
+            goal_id=goal_id,
+            scope_actor=scope_actor,
+        )
+    except KeyError as exc:
+        raise NoCanonicalBound(
+            f"Goal {goal_id!r} does not exist",
+            details={"goal_id": goal_id, "scope_actor": scope_actor},
+        ) from exc
+    if not branch_version_id:
+        raise NoCanonicalBound(
+            f"Goal {goal_id!r} has no canonical bound for actor {scope_actor!r}",
+            details={
+                "goal_id": goal_id,
+                "scope_actor": scope_actor,
+                "fallback_attempted": ["default", "legacy"],
+            },
+        )
+
+    from tinyassets.runs import execute_branch_version
+
+    try:
+        return execute_branch_version(
+            base_path,
+            branch_version_id=branch_version_id,
+            inputs={"patch_notes": routed_notes.to_dict()},
+            actor=run_actor,
+            provider_call=provider_call,
+        )
+    except KeyError as exc:
+        raise CanonicalArtifactMissing(
+            f"Canonical Branch version {branch_version_id!r} is missing",
+            details={
+                "goal_id": goal_id,
+                "scope_actor": scope_actor,
+                "branch_version_id": branch_version_id,
+            },
+        ) from exc
 
 
 def resolve_canonical_for_run(
@@ -702,6 +810,7 @@ def _resolve_actor_for_history() -> str:
 
 
 __all__ = [
+    "CanonicalArtifactMissing",
     "IN_FLIGHT_WINDOW_SECONDS",
     "SOURCE_CANONICAL_STORED",
     "SOURCE_LEADERBOARD_REFRESHED",
@@ -710,6 +819,11 @@ __all__ = [
     "SOURCE_LEADERBOARD_SKIPPED_IN_FLIGHT",
     "SOURCE_LEADERBOARD_SKIPPED_NO_PUBLISHED_VERSION",
     "SOURCE_LEADERBOARD_NO_ENTRIES",
+    "NoCanonicalBound",
+    "OriginatingRunMissing",
+    "RouteBackError",
+    "RouteBackLoop",
     "resolve_canonical_for_run",
+    "route_back_evaluation",
     "is_in_flight_for_version",
 ]

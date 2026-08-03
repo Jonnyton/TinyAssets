@@ -21,10 +21,10 @@
 
 ## 4. Goal-Aware Gate Route-Back
 
-- [ ] 4.1 Add typed `PatchNotes` and a `route_back` evaluation decision
-- [ ] 4.2 Implement actor-derived canonical resolution, route-history loop bounds, and structured failure classes
-- [ ] 4.3 Execute routed patch notes synchronously through the immutable version runner
-- [ ] 4.4 Add end-to-end gate rejection tests for personal/default routing and fail-loud loop/missing-canonical cases
+- [x] 4.1 Add typed `PatchNotes` and a `route_back` evaluation decision
+- [x] 4.2 Implement actor-derived canonical resolution, route-history loop bounds, and structured failure classes
+- [x] 4.3 Execute routed patch notes synchronously through the immutable version runner
+- [x] 4.4 Add end-to-end gate rejection tests for personal/default routing and fail-loud loop/missing-canonical cases
 
 > **Archive guard:** Do not archive this change, including with
 > `openspec archive --yes`, while any of 4.1–4.4 is incomplete. Syncing before

@@ -106,6 +106,23 @@ documents each):
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
+Generate the daemon+worker request-admission key without printing it. The
+dedicated file is not exposed to Cloudflare or logging sidecars, and the atomic
+installer preserves its ownership and mode:
+
+```bash
+openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /opt/tinyassets/deploy/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
+```
+
+For automated production deploys, store a separately generated value under the
+GitHub Actions repository secret `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`.
+The deploy validates it before touching the host and installs it once before
+recreating the daemon/workers. **Do not rotate this key:** persisted idempotency
+hashes and admission witnesses depend on it. `set-once` fails closed if GitHub
+and the host differ. Rotation requires a separately reviewed versioned dual-read
+migration. Emergency response stops the fleet but retains the host value until
+that migration exists.
+
 Generate a unique daemon-only agent interchange key without printing it to the
 terminal. This writes canonical single-line base64 for 48 random bytes:
 
@@ -121,9 +138,10 @@ stops the daemon before removing this protected file.
 Permissions check:
 
 ```bash
-ls -la /etc/tinyassets/env /etc/tinyassets/agent-interchange.env
+ls -la /etc/tinyassets/env /etc/tinyassets/agent-interchange.env /etc/tinyassets/request-idempotency.env
 # -rw-r----- 1 root tinyassets ... env
 # -rw-r----- 1 root tinyassets ... agent-interchange.env
+# -rw-r----- 1 root tinyassets ... request-idempotency.env
 ```
 
 If ownership/mode differs, re-run the bootstrap — it resets to
@@ -492,8 +510,9 @@ Then `DO_SSH_USER=deploy` in the GH secret.
 ## Row K — Log aggregation (sidecar in compose)
 
 The `logs` service in `deploy/compose.yml` runs a Vector sidecar that
-tails `daemon` + `cloudflared` container stdout via the Docker socket
-and forwards events. Two paths:
+receives `daemon`, `cloudflared`, and worker stdout through Docker's
+asynchronous Fluent logging driver on host-loopback port 24224 and forwards
+events. Vector receives no Docker socket or container-control capability. Two paths:
 
 - **Default (no config):** Vector writes to its own stdout, which
   `docker compose` + journald capture. Equivalent to not running the

@@ -1558,6 +1558,202 @@ def test_agent_interchange_hmac_validator_never_echoes_rejected_secret():
     assert secret not in result.stderr
 
 
+def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
+    wf = _load()
+    steps = _steps(wf)
+    indexes = {step.get("name"): index for index, step in enumerate(steps)}
+
+    validation_name = "Validate request idempotency HMAC prerequisite"
+    install_name = "Install shared request idempotency HMAC secret"
+    validation = steps[indexes[validation_name]]
+    validation_secret = str(
+        (validation.get("env") or {}).get(
+            "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY", ""
+        )
+    )
+    assert "secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in validation_secret
+    validation_companion = str(
+        (validation.get("env") or {}).get(
+            "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", ""
+        )
+    )
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in validation_companion
+    assert validation.get("run") == (
+        "python scripts/validate_request_idempotency_hmac.py"
+    )
+
+    mutating_names = {
+        "Preflight droplet disk before image pull",
+        "Transitional task 2.1 stop-writer preflight",
+        "Install daemon-only agent interchange HMAC secret",
+        install_name,
+        "Scrub stale cloud env overrides",
+        "Sync runtime deploy files",
+        "Prepare codex auth persistent volume",
+        "Retire legacy Workflow service",
+        "Deploy new image",
+    }
+    assert indexes[validation_name] < min(
+        indexes[name] for name in mutating_names
+    )
+    assert indexes["Transitional task 2.1 stop-writer preflight"] < indexes[
+        install_name
+    ]
+    assert indexes[install_name] < indexes[
+        "Install daemon-only agent interchange HMAC secret"
+    ]
+    assert indexes["Install daemon-only agent interchange HMAC secret"] < indexes[
+        "Validate installed host HMAC pair"
+    ]
+    assert indexes["Validate installed host HMAC pair"] < indexes[
+        "Scrub stale cloud env overrides"
+    ]
+    host_validation = steps[indexes["Validate installed host HMAC pair"]]
+    host_validation_script = host_validation.get("run", "") or ""
+    assert "scripts/validate_host_runtime_hmac_pair.py" in host_validation_script
+    assert '"sudo python3 -"' in host_validation_script
+    assert indexes[install_name] < indexes["Scrub stale cloud env overrides"]
+
+    install = steps[indexes[install_name]]
+    install_secret = str(
+        (install.get("env") or {}).get(
+            "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY", ""
+        )
+    )
+    assert "secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in install_secret
+    script = install.get("run", "") or ""
+    assert re.search(
+        r'printf \'%s\' "\$\{TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\}" '
+        r'\|\s*\\?\s*ssh',
+        script,
+    )
+    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env" in script
+    assert "no-request-idempotency-legacy" in script
+    assert (
+        "install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+        in script
+    )
+    assert 'echo "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"' not in script
+
+    deploy_step = next(step for step in steps if step.get("id") == "deploy")
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" not in (
+        deploy_step.get("env") or {}
+    )
+
+
+def test_request_idempotency_hmac_template_and_compose_contract():
+    template = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
+    dedicated = Path("deploy/request-idempotency-env.template").read_text(
+        encoding="utf-8"
+    )
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" not in template
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=" in dedicated
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=change" not in dedicated
+
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    dedicated_path = "/etc/tinyassets/request-idempotency.env"
+    for name in (
+        "daemon",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    ):
+        assert dedicated_path in (services[name].get("env_file") or []), name
+    for name in ("cloudflared", "logs"):
+        assert dedicated_path not in (services[name].get("env_file") or []), name
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        base64.b64encode(b"x" * 31).decode("ascii"),
+        base64.b64encode(b"x" * 32).decode("ascii") + "\nINJECTED_SETTING=1",
+        "not-base64!",
+        base64.b64encode(b"x" * 32).decode("ascii").rstrip("="),
+    ],
+)
+def test_request_idempotency_hmac_validator_rejects_unsafe_values(value: str):
+    from scripts.validate_request_idempotency_hmac import validate_secret
+
+    with pytest.raises(ValueError):
+        validate_secret(value)
+
+
+def test_request_idempotency_hmac_validator_accepts_and_never_echoes_secret():
+    from scripts.validate_request_idempotency_hmac import validate_secret
+
+    raw = bytes(range(48))
+    encoded = base64.b64encode(raw).decode("ascii")
+    assert validate_secret(encoded) == raw
+
+    rejected = encoded + "\nINJECTED_SETTING=1"
+    env = {**os.environ, "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY": rejected}
+    result = subprocess.run(
+        [sys.executable, "scripts/validate_request_idempotency_hmac.py"],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert rejected not in result.stdout
+    assert "INJECTED_SETTING" not in result.stdout
+    assert rejected not in result.stderr
+
+
+def test_request_idempotency_hmac_validator_rejects_agent_key_reuse():
+    encoded = base64.b64encode(bytes(range(48))).decode("ascii")
+    env = {
+        **os.environ,
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY": encoded,
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": encoded,
+    }
+    result = subprocess.run(
+        [sys.executable, "scripts/validate_request_idempotency_hmac.py"],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert encoded not in result.stdout
+    assert encoded not in result.stderr
+    assert "must differ" in result.stdout
+
+
+def test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation():
+    wf = _load()
+    steps = wf["jobs"]["recover-unsafe"]["steps"]
+    indexes = {step.get("name"): index for index, step in enumerate(steps)}
+    request = steps[indexes["Validate recovery request idempotency HMAC"]]
+    agent = steps[indexes["Validate recovery agent interchange HMAC"]]
+    assert request.get("run") == (
+        "python scripts/validate_request_idempotency_hmac.py"
+    )
+    assert agent.get("run") == "python scripts/validate_agent_interchange_hmac.py"
+    assert indexes["Validate recovery request idempotency HMAC"] < indexes[
+        "Pull recovery image on production host"
+    ]
+    assert indexes["Validate recovery agent interchange HMAC"] < indexes[
+        "Pull recovery image on production host"
+    ]
+    host = steps[indexes["Validate host HMAC pair before recovery mutation"]]
+    host_script = host.get("run", "") or ""
+    assert "scripts/validate_host_runtime_hmac_pair.py" in host_script
+    assert '"sudo python3 -"' in host_script
+    assert indexes["Install recovery SSH key"] < indexes[
+        "Validate host HMAC pair before recovery mutation"
+    ]
+    assert indexes["Validate host HMAC pair before recovery mutation"] < indexes[
+        "Pull recovery image on production host"
+    ]
+
+
 def test_deploy_step_syncs_github_pr_capabilities_when_set():
     """When ``HAS_GITHUB_PR_CAPABILITY=true``, the Deploy step must
     pipe the secret into install-tinyassets-env.sh via the same atomic

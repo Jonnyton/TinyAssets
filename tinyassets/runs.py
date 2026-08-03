@@ -3122,6 +3122,64 @@ class SnapshotSchemaDrift(Exception):
     actionable_by = "chatbot"
 
 
+def _load_branch_version(
+    base_path: str | Path,
+    branch_version_id: str,
+) -> BranchDefinition:
+    from tinyassets.branch_versions import get_branch_version
+
+    version = get_branch_version(base_path, branch_version_id=branch_version_id)
+    if version is None:
+        raise KeyError(
+            f"branch_version_id {branch_version_id!r} not found in branch_versions"
+        )
+    try:
+        snapshot = dict(version.snapshot)
+        # Published snapshots contain behavior only; the compiler still
+        # requires a non-empty presentation name at validation time.
+        snapshot.setdefault("name", snapshot.get("branch_def_id", ""))
+        return BranchDefinition.from_dict(snapshot)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise SnapshotSchemaDrift(
+            f"Snapshot for {branch_version_id!r} cannot be reconstructed: "
+            f"{exc}. Republish at current schema version."
+        ) from exc
+
+
+def execute_branch_version(
+    base_path: str | Path,
+    *,
+    branch_version_id: str,
+    inputs: dict[str, Any],
+    run_name: str = "",
+    actor: str = "anonymous",
+    provider_call: Callable[..., str] | None = None,
+    recursion_limit_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    _invocation_depth: int = 0,
+) -> RunOutcome:
+    """Execute an immutable published Branch version and block to completion."""
+    branch = _load_branch_version(base_path, branch_version_id)
+    run_id = _prepare_run(
+        base_path,
+        branch=branch,
+        inputs=inputs,
+        run_name=run_name,
+        actor=actor,
+        branch_version_id=branch_version_id,
+    )
+    return _invoke_graph(
+        base_path,
+        run_id=run_id,
+        branch=branch,
+        inputs=inputs,
+        provider_call=provider_call,
+        recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
+        on_node_status=on_node_status,
+        invocation_depth=_invocation_depth,
+    )
+
+
 def execute_branch_version_async(
     base_path: str | Path,
     *,
@@ -3165,21 +3223,7 @@ def execute_branch_version_async(
         ``suggested_action`` class attributes name the recovery path
         ("republish at current schema version").
     """
-    from tinyassets.branch_versions import get_branch_version
-
-    bv = get_branch_version(base_path, branch_version_id=branch_version_id)
-    if bv is None:
-        raise KeyError(
-            f"branch_version_id {branch_version_id!r} not found "
-            "in branch_versions"
-        )
-    try:
-        branch = BranchDefinition.from_dict(bv.snapshot)
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        raise SnapshotSchemaDrift(
-            f"Snapshot for {branch_version_id!r} cannot be reconstructed: "
-            f"{exc}. Republish at current schema version."
-        ) from exc
+    branch = _load_branch_version(base_path, branch_version_id)
     return _execute_branch_core(
         base_path,
         branch=branch,
@@ -4186,6 +4230,7 @@ __all__ = [
     "build_node_status_map",
     "create_run",
     "execute_branch",
+    "execute_branch_version",
     "execute_branch_async",
     "find_node_snapshot",
     "get_future",

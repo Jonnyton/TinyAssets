@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from tinyassets.evaluation import EvalResult, EvidenceRef, PatchNotes
 from tinyassets.evaluation.structural import (
     CheckResult,
     StructuralEvaluator,
@@ -23,6 +24,91 @@ from tinyassets.evaluation.structural import (
     _extract_premise_terms,
     _facts_contradict,
 )
+
+
+def _patch_notes(**overrides) -> PatchNotes:
+    values = {
+        "summary": "Repair the rejected artifact",
+        "rationale": "The gate found a deterministic mismatch.",
+        "author_actor_id": "alice",
+    }
+    values.update(overrides)
+    return PatchNotes(**values)
+
+
+def test_patch_notes_round_trip_preserves_typed_evidence_and_identity():
+    notes = _patch_notes(
+        evidence_refs=[
+            EvidenceRef(kind="run_artifact", id="artifact-1", cited_by="gate-1")
+        ],
+        extra={"target": "draft"},
+    )
+
+    restored = PatchNotes.from_dict(notes.to_dict())
+
+    assert restored == notes
+    assert restored.patch_notes_id == notes.patch_notes_id
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"summary": ""}, "summary must be 1-200 characters"),
+        ({"summary": "x" * 201}, "summary must be 1-200 characters"),
+        ({"author_actor_id": ""}, "author_actor_id is required"),
+    ],
+)
+def test_patch_notes_reject_malformed_required_fields(changes, message):
+    with pytest.raises(ValueError, match=message):
+        _patch_notes(**changes)
+
+
+@pytest.mark.parametrize(
+    "payload_update",
+    [
+        {"summary": 42},
+        {"rationale": None},
+        {"affected_files": "tinyassets/runs.py"},
+        {"tests_added": ["ok", 7]},
+        {"evidence_run_id": {"run": "r1"}},
+    ],
+)
+def test_patch_notes_from_dict_rejects_malformed_field_types(payload_update):
+    payload = _patch_notes().to_dict()
+    payload.update(payload_update)
+
+    with pytest.raises(TypeError):
+        PatchNotes.from_dict(payload)
+
+
+def test_route_back_evaluation_requires_goal_and_typed_patch_notes():
+    notes = _patch_notes()
+
+    decision = EvalResult(
+        score=0.0,
+        verdict="route_back",
+        kind="structural",
+        goal_id="goal-1",
+        patch_notes=notes,
+    )
+
+    assert decision.goal_id == "goal-1"
+    assert decision.patch_notes is notes
+    with pytest.raises(ValueError, match="goal_id"):
+        EvalResult(
+            score=0.0,
+            verdict="route_back",
+            kind="structural",
+            patch_notes=notes,
+        )
+    with pytest.raises(TypeError, match="PatchNotes"):
+        EvalResult(
+            score=0.0,
+            verdict="route_back",
+            kind="structural",
+            goal_id="goal-1",
+            patch_notes={"summary": "untyped"},
+        )
 
 # ---------------------------------------------------------------------------
 # Helpers
