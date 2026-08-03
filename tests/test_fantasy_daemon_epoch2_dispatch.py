@@ -7,6 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import rfc8785
@@ -144,17 +145,22 @@ def _seed_cloud_worker(
     return daemon, runtime
 
 
-def _active_cloud_automation(base_path: Path) -> AutomationActivation:
+def _active_cloud_automation(
+    base_path: Path,
+    *,
+    automation_id: str = "automation-a",
+    branch_version: str = "branch-version-a",
+) -> AutomationActivation:
     activations = AutomationActivationStore(base_path)
     stopped = activations.create_stopped(
         universe_id="universe-a",
-        automation_id="automation-a",
+        automation_id=automation_id,
     )
     active = activations.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.CLOUD,
-        subject=_activation_subject("branch-version-a"),
-        lease_id="cloud-lease-a",
+        subject=_activation_subject(branch_version),
+        lease_id=f"cloud-lease-{automation_id}",
     )
     assert active is not None
     return active
@@ -162,6 +168,40 @@ def _active_cloud_automation(base_path: Path) -> AutomationActivation:
 
 def test_epoch2_consumer_readiness_is_code_owned_true() -> None:
     assert branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is True
+
+
+def test_run_branch_continuation_uses_direct_branch_execution() -> None:
+    task = SimpleNamespace(
+        branch_def_id="ordinary-user-branch",
+        request_type="run_branch",
+    )
+
+    assert daemon_main._should_execute_claimed_branch_directly(task) is True
+
+
+def test_epoch2_read_model_retains_immutable_activation_execution_fields(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    active = _active_cloud_automation(tmp_path)
+    committed = _commit_epoch2(
+        tmp_path,
+        key="immutable-fields",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=active,
+    )
+
+    task = Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"])
+
+    assert task is not None
+    assert task.automation_id == active.automation_id
+    assert task.automation_activation_epoch == active.epoch
+    assert task.automation_executor_class == "cloud"
+    assert task.automation_subject_kind == "branch_version"
+    assert task.automation_subject_ref == active.subject.ref
+    assert task.automation_subject_digest == active.subject.digest
+    assert task.automation_branch_version == active.immutable_branch_version
+    assert task.automation_lease_id == active.lease_id
 
 
 def test_worker_claim_context_is_read_from_canonical_runtime_transaction(
@@ -478,6 +518,248 @@ def test_activation_bound_claim_is_single_flight_across_workers(
         descriptor=worker_b,
         descriptor_reader=lambda _conn, _worker: worker_b,
     ) is None
+
+
+def test_active_automation_does_not_starve_unrelated_pending_work(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    active_a = _active_cloud_automation(tmp_path, automation_id="automation-a")
+    active_b = _active_cloud_automation(
+        tmp_path,
+        automation_id="automation-b",
+        branch_version="branch-version-b",
+    )
+    running = _commit_epoch2(
+        tmp_path,
+        key="running-a",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=active_a,
+    )
+    blocked = _commit_epoch2(
+        tmp_path,
+        key="blocked-a",
+        created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+        activation=active_a,
+    )
+    unrelated = _commit_epoch2(
+        tmp_path,
+        key="unrelated-b",
+        created_at=(datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),
+        activation=active_b,
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker-a",
+        runtime_instance_id="runtime::worker-a",
+        boot_id="boot::worker-a",
+        build_sha="a" * 40,
+        config_hash="sha256:" + ("b" * 64),
+        universe_id="universe-a",
+        expires_at=(datetime.now(timezone.utc) + timedelta(seconds=75)).isoformat(),
+        executor_class=AutomationActivationExecutor.CLOUD,
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    assert adapter.claim(
+        running["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker: descriptor,
+    ) is not None
+
+    candidate_ids = {task.branch_task_id for task in adapter.list_candidates()}
+
+    assert blocked["branch_task_id"] not in candidate_ids
+    assert unrelated["branch_task_id"] in candidate_ids
+
+
+def test_epoch2_default_lease_survives_a_long_provider_node(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    now = datetime.now(timezone.utc)
+    current = {"value": now}
+    active = _active_cloud_automation(tmp_path)
+    committed = _commit_epoch2(
+        tmp_path,
+        key="long-provider-node",
+        created_at=now.isoformat(),
+        activation=active,
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker-a",
+        runtime_instance_id="runtime::worker-a",
+        boot_id="boot::worker-a",
+        build_sha="a" * 40,
+        config_hash="sha256:" + ("b" * 64),
+        universe_id="universe-a",
+        expires_at=(now + timedelta(seconds=75)).isoformat(),
+        executor_class=AutomationActivationExecutor.CLOUD,
+    )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: current["value"],
+    )
+    claimed = adapter.claim(
+        committed["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker: descriptor,
+    )
+    assert claimed is not None
+    current["value"] = now + timedelta(seconds=91)
+
+    assert adapter.recover_expired() == []
+    assert adapter.get(committed["branch_task_id"]).status == "running"
+
+
+def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    captured: dict = {}
+
+    def execute_version(_base_path, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run_id="run-a",
+            status=runs.RUN_STATUS_COMPLETED,
+            output={},
+            error="",
+        )
+
+    monkeypatch.setattr(runs, "latest_run_by_name", lambda *_a, **_k: None)
+    monkeypatch.setattr(runs, "execute_branch_version", execute_version)
+    task = SimpleNamespace(
+        branch_task_id="bt2_" + ("a" * 32),
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        depth=0,
+        origin_branch_task_id="",
+        executor_worker_id="worker-a",
+        executor_runtime_id="runtime-a",
+        automation_branch_version="branch-version-a",
+    )
+
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+    )
+
+    assert success is True
+    assert error == ""
+    assert metadata["branch_version_id"] == "branch-version-a"
+    assert captured["branch_version_id"] == "branch-version-a"
+    assert captured["daemon_id"] == "daemon-a"
+    assert captured["runtime_instance_id"] == "runtime-a"
+    assert captured["worker_id"] == "worker-a"
+
+
+def test_execute_branch_version_threads_identity_and_queue_lineage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    branch = SimpleNamespace(branch_def_id="ordinary-user-branch")
+    prepared: dict = {}
+    invoked: dict = {}
+    expected = runs.RunOutcome(
+        run_id="run-a",
+        status=runs.RUN_STATUS_COMPLETED,
+        output={},
+    )
+    monkeypatch.setattr(runs, "_load_branch_version", lambda *_a: branch)
+
+    def prepare(_base_path, **kwargs):
+        prepared.update(kwargs)
+        return "run-a"
+
+    def invoke(_base_path, **kwargs):
+        invoked.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(runs, "_prepare_run", prepare)
+    monkeypatch.setattr(runs, "_invoke_graph", invoke)
+
+    outcome = runs.execute_branch_version(
+        tmp_path,
+        branch_version_id="branch-version-a",
+        inputs={"repository": "owner/repo"},
+        actor="owner-a",
+        daemon_id="daemon-a",
+        runtime_instance_id="runtime-a",
+        worker_id="worker-a",
+        _enqueue_universe_id="universe-a",
+        _parent_branch_task_id="bt2_parent",
+        _origin_branch_task_id="bt2_origin",
+    )
+
+    assert outcome is expected
+    assert prepared["branch_version_id"] == "branch-version-a"
+    assert prepared["daemon_id"] == "daemon-a"
+    assert prepared["runtime_instance_id"] == "runtime-a"
+    assert prepared["worker_id"] == "worker-a"
+    enqueue = invoked["enqueue_context"]
+    assert enqueue.universe_id == "universe-a"
+    assert enqueue.parent_branch_task_id == "bt2_parent"
+    assert enqueue.origin_branch_task_id == "bt2_origin"
+
+
+def test_epoch2_incomplete_run_is_reconciled_without_second_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        runs,
+        "latest_run_by_name",
+        lambda *_a, **_k: {
+            "run_id": "run-existing",
+            "status": runs.RUN_STATUS_INTERRUPTED,
+            "output": {},
+            "actor": "owner-a",
+        },
+    )
+    monkeypatch.setattr(
+        runs,
+        "execute_branch_version",
+        lambda *_a, **_k: pytest.fail("must not execute a second run"),
+    )
+    task = SimpleNamespace(
+        branch_task_id="bt2_" + ("b" * 32),
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        automation_branch_version="branch-version-a",
+    )
+
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+    )
+
+    assert success is False
+    assert error == "existing_run_requires_reconciliation:interrupted"
+    assert metadata["run_id"] == "run-existing"
+    assert metadata["reused_existing_run"] is True
 
 
 def test_epoch2_cancel_request_finishes_without_legacy_queue_mutation(

@@ -9,7 +9,7 @@ fleet and ordinary epoch-2 Branch tasks. It does not claim chatbot activation,
 useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
-Implementation commit after the final current-main rebase: `bcc9dbbf`. The
+Implementation commit after the final current-main rebase: pending. The
 immutable PR comment records the final exact PR head, including this evidence
 document.
 
@@ -66,6 +66,19 @@ terminalized as `resume_authority_invalid` without material Branch execution.
 The trusted worker/runtime identity is attached to the in-memory execution
 model only after this revalidation.
 
+The execution boundary also preserves the activation's immutable published
+Branch version. A canonical `run_branch` continuation goes through direct
+Branch execution, the epoch-2 read model retains the complete activation
+tuple, and `execute_branch_version` persists the trusted daemon/runtime/worker
+identity plus queue lineage. A durable nonterminal run is reconciled as the
+same run identity and never starts a second provider/effect execution.
+
+Epoch-2 task leases use the existing 30-minute long-node safety envelope while
+the independently refreshed worker descriptor remains limited to 90 seconds.
+Pending tasks for an activation that already has a running or
+cancel-requested task are excluded in the transactional candidate query, so
+they cannot head-of-line block unrelated automations.
+
 ## Local evidence
 
 Environment: Windows PowerShell, Python 3.14.3, repository worktree based on
@@ -80,10 +93,13 @@ py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_soul_loop_dispatch.py
 ```
 
-Result after the final current-main rebase: `255 passed in 40.70s`. This
-includes eight
-fresh-database, two-worker races; each race produced exactly one
-activation-bound claim winner.
+Result after review-finding repairs: `250 passed in 37.11s` across the epoch-2
+consumer, cloud worker, transactional adapter/store, and immutable Branch
+version suites. This includes eight fresh-database, two-worker races; each
+race produced exactly one activation-bound claim winner, plus focused
+immutable-version, restart-reconciliation, long-node lease, and
+head-of-line-starvation proofs. The earlier rebased suite remains `255 passed
+in 40.70s` for the broader dispatcher/goal-pool coverage.
 
 ```text
 py -m ruff check tinyassets/branch_tasks_v2.py tinyassets/cloud_worker.py \
@@ -102,9 +118,14 @@ parity passed; diff check clean.
 Fresh-context same-provider review is permitted by the host after the opposite
 provider reported its hard subscription limit. An initial review of
 `5dca7056` was started before the proactive restart-authority amendments and
-is therefore advisory only. A second fresh-context review of the final exact
-head is required. The verdict and immutable PR comment must be added here
-before merge.
+is therefore advisory only. It returned `ADAPT` with six findings: canonical
+`run_branch` routing, restart activation revalidation, the 90-second task
+lease, mutable Branch-head execution and dropped runtime identity, duplicate
+execution after an incomplete run, and activation head-of-line starvation.
+The restart activation and trusted runtime fields were already repaired; the
+remaining four are now covered by the implementation and focused tests above.
+A second fresh-context review of the final exact head is still required. The
+verdict and immutable PR comment must be added here before merge.
 
 ## Deployment and acceptance state
 
@@ -123,7 +144,8 @@ cloud automation activation tuple.
 
 ## Temporary drain continuity
 
-At 2026-08-02 19:11 PDT, the local watchdog reported the controller alive and
-attempt 16 running. One attempt-15 admission collision was recorded, then the
-supervisor admitted attempt 16 automatically. The local bridge remains active
-until cloud acceptance is proven.
+At 2026-08-02 19:34 PDT, the local watchdog reported the controller alive,
+attempt 17 active, 17 attempts, five completed slices, and zero consecutive
+failures. One attempt-15 admission collision was recorded, then the supervisor
+admitted attempt 16 automatically. The local bridge remains active until cloud
+acceptance is proven.

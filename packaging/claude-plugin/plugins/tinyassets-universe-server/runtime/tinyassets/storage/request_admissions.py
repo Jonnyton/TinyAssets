@@ -36,7 +36,10 @@ PRIORITY_WEIGHT_CAP = 100
 QUEUE_EPOCH = 2
 QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
-MAX_LEASE_SECONDS = 90
+# Queue ownership must outlive the longest supported provider call (15m)
+# between node-boundary heartbeats. Worker descriptors remain independently
+# capped at 90 seconds and are revalidated for every new claim/resume.
+MAX_LEASE_SECONDS = 1800
 MAX_QUARANTINE_SCAN_ROWS = 1000
 MAX_OPERATIONAL_SCAN_ROWS = 1000
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
@@ -783,6 +786,7 @@ class RequestAdmissionStore:
                 conn,
                 universe_id=universe_id,
                 pending_only=True,
+                exclude_active_automation=True,
             )
             candidates: list[dict[str, Any]] = []
             requested = max(1, int(limit))
@@ -1130,6 +1134,7 @@ class RequestAdmissionStore:
         *,
         universe_id: str = "",
         pending_only: bool,
+        exclude_active_automation: bool = False,
         active_only: bool = False,
         include_disabled: bool = False,
         include_linked_universe_scope: bool = False,
@@ -1150,6 +1155,15 @@ class RequestAdmissionStore:
         params: list[Any] = []
         if pending_only:
             clauses.append("t.status = 'pending'")
+        if exclude_active_automation:
+            clauses.append(
+                "(t.automation_id IS NULL OR NOT EXISTS ("
+                "SELECT 1 FROM branch_tasks_v2 AS active "
+                "WHERE active.universe_id = t.universe_id "
+                "AND active.automation_id = t.automation_id "
+                "AND active.status IN ('running', 'cancel_requested') "
+                "AND active.disabled = 0))"
+            )
         if active_only:
             clauses.append(
                 "t.status NOT IN ('cancelled', 'succeeded', 'failed')"

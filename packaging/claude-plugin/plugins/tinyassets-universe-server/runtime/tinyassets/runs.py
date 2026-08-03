@@ -505,6 +505,11 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
             else None
         ),
         "worker_id": row["worker_id"] if "worker_id" in col_names else None,
+        "branch_version_id": (
+            row["branch_version_id"]
+            if "branch_version_id" in col_names
+            else None
+        ),
     }
 
 
@@ -3155,8 +3160,15 @@ def execute_branch_version(
     actor: str = "anonymous",
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
+    concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
+    _parent_branch_task_id: str = "",
+    _origin_branch_task_id: str = "",
 ) -> RunOutcome:
     """Execute an immutable published Branch version and block to completion."""
     branch = _load_branch_version(base_path, branch_version_id)
@@ -3167,6 +3179,21 @@ def execute_branch_version(
         run_name=run_name,
         actor=actor,
         branch_version_id=branch_version_id,
+        daemon_id=daemon_id,
+        runtime_instance_id=runtime_instance_id,
+        worker_id=worker_id,
+    )
+    enqueue_origin = (
+        str(_origin_branch_task_id or "").strip()
+        or str(_parent_branch_task_id or "").strip()
+    )
+    if _enqueue_universe_id and not enqueue_origin:
+        enqueue_origin = f"run:{run_id}"
+    enqueue_context = NodeEnqueueContext(
+        universe_id=_enqueue_universe_id,
+        actor=actor,
+        parent_branch_task_id=_parent_branch_task_id,
+        origin_branch_task_id=enqueue_origin,
     )
     return _invoke_graph(
         base_path,
@@ -3175,8 +3202,10 @@ def execute_branch_version(
         inputs=inputs,
         provider_call=provider_call,
         recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
+        concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
+        enqueue_context=enqueue_context,
     )
 
 

@@ -43,6 +43,14 @@ class Epoch2BranchTask(BranchTask):
     request_id: str = ""
     queue_epoch: int = QUEUE_EPOCH
     protocol_version: int = QUEUE_PROTOCOL_VERSION
+    automation_id: str = ""
+    automation_activation_epoch: int = 0
+    automation_executor_class: str = ""
+    automation_subject_kind: str = ""
+    automation_subject_ref: str = ""
+    automation_subject_digest: str = ""
+    automation_branch_version: str = ""
+    automation_lease_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,10 @@ DescriptorReader = Callable[
     WorkerClaimDescriptor | None,
 ]
 DESCRIPTOR_VALIDITY_SECONDS = 90
+# A provider node can legally run for 15 minutes.  Claims therefore retain
+# the established v1 30-minute safety envelope between node-boundary
+# heartbeats; the short descriptor TTL still fences new claim authority.
+EPOCH2_TASK_LEASE_SECONDS = 1800
 # Flip only in the same change that wires the supervised daemon's selector,
 # claim, and lifecycle paths to this adapter.  This constant is bundled with
 # every runtime mirror, so capability publication never depends on an
@@ -308,7 +320,7 @@ class Epoch2BranchTaskAdapter:
         *,
         descriptor: WorkerClaimDescriptor,
         descriptor_reader: DescriptorReader,
-        lease_seconds: int = 90,
+        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
     ) -> Epoch2BranchTask | None:
         if not _descriptor_shape_is_valid(descriptor):
             return None
@@ -372,7 +384,7 @@ class Epoch2BranchTaskAdapter:
         branch_task_id: str,
         *,
         worker_id: str,
-        lease_seconds: int = 90,
+        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
     ) -> Epoch2BranchTask | None:
         row = self._store.heartbeat_v2_task(
             branch_task_id,
@@ -1375,6 +1387,24 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
         request_id=str(row["request_id"]),
         queue_epoch=int(row["queue_epoch"]),
         protocol_version=int(row["protocol_version"]),
+        automation_id=str(row.get("automation_id") or ""),
+        automation_activation_epoch=int(
+            row.get("automation_activation_epoch") or 0
+        ),
+        automation_executor_class=str(
+            row.get("automation_executor_class") or ""
+        ),
+        automation_subject_kind=str(
+            row.get("automation_subject_kind") or ""
+        ),
+        automation_subject_ref=str(row.get("automation_subject_ref") or ""),
+        automation_subject_digest=str(
+            row.get("automation_subject_digest") or ""
+        ),
+        automation_branch_version=str(
+            row.get("automation_branch_version") or ""
+        ),
+        automation_lease_id=str(row.get("automation_lease_id") or ""),
     )
 
 
@@ -1383,6 +1413,7 @@ __all__ = [
     "Epoch2BranchTaskAdapter",
     "Epoch2ClaimedRequest",
     "Epoch2OperationalRead",
+    "EPOCH2_TASK_LEASE_SECONDS",
     "QuarantineMaintenanceResult",
     "QuarantineReceipt",
     "WorkerClaimDescriptor",

@@ -1036,7 +1036,7 @@ def _should_execute_claimed_branch_directly(claimed_task: Any) -> bool:
     if not branch_def_id or branch_def_id in _UNIVERSE_CYCLE_BRANCH_IDS:
         return False
     request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
-    return request_type in {"branch_run", "bug_investigation"}
+    return request_type in {"branch_run", "run_branch", "bug_investigation"}
 
 
 def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
@@ -1148,37 +1148,55 @@ def _try_execute_claimed_branch_task(
         from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             execute_branch,
+            execute_branch_version,
             latest_run_by_name,
         )
         from tinyassets.storage import data_dir
 
         base_path = data_dir()
         requested = str(getattr(claimed_task, "branch_def_id", "") or "")
-        branch_def_id = _resolve_branch_id(requested, base_path)
-        if not branch_def_id:
-            return False, f"branch_not_found: {requested}", {
-                "requested_branch_def_id": requested,
-            }
-        try:
-            source_dict = get_branch_definition(base_path, branch_def_id=branch_def_id)
-        except KeyError:
-            return False, f"branch_not_found: {branch_def_id}", {
-                "branch_def_id": branch_def_id,
-            }
-        branch = BranchDefinition.from_dict(source_dict)
-        errors = branch.validate()
-        if errors:
-            return False, "branch_validation_failed", {
-                "branch_def_id": branch_def_id,
-                "validation_errors": errors,
-            }
+        is_epoch2 = _is_epoch2_branch_task(claimed_task)
+        branch_version_id = str(
+            getattr(claimed_task, "automation_branch_version", "") or ""
+        ).strip()
+        branch = None
+        if is_epoch2:
+            if not branch_version_id:
+                return False, "missing_immutable_branch_version", {
+                    "requested_branch_def_id": requested,
+                }
+            # The transactional admission already bound this task to an exact
+            # published snapshot.  Never resolve the mutable branch head for
+            # epoch 2 execution.
+            branch_def_id = requested
+        else:
+            branch_def_id = _resolve_branch_id(requested, base_path)
+            if not branch_def_id:
+                return False, f"branch_not_found: {requested}", {
+                    "requested_branch_def_id": requested,
+                }
+            try:
+                source_dict = get_branch_definition(
+                    base_path,
+                    branch_def_id=branch_def_id,
+                )
+            except KeyError:
+                return False, f"branch_not_found: {branch_def_id}", {
+                    "branch_def_id": branch_def_id,
+                }
+            branch = BranchDefinition.from_dict(source_dict)
+            errors = branch.validate()
+            if errors:
+                return False, "branch_validation_failed", {
+                    "branch_def_id": branch_def_id,
+                    "validation_errors": errors,
+                }
 
         run_name = f"branch-task-{claimed_task.branch_task_id}"
-        existing_run = latest_run_by_name(
-            base_path,
-            run_name=run_name,
-            branch_def_id=branch_def_id,
-        )
+        lookup_kwargs = {"run_name": run_name}
+        if not is_epoch2:
+            lookup_kwargs["branch_def_id"] = branch_def_id
+        existing_run = latest_run_by_name(base_path, **lookup_kwargs)
         if existing_run and existing_run.get("status") == RUN_STATUS_COMPLETED:
             output = existing_run.get("output", {})
             metadata = {
@@ -1188,6 +1206,8 @@ def _try_execute_claimed_branch_task(
                 "actor": existing_run.get("actor") or "",
                 "reused_existing_run": True,
             }
+            if is_epoch2:
+                metadata["branch_version_id"] = branch_version_id
             attach_result = _maybe_attach_bug_investigation_patch_packet(
                 claimed_task,
                 existing_run["status"],
@@ -1203,6 +1223,24 @@ def _try_execute_claimed_branch_task(
                 existing_run["run_id"],
             )
             return True, "", metadata
+        if existing_run:
+            existing_status = str(existing_run.get("status") or "unknown")
+            # A durable run means provider/effect work may already have
+            # happened.  Reconcile that identity instead of creating a second
+            # run after worker restart; a later continuation can use the
+            # persisted background-attempt/effect owners to advance safely.
+            return (
+                False,
+                f"existing_run_requires_reconciliation:{existing_status}",
+                {
+                    "branch_def_id": branch_def_id,
+                    "branch_version_id": branch_version_id,
+                    "run_id": existing_run.get("run_id") or "",
+                    "run_status": existing_status,
+                    "actor": existing_run.get("actor") or "",
+                    "reused_existing_run": True,
+                },
+            )
 
         provider_call: Any = None
         try:
@@ -1219,38 +1257,51 @@ def _try_execute_claimed_branch_task(
         executor_runtime_id = str(
             getattr(claimed_task, "executor_runtime_id", "") or "",
         )
-        outcome = execute_branch(
-            base_path,
-            branch=branch,
-            inputs=_branch_task_inputs_for_execution(claimed_task),
-            run_name=run_name,
-            actor=actor,
-            daemon_id=daemon_id,
-            runtime_instance_id=executor_runtime_id,
-            worker_id=executor_worker_id,
-            provider_call=provider_call,
-            on_node_status=on_node_status,
+        execution_kwargs = {
+            "inputs": _branch_task_inputs_for_execution(claimed_task),
+            "run_name": run_name,
+            "actor": actor,
+            "daemon_id": daemon_id,
+            "runtime_instance_id": executor_runtime_id,
+            "worker_id": executor_worker_id,
+            "provider_call": provider_call,
+            "on_node_status": on_node_status,
             # Carry spawn depth across the queue boundary so an in-node enqueue
             # from this run is depth+1 and the depth cap can bound the chain.
-            _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
+            "_invocation_depth": int(getattr(claimed_task, "depth", 0) or 0),
             # Trusted enqueue context: universe authority comes from the
             # physical queue directory after its persisted row value matched;
             # lineage comes from the claimed task. A source node cannot
             # redirect descendants by editing task metadata or inputs.
-            _enqueue_universe_id=physical_universe_id,
-            _parent_branch_task_id=str(
+            "_enqueue_universe_id": physical_universe_id,
+            "_parent_branch_task_id": str(
                 getattr(claimed_task, "branch_task_id", "") or ""
             ),
-            _origin_branch_task_id=str(
+            "_origin_branch_task_id": str(
                 getattr(claimed_task, "origin_branch_task_id", "") or ""
             ),
-        )
+        }
+        if is_epoch2:
+            outcome = execute_branch_version(
+                base_path,
+                branch_version_id=branch_version_id,
+                **execution_kwargs,
+            )
+        else:
+            assert branch is not None
+            outcome = execute_branch(
+                base_path,
+                branch=branch,
+                **execution_kwargs,
+            )
         metadata = {
             "branch_def_id": branch_def_id,
             "run_id": outcome.run_id,
             "run_status": outcome.status,
             "actor": actor,
         }
+        if is_epoch2:
+            metadata["branch_version_id"] = branch_version_id
         attach_result = _maybe_attach_bug_investigation_patch_packet(
             claimed_task,
             outcome.status,
