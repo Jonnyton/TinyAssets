@@ -34,9 +34,21 @@ from pathlib import Path
 
 _TESTS = Path(__file__).resolve().parent
 
-# Callables that mutate shared state on enter and restore it on exit. Entering
-# one of these from more than one thread is the unsafe pattern.
-_UNSAFE_IN_THREAD = {"patch", "setattr", "setenv", "delenv", "chdir"}
+# Callables that mutate PROCESS-GLOBAL state on enter and restore it on exit.
+# Entering one from more than one thread is the unsafe pattern.
+#
+# Two separate shapes, deliberately not merged into one name set:
+#
+#   * bare `patch(...)` / `mock.patch(...)` / `mock.patch.object(...)`
+#   * `monkeypatch.<verb>(...)` — pytest's fixture, equally process-global
+#
+# `setattr` etc. are matched ONLY on a `monkeypatch` receiver. Matching them by
+# bare name would flag builtin `setattr(obj, "x", 1)` on a thread-local object,
+# which is perfectly safe — a false-positive gate is worse than no gate, since
+# it blocks correct code and trains people to delete the check.
+_PATCH_NAMES = {"patch"}
+_MONKEYPATCH_VERBS = {"setattr", "setenv", "delenv", "delattr", "chdir", "syspath_prepend"}
+_MONKEYPATCH_RECEIVERS = {"monkeypatch", "mp"}
 
 
 def _thread_target_names(tree: ast.Module) -> set[str]:
@@ -81,15 +93,30 @@ def _offenders(path: Path) -> list[str]:
         for sub in ast.walk(func):
             if not isinstance(sub, ast.Call):
                 continue
-            name = getattr(sub.func, "id", None) or getattr(
-                sub.func, "attr", None
-            )
-            if name in _UNSAFE_IN_THREAD:
+            name = _unsafe_call_name(sub.func)
+            if name:
                 found.append(
-                    f"{path.name}:{sub.lineno} — {name}() inside thread target "
+                    f"{path.name}:{sub.lineno} — {name} inside thread target "
                     f"{func.name!r}"
                 )
     return found
+
+
+def _unsafe_call_name(func: ast.expr) -> str | None:
+    """Return a label if this call mutates process-global state, else None."""
+    # patch(...)
+    if isinstance(func, ast.Name) and func.id in _PATCH_NAMES:
+        return f"{func.id}()"
+    if isinstance(func, ast.Attribute):
+        # mock.patch(...) / mock.patch.object(...) / monkeypatch.setattr(...)
+        if func.attr in _PATCH_NAMES:
+            return f"{func.attr}()"
+        if isinstance(func.value, ast.Attribute) and func.value.attr in _PATCH_NAMES:
+            return f"{func.value.attr}.{func.attr}()"
+        receiver = getattr(func.value, "id", None)
+        if func.attr in _MONKEYPATCH_VERBS and receiver in _MONKEYPATCH_RECEIVERS:
+            return f"{receiver}.{func.attr}()"
+    return None
 
 
 def test_no_patching_from_inside_a_thread_target() -> None:
@@ -134,3 +161,41 @@ def test_the_detector_can_actually_fire(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert not _offenders(safe), "detector flagged the correct hoisted pattern"
+
+
+def test_builtin_setattr_in_a_thread_is_not_flagged(tmp_path: Path) -> None:
+    """False positives block correct code, which is worse than no check.
+
+    Builtin `setattr` on a thread-local object is safe and common; only
+    `monkeypatch.setattr`, which mutates process-global state, is unsafe.
+    """
+    sample = tmp_path / "test_builtin.py"
+    sample.write_text(
+        "import threading\n"
+        "class Box: pass\n"
+        "def worker(box):\n"
+        "    setattr(box, 'done', True)\n"
+        "def test_x():\n"
+        "    b = Box()\n"
+        "    t = threading.Thread(target=worker, args=(b,))\n"
+        "    t.start(); t.join()\n",
+        encoding="utf-8",
+    )
+    assert not _offenders(sample), (
+        "builtin setattr on a local object must not be flagged"
+    )
+
+
+def test_monkeypatch_setattr_in_a_thread_is_flagged(tmp_path: Path) -> None:
+    """The receiver is what makes it unsafe, not the verb."""
+    sample = tmp_path / "test_mp.py"
+    sample.write_text(
+        "import threading\n"
+        "def worker(monkeypatch):\n"
+        "    monkeypatch.setattr('subprocess.run', None)\n"
+        "def test_x(monkeypatch):\n"
+        "    t = threading.Thread(target=worker, args=(monkeypatch,))\n"
+        "    t.start(); t.join()\n",
+        encoding="utf-8",
+    )
+    assert _offenders(sample), "monkeypatch.setattr in a thread must be flagged"
