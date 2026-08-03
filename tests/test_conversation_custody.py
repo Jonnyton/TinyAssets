@@ -5,6 +5,7 @@ import importlib
 import multiprocessing
 import os
 import sqlite3
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
@@ -748,12 +749,13 @@ def _create_grant(
     interlocutor_ref: str,
     key: str,
     scope=None,
+    retention_until: str | None = None,
 ):
     selected_scope = scope or _scope(custody)
     request_digest = custody.create_thread_request_digest(
         selected_scope,
         interlocutor_ref=interlocutor_ref,
-        retention_until=None,
+        retention_until=retention_until,
     )
     return _grant(
         custody,
@@ -827,6 +829,53 @@ def _read_grant(
             action="read_thread",
             request_digest=request_digest,
             scope=selected_scope,
+        ),
+    )
+
+
+def _export_grant(custody, root: Path, universe: Path, *, conversation_id: str):
+    scope = _scope(custody)
+    return _grant(
+        custody,
+        _evidence(
+            custody,
+            root,
+            universe,
+            action="export_thread",
+            request_digest=custody.thread_request_digest(
+                "export_thread",
+                scope,
+                conversation_id=conversation_id,
+            ),
+            scope=scope,
+        ),
+    )
+
+
+def _delete_grant(
+    custody,
+    root: Path,
+    universe: Path,
+    *,
+    conversation_id: str,
+    reason: str,
+    key: str,
+):
+    scope = _scope(custody)
+    return _grant(
+        custody,
+        _evidence(
+            custody,
+            root,
+            universe,
+            action="delete_thread",
+            request_digest=custody.delete_thread_request_digest(
+                scope,
+                conversation_id=conversation_id,
+                reason=reason,
+            ),
+            key_digest=custody.idempotency_key_digest(key),
+            scope=scope,
         ),
     )
 
@@ -1549,3 +1598,590 @@ def test_private_store_is_not_exported_and_uses_required_sqlite_mode(tmp_path: P
             "PRAGMA foreign_key_list(conversation_custody_messages)"
         ).fetchall()
         assert any(row[2] == "conversation_custody_threads" for row in foreign_keys)
+
+
+def _stored_conversation(
+    tmp_path: Path,
+    *,
+    retention_until: str | None = None,
+    payload: dict[str, object] | None = None,
+):
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = _key(40)
+    append_key = _key(41)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_private_sentinel",
+            key=create_key,
+            retention_until=retention_until,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_private_sentinel",
+        retention_until=retention_until,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    selected_payload = payload or {"private_sentinel": "custody-secret-9f4c1a"}
+    message = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=append_key,
+            payload=selected_payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=append_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=selected_payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:01.000000Z",
+    )
+    return custody, storage, root, universe, create_key, append_key, thread, message
+
+
+def test_private_store_export_is_authorized_and_byte_stable(tmp_path: Path) -> None:
+    custody, storage, root, universe, *_rest, thread, message = _stored_conversation(tmp_path)
+
+    first = storage.export_thread(
+        _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        scope=_scope(custody),
+        conversation_id=thread.conversation_id,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    second = storage.export_thread(
+        _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        scope=_scope(custody),
+        conversation_id=thread.conversation_id,
+        now="2026-08-03T12:01:03.000000Z",
+    )
+
+    assert first == second
+    assert first == custody.export_conversation(thread, (message,))
+    assert b"custody-secret-9f4c1a" in first.content
+
+
+def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path) -> None:
+    (
+        custody,
+        storage,
+        root,
+        universe,
+        create_key,
+        append_key,
+        thread,
+        _message,
+    ) = _stored_conversation(tmp_path)
+    delete_key = _key(42)
+    receipt = storage.delete_thread(
+        _delete_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            key=delete_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=delete_key,
+        conversation_id=thread.conversation_id,
+        reason="owner_request",
+        now="2026-08-03T12:02:00.000000Z",
+    )
+
+    assert receipt.conversation_id == thread.conversation_id
+    assert receipt.reason == "owner_request"
+    assert receipt.deleted_message_count == 1
+    assert receipt.deletion_scope == "active_private_universe_sqlite"
+    assert "historical backups" in receipt.historical_backup_caveat
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_messages").fetchone()[0] == 0
+        tombstones = conn.execute(
+            """
+            SELECT operation_kind, request_digest, conversation_id, result_ref
+            FROM conversation_custody_idempotency
+            WHERE operation_kind IN ('create_thread', 'append_message')
+            ORDER BY operation_kind
+            """
+        ).fetchall()
+        assert tombstones == [
+            ("append_message", None, None, None),
+            ("create_thread", None, None, None),
+        ]
+
+    for path in (
+        universe / ".tinyassets.db",
+        universe / ".tinyassets.db-wal",
+        universe / ".tinyassets.db-shm",
+    ):
+        if path.exists():
+            assert b"custody-secret-9f4c1a" not in path.read_bytes()
+            assert b"slack:user_private_sentinel" not in path.read_bytes()
+
+    with pytest.raises(storage.ConversationCustodyDeleted):
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_private_sentinel",
+                key=create_key,
+            ),
+            scope=_scope(custody),
+            idempotency_key=create_key,
+            interlocutor_ref="slack:user_private_sentinel",
+            retention_until=None,
+            now="2026-08-03T12:03:00.000000Z",
+        )
+    with pytest.raises(storage.ConversationCustodyDeleted):
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:changed",
+                key=create_key,
+            ),
+            scope=_scope(custody),
+            idempotency_key=create_key,
+            interlocutor_ref="slack:changed",
+            retention_until=None,
+            now="2026-08-03T12:03:00.000001Z",
+        )
+    with pytest.raises(storage.ConversationCustodyDeleted):
+        storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                key=append_key,
+                payload={"private_sentinel": "custody-secret-9f4c1a"},
+            ),
+            scope=_scope(custody),
+            idempotency_key=append_key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload={"private_sentinel": "custody-secret-9f4c1a"},
+            reply_to_message_id=None,
+            now="2026-08-03T12:03:01.000000Z",
+        )
+    with pytest.raises(storage.ConversationCustodyDeleted):
+        storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                key=_key(45),
+                payload={"fresh": True},
+            ),
+            scope=_scope(custody),
+            idempotency_key=_key(45),
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload={"fresh": True},
+            reply_to_message_id=None,
+            now="2026-08-03T12:03:02.000000Z",
+        )
+    for operation, grant in (
+        (
+            storage.read_thread,
+            _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        ),
+        (
+            storage.export_thread,
+            _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        ),
+    ):
+        with pytest.raises(storage.ConversationCustodyDeleted):
+            operation(
+                grant,
+                scope=_scope(custody),
+                conversation_id=thread.conversation_id,
+                now="2026-08-03T12:03:03.000000Z",
+            )
+    fresh_key = _key(63)
+    fresh = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:fresh",
+            key=fresh_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=fresh_key,
+        interlocutor_ref="slack:fresh",
+        retention_until=None,
+        now="2026-08-03T12:03:04.000000Z",
+    )
+    assert fresh.conversation_id != thread.conversation_id
+
+
+def test_private_store_retention_deletion_refuses_early_then_succeeds(tmp_path: Path) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(
+        tmp_path,
+        retention_until="2026-08-03T12:04:00.000000Z",
+    )
+    early_key = _key(43)
+    with pytest.raises(storage.ConversationCustodyRetentionError):
+        storage.delete_thread(
+            _delete_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                reason="retention_expired",
+                key=early_key,
+            ),
+            scope=_scope(custody),
+            idempotency_key=early_key,
+            conversation_id=thread.conversation_id,
+            reason="retention_expired",
+            now="2026-08-03T12:03:59.999999Z",
+        )
+    snapshot = storage.read_thread(
+        _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        scope=_scope(custody),
+        conversation_id=thread.conversation_id,
+        now="2026-08-03T12:03:59.999999Z",
+    )
+    assert len(snapshot.messages) == 1
+
+    delete_key = _key(44)
+    receipt = storage.delete_thread(
+        _delete_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            reason="retention_expired",
+            key=delete_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=delete_key,
+        conversation_id=thread.conversation_id,
+        reason="retention_expired",
+        now="2026-08-03T12:04:00.000000Z",
+    )
+    assert receipt.reason == "retention_expired"
+
+
+def test_private_store_delete_retries_and_competing_keys_are_deterministic(
+    tmp_path: Path,
+) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(tmp_path)
+    first_key = _key(46)
+
+    def delete(key: str, reason: str, now: str):
+        return storage.delete_thread(
+            _delete_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                reason=reason,
+                key=key,
+            ),
+            scope=_scope(custody),
+            idempotency_key=key,
+            conversation_id=thread.conversation_id,
+            reason=reason,
+            now=now,
+        )
+
+    first = delete(first_key, "owner_request", "2026-08-03T12:02:00.000000Z")
+    assert delete(first_key, "owner_request", "2026-08-03T12:02:01.000000Z") == first
+    assert delete(_key(47), "owner_request", "2026-08-03T12:02:02.000000Z") == first
+    with pytest.raises(storage.ConversationCustodyConflict):
+        delete(first_key, "retention_expired", "2026-08-03T12:02:03.000000Z")
+    with pytest.raises(storage.ConversationCustodyConflict):
+        delete(_key(48), "retention_expired", "2026-08-03T12:02:04.000000Z")
+
+
+def test_private_store_cleanup_interruption_resumes_without_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(tmp_path)
+    delete_key = _key(49)
+    original_checkpoint = storage._checkpoint_truncate
+
+    def interrupted(*_args, **_kwargs):
+        raise storage.ConversationCustodyCleanupPending("injected busy checkpoint")
+
+    monkeypatch.setattr(storage, "_checkpoint_truncate", interrupted)
+    with pytest.raises(storage.ConversationCustodyCleanupPending):
+        storage.delete_thread(
+            _delete_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                reason="owner_request",
+                key=delete_key,
+            ),
+            scope=_scope(custody),
+            idempotency_key=delete_key,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            now="2026-08-03T12:02:00.000000Z",
+        )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_messages").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT cleanup_completed_at FROM conversation_custody_deletions"
+            ).fetchone()[0]
+            is None
+        )
+    with pytest.raises(storage.ConversationCustodyDeleted):
+        storage.read_thread(
+            _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
+            scope=_scope(custody),
+            conversation_id=thread.conversation_id,
+            now="2026-08-03T12:02:01.000000Z",
+        )
+
+    monkeypatch.setattr(storage, "_checkpoint_truncate", original_checkpoint)
+    receipt = storage.delete_thread(
+        _delete_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            key=delete_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=delete_key,
+        conversation_id=thread.conversation_id,
+        reason="owner_request",
+        now="2026-08-03T12:02:02.000000Z",
+    )
+    assert receipt.logical_deleted_at == "2026-08-03T12:02:00.000000Z"
+    assert receipt.cleanup_completed_at == "2026-08-03T12:02:02.000000Z"
+
+
+def test_private_store_deletes_corrupt_content_but_refuses_corrupt_scope(
+    tmp_path: Path,
+) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(tmp_path)
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute(
+            "UPDATE conversation_custody_messages SET record_json = ?",
+            (b'{"corrupt":"custody-secret-9f4c1a"}',),
+        )
+    receipt = storage.delete_thread(
+        _delete_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            key=_key(50),
+        ),
+        scope=_scope(custody),
+        idempotency_key=_key(50),
+        conversation_id=thread.conversation_id,
+        reason="owner_request",
+        now="2026-08-03T12:02:00.000000Z",
+    )
+    assert receipt.deleted_message_count == 1
+
+    second = _stored_conversation(tmp_path / "second")
+    custody, storage, root, universe, *_rest, thread, _message = second
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute("UPDATE conversation_custody_threads SET owner_user_id = 'owner_other'")
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.delete_thread(
+            _delete_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                reason="owner_request",
+                key=_key(51),
+            ),
+            scope=_scope(custody),
+            idempotency_key=_key(51),
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            now="2026-08-03T12:02:00.000000Z",
+        )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 1
+
+
+def test_private_store_append_and_delete_follow_transaction_order(tmp_path: Path) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(tmp_path)
+    append_key = _key(52)
+    delete_key = _key(53)
+    payload = {"racing": True}
+    append_grant = _append_grant(
+        custody,
+        root,
+        universe,
+        conversation_id=thread.conversation_id,
+        key=append_key,
+        payload=payload,
+    )
+    delete_grant = _delete_grant(
+        custody,
+        root,
+        universe,
+        conversation_id=thread.conversation_id,
+        reason="owner_request",
+        key=delete_key,
+    )
+    barrier = threading.Barrier(2)
+
+    def append():
+        barrier.wait()
+        try:
+            return storage.append_message(
+                append_grant,
+                scope=_scope(custody),
+                idempotency_key=append_key,
+                conversation_id=thread.conversation_id,
+                kind="text",
+                participant_ref="slack:user_1",
+                source_event_ref="slack:event_1",
+                payload=payload,
+                reply_to_message_id=None,
+                now="2026-08-03T12:02:00.000000Z",
+            )
+        except storage.ConversationCustodyDeleted as exc:
+            return exc
+
+    def delete():
+        barrier.wait()
+        return storage.delete_thread(
+            delete_grant,
+            scope=_scope(custody),
+            idempotency_key=delete_key,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            now="2026-08-03T12:02:00.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        append_future = executor.submit(append)
+        delete_future = executor.submit(delete)
+        append_result = append_future.result()
+        receipt = delete_future.result()
+
+    if isinstance(append_result, storage.ConversationCustodyDeleted):
+        assert receipt.deleted_message_count == 1
+    else:
+        assert append_result.ordinal == 2
+        assert receipt.deleted_message_count == 2
+
+
+@pytest.mark.parametrize("operation_name", ["read_thread", "export_thread"])
+def test_private_store_read_or_export_and_delete_follow_transaction_order(
+    tmp_path: Path,
+    operation_name: str,
+) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(tmp_path)
+    operation = getattr(storage, operation_name)
+    operation_grant = (
+        _read_grant(custody, root, universe, conversation_id=thread.conversation_id)
+        if operation_name == "read_thread"
+        else _export_grant(custody, root, universe, conversation_id=thread.conversation_id)
+    )
+    delete_key = _key(54)
+    delete_grant = _delete_grant(
+        custody,
+        root,
+        universe,
+        conversation_id=thread.conversation_id,
+        reason="owner_request",
+        key=delete_key,
+    )
+    barrier = threading.Barrier(2)
+
+    def observe():
+        barrier.wait()
+        try:
+            return operation(
+                operation_grant,
+                scope=_scope(custody),
+                conversation_id=thread.conversation_id,
+                now="2026-08-03T12:02:00.000000Z",
+            )
+        except storage.ConversationCustodyDeleted as exc:
+            return exc
+
+    def delete():
+        barrier.wait()
+        return storage.delete_thread(
+            delete_grant,
+            scope=_scope(custody),
+            idempotency_key=delete_key,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            now="2026-08-03T12:02:00.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        observed_future = executor.submit(observe)
+        deleted_future = executor.submit(delete)
+        observed = observed_future.result()
+        receipt = deleted_future.result()
+
+    assert receipt.deleted_message_count == 1
+    if not isinstance(observed, storage.ConversationCustodyDeleted):
+        if operation_name == "read_thread":
+            assert len(observed.messages) == 1
+        else:
+            assert b"custody-secret-9f4c1a" in observed.content
+
+
+def test_private_store_concurrent_delete_keys_return_one_receipt(tmp_path: Path) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(tmp_path)
+    keys = tuple(_key(index) for index in range(55, 63))
+    grants = tuple(
+        _delete_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            key=key,
+        )
+        for key in keys
+    )
+
+    def delete(call):
+        key, grant = call
+        return storage.delete_thread(
+            grant,
+            scope=_scope(custody),
+            idempotency_key=key,
+            conversation_id=thread.conversation_id,
+            reason="owner_request",
+            now="2026-08-03T12:02:00.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        receipts = tuple(executor.map(delete, zip(keys, grants, strict=True)))
+    assert len(set(receipts)) == 1

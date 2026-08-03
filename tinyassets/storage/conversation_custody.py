@@ -13,12 +13,16 @@ import time
 from pathlib import Path
 
 from tinyassets.conversation_custody import (
+    ACTIVE_SQLITE_DELETION_SCOPE,
     CONVERSATION_CUSTODY_SCHEMA,
+    HISTORICAL_BACKUP_CAVEAT,
     PRIVATE_UNIVERSE_MODE,
     ConversationCustodyAuthorizationError,
     ConversationCustodyGrantEvidence,
     ConversationCustodyOperationGrant,
     ConversationCustodyScope,
+    ConversationDeletionReceipt,
+    ConversationExport,
     ConversationMessage,
     ConversationSnapshot,
     ConversationThread,
@@ -28,6 +32,9 @@ from tinyassets.conversation_custody import (
     canonical_json_bytes,
     consume_operation_grant,
     create_thread_request_digest,
+    delete_thread_request_digest,
+    deleted_target_digest,
+    export_conversation,
     idempotency_key_digest,
     thread_request_digest,
     validate_private_universe_location,
@@ -75,8 +82,24 @@ CREATE TABLE IF NOT EXISTS conversation_custody_idempotency (
     request_digest TEXT,
     conversation_id TEXT,
     result_ref TEXT,
+    deleted_target_digest TEXT,
     PRIMARY KEY (owner_user_id, operation_kind, idempotency_key_digest),
     CHECK (operation_kind IN ('create_thread', 'append_message', 'delete_thread'))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_custody_deletions (
+    deleted_target_digest TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    agent_binding_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (reason IN ('owner_request', 'retention_expired')),
+    logical_deleted_at TEXT NOT NULL,
+    cleanup_completed_at TEXT,
+    deleted_message_count INTEGER NOT NULL CHECK (deleted_message_count >= 0),
+    deletion_scope TEXT NOT NULL,
+    historical_backup_caveat TEXT NOT NULL,
+    receipt_json BLOB
 );
 """
 
@@ -99,6 +122,18 @@ class ConversationCustodyReplyError(ConversationCustodyStoreError):
 
 class ConversationCustodyIntegrityError(ConversationCustodyStoreError):
     """Persisted custody data disagrees with its canonical envelope."""
+
+
+class ConversationCustodyDeleted(ConversationCustodyStoreError):
+    """The addressed conversation or mutation key was tombstoned."""
+
+
+class ConversationCustodyRetentionError(ConversationCustodyStoreError):
+    """Retention-based deletion was requested before its stored boundary."""
+
+
+class ConversationCustodyCleanupPending(ConversationCustodyStoreError):
+    """Logical deletion committed but active-store cleanup is incomplete."""
 
 
 def _canonical_record(value: dict[str, object]) -> bytes:
@@ -191,6 +226,97 @@ _MESSAGE_MEMBERS = frozenset(
         "source_event_ref",
     }
 )
+_RECEIPT_MEMBERS = frozenset(
+    {
+        "agent_binding_id",
+        "cleanup_completed_at",
+        "conversation_id",
+        "deleted_message_count",
+        "deletion_scope",
+        "historical_backup_caveat",
+        "logical_deleted_at",
+        "owner_user_id",
+        "reason",
+        "universe_id",
+    }
+)
+
+
+def _receipt_record(receipt: ConversationDeletionReceipt) -> dict[str, object]:
+    return {
+        "agent_binding_id": receipt.agent_binding_id,
+        "cleanup_completed_at": receipt.cleanup_completed_at,
+        "conversation_id": receipt.conversation_id,
+        "deleted_message_count": receipt.deleted_message_count,
+        "deletion_scope": receipt.deletion_scope,
+        "historical_backup_caveat": receipt.historical_backup_caveat,
+        "logical_deleted_at": receipt.logical_deleted_at,
+        "owner_user_id": receipt.owner_user_id,
+        "reason": receipt.reason,
+        "universe_id": receipt.universe_id,
+    }
+
+
+def _load_deletion_receipt(row: sqlite3.Row) -> ConversationDeletionReceipt | None:
+    expected_target = deleted_target_digest(
+        ConversationCustodyScope(
+            owner_user_id=row["owner_user_id"],
+            universe_id=row["universe_id"],
+            agent_binding_id=row["agent_binding_id"],
+        ),
+        conversation_id=row["conversation_id"],
+    )
+    if (
+        expected_target != row["deleted_target_digest"]
+        or row["deletion_scope"] != ACTIVE_SQLITE_DELETION_SCOPE
+        or row["historical_backup_caveat"] != HISTORICAL_BACKUP_CAVEAT
+    ):
+        raise ConversationCustodyIntegrityError("deletion target or scope disagrees")
+    if row["cleanup_completed_at"] is None and row["receipt_json"] is None:
+        return None
+    if row["cleanup_completed_at"] is None or row["receipt_json"] is None:
+        raise ConversationCustodyIntegrityError("deletion completion state is partial")
+    record = _decoded_record(row["receipt_json"], expected_members=_RECEIPT_MEMBERS)
+    try:
+        receipt = ConversationDeletionReceipt(
+            owner_user_id=record["owner_user_id"],
+            universe_id=record["universe_id"],
+            agent_binding_id=record["agent_binding_id"],
+            conversation_id=record["conversation_id"],
+            reason=record["reason"],
+            logical_deleted_at=record["logical_deleted_at"],
+            cleanup_completed_at=record["cleanup_completed_at"],
+            deleted_message_count=record["deleted_message_count"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConversationCustodyIntegrityError("deletion receipt is invalid") from exc
+    indexed = (
+        row["owner_user_id"],
+        row["universe_id"],
+        row["agent_binding_id"],
+        row["conversation_id"],
+        row["reason"],
+        row["logical_deleted_at"],
+        row["cleanup_completed_at"],
+        row["deleted_message_count"],
+        row["deletion_scope"],
+        row["historical_backup_caveat"],
+    )
+    canonical = (
+        receipt.owner_user_id,
+        receipt.universe_id,
+        receipt.agent_binding_id,
+        receipt.conversation_id,
+        receipt.reason,
+        receipt.logical_deleted_at,
+        receipt.cleanup_completed_at,
+        receipt.deleted_message_count,
+        receipt.deletion_scope,
+        receipt.historical_backup_caveat,
+    )
+    if indexed != canonical or _canonical_record(_receipt_record(receipt)) != row["receipt_json"]:
+        raise ConversationCustodyIntegrityError("deletion receipt columns disagree")
+    return receipt
 
 
 def _load_thread_row(row: sqlite3.Row) -> ConversationThread:
@@ -386,6 +512,48 @@ def _new_ref(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(24)}"
 
 
+def _select_deletion(
+    conn: sqlite3.Connection,
+    target_digest: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM conversation_custody_deletions
+        WHERE deleted_target_digest = ?
+        """,
+        (target_digest,),
+    ).fetchone()
+
+
+def _raise_if_deleted(
+    conn: sqlite3.Connection,
+    scope: ConversationCustodyScope,
+    conversation_id: str,
+) -> None:
+    target = deleted_target_digest(scope, conversation_id=conversation_id)
+    if _select_deletion(conn, target) is not None:
+        raise ConversationCustodyDeleted("conversation was deleted")
+
+
+def _checkpoint_truncate(
+    conn: sqlite3.Connection,
+    evidence: ConversationCustodyGrantEvidence,
+    identity: StorageFileIdentity,
+) -> None:
+    deadline = time.monotonic() + 30
+    while True:
+        validate_private_universe_location(evidence, expected_primary_identity=identity)
+        busy, remaining, _checkpointed = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if busy == 0 and remaining == 0:
+            validate_private_universe_location(evidence, expected_primary_identity=identity)
+            return
+        if time.monotonic() >= deadline:
+            raise ConversationCustodyCleanupPending(
+                "logical deletion committed but WAL cleanup is busy"
+            )
+        time.sleep(0.01)
+
+
 def _select_thread(conn: sqlite3.Connection, conversation_id: str) -> ConversationThread:
     row = conn.execute(
         "SELECT * FROM conversation_custody_threads WHERE conversation_id = ?",
@@ -457,6 +625,8 @@ def create_thread(
             (scope.owner_user_id, key_digest),
         ).fetchone()
         if existing is not None:
+            if existing["request_digest"] is None:
+                raise ConversationCustodyDeleted("mutation key belongs to a deleted conversation")
             if existing["request_digest"] != request_digest:
                 raise ConversationCustodyConflict(
                     "create_thread idempotency key is bound to different input"
@@ -576,6 +746,8 @@ def append_message(
             (scope.owner_user_id, key_digest),
         ).fetchone()
         if existing is not None:
+            if existing["request_digest"] is None:
+                raise ConversationCustodyDeleted("mutation key belongs to a deleted conversation")
             if existing["request_digest"] != request_digest:
                 raise ConversationCustodyConflict(
                     "append_message idempotency key is bound to different input"
@@ -601,6 +773,7 @@ def append_message(
             _finish_transaction(conn, evidence, identity)
             return message
 
+        _raise_if_deleted(conn, scope, conversation_id)
         thread = _select_thread(conn, conversation_id)
         _require_thread_scope(thread, scope)
         next_ordinal = conn.execute(
@@ -709,6 +882,7 @@ def read_thread(
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _raise_if_deleted(conn, scope, conversation_id)
         thread = _select_thread(conn, conversation_id)
         _require_thread_scope(thread, scope)
         rows = conn.execute(
@@ -730,13 +904,304 @@ def read_thread(
         conn.close()
 
 
+def export_thread(
+    grant: ConversationCustodyOperationGrant,
+    *,
+    scope: ConversationCustodyScope,
+    conversation_id: str,
+    now: str,
+) -> ConversationExport:
+    """Export one complete thread as deterministic private canonical bytes."""
+
+    request_digest = thread_request_digest(
+        "export_thread",
+        scope,
+        conversation_id=conversation_id,
+    )
+    _parsed_timestamp(now, "now")
+    evidence = _consume_for_scope(
+        grant,
+        action="export_thread",
+        request_digest=request_digest,
+        key_digest=None,
+        scope=scope,
+        now=now,
+    )
+    conn, _path, identity = _open_database(evidence)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _raise_if_deleted(conn, scope, conversation_id)
+        thread = _select_thread(conn, conversation_id)
+        _require_thread_scope(thread, scope)
+        rows = conn.execute(
+            """
+            SELECT * FROM conversation_custody_messages
+            WHERE conversation_id = ?
+            ORDER BY ordinal ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
+        messages = tuple(_load_message_row(row) for row in rows)
+        exported = export_conversation(thread, messages)
+        _finish_transaction(conn, evidence, identity)
+        return exported
+    except BaseException:
+        _rollback(conn)
+        raise
+    finally:
+        conn.close()
+
+
+def _validate_deletion_scope_row(
+    row: sqlite3.Row,
+    scope: ConversationCustodyScope,
+    conversation_id: str,
+) -> None:
+    indexed = (
+        row["conversation_id"],
+        row["schema_name"],
+        row["custody_mode"],
+        row["owner_user_id"],
+        row["universe_id"],
+        row["agent_binding_id"],
+    )
+    expected = (
+        conversation_id,
+        CONVERSATION_CUSTODY_SCHEMA,
+        PRIVATE_UNIVERSE_MODE,
+        scope.owner_user_id,
+        scope.universe_id,
+        scope.agent_binding_id,
+    )
+    if indexed != expected:
+        raise ConversationCustodyIntegrityError("conversation deletion scope columns disagree")
+
+
+def _finalize_deletion(
+    conn: sqlite3.Connection,
+    evidence: ConversationCustodyGrantEvidence,
+    identity: StorageFileIdentity,
+    *,
+    target_digest: str,
+    now: str,
+) -> ConversationDeletionReceipt:
+    _checkpoint_truncate(conn, evidence, identity)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _select_deletion(conn, target_digest)
+        if row is None:
+            raise ConversationCustodyIntegrityError("deletion intent is missing")
+        receipt = _load_deletion_receipt(row)
+        if receipt is None:
+            receipt = ConversationDeletionReceipt(
+                owner_user_id=row["owner_user_id"],
+                universe_id=row["universe_id"],
+                agent_binding_id=row["agent_binding_id"],
+                conversation_id=row["conversation_id"],
+                reason=row["reason"],
+                logical_deleted_at=row["logical_deleted_at"],
+                cleanup_completed_at=now,
+                deleted_message_count=row["deleted_message_count"],
+            )
+            conn.execute(
+                """
+                UPDATE conversation_custody_deletions
+                SET cleanup_completed_at = ?, receipt_json = ?
+                WHERE deleted_target_digest = ? AND cleanup_completed_at IS NULL
+                """,
+                (now, _canonical_record(_receipt_record(receipt)), target_digest),
+            )
+        _finish_transaction(conn, evidence, identity)
+    except BaseException:
+        _rollback(conn)
+        raise
+    _checkpoint_truncate(conn, evidence, identity)
+    final_row = _select_deletion(conn, target_digest)
+    if final_row is None:
+        raise ConversationCustodyIntegrityError("completed deletion is missing")
+    final_receipt = _load_deletion_receipt(final_row)
+    if final_receipt is None:
+        raise ConversationCustodyCleanupPending("deletion cleanup is still pending")
+    return final_receipt
+
+
+def delete_thread(
+    grant: ConversationCustodyOperationGrant,
+    *,
+    scope: ConversationCustodyScope,
+    idempotency_key: str,
+    conversation_id: str,
+    reason: str,
+    now: str,
+) -> ConversationDeletionReceipt:
+    """Logically delete, clean, and return one content-free immutable receipt."""
+
+    request_digest = delete_thread_request_digest(
+        scope,
+        conversation_id=conversation_id,
+        reason=reason,
+    )
+    key_digest = idempotency_key_digest(idempotency_key)
+    observed_at = _parsed_timestamp(now, "now")
+    target_digest = deleted_target_digest(scope, conversation_id=conversation_id)
+    evidence = _consume_for_scope(
+        grant,
+        action="delete_thread",
+        request_digest=request_digest,
+        key_digest=key_digest,
+        scope=scope,
+        now=now,
+    )
+    conn, _path, identity = _open_database(evidence)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        key_row = conn.execute(
+            """
+            SELECT request_digest, deleted_target_digest
+            FROM conversation_custody_idempotency
+            WHERE owner_user_id = ? AND operation_kind = 'delete_thread'
+              AND idempotency_key_digest = ?
+            """,
+            (scope.owner_user_id, key_digest),
+        ).fetchone()
+        deletion_row = _select_deletion(conn, target_digest)
+        if key_row is not None:
+            if (
+                key_row["request_digest"] != request_digest
+                or key_row["deleted_target_digest"] != target_digest
+            ):
+                raise ConversationCustodyConflict(
+                    "delete_thread idempotency key is bound to different input"
+                )
+            if deletion_row is None:
+                raise ConversationCustodyIntegrityError("delete idempotency target is missing")
+            if deletion_row["reason"] != reason:
+                raise ConversationCustodyIntegrityError("delete reason disagrees")
+        elif deletion_row is not None:
+            if deletion_row["reason"] != reason:
+                raise ConversationCustodyConflict(
+                    "conversation deletion target is bound to a different reason"
+                )
+            conn.execute(
+                """
+                INSERT INTO conversation_custody_idempotency (
+                    owner_user_id, operation_kind, idempotency_key_digest,
+                    request_digest, deleted_target_digest
+                ) VALUES (?, 'delete_thread', ?, ?, ?)
+                """,
+                (scope.owner_user_id, key_digest, request_digest, target_digest),
+            )
+        else:
+            thread_row = conn.execute(
+                """
+                SELECT * FROM conversation_custody_threads
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if thread_row is None:
+                raise ConversationCustodyNotFound("conversation is unavailable")
+            _validate_deletion_scope_row(thread_row, scope, conversation_id)
+            if reason == "retention_expired":
+                retention_until = thread_row["retention_until"]
+                if retention_until is None:
+                    raise ConversationCustodyRetentionError(
+                        "conversation has no retention-expiry boundary"
+                    )
+                try:
+                    retained_until = _parsed_timestamp(retention_until, "retention_until")
+                except ValueError as exc:
+                    raise ConversationCustodyIntegrityError(
+                        "stored retention boundary is invalid"
+                    ) from exc
+                if observed_at < retained_until:
+                    raise ConversationCustodyRetentionError(
+                        "stored retention boundary has not passed"
+                    )
+            deleted_message_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM conversation_custody_messages
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()[0]
+            conn.execute(
+                """
+                INSERT INTO conversation_custody_deletions (
+                    deleted_target_digest, owner_user_id, universe_id,
+                    agent_binding_id, conversation_id, reason,
+                    logical_deleted_at, cleanup_completed_at,
+                    deleted_message_count, deletion_scope,
+                    historical_backup_caveat, receipt_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
+                """,
+                (
+                    target_digest,
+                    scope.owner_user_id,
+                    scope.universe_id,
+                    scope.agent_binding_id,
+                    conversation_id,
+                    reason,
+                    now,
+                    deleted_message_count,
+                    ACTIVE_SQLITE_DELETION_SCOPE,
+                    HISTORICAL_BACKUP_CAVEAT,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE conversation_custody_idempotency
+                SET request_digest = NULL, conversation_id = NULL,
+                    result_ref = NULL, deleted_target_digest = ?
+                WHERE operation_kind IN ('create_thread', 'append_message')
+                  AND conversation_id = ?
+                """,
+                (target_digest, conversation_id),
+            )
+            conn.execute(
+                "DELETE FROM conversation_custody_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            conn.execute(
+                "DELETE FROM conversation_custody_threads WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO conversation_custody_idempotency (
+                    owner_user_id, operation_kind, idempotency_key_digest,
+                    request_digest, deleted_target_digest
+                ) VALUES (?, 'delete_thread', ?, ?, ?)
+                """,
+                (scope.owner_user_id, key_digest, request_digest, target_digest),
+            )
+        _finish_transaction(conn, evidence, identity)
+        return _finalize_deletion(
+            conn,
+            evidence,
+            identity,
+            target_digest=target_digest,
+            now=now,
+        )
+    except BaseException:
+        _rollback(conn)
+        raise
+    finally:
+        conn.close()
+
+
 __all__ = [
+    "ConversationCustodyCleanupPending",
     "ConversationCustodyConflict",
+    "ConversationCustodyDeleted",
     "ConversationCustodyIntegrityError",
     "ConversationCustodyNotFound",
     "ConversationCustodyReplyError",
+    "ConversationCustodyRetentionError",
     "ConversationCustodyStoreError",
     "append_message",
     "create_thread",
+    "delete_thread",
+    "export_thread",
     "read_thread",
 ]

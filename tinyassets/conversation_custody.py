@@ -27,6 +27,11 @@ from types import MappingProxyType
 PRIVATE_UNIVERSE_MODE = "private_universe"
 CONVERSATION_CUSTODY_SCHEMA = "conversation-custody/v1"
 CANONICAL_JSON_SCHEMA = "tinyassets-canonical-json/v1"
+ACTIVE_SQLITE_DELETION_SCOPE = "active_private_universe_sqlite"
+HISTORICAL_BACKUP_CAVEAT = (
+    "historical backups, snapshots, media remanence, and external copies follow "
+    "separate retention and deletion policies"
+)
 
 _ACTIONS = frozenset(
     {"create_thread", "append_message", "read_thread", "export_thread", "delete_thread"}
@@ -428,6 +433,40 @@ class ConversationSnapshot:
         export_conversation(self.thread, self.messages)
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationDeletionReceipt:
+    """Content-free proof that active private-universe cleanup completed."""
+
+    owner_user_id: str
+    universe_id: str
+    agent_binding_id: str
+    conversation_id: str
+    reason: str
+    logical_deleted_at: str
+    cleanup_completed_at: str
+    deleted_message_count: int
+    deletion_scope: str = field(default=ACTIVE_SQLITE_DELETION_SCOPE, init=False)
+    historical_backup_caveat: str = field(default=HISTORICAL_BACKUP_CAVEAT, init=False)
+
+    def __post_init__(self) -> None:
+        _required_ref(self.owner_user_id, "owner_user_id")
+        _required_ref(self.universe_id, "universe_id")
+        _required_ref(self.agent_binding_id, "agent_binding_id")
+        _required_ref(self.conversation_id, "conversation_id")
+        if self.reason not in {"owner_request", "retention_expired"}:
+            raise ConversationCustodyValidationError("deletion reason is unsupported")
+        logical = _parsed_timestamp(self.logical_deleted_at, "logical_deleted_at")
+        completed = _parsed_timestamp(self.cleanup_completed_at, "cleanup_completed_at")
+        if completed < logical:
+            raise ConversationCustodyValidationError(
+                "cleanup_completed_at cannot precede logical_deleted_at"
+            )
+        if type(self.deleted_message_count) is not int or self.deleted_message_count < 0:
+            raise ConversationCustodyValidationError(
+                "deleted_message_count must be an integer >= 0"
+            )
+
+
 def _thread_export_mapping(thread: ConversationThread) -> dict[str, object]:
     return {
         "agent_binding_id": thread.agent_binding_id,
@@ -742,8 +781,10 @@ def consume_operation_grant(
 
 
 __all__ = [
+    "ACTIVE_SQLITE_DELETION_SCOPE",
     "CANONICAL_JSON_SCHEMA",
     "CONVERSATION_CUSTODY_SCHEMA",
+    "HISTORICAL_BACKUP_CAVEAT",
     "PRIVATE_UNIVERSE_MODE",
     "ConversationCustodyAuthorizationError",
     "ConversationCustodyScope",
@@ -751,6 +792,7 @@ __all__ = [
     "ConversationCustodyOperationGrant",
     "ConversationCustodyStorageLocation",
     "ConversationCustodyValidationError",
+    "ConversationDeletionReceipt",
     "ConversationExport",
     "ConversationMessage",
     "ConversationSnapshot",
