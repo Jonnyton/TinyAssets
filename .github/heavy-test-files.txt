@@ -1,0 +1,78 @@
+# Excluded from the REQUIRED `required-tests` gate: these files hold ~90%
+# of its wall clock. They still run in `full-tests` on every main push,
+# against the same quarantine ledger.
+#
+# WHY a subset gates merges: `strict` branch protection requires a PR to be
+# up to date at merge time. main takes a commit every ~10 min (median, 39
+# gaps measured 2026-08-03), so a required check must finish inside that
+# window. At the full suite's ~37 min only 5% of gaps are long enough to
+# land anything; at ~4 min, 79% are.
+#
+# Excluding these is SAFE, and that was verified rather than assumed: every
+# failure the exclusion run reported was also failing in the same-tree full
+# run, so the exclusion introduced none. Do not re-derive that claim from a
+# run on a different tree — that mistake nearly quarantined 144 real
+# regressions as flaky.
+#
+# Measured: every file whose tests totalled >3.0s in CI run 30780762657
+# (12991 tests / 34.0 min). Regenerate after a big suite change.
+tests/command_center/test_server.py
+tests/load/test_agent_runtime_cloud_load.py
+tests/test_api.py
+tests/test_api_edge_cases.py
+tests/test_background_authority_inventory.py
+tests/test_branch_authoring_actions.py
+tests/test_branch_evaluation_iteration.py
+tests/test_branch_runner.py
+tests/test_branch_tasks_v2.py
+tests/test_canonical_dispatch.py
+tests/test_claude_chat_recovery.py
+tests/test_cloud_automation_continuation.py
+tests/test_composite_branch_actions.py
+tests/test_cross_run_state_query.py
+tests/test_daemon_dashboard.py
+tests/test_deploy_prod_workflow.py
+tests/test_first_contact.py
+tests/test_gates_claim_from_branch_run.py
+tests/test_goals_surface.py
+tests/test_handoff_concurrency.py
+tests/test_host_uptime_installers.py
+tests/test_integration.py
+tests/test_interlocutor_tier.py
+tests/test_llm_policy_override.py
+tests/test_mcp_instruction_surfaces.py
+tests/test_node_enqueue_concurrency.py
+tests/test_node_ref_reuse.py
+tests/test_node_reuse_discovery.py
+tests/test_nodes_real.py
+tests/test_outcome_gate_claims.py
+tests/test_outcome_gates.py
+tests/test_outcome_mcp.py
+tests/test_patch_branch_metadata.py
+tests/test_patch_branch_node_keys.py
+tests/test_patch_nodes.py
+tests/test_payments_escrow_mcp.py
+tests/test_provider_retry.py
+tests/test_provider_work_authority.py
+tests/test_public_goal_visibility.py
+tests/test_retire_cheat_loop_deploy_fence.py
+tests/test_routing_evidence.py
+tests/test_scoped_identity_reset.py
+tests/test_stability.py
+tests/test_universe_cycle_noop_guardrail.py
+tests/test_universe_server_isolation.py
+tests/test_universe_visibility.py
+tests/test_writer_tools.py
+# --- excluded for ORDER-COUPLING, not for speed ---------------------
+# These two assert that EPOCH2_QUEUE_CONSUMER_READY is False. Under the
+# subset they see it True and fail; in the full run they pass. Every
+# writer of that global uses monkeypatch (which restores), so the leak is
+# not yet located -- tracked as its own STATUS row.
+#
+# This is NOT quarantining: their assertions are untouched and they still
+# run, and gate, in `full-tests` on every main push. Excluding a test that
+# only misbehaves in the artificial subset context is honest; adding it to
+# known-failing-tests.txt would NOT be, because it would also mask the
+# test failing for real reasons.
+tests/test_dispatcher_queue.py
+tests/test_distributed_execution_authority.py
