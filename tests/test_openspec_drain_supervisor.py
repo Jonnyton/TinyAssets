@@ -3436,6 +3436,63 @@ def test_verify_preexisting_open_pr_owner_rejects_unrelated_branch() -> None:
 
 
 @pytest.mark.parametrize(
+    "branch_leaf",
+    [
+        "refine-openspec-target-tests",
+        "refine-openspec-target-a12",
+        "refine-openspec-target-a1234",
+        "refine-openspec-target-aXYZ",
+    ],
+)
+def test_verify_preexisting_open_pr_owner_rejects_noncanonical_suffix(
+    branch_leaf: str,
+) -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "state": "OPEN",
+                    "createdAt": "2026-08-03T16:00:00Z",
+                    "headRefName": f"drain/run/{branch_leaf}",
+                }
+            ),
+            stderr="",
+        )
+
+    assert not drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+def test_verify_preexisting_open_pr_owner_accepts_exact_target_branch() -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "state": "OPEN",
+                    "createdAt": "2026-08-03T16:00:00Z",
+                    "headRefName": "refine-openspec-target",
+                }
+            ),
+            stderr="",
+        )
+
+    assert drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+@pytest.mark.parametrize(
     ("payload", "returncode"),
     [
         ({"state": "CLOSED", "createdAt": "2026-08-03T16:00:00Z"}, 0),

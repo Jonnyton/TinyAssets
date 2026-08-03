@@ -1322,9 +1322,11 @@ def verify_preexisting_open_pr_owner(
         ):
             return False
         branch_leaf = head_ref.rsplit("/", 1)[-1]
-        if branch_leaf != assigned_target and not branch_leaf.startswith(
-            f"{assigned_target}-"
-        ):
+        attempt_branch = re.fullmatch(
+            rf"{re.escape(assigned_target)}-a[0-9]{{3}}",
+            branch_leaf,
+        )
+        if branch_leaf != assigned_target and attempt_branch is None:
             return False
         return _parse_timestamp(created_at) < _parse_timestamp(started_at)
     except (

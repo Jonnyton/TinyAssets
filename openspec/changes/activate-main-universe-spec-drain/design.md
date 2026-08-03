@@ -201,8 +201,9 @@ coordination-only refinery worker discovers that an older open pull request
 already owns the exact assigned target, the supervisor suppresses that target
 for the entire bounded run and immediately considers the next candidate.
 Suppression requires the exact terminal-marker PR URL, exact repository, a PR
-head branch bound to the assigned target, fresh open state, and a creation time
-before the run start. Missing, unrelated, closed, merged, malformed, or
+head branch equal to the assigned target or its canonical `-aNNN` attempt lane,
+fresh open state, and a creation time before the run start. Prefix-colliding,
+missing, unrelated, closed, merged, malformed, or
 same-run PR evidence remains a real failure. The exact refinery assignment is
 persisted before dispatch, and restart recovery reruns the same verification
 before consuming a result left behind by a crash; failed recovery verification
