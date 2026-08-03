@@ -244,6 +244,11 @@ Host directive 2026-07-19: this project is spec-driven from here on.
 
 #### All-day OpenSpec drain
 
+- Host directive 2026-08-03: keep exactly the canonical tray and guard tasks
+  green and productive until the cloud drain is accepted as running 24/7.
+  Test-created scheduled tasks are leaks and must be removed. At single-active
+  cutover, stop and disable the local drain before activating the cloud epoch;
+  tray and cloud must never claim concurrently.
 - `Start the OpenSpec drain` is the canonical host trigger. Do not ask the host
   to remember setup commands: inspect the autostart/watchdog state, attach or
   start it, and report health. Normal daily operation uses the installed
