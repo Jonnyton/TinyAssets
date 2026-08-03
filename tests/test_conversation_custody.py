@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import asyncio
 import base64
 import importlib
 import multiprocessing
@@ -2185,3 +2187,91 @@ def test_private_store_concurrent_delete_keys_return_one_receipt(tmp_path: Path)
     with ThreadPoolExecutor(max_workers=8) as executor:
         receipts = tuple(executor.map(delete, zip(keys, grants, strict=True)))
     assert len(set(receipts)) == 1
+
+
+def test_packaged_runtime_mirrors_exist_and_are_byte_identical() -> None:
+    root = Path(__file__).parents[1]
+    runtime = (
+        root
+        / "packaging"
+        / "claude-plugin"
+        / "plugins"
+        / "tinyassets-universe-server"
+        / "runtime"
+        / "tinyassets"
+    )
+    pairs = (
+        (root / "tinyassets" / "conversation_custody.py", runtime / "conversation_custody.py"),
+        (
+            root / "tinyassets" / "storage" / "conversation_custody.py",
+            runtime / "storage" / "conversation_custody.py",
+        ),
+    )
+
+    for canonical, mirror in pairs:
+        assert mirror.is_file(), f"required packaged mirror is missing: {mirror}"
+        assert mirror.read_bytes() == canonical.read_bytes()
+
+
+def test_custody_adds_no_public_handle_or_production_consumer() -> None:
+    import tinyassets.universe_server as universe_server
+
+    advertised = {
+        tool.name for tool in asyncio.run(universe_server.mcp.list_tools(run_middleware=True))
+    }
+    assert advertised == {
+        "read_graph",
+        "write_graph",
+        "run_graph",
+        "read_page",
+        "write_page",
+        "converse",
+        "get_status",
+    }
+
+    root = Path(__file__).parents[1]
+    owners = {
+        root / "tinyassets" / "conversation_custody.py",
+        root / "tinyassets" / "storage" / "conversation_custody.py",
+    }
+    consumers = []
+    for path in (root / "tinyassets").rglob("*.py"):
+        if path not in owners and "conversation_custody" in path.read_text(encoding="utf-8"):
+            consumers.append(path.relative_to(root).as_posix())
+    assert consumers == []
+
+
+def test_custody_owners_have_no_network_app_provider_or_public_server_imports() -> None:
+    root = Path(__file__).parents[1]
+    forbidden_roots = {
+        "aiohttp",
+        "fastmcp",
+        "httpx",
+        "requests",
+        "slack",
+        "socket",
+        "tinyassets.providers",
+        "tinyassets.universe_server",
+        "urllib",
+    }
+    for relative in (
+        Path("tinyassets/conversation_custody.py"),
+        Path("tinyassets/storage/conversation_custody.py"),
+    ):
+        source = (root / relative).read_text(encoding="utf-8")
+        imported = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+        assert not {
+            name
+            for name in imported
+            if any(
+                name == root_name or name.startswith(f"{root_name}.")
+                for root_name in forbidden_roots
+            )
+        }
+        assert "UPDATE agent_" not in source
+        assert "INSERT INTO agent_" not in source

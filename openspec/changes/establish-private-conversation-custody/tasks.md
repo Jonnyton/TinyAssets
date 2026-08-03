@@ -14,7 +14,7 @@
 
 ## 4. Packaging and Dark Boundary
 
-- [ ] 4.1 Mirror both canonical modules into the packaged universe-server runtime and prove no public MCP handle, app/provider import, network call, binding mutation, definition/lineage mutation, credential field, or production construction path was added. Acceptance: a focused test explicitly asserts both packaged paths exist and are byte-identical to their canonical files, and the exact-seven public-handle assertion is unchanged. Verification: `python scripts/invariants_run.py --check mirror-parity`, `python -m pytest tests/test_conversation_custody.py -k packaged_runtime_mirrors`, focused custom-agent/runtime regressions, and forbidden-integration searches pass.
+- [x] 4.1 Mirror both canonical modules into the packaged universe-server runtime and prove no public MCP handle, app/provider import, network call, binding mutation, definition/lineage mutation, credential field, or production construction path was added. Acceptance: a focused test explicitly asserts both packaged paths exist and are byte-identical to their canonical files, and the exact-seven public-handle assertion is unchanged. Verification: the explicit missing-mirror test was RED before both copies were added; all 328 canonical mirrors now match, both packaged modules import from the isolated runtime, and 148 custody/custom-agent/runtime/compiler/exact-seven tests pass. AST/import, production-consumer, SQL-mutation, and repository searches find no forbidden integration; the only non-test consumers are the exact packaged mirrors.
 
 ## 5. Verification and Foldback
 
