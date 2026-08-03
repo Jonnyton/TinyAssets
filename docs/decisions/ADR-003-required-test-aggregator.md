@@ -290,7 +290,12 @@ by `main`, and the subset remains viable. Recorded because the wrong
 inference nearly quarantined 144 real regressions as `flaky`, which would
 have hidden every future pass→fail transition on them.
 
-The full suite is required for now, with `strict` retained. PRs do not
+**Resolution: the fast subset is the required gate, and `strict` stays true.**
+`required-tests` excludes the 47 heaviest files (~4 min, 83.7% of tests
+kept); `full-tests` runs everything on every main push as the tripwire.
+This keeps latest-main integration testing — which `strict: false` would
+have given up, permitting a stale-green PR to merge after an incompatible
+`main` change — while fitting inside main's commit cadence. PRs do not
 serialize: each runs its own ~37 min concurrently and merges when green, so
 throughput is unchanged and only per-PR latency rises. The cost is a real
 regression `strict` used to prevent — a PR green against an older `main` can
