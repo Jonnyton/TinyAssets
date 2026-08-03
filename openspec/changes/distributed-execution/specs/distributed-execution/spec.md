@@ -278,17 +278,26 @@ Distributed execution SHALL own immutable, versioned
 its schema and purpose, the complete trusted logical execution requirement by
 canonical value and digest, the selected backend-binding digest, the inner
 `SandboxJobRequest.job_id`, and the applicable B2/B13 authority-evidence
-reference and digest before dispatch. The capsule SHALL remain outside the
-inner request and result wires.
+reference and digest before dispatch. It SHALL be a purpose-separated M1
+signed domain minted only by the trust-root-built complete execution-authority
+composition root after resolving those inputs from trusted state. Dispatch
+SHALL receive it only through an M1 verifier using the pinned trust set and
+SHALL independently compare every bound field with the exact request context.
+A caller SHALL NOT supply the signer, key, verifier, requirement, backend
+binding, authority reference, or a pre-verified capsule. The capsule SHALL
+remain outside the inner request and result wires.
 
 Each `BackendBindingV1` SHALL identify one reviewed backend implementation and
 protocol version, exactly one closed execution profile, the exact enforcement
 properties it can prove, current capability/self-test evidence, the exact
 planned-launch-configuration digest, and the versioned launch-evidence
-contract it promises to return. A backend SHALL support a requirement only
-when the binding's proved property set includes every required property and
-every policy, isolation, projection, egress, credential, authority, backend,
-and planned-configuration reference and digest matches.
+contract it promises to return. The binding SHALL be a purpose-separated M1
+signed release/policy artifact verified through the pinned trust set; neither
+the backend nor a caller SHALL self-declare or widen it. A backend SHALL
+support a requirement only when the binding's proved property set includes
+every required property and every policy, isolation, projection, egress,
+credential, authority, backend, and planned-configuration reference and
+digest matches.
 
 Pre-launch admission SHALL verify the trusted requirement, outer capsule,
 backend binding, current capability/self-test evidence, exact planned launch
@@ -301,6 +310,10 @@ After dispatch, `BackendLaunchEvidenceV1` SHALL bind the outer-capsule digest,
 inner `job_id`, backend-binding and planned-configuration digests, actual
 process or remote-execution identity, policy/projection/egress/resource/secret/
 device enforcement, cleanup, result digest, and complete proved property set.
+The binding's versioned evidence contract SHALL fix the evidence producer
+identity, authenticity mechanism, canonical fields, and reviewed verifier.
+Only that verifier SHALL accept launch evidence; a caller or backend result
+SHALL NOT mark itself verified or choose its verifier.
 Output SHALL be accepted only after fresh evidence verifies against the same
 capsule, inner job, actual execution, and result and proves every required
 guarantee. Missing or invalid actual-launch evidence SHALL raise
@@ -322,6 +335,14 @@ request-bound evidence SHALL remain unavailable for execution admission.
 - **THEN** pre-launch admission may establish capability and configuration
   support for that request
 - **AND** it does not prove the future launch, enforcement, cleanup, or result
+
+#### Scenario: caller cannot mint a self-consistent capsule
+
+- **WHEN** a caller supplies a capsule, requirement, backend binding, authority
+  reference, signer, key, verifier, or mutually matching replacement digests
+- **THEN** admission refuses because the outer capsule must be M1-minted from
+  independently trusted state and verified against the exact request context
+- **AND** no self-consistent caller substitution creates execution authority
 
 #### Scenario: outer capsule preserves the frozen inner runner wire
 
