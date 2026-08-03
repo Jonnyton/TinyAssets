@@ -556,13 +556,38 @@ def _execute_scoped_cloud_github_pr_effect(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
+
+    def reconcile_frozen_intent(effect_key: str) -> dict[str, Any]:
+        from tinyassets.storage.external_write_receipts import lookup_receipt
+
+        receipt = lookup_receipt(
+            universe_dir,
+            idempotency_hint=effect_key,
+            sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
+        )
+        receipt_evidence = receipt.get("evidence") if receipt is not None else None
+        reserved_result = (
+            receipt_evidence.get("result")
+            if isinstance(receipt_evidence, dict)
+            else None
+        )
+        if not isinstance(reserved_result, dict) or not isinstance(
+            reserved_result.get("effect_intent_digest"),
+            str,
+        ):
+            return {
+                "status": "failed",
+                "evidence": {"reason": "legacy_intent_reservation_missing_digest"},
+            }
+        return {"status": "succeeded", "evidence": {}}
+
     frozen_intent = execute_replay_safe_effect(
         universe_dir=universe_dir,
         effect_key=f"github-pr-intent:{preparation_identity_digest}",
         sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
         run_id=run_id,
         invoke=lambda: {"effect_intent_digest": effect_intent_digest},
-        reconcile=lambda _effect_key: {"status": "succeeded", "evidence": {}},
+        reconcile=reconcile_frozen_intent,
         reservation_evidence={
             "result": {"effect_intent_digest": effect_intent_digest},
         },
