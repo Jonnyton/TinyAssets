@@ -104,6 +104,15 @@ confirmation. Published artifacts are new immutable versions with provenance;
 optimization cannot mutate a fixed evaluator or merge a candidate without the
 declared policy.
 
+An installed sandbox binary, availability probe, subprocess boundary, or
+draft-visible status or isolation flag is diagnostic only. It cannot satisfy
+`requires_os_isolation`. The authoring owner must refuse such a test before
+execution unless trusted composition admits the exact immutable draft/test
+request against a real active distributed-execution backend binding and seals
+that admission outside the draft. A successful test must additionally carry
+verified, request-bound launch evidence from that binding; neither draft input
+nor a host capability report can attest that the selected execution used it.
+
 Optimization-candidate leases are request-local scheduling records. The
 implementation must compare them with the active `distributed-execution`
 lease-store owner and reuse its generic lease/fencing primitive if it is
