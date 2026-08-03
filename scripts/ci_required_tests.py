@@ -49,6 +49,30 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 MIN_RAN_FLOOR = 10000
 
 
+def _min_ran_arg(raw: str) -> int:
+    """Reject a `--min-ran` below the floor, at the point of enforcement.
+
+    Validating this only in the workflow-shape test is not enough: argparse uses
+    the LAST occurrence of a repeated flag, so `--min-ran 10700 --min-ran 1`
+    reads as 1 while any check that scans for the first match still sees 10700.
+    Found in cross-family review 2026-08-03 and rated BLOCKING, because it
+    silently disables the vacuity floor and lets a mass-deselected suite merge.
+
+    Refusing here closes it for every caller, including ones that never go
+    through the workflow. Lowering the floor legitimately means editing
+    MIN_RAN_FLOOR in the same reviewed change — which is the point.
+    """
+    value = int(raw)
+    if value < MIN_RAN_FLOOR:
+        raise argparse.ArgumentTypeError(
+            f"--min-ran {value} is below MIN_RAN_FLOOR ({MIN_RAN_FLOOR}); a low "
+            f"floor disables the vacuity check as surely as omitting it. If the "
+            f"suite legitimately shrank, lower MIN_RAN_FLOOR in the same PR and "
+            f"say why."
+        )
+    return value
+
+
 def vacuity_failure(ran_count: int, floor: int = MIN_RAN_FLOOR) -> str | None:
     """Return a failure message if too few tests ran to trust a green result."""
     if ran_count < floor:
@@ -175,12 +199,13 @@ def main() -> int:
     )
     ap.add_argument(
         "--min-ran",
-        type=int,
+        type=_min_ran_arg,
         default=MIN_RAN_FLOOR,
         help=(
             "Vacuity floor: fail if fewer than this many tests actually ran. "
             "Must be set per job — the fast gate and the full suite have "
-            f"different honest totals (default {MIN_RAN_FLOOR})."
+            f"different honest totals (default {MIN_RAN_FLOOR}). Values below "
+            f"MIN_RAN_FLOOR ({MIN_RAN_FLOOR}) are rejected outright."
         ),
     )
     ap.add_argument(

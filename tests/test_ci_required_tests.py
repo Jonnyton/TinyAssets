@@ -6,6 +6,7 @@ needs the same scrutiny as the code it guards — a bug here fails open silently
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -161,3 +162,24 @@ def test_node_id_collection_error_has_no_double_colon():
     """A collection error records an empty classname; the id must stay clean."""
     el = _tc(file="tests/test_x.py", classname="", name="tests.test_x")
     assert gate.node_id(el) == "tests/test_x.py::tests.test_x"
+
+
+def test_min_ran_below_floor_is_rejected_at_parse_time():
+    """A low `--min-ran` must fail closed, not silently disable the floor.
+
+    Cross-family review rated this BLOCKING: argparse honours the LAST
+    occurrence of a repeated flag, so `--min-ran 10700 --min-ran 1` sets the
+    real floor to 1 while any check scanning for the first match still reads
+    10700 — and a mass-deselected suite then merges green. Validating only in
+    the workflow-shape test would leave every other caller exposed, so the
+    refusal lives here, at the point of enforcement.
+    """
+    with pytest.raises(argparse.ArgumentTypeError) as excinfo:
+        gate._min_ran_arg(str(gate.MIN_RAN_FLOOR - 1))
+    assert "MIN_RAN_FLOOR" in str(excinfo.value)
+
+
+def test_min_ran_at_or_above_floor_is_accepted():
+    """The escape hatch is lowering MIN_RAN_FLOOR itself, in the same PR."""
+    assert gate._min_ran_arg(str(gate.MIN_RAN_FLOOR)) == gate.MIN_RAN_FLOOR
+    assert gate._min_ran_arg("10700") == 10700
