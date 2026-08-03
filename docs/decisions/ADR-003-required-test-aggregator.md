@@ -269,6 +269,37 @@ Cross-family review: Codex, two rounds, both `adapt`, all findings addressed
 - A PR that breaks a test can no longer auto-merge to production.
 - Repo test debt becomes a visible, counted, one-way-ratcheted number instead of
   an unknown.
+### Why `strict: false`, and why not a fast subset (2026-08-03)
+
+`Require branches to be up to date` (`strict`) means a PR must be current with
+`main` *at merge time*. `main` takes a commit every **~10 min** (median, 39 gaps
+measured) and this suite takes **~37 min**, so a PR goes stale before its own
+run finishes: only **5% of gaps** are long enough to land. Keeping `strict`
+would have wedged every merge, the drain included.
+
+The obvious escape — require a fast subset instead — was built, measured, and
+**rejected on evidence**. Excluding the 53 files that held 90% of the wall clock
+gave a 4-minute gate, but turned **81 passing tests red** (run 30781261125)
+purely by changing test *order*: this suite is not hermetic, so its results
+depend on which files run. A subset baseline would shift every time anyone adds
+a test file, failing PRs for unrelated reasons — the flaky-required-check trap
+this ADR exists to avoid. The full run's baseline, by contrast, reproduced
+identically twice (483 then 482).
+
+So the full suite is required and `strict` is set **false**. PRs do not
+serialize: each runs its own ~37 min concurrently and merges when green, so
+throughput is unchanged and only per-PR latency rises. The cost is a real
+regression `strict` used to prevent — a PR green against an older `main` can
+merge after a compatible-looking invariant changed underneath it. That is
+detected by the per-SHA `push: main` run, which now actually completes (main
+runs used to share one concurrency group and cancel each other, so the
+"tripwire" had never once finished).
+
+**Unblocking a subset gate, parallelism, and `strict` all reduce to one thing:
+making the suite order-independent.** Two leaks are already fixed (the
+`git_bridge.is_enabled` process cache; the headless tray collection abort); the
+xdist note above and these 81 failures are the same class.
+
 - Every PR pays the serial suite: measured **~26 minutes** on 2026-08-02
   (25:48 of tests; the original ~3-minute estimate predated the suite's growth
   to ~9,100 tests and was wrong). Accepted trade: it was ~0 minutes of
