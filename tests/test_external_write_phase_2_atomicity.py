@@ -594,9 +594,21 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
                 t.join(timeout=join_timeout)
             slow = [t.name for t in started if t.is_alive()]
         finally:
+            # Each join is individually guarded: a BaseException raised by ONE
+            # join (KeyboardInterrupt being the realistic one) would otherwise
+            # abort this loop and leave the remaining workers unjoined, which is
+            # the very hazard the loop exists to prevent. Every started worker
+            # gets joined; the first interruption is preserved and re-raised
+            # once cleanup is complete.
+            interrupted: BaseException | None = None
             for t in started:
-                if t.is_alive():
-                    t.join()
+                while t.is_alive():
+                    try:
+                        t.join()
+                    except BaseException as exc:  # noqa: BLE001 — re-raised below
+                        interrupted = interrupted or exc
+            if interrupted is not None:
+                raise interrupted
         assert not [t for t in started if t.is_alive()]
 
     # Raised only after the patch has been dropped, which is now safe because

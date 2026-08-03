@@ -129,19 +129,30 @@ def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
     lambdas: list[ast.Lambda] = []
     ctor_names, ctor_modules = _thread_ctor_names(tree)
 
+    partial_names, functools_modules = _partial_names(tree)
+
+    def is_partial(func: ast.expr) -> bool:
+        if isinstance(func, ast.Name):
+            return func.id in partial_names
+        if isinstance(func, ast.Attribute):
+            return func.attr == "partial" and (
+                getattr(func.value, "id", None) in functools_modules
+            )
+        return False
+
     def record(expr: ast.expr) -> None:
         if isinstance(expr, ast.Lambda):
             lambdas.append(expr)
         elif isinstance(expr, ast.Name):
             names.add(expr.id)
-        elif isinstance(expr, ast.Attribute):
-            names.add(expr.attr)
-        elif isinstance(expr, ast.Call):
-            callee = getattr(expr.func, "id", None) or getattr(
-                expr.func, "attr", None
-            )
-            if callee == "partial" and expr.args:
-                record(expr.args[0])
+        elif isinstance(expr, ast.Call) and is_partial(expr.func) and expr.args:
+            record(expr.args[0])
+        # An ATTRIBUTE target (`Thread(target=Safe().worker)`) is deliberately
+        # ignored. Reducing it to its final name and then scanning every
+        # same-named function in the module flagged an unrelated module-level
+        # `worker()` that happened to patch — a false positive that would wedge
+        # a correct PR. Resolving the receiver's type properly is out of scope
+        # for a lint, so the ambiguous form is rejected rather than guessed at.
 
     def is_threading_thread(func: ast.expr) -> bool:
         if isinstance(func, ast.Name):
@@ -191,7 +202,45 @@ def _patch_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
                 # `import mock` / `import unittest.mock as m`
                 if a.name in _MOCK_MODULES:
                     modules.add(a.asname or a.name.split(".")[-1])
-    return aliases, modules
+    # A module-level `def patch(...)` shadows `from unittest.mock import patch`,
+    # leaving the import binding stale. Treating it as live flags the local
+    # helper — a false positive that would wedge a correct PR.
+    shadowed = _module_level_bindings(tree)
+    return aliases - shadowed, modules - shadowed
+
+
+def _module_level_bindings(tree: ast.Module) -> set[str]:
+    """Names the module defines itself, which SHADOW any same-named import.
+
+    `from unittest.mock import patch` followed by a local `def patch(...)`
+    leaves the import binding stale; treating it as live flags the local
+    helper. Conservative: a shadowed name is dropped from every alias set.
+    """
+    bound: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    bound.add(tgt.id)
+    return bound
+
+
+def _partial_names(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """(names bound to `functools.partial`, names bound to `functools`)."""
+    names: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "functools":
+            for a in node.names:
+                if a.name == "partial":
+                    names.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "functools":
+                    modules.add(a.asname or a.name)
+    return names - _module_level_bindings(tree), modules
 
 
 def _thread_ctor_names(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -211,7 +260,8 @@ def _thread_ctor_names(tree: ast.Module) -> tuple[set[str], set[str]]:
             for a in node.names:
                 if a.name == "threading":
                     modules.add(a.asname or a.name)
-    return names, modules
+    shadowed = _module_level_bindings(tree)
+    return names - shadowed, modules - shadowed
 
 
 def _offenders(path: Path) -> list[str]:
@@ -444,6 +494,41 @@ def worker(monkeypatch):
     monkeypatch.undo()
 def test_x(monkeypatch):
     threading.Thread(target=worker, args=(monkeypatch,)).start()
+"""),
+    # Round-4 false positives: an attribute target was reduced to its final
+    # name and then matched against EVERY same-named function in the module.
+    (False, "method target must not flag a same-named global", """
+import threading
+from unittest.mock import patch
+class Safe:
+    def worker(self):
+        pass
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=Safe().worker).start()
+"""),
+    (False, "shadowed patch import is not mock.patch", """
+import threading
+from unittest.mock import patch
+from contextlib import contextmanager
+@contextmanager
+def patch(x):
+    yield
+def worker():
+    with patch('anything'): pass
+def test_x():
+    threading.Thread(target=worker).start()
+"""),
+    (False, "obj.partial() is not functools.partial", """
+import threading
+from unittest.mock import patch
+class Painter:
+    def partial(self, fn, *a): return fn
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=Painter().partial(worker, 1)).start()
 """),
     (False, "patch outside any thread target", """
 import threading
