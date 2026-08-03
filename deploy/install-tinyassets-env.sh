@@ -70,6 +70,27 @@ ENV_MODE="${TINYASSETS_ENV_MODE-640}"
 ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
+VALUE_FILE=""
+
+cleanup_value_file() {
+    if [ -n "${VALUE_FILE}" ]; then
+        rm -f -- "${VALUE_FILE}"
+        VALUE_FILE=""
+    fi
+    return 0
+}
+
+handle_signal() {
+    local signal="$1"
+    cleanup_value_file
+    trap - "${signal}"
+    kill -s "${signal}" "$$"
+}
+
+trap cleanup_value_file EXIT
+trap 'handle_signal HUP' HUP
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
 
 usage() {
     cat >&2 <<'EOF'
@@ -289,12 +310,11 @@ cmd_set() {
     # absent. The secret goes through a mode-600 temporary file rather than
     # awk's argv, so it is not exposed in the process list. Awk reconstructs
     # multi-line values to preserve the existing `set` behavior.
-    local value_file
-    value_file="$(mktemp "${ENV_FILE}.value.XXXXXX")"
-    chmod 600 "${value_file}"
-    printf '%s' "${value}" > "${value_file}"
+    VALUE_FILE="$(mktemp "${ENV_FILE}.value.XXXXXX")"
+    chmod 600 "${VALUE_FILE}"
+    printf '%s' "${value}" > "${VALUE_FILE}"
     local new_content
-    if ! new_content="$(awk -v k="${key}" -v vf="${value_file}" '
+    if ! new_content="$(awk -v k="${key}" -v vf="${VALUE_FILE}" '
         BEGIN {
             found = 0
             value_seen = 0
@@ -308,11 +328,11 @@ cmd_set() {
         { print }
         END { if (!found) print k "=" v }
     ' "${ENV_FILE}")"; then
-        rm -f -- "${value_file}"
+        cleanup_value_file
         echo "::error::failed constructing updated ${ENV_FILE}" >&2
         exit 3
     fi
-    rm -f -- "${value_file}"
+    cleanup_value_file
 
     atomic_install "${new_content}"$'\n'
     assert_readable

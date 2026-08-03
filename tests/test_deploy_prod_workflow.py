@@ -89,6 +89,15 @@ def test_workflow_dispatch_has_image_tag_input():
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
 
 
+def test_workflow_dispatch_has_explicit_request_hmac_rotation_input():
+    wf = _load()
+    inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
+    rotation = inputs["rotate_request_idempotency_hmac"]
+    assert rotation.get("type") == "boolean"
+    assert rotation.get("default") is False
+    assert "exposed" in str(rotation.get("description", "")).lower()
+
+
 def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     wf = _load()
     inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
@@ -1558,13 +1567,13 @@ def test_agent_interchange_hmac_validator_never_echoes_rejected_secret():
     assert secret not in result.stderr
 
 
-def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
+def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
     wf = _load()
     steps = _steps(wf)
     indexes = {step.get("name"): index for index, step in enumerate(steps)}
 
     validation_name = "Validate request idempotency HMAC prerequisite"
-    install_name = "Install shared request idempotency HMAC secret"
+    install_name = "Install daemon-only request idempotency HMAC secret"
     validation = steps[indexes[validation_name]]
     validation_secret = str(
         (validation.get("env") or {}).get(
@@ -1629,10 +1638,14 @@ def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
     )
     assert "TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env" in script
     assert "no-request-idempotency-legacy" in script
-    assert (
-        "install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
-        in script
-    )
+    install_mode = str((install.get("env") or {}).get("REQUEST_HMAC_INSTALL_MODE", ""))
+    assert "github.event_name == 'workflow_dispatch'" in install_mode
+    assert "inputs.rotate_request_idempotency_hmac" in install_mode
+    assert "set-once" in install_mode
+    assert "set" in install_mode
+    assert 'case "${REQUEST_HMAC_INSTALL_MODE}" in' in script
+    assert "set-once|set)" in script
+    assert "bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}'" in script
     assert 'echo "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"' not in script
 
     deploy_step = next(step for step in steps if step.get("id") == "deploy")
@@ -1653,16 +1666,10 @@ def test_request_idempotency_hmac_template_and_compose_contract():
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
     dedicated_path = "/etc/tinyassets/request-idempotency.env"
-    for name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
-        assert dedicated_path in (services[name].get("env_file") or []), name
-    for name in ("cloudflared", "logs"):
-        assert dedicated_path not in (services[name].get("env_file") or []), name
+    assert dedicated_path in (services["daemon"].get("env_file") or [])
+    for name, service in services.items():
+        if name != "daemon":
+            assert dedicated_path not in (service.get("env_file") or []), name
 
 
 @pytest.mark.parametrize(

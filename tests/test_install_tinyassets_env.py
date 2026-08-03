@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -76,6 +78,7 @@ def test_set_creates_empty_env_when_no_legacy_file_exists(tmp_path):
         == "TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon@sha256:abc\n"
     )
     assert "creating empty env file" in result.stderr
+    assert not list(env_file.parent.glob("env.value.*"))
 
 
 @pytest.mark.skipif(
@@ -130,6 +133,82 @@ def test_set_once_same_value_still_uses_permission_repair_path():
     )[0]
     assert "return 0" not in immutable_block
     assert "atomic_install" in text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
+
+
+def test_protected_value_file_has_exit_and_signal_cleanup_guards():
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert "cleanup_value_file" in text
+    assert "trap cleanup_value_file EXIT" in text
+    for signal_name in ("HUP", "INT", "TERM"):
+        assert f"handle_signal {signal_name}" in text
+        assert 'trap - "${signal}"' in text
+        assert 'kill -s "${signal}" "$$"' in text
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+@pytest.mark.parametrize("exit_kind", ["failure", "term"])
+def test_protected_value_file_is_removed_on_failure_or_signal(
+    tmp_path, exit_kind: str
+):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "awk-started"
+    fake_awk = fake_bin / "awk"
+    if exit_kind == "failure":
+        fake_awk.write_text("#!/usr/bin/env bash\nexit 19\n", encoding="utf-8")
+    else:
+        fake_awk.write_text(
+            '#!/usr/bin/env bash\n: > "${AWK_MARKER}"\nsleep 30\n',
+            encoding="utf-8",
+        )
+    fake_awk.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "TINYASSETS_ENV_FILE": str(env_file),
+            "TINYASSETS_LEGACY_ENV_FILE": str(legacy_file),
+            "TINYASSETS_ENV_OWNER": "",
+            "TINYASSETS_ENV_READ_USER": "",
+            "AWK_MARKER": str(marker),
+            "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+        }
+    )
+    protected = "never-print-this-protected-value"
+    process = subprocess.Popen(
+        ["bash", str(_SCRIPT), "set", "SECRET_VALUE"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        start_new_session=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write(protected)
+    process.stdin.close()
+
+    if exit_kind == "term":
+        for _ in range(100):
+            if marker.exists():
+                break
+            time.sleep(0.02)
+        assert marker.exists(), "fake awk did not start after value-file creation"
+        os.killpg(process.pid, signal.SIGTERM)
+
+    process.wait(timeout=5)
+    stdout = process.stdout.read() if process.stdout else ""
+    stderr = process.stderr.read() if process.stderr else ""
+    assert process.returncode != 0
+    assert not list(env_file.parent.glob("env.value.*"))
+    assert protected not in stdout
+    assert protected not in stderr
 
 
 def _run_helper(

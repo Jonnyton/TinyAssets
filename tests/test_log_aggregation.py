@@ -14,6 +14,7 @@ VECTOR_YAML = REPO_ROOT / "deploy" / "vector.yaml"
 VECTOR_BETTERSTACK_YAML = REPO_ROOT / "deploy" / "vector-betterstack.yaml"
 VECTOR_ENTRYPOINT = REPO_ROOT / "deploy" / "vector-entrypoint.sh"
 SHIP_LOGS = REPO_ROOT / "deploy" / "ship-logs.sh"
+RUNBOOK = REPO_ROOT / "docs" / "ops" / "log-aggregation-runbook.md"
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +222,34 @@ _BASH_AVAILABLE = sys.platform != "win32"
 
 def test_ship_logs_script_exists():
     assert SHIP_LOGS.exists(), "deploy/ship-logs.sh must exist"
+
+
+def test_ship_logs_default_covers_complete_production_fleet():
+    text = SHIP_LOGS.read_text(encoding="utf-8")
+    for container in (
+        "tinyassets-daemon",
+        "tinyassets-tunnel",
+        "tinyassets-worker",
+        "tinyassets-worker-codex-2",
+        "tinyassets-worker-claude-1",
+        "tinyassets-worker-claude-2",
+    ):
+        assert container in text
+
+
+def test_log_runbook_uses_current_production_identities():
+    text = RUNBOOK.read_text(encoding="utf-8")
+    for stale in (
+        "docker-compose@workflow",
+        '.service = "workflow"',
+        "workflow-logs-",
+        "docker logs workflow-logs",
+    ):
+        assert stale not in text
+    assert "docker-compose@tinyassets" in text
+    assert '.service = "tinyassets"' in text
+    assert "tinyassets-logs-" in text
+    assert "docker logs tinyassets-logs" in text
 
 
 @pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")

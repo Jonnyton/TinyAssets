@@ -45,6 +45,11 @@ on:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
         required: false
         type: string
+      rotate_request_idempotency_hmac:
+        description: 'Replace the exposed production request HMAC during a reviewed correction deploy'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -612,17 +617,29 @@ jobs:
           PY
           exit "$preflight_status"
 
-      - name: Install shared request idempotency HMAC secret
+      - name: Install daemon-only request idempotency HMAC secret
         env:
           TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
+          REQUEST_HMAC_INSTALL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac && 'set' || 'set-once' }}
         run: |
+          case "${REQUEST_HMAC_INSTALL_MODE}" in
+            set-once|set) ;;
+            *)
+              echo "::error::invalid request HMAC install mode"
+              exit 1
+              ;;
+          esac
+          if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "::error::request HMAC rotation is manual-dispatch only"
+            exit 1
+          fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
           printf '%s' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}" | \
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}' TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 
       - name: Install daemon-only agent interchange HMAC secret
         env:
