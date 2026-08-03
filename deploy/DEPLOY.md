@@ -106,9 +106,9 @@ documents each):
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
-Generate the daemon+worker request-admission key without printing it. The
-dedicated file is not exposed to Cloudflare or logging sidecars, and the atomic
-installer preserves its ownership and mode:
+Generate the daemon-only request-admission key without printing it. The
+dedicated file is exposed only to the daemon, not to workers, Cloudflare, or
+logging sidecars, and the atomic installer preserves its ownership and mode:
 
 ```bash
 openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /opt/tinyassets/deploy/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
@@ -116,12 +116,15 @@ openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyass
 
 For automated production deploys, store a separately generated value under the
 GitHub Actions repository secret `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`.
-The deploy validates it before touching the host and installs it once before
-recreating the daemon/workers. **Do not rotate this key:** persisted idempotency
-hashes and admission witnesses depend on it. `set-once` fails closed if GitHub
-and the host differ. Rotation requires a separately reviewed versioned dual-read
-migration. Emergency response stops the fleet but retains the host value until
-that migration exists.
+The deploy validates it before touching the host and installs it before
+recreating the daemon/workers. Ordinary deploys use `set-once` and fail closed
+if GitHub and the host differ because persisted idempotency hashes and admission
+witnesses depend on the current key. If the key crosses an execution boundary,
+first ship the reviewed daemon-only boundary correction, replace the repository
+secret, then manually dispatch that same correction image with
+`rotate_request_idempotency_hmac=true`. Incident rotation intentionally
+invalidates witnesses signed by the exposed key; verify the running worker
+environments and canonical MCP health before resuming activation.
 
 Generate a unique daemon-only agent interchange key without printing it to the
 terminal. This writes canonical single-line base64 for 48 random bytes:

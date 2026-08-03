@@ -89,6 +89,15 @@ def test_workflow_dispatch_has_image_tag_input():
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
 
 
+def test_workflow_dispatch_has_explicit_request_hmac_rotation_input():
+    wf = _load()
+    inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
+    rotation = inputs["rotate_request_idempotency_hmac"]
+    assert rotation.get("type") == "boolean"
+    assert rotation.get("default") is False
+    assert "exposed" in str(rotation.get("description", "")).lower()
+
+
 def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     wf = _load()
     inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
@@ -701,6 +710,17 @@ def test_deploy_scrubs_legacy_workflow_env_from_cloud_env():
         assert key in run_script
 
 
+def test_deploy_scrubs_and_fails_closed_on_shared_request_hmac_duplicate():
+    wf = _load()
+    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
+    run_script = scrub_step.get("run", "") or ""
+
+    assert "delete TINYASSETS_WIKI_PATH" in run_script
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
+    assert "grep -q '^TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY='" in run_script
+    assert "shared env still contains request admission minting authority" in run_script
+
+
 def test_deploy_preserves_host_owned_backup_destination():
     wf = _load()
     scrub_step = next(
@@ -734,6 +754,16 @@ def test_deploy_verifies_cloud_worker_running():
     assert "sleep 2" in run_script
     assert "docker compose --env-file /etc/tinyassets/env" in run_script
     assert "exit 1" in run_script
+
+
+def test_deploy_proves_running_workers_lack_request_hmac():
+    wf = _load()
+    worker_step = _step_named(wf, "Verify cloud worker is running")
+    run_script = worker_step.get("run", "") or ""
+
+    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
+    assert "in os.environ" in run_script
+    assert "inherited request admission minting authority" in run_script
 
 
 def test_deploy_retires_legacy_workflow_service_before_restart():
@@ -1558,13 +1588,13 @@ def test_agent_interchange_hmac_validator_never_echoes_rejected_secret():
     assert secret not in result.stderr
 
 
-def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
+def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
     wf = _load()
     steps = _steps(wf)
     indexes = {step.get("name"): index for index, step in enumerate(steps)}
 
     validation_name = "Validate request idempotency HMAC prerequisite"
-    install_name = "Install shared request idempotency HMAC secret"
+    install_name = "Install daemon-only request idempotency HMAC secret"
     validation = steps[indexes[validation_name]]
     validation_secret = str(
         (validation.get("env") or {}).get(
@@ -1629,10 +1659,14 @@ def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
     )
     assert "TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env" in script
     assert "no-request-idempotency-legacy" in script
-    assert (
-        "install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
-        in script
-    )
+    install_mode = str((install.get("env") or {}).get("REQUEST_HMAC_INSTALL_MODE", ""))
+    assert "github.event_name == 'workflow_dispatch'" in install_mode
+    assert "inputs.rotate_request_idempotency_hmac" in install_mode
+    assert "set-once" in install_mode
+    assert "set" in install_mode
+    assert 'case "${REQUEST_HMAC_INSTALL_MODE}" in' in script
+    assert "set-once|set)" in script
+    assert "bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}'" in script
     assert 'echo "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"' not in script
 
     deploy_step = next(step for step in steps if step.get("id") == "deploy")
@@ -1653,16 +1687,28 @@ def test_request_idempotency_hmac_template_and_compose_contract():
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
     dedicated_path = "/etc/tinyassets/request-idempotency.env"
-    for name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
-        assert dedicated_path in (services[name].get("env_file") or []), name
-    for name in ("cloudflared", "logs"):
-        assert dedicated_path not in (services[name].get("env_file") or []), name
+    assert dedicated_path in (services["daemon"].get("env_file") or [])
+    for name, service in services.items():
+        if name != "daemon":
+            assert dedicated_path not in (service.get("env_file") or []), name
+
+
+def test_request_hmac_operator_guidance_is_daemon_only_and_rotation_aware():
+    deploy_doc = Path("deploy/DEPLOY.md").read_text(encoding="utf-8")
+    template = Path("deploy/request-idempotency-env.template").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = Path("deploy/hetzner-bootstrap.sh").read_text(encoding="utf-8")
+
+    assert "daemon+worker request-admission" not in deploy_doc
+    assert "daemon + worker request-admission" not in deploy_doc
+    assert "daemon + worker request-admission" not in template
+    assert "daemon+worker request-admission" not in bootstrap
+    assert "daemon+worker template" not in bootstrap
+    assert "daemon-only request-admission" in deploy_doc
+    assert "daemon-only request-admission" in template
+    assert "daemon-only template" in bootstrap
+    assert "rotate_request_idempotency_hmac=true" in deploy_doc
 
 
 @pytest.mark.parametrize(

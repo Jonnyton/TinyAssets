@@ -2,6 +2,7 @@
 
 ### Requirement: A canonical branch version records the Goal's best-known version, author/host-only
 A Goal SHALL retain at most one default `canonical_branch_version_id`, while the system SHALL additionally store at most one active published Branch version per `(goal_id, scope_actor)` in `goal_canonicals`. `scope_actor=''` SHALL represent the default canonical; a non-empty scope SHALL be the exact authenticated actor ID. `goals action=set_canonical` with empty or absent `scope` SHALL retain the existing Goal-author or canonical-capability authorization, update both the legacy Goal column and the default `goal_canonicals` row, and preserve canonical history. A non-empty action `scope` SHALL be persisted as `scope_actor`, be writable only when it exactly equals the authenticated actor, and SHALL NOT update the legacy Goal column or default row. A supplied version SHALL be validated as a published branch version whose status is `active`; an empty `branch_version_id` SHALL unset only the authorized scope.
+The advertised `write_graph` handle SHALL expose the same action as `target=goal operation=set_canonical`, forward the Goal, version, and scope fields unchanged, and MUST NOT implement a second authorization path.
 
 #### Scenario: Author sets the default canonical version
 - **WHEN** the Goal author invokes `goals action=set_canonical` with a published active `branch_version_id` and no `scope`
@@ -11,6 +12,10 @@ A Goal SHALL retain at most one default `canonical_branch_version_id`, while the
 #### Scenario: Actor sets their own personal canonical
 - **WHEN** an authenticated actor invokes `set_canonical` for a visible Goal with `scope` equal to their actor ID and an active published version
 - **THEN** the actor-scoped row is upserted without changing the Goal default or another actor's row
+
+#### Scenario: Advertised handle preserves personal canonical authority
+- **WHEN** an actor invokes `write_graph target=goal operation=set_canonical` with `scope` equal to their authenticated actor ID
+- **THEN** the existing Goal action sets only that actor's canonical and the Goal default remains unchanged
 
 #### Scenario: Cross-actor personal write is rejected
 - **WHEN** any actor, including the Goal author or a capability holder, supplies a non-empty `scope` different from the authenticated actor

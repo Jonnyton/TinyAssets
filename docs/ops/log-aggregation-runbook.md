@@ -44,9 +44,9 @@ Add to `/etc/tinyassets/env`:
 
 ```
 # rclone URL for log archives — can share the same remote as backups
-LOG_DEST=sftp:storagebox/workflow-logs
+LOG_DEST=sftp:storagebox/tinyassets-logs
 # or for DO Spaces:
-# LOG_DEST=s3:workflow-logs/logs
+# LOG_DEST=s3:tinyassets-logs/logs
 ```
 
 Install the systemd units (ship-logs + disk-watch together):
@@ -86,17 +86,14 @@ docker logs tinyassets-logs -f
 ### Query via journald (compose captures Vector's stdout)
 
 ```bash
-# All workflow containers via compose labels
-journalctl -u docker -t tinyassets-daemon --since today
-
-# Or via the compose project (if started via systemd)
-journalctl -u docker-compose@workflow --since "1 hour ago"
+# The shipped systemd unit owns the attached Compose process and Vector stdout
+journalctl -u tinyassets-daemon --since "1 hour ago"
 ```
 
 ### Query from Better Stack
 
 1. Log in at `logs.betterstack.com`.
-2. Filter by source or by metadata field `.service = "workflow"`.
+2. Filter by source or by metadata field `.service = "tinyassets"`.
 3. Use `.role = "daemon"` or `.role = "cloudflared"` to scope to one container.
 4. Date-range picker selects the archive window.
 
@@ -106,7 +103,7 @@ Better Stack free tier retains 3 GB / month — sufficient for a single daemon r
 
 ## Pull a Date Range from Offsite Archives
 
-Archives are named `workflow-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` and stored at `LOG_DEST`.
+Archives are named `tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` and stored at `LOG_DEST`.
 
 ### List available archives
 
@@ -118,11 +115,11 @@ rclone lsf --format "tp" "${LOG_DEST}/"
 
 ```bash
 # Download
-rclone copyto "${LOG_DEST}/workflow-logs-2026-04-20T02-00-00.tar.gz" /tmp/
+rclone copyto "${LOG_DEST}/tinyassets-logs-2026-04-20T02-00-00.tar.gz" /tmp/
 
 # Extract
 mkdir /tmp/log-restore
-tar -xzf /tmp/workflow-logs-2026-04-20T02-00-00.tar.gz -C /tmp/log-restore
+tar -xzf /tmp/tinyassets-logs-2026-04-20T02-00-00.tar.gz -C /tmp/log-restore
 
 # Inspect
 ls /tmp/log-restore/
@@ -136,7 +133,7 @@ grep "ERROR" /tmp/log-restore/tinyassets-daemon.log
 rclone lsf --format "tp" "${LOG_DEST}/" | grep "2026-04-1[5-9]"
 
 # Download all of them
-rclone copy --include "workflow-logs-2026-04-1*.tar.gz" "${LOG_DEST}/" /tmp/log-range/
+rclone copy --include "tinyassets-logs-2026-04-1*.tar.gz" "${LOG_DEST}/" /tmp/log-range/
 ```
 
 ---
@@ -162,10 +159,10 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets/deploy/ship-logs.sh
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/tinyassets/env`; restart `logs` container |
-| Vector container not running | Depends-on daemon unhealthy | Check `docker logs workflow-logs`; confirm daemon healthcheck passes |
+| Vector container not running | Depends-on daemon unhealthy | Check `docker logs tinyassets-logs`; confirm daemon healthcheck passes |
 | ship-logs.sh exits 1 | `LOG_DEST` missing | Set `LOG_DEST` in `/etc/tinyassets/env` |
 | rclone upload fails | Remote misconfigured | Run `rclone lsd "${LOG_DEST}/"` to test connectivity |
-| Archives not being pruned | Clock skew or naming mismatch | Check archive names match `workflow-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` pattern |
+| Archives not being pruned | Clock skew or naming mismatch | Check archive names match `tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` pattern |
 | `docker logs` shows nothing | Container hasn't started | `docker ps -a` to check container state |
 
 ---

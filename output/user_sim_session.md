@@ -280,3 +280,16 @@ the available session and audit evidence showed no independent clean ChatGPT
 OAuth use. This synthetic failed retry is not organic-use evidence. Keep the
 STATUS monitoring watch open and leave both OpenSpec acceptance checkboxes
 unchecked.
+
+## [2026-08-02 19:34 PDT] PER-USER CANONICAL FOLDBACK PREFLIGHT
+
+TAB HYGIENE: 1 host-visible ChatGPT tab throughout. A fresh chat preserved the
+complete connector-check prompt but rendered no assistant or tool result within
+three minutes; no approval dialog or principal fingerprint appeared.
+
+This is not post-fix acceptance evidence: the supporting public `get_status`
+receipt still reported production `git_sha=81c01fa721afa6c29177de32d48b8f77c4e09419`
+at 19:34 PDT, which does not include #2184 merge
+`d8dea1a9a22aae7338aa6e91e71e96aa3929979c`. The exact-seven public canary was
+green. Task 5.1 remains unchecked until a receipt containing the merge is live
+and both Claude.ai and ChatGPT render the canonical set/run acceptance flow.

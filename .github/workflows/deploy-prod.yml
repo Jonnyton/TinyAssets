@@ -45,6 +45,11 @@ on:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
         required: false
         type: string
+      rotate_request_idempotency_hmac:
+        description: 'Replace the exposed production request HMAC during a reviewed correction deploy'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -612,17 +617,29 @@ jobs:
           PY
           exit "$preflight_status"
 
-      - name: Install shared request idempotency HMAC secret
+      - name: Install daemon-only request idempotency HMAC secret
         env:
           TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
+          REQUEST_HMAC_INSTALL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac && 'set' || 'set-once' }}
         run: |
+          case "${REQUEST_HMAC_INSTALL_MODE}" in
+            set-once|set) ;;
+            *)
+              echo "::error::invalid request HMAC install mode"
+              exit 1
+              ;;
+          esac
+          if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "::error::request HMAC rotation is manual-dispatch only"
+            exit 1
+          fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
           printf '%s' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}" | \
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}' TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 
       - name: Install daemon-only agent interchange HMAC secret
         env:
@@ -668,8 +685,22 @@ jobs:
           echo "production_mutation_started=true" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_GH_REPO LOG_DEST" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_GH_REPO LOG_DEST" \
               < deploy/install-tinyassets-env.sh
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+          shared_env=/etc/tinyassets/env
+          if ! test -r "${shared_env}"; then
+            echo "::error::cannot validate request admission authority boundary: ${shared_env} is unreadable"
+            exit 1
+          fi
+          if grep -q '^TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=' "${shared_env}"; then
+            echo "::error::shared env still contains request admission minting authority"
+            exit 1
+          fi
+          SH
 
       - name: Sync runtime deploy files
         run: |
@@ -1268,6 +1299,12 @@ jobs:
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo docker exec ${container} env | grep -q '^TINYASSETS_UNIVERSE='"; then
               echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
+              exit 1
+            fi
+            if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo docker exec ${container} python -c 'import os, sys; sys.exit(1 if \"TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\" in os.environ else 0)'"; then
+              echo "::error::${container} inherited request admission minting authority"
               exit 1
             fi
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
