@@ -20,7 +20,33 @@ import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "deploy" / "install-tinyassets-env.sh"
-_COMPOSE_UNICODE_SPACES = ("\u0085", "\u00a0")
+_COMPOSE_UNICODE_SPACES = (
+    "\u0085",
+    "\u00a0",
+    "\u1680",
+    "\u2000",
+    "\u2001",
+    "\u2002",
+    "\u2003",
+    "\u2004",
+    "\u2005",
+    "\u2006",
+    "\u2007",
+    "\u2008",
+    "\u2009",
+    "\u200a",
+    "\u2028",
+    "\u2029",
+    "\u202f",
+    "\u205f",
+    "\u3000",
+)
+_COMPOSE_UNICODE_CASES = (
+    *((space, "leading") for space in _COMPOSE_UNICODE_SPACES),
+    *((space, "leading-export") for space in _COMPOSE_UNICODE_SPACES),
+    *((space, "delimiter") for space in _COMPOSE_UNICODE_SPACES[:2]),
+    *((space, "export-delimiter") for space in _COMPOSE_UNICODE_SPACES[:2]),
+)
 
 
 def _docker_compose_available() -> bool:
@@ -315,17 +341,20 @@ def test_utf8_bom_first_assignment_cannot_bypass_protected_key_operations(tmp_pa
     os.name == "nt" or shutil.which("bash") is None,
     reason="shell helper is exercised on POSIX CI; Windows test stays structural",
 )
-@pytest.mark.parametrize("compose_space", _COMPOSE_UNICODE_SPACES)
-@pytest.mark.parametrize("shape", ["leading", "export"])
+@pytest.mark.parametrize(("compose_space", "shape"), _COMPOSE_UNICODE_CASES)
 def test_compose_unicode_space_cannot_bypass_protected_key_operations(
     tmp_path, compose_space: str, shape: str
 ):
     env_file = tmp_path / "tinyassets" / "env"
     legacy_file = tmp_path / "never" / "legacy"
     env_file.parent.mkdir(parents=True)
-    prefix = "export " if shape == "export" else compose_space
-    delimiter = "=" if shape == "export" else ": "
-    original = f"{prefix}TARGET{compose_space}{delimiter}old-secret\nKEEP=1\n"
+    prefix = compose_space if shape == "leading" else ""
+    if shape == "leading-export":
+        prefix = f"{compose_space}export "
+    elif shape == "export-delimiter":
+        prefix = "export "
+    delimiter_space = compose_space if shape.endswith("delimiter") else ""
+    original = f"{prefix}TARGET{delimiter_space}=old-secret\nKEEP=1\n"
 
     env_file.write_text(original, encoding="utf-8")
     absent = _run_helper(
@@ -363,8 +392,7 @@ def test_compose_unicode_space_cannot_bypass_protected_key_operations(
     not _docker_compose_available(),
     reason="requires the installed Docker Compose CLI grammar",
 )
-@pytest.mark.parametrize("compose_space", _COMPOSE_UNICODE_SPACES)
-@pytest.mark.parametrize("shape", ["leading", "export"])
+@pytest.mark.parametrize(("compose_space", "shape"), _COMPOSE_UNICODE_CASES)
 def test_installed_compose_resolves_unicode_space_assignment(
     tmp_path, compose_space: str, shape: str
 ):
@@ -378,10 +406,14 @@ def test_installed_compose_resolves_unicode_space_assignment(
         "      - ./probe.env\n",
         encoding="utf-8",
     )
-    prefix = "export " if shape == "export" else compose_space
-    delimiter = "=" if shape == "export" else ": "
+    prefix = compose_space if shape == "leading" else ""
+    if shape == "leading-export":
+        prefix = f"{compose_space}export "
+    elif shape == "export-delimiter":
+        prefix = "export "
+    delimiter_space = compose_space if shape.endswith("delimiter") else ""
     env_file.write_text(
-        f"{prefix}TARGET{compose_space}{delimiter}secret\n", encoding="utf-8"
+        f"{prefix}TARGET{delimiter_space}=secret\n", encoding="utf-8"
     )
 
     result = subprocess.run(

@@ -10,7 +10,7 @@ The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
 
 #### Scenario: stale shared duplicate fails closed
 - **WHEN** the fenced deploy prepares `/etc/tinyassets/env` before recreating the fleet
-- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, UTF-8-BOM-prefixed first assignments, `export` assignments, assignments using Compose's Unicode whitespace (including U+0085 and U+00A0) before the key or delimiter, or assignments using either Compose-supported `=` or `:` delimiters
+- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, UTF-8-BOM-prefixed first assignments, `export` assignments, assignments using Compose's complete accepted Unicode White_Space set before the declaration or supported whitespace before the delimiter, or assignments using either Compose-supported `=` or `:` delimiters
 - **AND** it fails before Compose synchronization if the shared file is unreadable or still contains that key
 
 #### Scenario: running workers prove the boundary
@@ -71,7 +71,7 @@ The environment installer SHALL construct updated content in the current Bash pr
 - **AND** no child process survives with the protected-input descriptor
 
 #### Scenario: Compose-valid duplicate immutable assignments fail before mutation
-- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including a UTF-8-BOM-prefixed first assignment, `export`, leading whitespace, delimiter whitespace, `=` or `:`, or a non-empty assignment followed by an empty assignment
+- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including a UTF-8-BOM-prefixed first assignment, `export`, the complete accepted Unicode White_Space set before a declaration, supported delimiter whitespace, `=` or `:`, or a non-empty assignment followed by an empty assignment
 - **THEN** it exits with immutable-refusal status before writing the environment file
 - **AND** neither existing nor proposed values appear in output
 
@@ -84,7 +84,7 @@ The default offsite archive SHALL collect the daemon, tunnel, and every fixed pr
 
 #### Scenario: stopped workers remain visible and omissions fail closed
 - **WHEN** a required container is stopped but inspectable
-- **THEN** the collector pins its exact container ID, reads logs by that immutable ID, rechecks the name still maps to the same ID, and records its ID, stopped state, and log filename in the uploaded fleet manifest and archive
+- **THEN** the collector pins its exact container ID, reads logs by that immutable ID, rechecks the name still maps to the same ID after the read and again for the complete fleet before archiving or upload, and records its ID, stopped state, and log filename in the uploaded fleet manifest and archive
 - **AND** if any required container is missing, changes generation during collection, or has unreadable logs, the script fails before upload instead of publishing a partial archive
 
 #### Scenario: normal production deployment installs the reviewed log closure
@@ -92,6 +92,7 @@ The default offsite archive SHALL collect the daemon, tunnel, and every fixed pr
 - **THEN** the content-addressed host release includes `deploy/ship-logs.sh` and its service/timer units
 - **AND** the service executes the script through `/opt/tinyassets-host-uptime/current`
 - **AND** installation fails before timer acceptance if any installed runtime or unit differs from the reviewed source
+- **AND** application deployment preserves the host-owned `LOG_DEST` read by the timer service
 
 #### Scenario: operator examples match deployed identities
 - **WHEN** an operator follows the logging runbook to query, download, extract, or troubleshoot logs

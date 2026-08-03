@@ -268,6 +268,8 @@ def test_log_runbook_uses_current_production_identities():
     assert '.service = "tinyassets"' in text
     assert "tinyassets-logs-" in text
     assert "docker logs tinyassets-logs" in text
+    assert "/opt/tinyassets-host-uptime/current/deploy/ship-logs.sh" in text
+    assert "/opt/tinyassets/deploy/ship-logs.sh" not in text
 
 
 @pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
@@ -330,7 +332,9 @@ def test_ship_logs_missing_log_dest_exits_1(tmp_path):
 
 
 @pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
-@pytest.mark.parametrize("failure", [None, "missing", "unreadable", "recreated"])
+@pytest.mark.parametrize(
+    "failure", [None, "missing", "unreadable", "recreated", "recreated-earlier"]
+)
 def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
     bin_dir = tmp_path / "bin"
     capture_dir = tmp_path / "capture"
@@ -353,6 +357,9 @@ def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
         "        printf '%s %s\\n' \"$id\" \"$status\"\n"
         "        if [ \"${SHIP_LOG_FAILURE-}\" = recreated ] "
         "&& [ \"$name\" = worker-b ]; then printf '%064x' 99 > \"$SHIP_LOG_STATE/$name.id\"; fi\n"
+        "        if [ \"${SHIP_LOG_FAILURE-}\" = recreated-earlier ] "
+        "&& [ \"$name\" = worker-b ]; then "
+        "printf '%064x' 98 > \"$SHIP_LOG_STATE/worker-a.id\"; fi\n"
         "        ;;\n"
         "      '{{.Id}}') printf '%s\\n' \"$id\" ;;\n"
         "      *) exit 91 ;;\n"

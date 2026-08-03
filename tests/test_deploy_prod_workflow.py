@@ -705,7 +705,6 @@ def test_deploy_scrubs_legacy_workflow_env_from_cloud_env():
         "WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64",
         "WORKFLOW_GITHUB_PR_CAPABILITIES",
         "BACKUP_GH_REPO",
-        "LOG_DEST",
     ):
         assert key in run_script
 
@@ -731,6 +730,18 @@ def test_deploy_preserves_host_owned_backup_destination():
     run_script = scrub_step.get("run", "") or ""
 
     assert "BACKUP_DEST" not in run_script
+
+
+def test_deploy_preserves_host_owned_log_destination():
+    wf = _load()
+    scrub_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Scrub stale cloud env overrides"),
+        None,
+    )
+    assert scrub_step is not None
+    run_script = scrub_step.get("run", "") or ""
+
+    assert "LOG_DEST" not in run_script
 
 
 def test_deploy_verifies_cloud_worker_running():

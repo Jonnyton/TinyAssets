@@ -84,6 +84,8 @@ echo "[ship-logs] collecting logs for containers: ${LOG_CONTAINERS}"
 manifest="${LOG_DIR}/fleet-manifest.tsv"
 printf 'container\tcontainer_id\tstatus\tlog_file\n' > "${manifest}"
 archive_files=("$(basename -- "${manifest}")")
+collected_names=()
+collected_ids=()
 for container in ${LOG_CONTAINERS}; do
     log_file="${LOG_DIR}/${container}.log"
     if ! identity_state="$(
@@ -110,8 +112,20 @@ for container in ${LOG_CONTAINERS}; do
     printf '%s\t%s\t%s\t%s\n' \
         "${container}" "${container_id}" "${status}" "${log_name}" >> "${manifest}"
     archive_files+=("${log_name}")
+    collected_names+=("${container}")
+    collected_ids+=("${container_id}")
     lines=$(wc -l <"${log_file}")
     echo "[ship-logs] ${container}: status=${status}; ${lines} lines (since ${LOG_SINCE})"
+done
+
+for index in "${!collected_names[@]}"; do
+    container="${collected_names[${index}]}"
+    container_id="${collected_ids[${index}]}"
+    if ! current_id="$(docker inspect -f '{{.Id}}' "${container}" 2>/dev/null)" \
+        || [ "${current_id}" != "${container_id}" ]; then
+        echo "ERROR: required log container ${container} changed generation during collection" >&2
+        exit 1
+    fi
 done
 
 # ---------------------------------------------------------------------------

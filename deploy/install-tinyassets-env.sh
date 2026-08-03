@@ -99,7 +99,8 @@ validate_key() {
 }
 
 # Match Docker Compose's accepted env-declaration whitespace. Bash [[:space:]]
-# under C.UTF-8 omits the Compose-recognized U+0085 and U+00A0 characters.
+# under C.UTF-8 omits much of Unicode's White_Space property, so enumerate the
+# non-ASCII code points Compose accepts instead of depending on the host locale.
 strip_compose_leading_space() {
     local input="$1"
     while true; do
@@ -111,6 +112,23 @@ strip_compose_leading_space() {
             $'\f'*) input="${input#$'\f'}" ;;
             $'\u0085'*) input="${input#$'\u0085'}" ;;
             $'\u00A0'*) input="${input#$'\u00A0'}" ;;
+            $'\u1680'*) input="${input#$'\u1680'}" ;;
+            $'\u2000'*) input="${input#$'\u2000'}" ;;
+            $'\u2001'*) input="${input#$'\u2001'}" ;;
+            $'\u2002'*) input="${input#$'\u2002'}" ;;
+            $'\u2003'*) input="${input#$'\u2003'}" ;;
+            $'\u2004'*) input="${input#$'\u2004'}" ;;
+            $'\u2005'*) input="${input#$'\u2005'}" ;;
+            $'\u2006'*) input="${input#$'\u2006'}" ;;
+            $'\u2007'*) input="${input#$'\u2007'}" ;;
+            $'\u2008'*) input="${input#$'\u2008'}" ;;
+            $'\u2009'*) input="${input#$'\u2009'}" ;;
+            $'\u200A'*) input="${input#$'\u200A'}" ;;
+            $'\u2028'*) input="${input#$'\u2028'}" ;;
+            $'\u2029'*) input="${input#$'\u2029'}" ;;
+            $'\u202F'*) input="${input#$'\u202F'}" ;;
+            $'\u205F'*) input="${input#$'\u205F'}" ;;
+            $'\u3000'*) input="${input#$'\u3000'}" ;;
             *) break ;;
         esac
     done

@@ -143,13 +143,13 @@ rclone copy --include "tinyassets-logs-2026-04-1*.tar.gz" "${LOG_DEST}/" /tmp/lo
 To trigger an ad-hoc archive (e.g. before a deploy):
 
 ```bash
-LOG_DEST="${LOG_DEST}" LOG_SINCE=4h bash /opt/tinyassets/deploy/ship-logs.sh
+LOG_DEST="${LOG_DEST}" LOG_SINCE=4h bash /opt/tinyassets-host-uptime/current/deploy/ship-logs.sh
 ```
 
 Dry-run to confirm env without touching anything:
 
 ```bash
-DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets/deploy/ship-logs.sh
+DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy/ship-logs.sh
 ```
 
 ---
