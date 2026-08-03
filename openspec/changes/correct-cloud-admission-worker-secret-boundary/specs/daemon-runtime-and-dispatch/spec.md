@@ -15,8 +15,14 @@ The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
 
 #### Scenario: running workers prove the boundary
 - **WHEN** the corrected production worker fleet reports running
-- **THEN** the deploy inspects every worker process environment without printing it
+- **THEN** the deploy inspects every worker's configured environment through host-controlled Docker metadata without printing it
+- **AND** the proof executes no worker-controlled Python or other in-container oracle
 - **AND** deployment fails if any worker contains `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`
+
+#### Scenario: worker-controlled startup customization cannot falsify absence
+- **WHEN** an approved source node has planted `/app/sitecustomize.py` that removes the key from Python's environment before `python -c`
+- **THEN** the old in-container oracle can report false absence but the deployment proof still reads the unchanged Docker configuration from the host
+- **AND** deployment fails before accepting that worker
 
 #### Scenario: ordinary execution remains dark
 - **WHEN** the corrected deployment starts the daemon and legacy worker fleet
@@ -31,7 +37,7 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 
 #### Scenario: reviewed correction rotates the exposed trust root
 - **WHEN** an operator manually dispatches the reviewed correction with rotation enabled and a newly generated repository secret
-- **THEN** before quiescence the workflow proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, and all four running workers lack the key, and it records their exact container IDs
+- **THEN** before quiescence the workflow proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, and host-controlled Docker metadata shows all four running workers lack the key, and it records their exact container IDs
 - **AND** the stop-writer preflight disables restart paths and stops that fleet
 - **AND** immediately before transmission the workflow rechecks the Compose/shared-env boundary and proves those same four recorded IDs remain present and stopped
 - **AND** the workflow replaces the host request-idempotency HMAC only after all pre-quiescence and post-quiescence prerequisites pass

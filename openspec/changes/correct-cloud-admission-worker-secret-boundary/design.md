@@ -27,7 +27,7 @@ The same deploy slice also writes protected stdin to a plaintext temporary file 
 
 ### Keep all minting-key sources only on the daemon
 
-`daemon.env_file` retains `/etc/tinyassets/request-idempotency.env`; the shared worker anchor drops it, which also removes it from all inherited worker services. While the deploy fleet is fenced, the correction also deletes any stale duplicate from `/etc/tinyassets/env`, fails closed if the shared file is unreadable or still contains the key, and checks each running worker's actual environment without printing it. Regressions load the actual YAML and inspect the deploy script. This is preferred over subprocess environment scrubbing because source nodes execute in-process before a subprocess boundary and workers have no current request-admission responsibility.
+`daemon.env_file` retains `/etc/tinyassets/request-idempotency.env`; the shared worker anchor drops it, which also removes it from all inherited worker services. While the deploy fleet is fenced, the correction also deletes any stale duplicate from `/etc/tinyassets/env`, fails closed if the shared file is unreadable or still contains the key, and checks each running worker's configured environment from host-controlled Docker metadata without printing it. The proof never executes Python or another oracle inside the worker: approved source can write `/app/sitecustomize.py`, and Python imports that file before `python -c`, so an in-container check could delete the key from its own view and falsely report success. Regressions load the actual YAML, inspect the deploy script, and plant that exact bypass while requiring the host-side proof to reject the worker. This is preferred over subprocess environment scrubbing because source nodes execute in-process before a subprocess boundary and workers have no current request-admission responsibility.
 
 ### Rotate through an explicit manual deploy input
 
@@ -52,7 +52,7 @@ EXIT/HUP/INT/TERM cleanup removes an incomplete transaction, and signal handling
 ## Risks / Trade-offs
 
 - **[Rotation invalidates witnesses signed by the exposed key]** -> Accept fail-closed invalidation because the runtime is dark and trusting an exposed issuer is worse; verify daemon health and canonical canaries after cutover.
-- **[Compose env grammar grows beyond the recognized key forms]** -> Keep one parser helper, exercise every currently accepted Compose assignment shape against the installed Compose version, and fail closed through actual running-worker environment proof after deploy.
+- **[Compose env grammar grows beyond the recognized key forms]** -> Keep one parser helper, exercise every currently accepted Compose assignment shape against the installed Compose version, and fail closed through host-controlled Docker configuration inspection after deploy.
 - **[Transaction contains the complete environment briefly]** -> Create it beside the target under mode 0600, never stage the value alone, never pass it through child argv/environment, clean it on exits/signals, and rename only after the complete candidate is synced.
 - **[Compose inheritance changes later]** -> Parse the actual compose document in regression tests and assert the secret file is absent from every non-daemon service, not only the base worker.
 - **[Automatic deploy races the secret update]** -> Merge only after exact-head review, complete and verify the ordinary corrected-boundary deploy first, replace the repository secret immediately before the second manual rotation deploy, and use the production mutation concurrency group.

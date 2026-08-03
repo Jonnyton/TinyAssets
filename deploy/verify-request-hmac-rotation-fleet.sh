@@ -23,6 +23,27 @@ validate_id() {
     }
 }
 
+assert_no_minting_authority() {
+    local container="$1"
+    local configured_environment
+    local entry
+    configured_environment="$(
+        docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+            "${container}" 2>/dev/null
+    )" || {
+        echo "::error::${container} configured environment is unavailable" >&2
+        exit 1
+    }
+    while IFS= read -r entry; do
+        case "${entry}" in
+            TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=*)
+                echo "::error::${container} exposes request admission minting authority" >&2
+                exit 1
+                ;;
+        esac
+    done <<< "${configured_environment}"
+}
+
 capture() {
     local container
     local container_id
@@ -41,11 +62,7 @@ capture() {
             echo "::error::${container} is not running before rotation quiescence" >&2
             exit 1
         fi
-        if ! docker exec "${container}" python -c \
-            'import os, sys; sys.exit(1 if "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in os.environ else 0)'; then
-            echo "::error::${container} exposes request admission minting authority" >&2
-            exit 1
-        fi
+        assert_no_minting_authority "${container}"
         printf '%s\n' "${container_id}"
     done
 }

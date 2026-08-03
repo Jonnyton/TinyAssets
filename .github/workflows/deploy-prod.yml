@@ -1383,16 +1383,16 @@ jobs:
               echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
               exit 1
             fi
-            if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker exec ${container} python -c 'import os, sys; sys.exit(1 if \"TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\" in os.environ else 0)'"; then
-              echo "::error::${container} inherited request admission minting authority"
-              exit 1
-            fi
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
           done
+          if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture >/dev/null'; then
+            echo "::error::running workers expose request admission minting authority or could not be verified from host-controlled Docker metadata"
+            exit 1
+          fi
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               'sudo docker exec -i tinyassets-worker python -' <<'PY'

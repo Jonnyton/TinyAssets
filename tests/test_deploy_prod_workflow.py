@@ -761,9 +761,9 @@ def test_deploy_proves_running_workers_lack_request_hmac():
     worker_step = _step_named(wf, "Verify cloud worker is running")
     run_script = worker_step.get("run", "") or ""
 
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
-    assert "in os.environ" in run_script
-    assert "inherited request admission minting authority" in run_script
+    assert "verify-request-hmac-rotation-fleet.sh capture" in run_script
+    assert "docker exec ${container} python -c" not in run_script
+    assert "in os.environ" not in run_script
 
 
 def test_deploy_retires_legacy_workflow_service_before_restart():

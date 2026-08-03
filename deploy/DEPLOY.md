@@ -124,7 +124,8 @@ first ship the reviewed daemon-only boundary correction, replace the repository
 secret, then manually dispatch that same correction image with
 `rotate_request_idempotency_hmac=true`. Incident rotation intentionally
 invalidates witnesses signed by the exposed key. The rotation workflow proves
-the exact running worker identities lack minting authority before the
+the exact running worker identities lack minting authority in host-controlled
+Docker configuration metadata before the
 stop-writer fence, then requires those same identities to be stopped before it
 transmits the replacement. Verify the restarted worker environments and
 canonical MCP health before resuming activation.
