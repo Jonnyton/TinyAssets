@@ -1465,6 +1465,7 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include the workflow path touch and the
   release-critical declaration in the first PR increment so exact CI evidence
   and the scope guard start together.
+
 # Canonical agent admission rejection repair (2026-08-02)
 
 - Surprised: structural digest/link validation still let raw database rows reach a real provider carrier; a witness must be server-sealed, not merely self-consistent.
@@ -1481,3 +1482,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** start concurrency acceptance with spawned
   process single-flight plus revocation-during-replay, then add thread load for
   density, rather than treating thread contention as a proxy for worker loss.
+
+## 2026-08-02 - Crash-consistent background authority owners
+
+- **What surprised me:** a typed owner-store protocol and passing fake-store
+  tests still allowed recovery and reauthorization to publish authority that
+  had never existed in canonical storage; even persisting a fresh attempt was
+  unsafe until the transaction re-applied the binding's issuance limit.
+- **Pattern worth capturing:** an authority fence is meaningful only when its
+  referenced binding and attempt are validated and committed in the same
+  transaction. Exact absence may authorize a safe closed hold, but typed
+  resolver output alone can never authorize a runnable owner.
+- **What I would do differently:** split queue and source reauthorization exit
+  shapes at the start; queue recovery must create a fresh attempt, while a
+  source owner may safely exit without one.
