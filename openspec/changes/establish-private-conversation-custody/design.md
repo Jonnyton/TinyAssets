@@ -206,14 +206,22 @@ export-time timestamp, so unchanged exports are byte-for-byte stable.
 The future authority supplies each mutating operation a cryptographically
 random 32-byte value encoded as exactly 43 unpadded base64url characters with
 the prefix `ik_`. The complete 46-character ASCII key must match
-`^ik_[A-Za-z0-9_-]{43}$`, its suffix must decode without padding to exactly 32
-bytes, and raw provider event IDs are never keys. The persisted key digest is
+`^ik_[A-Za-z0-9_-]{43}$`, and its suffix must decode with one implicit `=` to
+exactly 32 bytes and then re-encode to the exact same 43 unpadded characters;
+this rejects nonzero/alternate trailing pad bits. The persisted key digest is
 lowercase `sha256:<64 hex>` over the UTF-8/ASCII bytes of the complete `ik_...`
 string, not over the decoded random bytes. Test-only vector
 `ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` decodes to 32 zero bytes and
 hashes to
 `sha256:7c02713014568e7c6a23ccce8e98f0d6e165f7f779f274859610460060faf803`;
 production issuers must never use that zero-entropy value.
+
+Generating the key from fresh cryptographic randomness rather than copying a
+provider event identifier is an issuer-side authority invariant: the custody
+facade cannot infer a string's origin after issuance. This dark change validates
+the canonical wire form, digest, and opaque grant provenance only. The future
+app-authority review must prove its issuer generates the 32 random bytes and
+never derives them from transport identifiers.
 
 The logical mutating namespace is `(universe_id, owner_user_id,
 operation_kind, idempotency_key_digest)`, where operation kind is

@@ -62,15 +62,19 @@ The system SHALL compute every action-bound request digest as lowercase `sha256:
 - **THEN** create, append, read, export, and delete digests are respectively `sha256:2e16d89e186ea01130b06c77c544394f1bdc84159d7fd816419acd65826dd78f`, `sha256:03d0dce3eba96d9efa1c8bf8ab383c90a2724c6c6e4a935201653649805fc3d5`, `sha256:6b9114c5a4161548e7bca566a340d73f7ddab83c21527f53a375c2c47531b143`, `sha256:f0d5c9697fbac581b93f42a4c52750388e1cb8c825fe653d52d2e91b902bef42`, and `sha256:a326ce1489645ec9083d739e9a27bfb2c88870a63cf7e833877b77a59acb00be`
 
 ### Requirement: Mutation idempotency keys have one wire and digest form
-The system SHALL accept mutation keys only as `ik_` plus exactly 43 unpadded base64url characters decoding to 32 bytes, persist lowercase `sha256:<64 hex>` over the ASCII bytes of the complete 46-character key string, and enforce uniqueness within the selected universe as `(universe_id,owner_user_id,operation_kind,key_digest)` without claiming cross-universe uniqueness.
+The system SHALL accept mutation keys only as `ik_` plus exactly 43 canonical unpadded base64url characters decoding with one implicit `=` to 32 bytes and re-encoding exactly to the same suffix, persist lowercase `sha256:<64 hex>` over the ASCII bytes of the complete 46-character key string, and enforce uniqueness within the selected universe as `(universe_id,owner_user_id,operation_kind,key_digest)` without claiming cross-universe uniqueness.
 
 #### Scenario: Key digest vector is normative
 - **WHEN** the test-only key is `ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`
 - **THEN** it decodes to 32 zero bytes and its full-string digest is `sha256:7c02713014568e7c6a23ccce8e98f0d6e165f7f779f274859610460060faf803`, while production issuance must use cryptographically random bytes
 
 #### Scenario: Invalid key wire form is atomic
-- **WHEN** a mutation key has another prefix/length/alphabet, contains padding, does not decode to exactly 32 bytes, or is a raw provider event identifier
+- **WHEN** a mutation key has another prefix/length/alphabet, contains explicit padding, does not decode to exactly 32 bytes, or decoding then canonical unpadded re-encoding differs from its suffix, including 42 `A`s followed by `B`
 - **THEN** the system rejects it before grant consumption or storage
+
+#### Scenario: Random issuance is owned upstream
+- **WHEN** the future app authority mints a mutation key
+- **THEN** that issuer, not this text-only facade, must prove it generated 32 fresh cryptographically random bytes and did not copy or derive them from a provider event identifier
 
 #### Scenario: Same key in another universe is independent
 - **WHEN** an owner deliberately reuses a valid key in another selected universe
