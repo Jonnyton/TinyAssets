@@ -510,8 +510,9 @@ Then `DO_SSH_USER=deploy` in the GH secret.
 ## Row K — Log aggregation (sidecar in compose)
 
 The `logs` service in `deploy/compose.yml` runs a Vector sidecar that
-tails `daemon` + `cloudflared` container stdout via the Docker socket
-and forwards events. Two paths:
+receives `daemon`, `cloudflared`, and worker stdout through Docker's
+asynchronous Fluent logging driver on host-loopback port 24224 and forwards
+events. Vector receives no Docker socket or container-control capability. Two paths:
 
 - **Default (no config):** Vector writes to its own stdout, which
   `docker compose` + journald capture. Equivalent to not running the

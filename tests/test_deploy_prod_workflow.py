@@ -1599,6 +1599,19 @@ def test_deploy_requires_and_installs_shared_request_idempotency_hmac_secret():
     assert indexes["Transitional task 2.1 stop-writer preflight"] < indexes[
         install_name
     ]
+    assert indexes[install_name] < indexes[
+        "Install daemon-only agent interchange HMAC secret"
+    ]
+    assert indexes["Install daemon-only agent interchange HMAC secret"] < indexes[
+        "Validate installed host HMAC pair"
+    ]
+    assert indexes["Validate installed host HMAC pair"] < indexes[
+        "Scrub stale cloud env overrides"
+    ]
+    host_validation = steps[indexes["Validate installed host HMAC pair"]]
+    host_validation_script = host_validation.get("run", "") or ""
+    assert "scripts/validate_host_runtime_hmac_pair.py" in host_validation_script
+    assert '"sudo python3 -"' in host_validation_script
     assert indexes[install_name] < indexes["Scrub stale cloud env overrides"]
 
     install = steps[indexes[install_name]]
@@ -1727,6 +1740,16 @@ def test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation():
         "Pull recovery image on production host"
     ]
     assert indexes["Validate recovery agent interchange HMAC"] < indexes[
+        "Pull recovery image on production host"
+    ]
+    host = steps[indexes["Validate host HMAC pair before recovery mutation"]]
+    host_script = host.get("run", "") or ""
+    assert "scripts/validate_host_runtime_hmac_pair.py" in host_script
+    assert '"sudo python3 -"' in host_script
+    assert indexes["Install recovery SSH key"] < indexes[
+        "Validate host HMAC pair before recovery mutation"
+    ]
+    assert indexes["Validate host HMAC pair before recovery mutation"] < indexes[
         "Pull recovery image on production host"
     ]
 

@@ -282,9 +282,6 @@ cmd_set() {
                 echo "::error::set-once refused rotation for ${key}; versioned migration required" >&2
                 exit 5
             fi
-            assert_readable
-            echo "unchanged ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
-            return 0
         fi
     fi
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -101,15 +102,34 @@ def test_set_once_refuses_secret_rotation_without_exposing_values(tmp_path):
         env_file=env_file,
         legacy_file=legacy_file,
     )
+    env_file.chmod(0o666)
+    repair = _run_helper(
+        tmp_path,
+        ["set-once", "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"],
+        stdin=original,
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
 
     assert first.returncode == 0, first.stderr
     assert second.returncode != 0
+    assert repair.returncode == 0, repair.stderr
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
     assert env_file.read_text(encoding="utf-8") == (
         "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=first-secret-value\n"
     )
     combined = second.stdout + second.stderr
     assert original not in combined
     assert replacement not in combined
+
+
+def test_set_once_same_value_still_uses_permission_repair_path():
+    text = _SCRIPT.read_text(encoding="utf-8")
+    immutable_block = text.split('if [ "${immutable}" = "true" ]', 1)[1].split(
+        "# Build new content", 1
+    )[0]
+    assert "return 0" not in immutable_block
+    assert "atomic_install" in text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
 
 
 def _run_helper(
