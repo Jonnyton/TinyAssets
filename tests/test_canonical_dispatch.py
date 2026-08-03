@@ -29,6 +29,7 @@ In-flight detection has its own unit covering:
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -42,21 +43,34 @@ from tinyassets.api.canonical_dispatch import (
     SOURCE_LEADERBOARD_SKIPPED_IN_FLIGHT,
     SOURCE_LEADERBOARD_SKIPPED_INSUFFICIENT_RUNS,
     SOURCE_LEADERBOARD_SKIPPED_NO_PUBLISHED_VERSION,
+    CanonicalArtifactMissing,
+    NoCanonicalBound,
+    RouteBackLoop,
     is_in_flight_for_version,
     resolve_canonical_for_run,
+    route_back_evaluation,
 )
 from tinyassets.branch_versions import publish_branch_version
+from tinyassets.branches import (
+    BranchDefinition,
+    EdgeDefinition,
+    GraphNodeRef,
+    NodeDefinition,
+)
 from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
     save_goal,
     set_canonical_branch,
+    set_goal_canonical,
     update_goal,
 )
+from tinyassets.evaluation import EvalResult, PatchNotes
 from tinyassets.runs import (
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
+    RunOutcome,
     add_judgment,
     create_run,
     initialize_runs_db,
@@ -258,6 +272,228 @@ def _record_judgment_for_branch(
         base_path, run_id=rid, text="great",
         tags=[tag], author="judge",
     )
+
+
+def _route_back_decision(
+    goal_id: str = "g1",
+    *,
+    history: list[tuple[str, str]] | None = None,
+) -> EvalResult:
+    return EvalResult(
+        score=0.0,
+        verdict="route_back",
+        kind="structural",
+        goal_id=goal_id,
+        patch_notes=PatchNotes(
+            summary="Repair the rejected artifact",
+            rationale="The gate found a deterministic mismatch.",
+            author_actor_id="alice",
+            route_history=history or [],
+        ),
+    )
+
+
+def test_route_back_prefers_actor_canonical_and_runs_version_synchronously(
+    base_path,
+    monkeypatch,
+):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="default", goal_id="g1")
+    _make_branch(base_path, branch_def_id="personal", goal_id="g1")
+    default_version = _publish_version(base_path, branch_def_id="default")
+    personal_version = _publish_version(base_path, branch_def_id="personal")
+    set_canonical_branch(
+        base_path,
+        goal_id="g1",
+        branch_version_id=default_version,
+        set_by="host",
+    )
+    set_goal_canonical(
+        base_path,
+        goal_id="g1",
+        scope_actor="alice",
+        branch_version_id=personal_version,
+        set_by="alice",
+    )
+    seen = {}
+
+    def _execute(_base_path, **kwargs):
+        seen.update(kwargs)
+        return RunOutcome(run_id="routed-1", status="completed", output={"ok": True})
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", _execute)
+
+    outcome = route_back_evaluation(
+        base_path,
+        evaluation=_route_back_decision(),
+        actor="alice",
+    )
+
+    assert outcome.status == "completed", outcome.error
+    assert seen["branch_version_id"] == personal_version
+    assert seen["actor"] == "alice"
+    assert seen["inputs"]["patch_notes"]["route_history"] == [["g1", "alice"]]
+
+
+def test_route_back_falls_back_to_default_canonical(base_path, monkeypatch):
+    _make_goal(base_path, "g1")
+    _make_branch(base_path, branch_def_id="default", goal_id="g1")
+    default_version = _publish_version(base_path, branch_def_id="default")
+    set_canonical_branch(
+        base_path,
+        goal_id="g1",
+        branch_version_id=default_version,
+        set_by="host",
+    )
+    seen = {}
+
+    def _execute(_base_path, **kwargs):
+        seen.update(kwargs)
+        return RunOutcome(run_id="routed-default", status="completed", output={})
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", _execute)
+
+    route_back_evaluation(
+        base_path,
+        evaluation=_route_back_decision(),
+        actor="bob",
+    )
+
+    assert seen["branch_version_id"] == default_version
+    assert seen["inputs"]["patch_notes"]["route_history"] == [["g1", "bob"]]
+
+
+def test_route_back_executes_real_immutable_version_to_terminal_state(base_path):
+    _make_goal(base_path, "g1")
+    node = NodeDefinition(
+        node_id="apply-notes",
+        display_name="Apply notes",
+        source_code=(
+            "def run(state):\n"
+            "    notes = state['patch_notes']\n"
+            "    return {'applied_summary': notes['summary']}"
+        ),
+        input_keys=["patch_notes"],
+        output_keys=["applied_summary"],
+    ).mark_approved()
+    branch = BranchDefinition(
+        branch_def_id="route-handler",
+        name="Route handler",
+        graph_nodes=[GraphNodeRef(id="apply-notes", node_def_id="apply-notes")],
+        edges=[
+            EdgeDefinition(from_node="START", to_node="apply-notes"),
+            EdgeDefinition(from_node="apply-notes", to_node="END"),
+        ],
+        entry_point="apply-notes",
+        node_defs=[node],
+        state_schema=[
+            {"name": "patch_notes", "type": "dict"},
+            {"name": "applied_summary", "type": "str"},
+        ],
+    )
+    branch_version_id = publish_branch_version(
+        base_path,
+        branch.to_dict(),
+        publisher="alice",
+    ).branch_version_id
+    set_goal_canonical(
+        base_path,
+        goal_id="g1",
+        scope_actor="alice",
+        branch_version_id=branch_version_id,
+        set_by="alice",
+    )
+
+    outcome = route_back_evaluation(
+        base_path,
+        evaluation=_route_back_decision(),
+        actor="alice",
+    )
+
+    assert outcome.status == "completed", outcome.error
+    assert outcome.output["applied_summary"] == "Repair the rejected artifact"
+    with sqlite3.connect(base_path / ".runs.db") as connection:
+        recorded_version = connection.execute(
+            "SELECT branch_version_id FROM runs WHERE run_id = ?",
+            (outcome.run_id,),
+        ).fetchone()[0]
+    assert recorded_version == branch_version_id
+
+
+def test_route_back_missing_canonical_fails_loudly(base_path, monkeypatch):
+    _make_goal(base_path, "g1")
+    executed = False
+
+    def _execute(*_args, **_kwargs):
+        nonlocal executed
+        executed = True
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", _execute)
+
+    with pytest.raises(NoCanonicalBound) as exc_info:
+        route_back_evaluation(
+            base_path,
+            evaluation=_route_back_decision(),
+            actor="alice",
+        )
+
+    assert exc_info.value.failure_class == "no_canonical_bound"
+    assert exc_info.value.details["scope_actor"] == "alice"
+    assert executed is False
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [("g1", "alice")],
+        [("g2", "alice"), ("g3", "alice"), ("g4", "alice")],
+    ],
+)
+def test_route_back_repeated_or_fourth_hop_terminates_without_a_run(
+    base_path,
+    monkeypatch,
+    history,
+):
+    executed = False
+
+    def _execute(*_args, **_kwargs):
+        nonlocal executed
+        executed = True
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", _execute)
+
+    with pytest.raises(RouteBackLoop) as exc_info:
+        route_back_evaluation(
+            base_path,
+            evaluation=_route_back_decision(history=history),
+            actor="alice",
+        )
+
+    assert exc_info.value.failure_class == "route_back_loop"
+    assert executed is False
+
+
+def test_route_back_classifies_missing_immutable_artifact(base_path, monkeypatch):
+    _make_goal(base_path, "g1")
+    monkeypatch.setattr(
+        "tinyassets.daemon_server.resolve_goal_canonical",
+        lambda *_args, **_kwargs: "missing@version",
+    )
+
+    def _missing(*_args, **_kwargs):
+        raise KeyError("missing immutable version")
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", _missing)
+
+    with pytest.raises(CanonicalArtifactMissing) as exc_info:
+        route_back_evaluation(
+            base_path,
+            evaluation=_route_back_decision(),
+            actor="alice",
+        )
+
+    assert exc_info.value.failure_class == "canonical_artifact_missing"
+    assert exc_info.value.details["branch_version_id"] == "missing@version"
 
 
 # ---------------------------------------------------------------------------

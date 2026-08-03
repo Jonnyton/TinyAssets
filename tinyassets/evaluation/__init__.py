@@ -24,6 +24,7 @@ from tinyassets.evaluation.editorial import (
     EditorialNotes,
     read_editorial,
 )
+from tinyassets.evaluation.patch_notes import EvidenceRef, PatchNotes
 from tinyassets.evaluation.process import (
     ProcessCheck,
     ProcessEvaluation,
@@ -37,7 +38,7 @@ from tinyassets.evaluation.structural import (
 
 # ── Shared types ──────────────────────────────────────────────────────────────
 
-EvalVerdict = Literal["pass", "fail", "skip", "error"]
+EvalVerdict = Literal["pass", "fail", "skip", "error", "route_back"]
 EvaluatorKind = Literal["structural", "editorial", "process", "numeric", "custom"]
 
 
@@ -54,12 +55,19 @@ class EvalResult:
     kind: EvaluatorKind
     label: str = ""
     details: dict[str, Any] = field(default_factory=dict)
+    goal_id: str | None = None
+    patch_notes: PatchNotes | None = None
 
     def __post_init__(self) -> None:
         if not -1.0 <= self.score <= 1.0:
             raise ValueError(
                 f"EvalResult.score must be in [-1.0, 1.0], got {self.score!r}"
             )
+        if self.verdict == "route_back":
+            if not self.goal_id or not self.goal_id.strip():
+                raise ValueError("route_back requires a non-empty goal_id")
+            if not isinstance(self.patch_notes, PatchNotes):
+                raise TypeError("route_back requires typed PatchNotes")
 
 
 # ── Protocol ──────────────────────────────────────────────────────────────────
@@ -84,6 +92,8 @@ __all__ = [
     "EvalResult",
     "EvalVerdict",
     "EvaluatorKind",
+    "EvidenceRef",
+    "PatchNotes",
     # Existing evaluation types
     "CheckResult",
     "CodingTrajectoryCheck",
