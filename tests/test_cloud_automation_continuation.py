@@ -1112,6 +1112,32 @@ def test_external_effect_dispatch_uses_only_claimed_cloud_session(
     assert evidence["write"]["github_pull_request"]["pr_number"] == 17
     assert calls == [(packet, "run-cloud-dispatch")]
 
+    def fail_effect(self, *, packet, run_id):
+        assert self is session
+        return {
+            "status": "failed",
+            "terminal": True,
+            "reason": "destination_rejected",
+            "error_type": "RuntimeError",
+            "replay": False,
+        }
+
+    monkeypatch.setattr(
+        type(session),
+        "execute_github_pull_request_effect",
+        fail_effect,
+    )
+    failed = _run_external_write_effectors(
+        branch,
+        {"packet": packet},
+        base_path=tmp_path,
+        run_id="run-cloud-dispatch-failed",
+        cloud_effect_session=session,
+    )
+    failed_effect = failed["write"]["github_pull_request"]
+    assert failed_effect["error_kind"] == "cloud_effect_failed"
+    assert failed_effect["reason"] == "destination_rejected"
+
 
 def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
     tmp_path: Path,

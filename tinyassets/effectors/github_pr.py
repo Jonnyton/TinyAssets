@@ -525,6 +525,23 @@ def _execute_scoped_cloud_github_pr_effect(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
+    effect_intent_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "prepare": prepare_request,
+                "pull_request": {
+                    "base_branch": base_branch,
+                    "body": body,
+                    "draft": bool(payload.get("draft", True)),
+                    "labels": payload.get("labels") or [],
+                    "title": title.strip(),
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     preparation_identity_digest = hashlib.sha256(
         json.dumps(
             {
@@ -548,6 +565,7 @@ def _execute_scoped_cloud_github_pr_effect(
             )
         return {
             **result,
+            "effect_intent_digest": effect_intent_digest,
             "prepare_request_digest": prepare_request_digest,
         }
 
@@ -561,13 +579,14 @@ def _execute_scoped_cloud_github_pr_effect(
             "status": "failed",
             "evidence": {"reason": "content_addressed_prepare_retryable"},
         },
+        max_failed_retries=1,
     )
     if preparation.get("status") != "succeeded":
         raise ProxyRequestError("cloud GitHub commit preparation did not complete")
     prepared = preparation.get("result")
     if not isinstance(prepared, dict):
         raise ProxyRequestError("cloud GitHub commit preparation returned invalid evidence")
-    if prepared.get("prepare_request_digest") != prepare_request_digest:
+    if prepared.get("effect_intent_digest") != effect_intent_digest:
         raise PermissionError("cloud GitHub effect intent changed after claim reservation")
     intended_head_sha = prepared.get("commit_sha")
     if refresh_claim_id is not None:
@@ -617,6 +636,7 @@ def _execute_scoped_cloud_github_pr_effect(
             identity,
             proxy=proxy,
         ),
+        max_failed_retries=1,
     )
 
 
@@ -1891,12 +1911,20 @@ def run_github_pr_effector(
                 "failure_type": type(exc).__name__,
                 "matched_output_key": matched_key,
             }
-        return {
+        evidence = {
             **result,
             "phase": "cloud",
             "destination": destination,
             "matched_output_key": matched_key,
         }
+        if result.get("status") != "succeeded":
+            evidence.update(
+                {
+                    "error": "cloud GitHub effect did not complete",
+                    "error_kind": "cloud_effect_failed",
+                }
+            )
+        return evidence
 
     # Phase 1 backward-compat path.
     # A packet without ``destination`` is a Phase 1 packet by definition

@@ -423,6 +423,138 @@ def test_scoped_cloud_effect_claim_freezes_first_effect_intent(tmp_path):
     assert channel.publish_count == 1
 
 
+def test_scoped_cloud_effect_freezes_pull_request_metadata_before_retry(tmp_path):
+    class _RejectedThenAvailableChannel:
+        def __init__(self):
+            self.prepare_count = 0
+            self.publish_count = 0
+
+        def request(self, verb, request):
+            assert verb != "pull_requests:read_for_commit"
+            if request["operation"] == "prepare_commit":
+                self.prepare_count += 1
+                return {"commit_sha": "b" * 40, "tree_sha": "c" * 40}
+            self.publish_count += 1
+            if self.publish_count == 1:
+                raise RuntimeError("definitive rejection")
+            return {
+                "pr_url": "https://github.com/owner/repo/pull/17",
+                "pr_number": 17,
+                "commit_sha": request["intended_head_sha"],
+            }
+
+    channel = _RejectedThenAvailableChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship",
+            "body": "First reviewed body",
+            "base_branch": "main",
+            "changes_json": {"README.md": "first\n"},
+            "labels": ["automation"],
+            "draft": True,
+        },
+    }
+    kwargs = {
+        "universe_dir": tmp_path,
+        "universe_id": "universe-42",
+        "automation_id": "automation-7",
+        "claim_id": "claim-3",
+        "repository": "owner/repo",
+        "proxy": proxy,
+    }
+
+    first = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        packet=packet,
+        run_id="run-first",
+    )
+    assert first["status"] == "failed"
+
+    changed_packet = json.loads(json.dumps(packet))
+    changed_packet["payload"]["body"] = "Changed body must not publish"
+    with pytest.raises(PermissionError, match="intent changed"):
+        github_pr._execute_scoped_cloud_github_pr_effect(
+            **kwargs,
+            packet=changed_packet,
+            run_id="run-changed",
+        )
+
+    assert channel.prepare_count == 1
+    assert channel.publish_count == 1
+
+
+def test_scoped_cloud_effect_allows_only_one_failed_publish_retry(tmp_path):
+    class _AlwaysRejectedChannel:
+        def __init__(self):
+            self.prepare_count = 0
+            self.publish_count = 0
+
+        def request(self, verb, request):
+            assert verb != "pull_requests:read_for_commit"
+            if request["operation"] == "prepare_commit":
+                self.prepare_count += 1
+                return {"commit_sha": "b" * 40, "tree_sha": "c" * 40}
+            self.publish_count += 1
+            raise RuntimeError("definitive rejection")
+
+    channel = _AlwaysRejectedChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    kwargs = {
+        "universe_dir": tmp_path,
+        "universe_id": "universe-42",
+        "automation_id": "automation-7",
+        "claim_id": "claim-3",
+        "repository": "owner/repo",
+        "packet": {
+            "sink": "github_pull_request",
+            "destination": "owner/repo",
+            "payload": {
+                "title": "Ship",
+                "body": "Reviewed",
+                "base_branch": "main",
+                "changes_json": {"README.md": "first\n"},
+            },
+        },
+        "proxy": proxy,
+    }
+
+    first = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-first",
+    )
+    retry = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-retry",
+    )
+    exhausted = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-exhausted",
+    )
+
+    assert first["status"] == "failed"
+    assert retry["status"] == "failed"
+    assert exhausted["status"] == "failed"
+    assert exhausted["reason"] == "retry_limit_exhausted"
+    assert exhausted["failed_attempts"] == 2
+    assert channel.prepare_count == 1
+    assert channel.publish_count == 2
+
+
 def test_authoritative_empty_commit_association_is_terminal_absence():
     identity = _identity()
     proxy, _channel = _proxy([])

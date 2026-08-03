@@ -369,6 +369,7 @@ def try_reserve_receipt(
     run_id: str,
     now: float | None = None,
     stale_after_seconds: float = STALE_PENDING_THRESHOLD_SECONDS,
+    max_failed_retries: int | None = None,
 ) -> dict[str, Any]:
     """Atomically reserve a receipt slot for ``(idempotency_hint, sink)``.
 
@@ -404,6 +405,8 @@ def try_reserve_receipt(
     Raises :class:`sqlite3.OperationalError` on lock timeout; the caller
     must surface this loudly, NOT swallow it as a miss.
     """
+    if max_failed_retries is not None and max_failed_retries < 0:
+        raise ValueError("max_failed_retries must be non-negative")
     if not idempotency_hint:
         return {"status": "no_hint"}
     initialize_receipts_db(universe_dir)
@@ -512,6 +515,28 @@ def try_reserve_receipt(
                 "row": existing,
             }
         if status == STATUS_FAILED:
+            failed_attempts_raw = existing["evidence"].get("failed_attempts", 1)
+            failed_attempts = (
+                failed_attempts_raw
+                if isinstance(failed_attempts_raw, int)
+                and not isinstance(failed_attempts_raw, bool)
+                and failed_attempts_raw > 0
+                else 1
+            )
+            if (
+                max_failed_retries is not None
+                and failed_attempts > max_failed_retries
+            ):
+                return {"status": "retry_exhausted", "row": existing}
+            pending_evidence = (
+                json.dumps(
+                    {"failed_attempts": failed_attempts},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if max_failed_retries is not None
+                else "{}"
+            )
             # Failed-prior policy: a retry under the same hint replaces
             # the failed row with a fresh reservation. UPDATE WHERE
             # status='failed' so we don't clobber a concurrent retry
@@ -520,12 +545,12 @@ def try_reserve_receipt(
                 """
                 UPDATE external_write_receipts
                    SET run_id = ?, created_at = ?, status = ?,
-                       evidence_json = '{}'
+                       evidence_json = ?
                  WHERE idempotency_hint = ? AND sink = ?
                    AND status = ?
                 """,
                 (
-                    run_id, ts, STATUS_PENDING,
+                    run_id, ts, STATUS_PENDING, pending_evidence,
                     idempotency_hint, sink, STATUS_FAILED,
                 ),
             )
@@ -535,7 +560,7 @@ def try_reserve_receipt(
                         """
                         UPDATE external_write_receipts
                            SET run_id = ?, created_at = ?, status = ?,
-                               evidence_json = '{}'
+                               evidence_json = ?
                          WHERE idempotency_hint = ? AND sink = ?
                            AND status = ?
                         """,
@@ -543,6 +568,7 @@ def try_reserve_receipt(
                             run_id,
                             ts,
                             STATUS_PENDING,
+                            pending_evidence,
                             peer_key,
                             sink,
                             STATUS_FAILED,
