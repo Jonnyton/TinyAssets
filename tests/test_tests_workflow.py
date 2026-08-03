@@ -63,7 +63,10 @@ _FULL_TESTS_IF = "github.event_name != 'pull_request'"
 _CONCURRENCY_GROUP = (
     "tests-${{ github.event.pull_request.number || github.run_id }}"
 )
-_CANCEL_IN_PROGRESS = "github.event_name == 'pull_request'"
+# Compared LITERALLY, not through _expr(): in `concurrency`, unlike `if:`, the
+# `${{ }}` wrapper is NOT optional — actionlint rejects a bare expression there.
+# Normalizing it away would let an invalid workflow pass this test.
+_CANCEL_IN_PROGRESS = "${{ github.event_name == 'pull_request' }}"
 
 
 def _load() -> dict:
@@ -75,16 +78,31 @@ def _triggers(wf: dict) -> dict:
     return wf[True] if True in wf else wf["on"]
 
 
+def _norm(value: object) -> str:
+    """Collapse whitespace only. Use where the literal text is the assertion."""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
 def _expr(value: object) -> str:
     """Normalize whitespace and strip a whole-value `${{ }}` wrapper.
+
+    Use ONLY for `if:`, where GitHub makes the wrapper optional. Do NOT use for
+    `concurrency`, where the wrapper is mandatory — stripping it there would let
+    a workflow actionlint rejects pass this suite.
 
     `if: foo` and `if: ${{ foo }}` are the same expression to GitHub, so a test
     that accepts only one spelling is testing spelling, not behaviour. Only a
     wrapper spanning the ENTIRE value is stripped — `tests-${{ x }}` keeps its
     interpolation, since there the literal text is the thing being asserted.
+
+    The inner pattern is `[^{}]*`, not `.*`: greedy `.*` also matches a value
+    made of TWO interpolations, e.g. `${{ a }}-${{ b }}`, mangling it to
+    `a }}-${{ b`. That failed in the safe direction here (a mangled value just
+    fails the exact comparison) but it is still wrong, and a future assertion
+    might not be exact.
     """
     text = re.sub(r"\s+", " ", str(value)).strip()
-    m = re.fullmatch(r"\$\{\{(.*)\}\}", text)
+    m = re.fullmatch(r"\$\{\{([^{}]*)\}\}", text)
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else text
 
 
@@ -116,14 +134,25 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
         assert isinstance(entry, dict) and "cron" in entry, (
             f"each schedule entry needs a `cron:` key, got {entry!r}"
         )
-        # Structural only. actionlint validates GitHub's cron grammar in CI;
-        # re-implementing it here got day-of-week `7` and symbolic `SUN-SAT`
+        # Structure plus numeric ranges only. A full re-implementation of
+        # GitHub's cron grammar got day-of-week `7` and symbolic `SUN-SAT`
         # wrong in review, and a validator that rejects a VALID cron is a
-        # false-positive gate — worse than delegating.
+        # false-positive gate. But pure structure accepted `99 99 99 99 99`,
+        # so numeric values are range-checked and anything containing letters
+        # (`JAN-DEC`, `SUN-SAT`) is left to actionlint.
         fields = str(entry["cron"]).split()
         assert len(fields) == 5, (
             f"cron must have 5 fields, got {len(fields)}: {entry['cron']!r}"
         )
+        bounds = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
+        for field, (lo, hi) in zip(fields, bounds):
+            if re.search(r"[A-Za-z]", field):
+                continue  # symbolic form — actionlint owns it
+            for number in re.findall(r"\d+", field.split("/")[0]):
+                assert lo <= int(number) <= hi, (
+                    f"cron field {field!r} has {number} outside {lo}-{hi} in "
+                    f"{entry['cron']!r}"
+                )
 
 
 def test_full_tests_runs_on_every_non_pr_event() -> None:
@@ -145,15 +174,19 @@ def test_non_pr_runs_never_cancel_or_queue_behind_each_other() -> None:
     the exact opposite — cancel main runs, keep PR runs.
     """
     concurrency = _load()["concurrency"]
-    assert _expr(concurrency["group"]) == _CONCURRENCY_GROUP, (
+    group = _norm(concurrency["group"])
+    cancel = _norm(concurrency["cancel-in-progress"])
+    assert group == _CONCURRENCY_GROUP, (
         f"concurrency group must be exactly {_CONCURRENCY_GROUP!r}; got "
-        f"{_expr(concurrency['group'])!r}. Keying non-PR runs by ref lets each "
-        f"push cancel the previous run; keying them by SHA still lets a newer "
-        f"pending run replace a queued one on an unchanged main."
+        f"{group!r}. Keying non-PR runs by ref lets each push cancel the "
+        f"previous run; keying them by SHA still lets a newer pending run "
+        f"replace a queued one on an unchanged main."
     )
-    assert _expr(concurrency["cancel-in-progress"]) == _CANCEL_IN_PROGRESS, (
+    assert cancel == _CANCEL_IN_PROGRESS, (
         f"cancel-in-progress must be exactly {_CANCEL_IN_PROGRESS!r}; got "
-        f"{_expr(concurrency['cancel-in-progress'])!r}"
+        f"{cancel!r}. Compared literally on purpose — the `${{{{ }}}}` wrapper "
+        f"is mandatory in `concurrency`, so accepting a bare expression here "
+        f"would pass a workflow actionlint rejects."
     )
 
 
@@ -184,7 +217,16 @@ def test_required_tests_cannot_decline_to_report() -> None:
     gets neither.
     """
     wf = _load()
-    pr_trigger = _triggers(wf).get("pull_request") or {}
+    triggers = _triggers(wf)
+    # Asserted separately: `.get("pull_request") or {}` treats a MISSING
+    # pull_request trigger as an unfiltered one, so deleting the trigger
+    # outright would have passed the filter checks below.
+    assert "pull_request" in triggers, (
+        "the required check must be triggered by `pull_request` at all — "
+        "without it no check is ever reported and every PR hangs on "
+        "'Expected — waiting for status'"
+    )
+    pr_trigger = triggers.get("pull_request") or {}
     for key in ("paths", "paths-ignore"):
         assert key not in pr_trigger, (
             f"`{key}:` on the required check's trigger stops the workflow from "
@@ -208,13 +250,21 @@ def test_required_tests_enforces_an_adequate_vacuity_floor() -> None:
     """
     steps = _load()["jobs"]["required-tests"]["steps"]
     run_block = " ".join(str(s.get("run", "")) for s in steps)
-    match = re.search(r"--min-ran[\s=]+(\d+)", run_block)
-    assert match, (
+    values = [int(v) for v in re.findall(r"--min-ran[\s=]+(\d+)", run_block)]
+    assert values, (
         "required-tests must pass --min-ran so a mass-deselect cannot pass"
     )
-    floor = int(match.group(1))
-    assert floor >= _ci.MIN_RAN_FLOOR, (
-        f"--min-ran {floor} is below the script's own MIN_RAN_FLOOR "
+    # Exactly one, because argparse honours the LAST occurrence while a naive
+    # scan reads the first: `--min-ran 10700 --min-ran 1` would look compliant
+    # while setting the real floor to 1. Rated BLOCKING in review — it lets a
+    # mass-deselected suite merge. The script now also rejects a low value
+    # outright (ci_required_tests._min_ran_arg); this is the second lock.
+    assert len(values) == 1, (
+        f"--min-ran must appear exactly once, found {values}. argparse uses the "
+        f"LAST value, so a repeated flag can silently lower the floor."
+    )
+    assert values[0] >= _ci.MIN_RAN_FLOOR, (
+        f"--min-ran {values[0]} is below the script's own MIN_RAN_FLOOR "
         f"({_ci.MIN_RAN_FLOOR}); a low floor disables the vacuity check as "
         f"surely as omitting the flag. If the suite legitimately shrank, lower "
         f"MIN_RAN_FLOOR in the same PR and say why."
