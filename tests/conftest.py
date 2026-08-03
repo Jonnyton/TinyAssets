@@ -333,3 +333,97 @@ def universe_input() -> dict[str, Any]:
         "cross_series_facts": [],
         "quality_trace": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Process-global patch leak detector
+# ---------------------------------------------------------------------------
+#
+# Watched callables are process-global. A test that patches one and fails to
+# restore it corrupts every later test in the same interpreter, and the damage
+# surfaces in the VICTIMS, never in the culprit — which reads as flaky ordering.
+#
+# Two measured incidents in this repo:
+#
+#   * a threaded `patch("...github_pr.subprocess.run")` leaked, and ~70
+#     unrelated tests then received its canned stdout
+#     `https://github.com/x/x/pull/99` from what they believed were real
+#     subprocess calls. 111 quarantine entries flipped between two CI runs whose
+#     trees differed by two test functions (#2197, #2199).
+#   * a `shutil.which` stub latched `git_bridge.is_enabled` to False and
+#     silently no-opped 138 tests (see `_reset_git_enabled_probe` above).
+#
+# This checks the CONDITION rather than the spelling. An earlier attempt used an
+# AST lint to spot the unsafe pattern; five review rounds each found a fresh
+# false positive in it (method targets, shadowed imports, `functools.partial`
+# lookalikes, a parameter named `patch`), because deciding what a name refers to
+# is real scope analysis. Checking what actually leaked is both simpler and
+# strictly stronger: it catches any spelling, and correct code cannot trip it,
+# because correct code restores what it patches.
+_LEAK_WATCHED = (
+    ("subprocess", "run"),
+    ("subprocess", "Popen"),
+    ("subprocess", "check_output"),
+    ("subprocess", "check_call"),
+    ("shutil", "which"),
+)
+
+_leak_baseline: dict[tuple[str, str], object] = {}
+
+
+def _snapshot_globals() -> dict[tuple[str, str], object]:
+    import importlib
+
+    snap: dict[tuple[str, str], object] = {}
+    for module_name, attr in _LEAK_WATCHED:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:  # pragma: no cover - stdlib, but stay fail-soft
+            continue
+        snap[(module_name, attr)] = getattr(module, attr, None)
+    return snap
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """Baseline BEFORE the test's own fixtures run."""
+    _leak_baseline.clear()
+    _leak_baseline.update(_snapshot_globals())
+
+
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Compare AFTER every finalizer, including `monkeypatch`'s undo.
+
+    This is a teardown hookwrapper rather than an autouse fixture for a
+    measured reason: as a fixture it ran BEFORE `monkeypatch` restored its
+    patches, so it reported patches pytest was about to put back — a false
+    positive on completely correct tests. The code after `yield` here runs once
+    all finalizers are done.
+    """
+    import importlib
+
+    yield
+
+    if not _leak_baseline:
+        return
+    leaked = []
+    for (module_name, attr), original in _leak_baseline.items():
+        module = importlib.import_module(module_name)
+        current = getattr(module, attr, None)
+        if current is not original:
+            leaked.append(f"{module_name}.{attr} -> {current!r}")
+            # Repair, so ONE offender does not cascade into a wall of unrelated
+            # failures. The point is to attribute the leak, not to punish its
+            # victims.
+            setattr(module, attr, original)
+    _leak_baseline.clear()
+    if leaked:
+        raise AssertionError(
+            f"{item.nodeid} left a process-global patched, which silently "
+            f"corrupts every later test in this process: " + "; ".join(leaked)
+            + ". A common cause is entering `patch(...)` from inside a thread "
+            "worker: the swap is not thread-local, so two threads can "
+            "interleave and leave the mock installed permanently. Hoist the "
+            "patch to wrap the whole concurrent section on the calling thread."
+        )
