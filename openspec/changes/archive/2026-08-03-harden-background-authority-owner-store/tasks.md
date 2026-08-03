@@ -17,4 +17,4 @@
 
 ## 3. Review and foldback
 
-- [ ] 3.1 Obtain fresh independent exact-head code/security review, land through the normal PR path, leave umbrella task 2.6 explicitly partial and task 5.3 open, then sync/archive only this bounded correction and retire its STATUS row.
+- [x] 3.1 Obtain fresh independent exact-head code/security review, land through the normal PR path, leave umbrella task 2.6 explicitly partial and task 5.3 open, then sync/archive only this bounded correction and retire its STATUS row. PR #2171 merged as `bcfca9a4` on 2026-08-02 after independent Codex and opposite-family Claude review, adversarial forged-attempt reproduction, 394-test and 287-test authority/load matrices, strict OpenSpec and mirror validation, and green package/platform/installer/signing CI. STATUS row retirement remains a foldback commit concern because another active provider currently owns `STATUS.md`.
