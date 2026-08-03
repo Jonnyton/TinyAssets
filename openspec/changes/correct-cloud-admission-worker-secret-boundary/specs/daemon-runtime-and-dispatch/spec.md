@@ -10,7 +10,7 @@ The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
 
 #### Scenario: stale shared duplicate fails closed
 - **WHEN** the fenced deploy prepares `/etc/tinyassets/env` before recreating the fleet
-- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, `export` assignments, leading-whitespace assignments, assignments with delimiter whitespace, or assignments using either Compose-supported `=` or `:` delimiters
+- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, UTF-8-BOM-prefixed first assignments, `export` assignments, leading-whitespace assignments, assignments with delimiter whitespace, or assignments using either Compose-supported `=` or `:` delimiters
 - **AND** it fails before Compose synchronization if the shared file is unreadable or still contains that key
 
 #### Scenario: running workers prove the boundary
@@ -58,7 +58,7 @@ The environment installer SHALL construct updated content in the current Bash pr
 - **THEN** no content-builder child or secret-only value file exists to outlive the installer
 
 #### Scenario: Compose-valid duplicate immutable assignments fail before mutation
-- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including `export`, leading whitespace, delimiter whitespace, `=` or `:`, or a non-empty assignment followed by an empty assignment
+- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including a UTF-8-BOM-prefixed first assignment, `export`, leading whitespace, delimiter whitespace, `=` or `:`, or a non-empty assignment followed by an empty assignment
 - **THEN** it exits with immutable-refusal status before writing the environment file
 - **AND** neither existing nor proposed values appear in output
 

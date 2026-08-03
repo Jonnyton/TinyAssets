@@ -7,6 +7,7 @@ tests run the helper against tmp_path files and never touch /etc.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -245,6 +246,91 @@ def test_assert_absent_rejects_every_compose_assignment_shape(
 
     assert result.returncode == 6
     assert "secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+def test_utf8_bom_first_assignment_cannot_bypass_protected_key_operations(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    bom_only = "\ufeffTARGET: old-secret\nKEEP=1\n"
+    env_file.write_text(bom_only, encoding="utf-8")
+
+    absent = _run_helper(
+        tmp_path,
+        ["assert-absent", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert absent.returncode == 6
+    assert env_file.read_text(encoding="utf-8") == bom_only
+
+    duplicate = "\ufeffTARGET: old-secret\nTARGET=\nKEEP=1\n"
+    env_file.write_text(duplicate, encoding="utf-8")
+    immutable = _run_helper(
+        tmp_path,
+        ["set-once", "TARGET"],
+        stdin="replacement-secret",
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert immutable.returncode == 5
+    assert env_file.read_text(encoding="utf-8") == duplicate
+    combined = absent.stdout + absent.stderr + immutable.stdout + immutable.stderr
+    assert "old-secret" not in combined
+    assert "replacement-secret" not in combined
+
+    env_file.write_text(bom_only, encoding="utf-8")
+    deleted = _run_helper(
+        tmp_path,
+        ["delete", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+    assert deleted.returncode == 0, deleted.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
+
+
+@pytest.mark.skipif(
+    shutil.which("docker") is None,
+    reason="requires the installed Docker Compose CLI grammar",
+)
+def test_installed_compose_resolves_bom_prefixed_colon_assignment(tmp_path):
+    compose_file = tmp_path / "compose.yml"
+    env_file = tmp_path / "probe.env"
+    compose_file.write_text(
+        "services:\n"
+        "  probe:\n"
+        "    image: alpine:3.20\n"
+        "    env_file:\n"
+        "      - ./probe.env\n",
+        encoding="utf-8",
+    )
+    env_file.write_bytes(b"\xef\xbb\xbfTARGET: secret\n")
+
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "config",
+            "--format",
+            "json",
+        ],
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    model = json.loads(result.stdout)
+    assert model["services"]["probe"]["environment"]["TARGET"] == "secret"
 
 
 @pytest.mark.skipif(

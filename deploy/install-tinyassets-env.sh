@@ -98,13 +98,15 @@ validate_key() {
 }
 
 # Docker Compose accepts optional leading whitespace, an optional `export`
-# prefix, whitespace before the delimiter, and either `=` or `:` in env files.
-# Normalize only enough to identify the declared key; preserve the original
-# line for unrelated entries.
+# prefix, whitespace before the delimiter, either `=` or `:`, and an optional
+# UTF-8 BOM at the beginning of the file. Normalize only enough to identify the
+# declared key; preserve the original line for unrelated entries.
 compose_line_assigns_key() {
     local line="$1"
     local key="$2"
     local normalized="${line}"
+    normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+    normalized="${normalized#$'\xEF\xBB\xBF'}"
     normalized="${normalized#"${normalized%%[![:space:]]*}"}"
     if [[ "${normalized}" =~ ^export[[:space:]]+ ]]; then
         normalized="${normalized#export}"

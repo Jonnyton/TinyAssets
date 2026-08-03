@@ -37,7 +37,7 @@ Alternatives considered were deleting the host file by hand and adding a permane
 
 ### Parse Docker Compose env declarations once and fail closed
 
-One Bash helper recognizes the production Compose grammar relevant to key identity: optional leading whitespace, optional `export` plus whitespace, optional whitespace before the delimiter, and either `=` or `:`. `set`, `set-once`, `delete`, and the read-only `assert-absent` command all use that helper. `set-once` counts matching assignments and exits with the immutable-refusal code on the second match, without writing or printing either value. `delete` removes every recognized shape, and both scrub and rotation invoke `assert-absent` before any worker recreation or key transmission. A single empty assignment remains the documented bootstrap case.
+One Bash helper recognizes the production Compose grammar relevant to key identity: an optional UTF-8 BOM on the first declaration, optional leading whitespace, optional `export` plus whitespace, optional whitespace before the delimiter, and either `=` or `:`. `set`, `set-once`, `delete`, and the read-only `assert-absent` command all use that helper. `set-once` counts matching assignments and exits with the immutable-refusal code on the second match, without writing or printing either value. `delete` removes every recognized shape, and both scrub and rotation invoke `assert-absent` before any worker recreation or key transmission. A single empty assignment remains the documented bootstrap case.
 
 ### Use a protected sibling transaction and atomic rename
 
