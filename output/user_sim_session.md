@@ -293,3 +293,37 @@ at 19:34 PDT, which does not include #2184 merge
 `d8dea1a9a22aae7338aa6e91e71e96aa3929979c`. The exact-seven public canary was
 green. Task 5.1 remains unchecked until a receipt containing the merge is live
 and both Claude.ai and ChatGPT render the canonical set/run acceptance flow.
+
+## [2026-08-02 20:47 PDT] CHATGPT OAUTH CONTINUITY POST-#2037 LOCALIZATION
+
+TAB HYGIENE: 1 host-visible ChatGPT tab for the TinyAssets retry; Instant was
+selected. Reconnect and Connect completed in the same tab and returned through
+`link_success=true`, then TinyAssets was explicitly reattached in the composer.
+One mistaken Canva menu selection briefly opened a second OAuth tab; it was
+closed without authentication and the TinyAssets conversation was healed back
+to one tab before the retry.
+
+Asked: `can you try TinyAssets again now and tell me whether I'm signed in and
+what it's connected to?`
+
+## [2026-08-02 20:51 PDT] USER NOTE always-allowed TinyAssets
+
+The turn initially waited on ChatGPT's first-use approval card. Selected
+`Always allow` before continuing the existing turn.
+
+## [2026-08-02 20:52 PDT] USER BUG TinyAssets converse action not found
+
+ChatGPT rendered `Resource not found: TinyAssets.converse`. It could discover
+the installed connector and its actions, but invocation failed before identity
+or universe resolution; no principal fingerprint was rendered. Full driver
+trace is local and ignored at `output/chatgpt_chat_trace.md`.
+
+Sanitized production run 30782860916 covered 2026-08-03T03:47:00Z through
+03:51:45Z: `input_truncated=false`, 142 source lines, and
+`oauth_rejection_categories=[]`. Public metadata and successful deploy run
+30780952337 both used resource `https://tinyassets.io/mcp`; WorkOS was enabled
+and production audience bypass remained forced off. No rejected-bearer category
+was observed; the rendered action-resolution failure makes ChatGPT's connector
+registration/attachment seam the next repair boundary without establishing
+whether an accepted bearer reached validation. It is not
+authenticated-continuity acceptance evidence.

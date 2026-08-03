@@ -20,14 +20,26 @@ A second rendered attempt on 2026-08-01 reached ChatGPT's
 `link_success=true` return but did not retain TinyAssets in the returned
 conversation's plugin picker. A complete, non-truncated production journal
 window for that attempt contained no sanitized token-rejection category. This
-attempt therefore failed before the instrumented bearer validator; it is not
-evidence for relaxing or changing JWT validation.
+attempt therefore produced no rejected-bearer evidence and does not establish
+whether an accepted bearer reached validation. It is not evidence for relaxing
+or changing JWT validation.
 
 A third rendered attempt on 2026-08-02 reattached TinyAssets successfully
 through the same-tab OAuth return. The original call did not resume, and an
 explicit retry with TinyAssets visibly attached produced no rendered assistant
 or tool result before the 120-second driver timeout. This again fails before an
 accepted authenticated call and does not authorize a JWT change.
+
+A fourth rendered attempt on 2026-08-02 completed the same-tab OAuth reconnect,
+explicitly reattached TinyAssets, and cleared ChatGPT's first-use permission
+card with `Always allow`. ChatGPT then rendered `Resource not found:
+TinyAssets.converse`: connector discovery and the advertised action were
+visible, but invocation failed before identity or universe resolution. The
+complete correlated production journal window contained no bounded validator
+category. The rendered action-resolution failure makes ChatGPT's connector
+action-registration or attachment seam the next repair boundary without
+establishing whether an accepted bearer reached validation; correction task 2.1
+remains pending.
 
 ## Rendered reproduction
 
@@ -73,6 +85,24 @@ That second turn also produced no rendered assistant or tool result before the
 120-second driver timeout. No principal fingerprint was rendered, so neither
 turn is authenticated-call acceptance evidence.
 
+The bounded 2026-08-02 task-1.2 retry reused that host-visible Instant
+conversation after another successful same-tab reconnect. TinyAssets was
+explicitly selected in the composer and the user asked:
+
+> can you try TinyAssets again now and tell me whether I'm signed in and what
+> it's connected to?
+
+The turn initially waited on ChatGPT's first-use approval card. After the user
+selected `Always allow`, ChatGPT rendered `Resource not found:
+TinyAssets.converse` and stated that the installed connector and its actions
+were discoverable but invocation failed. It therefore could not render
+`request_identity`, a principal fingerprint, or universe state. One accidental
+Canva menu selection briefly opened a second OAuth tab; it was closed without
+authentication and the TinyAssets conversation was restored to one-tab hygiene
+before the retry. The full local driver trace remains ignored at
+`output/chatgpt_chat_trace.md`; the bounded shared result is in
+`output/user_sim_session.md`.
+
 ## Public and deployed configuration parity
 
 Public metadata fetched 2026-07-30:
@@ -95,6 +125,29 @@ Safe production environment inspection:
 
 This proves visible URL/issuer/algorithm parity, but not the rejected token's
 actual `aud`, expiry, issuer, subject, or signing-key match.
+
+Freshness check 2026-08-02 20:52 PDT:
+
+- public protected-resource metadata still advertised resource
+  `https://tinyassets.io/mcp`, authorization server
+  `https://inventive-van-62-staging.authkit.app`, scopes `openid`, `profile`,
+  `email`, and `offline_access`;
+- authorization-server metadata still advertised the same issuer,
+  authorization-code/refresh-token/device-code grants, and PKCE `S256`;
+- successful production deploy run 30780952337 at
+  `8365cec39b398ffadc828d5698d12dcf48311c70` recorded
+  `HAS_WORKOS_CONFIG=true`,
+  `WORKOS_MCP_RESOURCE=https://tinyassets.io/mcp`, and
+  `WORKOS_REQUIRE_AUTH=0`; the deploy contract forces
+  `WORKOS_ALLOW_NO_AUDIENCE=0` whenever WorkOS is enabled; and
+- that deployed revision contains #2037 merge
+  `3c6a497dd4977f2b805a8cdef362ef7466eda03d`.
+
+The public resource and deployed audience therefore match. No rejected-bearer
+category was observed; the rendered `TinyAssets.converse` lookup failure makes
+connector registration/attachment the next repair boundary without
+establishing whether an accepted bearer reached validation. It does not justify
+changing any JWT check.
 
 ## Diagnostic implementation
 
@@ -153,6 +206,17 @@ published. The empty category is evidence that this rendered attempt did not
 reach a logged bearer rejection, not evidence that the validator accepted a
 token.
 
+Manual read-only workflow run
+`https://github.com/Jonnyton/TinyAssets/actions/runs/30782860916` inspected the
+exact 2026-08-03T03:47:00Z through 03:51:45Z retry window at current-main head
+`773315ffb5cb87975e37be727ee8568a244e7b8c`. The sanitizer reported
+`input_truncated=false`, 142 source lines, and
+`oauth_rejection_categories=[]`; raw journal text was neither printed nor
+published. Coupled with ChatGPT's rendered `Resource not found:
+TinyAssets.converse`, the empty category makes connector action registration or
+attachment the next investigation boundary, but does not establish whether an
+accepted bearer reached validation.
+
 ## Production rollout and rollback
 
 The diagnostic does not change token acceptance or the caller's standard `401
@@ -177,12 +241,16 @@ There is no data migration and no persistent-state rollback.
 
 ## Next evidence gate
 
-After the diagnostic lands, start a fresh rendered conversation, explicitly
-attach TinyAssets after the OAuth return, perform one authenticated call, and
-read the bounded category at the correlated timestamp if the server rejects
-it. If ChatGPT still cannot attach TinyAssets and the bounded category remains
-empty, treat the connector-return/attachment seam—not JWT validation—as the
-next repair boundary. Only implement the smallest evidence-backed correction.
+Task 1.2's post-#2037 retry is complete. The rendered
+`Resource not found: TinyAssets.converse` result plus an empty, non-truncated
+bounded validator category makes ChatGPT's connector action-registration or
+attachment seam the next repair boundary without establishing validator
+ordering. Before task 2.1
+changes anything, reconcile ChatGPT's registered `TinyAssets.converse` action
+with the live canonical `converse` handle and identify why the client-visible
+action cannot resolve even while the public canary advertises the handle. Only
+implement the smallest evidence-backed correction; do not relax token
+acceptance.
 
 Final acceptance requires both an immediate authenticated call and a later
 continued/refreshed call to the same owner/universe from a rendered chatbot,
