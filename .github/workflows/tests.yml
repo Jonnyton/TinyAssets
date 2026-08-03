@@ -100,7 +100,7 @@ jobs:
           # The excluded files still run in `full-tests` on every main push.
           python scripts/ci_required_tests.py --junit junit.xml \
             --exclude-from .github/heavy-test-files.txt \
-            --min-ran 9500
+            --min-ran 10700
 
       - name: Upload junit
         if: always()
@@ -138,7 +138,7 @@ jobs:
         run: |
           mkdir -p "$TINYASSETS_DATA_DIR"
           # No --exclude-from: this is everything.
-          python scripts/ci_required_tests.py --junit junit-full.xml --min-ran 12000
+          python scripts/ci_required_tests.py --junit junit-full.xml --min-ran 12800
       - name: Upload junit
         if: always()
         uses: actions/upload-artifact@v4
