@@ -379,6 +379,43 @@ def _same_receipt_intent(
     return left == right
 
 
+def _same_receipt_authority_intent(
+    current: ProviderUniverseWorkReceipt,
+    candidate: ProviderUniverseWorkReceipt,
+) -> bool:
+    """Compare immutable authority while permitting an explicit lease migration."""
+    left = current.to_dict()
+    right = candidate.to_dict()
+    for payload in (left, right):
+        for field in (
+            "receipt_digest",
+            "generation",
+            "expires_at",
+            "created_at",
+        ):
+            del payload[field]
+    return left == right
+
+
+def _receipt_matches_authority(
+    receipt: ProviderUniverseWorkReceipt,
+    authority: ProviderUniverseWorkAuthority,
+) -> bool:
+    expected = _receipt_from_authority(
+        authority,
+        created_at=receipt.created_at,
+    )
+    provisional = replace(
+        expected,
+        generation=receipt.generation,
+        receipt_digest=_PLACEHOLDER_DIGEST,
+    )
+    return receipt == replace(
+        provisional,
+        receipt_digest=provisional.expected_digest(),
+    )
+
+
 def _same_claim_intent(
     current: ProviderWorkExecutionClaim,
     candidate: ProviderWorkExecutionClaim,
@@ -579,12 +616,69 @@ class _Transaction:
         ).fetchone()
         if existing is not None:
             current = _receipt_record(existing)
+            if _same_receipt_intent(current, candidate):
+                return ProviderWorkReceiptWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.REPLAYED,
+                    current,
+                )
+            current_expiry = datetime.fromisoformat(
+                current.expires_at.removesuffix("Z") + "+00:00"
+            )
+            candidate_expiry = datetime.fromisoformat(
+                candidate.expires_at.removesuffix("Z") + "+00:00"
+            )
+            has_claim = self._conn.execute(
+                "SELECT 1 FROM provider_work_execution_claims "
+                "WHERE receipt_id = ? LIMIT 1",
+                (current.receipt_id,),
+            ).fetchone()
+            has_reservation = self._conn.execute(
+                "SELECT 1 FROM provider_invocation_reservations "
+                "WHERE receipt_id = ? LIMIT 1",
+                (current.receipt_id,),
+            ).fetchone()
+            if (
+                current.work_item_kind == "background_attempt"
+                and current.state is ProviderWorkReceiptState.ACTIVE
+                and _same_receipt_authority_intent(current, candidate)
+                and candidate_expiry > current_expiry
+                and has_claim is None
+                and has_reservation is None
+            ):
+                provisional = replace(
+                    candidate,
+                    generation=current.generation + 1,
+                    receipt_digest=_PLACEHOLDER_DIGEST,
+                    created_at=current.created_at,
+                )
+                replacement = replace(
+                    provisional,
+                    receipt_digest=provisional.expected_digest(),
+                )
+                cursor = self._conn.execute(
+                    """
+                    UPDATE provider_work_receipts
+                    SET receipt_digest = ?, generation = ?, expires_at = ?,
+                        record_json = ?
+                    WHERE receipt_id = ? AND generation = ? AND receipt_digest = ?
+                    """,
+                    (
+                        replacement.receipt_digest,
+                        replacement.generation,
+                        replacement.expires_at,
+                        _json_record(replacement),
+                        current.receipt_id,
+                        current.generation,
+                        current.receipt_digest,
+                    ),
+                )
+                if cursor.rowcount == 1:
+                    return ProviderWorkReceiptWriteResult(
+                        ProviderWorkAuthorityWriteOutcome.APPLIED,
+                        replacement,
+                    )
             return ProviderWorkReceiptWriteResult(
-                (
-                    ProviderWorkAuthorityWriteOutcome.REPLAYED
-                    if _same_receipt_intent(current, candidate)
-                    else ProviderWorkAuthorityWriteOutcome.CONFLICT
-                ),
+                ProviderWorkAuthorityWriteOutcome.CONFLICT,
                 current,
             )
         self._conn.execute(
@@ -622,6 +716,7 @@ class _Transaction:
         *,
         now: datetime,
         agent_store_grant: object | None = None,
+        allow_cloud_background_fixture: bool = False,
     ) -> ProviderWorkExecutionClaimWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -633,6 +728,13 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
+        if (
+            receipt.work_item_kind == "background_attempt"
+            and not allow_cloud_background_fixture
+        ):
+            raise PermissionError(
+                "cloud Branch claims require current service authority"
+            )
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
                 agent_store_grant
@@ -719,6 +821,7 @@ class _Transaction:
         now: datetime,
         created_at: str,
         agent_store_grant: object | None = None,
+        allow_cloud_background_fixture: bool = False,
     ) -> ProviderInvocationReservationWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -730,6 +833,13 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
+        if (
+            receipt.work_item_kind == "background_attempt"
+            and not allow_cloud_background_fixture
+        ):
+            raise PermissionError(
+                "cloud Branch reservations require current service authority"
+            )
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
                 agent_store_grant
@@ -867,6 +977,7 @@ class _Transaction:
         *,
         now: datetime,
         agent_store_grant: object | None = None,
+        allow_cloud_background_fixture: bool = False,
     ) -> ProviderInvocationReservationWriteResult:
         if agent_store_grant is not None:
             agent_authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
@@ -889,6 +1000,13 @@ class _Transaction:
                     None,
                 )
             receipt = _receipt_record(receipt_row)
+            if (
+                receipt.work_item_kind == "background_attempt"
+                and not allow_cloud_background_fixture
+            ):
+                raise PermissionError(
+                    "cloud Branch launch requires current service authority"
+                )
             if receipt.work_item_kind == "agent_invocation":
                 SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(None)
 
@@ -1410,7 +1528,12 @@ class SQLiteProviderWorkAuthorityStore:
             lease_expires_at=self._timestamp(now + timedelta(seconds=request.lease_seconds)),
         )
         with self._ledger_transaction() as transaction:
-            return transaction.claim_receipt(request, candidate, now=now)
+            return transaction.claim_receipt(
+                request,
+                candidate,
+                now=now,
+                allow_cloud_background_fixture=self._allow_test_fixtures,
+            )
 
     def _claim_or_renew_cloud_branch(
         self,
@@ -1437,7 +1560,7 @@ class SQLiteProviderWorkAuthorityStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                authority = authority_grant._consume(request)
+                authority = authority_grant._consume(request, conn)
                 receipt_row = conn.execute(
                     "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
                     (request.receipt_id,),
@@ -1449,13 +1572,9 @@ class SQLiteProviderWorkAuthorityStore:
                         None,
                     )
                 receipt = _receipt_record(receipt_row)
-                expected_receipt = _receipt_from_authority(
-                    authority,
-                    created_at=receipt.created_at,
-                )
                 if (
                     authority.root.work_item_kind != "background_attempt"
-                    or receipt != expected_receipt
+                    or not _receipt_matches_authority(receipt, authority)
                     or datetime.fromisoformat(
                         candidate.lease_expires_at.removesuffix("Z") + "+00:00"
                     )
@@ -1469,6 +1588,7 @@ class SQLiteProviderWorkAuthorityStore:
                     request,
                     candidate,
                     now=now,
+                    allow_cloud_background_fixture=True,
                 )
                 current = result.record
                 if (
@@ -1549,6 +1669,7 @@ class SQLiteProviderWorkAuthorityStore:
                 request,
                 now=now,
                 created_at=self._timestamp(now),
+                allow_cloud_background_fixture=self._allow_test_fixtures,
             )
 
     def arm_launch(
@@ -1559,7 +1680,11 @@ class SQLiteProviderWorkAuthorityStore:
             raise ValueError("request must be a ProviderInvocationLaunchRequest")
         now = self._now()
         with self._ledger_transaction() as transaction:
-            result = transaction.arm_launch(request, now=now)
+            result = transaction.arm_launch(
+                request,
+                now=now,
+                allow_cloud_background_fixture=self._allow_test_fixtures,
+            )
         if result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED or result.record is None:
             return result
 
@@ -1614,6 +1739,7 @@ class SQLiteProviderWorkAuthorityStore:
             request,
             now=now,
             created_at=self._timestamp(now),
+            allow_cloud_background_fixture=True,
         )
         if (
             reserved.record is None
@@ -1626,7 +1752,11 @@ class SQLiteProviderWorkAuthorityStore:
         ):
             raise PermissionError("provider invocation budget or authority is unavailable")
         launch = ProviderInvocationLaunchRequest.from_reservation(reserved.record)
-        armed = transaction.arm_launch(launch, now=now)
+        armed = transaction.arm_launch(
+            launch,
+            now=now,
+            allow_cloud_background_fixture=True,
+        )
         if (
             armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
             or armed.record is None

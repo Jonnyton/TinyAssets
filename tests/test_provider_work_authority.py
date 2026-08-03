@@ -667,6 +667,7 @@ def test_concurrent_claim_has_one_owner_and_same_request_replays(tmp_path) -> No
         return SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         ).claim(
             ProviderWorkExecutionClaimRequest(
                 receipt_id=receipt.receipt_id,
@@ -723,6 +724,7 @@ def test_reservations_conserve_invocation_token_and_cost_budgets(tmp_path) -> No
         return SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         ).reserve(
             ProviderInvocationReservationRequest(
                 receipt_id=receipt.receipt_id,
@@ -806,6 +808,7 @@ def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
         return SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         ).arm_launch(request)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -829,6 +832,7 @@ def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
         SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         )
         .arm_launch(request)
         .record
@@ -1308,6 +1312,49 @@ def test_cloud_branch_store_rejects_object_new_authority_fence(tmp_path) -> None
     assert store.list_reservations(receipt.receipt_id) == ()
 
 
+def test_generic_store_api_cannot_launch_cloud_background_receipt(tmp_path) -> None:
+    fixture_store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = fixture_store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_bypass",
+            runtime_id="runtime_cloud_bypass",
+            claim_nonce_digest=f"sha256:{'7' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation_request = ProviderInvocationReservationRequest(
+        receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest,
+        claim_id=claim.claim_id,
+        claim_digest=claim.claim_digest,
+        claim_generation=claim.generation,
+        invocation_key="generic-cloud-bypass",
+        operation="repository_spec_delivery",
+        role="writer",
+        max_tokens=1,
+        max_cost_microunits=1,
+    )
+    production_store = SQLiteProviderWorkAuthorityStore(
+        tmp_path,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(PermissionError, match="cloud Branch"):
+        production_store.reserve(reservation_request)
+
+    reservation = fixture_store.reserve(reservation_request).record
+    assert reservation is not None
+    with pytest.raises(PermissionError, match="cloud Branch"):
+        production_store.arm_launch_carrier(
+            ProviderInvocationLaunchRequest.from_reservation(reservation)
+        )
+
+
 def test_cloud_branch_store_rejects_object_new_claim_grant(tmp_path) -> None:
     store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
     receipt = service.issue(root).record
@@ -1357,6 +1404,7 @@ def test_expired_claim_cannot_replay_or_reserve(tmp_path) -> None:
     later = SQLiteProviderWorkAuthorityStore(
         tmp_path,
         clock=lambda: NOW + timedelta(minutes=2),
+        allow_test_fixtures=True,
     )
 
     replay = later.claim(request)

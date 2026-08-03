@@ -1870,6 +1870,7 @@ _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS: dict[
         weakref.ReferenceType["_CloudProviderClaimAuthorityGrant"],
         ProviderWorkExecutionClaimRequest,
         ProviderUniverseWorkAuthority,
+        Callable[[sqlite3.Connection, ProviderUniverseWorkAuthority], None],
         int,
     ],
 ] = {}
@@ -1924,23 +1925,28 @@ class _CloudProviderClaimAuthorityGrant:
     def _consume(
         self,
         request: ProviderWorkExecutionClaimRequest,
+        connection: sqlite3.Connection,
     ) -> ProviderUniverseWorkAuthority:
         if type(self) is not _CloudProviderClaimAuthorityGrant:
             raise PermissionError("cloud provider claim grant is not service-issued")
         current_pid = os.getpid()
         if self._issuer_pid != current_pid:
             raise PermissionError("cloud provider claim grant belongs to another process")
+        if not isinstance(connection, sqlite3.Connection) or not connection.in_transaction:
+            raise PermissionError("cloud provider claim grant requires a transaction")
         with _CLOUD_PROVIDER_CLAIM_GRANT_LOCK:
             entry = _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS.get(self._grant_id)
             if (
                 entry is None
                 or entry[0]() is not self
                 or entry[1] != request
-                or entry[3] != current_pid
+                or entry[4] != current_pid
             ):
                 raise PermissionError("cloud provider claim grant is invalid or consumed")
             del _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS[self._grant_id]
-            return entry[2]
+        authority = entry[2]
+        entry[3](connection, authority)
+        return authority
 
 
 class _CloudBranchInvocationAuthorityFence:
@@ -2008,7 +2014,6 @@ class _ClaimedCloudProviderSession:
         self._refresh_background_authority = refresh_background_authority
         self._refresh_provider_claim = refresh_provider_claim
         self._revalidate_in_transaction = revalidate_in_transaction
-        self._call_ordinal = 0
         self._lock = threading.Lock()
 
     @staticmethod
@@ -2074,37 +2079,46 @@ class _ClaimedCloudProviderSession:
         with self._lock:
             self._refresh_background_authority()
             self._claim = self._refresh_provider_claim()
-            self._call_ordinal += 1
-            ordinal = self._call_ordinal
-        invocation_key = (
-            f"cloud-branch:{self._branch_task_id}:{ordinal}:"
-            f"{_content_digest({'prompt': prompt, 'system': system})}"
-        )
-        token_share, token_remainder = divmod(
-            self._receipt.max_tokens,
-            self._receipt.max_invocations,
-        )
-        cost_share, cost_remainder = divmod(
-            self._receipt.max_cost_microunits,
-            self._receipt.max_invocations,
-        )
-        max_tokens = token_share + int(ordinal <= token_remainder)
-        max_cost = cost_share + int(ordinal <= cost_remainder)
-        request = ProviderInvocationReservationRequest(
-            receipt_id=self._receipt.receipt_id,
-            receipt_digest=self._receipt.receipt_digest,
-            claim_id=self._claim.claim_id,
-            claim_digest=self._claim.claim_digest,
-            claim_generation=self._claim.generation,
-            invocation_key=invocation_key,
-            operation=self._OPERATION,
-            role=self._ROLE,
-            max_tokens=max_tokens,
-            max_cost_microunits=max_cost,
-        )
+            current_claim = self._claim
         with self._provider_store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                reservation_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM provider_invocation_reservations "
+                        "WHERE receipt_id = ?",
+                        (self._receipt.receipt_id,),
+                    ).fetchone()[0]
+                )
+                ordinal = reservation_count + 1
+                invocation_key = (
+                    f"cloud-branch:{self._branch_task_id}:{ordinal}:"
+                    f"{_content_digest({'prompt': prompt, 'system': system})}"
+                )
+                token_share, token_remainder = divmod(
+                    self._receipt.max_tokens,
+                    self._receipt.max_invocations,
+                )
+                cost_share, cost_remainder = divmod(
+                    self._receipt.max_cost_microunits,
+                    self._receipt.max_invocations,
+                )
+                request = ProviderInvocationReservationRequest(
+                    receipt_id=self._receipt.receipt_id,
+                    receipt_digest=self._receipt.receipt_digest,
+                    claim_id=current_claim.claim_id,
+                    claim_digest=current_claim.claim_digest,
+                    claim_generation=current_claim.generation,
+                    invocation_key=invocation_key,
+                    operation=self._OPERATION,
+                    role=self._ROLE,
+                    max_tokens=(
+                        token_share + int(ordinal <= token_remainder)
+                    ),
+                    max_cost_microunits=(
+                        cost_share + int(ordinal <= cost_remainder)
+                    ),
+                )
                 fence = self._revalidate_in_transaction(conn, request)
                 carrier = (
                     self._provider_store
@@ -2402,6 +2416,147 @@ def prepare_claimed_cloud_provider_call(
     ).issue(provider_root).record
     if receipt is None:
         raise PermissionError("cloud provider receipt is unavailable")
+
+    def revalidate_claim_roots_in_transaction(
+        conn: sqlite3.Connection,
+        authority: ProviderUniverseWorkAuthority,
+    ) -> None:
+        """Recheck every mutable claim owner under the provider-ledger write lock."""
+        from tinyassets.branch_tasks_v2 import read_worker_claim_context
+
+        current_now = now_clock()
+        if current_now.tzinfo is None or current_now.utcoffset() is None:
+            raise PermissionError("cloud provider authority clock is unavailable")
+        current_now = current_now.astimezone(timezone.utc)
+        continuation_row = conn.execute(
+            "SELECT record_json FROM cloud_automation_continuations "
+            "WHERE universe_id = ? AND automation_id = ?",
+            (continuation.universe_id, continuation.automation_id),
+        ).fetchone()
+        activation_row = conn.execute(
+            "SELECT * FROM automation_activations "
+            "WHERE universe_id = ? AND automation_id = ?",
+            (continuation.universe_id, continuation.automation_id),
+        ).fetchone()
+        task_row = conn.execute(
+            "SELECT * FROM branch_tasks_v2 "
+            "WHERE branch_task_id = ? AND admission_id = ? AND request_id = ?",
+            (branch_task_id, admission_id, request_id),
+        ).fetchone()
+        binding_row = conn.execute(
+            "SELECT record_json FROM background_branch_bindings "
+            "WHERE binding_id = ?",
+            (continuation.background_binding_id,),
+        ).fetchone()
+        attempt_row = conn.execute(
+            "SELECT record_json FROM background_branch_attempts "
+            "WHERE attempt_id = ?",
+            (attempt.attempt_id,),
+        ).fetchone()
+        worker_context = read_worker_claim_context(conn, worker_id)
+        if any(
+            row is None
+            for row in (
+                continuation_row,
+                activation_row,
+                task_row,
+                binding_row,
+                attempt_row,
+                worker_context,
+            )
+        ):
+            raise PermissionError("cloud provider claim roots are unavailable")
+        try:
+            def parse_timestamp(value: object) -> datetime:
+                raw = str(value)
+                return datetime.fromisoformat(
+                    raw.removesuffix("Z") + "+00:00" if raw.endswith("Z") else raw
+                ).astimezone(timezone.utc)
+
+            current_continuation = PreparedCloudContinuation.from_dict(
+                json.loads(str(continuation_row["record_json"]))
+            )
+            current_binding = BackgroundBranchBinding.from_dict(
+                json.loads(str(binding_row["record_json"]))
+            )
+            current_attempt = BackgroundBranchAttempt.from_dict(
+                json.loads(str(attempt_row["record_json"]))
+            )
+            task_lease = parse_timestamp(task_row["lease_expires_at"])
+            attempt_lease = parse_timestamp(current_attempt.lease_expires_at)
+            worker_expiry = parse_timestamp(worker_context.descriptor.expires_at)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PermissionError("cloud provider claim roots are invalid") from exc
+        actor_id = audience.daemon_id or audience.worker_id
+        exact = (
+            current_continuation == continuation,
+            activation_row["state"] == "active",
+            activation_row["executor_class"] == "cloud",
+            activation_row["epoch"] == continuation.activation_epoch + 1,
+            activation_row["subject_kind"] == "branch_version",
+            activation_row["subject_ref"] == continuation.branch_version_id,
+            activation_row["subject_digest"] == continuation.branch_content_digest,
+            activation_row["immutable_branch_version"]
+            == continuation.branch_version_id,
+            activation_row["lease_id"] == task_row["automation_lease_id"],
+            task_row["status"] == "running",
+            task_row["disabled"] == 0,
+            task_row["claimed_by"] == worker_id,
+            task_row["universe_id"] == continuation.universe_id,
+            task_row["branch_def_id"] == continuation.branch_def_id,
+            task_row["automation_id"] == continuation.automation_id,
+            task_row["automation_activation_epoch"]
+            == continuation.activation_epoch + 1,
+            task_row["automation_executor_class"] == "cloud",
+            task_row["automation_subject_ref"] == continuation.branch_version_id,
+            task_row["automation_subject_digest"]
+            == continuation.branch_content_digest,
+            task_row["automation_branch_version"]
+            == continuation.branch_version_id,
+            task_lease > current_now,
+            worker_context.daemon_id == daemon_id,
+            worker_context.descriptor.worker_id == worker_id,
+            worker_context.descriptor.runtime_instance_id == runtime_id,
+            worker_context.descriptor.universe_id == continuation.universe_id,
+            worker_context.descriptor.executor_class
+            is AutomationActivationExecutor.CLOUD,
+            worker_expiry > current_now,
+            current_binding.status is BackgroundBranchBindingStatus.ACTIVE,
+            current_binding.binding_id == continuation.background_binding_id,
+            current_binding.generation == continuation.background_binding_generation,
+            current_binding.binding_digest == continuation.background_binding_digest,
+            current_attempt.attempt_id == attempt.attempt_id,
+            current_attempt.binding_id == current_binding.binding_id,
+            current_attempt.binding_generation == current_binding.generation,
+            current_attempt.binding_digest == current_binding.binding_digest,
+            current_attempt.authorizing_principal_id == continuation.principal_id,
+            current_attempt.universe_id == continuation.universe_id,
+            current_attempt.branch_def_id == continuation.branch_def_id,
+            current_attempt.branch_version_id == continuation.branch_version_id,
+            current_attempt.branch_content_digest == continuation.branch_content_digest,
+            current_attempt.executor_audience == audience,
+            current_attempt.lifecycle
+            in {
+                BackgroundBranchAttemptLifecycle.CLAIMED,
+                BackgroundBranchAttemptLifecycle.RUNNING,
+            },
+            attempt_lease > current_now,
+            attempt_lease == task_lease,
+            authority.root == provider_root,
+            authority.binding.binding_id == continuation.provider_binding_id,
+            authority.binding.generation == continuation.provider_binding_generation,
+            authority.binding.binding_digest == continuation.provider_binding_digest,
+            authority.principal_id == continuation.principal_id,
+            authority.actor_id == actor_id,
+            authority.branch_def_id == continuation.branch_def_id,
+            authority.branch_version_id == continuation.branch_version_id,
+            authority.operation == "repository_spec_delivery",
+            authority.role == "writer",
+            authority.executor_class == "cloud",
+        )
+        if not all(exact):
+            raise PermissionError("cloud provider claim authority is not current")
+
     claim_nonce_digest = _content_digest(
         {
             "continuation_digest": continuation.continuation_digest,
@@ -2412,11 +2567,13 @@ def prepare_claimed_cloud_provider_call(
         }
     )
     provider_claim_record: list[Any] = []
+    provider_authority_record: list[ProviderUniverseWorkAuthority] = []
 
     def refresh_provider_claim() -> Any:
         authority = provider_resolver.resolve(provider_root)
         if authority is None:
             raise PermissionError("cloud provider authority is unavailable")
+        provider_authority_record[:] = [authority]
         current_now = now_clock().astimezone(timezone.utc)
         receipt_expiry = datetime.fromisoformat(
             receipt.expires_at.removesuffix("Z") + "+00:00"
@@ -2451,6 +2608,7 @@ def prepare_claimed_cloud_provider_call(
                 weakref.ref(grant),
                 request,
                 authority,
+                revalidate_claim_roots_in_transaction,
                 issuer_pid,
             )
         result = provider_store._claim_or_renew_cloud_branch(request, grant)
@@ -2472,137 +2630,9 @@ def prepare_claimed_cloud_provider_call(
         conn: sqlite3.Connection,
         request: ProviderInvocationReservationRequest,
     ) -> _CloudBranchInvocationAuthorityFence:
-        from tinyassets.branch_tasks_v2 import read_worker_claim_context
-
-        current_now = now_clock()
-        if current_now.tzinfo is None or current_now.utcoffset() is None:
-            raise PermissionError("cloud provider authority clock is unavailable")
-        current_now = current_now.astimezone(timezone.utc)
-        continuation_row = conn.execute(
-            """
-            SELECT record_json FROM cloud_automation_continuations
-            WHERE universe_id = ? AND automation_id = ?
-            """,
-            (continuation.universe_id, continuation.automation_id),
-        ).fetchone()
-        activation_row = conn.execute(
-            """
-            SELECT * FROM automation_activations
-            WHERE universe_id = ? AND automation_id = ?
-            """,
-            (continuation.universe_id, continuation.automation_id),
-        ).fetchone()
-        task_row = conn.execute(
-            """
-            SELECT * FROM branch_tasks_v2
-            WHERE branch_task_id = ? AND admission_id = ? AND request_id = ?
-            """,
-            (branch_task_id, admission_id, request_id),
-        ).fetchone()
-        binding_row = conn.execute(
-            """
-            SELECT record_json FROM background_branch_bindings
-            WHERE binding_id = ?
-            """,
-            (continuation.background_binding_id,),
-        ).fetchone()
-        attempt_row = conn.execute(
-            """
-            SELECT record_json FROM background_branch_attempts
-            WHERE attempt_id = ?
-            """,
-            (attempt.attempt_id,),
-        ).fetchone()
-        worker_context = read_worker_claim_context(conn, worker_id)
-        if any(
-            row is None
-            for row in (
-                continuation_row,
-                activation_row,
-                task_row,
-                binding_row,
-                attempt_row,
-                worker_context,
-            )
-        ):
-            raise PermissionError("cloud provider authority is no longer current")
-        try:
-            def parse_authority_timestamp(value: object) -> datetime:
-                raw = str(value)
-                return datetime.fromisoformat(
-                    raw.removesuffix("Z") + "+00:00" if raw.endswith("Z") else raw
-                ).astimezone(timezone.utc)
-
-            current_continuation = PreparedCloudContinuation.from_dict(
-                json.loads(str(continuation_row["record_json"]))
-            )
-            current_binding = BackgroundBranchBinding.from_dict(
-                json.loads(str(binding_row["record_json"]))
-            )
-            current_attempt = BackgroundBranchAttempt.from_dict(
-                json.loads(str(attempt_row["record_json"]))
-            )
-            task_lease = parse_authority_timestamp(task_row["lease_expires_at"])
-            attempt_lease = parse_authority_timestamp(current_attempt.lease_expires_at)
-            worker_expiry = parse_authority_timestamp(
-                worker_context.descriptor.expires_at
-            )
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise PermissionError("cloud provider authority record is invalid") from exc
-        activation_exact = (
-            activation_row["state"] == "active",
-            activation_row["executor_class"] == "cloud",
-            activation_row["epoch"] == continuation.activation_epoch + 1,
-            activation_row["subject_kind"] == "branch_version",
-            activation_row["subject_ref"] == continuation.branch_version_id,
-            activation_row["subject_digest"] == continuation.branch_content_digest,
-            activation_row["immutable_branch_version"] == continuation.branch_version_id,
-            activation_row["lease_id"] == task_row["automation_lease_id"],
-        )
-        task_exact = (
-            task_row["status"] == "running",
-            task_row["disabled"] == 0,
-            task_row["claimed_by"] == worker_id,
-            task_row["universe_id"] == continuation.universe_id,
-            task_row["branch_def_id"] == continuation.branch_def_id,
-            task_row["automation_id"] == continuation.automation_id,
-            task_row["automation_activation_epoch"] == continuation.activation_epoch + 1,
-            task_row["automation_executor_class"] == "cloud",
-            task_row["automation_subject_ref"] == continuation.branch_version_id,
-            task_row["automation_subject_digest"] == continuation.branch_content_digest,
-            task_row["automation_branch_version"] == continuation.branch_version_id,
-            task_lease > current_now,
-        )
-        worker_exact = (
-            worker_context.daemon_id == daemon_id,
-            worker_context.descriptor.worker_id == worker_id,
-            worker_context.descriptor.runtime_instance_id == runtime_id,
-            worker_context.descriptor.universe_id == continuation.universe_id,
-            worker_context.descriptor.executor_class
-            is AutomationActivationExecutor.CLOUD,
-            worker_expiry > current_now,
-        )
-        background_exact = (
-            current_binding.status is BackgroundBranchBindingStatus.ACTIVE,
-            current_binding.binding_id == continuation.background_binding_id,
-            current_binding.generation == continuation.background_binding_generation,
-            current_binding.binding_digest == continuation.background_binding_digest,
-            current_attempt.attempt_id == attempt.attempt_id,
-            current_attempt.binding_id == current_binding.binding_id,
-            current_attempt.binding_generation == current_binding.generation,
-            current_attempt.binding_digest == current_binding.binding_digest,
-            current_attempt.authorizing_principal_id == continuation.principal_id,
-            current_attempt.universe_id == continuation.universe_id,
-            current_attempt.branch_def_id == continuation.branch_def_id,
-            current_attempt.branch_version_id == continuation.branch_version_id,
-            current_attempt.branch_content_digest == continuation.branch_content_digest,
-            current_attempt.executor_audience == audience,
-            current_attempt.lifecycle
-            in {
-                BackgroundBranchAttemptLifecycle.CLAIMED,
-                BackgroundBranchAttemptLifecycle.RUNNING,
-            },
-            attempt_lease > current_now,
+        revalidate_claim_roots_in_transaction(
+            conn,
+            provider_authority_record[0],
         )
         request_exact = (
             request.receipt_id == receipt.receipt_id,
@@ -2613,16 +2643,7 @@ def prepare_claimed_cloud_provider_call(
             request.operation == "repository_spec_delivery",
             request.role == "writer",
         )
-        if not all(
-            (
-                current_continuation == continuation,
-                *activation_exact,
-                *task_exact,
-                *worker_exact,
-                *background_exact,
-                *request_exact,
-            )
-        ):
+        if not all(request_exact):
             raise PermissionError("cloud provider authority is no longer current")
         # Mint inline after every authority check. A module-level mint helper
         # would let another control-plane caller bypass this sole validation
