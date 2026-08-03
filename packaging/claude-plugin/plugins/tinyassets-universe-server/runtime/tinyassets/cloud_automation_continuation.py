@@ -1888,6 +1888,53 @@ class _ClaimedCloudProviderSession:
         self._call_ordinal = 0
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
+        providers: set[str] = set()
+        if not policy:
+            return providers
+        preferred = policy.get("preferred")
+        if isinstance(preferred, dict) and preferred.get("provider"):
+            providers.add(str(preferred["provider"]))
+        fallback_chain = policy.get("fallback_chain")
+        if isinstance(fallback_chain, list):
+            for entry in fallback_chain:
+                if isinstance(entry, dict) and entry.get("provider"):
+                    providers.add(str(entry["provider"]))
+        difficulty_overrides = policy.get("difficulty_override")
+        if isinstance(difficulty_overrides, list):
+            for entry in difficulty_overrides:
+                use = entry.get("use") if isinstance(entry, dict) else None
+                if isinstance(use, dict) and use.get("provider"):
+                    providers.add(str(use["provider"]))
+        return providers
+
+    def call_with_policy_sync(
+        self,
+        role: str,
+        prompt: str,
+        system: str,
+        policy: dict[str, Any] | None,
+        config: Any = None,
+        difficulty: str = "",
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Honor a Branch policy without escaping the requester-owned carrier."""
+        del difficulty
+        declared = self._declared_policy_providers(policy)
+        if declared - {self._receipt.provider}:
+            raise PermissionError("cloud policy provider is outside prepared authority")
+        response = self(
+            prompt,
+            system,
+            role=role,
+            config=config,
+        )
+        return (
+            response,
+            self._receipt.provider,
+            {"authority": "requester_owned", "attempts": 1},
+        )
+
     def __call__(
         self,
         prompt: str,

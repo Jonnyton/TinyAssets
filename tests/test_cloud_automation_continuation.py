@@ -866,6 +866,189 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
     assert [row["state"] for row in reservation_states] == ["launch_started"] * 4
 
 
+def test_claimed_cloud_task_governs_policy_provider_call(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    received: list[dict[str, object]] = []
+
+    def provider_call(prompt, system="", *, role="writer", **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        received.append(
+            {
+                "prompt": prompt,
+                "system": system,
+                "role": role,
+                "config": kwargs["config"],
+                "provider": carrier.validate_for_call(
+                    role=role,
+                    operation=kwargs["operation"],
+                ),
+            }
+        )
+        return "policy-authorized"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert authorized_call is not None
+    config = object()
+
+    result = authorized_call.call_with_policy_sync(
+        "writer",
+        "policy prompt",
+        "system",
+        {"preferred": {"provider": "codex"}},
+        config,
+    )
+
+    assert result == (
+        "policy-authorized",
+        "codex",
+        {"authority": "requester_owned", "attempts": 1},
+    )
+    assert received == [
+        {
+            "prompt": "policy prompt",
+            "system": "system",
+            "role": "writer",
+            "config": config,
+            "provider": "codex",
+        }
+    ]
+
+
+def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    provider_called = False
+
+    def provider_call(*_args, **_kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return "must-not-run"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert authorized_call is not None
+
+    with pytest.raises(PermissionError, match="policy provider"):
+        authorized_call.call_with_policy_sync(
+            "writer",
+            "must reject",
+            "system",
+            {
+                "preferred": {"provider": "claude"},
+                "fallback_chain": [{"provider": "codex"}],
+            },
+        )
+
+    assert provider_called is False
+    with fixture[4].connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM provider_invocation_reservations"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.graph_compiler import compile_branch
+
+    _fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    invoked: list[str] = []
+
+    def provider_call(prompt, system="", *, role="writer", **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        invoked.append(
+            carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        )
+        return f"governed: {prompt}"
+
+    session = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert session is not None
+    monkeypatch.setattr(
+        "tinyassets.graph_compiler._get_shared_router",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("compiled cloud Branch escaped to shared router")
+        ),
+    )
+    node = NodeDefinition(
+        node_id="draft",
+        display_name="Draft",
+        prompt_template="Implement {request}",
+        input_keys=["request"],
+        output_keys=["result"],
+        llm_policy={"preferred": {"provider": "codex"}},
+    )
+    branch = BranchDefinition(name="governed-policy", entry_point="draft")
+    branch.node_defs = [node]
+    branch.graph_nodes = [GraphNodeRef(id="draft", node_def_id="draft")]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="draft"),
+        EdgeDefinition(from_node="draft", to_node="END"),
+    ]
+    branch.state_schema = [
+        {"name": "request", "type": "str", "default": ""},
+        {"name": "result", "type": "str", "default": ""},
+    ]
+
+    runnable = compile_branch(branch, provider_call=session).graph.compile(
+        checkpointer=InMemorySaver()
+    )
+    result = runnable.invoke(
+        {"request": "the next slice"},
+        config={"configurable": {"thread_id": "cloud-policy-integration"}},
+    )
+
+    assert result["result"] == "governed: Implement the next slice"
+    assert invoked == ["codex"]
+
+
 @pytest.mark.parametrize(
     "fault",
     ("activation_stopped", "task_cancelled", "provider_revoked"),
