@@ -363,6 +363,65 @@ rendered acceptance test:
 D0 is not eligible for live acceptance because it intentionally has no live
 surface.
 
+### 13. Bind execution admission outside the frozen runner wire
+
+Distributed execution owns three versioned, immutable contracts for execution
+admission:
+
+- `ExecutionAdmissionCapsuleV1` is the sealed outer carrier. It binds its
+  schema and purpose, the complete trusted logical execution requirement by
+  canonical value and digest, the selected `BackendBindingV1` digest, the
+  inner `SandboxJobRequest.job_id`, and the applicable B2/B13 authority
+  evidence reference and digest. It is a purpose-separated M1 signed domain,
+  minted only by the trust-root-built complete execution-authority composition
+  root after resolving those inputs from trusted state. Dispatch receives it
+  only through an M1 verifier using the pinned trust set and independently
+  checks its fields against the exact request context. A caller cannot supply
+  the signer, key, verifier, requirement, binding, authority reference, or a
+  pre-verified capsule. The capsule is created before dispatch and is not a
+  field of the inner request or result.
+- `BackendBindingV1` identifies one reviewed backend implementation and
+  protocol version, the one closed execution profile it supports, the exact
+  enforcement properties it can prove, its current capability/self-test
+  evidence, the digest of the planned launch configuration, and the versioned
+  evidence contract it promises to return. It is a purpose-separated M1
+  signed release/policy artifact verified through the pinned trust set rather
+  than a backend or caller self-declaration. A binding supports a logical
+  requirement only when its proved property set includes every required
+  property and all bound references and digests match.
+- `BackendLaunchEvidenceV1` is produced for the actual launch. It binds the
+  admission-capsule digest, inner `job_id`, backend binding and planned
+  configuration digests, actual process or remote-execution identity,
+  policy/projection/egress/resource/secret/device enforcement, cleanup, result
+  digest, and the complete proved property set. Its backend-specific evidence
+  contract fixes the producer identity, authenticity mechanism, canonical
+  fields, and verifier. Only that reviewed verifier may accept the evidence;
+  a caller or backend result cannot mark itself verified.
+
+Pre-launch admission verifies the trusted requirement, capsule, binding,
+current capability/self-test evidence, exact planned configuration, property
+inclusion, and the backend protocol's commitment to return request-bound
+evidence. It proves only capability and planned configuration; it cannot
+attest a future launch. After dispatch, output is acceptable only when fresh
+launch evidence validates against the same capsule, inner `job_id`, actual
+execution, and result and proves the complete required guarantee set. Missing
+or invalid post-launch evidence fails with
+`ExecutionAdmissionError(reason=backend_evidence_invalid)` and cannot become a
+successful result or fallback input.
+
+This outer contract leaves `runner/v1`, `runner-job/v1`, `runner-result/v1`,
+`SandboxJobRequest`, `SandboxJobResult`, and `EnforcementReceipt` unchanged.
+`JobCapability` remains exactly `source_exec`, `repo_read`, `repo_exec`, and
+`coding`, with its existing action mapping. `inference_only` and
+`provider_cli` remain admission vocabulary, not runner capabilities. No
+backend is considered available until it publishes a reviewed binding and can
+produce the promised request-bound evidence.
+
+Alternative considered: add admission fields to `runner/v1` or treat
+`RunnerCapabilities`/`EnforcementReceipt` as complete evidence. Rejected
+because it would either break the frozen inner wire or let pre-launch and
+backend-authored diagnostics attest enforcement they cannot prove.
+
 ## Risks / Trade-offs
 
 - **Risk: a dark fake is later wired accidentally.** -> Use a test-only package,

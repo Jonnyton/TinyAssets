@@ -142,8 +142,10 @@ Recovered D0 provenance and current-main replacement evidence are recorded in
 - [ ] 4.6 S5 - device-signed result, decision-point M2 blob proof,
   `Verified[BlobRef]`, fresh completion proof, and explicit owner-CAS proof.
 - [ ] 4.7 S6 - fixed reviewed Linux isolation backend and policy with no
-  caller-selected mounts, image, network, devices, or flags; OS attestation is
-  established only inside the isolated child.
+  caller-selected mounts, image, network, devices, or flags; publish its exact
+  `BackendBindingV1`, seal each complete requirement and binding to the inner
+  `job_id` in `ExecutionAdmissionCapsuleV1`, and establish request-bound OS
+  evidence only inside the isolated child as `BackendLaunchEvidenceV1`.
 - [ ] 4.8 S7 - job/lease/fence-bound model broker capability with scoped
   budget, cancellation, process/session binding, and no raw provider key.
 - [ ] 4.9 S8 - exact accepted source closure, malicious-input-safe staging,
@@ -210,8 +212,10 @@ Recovered D0 provenance and current-main replacement evidence are recorded in
 ### Confinement, gates, governance, and live staging
 
 - [ ] 5.19 B19 - deliver a usable per-job sandbox backend and confine every
-  user-code route while externalizing key/KEK trust; #1485 supplies only the
-  unwired seam and diagnostic.
+  user-code route while externalizing key/KEK trust; require pre-launch proof
+  of capability plus the exact planned configuration and post-launch proof of
+  the complete guarantee set for the actual execution; #1485 supplies only
+  the unwired seam and diagnostic.
 - [ ] 5.20 B20 - add blocking site/effect/probe equality, semantic mutations,
   real CPython 3.11, exact mirror regeneration, and stable aggregate CI.
 - [ ] 5.21 B21 - close mutation-probe gaps across auth, ACL/home, branch
@@ -233,7 +237,10 @@ Recovered D0 provenance and current-main replacement evidence are recorded in
 ### Remaining S0-S16 implementation and integration
 
 - [ ] 5.28 B28 - implement the fixed Linux launcher/backend and real
-  escape/readiness suite with no caller-selected fallback.
+  escape/readiness suite with no caller-selected fallback; mutation-prove the
+  outer capsule's `job_id`/requirement/binding/configuration ties and rejection
+  of missing, stale, mismatched, or incomplete launch evidence without changing
+  `runner-job/v1`, `runner-result/v1`, or `JobCapability`.
 - [ ] 5.29 B29 - implement the model broker's session binding, scoped
   credential, per-call fence, cost/budget, cancellation, and framing.
 - [ ] 5.30 B30 - implement exact-source staging/extraction, isolated
