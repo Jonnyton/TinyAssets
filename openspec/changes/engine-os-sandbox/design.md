@@ -295,17 +295,21 @@ waves.
 
 Canonical spec sync and archive happen only with the implementation landing. Deployment, canary, rendered-chatbot proof, and post-fix clean-use evidence are later shipping gates, not claims of this change.
 
-## Open Questions
+## Remaining Owner Questions
 
-The logical admission invariants are closed here. Their owner-native
-integrations remain intentionally open and blocking:
+The logical admission invariants are closed here. The outer-capsule handoff is
+also resolved: `distributed-execution` owns the M1-signed static
+`BackendProfileBindingV1`, fresh admission- and full-request-bound
+`BackendPreflightEvidenceV1`, purpose-separated M1-signed
+`ExecutionAdmissionCapsuleV1`, and authenticated exact-property
+`BackendLaunchEvidenceV1`. They bind the complete canonical inner request,
+planned/actual configuration, authority generation, result, and cleanup while
+remaining outside the frozen `runner/v1` wire. These owner-native integrations
+remain open and blocking:
 
-1. Which exact sealed outer capsule or versioned successor will distributed
-   execution use to bind the complete requirement and backend evidence to
-   frozen inner `runner/v1` jobs?
-2. Which credential-vault and outbound-boundary reference/digest pairs are
+1. Which credential-vault and outbound-boundary reference/digest pairs are
    compatible with each execution profile?
-3. Which concrete backends prove each required guarantee set?
+2. Which concrete backends prove each required guarantee set?
 
 Those owners must answer in their own OpenSpec changes before runtime
 implementation or cutover; this lane must not choose for them.

@@ -363,6 +363,161 @@ rendered acceptance test:
 D0 is not eligible for live acceptance because it intentionally has no live
 surface.
 
+### 13. Bind execution admission outside the frozen runner wire
+
+Distributed execution owns four immutable, versioned records. Static release
+policy, per-request preflight state, the outer seal, and actual-launch evidence
+are deliberately separate:
+
+```text
+BackendProfileBindingV1 {                 # static release/policy record
+  schema_version = execution-backend-profile/v1
+  signing_key_id + binding_id + activation_generation
+  backend_implementation_id + backend_release_digest + protocol_version
+  execution_profile + supported_job_capabilities
+  supported_guarantee_property_ids
+  planned_configuration_schema_digest
+  preflight_contract_id + preflight_contract_digest
+  launch_evidence_contract_id + launch_evidence_contract_digest
+  producer_identity + authenticity_mechanism + evidence_key_custody
+  preflight_verifier_id + launch_verifier_id + trust_set_id
+  revocation_ref + revocation_digest + issued_at + expires_at
+}
+
+BackendPreflightEvidenceV1 {              # fresh request-bound readiness
+  schema_version = execution-backend-preflight/v1
+  admission_id + job_id + inner_request_digest
+  profile_binding_digest + backend_release_digest
+  capability_self_test_digest + planned_configuration_digest
+  producer_identity + verifier_id + trust_set_id + revocation_generation
+  observed_at + expires_at
+}
+
+ExecutionAdmissionCapsuleV1 {             # final purpose-separated M1 seal
+  schema_version = execution-admission-capsule/v1
+  signing_key_id + capsule_id + admission_id + job_id
+  inner_request_schema_version + inner_request_digest
+  execution_requirement_value + execution_requirement_digest
+  profile_binding_digest + preflight_evidence_digest
+  planned_configuration_digest
+  authority_evidence_ref + authority_evidence_digest
+  authority_generation + issued_at + expires_at
+}
+
+BackendLaunchEvidenceV1 {                 # authenticated actual-launch proof
+  schema_version = execution-backend-launch-evidence/v1
+  evidence_id + admission_id + admission_capsule_digest
+  job_id + inner_request_digest + backend_execution_id
+  profile_binding_digest + backend_release_digest
+  planned_configuration_digest + actual_configuration_digest
+  result_schema_version + result_digest
+  producer_identity + authenticity_mechanism
+  verifier_id + trust_set_id + revocation_generation
+  proved_property_ids
+  property_proofs: sorted (property_id, evidence_kind, ref, digest) tuples
+  started_at + finished_at
+  cleanup_subject_digest + cleanup_ref + cleanup_digest + cleanup_observed_at
+}
+```
+
+`BackendProfileBindingV1` is a release-pinned M1 signed artifact. It contains
+no current self-test result and no per-job planned configuration. The active
+trust manifest fixes its generation, revocation state, producer identity,
+authenticity mechanism, evidence-key custody class, canonical preflight and
+launch-evidence contracts, and reviewed verifiers. A request, worker, queue
+row, provider/backend response, environment variable, mutable diagnostic, or
+caller cannot create, select, modify, refresh, or widen it.
+
+The exact serialized `os_isolated` property identifiers are
+`kernel_process_boundary`, `filesystem_default_deny`,
+`network_default_deny`, `cpu_limit`, `memory_limit`, `process_limit`,
+`wall_time_limit`, `output_limit`, `platform_secrets_absent`,
+`undeclared_devices_absent`, `bounded_cleanup`, and
+`request_bound_evidence`. `vm_isolated` adds `guest_kernel_boundary` and
+`host_devices_default_deny`. These identifiers encode the closed semantics
+owned by `engine-os-sandbox`; unknown identifiers deny, and labels are derived
+only after property-set inclusion.
+
+Trusted code converts the complete existing `SandboxJobRequest.to_wire()`
+object to RFC 8785/JCS bytes and hashes those exact bytes. Before admission it
+decodes the bytes and recursively compares the decoded value to the source
+with JSON-type strictness, safe-integer bounds, and IEEE-754 bit identity;
+values that do not round-trip losslessly (including `1.0`, `0.0`, `-0.0`,
+non-finite numbers, or unsafe integers) are rejected rather than aliased to a
+different value. The canonical bytes cover schema, `job_id`,
+`idempotency_key`, `owner_scope`, `capability`, derived `actions`, `payload`,
+`workspace_ref`, and `credential_grant_ref`; they are the only dispatched
+request representation. The backend verifies the digest before decoding and
+executes only the value decoded from those same bytes, never the caller's
+original Python object or a separately reserialized request.
+
+Trusted code then creates a fresh unguessable `admission_id`, resolves the
+active profile binding and every owner-defined requirement reference/digest,
+derives the exact planned launch configuration, and obtains authenticated
+`BackendPreflightEvidenceV1` bound to that admission ID, job, full request
+digest, binding, backend release, and planned configuration. The record
+includes observation/expiry and the exact revocation generation; it cannot be
+reused after expiry, revocation, binding replacement, request mutation, or for
+another admission.
+
+The complete execution-authority composition root then seals the final
+`ExecutionAdmissionCapsuleV1` under its purpose-separated M1 domain. Sharing
+`admission_id` avoids a circular digest: preflight binds the admission ID and
+request facts; the later capsule binds the same ID plus the preflight digest.
+Both dispatcher and backend independently hash the identical canonical byte
+carrier and compare every field before launch. The capsule expiry is no later
+than the profile, preflight, or authority evidence expiry.
+
+The capsule authenticates admission facts only. Dispatch re-verifies the
+independent provider/B2 authority, its generation, expiry, and revocation at
+the decision point; a valid admission capsule cannot promote or preserve stale
+authority. Ordinary provider work retains #1784 `ProviderInvocation`, and
+accepted-market work retains B2/B13. The four records above define the
+runner-backed instantiation only; other owners use their native request
+identity and carriers rather than inventing a runner `job_id`.
+
+After launch, the selected backend's evidence producer emits canonical
+`BackendLaunchEvidenceV1` under the producer identity, authenticity mechanism,
+key-custody rule, verifier, and trust set fixed by the active profile binding.
+For a local isolation backend, the evidence key/attester lives outside the
+model-controlled child; for a remote/VM backend, the reviewed binding names
+the remote/guest attestation root. Caller data, the result payload, and the
+model-controlled process cannot choose a producer, key, mechanism, verifier,
+trust set, evidence kind, or property identifier.
+
+Every proved property has exactly one sorted tuple binding its canonical
+identifier to a contract-allowed evidence kind and exact reference/digest.
+The verifier checks admission/capsule/request/execution identity, binding and
+revocation generations, planned versus actual configuration, result hash,
+timestamps, freshness, each property proof, and cleanup subject/proof before
+output is exposed. Evidence replay is accepted only when the canonical record
+is byte-identical for the same admission and result; cross-admission reuse or
+different content under the same `evidence_id` fails closed. Cleanup proof
+must name the actual execution subject and be observed after finish.
+
+Preflight proves only current capability and exact planned configuration. Only
+fresh authenticated actual-launch evidence can prove the complete guarantee
+set. `RunnerCapabilities`, `isolation_enforced`, executable probes,
+`EnforcementReceipt`, tier labels, queue/admission receipts, or a valid outer
+seal without launch evidence may veto or diagnose but cannot prove execution.
+Any failure maps to shared terminal `ExecutionAdmissionError`; invalid launch
+evidence uses `backend_evidence_invalid` and cannot become success or fallback.
+
+This sidecar contract leaves `runner/v1`, `runner-job/v1`, `runner-result/v1`,
+`SandboxJobRequest`, `SandboxJobResult`, `EnforcementReceipt`, statuses, and
+the existing `JobCapability`/action mapping unchanged. Production construction
+remains absent until task 7.2's trust distribution, purpose-separated custody,
+rotation/revocation, and persistent-store boundary are explicitly approved and
+implemented; no test/generated/unsigned fallback is permitted.
+
+Alternative considered: add fields to the frozen inner wire. Rejected because
+it breaks existing consumers. Alternative considered: place self-test and
+planned configuration in one release binding. Rejected because it makes an
+immutable policy artifact replayable as volatile per-request evidence.
+Alternative considered: let each backend invent evidence later. Rejected
+because untyped signed booleans cannot mutation-prove OS enforcement, request
+identity, result integrity, or cleanup.
+
 ## Risks / Trade-offs
 
 - **Risk: a dark fake is later wired accidentally.** -> Use a test-only package,

@@ -242,9 +242,16 @@ credential reference and perform network I/O. For requester-owned
 `llm_api_key`, that proxy and the native secret store SHALL run on the same
 attested requester-controlled host, and the proxy SHALL resolve through this
 capability's native reference rather than through a legacy
-`credential-vault` `llm_api_key` record. This path SHALL remain blocked until
-the `outbound-boundary-layer` owner accepts that custody-source adaptation;
-retained `llm_subscription`, `vcs`, and `social` custody remains unchanged.
+`credential-vault` `llm_api_key` record. The `outbound-boundary-layer` owner
+has accepted this narrow custody-source adaptation through its task 0.5 and
+credential-blind execution-admission requirement; retained
+`llm_subscription`, `vcs`, and `social` custody remains unchanged. This narrow
+acceptance does not complete the provider-call lifecycle gate in task 1.4b:
+runtime remains held until the outbound owner classifies provider model calls
+under its action-cap and confirmation contract and defines or explicitly
+carves out request-lineage idempotency, journal-before-fire, reconciliation,
+terminal receipts, and batch holds without creating a second outbound
+authority or receipt system.
 Neither the executor nor an HTTP provider SHALL dereference native material
 into provider-child memory, environment, arguments, config, logs, traces,
 receipts, or server state.
@@ -268,6 +275,51 @@ from its attested requester endpoint and executor-host identity.
 - **WHEN** the outbound grant or proxy is missing, expired, revoked, ambiguous, wrong-principal, or wrong-universe
 - **THEN** remote HTTP remains held before provider, credential, or network access
 - **AND** no local dereference, ambient credential, alternate proxy, or maintainer route is attempted
+
+### Requirement: Engine OS credential requirements are opaque and credential-blind
+
+For Engine OS execution admission, this capability SHALL resolve the trusted
+logical requirement's opaque `credential_requirement_ref` and digest, while
+the outbound owner resolves its independent `egress_requirement_ref` and
+digest. The exact resolved objects, digests, workload, profile, binding, grant,
+and proxy authority SHALL agree through an owner-published compatible pairing
+before credential or network access. A caller, graph, provider, backend, or
+adapter SHALL NOT supply the resolved object, replace its digest, or treat a
+`credential_binding_ref`, generic grant, proxy handle, or matching name as the
+credential requirement or as compatibility proof.
+
+`source_exec/runner_source_exec` SHALL resolve to no credential available to
+the workload. `inference_only/provider_cli` SHALL expose no raw key, token,
+auth file, `native_secret_ref`, `credential_binding_ref`, or other recoverable
+credential material to model-controlled work. CLI/local/in-process resolution
+SHALL remain inside the authorized executor launch boundary. Requester-owned
+remote HTTP SHALL remain inside the outbound owner's non-serializable proxy on
+the same attested requester-controlled host as native custody and SHALL never
+resolve a legacy vault `llm_api_key` record.
+
+No profile SHALL be admitted when either owner binding or its exact compatible
+pairing is absent, stale, mismatched, malformed, unknown, or unpublished. This
+requirement does not define a complete credential taxonomy or compatibility
+matrix, does not change retained subscription/VCS/social custody, and does not
+resolve the provider-call lifecycle questions that remain open in task 1.4b.
+
+#### Scenario: source execution resolves no credential
+
+- **WHEN** `source_exec/runner_source_exec` reaches execution admission
+- **THEN** its exact credential requirement resolves to no credential available to the workload
+- **AND** no vault record, native reference, grant, proxy, environment, or caller field widens it
+
+#### Scenario: provider inference requires an exact credential-blind pairing
+
+- **WHEN** `inference_only/provider_cli` reaches execution admission
+- **THEN** its credential reference and digest and the outbound owner's egress reference and digest match an owner-published compatible pairing
+- **AND** model-controlled work receives no recoverable credential material
+
+#### Scenario: opaque references do not imply compatibility
+
+- **WHEN** the credential and egress bindings are each well-formed but their exact compatible pairing is absent or unpublished
+- **THEN** admission remains held before credential resolution or network access
+- **AND** matching names, grants, proxy handles, or opaque references do not infer compatibility
 
 ### Requirement: Shared-universe administration does not confer credential use
 A shared universe SHALL NOT own or copy provider API-key material, and a

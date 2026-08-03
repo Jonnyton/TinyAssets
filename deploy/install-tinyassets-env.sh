@@ -57,9 +57,11 @@
 #   1  bad invocation (unknown subcommand, missing args, missing key
 #      name, value containing forbidden chars).
 #   2  env bootstrap failed before install(1).
-#   3  install(1) failed.
+#   3  transaction staging, sync, or atomic replacement failed.
 #   4  post-write readability assert failed (tinyassets user cannot read).
 #   5  set-once refused replacement of an existing non-empty value.
+#   6  assert-absent found a Compose-recognized target assignment or could
+#      not read the target file.
 
 set -euo pipefail
 
@@ -70,28 +72,9 @@ ENV_MODE="${TINYASSETS_ENV_MODE-640}"
 ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
-ACTIVE_BUILDER_PID=""
-
-stop_content_builder() {
-    if [ -n "${ACTIVE_BUILDER_PID}" ]; then
-        kill -TERM "${ACTIVE_BUILDER_PID}" 2>/dev/null || true
-        wait "${ACTIVE_BUILDER_PID}" 2>/dev/null || true
-        ACTIVE_BUILDER_PID=""
-    fi
-    return 0
-}
-
-handle_signal() {
-    local signal="$1"
-    stop_content_builder
-    trap - "${signal}"
-    kill -s "${signal}" "$$"
-}
-
-trap stop_content_builder EXIT
-trap 'handle_signal HUP' HUP
-trap 'handle_signal INT' INT
-trap 'handle_signal TERM' TERM
+COMPOSE_ASSIGNMENT=""
+COMPOSE_TRIMMED=""
+ATOMIC_TEMP=""
 
 usage() {
     cat >&2 <<'EOF'
@@ -99,6 +82,7 @@ Usage:
   install-tinyassets-env.sh set <KEY>           # value on stdin
   install-tinyassets-env.sh set-once <KEY>      # immutable value on stdin
   install-tinyassets-env.sh delete <KEY> [KEY...]
+  install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
 EOF
     exit 1
 }
@@ -112,6 +96,71 @@ validate_key() {
         echo "::error::invalid env key: ${key}" >&2
         exit 1
     fi
+}
+
+# Match Docker Compose's accepted env-declaration whitespace. Bash [[:space:]]
+# under C.UTF-8 omits much of Unicode's White_Space property, so enumerate the
+# non-ASCII code points Compose accepts instead of depending on the host locale.
+strip_compose_leading_space() {
+    local input="$1"
+    while true; do
+        case "${input}" in
+            ' '*) input="${input# }" ;;
+            $'\t'*) input="${input#$'\t'}" ;;
+            $'\r'*) input="${input#$'\r'}" ;;
+            $'\v'*) input="${input#$'\v'}" ;;
+            $'\f'*) input="${input#$'\f'}" ;;
+            $'\u0085'*) input="${input#$'\u0085'}" ;;
+            $'\u00A0'*) input="${input#$'\u00A0'}" ;;
+            $'\u1680'*) input="${input#$'\u1680'}" ;;
+            $'\u2000'*) input="${input#$'\u2000'}" ;;
+            $'\u2001'*) input="${input#$'\u2001'}" ;;
+            $'\u2002'*) input="${input#$'\u2002'}" ;;
+            $'\u2003'*) input="${input#$'\u2003'}" ;;
+            $'\u2004'*) input="${input#$'\u2004'}" ;;
+            $'\u2005'*) input="${input#$'\u2005'}" ;;
+            $'\u2006'*) input="${input#$'\u2006'}" ;;
+            $'\u2007'*) input="${input#$'\u2007'}" ;;
+            $'\u2008'*) input="${input#$'\u2008'}" ;;
+            $'\u2009'*) input="${input#$'\u2009'}" ;;
+            $'\u200A'*) input="${input#$'\u200A'}" ;;
+            $'\u2028'*) input="${input#$'\u2028'}" ;;
+            $'\u2029'*) input="${input#$'\u2029'}" ;;
+            $'\u202F'*) input="${input#$'\u202F'}" ;;
+            $'\u205F'*) input="${input#$'\u205F'}" ;;
+            $'\u3000'*) input="${input#$'\u3000'}" ;;
+            *) break ;;
+        esac
+    done
+    COMPOSE_TRIMMED="${input}"
+}
+
+# Docker Compose accepts optional leading Unicode whitespace, an optional
+# `export` prefix, whitespace before the delimiter, either `=` or `:`, and an
+# optional UTF-8 BOM at the beginning of the file. Normalize only enough to
+# identify the declared key; preserve the original line for unrelated entries.
+compose_line_assigns_key() {
+    local line="$1"
+    local key="$2"
+    local normalized="${line}"
+    strip_compose_leading_space "${normalized}"
+    normalized="${COMPOSE_TRIMMED}"
+    normalized="${normalized#$'\xEF\xBB\xBF'}"
+    strip_compose_leading_space "${normalized}"
+    normalized="${COMPOSE_TRIMMED}"
+    if [[ "${normalized}" == export* ]]; then
+        local after_export="${normalized#export}"
+        strip_compose_leading_space "${after_export}"
+        if [ "${COMPOSE_TRIMMED}" != "${after_export}" ]; then
+            normalized="${COMPOSE_TRIMMED}"
+        fi
+    fi
+    [[ "${normalized}" == "${key}"* ]] || return 1
+    local remainder="${normalized#"${key}"}"
+    strip_compose_leading_space "${remainder}"
+    remainder="${COMPOSE_TRIMMED}"
+    [[ -z "${remainder}" || "${remainder}" == =* || "${remainder}" == :* ]] || return 1
+    COMPOSE_ASSIGNMENT="${key}${remainder}"
 }
 
 env_owner_user() {
@@ -134,14 +183,64 @@ owner_label() {
     fi
 }
 
-install_env_file() {
-    local src="$1"
-    local owner_args=()
-    ensure_owner_principals
-    if [ -n "${ENV_OWNER}" ]; then
-        owner_args=(-o "$(env_owner_user)" -g "$(env_owner_group)")
+cleanup_atomic_temp() {
+    if [ -n "${ATOMIC_TEMP}" ]; then
+        rm -f -- "${ATOMIC_TEMP}" 2>/dev/null || true
+        ATOMIC_TEMP=""
     fi
-    install -m "${ENV_MODE}" "${owner_args[@]}" "${src}" "${ENV_FILE}"
+}
+
+handle_atomic_signal() {
+    local signal="$1"
+    cleanup_atomic_temp
+    trap - "${signal}"
+    kill -s "${signal}" "$$"
+}
+
+clear_atomic_traps() {
+    trap - EXIT HUP INT TERM
+}
+
+install_atomic_traps() {
+    trap cleanup_atomic_temp EXIT
+    trap 'handle_atomic_signal HUP' HUP
+    trap 'handle_atomic_signal INT' INT
+    trap 'handle_atomic_signal TERM' TERM
+}
+
+prepare_atomic_temp() {
+    local env_dir
+    local env_name
+    env_dir="$(dirname -- "${ENV_FILE}")"
+    env_name="$(basename -- "${ENV_FILE}")"
+    install_atomic_traps
+    if ! ATOMIC_TEMP="$(umask 077; mktemp "${env_dir}/.${env_name}.tmp.XXXXXX")"; then
+        clear_atomic_traps
+        echo "::error::failed creating sibling transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+}
+
+commit_atomic_temp() {
+    ensure_owner_principals
+    if ! chmod "${ENV_MODE}" "${ATOMIC_TEMP}"; then
+        echo "::error::failed setting mode on transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    if [ -n "${ENV_OWNER}" ] && ! chown "$(env_owner_user):$(env_owner_group)" "${ATOMIC_TEMP}"; then
+        echo "::error::failed setting owner on transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    if command -v sync >/dev/null 2>&1 && ! sync -f "${ATOMIC_TEMP}"; then
+        echo "::error::failed syncing transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    if ! mv -fT -- "${ATOMIC_TEMP}" "${ENV_FILE}"; then
+        echo "::error::failed atomically replacing ${ENV_FILE}" >&2
+        exit 3
+    fi
+    ATOMIC_TEMP=""
+    clear_atomic_traps
 }
 
 ensure_group_exists() {
@@ -254,23 +353,35 @@ ensure_env_file() {
         echo "::notice::${ENV_FILE} missing; creating empty env file" >&2
     fi
 
-    if ! install_env_file "${src}"; then
-        echo "::error::install(1) failed bootstrapping ${ENV_FILE}" >&2
-        exit 3
-    fi
+    atomic_install_from_file "${src}"
     assert_readable
 }
 
-# Atomic write of a buffer to ENV_FILE with correct owner + mode.
-# install(1) creates the target with the requested mode/owner in one
-# step; no intermediate 0600 root:root state is ever observable.
-atomic_install() {
-    local content="$1"
-    if ! printf '%s' "${content}" \
-            | install_env_file /dev/stdin; then
-        echo "::error::install(1) failed writing ${ENV_FILE}" >&2
+# Copy a source into a same-directory transaction and rename it over ENV_FILE.
+# A failed copy, metadata operation, sync, or rename leaves the live file
+# untouched; the EXIT/signal traps remove the incomplete sibling.
+atomic_install_from_file() {
+    local src="$1"
+    prepare_atomic_temp
+    if ! cp -- "${src}" "${ATOMIC_TEMP}"; then
+        echo "::error::failed staging ${ENV_FILE}" >&2
         exit 3
     fi
+    commit_atomic_temp
+}
+
+# Atomic write of an in-process buffer to ENV_FILE with correct owner + mode.
+# The transaction is a mode-0600 same-directory target candidate, not a
+# secret-only value staging file. The protected value never enters child argv
+# or environment, and the live file changes only at the final rename.
+atomic_install() {
+    local content="$1"
+    prepare_atomic_temp
+    if ! printf '%s' "${content}" > "${ATOMIC_TEMP}"; then
+        echo "::error::failed writing transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    commit_atomic_temp
 }
 
 cmd_set() {
@@ -283,8 +394,12 @@ cmd_set() {
     # newline the caller piped in — but we strip a single trailing
     # newline so `echo "foo" | ...` produces `KEY=foo` not `KEY=foo\n`
     # appearing as `KEY=foo` followed by a blank entry line).
-    local value
-    value="$(cat)"
+    local value=""
+    install_atomic_traps
+    if IFS= read -r -d '' value; then
+        echo "::error::protected input cannot contain NUL for ${key}" >&2
+        exit 1
+    fi
     value="${value%$'\n'}"
 
     if [ "${immutable}" = "true" ]; then
@@ -293,11 +408,29 @@ cmd_set() {
             exit 1
         fi
         local existing=""
+        local assignment_count=0
         local line
         while IFS= read -r line || [ -n "${line}" ]; do
-            case "${line}" in
-                "${key}="*) existing="${line#*=}" ;;
-            esac
+            if compose_line_assigns_key "${line}" "${key}"; then
+                assignment_count=$((assignment_count + 1))
+                if [ "${assignment_count}" -gt 1 ]; then
+                    echo "::error::set-once refused duplicate assignments for ${key}" >&2
+                    exit 5
+                fi
+                local remainder="${COMPOSE_ASSIGNMENT#"${key}"}"
+                strip_compose_leading_space "${remainder}"
+                remainder="${COMPOSE_TRIMMED}"
+                if [[ "${remainder}" == =* || "${remainder}" == :* ]]; then
+                    local delimiter="${remainder:0:1}"
+                    existing="${remainder:1}"
+                    if [ "${delimiter}" = ":" ]; then
+                        strip_compose_leading_space "${existing}"
+                        existing="${COMPOSE_TRIMMED}"
+                    fi
+                else
+                    existing=""
+                fi
+            fi
         done < "${ENV_FILE}"
         if [ -n "${existing}" ]; then
             if [ "${existing}" != "${value}" ]; then
@@ -307,48 +440,26 @@ cmd_set() {
         fi
     fi
 
-    # Build new content: replace the existing KEY= line, or append if absent.
-    # Pass the protected value through an inherited pipe on fd 3 rather than
-    # awk argv, environment, or a named plaintext file. Awk reconstructs
-    # multi-line values to preserve the existing `set` behavior.
+    # Build new content in this shell: replace every Compose-recognized target
+    # assignment with one canonical line, or append when absent. The protected
+    # value never enters child argv/environment or a secret-only value file.
     local new_content=""
-    local builder_fd
-    local builder_status
-    coproc CONTENT_BUILDER {
-        exec awk -v k="${key}" '
-        BEGIN {
-            found = 0
-            value_seen = 0
-            while ((getline value_line < "/dev/fd/3") > 0) {
-                v = v (value_seen ? ORS : "") value_line
-                value_seen = 1
-            }
-            close("/dev/fd/3")
-        }
-        $0 ~ "^" k "=" { print k "=" v; found = 1; next }
-        { print }
-        END { if (!found) print k "=" v }
-        ' "${ENV_FILE}" 3< <(printf '%s' "${value}")
-    }
-    ACTIVE_BUILDER_PID="${CONTENT_BUILDER_PID}"
-    builder_fd="${CONTENT_BUILDER[0]}"
-    IFS= read -r -d '' new_content <&"${builder_fd}" || true
-    exec {builder_fd}<&-
-    while [[ "${new_content}" == *$'\n' ]]; do
-        new_content="${new_content%$'\n'}"
-    done
-    if wait "${ACTIVE_BUILDER_PID}"; then
-        builder_status=0
-    else
-        builder_status=$?
-    fi
-    ACTIVE_BUILDER_PID=""
-    if [ "${builder_status}" -ne 0 ]; then
-        echo "::error::failed constructing updated ${ENV_FILE}" >&2
-        exit 3
+    local found="false"
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if compose_line_assigns_key "${line}" "${key}"; then
+            if [ "${found}" = "false" ]; then
+                new_content+="${key}=${value}"$'\n'
+                found="true"
+            fi
+        else
+            new_content+="${line}"$'\n'
+        fi
+    done < "${ENV_FILE}"
+    if [ "${found}" = "false" ]; then
+        new_content+="${key}=${value}"$'\n'
     fi
 
-    atomic_install "${new_content}"$'\n'
+    atomic_install "${new_content}"
     assert_readable
     echo "set ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
 }
@@ -356,22 +467,46 @@ cmd_set() {
 cmd_delete() {
     local key
     ensure_env_file
-
-    # Build a single awk filter that drops every requested KEY= line
-    # in one pass.
-    local awk_expr=""
     for key in "$@"; do
         validate_key "${key}"
-        awk_expr+="\$0 ~ \"^${key}=\" { next } "
     done
-    awk_expr+="{ print }"
 
-    local new_content
-    new_content="$(awk "${awk_expr}" "${ENV_FILE}")"
+    local new_content=""
+    local drop
+    local line
+    while IFS= read -r line || [ -n "${line}" ]; do
+        drop="false"
+        for key in "$@"; do
+            if compose_line_assigns_key "${line}" "${key}"; then
+                drop="true"
+                break
+            fi
+        done
+        if [ "${drop}" = "false" ]; then
+            new_content+="${line}"$'\n'
+        fi
+    done < "${ENV_FILE}"
 
-    atomic_install "${new_content}"$'\n'
+    atomic_install "${new_content}"
     assert_readable
     echo "deleted: $* (${ENV_FILE} $(owner_label) ${ENV_MODE})"
+}
+
+cmd_assert_absent() {
+    local key="$1"
+    validate_key "${key}"
+    if [ ! -r "${ENV_FILE}" ]; then
+        echo "::error::cannot assert ${key} absence: ${ENV_FILE} is unreadable" >&2
+        exit 6
+    fi
+    local line
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if compose_line_assigns_key "${line}" "${key}"; then
+            echo "::error::Compose-recognized assignment for ${key} remains in ${ENV_FILE}" >&2
+            exit 6
+        fi
+    done < "${ENV_FILE}"
+    echo "absent ${key} (${ENV_FILE})"
 }
 
 [ $# -ge 1 ] || usage
@@ -390,6 +525,10 @@ case "${subcmd}" in
     delete)
         [ $# -ge 1 ] || usage
         cmd_delete "$@"
+        ;;
+    assert-absent)
+        [ $# -eq 1 ] || usage
+        cmd_assert_absent "$1"
         ;;
     *)
         usage

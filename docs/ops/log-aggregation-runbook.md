@@ -38,7 +38,7 @@ Logs from the daemon, tunnel, and workers will appear in Better Stack within sec
 
 ### 2. Offsite archive via ship-logs.sh
 
-`ship-logs.sh` uses rclone. Configure the same remote as Row J backups (see `docs/ops/backup-restore-runbook.md`).
+`ship-logs.sh` uses rclone. Each archive includes `fleet-manifest.tsv` with the exact container ID, state, and log filename for the daemon, tunnel, and four workers. Logs are read by immutable ID and the name-to-ID mapping is rechecked, so a concurrent Compose recreation fails the run instead of silently mixing generations. Stopped containers are included; a missing container or unreadable log also fails before upload. The script and timer are installed through the content-addressed host-uptime release after every successful production deploy. Configure the same remote as Row J backups (see `docs/ops/backup-restore-runbook.md`).
 
 Add to `/etc/tinyassets/env`:
 
@@ -143,13 +143,13 @@ rclone copy --include "tinyassets-logs-2026-04-1*.tar.gz" "${LOG_DEST}/" /tmp/lo
 To trigger an ad-hoc archive (e.g. before a deploy):
 
 ```bash
-LOG_DEST="${LOG_DEST}" LOG_SINCE=4h bash /opt/tinyassets/deploy/ship-logs.sh
+LOG_DEST="${LOG_DEST}" LOG_SINCE=4h bash /opt/tinyassets-host-uptime/current/deploy/ship-logs.sh
 ```
 
 Dry-run to confirm env without touching anything:
 
 ```bash
-DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets/deploy/ship-logs.sh
+DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy/ship-logs.sh
 ```
 
 ---
@@ -160,7 +160,7 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets/deploy/ship-logs.sh
 |---------|-------|-----|
 | No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/tinyassets/env`; restart `logs` container |
 | Vector container not running | Depends-on daemon unhealthy | Check `docker logs tinyassets-logs`; confirm daemon healthcheck passes |
-| ship-logs.sh exits 1 | `LOG_DEST` missing | Set `LOG_DEST` in `/etc/tinyassets/env` |
+| ship-logs.sh exits 1 | `LOG_DEST` missing, a required container missing, or its logs unreadable | Set `LOG_DEST`; then inspect `docker ps -a` and `docker logs <container>` for every required fleet member |
 | rclone upload fails | Remote misconfigured | Run `rclone lsd "${LOG_DEST}/"` to test connectivity |
 | Archives not being pruned | Clock skew or naming mismatch | Check archive names match `tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` pattern |
 | `docker logs` shows nothing | Container hasn't started | `docker ps -a` to check container state |
