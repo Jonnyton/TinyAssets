@@ -26,6 +26,7 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchAttemptFence,
     BackgroundBranchAttemptLifecycle,
     BackgroundBranchAuthorityWriteOutcome,
+    BackgroundBranchBinding,
     BackgroundBranchBindingStatus,
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
@@ -48,7 +49,6 @@ from tinyassets.background_branch_authority_service import (
 )
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
-    ProviderInvocationLaunchRequest,
     ProviderInvocationReservationRequest,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
@@ -1576,8 +1576,8 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
             task["protocol_version"] == 2,
             task["disabled"] == 0,
             task["claimed_by"] == audience.worker_id,
-            claimed_at == transitioned_at,
-            heartbeat_at == claimed_at,
+            claimed_at <= heartbeat_at,
+            heartbeat_at == transitioned_at,
             task_lease == requested_lease_at,
             task_lease > now,
             binding.status is BackgroundBranchBindingStatus.ACTIVE,
@@ -1738,14 +1738,14 @@ class PreparedCloudContinuationProviderResolver:
             and continuation.branch_def_id == definition.branch_def_id
             and continuation.branch_version_id == definition.branch_version_id
             and continuation.branch_content_digest == definition.branch_content_digest
-            and provider.max_invocations == definition.max_attempts
+            and provider.max_invocations == definition.max_provider_invocations
             and provider.max_tokens == definition.max_tokens
             and provider.max_cost_microunits == definition.max_cost_microunits
         )
         max_invocations = (
-            definition.max_attempts
+            definition.max_provider_invocations
             if definition is not None
-            else min(provider.max_invocations, attempt.remaining_count)
+            else provider.max_invocations
         )
         max_tokens = definition.max_tokens if definition is not None else provider.max_tokens
         max_cost_microunits = (
@@ -1825,6 +1825,37 @@ class PreparedCloudContinuationProviderResolver:
         )
 
 
+class _CloudBranchInvocationAuthorityFence:
+    """One-use proof that Branch authority passed under the launch transaction."""
+
+    __slots__ = ("_consumed", "_request")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("cloud Branch invocation fences are service-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("cloud Branch invocation fences are immutable")
+
+    def __reduce__(self):
+        raise TypeError("cloud Branch invocation fences are non-serializable")
+
+    def _consume(self, request: ProviderInvocationReservationRequest) -> None:
+        if type(self) is not _CloudBranchInvocationAuthorityFence:
+            raise PermissionError("cloud Branch invocation fence is not service-issued")
+        if self._consumed or request != self._request:
+            raise PermissionError("cloud Branch invocation fence is invalid or consumed")
+        object.__setattr__(self, "_consumed", True)
+
+
+def _cloud_branch_invocation_authority_fence(
+    request: ProviderInvocationReservationRequest,
+) -> _CloudBranchInvocationAuthorityFence:
+    fence = object.__new__(_CloudBranchInvocationAuthorityFence)
+    object.__setattr__(fence, "_request", request)
+    object.__setattr__(fence, "_consumed", False)
+    return fence
+
+
 class _ClaimedCloudProviderSession:
     """Process-local provider call owner for one claimed cloud Branch task."""
 
@@ -1841,6 +1872,10 @@ class _ClaimedCloudProviderSession:
         claim: Any,
         provider_store: Any,
         provider_call: Callable[..., str],
+        revalidate_in_transaction: Callable[
+            [sqlite3.Connection, ProviderInvocationReservationRequest],
+            _CloudBranchInvocationAuthorityFence,
+        ],
     ) -> None:
         self._base_path = base_path
         self._continuation = continuation
@@ -1849,6 +1884,7 @@ class _ClaimedCloudProviderSession:
         self._claim = claim
         self._provider_store = provider_store
         self._provider_call = provider_call
+        self._revalidate_in_transaction = revalidate_in_transaction
         self._call_ordinal = 0
         self._lock = threading.Lock()
 
@@ -1876,25 +1912,34 @@ class _ClaimedCloudProviderSession:
         max_cost = (
             self._receipt.max_cost_microunits // self._receipt.max_invocations
         )
-        reserved = self._provider_store.reserve(
-            ProviderInvocationReservationRequest(
-                receipt_id=self._receipt.receipt_id,
-                receipt_digest=self._receipt.receipt_digest,
-                claim_id=self._claim.claim_id,
-                claim_digest=self._claim.claim_digest,
-                claim_generation=self._claim.generation,
-                invocation_key=invocation_key,
-                operation=self._OPERATION,
-                role=self._ROLE,
-                max_tokens=max_tokens,
-                max_cost_microunits=max_cost,
-            )
-        ).record
-        if reserved is None:
-            raise PermissionError("provider invocation budget or authority is unavailable")
-        carrier = self._provider_store.arm_launch_carrier(
-            ProviderInvocationLaunchRequest.from_reservation(reserved)
+        request = ProviderInvocationReservationRequest(
+            receipt_id=self._receipt.receipt_id,
+            receipt_digest=self._receipt.receipt_digest,
+            claim_id=self._claim.claim_id,
+            claim_digest=self._claim.claim_digest,
+            claim_generation=self._claim.generation,
+            invocation_key=invocation_key,
+            operation=self._OPERATION,
+            role=self._ROLE,
+            max_tokens=max_tokens,
+            max_cost_microunits=max_cost,
         )
+        with self._provider_store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                fence = self._revalidate_in_transaction(conn, request)
+                carrier = (
+                    self._provider_store
+                    ._reserve_and_arm_cloud_branch_carrier_in_transaction(
+                        conn,
+                        request,
+                        fence,
+                    )
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         universe_dir = self._base_path / self._continuation.universe_id
         universe_config = load_universe_config(universe_dir)
         call_kwargs = dict(kwargs)
@@ -1971,7 +2016,8 @@ def prepare_claimed_cloud_provider_call(
         admission_row = conn.execute(
             """
             SELECT a.body_digest, a.grant_generation,
-                   a.receipt_json, t.claimed_at, t.lease_expires_at
+                   a.receipt_json, t.claimed_at, t.heartbeat_at,
+                   t.lease_expires_at
             FROM request_admissions AS a
             JOIN branch_tasks_v2 AS t
               ON t.admission_id = a.admission_id
@@ -2037,7 +2083,10 @@ def prepare_claimed_cloud_provider_call(
             raise ValueError(f"{name} must include a timezone")
         return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    claimed_at = canonical_task_timestamp(admission_row["claimed_at"], "claimed_at")
+    transitioned_at = canonical_task_timestamp(
+        admission_row["heartbeat_at"],
+        "heartbeat_at",
+    )
     lease_expires_at = canonical_task_timestamp(
         admission_row["lease_expires_at"],
         "lease_expires_at",
@@ -2064,7 +2113,7 @@ def prepare_claimed_cloud_provider_call(
         ).claim(
             expected=BackgroundBranchAttemptFence(attempt),
             executor_audience=audience,
-            claimed_at=claimed_at,
+            claimed_at=transitioned_at,
             lease_expires_at=lease_expires_at,
         ).record
     elif not (
@@ -2131,6 +2180,165 @@ def prepare_claimed_cloud_provider_call(
         or provider_claim.record is None
     ):
         raise PermissionError("cloud provider execution claim is unavailable")
+
+    def revalidate_in_transaction(
+        conn: sqlite3.Connection,
+        request: ProviderInvocationReservationRequest,
+    ) -> _CloudBranchInvocationAuthorityFence:
+        from tinyassets.branch_tasks_v2 import read_worker_claim_context
+
+        current_now = now_clock()
+        if current_now.tzinfo is None or current_now.utcoffset() is None:
+            raise PermissionError("cloud provider authority clock is unavailable")
+        current_now = current_now.astimezone(timezone.utc)
+        continuation_row = conn.execute(
+            """
+            SELECT record_json FROM cloud_automation_continuations
+            WHERE universe_id = ? AND automation_id = ?
+            """,
+            (continuation.universe_id, continuation.automation_id),
+        ).fetchone()
+        activation_row = conn.execute(
+            """
+            SELECT * FROM automation_activations
+            WHERE universe_id = ? AND automation_id = ?
+            """,
+            (continuation.universe_id, continuation.automation_id),
+        ).fetchone()
+        task_row = conn.execute(
+            """
+            SELECT * FROM branch_tasks_v2
+            WHERE branch_task_id = ? AND admission_id = ? AND request_id = ?
+            """,
+            (branch_task_id, admission_id, request_id),
+        ).fetchone()
+        binding_row = conn.execute(
+            """
+            SELECT record_json FROM background_branch_bindings
+            WHERE binding_id = ?
+            """,
+            (continuation.background_binding_id,),
+        ).fetchone()
+        attempt_row = conn.execute(
+            """
+            SELECT record_json FROM background_branch_attempts
+            WHERE attempt_id = ?
+            """,
+            (attempt.attempt_id,),
+        ).fetchone()
+        worker_context = read_worker_claim_context(conn, worker_id)
+        if any(
+            row is None
+            for row in (
+                continuation_row,
+                activation_row,
+                task_row,
+                binding_row,
+                attempt_row,
+                worker_context,
+            )
+        ):
+            raise PermissionError("cloud provider authority is no longer current")
+        try:
+            def parse_authority_timestamp(value: object) -> datetime:
+                raw = str(value)
+                return datetime.fromisoformat(
+                    raw.removesuffix("Z") + "+00:00" if raw.endswith("Z") else raw
+                ).astimezone(timezone.utc)
+
+            current_continuation = PreparedCloudContinuation.from_dict(
+                json.loads(str(continuation_row["record_json"]))
+            )
+            current_binding = BackgroundBranchBinding.from_dict(
+                json.loads(str(binding_row["record_json"]))
+            )
+            current_attempt = BackgroundBranchAttempt.from_dict(
+                json.loads(str(attempt_row["record_json"]))
+            )
+            task_lease = parse_authority_timestamp(task_row["lease_expires_at"])
+            attempt_lease = parse_authority_timestamp(current_attempt.lease_expires_at)
+            worker_expiry = parse_authority_timestamp(
+                worker_context.descriptor.expires_at
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PermissionError("cloud provider authority record is invalid") from exc
+        activation_exact = (
+            activation_row["state"] == "active",
+            activation_row["executor_class"] == "cloud",
+            activation_row["epoch"] == continuation.activation_epoch + 1,
+            activation_row["subject_kind"] == "branch_version",
+            activation_row["subject_ref"] == continuation.branch_version_id,
+            activation_row["subject_digest"] == continuation.branch_content_digest,
+            activation_row["immutable_branch_version"] == continuation.branch_version_id,
+            activation_row["lease_id"] == task_row["automation_lease_id"],
+        )
+        task_exact = (
+            task_row["status"] == "running",
+            task_row["disabled"] == 0,
+            task_row["claimed_by"] == worker_id,
+            task_row["universe_id"] == continuation.universe_id,
+            task_row["branch_def_id"] == continuation.branch_def_id,
+            task_row["automation_id"] == continuation.automation_id,
+            task_row["automation_activation_epoch"] == continuation.activation_epoch + 1,
+            task_row["automation_executor_class"] == "cloud",
+            task_row["automation_subject_ref"] == continuation.branch_version_id,
+            task_row["automation_subject_digest"] == continuation.branch_content_digest,
+            task_row["automation_branch_version"] == continuation.branch_version_id,
+            task_lease > current_now,
+        )
+        worker_exact = (
+            worker_context.daemon_id == daemon_id,
+            worker_context.descriptor.worker_id == worker_id,
+            worker_context.descriptor.runtime_instance_id == runtime_id,
+            worker_context.descriptor.universe_id == continuation.universe_id,
+            worker_context.descriptor.executor_class
+            is AutomationActivationExecutor.CLOUD,
+            worker_expiry > current_now,
+        )
+        background_exact = (
+            current_binding.status is BackgroundBranchBindingStatus.ACTIVE,
+            current_binding.binding_id == continuation.background_binding_id,
+            current_binding.generation == continuation.background_binding_generation,
+            current_binding.binding_digest == continuation.background_binding_digest,
+            current_attempt.attempt_id == attempt.attempt_id,
+            current_attempt.binding_id == current_binding.binding_id,
+            current_attempt.binding_generation == current_binding.generation,
+            current_attempt.binding_digest == current_binding.binding_digest,
+            current_attempt.authorizing_principal_id == continuation.principal_id,
+            current_attempt.universe_id == continuation.universe_id,
+            current_attempt.branch_def_id == continuation.branch_def_id,
+            current_attempt.branch_version_id == continuation.branch_version_id,
+            current_attempt.branch_content_digest == continuation.branch_content_digest,
+            current_attempt.executor_audience == audience,
+            current_attempt.lifecycle
+            in {
+                BackgroundBranchAttemptLifecycle.CLAIMED,
+                BackgroundBranchAttemptLifecycle.RUNNING,
+            },
+            attempt_lease > current_now,
+        )
+        request_exact = (
+            request.receipt_id == receipt.receipt_id,
+            request.receipt_digest == receipt.receipt_digest,
+            request.claim_id == provider_claim.record.claim_id,
+            request.claim_digest == provider_claim.record.claim_digest,
+            request.claim_generation == provider_claim.record.generation,
+            request.operation == "repository_spec_delivery",
+            request.role == "writer",
+        )
+        if not all(
+            (
+                current_continuation == continuation,
+                *activation_exact,
+                *task_exact,
+                *worker_exact,
+                *background_exact,
+                *request_exact,
+            )
+        ):
+            raise PermissionError("cloud provider authority is no longer current")
+        return _cloud_branch_invocation_authority_fence(request)
+
     return _ClaimedCloudProviderSession(
         base_path=root_path,
         continuation=continuation,
@@ -2139,6 +2347,7 @@ def prepare_claimed_cloud_provider_call(
         claim=provider_claim.record,
         provider_store=provider_store,
         provider_call=provider_call,
+        revalidate_in_transaction=revalidate_in_transaction,
     )
 
 

@@ -65,6 +65,11 @@ class _AuthorityAwareRouter:
         return _FakeResult("authorized-output", "codex")
 
 
+class _FailingAuthorityRouter:
+    def call_sync(self, *_args, **_kwargs):
+        raise RuntimeError("governed provider failed")
+
+
 def test_force_mock_returns_fallback_then_placeholder() -> None:
     provider_call.set_force_mock(True)
     assert provider_call.call_provider("p", fallback_response="FB") == "FB"
@@ -104,6 +109,28 @@ def test_provider_operation_and_universe_context_reach_router() -> None:
         "operation": "repository_spec_delivery",
         "universe_context": context,
     }]
+
+
+def test_governed_provider_call_rejects_force_mock_and_fallback() -> None:
+    context = object()
+    provider_call.set_force_mock(True)
+    with pytest.raises(PermissionError, match="governed provider"):
+        provider_call.call_provider(
+            "prompt",
+            fallback_response="must-not-return",
+            operation="repository_spec_delivery",
+            universe_context=context,
+        )
+
+    provider_call.set_force_mock(False)
+    provider_call.set_provider_router(_FailingAuthorityRouter())
+    with pytest.raises(RuntimeError, match="governed provider failed"):
+        provider_call.call_provider(
+            "prompt",
+            fallback_response="must-not-return",
+            operation="repository_spec_delivery",
+            universe_context=context,
+        )
 
 
 def test_get_last_provider_reflects_latest_call_not_snapshot() -> None:

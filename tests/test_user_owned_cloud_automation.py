@@ -62,6 +62,7 @@ def _definition_payload() -> dict[str, object]:
         "destination_grant_id": "destination_grant_project",
         "destination_purpose": "pull_request",
         "max_attempts": 2,
+        "max_provider_invocations": 4,
         "max_wall_time_seconds": 3600,
         "max_tokens": 100_000,
         "max_cost_microunits": 5_000_000,
@@ -122,7 +123,7 @@ def _cloud_authority_fixture(
         "allowed_roles": ("writer",),
         "assignment_generation": 2,
         "assignment_digest": f"sha256:{'8' * 64}",
-        "max_invocations": 2,
+        "max_invocations": 4,
         "max_tokens": 100_000,
         "max_cost_microunits": 5_000_000,
         "expires_at": "2026-08-02T00:00:00Z",
@@ -267,6 +268,15 @@ def test_work_definition_is_generic_immutable_and_content_addressed() -> None:
     assert automation.RepositorySpecWorkDefinition.from_dict(payload) == definition
     with pytest.raises(FrozenInstanceError):
         definition.repository = "other/project"
+
+
+@pytest.mark.parametrize("value", (0, 65))
+def test_work_definition_rejects_invalid_provider_invocation_budget(value: int) -> None:
+    payload = _definition_payload()
+    payload["max_provider_invocations"] = value
+
+    with pytest.raises(ValueError, match="max_provider_invocations"):
+        _automation().RepositorySpecWorkDefinition.from_dict(payload)
 
 
 @pytest.mark.parametrize(
@@ -593,7 +603,7 @@ def test_inactive_cloud_authority_rejects_revoked_provider_binding(
     [
         ({"allowed_operations": ("repository_spec_delivery", "admin")}, None, _DEFAULT_ACTION_CAP),
         ({"allowed_roles": ("writer", "admin")}, None, _DEFAULT_ACTION_CAP),
-        ({"max_invocations": 3}, None, _DEFAULT_ACTION_CAP),
+        ({"max_invocations": 5}, None, _DEFAULT_ACTION_CAP),
         ({"max_tokens": 100_001}, None, _DEFAULT_ACTION_CAP),
         ({"max_cost_microunits": 5_000_001}, None, _DEFAULT_ACTION_CAP),
         ({"expires_at": "2026-07-31T19:00:00Z"}, None, _DEFAULT_ACTION_CAP),

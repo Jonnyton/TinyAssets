@@ -251,7 +251,10 @@ def call_provider(
         Optional server-owned operation bound to a provider authority carrier.
         Omit for ordinary unarmed calls.
     """
+    governed = operation is not None
     if _force_mock:
+        if governed:
+            raise PermissionError("governed provider calls cannot use force-mock output")
         if fallback_response is not None:
             return fallback_response
         # Preserve the exact legacy string (callers/tests may assert on it).
@@ -270,7 +273,9 @@ def call_provider(
                 "All providers exhausted for role=%s after retries: %s", role, e,
             )
 
-    if fallback_response is not None:
+    if governed and provider_error is not None:
+        raise provider_error
+    if fallback_response is not None and not governed:
         logger.warning(
             "Using fallback response for role=%s (%d chars)",
             role, len(fallback_response),

@@ -110,6 +110,29 @@ class _ProviderInvocationStoreMintProof:
             del _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[self._proof_id]
 
 
+def _provider_invocation_store_mint_proof(
+    reservation: ProviderInvocationReservation,
+) -> _ProviderInvocationStoreMintProof:
+    proof_id = secrets.token_hex(32)
+    issuer_pid = os.getpid()
+    proof = object.__new__(_ProviderInvocationStoreMintProof)
+    object.__setattr__(proof, "_proof_id", proof_id)
+    object.__setattr__(proof, "_issuer_pid", issuer_pid)
+    object.__setattr__(proof, "_reservation_digest", reservation.reservation_digest)
+    weakref.finalize(
+        proof,
+        _discard_provider_invocation_store_mint_proof,
+        proof_id,
+        issuer_pid,
+    )
+    with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
+        _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[proof_id] = (
+            reservation.reservation_digest,
+            issuer_pid,
+        )
+    return proof
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS provider_work_bindings (
     binding_id TEXT PRIMARY KEY,
@@ -1369,24 +1392,10 @@ class SQLiteProviderWorkAuthorityStore:
                 or result.record is None
             ):
                 return result
-            proof_id = secrets.token_hex(32)
-            issuer_pid = os.getpid()
-            proof = object.__new__(_ProviderInvocationStoreMintProof)
-            object.__setattr__(proof, "_proof_id", proof_id)
-            object.__setattr__(proof, "_issuer_pid", issuer_pid)
-            object.__setattr__(proof, "_reservation_digest", result.record.reservation_digest)
-            weakref.finalize(
-                proof,
-                _discard_provider_invocation_store_mint_proof,
-                proof_id,
-                issuer_pid,
+            return replace(
+                result,
+                mint_proof=_provider_invocation_store_mint_proof(result.record),
             )
-            with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
-                _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[proof_id] = (
-                    result.record.reservation_digest,
-                    issuer_pid,
-                )
-            return replace(result, mint_proof=proof)
 
     def claim(
         self,
@@ -1429,28 +1438,10 @@ class SQLiteProviderWorkAuthorityStore:
         if result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED or result.record is None:
             return result
 
-        proof_id = secrets.token_hex(32)
-        issuer_pid = os.getpid()
-        proof = object.__new__(_ProviderInvocationStoreMintProof)
-        object.__setattr__(proof, "_proof_id", proof_id)
-        object.__setattr__(proof, "_issuer_pid", issuer_pid)
-        object.__setattr__(
-            proof,
-            "_reservation_digest",
-            result.record.reservation_digest,
+        return replace(
+            result,
+            mint_proof=_provider_invocation_store_mint_proof(result.record),
         )
-        weakref.finalize(
-            proof,
-            _discard_provider_invocation_store_mint_proof,
-            proof_id,
-            issuer_pid,
-        )
-        with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
-            _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[proof_id] = (
-                result.record.reservation_digest,
-                issuer_pid,
-            )
-        return replace(result, mint_proof=proof)
 
     def arm_launch_carrier(
         self,
@@ -1474,6 +1465,55 @@ class SQLiteProviderWorkAuthorityStore:
             result.claim,
             result.record,
             result.mint_proof,
+        )
+
+    def _reserve_and_arm_cloud_branch_carrier_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        request: ProviderInvocationReservationRequest,
+        authority_fence: object,
+    ) -> ProviderInvocationCarrier:
+        """Linearize current Branch authority validation with provider launch."""
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("cloud Branch launch requires an active transaction")
+        from tinyassets.cloud_automation_continuation import (
+            _CloudBranchInvocationAuthorityFence,
+        )
+
+        if type(authority_fence) is not _CloudBranchInvocationAuthorityFence:
+            raise PermissionError("cloud Branch launch authority was not revalidated")
+        authority_fence._consume(request)
+        now = self._now()
+        transaction = _Transaction(conn)
+        reserved = transaction.reserve_invocation(
+            request,
+            now=now,
+            created_at=self._timestamp(now),
+        )
+        if (
+            reserved.record is None
+            or reserved.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or reserved.record.state is not ProviderInvocationReservationState.RESERVED
+        ):
+            raise PermissionError("provider invocation budget or authority is unavailable")
+        launch = ProviderInvocationLaunchRequest.from_reservation(reserved.record)
+        armed = transaction.arm_launch(launch, now=now)
+        if (
+            armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or armed.record is None
+            or armed.receipt is None
+            or armed.claim is None
+        ):
+            raise PermissionError("provider invocation reservation could not be armed")
+        return _mint_provider_invocation_carrier(
+            armed.receipt,
+            armed.claim,
+            armed.record,
+            _provider_invocation_store_mint_proof(armed.record),
         )
 
     def list_reservations(

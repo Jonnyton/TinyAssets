@@ -46,7 +46,11 @@ from tinyassets.cloud_automation_continuation import (
     prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
 )
-from tinyassets.daemon_registry import create_daemon
+from tinyassets.daemon_registry import (
+    create_daemon,
+    ensure_daemon_runtime,
+    set_worker_queue_descriptor,
+)
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
@@ -102,6 +106,7 @@ def _definition(provider_binding_id: str) -> RepositorySpecWorkDefinition:
             "destination_grant_id": "destination_grant_project",
             "destination_purpose": "pull_request",
             "max_attempts": 2,
+            "max_provider_invocations": 4,
             "max_wall_time_seconds": 3600,
             "max_tokens": 100_000,
             "max_cost_microunits": 5_000_000,
@@ -208,7 +213,7 @@ def _fixture(
             allowed_roles=("writer",),
             assignment_generation=2,
             assignment_digest=f"sha256:{'8' * 64}",
-            max_invocations=2,
+            max_invocations=4,
             max_tokens=100_000,
             max_cost_microunits=5_000_000,
             expires_at="2026-08-30T00:00:00Z",
@@ -576,8 +581,18 @@ def _issue_epoch2_attempt(
     return result.record
 
 
-def _claim_epoch2_task(tmp_path: Path):
+def _claim_epoch2_task(
+    tmp_path: Path,
+    *,
+    audience: BackgroundBranchExecutorAudience | None = None,
+):
     descriptor = _worker_descriptor()
+    if audience is not None:
+        descriptor = replace(
+            descriptor,
+            runtime_instance_id=audience.runtime_id,
+            worker_id=audience.worker_id,
+        )
     adapter = Epoch2BranchTaskAdapter(
         tmp_path,
         clock=lambda: NOW + timedelta(seconds=1),
@@ -629,7 +644,38 @@ def _claimable_cloud_path(
         soul_mode="soul",
         soul_text="Own one bounded cloud continuation claim.",
     )
-    audience = _audience(str(daemon["daemon_id"]))
+    runtime = ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=str(daemon["daemon_id"]),
+        universe_id="universe_alice",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-worker",
+        worker_id="worker_codex_1",
+        metadata={"automation_executor_class": "cloud"},
+    )
+    set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=str(runtime["runtime_instance_id"]),
+        descriptor={
+            "queue_protocol_version": 2,
+            "capabilities": ["operator_request_v1"],
+            "worker_id": "worker_codex_1",
+            "runtime_instance_id": str(runtime["runtime_instance_id"]),
+            "boot_id": "boot_cloud_1",
+            "build_sha": "a" * 40,
+            "config_hash": "sha256:" + ("b" * 64),
+            "universe_id": "universe_alice",
+            "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
+        },
+        expected_worker_id="worker_codex_1",
+    )
+    audience = BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id=str(daemon["daemon_id"]),
+        runtime_id=str(runtime["runtime_instance_id"]),
+        worker_id="worker_codex_1",
+    )
     fixture = _fixture(
         tmp_path,
         background_binding=_background_binding(daemon_id=audience.daemon_id),
@@ -651,7 +697,7 @@ def _claimable_cloud_path(
         admission,
         audience=audience,
     )
-    task = _claim_epoch2_task(tmp_path)
+    task = _claim_epoch2_task(tmp_path, audience=audience)
     return fixture, continuation, admission, audience, attempt, task
 
 
@@ -750,7 +796,7 @@ def test_runtime_claim_and_provider_receipt_rehydrate_from_prepared_authority(
     assert receipt.principal_id == continuation.principal_id
     assert receipt.branch_def_id == continuation.branch_def_id
     assert receipt.branch_version_id == continuation.branch_version_id
-    assert receipt.max_invocations == 2
+    assert receipt.max_invocations == 4
     assert receipt.max_tokens == 100_000
     assert receipt.max_cost_microunits == 5_000_000
 
@@ -761,6 +807,11 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
     fixture, _continuation, _admission, audience, _attempt, _claimed = (
         _claimable_cloud_path(tmp_path)
     )
+    renewed = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: NOW + timedelta(seconds=2),
+    ).heartbeat(BRANCH_TASK_ID, worker_id=audience.worker_id)
+    assert renewed is not None
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
     task.executor_worker_id = audience.worker_id
@@ -789,28 +840,22 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
         claimed_task=task,
         daemon_id=audience.daemon_id,
         provider_call=provider_call,
-        clock=lambda: NOW + timedelta(seconds=1),
+        clock=lambda: NOW + timedelta(seconds=2),
     )
 
     assert authorized_call is not None
     assert authorized_call("first", "system") == "authorized-1"
     assert authorized_call("second", "system") == "authorized-2"
-    assert calls == [
-        {
-            "prompt": "first",
-            "system": "system",
-            "role": "writer",
-            "operation": "repository_spec_delivery",
-            "provider": "codex",
-        },
-        {
-            "prompt": "second",
-            "system": "system",
-            "role": "writer",
-            "operation": "repository_spec_delivery",
-            "provider": "codex",
-        },
+    assert authorized_call("third", "system") == "authorized-3"
+    assert authorized_call("fourth", "system") == "authorized-4"
+    assert [call["prompt"] for call in calls] == [
+        "first",
+        "second",
+        "third",
+        "fourth",
     ]
+    assert all(call["operation"] == "repository_spec_delivery" for call in calls)
+    assert all(call["provider"] == "codex" for call in calls)
     with pytest.raises(PermissionError, match="provider invocation"):
         authorized_call("over budget", "system")
 
@@ -818,10 +863,60 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
         reservation_states = conn.execute(
             "SELECT state FROM provider_invocation_reservations ORDER BY ordinal"
         ).fetchall()
-    assert [row["state"] for row in reservation_states] == [
-        "launch_started",
-        "launch_started",
-    ]
+    assert [row["state"] for row in reservation_states] == ["launch_started"] * 4
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ("activation_stopped", "task_cancelled", "provider_revoked"),
+)
+def test_cloud_provider_session_revalidates_authority_before_each_call(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture, continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    provider_called = False
+
+    def provider_call(*_args, **_kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return "must-not-run"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert authorized_call is not None
+    if fault == "activation_stopped":
+        active = fixture[2].get(continuation.universe_id, continuation.automation_id)
+        assert active is not None
+        assert fixture[2].stop(expected=active) is not None
+    elif fault == "task_cancelled":
+        assert Epoch2BranchTaskAdapter(tmp_path).request_cancel(BRANCH_TASK_ID) is not None
+    else:
+        binding = fixture[4].get(continuation.provider_binding_id)
+        assert binding is not None
+        assert ProviderWorkBindingService(fixture[4]).revoke(
+            ProviderWorkBindingFence(binding)
+        ).record is not None
+
+    with pytest.raises(PermissionError, match="authority"):
+        authorized_call("must revalidate", "system")
+    assert provider_called is False
+    with fixture[4].connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM provider_invocation_reservations"
+        ).fetchone()[0]
+    assert count == 0
 
 
 def test_concurrent_cloud_claims_have_one_task_custody_winner(
@@ -1394,7 +1489,7 @@ def test_claimed_cloud_attempt_resolves_one_restart_safe_provider_receipt(
     assert created.record.principal_id == fixture[0].principal_id
     assert created.record.actor_id == "daemon_spec_drain"
     assert created.record.branch_version_id == fixture[0].branch_version_id
-    assert created.record.max_invocations == fixture[0].max_attempts
+    assert created.record.max_invocations == fixture[0].max_provider_invocations
     assert created.record.max_tokens == fixture[0].max_tokens
     assert created.record.max_cost_microunits == fixture[0].max_cost_microunits
     assert created.record.expires_at == "2026-08-01T06:00:00Z"
