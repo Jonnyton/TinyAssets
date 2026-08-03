@@ -57,7 +57,7 @@
 #   1  bad invocation (unknown subcommand, missing args, missing key
 #      name, value containing forbidden chars).
 #   2  env bootstrap failed before install(1).
-#   3  install(1) failed.
+#   3  transaction staging, sync, or atomic replacement failed.
 #   4  post-write readability assert failed (tinyassets user cannot read).
 #   5  set-once refused replacement of an existing non-empty value.
 #   6  assert-absent found a Compose-recognized target assignment or could
@@ -73,6 +73,7 @@ ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
 COMPOSE_ASSIGNMENT=""
+ATOMIC_TEMP=""
 
 usage() {
     cat >&2 <<'EOF'
@@ -97,8 +98,9 @@ validate_key() {
 }
 
 # Docker Compose accepts optional leading whitespace, an optional `export`
-# prefix, and whitespace before `=` in env files. Normalize only enough to
-# identify the declared key; preserve the original line for unrelated entries.
+# prefix, whitespace before the delimiter, and either `=` or `:` in env files.
+# Normalize only enough to identify the declared key; preserve the original
+# line for unrelated entries.
 compose_line_assigns_key() {
     local line="$1"
     local key="$2"
@@ -109,7 +111,7 @@ compose_line_assigns_key() {
         normalized="${normalized#"${normalized%%[![:space:]]*}"}"
     fi
     COMPOSE_ASSIGNMENT="${normalized}"
-    [[ "${normalized}" =~ ^${key}[[:space:]]*(=|$) ]]
+    [[ "${normalized}" =~ ^${key}[[:space:]]*([=:]|$) ]]
 }
 
 env_owner_user() {
@@ -132,14 +134,60 @@ owner_label() {
     fi
 }
 
-install_env_file() {
-    local src="$1"
-    local owner_args=()
-    ensure_owner_principals
-    if [ -n "${ENV_OWNER}" ]; then
-        owner_args=(-o "$(env_owner_user)" -g "$(env_owner_group)")
+cleanup_atomic_temp() {
+    if [ -n "${ATOMIC_TEMP}" ]; then
+        rm -f -- "${ATOMIC_TEMP}" 2>/dev/null || true
+        ATOMIC_TEMP=""
     fi
-    install -m "${ENV_MODE}" "${owner_args[@]}" "${src}" "${ENV_FILE}"
+}
+
+handle_atomic_signal() {
+    local signal="$1"
+    cleanup_atomic_temp
+    trap - "${signal}"
+    kill -s "${signal}" "$$"
+}
+
+clear_atomic_traps() {
+    trap - EXIT HUP INT TERM
+}
+
+prepare_atomic_temp() {
+    local env_dir
+    local env_name
+    env_dir="$(dirname -- "${ENV_FILE}")"
+    env_name="$(basename -- "${ENV_FILE}")"
+    trap cleanup_atomic_temp EXIT
+    trap 'handle_atomic_signal HUP' HUP
+    trap 'handle_atomic_signal INT' INT
+    trap 'handle_atomic_signal TERM' TERM
+    if ! ATOMIC_TEMP="$(umask 077; mktemp "${env_dir}/.${env_name}.tmp.XXXXXX")"; then
+        clear_atomic_traps
+        echo "::error::failed creating sibling transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+}
+
+commit_atomic_temp() {
+    ensure_owner_principals
+    if ! chmod "${ENV_MODE}" "${ATOMIC_TEMP}"; then
+        echo "::error::failed setting mode on transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    if [ -n "${ENV_OWNER}" ] && ! chown "$(env_owner_user):$(env_owner_group)" "${ATOMIC_TEMP}"; then
+        echo "::error::failed setting owner on transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    if command -v sync >/dev/null 2>&1 && ! sync -f "${ATOMIC_TEMP}"; then
+        echo "::error::failed syncing transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    if ! mv -fT -- "${ATOMIC_TEMP}" "${ENV_FILE}"; then
+        echo "::error::failed atomically replacing ${ENV_FILE}" >&2
+        exit 3
+    fi
+    ATOMIC_TEMP=""
+    clear_atomic_traps
 }
 
 ensure_group_exists() {
@@ -252,23 +300,35 @@ ensure_env_file() {
         echo "::notice::${ENV_FILE} missing; creating empty env file" >&2
     fi
 
-    if ! install_env_file "${src}"; then
-        echo "::error::install(1) failed bootstrapping ${ENV_FILE}" >&2
-        exit 3
-    fi
+    atomic_install_from_file "${src}"
     assert_readable
 }
 
-# Atomic write of a buffer to ENV_FILE with correct owner + mode.
-# install(1) creates the target with the requested mode/owner in one
-# step; no intermediate 0600 root:root state is ever observable.
-atomic_install() {
-    local content="$1"
-    if ! printf '%s' "${content}" \
-            | install_env_file /dev/stdin; then
-        echo "::error::install(1) failed writing ${ENV_FILE}" >&2
+# Copy a source into a same-directory transaction and rename it over ENV_FILE.
+# A failed copy, metadata operation, sync, or rename leaves the live file
+# untouched; the EXIT/signal traps remove the incomplete sibling.
+atomic_install_from_file() {
+    local src="$1"
+    prepare_atomic_temp
+    if ! cp -- "${src}" "${ATOMIC_TEMP}"; then
+        echo "::error::failed staging ${ENV_FILE}" >&2
         exit 3
     fi
+    commit_atomic_temp
+}
+
+# Atomic write of an in-process buffer to ENV_FILE with correct owner + mode.
+# The transaction is a mode-0600 same-directory target candidate, not a
+# secret-only value staging file. The protected value never enters child argv
+# or environment, and the live file changes only at the final rename.
+atomic_install() {
+    local content="$1"
+    prepare_atomic_temp
+    if ! printf '%s' "${content}" > "${ATOMIC_TEMP}"; then
+        echo "::error::failed writing transaction for ${ENV_FILE}" >&2
+        exit 3
+    fi
+    commit_atomic_temp
 }
 
 cmd_set() {
@@ -302,8 +362,12 @@ cmd_set() {
                 fi
                 local remainder="${COMPOSE_ASSIGNMENT#"${key}"}"
                 remainder="${remainder#"${remainder%%[![:space:]]*}"}"
-                if [[ "${remainder}" == =* ]]; then
-                    existing="${remainder#=}"
+                if [[ "${remainder}" == =* || "${remainder}" == :* ]]; then
+                    local delimiter="${remainder:0:1}"
+                    existing="${remainder:1}"
+                    if [ "${delimiter}" = ":" ]; then
+                        existing="${existing#"${existing%%[![:space:]]*}"}"
+                    fi
                 else
                     existing=""
                 fi
@@ -319,7 +383,7 @@ cmd_set() {
 
     # Build new content in this shell: replace every Compose-recognized target
     # assignment with one canonical line, or append when absent. The protected
-    # value never enters child argv/environment or a named plaintext file.
+    # value never enters child argv/environment or a secret-only value file.
     local new_content=""
     local found="false"
     while IFS= read -r line || [ -n "${line}" ]; do

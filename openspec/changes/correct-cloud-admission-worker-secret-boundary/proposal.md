@@ -8,7 +8,7 @@ PR #2178 merged and automatically deployed a production compose shape that gives
 - Add a deployment regression that exercises the worker environment boundary and proves the key is absent, including after compose inheritance/merge.
 - Add an explicit manual-only, two-phase rotation path: deploy and prove the corrected worker boundary first, then rotate the exposed production key.
 - Make immutable secret installation reject duplicate key assignments across Docker Compose's accepted env-file grammar before any write.
-- Make protected-stdin secret installation build content entirely in the current Bash process, without a child or named plaintext temporary file.
+- Make protected-stdin secret installation build content in the current Bash process, stage it in a mode-0600 same-directory transaction, and atomically rename only after a complete write and metadata sync; failures preserve the live file and clean the transaction.
 - Include every production worker in the offsite log archive and correct stale service/archive identities in the operator runbook.
 - Keep custom-agent execution dark and prohibit production redeploy until exact-head security review passes.
 

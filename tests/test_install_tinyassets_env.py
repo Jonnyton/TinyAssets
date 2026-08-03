@@ -156,6 +156,8 @@ def test_set_once_has_duplicate_assignment_guard_before_write():
         "  TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret",
         "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY =old-secret",
         "\texport\tTINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\t=old-secret",
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: old-secret",
+        "  export TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY : old-secret",
     ],
 )
 def test_set_once_rejects_duplicate_assignments_before_mutation(
@@ -195,7 +197,9 @@ def test_delete_removes_every_compose_recognized_assignment_shape(tmp_path):
         "export TARGET=one\n"
         "  TARGET=two\n"
         "TARGET =three\n"
-        "\texport\tTARGET\t=four\n",
+        "\texport\tTARGET\t=four\n"
+        "TARGET: five\n"
+        "  export TARGET : six\n",
         encoding="utf-8",
     )
 
@@ -210,15 +214,101 @@ def test_delete_removes_every_compose_recognized_assignment_shape(tmp_path):
     assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
 
 
-def test_protected_value_never_uses_a_named_plaintext_file():
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "TARGET=secret",
+        "export TARGET=secret",
+        "  TARGET =secret",
+        "TARGET: secret",
+        "  export TARGET : secret",
+    ],
+)
+def test_assert_absent_rejects_every_compose_assignment_shape(
+    tmp_path, assignment: str
+):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(f"KEEP=1\n{assignment}\n", encoding="utf-8")
+
+    result = _run_helper(
+        tmp_path,
+        ["assert-absent", "TARGET"],
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert result.returncode == 6
+    assert "secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="requires a POSIX file-size limit and real shell write failure",
+)
+def test_atomic_write_failure_preserves_original_file(tmp_path):
+    env_file = tmp_path / "tinyassets" / "env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    original = "KEEP=" + ("a" * 4096) + "\n"
+    env_file.write_text(original, encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "TINYASSETS_ENV_FILE": str(env_file),
+            "TINYASSETS_LEGACY_ENV_FILE": str(legacy_file),
+            "TINYASSETS_ENV_OWNER": "",
+            "TINYASSETS_ENV_READ_USER": "",
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'ulimit -f 1; exec bash "$@"',
+            "bash",
+            str(_SCRIPT),
+            "set",
+            "TARGET",
+        ],
+        input="b" * 4096,
+        text=True,
+        capture_output=True,
+        cwd=tmp_path,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert env_file.read_text(encoding="utf-8") == original
+    assert not list(env_file.parent.glob(".env.tmp.*"))
+
+
+def test_protected_value_never_uses_a_secret_only_plaintext_file():
     text = _SCRIPT.read_text(encoding="utf-8")
     set_body = text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
-    assert "mktemp" not in set_body
     assert "VALUE_FILE" not in set_body
     assert "awk" not in set_body
     assert "coproc" not in set_body
     assert "compose_line_assigns_key" in set_body
     assert 'new_content+="${key}=${value}"' in set_body
+
+
+def test_atomic_install_uses_sibling_transaction_and_rename():
+    text = _SCRIPT.read_text(encoding="utf-8")
+    transaction_body = text.split("prepare_atomic_temp()", 1)[1].split(
+        "cmd_set()", 1
+    )[0]
+    assert "mktemp" in transaction_body
+    assert "trap" in transaction_body
+    assert "mv " in transaction_body
+    assert "install_env_file /dev/stdin" not in transaction_body
 
 
 def _run_helper(

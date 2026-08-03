@@ -10,7 +10,7 @@ The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
 
 #### Scenario: stale shared duplicate fails closed
 - **WHEN** the fenced deploy prepares `/etc/tinyassets/env` before recreating the fleet
-- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, `export` assignments, leading-whitespace assignments, or assignments with whitespace before `=`
+- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, `export` assignments, leading-whitespace assignments, assignments with delimiter whitespace, or assignments using either Compose-supported `=` or `:` delimiters
 - **AND** it fails before Compose synchronization if the shared file is unreadable or still contains that key
 
 #### Scenario: running workers prove the boundary
@@ -40,20 +40,25 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 - **THEN** the manual rotation run fails before transmitting or replacing the host key
 - **AND** the operator must complete the ordinary corrected-boundary deploy first
 
-### Requirement: Protected-stdin installation creates no named plaintext value file
-The environment installer SHALL construct updated content in the current Bash process without placing its protected-stdin value in process arguments, child environment, or a named plaintext filesystem object, and MUST NOT print the protected value.
+### Requirement: Protected-stdin installation atomically preserves the live environment
+The environment installer SHALL construct updated content in the current Bash process without placing its protected-stdin value in process arguments, child environment, or a secret-only staging file; SHALL protect any complete-file sibling transaction at mode 0600 until final metadata is applied; MUST atomically rename only after a complete write and sync; and MUST NOT print the protected value.
 
-#### Scenario: normal and error exits create no residue
-- **WHEN** protected-stdin installation succeeds or its content builder fails
-- **THEN** no matching value file exists beside the target environment file
+#### Scenario: normal and error exits create no transaction residue
+- **WHEN** protected-stdin installation succeeds or any pre-rename write, metadata, sync, or rename operation fails
+- **THEN** no matching sibling transaction exists beside the target environment file
 - **AND** stdout and stderr contain no protected value
 
-#### Scenario: construction has no child custody lifecycle
+#### Scenario: failed transaction preserves the live file
+- **WHEN** a real resource or I/O limit interrupts candidate construction before rename
+- **THEN** the installer returns failure and the prior target remains byte-for-byte unchanged
+- **AND** EXIT or signal cleanup removes the incomplete sibling transaction
+
+#### Scenario: construction has no secret child custody lifecycle
 - **WHEN** the installer rewrites a protected value
-- **THEN** no content-builder child or named plaintext value file exists to outlive the installer
+- **THEN** no content-builder child or secret-only value file exists to outlive the installer
 
 #### Scenario: Compose-valid duplicate immutable assignments fail before mutation
-- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including `export`, leading whitespace, whitespace before `=`, or a non-empty assignment followed by an empty assignment
+- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including `export`, leading whitespace, delimiter whitespace, `=` or `:`, or a non-empty assignment followed by an empty assignment
 - **THEN** it exits with immutable-refusal status before writing the environment file
 - **AND** neither existing nor proposed values appear in output
 
