@@ -162,6 +162,32 @@ def _post(
         raise CanaryError(2, f"socket error {url}: {exc}") from exc
 
 
+def _get_json(url: str, timeout: float) -> dict[str, Any]:
+    """GET one public JSON document used by the continuity probe."""
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "tinyassets-mcp-canary/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            req,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        ) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise CanaryError(6, f"protected resource metadata unavailable: {url}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CanaryError(6, f"protected resource metadata is not JSON: {url}") from exc
+    if not isinstance(payload, dict):
+        raise CanaryError(6, f"protected resource metadata is not an object: {url}")
+    return payload
+
+
 def advertised_tool_names(url: str, timeout: float) -> set[str]:
     """Full MCP handshake → tools/list; return the advertised tool name set."""
     status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
@@ -242,10 +268,9 @@ def assert_converse_auth_gate(url: str, timeout: float) -> None:
             6,
             f"converse auth gate expected HTTP 401 from {url}, got {status}",
         )
-    expected_metadata = (
-        f'resource_metadata="{url.rstrip("/")}/.well-known/'
-        'oauth-protected-resource"'
-    )
+    resource_url = url.rstrip("/")
+    metadata_url = f"{resource_url}/.well-known/oauth-protected-resource"
+    expected_metadata = f'resource_metadata="{metadata_url}"'
     challenge = response_headers.get("www-authenticate", "")
     if not challenge.startswith("Bearer ") or expected_metadata not in challenge:
         raise CanaryError(
@@ -258,6 +283,18 @@ def assert_converse_auth_gate(url: str, timeout: float) -> None:
         raise CanaryError(6, f"non-JSON converse auth challenge from {url}") from exc
     if payload != {"error": "authentication_required"}:
         raise CanaryError(6, f"unexpected converse auth challenge from {url}")
+    metadata = _get_json(metadata_url, timeout)
+    authorization_servers = metadata.get("authorization_servers")
+    if (
+        metadata.get("resource") != resource_url
+        or not isinstance(authorization_servers, list)
+        or not authorization_servers
+        or any(
+            not isinstance(server, str) or not server.startswith("https://")
+            for server in authorization_servers
+        )
+    ):
+        raise CanaryError(6, f"protected resource document drift on {url}")
 
 
 def assert_status_surface(url: str, timeout: float) -> str:

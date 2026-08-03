@@ -165,7 +165,69 @@ def test_advertised_tool_names_round_trips(monkeypatch):
 def test_converse_auth_gate_reaches_canonical_bearer_challenge(monkeypatch):
     monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
 
+    requested_urls = []
+
+    class MetadataResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({
+                "resource": "https://example/mcp",
+                "authorization_servers": ["https://auth.example"],
+            }).encode()
+
+    def urlopen(request, **kwargs):
+        requested_urls.append(request.full_url)
+        return MetadataResponse()
+
+    monkeypatch.setattr(canary.urllib.request, "urlopen", urlopen)
+
     canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert requested_urls == [
+        "https://example/mcp/.well-known/oauth-protected-resource"
+    ]
+
+
+def test_converse_auth_gate_rejects_protected_resource_document_drift(
+    monkeypatch,
+):
+    monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
+
+    class MetadataResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({
+                "resource": "https://wrong.example/mcp",
+                "authorization_servers": [],
+            }).encode()
+
+    monkeypatch.setattr(
+        canary.urllib.request,
+        "urlopen",
+        lambda request, **kwargs: MetadataResponse(),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert exc.value.code == 6
+    assert "protected resource document drift" in exc.value.msg
 
 
 def test_converse_auth_gate_rejects_resource_not_found(monkeypatch):
@@ -292,6 +354,14 @@ def test_assert_handles_retry_includes_get_status_uptime_assertion(monkeypatch):
         "_post",
         _scripted_post(_CANONICAL_PLUS_STATUS, status_stub),
     )
+    monkeypatch.setattr(
+        canary,
+        "_get_json",
+        lambda url, timeout: {
+            "resource": "https://example/mcp",
+            "authorization_servers": ["https://auth.example"],
+        },
+    )
 
     with pytest.raises(canary.CanaryError) as exc:
         canary.assert_canonical_handles_with_retry(
@@ -326,6 +396,14 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
         return good(url, payload, timeout, session_id, accepted_http_statuses)
 
     monkeypatch.setattr(canary, "_post", flaky)
+    monkeypatch.setattr(
+        canary,
+        "_get_json",
+        lambda url, timeout: {
+            "resource": "https://example/mcp",
+            "authorization_servers": ["https://auth.example"],
+        },
+    )
     # Should pass on the 2nd attempt; no real sleeping.
     canary.assert_canonical_handles_with_retry(
         "https://example/mcp", 5.0, retries=3, delay=0.0, _sleep=lambda _: None

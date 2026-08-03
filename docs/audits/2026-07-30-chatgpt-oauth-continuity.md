@@ -150,9 +150,9 @@ establishing whether an accepted bearer reached validation. It does not justify
 changing any JWT check.
 
 Secret-free boundary refinement on 2026-08-03 (Windows, worktree based on
-`origin/main` `340f5ebf`):
+`origin/main` `1c28dad8`):
 
-- `python -m pytest tests/test_mcp_public_canary.py -q` returned `23 passed`;
+- `python -m pytest tests/test_mcp_public_canary.py -q` returned `25 passed`;
 - `python -m ruff check scripts/mcp_public_canary.py
   tests/test_mcp_public_canary.py` returned `All checks passed!`; and
 - `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
@@ -164,11 +164,14 @@ Secret-free boundary refinement on 2026-08-03 (Windows, worktree based on
 
 The automated assertion now fails separately if `converse` disappears, if its
 direct call returns a 200/JSON-RPC action-resolution result instead of the 401
-gate, or if the challenge points at non-canonical protected-resource metadata.
-This proves public server registration plus auth-gate routing without a token;
-it does not prove ChatGPT attachment or authenticated continuity. No WorkOS
-control-plane mutation is identified or authorized by this evidence. The
-unavoidable dashboard/client contract remains the canonical
+  gate, or if the challenge points at non-canonical protected-resource metadata.
+It also fetches that public document and requires its `resource` to equal the
+canonical endpoint plus at least one HTTPS `authorization_servers` entry. The
+live document named `https://inventive-van-62-staging.authkit.app`. This proves
+public server registration, public OAuth discovery, and auth-gate routing
+without a token; it does not prove ChatGPT attachment or authenticated
+continuity. No WorkOS control-plane mutation is identified or authorized by
+this evidence. The unavoidable dashboard/client contract remains the canonical
 `https://tinyassets.io/mcp` resource indicator, authorization-code and refresh
 support, and PKCE S256, as recorded above.
 
