@@ -164,10 +164,10 @@ Secret-free boundary refinement on 2026-08-03 (Windows, worktree based on
 
 The automated assertion now fails separately if `converse` disappears, if its
 direct call returns a 200/JSON-RPC action-resolution result instead of the 401
-  gate, or if the challenge points at non-canonical protected-resource metadata.
+gate, or if the challenge points at non-canonical protected-resource metadata.
 It also fetches that public document and requires its `resource` to equal the
-canonical endpoint plus at least one HTTPS `authorization_servers` entry. The
-live document named `https://inventive-van-62-staging.authkit.app`. This proves
+canonical endpoint and its `authorization_servers` to equal the documented
+`https://inventive-van-62-staging.authkit.app` issuer. This proves
 public server registration, public OAuth discovery, and auth-gate routing
 without a token; it does not prove ChatGPT attachment or authenticated
 continuity. No WorkOS control-plane mutation is identified or authorized by

@@ -180,7 +180,9 @@ def test_converse_auth_gate_reaches_canonical_bearer_challenge(monkeypatch):
         def read(self):
             return json.dumps({
                 "resource": "https://example/mcp",
-                "authorization_servers": ["https://auth.example"],
+                "authorization_servers": list(
+                    canary.EXPECTED_AUTHORIZATION_SERVERS
+                ),
             }).encode()
 
     def urlopen(request, **kwargs):
@@ -221,6 +223,24 @@ def test_converse_auth_gate_rejects_protected_resource_document_drift(
         canary.urllib.request,
         "urlopen",
         lambda request, **kwargs: MetadataResponse(),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert exc.value.code == 6
+    assert "protected resource document drift" in exc.value.msg
+
+
+def test_converse_auth_gate_rejects_authorization_server_drift(monkeypatch):
+    monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
+    monkeypatch.setattr(
+        canary,
+        "_get_json",
+        lambda url, timeout: {
+            "resource": "https://example/mcp",
+            "authorization_servers": ["https://wrong.example"],
+        },
     )
 
     with pytest.raises(canary.CanaryError) as exc:
@@ -359,7 +379,7 @@ def test_assert_handles_retry_includes_get_status_uptime_assertion(monkeypatch):
         "_get_json",
         lambda url, timeout: {
             "resource": "https://example/mcp",
-            "authorization_servers": ["https://auth.example"],
+            "authorization_servers": list(canary.EXPECTED_AUTHORIZATION_SERVERS),
         },
     )
 
@@ -401,7 +421,7 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
         "_get_json",
         lambda url, timeout: {
             "resource": "https://example/mcp",
-            "authorization_servers": ["https://auth.example"],
+            "authorization_servers": list(canary.EXPECTED_AUTHORIZATION_SERVERS),
         },
     )
     # Should pass on the 2nd attempt; no real sleeping.

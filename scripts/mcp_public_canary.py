@@ -53,6 +53,9 @@ from typing import Any
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 10.0
+EXPECTED_AUTHORIZATION_SERVERS = (
+    "https://inventive-van-62-staging.authkit.app",
+)
 
 _INIT_PAYLOAD = {
     "jsonrpc": "2.0",
@@ -288,11 +291,7 @@ def assert_converse_auth_gate(url: str, timeout: float) -> None:
     if (
         metadata.get("resource") != resource_url
         or not isinstance(authorization_servers, list)
-        or not authorization_servers
-        or any(
-            not isinstance(server, str) or not server.startswith("https://")
-            for server in authorization_servers
-        )
+        or authorization_servers != list(EXPECTED_AUTHORIZATION_SERVERS)
     ):
         raise CanaryError(6, f"protected resource document drift on {url}")
 
