@@ -566,25 +566,41 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         for t in threads:
             t.join(timeout=join_timeout)
 
-        # Checked INSIDE the patch, deliberately. `join(timeout=...)` returns
-        # whether or not the thread finished, so leaving the `with` block with a
-        # worker still running would drop the mock and let that worker reach the
-        # REAL subprocess.run — i.e. actually shell out to `gh`. The per-worker
-        # patch this replaced could not have that problem, so the hoist has to
-        # re-establish the guarantee explicitly rather than inherit it.
-        stragglers = [t.name for t in threads if t.is_alive()]
-        assert not stragglers, (
-            f"worker threads still running after "
-            f"join(timeout={join_timeout}): "
-            f"{stragglers}. Refusing to continue — dropping the patch now "
-            f"would let a live worker invoke the real gh CLI."
-        )
+        # The patch MUST outlive every worker. `join(timeout=...)` returns
+        # whether or not the thread finished, so leaving this `with` block with
+        # a worker still running would drop the mock and let that worker reach
+        # the REAL subprocess.run — i.e. actually shell out to `gh`. The
+        # per-worker patch this replaced could not have that problem, so the
+        # hoist has to re-establish the guarantee explicitly.
+        #
+        # Note an assertion here would NOT be enough: raising inside the block
+        # still unwinds the context manager and restores the real
+        # `subprocess.run` while the straggler runs on. So a straggler is
+        # re-joined WITHOUT a timeout, deliberately.
+        #
+        # The trade is explicit: a genuinely wedged worker hangs this test
+        # (caught by the job timeout) instead of silently invoking the real gh
+        # CLI. Loud and slow beats quiet and wrong. These workers only take a
+        # dedup path, so the bounded join above is the expected case and this is
+        # a safety net, not the norm.
+        slow = [t.name for t in threads if t.is_alive()]
+        for t in threads:
+            if t.is_alive():
+                t.join()
+        assert not [t for t in threads if t.is_alive()]
 
+    # Raised only after the patch has been dropped, which is now safe because
+    # every worker is provably finished by this point.
     if errors:
         raise AssertionError(
             f"worker thread(s) raised: "
             f"{ {k: repr(v) for k, v in errors.items()} }"
         )
+    assert not slow, (
+        f"worker(s) outlived join(timeout={join_timeout}) and had to be "
+        f"re-joined without one: {slow}. The patch was held throughout, so "
+        f"this is a warning about test latency, not a safety failure."
+    )
     assert set(results) == {"run-A", "run-B"}, (
         f"expected a result from both workers, got {sorted(results)}"
     )

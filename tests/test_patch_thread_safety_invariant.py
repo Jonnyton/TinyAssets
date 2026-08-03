@@ -32,14 +32,30 @@ force for the threads while making install/restore single-threaded — and the
 hoisted version must then assert the workers actually finished before the patch
 is dropped, which a per-worker patch got for free.
 
-**What this detector is.** A lint over the common spellings, not a proof. It
-resolves `Thread(target=…)` (keyword and positional), `functools.partial`
-targets, inline `lambda` targets, `submit`/`map`/`apply_async` on a pool that is
-not a `ProcessPoolExecutor` (a separate process cannot leak into this one), and
-`patch` under an import alias, `patch.object`, or `mock.patch`. It does **not**
-follow indirection — a thread target that calls a helper which patches is not
-detected — and it cannot resolve dynamically-built callables. Treat a green
-result as "the obvious spellings are absent", not "the pattern is impossible".
+**What this detector is.** A deliberately narrow lint, not a proof.
+
+Covered: `threading.Thread(target=…)` — keyword or positional — where the target
+is a named function, a `functools.partial` of one, or an inline `lambda`; and
+`patch` spelled bare, under an import alias, as `mock.patch`, or as
+`patch.object`, plus `monkeypatch.<verb>()`.
+
+**Not covered, and pinned by tests below so this list cannot drift:**
+
+* `ThreadPoolExecutor.submit` / `.map` and other executor APIs;
+* indirection — a thread target that calls a helper which patches;
+* dynamically-built or aliased `Thread` constructors.
+
+Those exclusions are chosen, not accidental. An earlier revision did try to
+resolve executors, and review found every broadening unsound: builtin
+`map(worker, xs)` matched, an unrelated `obj.patch()` matched as `mock.patch`,
+and the `ProcessPoolExecutor` exemption keyed on a module-wide *variable name*,
+so reusing `executor` for a thread pool elsewhere in the same file silently
+suppressed a real offender. A false positive wedges a correct PR and teaches
+people to delete the check; a false negative in a lint is survivable. So the
+unsound half was removed rather than patched.
+
+Treat a green result as "the obvious spelling is absent", not "the pattern is
+impossible".
 """
 
 from __future__ import annotations
@@ -68,66 +84,40 @@ _MONKEYPATCH_VERBS = {"setattr", "setenv", "delenv", "delattr", "chdir", "syspat
 _MONKEYPATCH_RECEIVERS = {"monkeypatch", "mp"}
 
 
-def _process_pool_vars(tree: ast.Module) -> set[str]:
-    """Variables bound to a PROCESS pool.
-
-    `ProcessPoolExecutor.submit` runs the callable in a separate process, so a
-    patch there cannot leak into this interpreter. Flagging it would be a false
-    positive.
-    """
-    names: set[str] = set()
-
-    def ctor_name(node: ast.expr) -> str | None:
-        if isinstance(node, ast.Call):
-            return getattr(node.func, "id", None) or getattr(
-                node.func, "attr", None
-            )
-        return None
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            tgt = node.targets[0]
-            if isinstance(tgt, ast.Name) and ctor_name(node.value) == (
-                "ProcessPoolExecutor"
-            ):
-                names.add(tgt.id)
-        if isinstance(node, (ast.With, ast.AsyncWith)):
-            for item in node.items:
-                if ctor_name(item.context_expr) == "ProcessPoolExecutor":
-                    if isinstance(item.optional_vars, ast.Name):
-                        names.add(item.optional_vars.id)
-    return names
-
-
-def _callable_names(node: ast.expr) -> set[str]:
-    """Names a callable-valued expression could refer to.
-
-    Handles a bare name, a method reference, and `functools.partial(fn, ...)`.
-    """
-    if isinstance(node, ast.Name):
-        return {node.id}
-    if isinstance(node, ast.Attribute):
-        return {node.attr}
-    if isinstance(node, ast.Call):
-        callee = getattr(node.func, "id", None) or getattr(
-            node.func, "attr", None
-        )
-        if callee == "partial" and node.args:
-            return _callable_names(node.args[0])
-    return set()
-
-
 def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
-    """Callables handed to a thread/thread-pool, plus inline lambda targets."""
+    """Callables handed to `threading.Thread`, plus inline lambda targets.
+
+    Scope is deliberately narrow: `threading.Thread` ONLY. An earlier version
+    also tried to resolve `submit`/`map`/`apply_async` on executors, and every
+    one of those broadenings turned out unsound in review:
+
+      * builtin `map(worker, xs)` matched, flagging non-threaded code;
+      * `obj.patch()` on an unrelated object matched as `mock.patch`;
+      * the `ProcessPoolExecutor` exemption keyed on a module-wide VARIABLE
+        NAME, so reusing `executor` for a thread pool elsewhere in the same
+        file silently suppressed a real offender.
+
+    A false positive wedges a correct PR and teaches people to delete the
+    check; a false negative in a lint is survivable. So the unsound half was
+    removed rather than patched, and executors are a documented blind spot
+    with a pinned test below.
+    """
     names: set[str] = set()
     lambdas: list[ast.Lambda] = []
-    process_pools = _process_pool_vars(tree)
 
     def record(expr: ast.expr) -> None:
         if isinstance(expr, ast.Lambda):
             lambdas.append(expr)
-        else:
-            names.update(_callable_names(expr))
+        elif isinstance(expr, ast.Name):
+            names.add(expr.id)
+        elif isinstance(expr, ast.Attribute):
+            names.add(expr.attr)
+        elif isinstance(expr, ast.Call):
+            callee = getattr(expr.func, "id", None) or getattr(
+                expr.func, "attr", None
+            )
+            if callee == "partial" and expr.args:
+                record(expr.args[0])
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -135,33 +125,42 @@ def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
         callee = getattr(node.func, "id", None) or getattr(
             node.func, "attr", None
         )
-        if callee == "Thread":
-            for kw in node.keywords:
-                if kw.arg == "target":
-                    record(kw.value)
-            # Positional: Thread(group, target, name, args, ...)
-            if len(node.args) >= 2:
-                record(node.args[1])
-        elif callee in {"submit", "map", "apply_async"}:
-            receiver = getattr(node.func, "value", None)
-            if isinstance(receiver, ast.Name) and receiver.id in process_pools:
-                continue  # separate process — cannot leak into this one
-            if node.args:
-                record(node.args[0])
+        if callee != "Thread":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "target":
+                record(kw.value)
+        # Positional signature: Thread(group, target, name, args, kwargs)
+        if len(node.args) >= 2:
+            record(node.args[1])
     return names, lambdas
 
 
-def _patch_aliases(tree: ast.Module) -> set[str]:
-    """Local names bound to `unittest.mock.patch`, including aliases."""
+def _patch_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """(names bound to `mock.patch`, names bound to the `mock` MODULE).
+
+    Both halves matter. Without the second, any attribute call spelled `.patch`
+    matches — so an unrelated `quilt.patch(hole)` inside a thread target was
+    flagged as mock patching, which would wedge a correct PR. The receiver has
+    to be a name actually bound to the mock module.
+    """
     aliases = set(_PATCH_NAMES)
+    modules: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
-            "mock"
-        ):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
             for a in node.names:
-                if a.name == "patch":
+                if module.endswith("mock") and a.name == "patch":
                     aliases.add(a.asname or a.name)
-    return aliases
+                # `from unittest import mock`
+                if a.name == "mock":
+                    modules.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                # `import mock` / `import unittest.mock as m`
+                if a.name == "mock" or a.name.endswith(".mock"):
+                    modules.add(a.asname or a.name.split(".")[-1])
+    return aliases, modules
 
 
 def _offenders(path: Path) -> list[str]:
@@ -172,14 +171,14 @@ def _offenders(path: Path) -> list[str]:
     targets, lambdas = _thread_target_names(tree)
     if not targets and not lambdas:
         return []
-    aliases = _patch_aliases(tree)
+    aliases, mock_modules = _patch_aliases(tree)
     found: list[str] = []
 
     def scan(body: ast.AST, where: str) -> None:
         for sub in ast.walk(body):
             if not isinstance(sub, ast.Call):
                 continue
-            name = _unsafe_call_name(sub.func, aliases)
+            name = _unsafe_call_name(sub.func, aliases, mock_modules)
             if name:
                 found.append(f"{path.name}:{sub.lineno} — {name} inside {where}")
 
@@ -192,22 +191,30 @@ def _offenders(path: Path) -> list[str]:
     return found
 
 
-def _unsafe_call_name(func: ast.expr, aliases: set[str]) -> str | None:
+def _unsafe_call_name(
+    func: ast.expr, aliases: set[str], mock_modules: set[str]
+) -> str | None:
     """Return a label if this call mutates process-global state, else None."""
     # patch(...) — including `from unittest.mock import patch as p`
     if isinstance(func, ast.Name) and func.id in aliases:
         return f"{func.id}()"
     if isinstance(func, ast.Attribute):
-        # mock.patch(...)
-        if func.attr in aliases:
-            return f"{func.attr}()"
-        # patch.object(...) / mock.patch.dict(...)
+        receiver = getattr(func.value, "id", None)
+        # mock.patch(...) — ONLY on a receiver bound to the mock module. A bare
+        # `.patch` match flags any unrelated object with a `patch` method.
+        if func.attr in aliases and receiver in mock_modules:
+            return f"{receiver}.{func.attr}()"
+        # patch.object(...) / patch.dict(...) — receiver is `patch` itself
         inner = func.value
         if isinstance(inner, ast.Name) and inner.id in aliases:
             return f"{inner.id}.{func.attr}()"
-        if isinstance(inner, ast.Attribute) and inner.attr in aliases:
+        # mock.patch.object(...)
+        if (
+            isinstance(inner, ast.Attribute)
+            and inner.attr in aliases
+            and getattr(inner.value, "id", None) in mock_modules
+        ):
             return f"{inner.attr}.{func.attr}()"
-        receiver = getattr(func.value, "id", None)
         if func.attr in _MONKEYPATCH_VERBS and receiver in _MONKEYPATCH_RECEIVERS:
             return f"{receiver}.{func.attr}()"
     return None
@@ -274,7 +281,8 @@ def worker():
 def test_x():
     threading.Thread(target=worker).start()
 """),
-    (True, "ThreadPoolExecutor.submit", """
+    # Documented blind spot, asserted as such: executors are out of scope.
+    (False, "ThreadPoolExecutor.submit (BLIND SPOT, not covered)", """
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
@@ -283,6 +291,30 @@ def worker():
 def test_x():
     ex = ThreadPoolExecutor()
     ex.submit(worker)
+"""),
+    (False, "builtin map() must never be treated as a thread pool", """
+from unittest.mock import patch
+def worker(x):
+    with patch('subprocess.run'): pass
+def test_x():
+    list(map(worker, [1, 2]))
+"""),
+    (False, "unrelated obj.patch() is not mock.patch", """
+import threading
+class Quilt:
+    def patch(self, x): return x
+def worker(q):
+    q.patch('hole')
+def test_x():
+    threading.Thread(target=worker, args=(Quilt(),)).start()
+"""),
+    (True, "mock.patch attribute spelling", """
+import threading
+from unittest import mock
+def worker():
+    with mock.patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=worker).start()
 """),
     (True, "monkeypatch.setattr in a thread", """
 import threading
