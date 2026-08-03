@@ -1135,7 +1135,10 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
    review. Do not invoke `gh pr merge` directly; the trusted repository workflow
    owns auto-merge enrollment.
 7. Verify the coordination PR is actually merged. Return PARTIAL for a pending
-   row or BLOCKED for a current-main blocked row using the exact assigned target."""
+   row or BLOCKED for a current-main blocked row using the exact assigned target.
+   If an older open PR already owns the exact assigned target, the FAILED marker
+   MUST include that exact PR URL rather than a dash so the controller can
+   verify ownership without trusting prose."""
         if refinery_mode
         else """5. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
@@ -1269,6 +1272,7 @@ def verify_merged(
 def verify_preexisting_open_pr_owner(
     pr_url: str,
     *,
+    assigned_target: str,
     started_at: str,
     repo: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
@@ -1291,7 +1295,14 @@ def verify_preexisting_open_pr_owner(
             if expected_slug is None or actual_slug != expected_slug:
                 return False
         result = runner(
-            ["gh", "pr", "view", pr_url, "--json", "state,createdAt"],
+            [
+                "gh",
+                "pr",
+                "view",
+                pr_url,
+                "--json",
+                "state,createdAt,headRefName",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -1303,7 +1314,17 @@ def verify_preexisting_open_pr_owner(
         if not isinstance(payload, dict):
             return False
         created_at = payload.get("createdAt")
-        if payload.get("state") != "OPEN" or not isinstance(created_at, str):
+        head_ref = payload.get("headRefName")
+        if (
+            payload.get("state") != "OPEN"
+            or not isinstance(created_at, str)
+            or not isinstance(head_ref, str)
+        ):
+            return False
+        branch_leaf = head_ref.rsplit("/", 1)[-1]
+        if branch_leaf != assigned_target and not branch_leaf.startswith(
+            f"{assigned_target}-"
+        ):
             return False
         return _parse_timestamp(created_at) < _parse_timestamp(started_at)
     except (
@@ -1774,17 +1795,23 @@ def recover_unconsumed_result(
             return False
         if refinery_result_rejection(result, refinery):
             return False
-        if result.status != "FAILED" or not preexisting_owner_verifier(
+        if result.status != "FAILED":
+            return False
+        if preexisting_owner_verifier(
             result.pr,
+            assigned_target=result.target,
             repo=repo,
             started_at=started_at,
         ):
-            return False
-        apply_preexisting_open_pr_suppression(
-            state,
-            result,
-            attempt=attempt,
-        )
+            apply_preexisting_open_pr_suppression(
+                state,
+                result,
+                attempt=attempt,
+            )
+        else:
+            apply_result(state, result)
+            state["refinery_assignment"] = None
+            state["last_consumed_attempt"] = attempt
         return True
 
     try:
@@ -2666,6 +2693,7 @@ def _run(args: argparse.Namespace) -> int:
 
                 if result.status == "FAILED" and verify_preexisting_open_pr_owner(
                     result.pr,
+                    assigned_target=result.target,
                     repo=args.repo,
                     started_at=state["started_at"],
                 ):

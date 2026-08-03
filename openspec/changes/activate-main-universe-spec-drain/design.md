@@ -200,13 +200,15 @@ Until cutover, the temporary tray drain remains the active fallback. If its
 coordination-only refinery worker discovers that an older open pull request
 already owns the exact assigned target, the supervisor suppresses that target
 for the entire bounded run and immediately considers the next candidate.
-Suppression requires fresh open state plus a PR creation time before the run
-start; missing, closed, merged, malformed, or same-run PR evidence remains a
-real failure. The exact refinery assignment is persisted before dispatch, and
-restart recovery reruns the same verification before consuming a result left
-behind by a crash. This prevents a correct duplicate-lane refusal from
-consuming the two-strike failure budget while avoiding false progress or broad
-open-PR trust.
+Suppression requires the exact terminal-marker PR URL, exact repository, a PR
+head branch bound to the assigned target, fresh open state, and a creation time
+before the run start. Missing, unrelated, closed, merged, malformed, or
+same-run PR evidence remains a real failure. The exact refinery assignment is
+persisted before dispatch, and restart recovery reruns the same verification
+before consuming a result left behind by a crash; failed recovery verification
+consumes the `FAILED` result through ordinary failure accounting before any new
+dispatch. This prevents a correct duplicate-lane refusal from consuming the
+two-strike failure budget while avoiding false progress or broad open-PR trust.
 
 ## Risks / Trade-offs
 
