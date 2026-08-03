@@ -147,18 +147,24 @@ jobs:
           # count is trusted metadata and is always present. Anything that is
           # not a clean numeric 0 keeps the receipt requirement.
           if [ "$GATE_HITS" = ".github/known-failing-tests.txt" ]; then
-            LEDGER_ADDS="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
-              --jq '.[] | select(.filename==".github/known-failing-tests.txt") | .additions' \
-              2>/dev/null | head -1)"
-            # The decision itself lives in the policy script so it is unit
-            # tested; this step only supplies the count. Non-numeric or empty
-            # (API failure, omitted field) => receipt required.
-            if python scripts/drain_review_gate.py --ledger-additions "${LEDGER_ADDS}" \
-                --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file /dev/null; then
-              echo "scope guard: ledger deletion-only edit — receipt not required"
+            # Compare CONTENT, not diff metadata. GitHub reports additions: 0
+            # for binary files and for pure renames alike, so a NUL-poisoned
+            # ledger or a pre-planted file renamed into place both read as
+            # "no additions" (verified on PRs #2041/#2172). The base copy comes
+            # from the trusted checkout above; the head copy is fetched by sha.
+            HEAD_LEDGER="$RUNNER_TEMP/head-ledger.txt"
+            : > "$HEAD_LEDGER"
+            gh api "repos/${REPO}/contents/.github/known-failing-tests.txt?ref=${HEAD_OID}" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > "$HEAD_LEDGER" 2>/dev/null || true
+            # The decision lives in the policy script so it is unit tested.
+            if python scripts/drain_review_gate.py \
+                --ledger-base-file .github/known-failing-tests.txt \
+                --ledger-head-file "$HEAD_LEDGER" \
+                --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file "$HEAD_LEDGER"; then
+              echo "scope guard: ledger edit removes entries only — receipt not required"
               GATE_HITS=""
             else
-              echo "ledger edit adds lines (or the count was unreadable) — receipt required"
+              echo "ledger edit adds entries (or head content was unreadable) — receipt required"
             fi
           fi
 

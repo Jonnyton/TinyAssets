@@ -71,45 +71,85 @@ def test_require_receipt_denies_ordinary_branch_without_receipt(tmp_path: Path) 
     assert completed.stdout.strip() == "deny"
 
 
-@pytest.mark.parametrize(
-    "additions,expected_rc",
-    [
-        ("0", 0),  # provably deletion-only: the ratchet's own maintenance
-        ("1", 2),
-        ("483", 2),
-        ("", 2),  # API failure / field absent -> fail CLOSED
-        ("null", 2),  # jq emitted null (patch omitted on large/binary diffs)
-        ("  0  ", 0),  # whitespace tolerated, still provably zero
-        ("0x0", 2),  # not a clean numeric zero
-    ],
+_BASE_LEDGER = (
+    "# header\ntests/a.py::test_one\ntests/b.py::test_two\nflaky tests/c.py::test_three\n"
 )
-def test_ledger_edit_receipt_policy_fails_closed(
-    tmp_path: Path, additions: str, expected_rc: int
-) -> None:
-    # Regression for the fail-open Codex found: deciding from `.patch` text made
-    # an unreadable diff look like "no additions" and waved the edit through.
-    # Exercised through the CLI the workflow actually calls, exit codes included.
-    body = tmp_path / "empty.md"
-    body.write_text("", encoding="utf-8")
-    completed = subprocess.run(
+
+
+def _run_ledger_gate(
+    tmp_path: Path, *, base: str | None, head: bytes | None
+) -> subprocess.CompletedProcess[str]:
+    base_path = tmp_path / "base-ledger.txt"
+    head_path = tmp_path / "head-ledger.txt"
+    if base is not None:
+        base_path.write_text(base, encoding="utf-8")
+    # Bytes, not text: a "binary" ledger is one of the bypasses under test.
+    head_path.write_bytes(head if head is not None else b"")
+    return subprocess.run(
         [
             sys.executable,
             str(SCRIPT),
-            "--ledger-additions",
-            additions,
+            "--ledger-base-file",
+            str(base_path),
+            "--ledger-head-file",
+            str(head_path),
             "--branch",
             "fix/ordinary",
             "--head",
             HEAD,
             "--body-file",
-            str(body),
+            str(head_path),
         ],
         text=True,
         capture_output=True,
         check=False,
     )
-    assert completed.returncode == expected_rc
+
+
+@pytest.mark.parametrize(
+    "head_bytes,expected_rc,why",
+    [
+        # Deletion-only: the maintenance the ratchet itself forces.
+        (b"# header\ntests/a.py::test_one\n", 0, "removed two entries"),
+        (_BASE_LEDGER.encode(), 0, "unchanged"),
+        (b"# header\ntests/a.py::test_one\ntests/b.py::test_two\n", 0, "dropped flaky entry"),
+        # Additions in any dress -> receipt required.
+        (_BASE_LEDGER.encode() + b"tests/d.py::test_new\n", 2, "plain addition"),
+        (
+            b"# header\x00poisoned\ntests/a.py::test_one\ntests/b.py::test_two\n"
+            b"flaky tests/c.py::test_three\ntests/d.py::test_new\n",
+            2,
+            "NUL-poisoned 'binary' file still parses as an addition (additions:0 bypass)",
+        ),
+        (b"# planted\ntests/evil.py::test_smuggled\n", 2, "file renamed into place"),
+        (b"", 2, "rename-out / deleted / unreadable head -> fail closed"),
+        (b"# comments only\n", 2, "every entry wiped at once needs a human"),
+        (
+            b"# header\ntests/a.py::test_one\nflaky tests/b.py::test_two\n"
+            b"flaky tests/c.py::test_three\n",
+            0,
+            "re-labelling an existing entry flaky is not a new entry",
+        ),
+    ],
+)
+def test_ledger_edit_receipt_policy_fails_closed(
+    tmp_path: Path, head_bytes: bytes, expected_rc: int, why: str
+) -> None:
+    # Regressions for two verified bypasses: GitHub reports additions:0 for
+    # BOTH binary files and pure renames, so any metadata-based check waves
+    # those through. Content comparison is immune to how the change is dressed.
+    completed = _run_ledger_gate(tmp_path, base=_BASE_LEDGER, head=head_bytes)
+
+    assert completed.returncode == expected_rc, why
     assert completed.stdout.strip() == ("exempt" if expected_rc == 0 else "receipt-required")
+
+
+def test_ledger_gate_missing_base_treats_every_entry_as_new(tmp_path: Path) -> None:
+    # No ledger on base (as on `main` before this lands) -> nothing is exempt.
+    completed = _run_ledger_gate(tmp_path, base=None, head=_BASE_LEDGER.encode())
+
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "receipt-required"
 
 
 def test_require_receipt_allows_ordinary_branch_with_receipt(tmp_path: Path) -> None:
