@@ -1863,13 +1863,27 @@ _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES: dict[
         int,
     ],
 ] = {}
+_CLOUD_PROVIDER_CLAIM_GRANT_LOCK = threading.Lock()
+_ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS: dict[
+    str,
+    tuple[
+        weakref.ReferenceType["_CloudProviderClaimAuthorityGrant"],
+        ProviderWorkExecutionClaimRequest,
+        ProviderUniverseWorkAuthority,
+        int,
+    ],
+] = {}
 
 
 def _reset_cloud_branch_invocation_fences_after_fork() -> None:
     global _CLOUD_BRANCH_INVOCATION_FENCE_LOCK
     global _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES
+    global _CLOUD_PROVIDER_CLAIM_GRANT_LOCK
+    global _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS
     _CLOUD_BRANCH_INVOCATION_FENCE_LOCK = threading.Lock()
     _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES = {}
+    _CLOUD_PROVIDER_CLAIM_GRANT_LOCK = threading.Lock()
+    _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS = {}
 
 
 if hasattr(os, "register_at_fork"):
@@ -1884,6 +1898,49 @@ def _discard_cloud_branch_invocation_fence(
         return
     with _CLOUD_BRANCH_INVOCATION_FENCE_LOCK:
         _ACTIVE_CLOUD_BRANCH_INVOCATION_FENCES.pop(fence_id, None)
+
+
+def _discard_cloud_provider_claim_grant(grant_id: str, issuer_pid: int) -> None:
+    if issuer_pid != os.getpid():
+        return
+    with _CLOUD_PROVIDER_CLAIM_GRANT_LOCK:
+        _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS.pop(grant_id, None)
+
+
+class _CloudProviderClaimAuthorityGrant:
+    """One-use proof that current cloud roots authorize claim renewal."""
+
+    __slots__ = ("_grant_id", "_issuer_pid", "__weakref__")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("cloud provider claim grants are service-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("cloud provider claim grants are immutable")
+
+    def __reduce__(self):
+        raise TypeError("cloud provider claim grants are non-serializable")
+
+    def _consume(
+        self,
+        request: ProviderWorkExecutionClaimRequest,
+    ) -> ProviderUniverseWorkAuthority:
+        if type(self) is not _CloudProviderClaimAuthorityGrant:
+            raise PermissionError("cloud provider claim grant is not service-issued")
+        current_pid = os.getpid()
+        if self._issuer_pid != current_pid:
+            raise PermissionError("cloud provider claim grant belongs to another process")
+        with _CLOUD_PROVIDER_CLAIM_GRANT_LOCK:
+            entry = _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS.get(self._grant_id)
+            if (
+                entry is None
+                or entry[0]() is not self
+                or entry[1] != request
+                or entry[3] != current_pid
+            ):
+                raise PermissionError("cloud provider claim grant is invalid or consumed")
+            del _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS[self._grant_id]
+            return entry[2]
 
 
 class _CloudBranchInvocationAuthorityFence:
@@ -1935,6 +1992,7 @@ class _ClaimedCloudProviderSession:
         provider_store: Any,
         provider_call: Callable[..., str],
         refresh_background_authority: Callable[[], None],
+        refresh_provider_claim: Callable[[], Any],
         revalidate_in_transaction: Callable[
             [sqlite3.Connection, ProviderInvocationReservationRequest],
             _CloudBranchInvocationAuthorityFence,
@@ -1948,6 +2006,7 @@ class _ClaimedCloudProviderSession:
         self._provider_store = provider_store
         self._provider_call = provider_call
         self._refresh_background_authority = refresh_background_authority
+        self._refresh_provider_claim = refresh_provider_claim
         self._revalidate_in_transaction = revalidate_in_transaction
         self._call_ordinal = 0
         self._lock = threading.Lock()
@@ -2014,6 +2073,7 @@ class _ClaimedCloudProviderSession:
             raise PermissionError("cloud provider role is outside prepared authority")
         with self._lock:
             self._refresh_background_authority()
+            self._claim = self._refresh_provider_claim()
             self._call_ordinal += 1
             ordinal = self._call_ordinal
         invocation_key = (
@@ -2323,56 +2383,90 @@ def prepare_claimed_cloud_provider_call(
             ):
                 raise PermissionError("cloud background attempt renewal failed")
     provider_store = SQLiteProviderWorkAuthorityStore(root_path, clock=now_clock)
+    provider_root = ProviderUniverseWorkRoot(
+        work_item_kind="background_attempt",
+        work_item_id=attempt.attempt_id,
+    )
+    provider_resolver = PreparedCloudContinuationProviderResolver(
+        None,
+        continuation=continuation,
+        activation_store=AutomationActivationStore(root_path, clock=now_clock),
+        background_store=background_store,
+        provider_store=provider_store,
+        continuation_store=continuation_store,
+        clock=now_clock,
+    )
     receipt = ProviderWorkReceiptService(
         provider_store,
-        PreparedCloudContinuationProviderResolver(
-            None,
-            continuation=continuation,
-            activation_store=AutomationActivationStore(root_path, clock=now_clock),
-            background_store=background_store,
-            provider_store=provider_store,
-            continuation_store=continuation_store,
-            clock=now_clock,
-        ),
-    ).issue(
-        ProviderUniverseWorkRoot(
-            work_item_kind="background_attempt",
-            work_item_id=attempt.attempt_id,
-        )
-    ).record
+        provider_resolver,
+    ).issue(provider_root).record
     if receipt is None:
         raise PermissionError("cloud provider receipt is unavailable")
-    receipt_expiry = datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00")
-    lease_seconds = min(3600, int((receipt_expiry - now).total_seconds()))
-    if lease_seconds < 1:
-        raise PermissionError("cloud provider claim lease is expired")
-    provider_claim = provider_store.claim(
-        ProviderWorkExecutionClaimRequest(
+    claim_nonce_digest = _content_digest(
+        {
+            "continuation_digest": continuation.continuation_digest,
+            "domain": "cloud-branch-provider-claim-v1",
+            "runtime_id": runtime_id,
+            "task_id": branch_task_id,
+            "worker_id": worker_id,
+        }
+    )
+    provider_claim_record: list[Any] = []
+
+    def refresh_provider_claim() -> Any:
+        authority = provider_resolver.resolve(provider_root)
+        if authority is None:
+            raise PermissionError("cloud provider authority is unavailable")
+        current_now = now_clock().astimezone(timezone.utc)
+        receipt_expiry = datetime.fromisoformat(
+            receipt.expires_at.removesuffix("Z") + "+00:00"
+        )
+        lease_seconds = min(
+            3600,
+            int((receipt_expiry - current_now).total_seconds()),
+        )
+        if lease_seconds < 1:
+            raise PermissionError("cloud provider claim lease is expired")
+        request = ProviderWorkExecutionClaimRequest(
             receipt_id=receipt.receipt_id,
             receipt_digest=receipt.receipt_digest,
             worker_id=worker_id,
             runtime_id=runtime_id,
-            claim_nonce_digest=_content_digest(
-                {
-                    "continuation_digest": continuation.continuation_digest,
-                    "domain": "cloud-branch-provider-claim-v1",
-                    "runtime_id": runtime_id,
-                    "task_id": branch_task_id,
-                    "worker_id": worker_id,
-                }
-            ),
+            claim_nonce_digest=claim_nonce_digest,
             lease_seconds=lease_seconds,
         )
-    )
-    if (
-        provider_claim.outcome
-        not in {
-            ProviderWorkAuthorityWriteOutcome.APPLIED,
-            ProviderWorkAuthorityWriteOutcome.REPLAYED,
-        }
-        or provider_claim.record is None
-    ):
-        raise PermissionError("cloud provider execution claim is unavailable")
+        grant_id = secrets.token_hex(32)
+        issuer_pid = os.getpid()
+        grant = object.__new__(_CloudProviderClaimAuthorityGrant)
+        object.__setattr__(grant, "_grant_id", grant_id)
+        object.__setattr__(grant, "_issuer_pid", issuer_pid)
+        weakref.finalize(
+            grant,
+            _discard_cloud_provider_claim_grant,
+            grant_id,
+            issuer_pid,
+        )
+        with _CLOUD_PROVIDER_CLAIM_GRANT_LOCK:
+            _ACTIVE_CLOUD_PROVIDER_CLAIM_GRANTS[grant_id] = (
+                weakref.ref(grant),
+                request,
+                authority,
+                issuer_pid,
+            )
+        result = provider_store._claim_or_renew_cloud_branch(request, grant)
+        if (
+            result.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or result.record is None
+        ):
+            raise PermissionError("cloud provider execution claim is unavailable")
+        provider_claim_record[:] = [result.record]
+        return result.record
+
+    refresh_provider_claim()
 
     def revalidate_in_transaction(
         conn: sqlite3.Connection,
@@ -2513,9 +2607,9 @@ def prepare_claimed_cloud_provider_call(
         request_exact = (
             request.receipt_id == receipt.receipt_id,
             request.receipt_digest == receipt.receipt_digest,
-            request.claim_id == provider_claim.record.claim_id,
-            request.claim_digest == provider_claim.record.claim_digest,
-            request.claim_generation == provider_claim.record.generation,
+            request.claim_id == provider_claim_record[0].claim_id,
+            request.claim_digest == provider_claim_record[0].claim_digest,
+            request.claim_generation == provider_claim_record[0].generation,
             request.operation == "repository_spec_delivery",
             request.role == "writer",
         )
@@ -2557,10 +2651,11 @@ def prepare_claimed_cloud_provider_call(
         continuation=continuation,
         branch_task_id=branch_task_id,
         receipt=receipt,
-        claim=provider_claim.record,
+        claim=provider_claim_record[0],
         provider_store=provider_store,
         provider_call=provider_call,
         refresh_background_authority=refresh_background_authority,
+        refresh_provider_claim=refresh_provider_claim,
         revalidate_in_transaction=revalidate_in_transaction,
     )
 

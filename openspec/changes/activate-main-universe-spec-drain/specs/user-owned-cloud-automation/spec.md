@@ -45,7 +45,7 @@ Before provider spend, the automation MUST freeze an existing `AcceptanceScenari
 - **THEN** admission records `sandbox_unavailable` and performs no tenant code, provider invocation, or external effect
 
 ### Requirement: Continuation and admission are durable and single-flight
-The owning activation, Trigger, epoch-2 task, background attempt, and provider/effect authorities SHALL persist their respective checkpoint, retry, lease, claim, and reservation state, SHALL read exact current repository head before admission, and SHALL allow at most one active slice and one mechanically claimed STATUS/OpenSpec lane for the activation identity across concurrent triggers and worker restarts. A continuously heartbeating epoch-2 task MUST explicitly renew its exact same-audience background-attempt lease before another provider launch; the inert provider receipt identity and conserved total budgets MAY survive rotating derived leases only while every launch transaction revalidates the current task, worker, activation, binding, attempt, and provider authority. A task heartbeat after expiry, newer task claim, alternate audience, stopped activation, or stale binding MUST NOT renew derived authority.
+The owning activation, Trigger, epoch-2 task, background attempt, and provider/effect authorities SHALL persist their respective checkpoint, retry, lease, claim, and reservation state, SHALL read exact current repository head before admission, and SHALL allow at most one active slice and one mechanically claimed STATUS/OpenSpec lane for the activation identity across concurrent triggers and worker restarts. A continuously heartbeating epoch-2 task MUST explicitly renew its exact same-audience background-attempt lease before another provider launch; the inert provider receipt identity and conserved total budgets MAY survive rotating derived leases only while every launch transaction revalidates the current task, worker, activation, binding, attempt, and provider authority. An expired provider execution claim MAY advance only through a one-use service grant derived from those exact current roots, MUST retain the same receipt and nonce-bound worker/runtime intent, MUST advance its generation without resetting prior reservations or aggregate budgets, and MUST refuse renewal while any launch remains merely reserved. Public claim replay remains stale after expiry. A task heartbeat after expiry, newer task claim, alternate audience, stopped activation, stale binding, or forged renewal grant MUST NOT renew derived authority.
 
 #### Scenario: Concurrent triggers race
 - **WHEN** two cloud invocations attempt to start the same automation activation
@@ -58,7 +58,8 @@ The owning activation, Trigger, epoch-2 task, background attempt, and provider/e
 #### Scenario: A long provider node crosses the original derived lease
 - **WHEN** the same live worker has continuously renewed the epoch-2 task before expiry and requests another governed provider node after the original background-attempt lease
 - **THEN** the runtime renews that exact attempt to the current task lease before transactionally arming the next carrier
-- **AND** it preserves the receipt's original aggregate invocation, token, and cost ceilings rather than minting new budgets
+- **AND** if the provider claim expired, it advances that exact nonce-bound claim generation through a one-use current-authority grant
+- **AND** it preserves the receipt's original aggregate invocation, token, cost, and prior-reservation ceilings rather than minting new budgets
 
 #### Scenario: Current-main admission finds no admissible work
 - **WHEN** the canonical admission policy proves that no claimable, stale, resumable, or safely promotable lane exists

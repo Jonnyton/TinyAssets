@@ -953,6 +953,77 @@ def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
     )
 
 
+def test_claimed_cloud_task_explicitly_renews_expired_provider_claim(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    current = [NOW + timedelta(seconds=2)]
+
+    def provider_call(_prompt, _system="", *, role="writer", **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        return "authorized"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: current[0],
+    )
+    assert authorized_call is not None
+
+    def heartbeat_and_call(at: datetime, prompt: str) -> None:
+        set_worker_queue_descriptor(
+            tmp_path,
+            runtime_instance_id=audience.runtime_id,
+            descriptor={
+                "queue_protocol_version": 2,
+                "capabilities": ["operator_request_v1"],
+                "worker_id": audience.worker_id,
+                "runtime_instance_id": audience.runtime_id,
+                "boot_id": "boot_cloud_1",
+                "build_sha": "a" * 40,
+                "config_hash": "sha256:" + ("b" * 64),
+                "universe_id": "universe_alice",
+                "expires_at": (at + timedelta(minutes=20)).isoformat(),
+            },
+            expected_worker_id=audience.worker_id,
+        )
+        heartbeat = Epoch2BranchTaskAdapter(
+            tmp_path,
+            clock=lambda: at,
+        ).heartbeat(BRANCH_TASK_ID, worker_id=audience.worker_id)
+        assert heartbeat is not None
+        current[0] = at + timedelta(seconds=1)
+        assert authorized_call(prompt) == "authorized"
+
+    heartbeat_and_call(NOW + timedelta(minutes=29), "before first task lease")
+    heartbeat_and_call(NOW + timedelta(minutes=58), "before second task lease")
+    current[0] = NOW + timedelta(minutes=61)
+    assert authorized_call("after original provider claim") == "authorized"
+
+    with fixture[4].connection() as conn:
+        claim = conn.execute(
+            "SELECT generation, lease_expires_at FROM provider_work_execution_claims"
+        ).fetchone()
+        reservations = conn.execute(
+            "SELECT state FROM provider_invocation_reservations ORDER BY ordinal"
+        ).fetchall()
+    assert claim is not None
+    assert claim["generation"] == 2
+    assert datetime.fromisoformat(
+        claim["lease_expires_at"].replace("Z", "+00:00")
+    ) > current[0]
+    assert [row["state"] for row in reservations] == ["launch_started"] * 3
+
+
 def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
     tmp_path: Path,
 ) -> None:

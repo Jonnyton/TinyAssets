@@ -1308,6 +1308,38 @@ def test_cloud_branch_store_rejects_object_new_authority_fence(tmp_path) -> None
     assert store.list_reservations(receipt.receipt_id) == ()
 
 
+def test_cloud_branch_store_rejects_object_new_claim_grant(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    request = ProviderWorkExecutionClaimRequest(
+        receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest,
+        worker_id="worker_cloud_forgery",
+        runtime_id="runtime_cloud_forgery",
+        claim_nonce_digest=f"sha256:{'9' * 64}",
+        lease_seconds=60,
+    )
+    grant_type = cloud_continuation._CloudProviderClaimAuthorityGrant
+    forged = object.__new__(grant_type)
+    forged_values = {
+        "_grant_id": "forged-cloud-provider-claim-grant",
+        "_issuer_pid": os.getpid(),
+    }
+    for slot in grant_type.__slots__:
+        if slot != "__weakref__":
+            object.__setattr__(forged, slot, forged_values[slot])
+
+    with pytest.raises(PermissionError, match="service-issued|invalid"):
+        store._claim_or_renew_cloud_branch(request, forged)
+
+    with store.connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM provider_work_execution_claims"
+        ).fetchone()[0]
+    assert count == 0
+
+
 def test_expired_claim_cannot_replay_or_reserve(tmp_path) -> None:
     store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
     receipt = service.issue(root).record

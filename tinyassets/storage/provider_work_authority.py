@@ -1412,6 +1412,131 @@ class SQLiteProviderWorkAuthorityStore:
         with self._ledger_transaction() as transaction:
             return transaction.claim_receipt(request, candidate, now=now)
 
+    def _claim_or_renew_cloud_branch(
+        self,
+        request: ProviderWorkExecutionClaimRequest,
+        authority_grant: object,
+    ) -> ProviderWorkExecutionClaimWriteResult:
+        """Explicitly renew one exact cloud claim under a service grant."""
+        if not isinstance(request, ProviderWorkExecutionClaimRequest):
+            raise ValueError("request must be a ProviderWorkExecutionClaimRequest")
+        from tinyassets.cloud_automation_continuation import (
+            _CloudProviderClaimAuthorityGrant,
+        )
+
+        if type(authority_grant) is not _CloudProviderClaimAuthorityGrant:
+            raise PermissionError("cloud provider claim requires a service-issued grant")
+        now = self._now()
+        candidate = _claim_from_request(
+            request,
+            created_at=self._timestamp(now),
+            lease_expires_at=self._timestamp(
+                now + timedelta(seconds=request.lease_seconds)
+            ),
+        )
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                authority = authority_grant._consume(request)
+                receipt_row = conn.execute(
+                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                    (request.receipt_id,),
+                ).fetchone()
+                if receipt_row is None:
+                    conn.commit()
+                    return ProviderWorkExecutionClaimWriteResult(
+                        ProviderWorkAuthorityWriteOutcome.MISSING,
+                        None,
+                    )
+                receipt = _receipt_record(receipt_row)
+                expected_receipt = _receipt_from_authority(
+                    authority,
+                    created_at=receipt.created_at,
+                )
+                if (
+                    authority.root.work_item_kind != "background_attempt"
+                    or receipt != expected_receipt
+                    or datetime.fromisoformat(
+                        candidate.lease_expires_at.removesuffix("Z") + "+00:00"
+                    )
+                    > datetime.fromisoformat(
+                        receipt.expires_at.removesuffix("Z") + "+00:00"
+                    )
+                ):
+                    raise PermissionError("cloud provider claim authority is not current")
+                transaction = _Transaction(conn)
+                result = transaction.claim_receipt(
+                    request,
+                    candidate,
+                    now=now,
+                )
+                current = result.record
+                if (
+                    result.outcome is not ProviderWorkAuthorityWriteOutcome.STALE
+                    or current is None
+                    or current.state is not ProviderWorkExecutionClaimState.ACTIVE
+                    or datetime.fromisoformat(
+                        current.lease_expires_at.removesuffix("Z") + "+00:00"
+                    )
+                    > now
+                    or not _same_claim_intent(current, candidate)
+                ):
+                    conn.commit()
+                    return result
+                reserved = conn.execute(
+                    """
+                    SELECT 1 FROM provider_invocation_reservations
+                    WHERE receipt_id = ? AND state = ? LIMIT 1
+                    """,
+                    (
+                        receipt.receipt_id,
+                        ProviderInvocationReservationState.RESERVED.value,
+                    ),
+                ).fetchone()
+                if reserved is not None:
+                    conn.commit()
+                    return result
+                renewed = replace(
+                    current,
+                    claim_digest=_PLACEHOLDER_DIGEST,
+                    generation=current.generation + 1,
+                    lease_expires_at=candidate.lease_expires_at,
+                    created_at=candidate.created_at,
+                )
+                renewed = replace(renewed, claim_digest=renewed.expected_digest())
+                cursor = conn.execute(
+                    """
+                    UPDATE provider_work_execution_claims
+                    SET claim_digest = ?, generation = ?, state = ?,
+                        lease_expires_at = ?, record_json = ?
+                    WHERE claim_id = ? AND generation = ? AND claim_digest = ?
+                    """,
+                    (
+                        renewed.claim_digest,
+                        renewed.generation,
+                        renewed.state.value,
+                        renewed.lease_expires_at,
+                        _json_record(renewed),
+                        current.claim_id,
+                        current.generation,
+                        current.claim_digest,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return ProviderWorkExecutionClaimWriteResult(
+                        ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                        current,
+                    )
+                conn.commit()
+                return ProviderWorkExecutionClaimWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.APPLIED,
+                    renewed,
+                )
+            except Exception:
+                conn.rollback()
+                raise
+
     def reserve(
         self,
         request: ProviderInvocationReservationRequest,
