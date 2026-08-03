@@ -102,9 +102,24 @@ documents each):
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → TinyAssets → Client ID. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
 | `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
+| `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` | Canonical base64 for 48 random bytes. Shared by the daemon and workers to authenticate request admission/idempotency witnesses; never reuse the agent-interchange key. |
 | `BACKUP_DEST` | Optional until offsite backup is provisioned; a root-configured rclone destination such as `storagebox:tinyassets-backups`. |
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
+
+Generate the shared request-admission key without printing it. The atomic env
+installer preserves `/etc/tinyassets/env` ownership and mode:
+
+```bash
+openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /opt/tinyassets/deploy/install-tinyassets-env.sh set TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
+```
+
+For automated production deploys, store a separately generated value under the
+GitHub Actions repository secret `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`.
+The deploy validates it before touching the host and installs it into the shared
+env file before recreating the daemon/workers. Rotate by replacing the repository
+secret and deploying; an emergency revocation stops the fleet before removing
+the host value.
 
 Generate a unique daemon-only agent interchange key without printing it to the
 terminal. This writes canonical single-line base64 for 48 random bytes:
