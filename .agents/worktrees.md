@@ -2330,3 +2330,14 @@ Notes:
 - Remaining: deployed first-attempt rendered proof, a public definition from another authenticated creator, and post-fix organic-use evidence.
 - Publish/cleanup: coordination-only PR, then remove the implementation and foldback worktrees after merge.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-cross-user-remix-foldback-20260802/_PURPOSE.md`
+
+## 2026-08-03 - Engine OS sandbox task 2.1 refinement
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `codex/engine-os-sandbox-refine-20260803`.
+- Lane state: Active; exact STATUS claim on the task 2.1 spec-only handoff.
+- Worktree: `C:/Users/Jonathan/Projects/wf-engine-os-sandbox-codex-20260803`.
+- Purpose: bind concrete admitted backends to isolation profiles/guarantees, request-bound evidence, and a `job_id`-sealed outer capsule in `distributed-execution`.
+- Review gate: strict validation of both OpenSpec changes, coverage audit, exact-head independent approval, hosted checks.
+- Publish/cleanup: one narrow spec-only PR; no runtime/deploy/authority mutation; retire the row and append removal after merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-engine-os-sandbox-codex-20260803/_PURPOSE.md`.
