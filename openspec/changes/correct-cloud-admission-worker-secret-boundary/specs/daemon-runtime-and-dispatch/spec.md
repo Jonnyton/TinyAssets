@@ -31,12 +31,14 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 
 #### Scenario: reviewed correction rotates the exposed trust root
 - **WHEN** an operator manually dispatches the reviewed correction with rotation enabled and a newly generated repository secret
-- **THEN** the workflow first proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, and all four running workers lack the key
-- **AND** the workflow replaces the host request-idempotency HMAC only after those prerequisites pass
+- **THEN** before quiescence the workflow proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, and all four running workers lack the key, and it records their exact container IDs
+- **AND** the stop-writer preflight disables restart paths and stops that fleet
+- **AND** immediately before transmission the workflow rechecks the Compose/shared-env boundary and proves those same four recorded IDs remain present and stopped
+- **AND** the workflow replaces the host request-idempotency HMAC only after all pre-quiescence and post-quiescence prerequisites pass
 - **AND** the rotation path is visible in workflow inputs and run history without exposing the key
 
 #### Scenario: stale or unproved boundary blocks rotation
-- **WHEN** the deployed Compose hash differs, the shared env contains the key, a worker is absent, or a running worker contains the key
+- **WHEN** the deployed Compose hash differs, the shared env contains the key, a worker is absent, a running worker contains the key, a recorded worker identity changes, or a recorded worker restarts after quiescence
 - **THEN** the manual rotation run fails before transmitting or replacing the host key
 - **AND** the operator must complete the ordinary corrected-boundary deploy first
 
