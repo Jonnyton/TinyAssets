@@ -36,7 +36,10 @@ PRIORITY_WEIGHT_CAP = 100
 QUEUE_EPOCH = 2
 QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
-MAX_LEASE_SECONDS = 90
+# Queue ownership must outlive the longest supported provider call (15m)
+# between node-boundary heartbeats. Worker descriptors remain independently
+# capped at 90 seconds and are revalidated for every new claim/resume.
+MAX_LEASE_SECONDS = 1800
 MAX_QUARANTINE_SCAN_ROWS = 1000
 MAX_OPERATIONAL_SCAN_ROWS = 1000
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
@@ -783,6 +786,7 @@ class RequestAdmissionStore:
                 conn,
                 universe_id=universe_id,
                 pending_only=True,
+                exclude_active_automation=True,
             )
             candidates: list[dict[str, Any]] = []
             requested = max(1, int(limit))
@@ -896,6 +900,82 @@ class RequestAdmissionStore:
                 requested,
             )
         return records
+
+    def list_live_owned_v2_tasks(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int,
+        integrity_check: Callable[[Mapping[str, Any]], bool],
+    ) -> list[dict[str, Any]]:
+        """Return running or cancel-requested tasks owned by one worker."""
+        requested = min(max(1, int(limit)), MAX_OPERATIONAL_SCAN_ROWS)
+        with self.connection() as conn:
+            rows = self._v2_integrity_cursor(
+                conn,
+                universe_id=_required(universe_id, "universe_id"),
+                pending_only=False,
+                include_linked_universe_scope=True,
+                live_owned_by=_required(worker_id, "worker_id"),
+                live_owned_at=_clock_iso(self._clock),
+                limit=requested,
+            ).fetchall()
+        tasks: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            if not integrity_check(raw):
+                continue
+            task_only = {
+                key: value
+                for key, value in raw.items()
+                if not key.startswith("linked_")
+                and key != "source_rowid"
+            }
+            tasks.append(_task_row(task_only))
+        return tasks
+
+    def read_live_v2_task_for_resume(
+        self,
+        branch_task_id: str,
+        *,
+        worker_id: str,
+        resume_check: Callable[
+            [sqlite3.Connection, Mapping[str, Any], str],
+            bool,
+        ],
+    ) -> dict[str, Any] | None:
+        """Revalidate one live claim and its authority in one transaction."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                at = _clock_iso(self._clock)
+                row = self._v2_integrity_cursor(
+                    conn,
+                    pending_only=False,
+                    branch_task_id=_required(
+                        branch_task_id,
+                        "branch_task_id",
+                    ),
+                    live_claimed_by=_required(worker_id, "worker_id"),
+                    live_claim_at=at,
+                    include_linked_universe_scope=True,
+                    limit=1,
+                ).fetchone()
+                if row is None or not resume_check(conn, dict(row), at):
+                    conn.commit()
+                    return None
+                task_only = {
+                    key: value
+                    for key, value in dict(row).items()
+                    if not key.startswith("linked_")
+                    and key != "source_rowid"
+                }
+                conn.commit()
+                return _task_row(task_only)
+            except Exception:
+                conn.rollback()
+                raise
 
     def has_active_v2_claim(
         self,
@@ -1054,6 +1134,7 @@ class RequestAdmissionStore:
         *,
         universe_id: str = "",
         pending_only: bool,
+        exclude_active_automation: bool = False,
         active_only: bool = False,
         include_disabled: bool = False,
         include_linked_universe_scope: bool = False,
@@ -1065,6 +1146,8 @@ class RequestAdmissionStore:
         uncompacted_only: bool = False,
         live_claimed_by: str = "",
         live_claim_at: str = "",
+        live_owned_by: str = "",
+        live_owned_at: str = "",
         limit: int | None = None,
         rowid_order: bool = False,
     ) -> sqlite3.Cursor:
@@ -1072,6 +1155,15 @@ class RequestAdmissionStore:
         params: list[Any] = []
         if pending_only:
             clauses.append("t.status = 'pending'")
+        if exclude_active_automation:
+            clauses.append(
+                "(t.automation_id IS NULL OR NOT EXISTS ("
+                "SELECT 1 FROM branch_tasks_v2 AS active "
+                "WHERE active.universe_id = t.universe_id "
+                "AND active.automation_id = t.automation_id "
+                "AND active.status IN ('running', 'cancel_requested') "
+                "AND active.disabled = 0))"
+            )
         if active_only:
             clauses.append(
                 "t.status NOT IN ('cancelled', 'succeeded', 'failed')"
@@ -1110,6 +1202,18 @@ class RequestAdmissionStore:
                 "julianday(t.lease_expires_at) > julianday(?)",
             ])
             params.extend([live_claimed_by, live_claim_at])
+        if live_owned_by:
+            if not live_owned_at:
+                raise ValueError(
+                    "live_owned_at is required with live_owned_by"
+                )
+            clauses.extend([
+                "t.status IN ('running', 'cancel_requested')",
+                "t.claimed_by = ?",
+                "t.lease_expires_at IS NOT NULL",
+                "julianday(t.lease_expires_at) > julianday(?)",
+            ])
+            params.extend([live_owned_by, live_owned_at])
         if terminal_before:
             clauses.append("a.terminal_at IS NOT NULL")
             clauses.append("a.terminal_at < ?")
@@ -1221,6 +1325,23 @@ class RequestAdmissionStore:
                 (branch_task_id,),
             ).fetchone()
         return _task_row(row) if row is not None else None
+
+    def get_v2_task_actor_id(self, branch_task_id: str) -> str:
+        """Return the immutable admission actor bound to a queue task."""
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT a.actor_id
+                FROM branch_tasks_v2 AS t
+                JOIN request_admissions AS a
+                  ON a.admission_id = t.admission_id
+                 AND a.branch_task_id = t.branch_task_id
+                WHERE t.branch_task_id = ?
+                LIMIT 1
+                """,
+                (branch_task_id,),
+            ).fetchone()
+        return str(row["actor_id"] or "") if row is not None else ""
 
     def claim_v2_task(
         self,
@@ -1582,6 +1703,7 @@ class RequestAdmissionStore:
         at: str = "",
         detail: Mapping[str, Any] | None = None,
         worker_id: str = "",
+        cancel_wins: bool = False,
     ) -> dict[str, Any]:
         if not expected_statuses:
             raise ValueError("expected_statuses must not be empty")
@@ -1623,8 +1745,15 @@ class RequestAdmissionStore:
                     >= _epoch_seconds(row["lease_expires_at"])
                 ):
                     raise PermissionError("branch_task_lease_expired")
+                effective_status = new_status
+                effective_detail = dict(detail or {})
+                if cancel_wins and row["status"] == "cancel_requested":
+                    effective_status = "cancelled"
+                    effective_detail["reason"] = "cancel_requested"
                 terminal_at = (
-                    effective_at if new_status in TERMINAL_STATUSES else None
+                    effective_at
+                    if effective_status in TERMINAL_STATUSES
+                    else None
                 )
                 conn.execute(
                     """
@@ -1634,9 +1763,9 @@ class RequestAdmissionStore:
                     WHERE branch_task_id = ?
                     """,
                     (
-                        new_status,
+                        effective_status,
                         terminal_at,
-                        _json(dict(detail or {})),
+                        _json(effective_detail),
                         branch_task_id,
                     ),
                 )
@@ -1656,7 +1785,7 @@ class RequestAdmissionStore:
                         WHERE request_id = ?
                         """,
                         (
-                            new_status,
+                            effective_status,
                             _epoch_seconds(effective_at),
                             row["request_id"],
                         ),
@@ -1664,9 +1793,9 @@ class RequestAdmissionStore:
                 self._append_task_event(
                     conn,
                     row,
-                    event_type=new_status,
+                    event_type=effective_status,
                     event_at=effective_at,
-                    detail=dict(detail or {}),
+                    detail=effective_detail,
                 )
                 updated = conn.execute(
                     "SELECT * FROM branch_tasks_v2 "
