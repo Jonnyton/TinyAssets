@@ -556,6 +556,21 @@ def _execute_scoped_cloud_github_pr_effect(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
+    frozen_intent = execute_replay_safe_effect(
+        universe_dir=universe_dir,
+        effect_key=f"github-pr-intent:{preparation_identity_digest}",
+        sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
+        run_id=run_id,
+        invoke=lambda: {"effect_intent_digest": effect_intent_digest},
+    )
+    if frozen_intent.get("status") != "succeeded":
+        raise ProxyRequestError("cloud GitHub effect intent reservation did not complete")
+    frozen_intent_result = frozen_intent.get("result")
+    if (
+        not isinstance(frozen_intent_result, dict)
+        or frozen_intent_result.get("effect_intent_digest") != effect_intent_digest
+    ):
+        raise PermissionError("cloud GitHub effect intent changed after claim reservation")
 
     def prepare() -> dict[str, Any]:
         result = proxy.request("pull_requests:write", prepare_request)

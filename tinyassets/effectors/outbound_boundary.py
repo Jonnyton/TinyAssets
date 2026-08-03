@@ -351,7 +351,7 @@ def execute_replay_safe_effect(
             sink=sink,
             run_id=run_id,
             reconcile=reconcile,
-            base_evidence=None,
+            base_evidence=dict(reservation["row"]["evidence"]),
             track_failed_attempts=max_failed_retries is not None,
         )
     if status == "retry_exhausted":

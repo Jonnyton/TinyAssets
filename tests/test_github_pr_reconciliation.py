@@ -5,6 +5,7 @@ import json
 import pytest
 
 from tinyassets.effectors import github_pr
+from tinyassets.storage import external_write_receipts
 from tinyassets.storage.outbound_connections import (
     ProxyRequestError,
     ScopedConnectionProxy,
@@ -552,6 +553,145 @@ def test_scoped_cloud_effect_allows_only_one_failed_publish_retry(tmp_path):
     assert exhausted["reason"] == "retry_limit_exhausted"
     assert exhausted["failed_attempts"] == 2
     assert channel.prepare_count == 1
+    assert channel.publish_count == 2
+
+
+def test_scoped_cloud_effect_freezes_intent_before_failed_preparation(tmp_path):
+    class _FailedPreparationChannel:
+        def __init__(self):
+            self.prepare_count = 0
+
+        def request(self, verb, request):
+            assert verb == "pull_requests:write"
+            assert request["operation"] == "prepare_commit"
+            self.prepare_count += 1
+            if self.prepare_count == 1:
+                raise RuntimeError("preparation rejected")
+            return {"commit_sha": "b" * 40, "tree_sha": "c" * 40}
+
+    channel = _FailedPreparationChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship",
+            "body": "Original body",
+            "base_branch": "main",
+            "changes_json": {"README.md": "first\n"},
+        },
+    }
+    kwargs = {
+        "universe_dir": tmp_path,
+        "universe_id": "universe-42",
+        "automation_id": "automation-7",
+        "claim_id": "claim-3",
+        "repository": "owner/repo",
+        "proxy": proxy,
+    }
+
+    with pytest.raises(ProxyRequestError, match="preparation did not complete"):
+        github_pr._execute_scoped_cloud_github_pr_effect(
+            **kwargs,
+            packet=packet,
+            run_id="run-first",
+        )
+
+    changed_packet = json.loads(json.dumps(packet))
+    changed_packet["payload"]["changes_json"]["README.md"] = "changed\n"
+    with pytest.raises(PermissionError, match="intent changed"):
+        github_pr._execute_scoped_cloud_github_pr_effect(
+            **kwargs,
+            packet=changed_packet,
+            run_id="run-changed",
+        )
+
+    assert channel.prepare_count == 1
+
+
+def test_scoped_cloud_effect_stale_retry_keeps_failure_count(tmp_path):
+    class _SimulatedWorkerCrash(BaseException):
+        pass
+
+    class _CrashOnRetryChannel:
+        def __init__(self):
+            self.publish_count = 0
+
+        def request(self, verb, request):
+            if verb == "pull_requests:read_for_commit":
+                return []
+            if request["operation"] == "prepare_commit":
+                return {"commit_sha": "b" * 40, "tree_sha": "c" * 40}
+            self.publish_count += 1
+            if self.publish_count == 1:
+                raise RuntimeError("first attempt rejected")
+            raise _SimulatedWorkerCrash("worker died after retry started")
+
+    channel = _CrashOnRetryChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    kwargs = {
+        "universe_dir": tmp_path,
+        "universe_id": "universe-42",
+        "automation_id": "automation-7",
+        "claim_id": "claim-3",
+        "repository": "owner/repo",
+        "packet": {
+            "sink": "github_pull_request",
+            "destination": "owner/repo",
+            "payload": {
+                "title": "Ship",
+                "body": "Reviewed",
+                "base_branch": "main",
+                "changes_json": {"README.md": "first\n"},
+            },
+        },
+        "proxy": proxy,
+    }
+
+    first = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-first",
+    )
+    assert first["failed_attempts"] == 1
+    with pytest.raises(_SimulatedWorkerCrash, match="worker died"):
+        github_pr._execute_scoped_cloud_github_pr_effect(
+            **kwargs,
+            run_id="run-retry-crash",
+        )
+
+    with external_write_receipts._connect(tmp_path) as conn:
+        conn.execute(
+            "UPDATE external_write_receipts SET created_at = 0 "
+            "WHERE sink = ? AND status = ?",
+            ("github_pull_request", "pending"),
+        )
+        conn.commit()
+
+    reconciled = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-reconcile",
+    )
+    exhausted = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-exhausted",
+    )
+
+    assert reconciled["status"] == "failed"
+    assert reconciled["failed_attempts"] == 2
+    assert exhausted["reason"] == "retry_limit_exhausted"
+    assert exhausted["failed_attempts"] == 2
     assert channel.publish_count == 2
 
 
