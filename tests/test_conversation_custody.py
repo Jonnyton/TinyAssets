@@ -209,3 +209,439 @@ def test_hard_linked_database_is_refused(tmp_path: Path) -> None:
             now="2026-08-03T12:01:00.000000Z",
         )
     assert blocked.value.code == "storage_location_invalid"
+
+
+def test_existing_database_identity_is_stable_while_sidecars_may_transition(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    database = universe / ".tinyassets.db"
+    database.write_bytes(b"first")
+
+    initial = custody.validate_private_universe_location(evidence)
+    assert initial.primary_identity is not None
+    wal = universe / ".tinyassets.db-wal"
+    wal.write_bytes(b"transient")
+    custody.validate_private_universe_location(
+        evidence,
+        expected_primary_identity=initial.primary_identity,
+    )
+    wal.unlink()
+    custody.validate_private_universe_location(
+        evidence,
+        expected_primary_identity=initial.primary_identity,
+    )
+
+    database.unlink()
+    database.write_bytes(b"replacement")
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.validate_private_universe_location(
+            evidence,
+            expected_primary_identity=initial.primary_identity,
+        )
+    assert blocked.value.code == "storage_location_invalid"
+
+
+def test_canonical_json_has_exact_bytes_and_preserves_unknown_members() -> None:
+    custody = _custody()
+    left = {"z": [True, None, -7], "a": {"unknown": "hello\nworld"}}
+    right = {"a": {"unknown": "hello\nworld"}, "z": [True, None, -7]}
+    expected = b'{"a":{"unknown":"hello\\nworld"},"z":[true,null,-7]}'
+
+    assert custody.canonical_json_bytes(left) == expected
+    assert custody.canonical_json_bytes(right) == expected
+    assert custody.canonical_json_digest(left) == (
+        "sha256:f43b6adc1f8bc1176ac226c62730f59de4d9ed29d68565c090c2735000f7cc9d"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "raw-json-text",
+        {"value": 1.5},
+        {"value": 2**63},
+        {"value": "e\u0301"},
+        {"value": "\ud800"},
+        {1: "non-string-key"},
+        {"k" * 257: "too-long-key"},
+        {"value": "x" * 32_769},
+        {f"key_{index}": index for index in range(129)},
+        {"items": list(range(257))},
+        {"left": "x" * 32_768, "right": "y" * 32_768},
+    ],
+)
+def test_canonical_json_rejects_ambiguous_or_oversized_values(payload: object) -> None:
+    custody = _custody()
+
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.canonical_json_bytes(payload)
+
+
+def test_canonical_json_depth_counts_root_at_zero() -> None:
+    custody = _custody()
+    accepted: object = "leaf"
+    for _ in range(15):
+        accepted = [accepted]
+    custody.canonical_json_bytes({"value": accepted})
+
+    rejected: object = [accepted]
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.canonical_json_bytes({"value": rejected})
+
+
+def test_canonical_json_node_count_and_escape_boundaries_are_exact() -> None:
+    custody = _custody()
+    exact_4096 = [[0] * 255 for _ in range(15)] + [[0] * 253]
+    custody.canonical_json_bytes({"batches": exact_4096})
+    exact_4096[-1].append(0)
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.canonical_json_bytes({"batches": exact_4096})
+
+    assert (
+        custody.canonical_json_bytes({"controls": '"\\\b\t\n\f\r\x00\x1f/é'})
+        == '{"controls":"\\"\\\\\\b\\t\\n\\f\\r\\u0000\\u001f/é"}'.encode()
+    )
+
+
+def test_canonical_json_rejects_custom_container_and_scalar_types() -> None:
+    custody = _custody()
+
+    class CustomMapping(dict):
+        pass
+
+    class CustomString(str):
+        pass
+
+    for payload in (CustomMapping(value=1), {"value": CustomString("text")}):
+        with pytest.raises(custody.ConversationCustodyValidationError):
+            custody.canonical_json_bytes(payload)
+
+
+def test_idempotency_key_wire_and_digest_are_canonical() -> None:
+    custody = _custody()
+    key = "ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+    assert custody.idempotency_key_digest(key) == (
+        "sha256:7c02713014568e7c6a23ccce8e98f0d6e165f7f779f274859610460060faf803"
+    )
+    for invalid in (
+        "A" * 43,
+        "ik_" + "A" * 42,
+        "ik_" + "A" * 42 + "=",
+        "ik_" + "A" * 42 + "+",
+        "ik_" + "A" * 42 + "B",  # non-canonical trailing pad bits
+    ):
+        with pytest.raises(custody.ConversationCustodyValidationError):
+            custody.idempotency_key_digest(invalid)
+
+
+def test_operation_request_digest_vectors_match_contract() -> None:
+    custody = _custody()
+    scope = custody.ConversationCustodyScope(
+        owner_user_id="owner_1",
+        universe_id="universe_1",
+        agent_binding_id="agent_binding_1",
+    )
+
+    assert (
+        custody.create_thread_request_digest(
+            scope,
+            interlocutor_ref="interlocutor_1",
+            retention_until="2030-01-02T03:04:05.000006Z",
+        )
+        == "sha256:2e16d89e186ea01130b06c77c544394f1bdc84159d7fd816419acd65826dd78f"
+    )
+    assert (
+        custody.append_message_request_digest(
+            scope,
+            conversation_id="conversation_1",
+            kind="text",
+            participant_ref="participant_1",
+            source_event_ref="event_1",
+            payload={"text": "hello\nworld"},
+            reply_to_message_id=None,
+        )
+        == "sha256:03d0dce3eba96d9efa1c8bf8ab383c90a2724c6c6e4a935201653649805fc3d5"
+    )
+    assert (
+        custody.thread_request_digest("read_thread", scope, conversation_id="conversation_1")
+        == "sha256:6b9114c5a4161548e7bca566a340d73f7ddab83c21527f53a375c2c47531b143"
+    )
+    assert (
+        custody.thread_request_digest("export_thread", scope, conversation_id="conversation_1")
+        == "sha256:f0d5c9697fbac581b93f42a4c52750388e1cb8c825fe653d52d2e91b902bef42"
+    )
+    assert custody.deleted_target_digest(scope, conversation_id="conversation_1") == (
+        "sha256:1720128239c73ade4c587c137126e013dde5617751676294b5029815154cc1f5"
+    )
+    assert (
+        custody.delete_thread_request_digest(
+            scope,
+            conversation_id="conversation_1",
+            reason="owner_request",
+        )
+        == "sha256:a326ce1489645ec9083d739e9a27bfb2c88870a63cf7e833877b77a59acb00be"
+    )
+
+
+def test_request_digest_validation_rejects_noncanonical_metadata() -> None:
+    custody = _custody()
+    scope = custody.ConversationCustodyScope(
+        owner_user_id="owner_1",
+        universe_id="universe_1",
+        agent_binding_id="agent_binding_1",
+    )
+
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.create_thread_request_digest(
+            scope,
+            interlocutor_ref="bad ref",
+            retention_until=None,
+        )
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.append_message_request_digest(
+            scope,
+            conversation_id="conversation_1",
+            kind="Text",
+            participant_ref="participant_1",
+            source_event_ref="event_1",
+            payload={"text": "hello"},
+            reply_to_message_id=None,
+        )
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.delete_thread_request_digest(
+            scope,
+            conversation_id="conversation_1",
+            reason="other",
+        )
+
+
+def test_metadata_ref_kind_and_timestamp_boundaries_are_exact() -> None:
+    custody = _custody()
+    scope = custody.ConversationCustodyScope(
+        owner_user_id="o" + "x" * 255,
+        universe_id="universe_1",
+        agent_binding_id="agent_binding_1",
+    )
+    custody.create_thread_request_digest(
+        scope,
+        interlocutor_ref="i" + "x" * 255,
+        retention_until="2030-01-02T03:04:05.000006Z",
+    )
+    custody.append_message_request_digest(
+        scope,
+        conversation_id="conversation_1",
+        kind="a" + "x" * 63,
+        participant_ref="participant_1",
+        source_event_ref="event_1",
+        payload={},
+        reply_to_message_id=None,
+    )
+
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.ConversationCustodyScope(
+            owner_user_id="o" + "x" * 256,
+            universe_id="universe_1",
+            agent_binding_id="agent_binding_1",
+        )
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.append_message_request_digest(
+            scope,
+            conversation_id="conversation_1",
+            kind="a" + "x" * 64,
+            participant_ref="participant_1",
+            source_event_ref="event_1",
+            payload={},
+            reply_to_message_id=None,
+        )
+    for invalid_time in (
+        "2030-01-02T03:04:05Z",
+        "2030-01-02T03:04:05.00000Z",
+        "2030-01-02T03:04:05.0000000Z",
+        "2030-01-02T03:04:05.000006+00:00",
+        "2030-01-02T03:04:60.000006Z",
+        "2030-02-30T03:04:05.000006Z",
+    ):
+        with pytest.raises(custody.ConversationCustodyValidationError):
+            custody.create_thread_request_digest(
+                scope,
+                interlocutor_ref="interlocutor_1",
+                retention_until=invalid_time,
+            )
+
+
+def _thread(custody):
+    return custody.ConversationThread(
+        conversation_id="conversation_1",
+        owner_user_id="owner_1",
+        universe_id="universe_1",
+        agent_binding_id="agent_binding_1",
+        interlocutor_ref="slack:user_1",
+        retention_until="2030-01-02T03:04:05.000006Z",
+        created_at="2026-08-03T12:00:00.000001Z",
+    )
+
+
+def _message(custody, *, ordinal: int = 1, reply_to_message_id: str | None = None):
+    return custody.ConversationMessage(
+        conversation_id="conversation_1",
+        message_id=f"message_{ordinal}",
+        ordinal=ordinal,
+        kind="text",
+        participant_ref="slack:user_1" if ordinal == 1 else "agent:agent_binding_1",
+        source_event_ref=f"slack:event_{ordinal}",
+        payload={"text": "hello" if ordinal == 1 else "hi", "unknown": [1, True]},
+        reply_to_message_id=reply_to_message_id,
+        created_at=f"2026-08-03T12:00:0{ordinal}.00000{ordinal}Z",
+    )
+
+
+def test_thread_and_message_records_are_immutable_and_payload_is_detached() -> None:
+    custody = _custody()
+    payload = {"nested": {"items": [1, 2]}}
+    message = custody.ConversationMessage(
+        conversation_id="conversation_1",
+        message_id="message_1",
+        ordinal=1,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=None,
+        created_at="2026-08-03T12:00:01.000001Z",
+    )
+    payload["nested"]["items"].append(3)
+
+    assert message.payload == {"nested": {"items": (1, 2)}}
+    assert message.payload_digest == (
+        "sha256:107bb99f37f332725c2b986d24cddf07e3c104989e28673e5132012eb651324a"
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        message.kind = "edited"
+    with pytest.raises(TypeError):
+        message.payload["nested"] = {}
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda custody: custody.ConversationThread(
+            conversation_id="bad ref",
+            owner_user_id="owner_1",
+            universe_id="universe_1",
+            agent_binding_id="agent_binding_1",
+            interlocutor_ref="slack:user_1",
+            retention_until=None,
+            created_at="2026-08-03T12:00:00.000001Z",
+        ),
+        lambda custody: custody.ConversationThread(
+            conversation_id="conversation_1",
+            owner_user_id="owner_1",
+            universe_id="universe_1",
+            agent_binding_id="agent_binding_1",
+            interlocutor_ref="slack:user_1",
+            retention_until=None,
+            created_at="2026-08-03T12:00:00Z",
+        ),
+        lambda custody: custody.ConversationMessage(
+            conversation_id="conversation_1",
+            message_id="message_1",
+            ordinal=True,
+            kind="Text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload={},
+            reply_to_message_id=None,
+            created_at="2026-08-03T12:00:01.000001Z",
+        ),
+    ],
+)
+def test_records_reject_noncanonical_metadata(factory) -> None:
+    custody = _custody()
+
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        factory(custody)
+
+
+def test_export_is_exact_deterministic_and_digest_is_separate() -> None:
+    custody = _custody()
+    thread = _thread(custody)
+    messages = (
+        _message(custody),
+        _message(custody, ordinal=2, reply_to_message_id="message_1"),
+    )
+
+    first = custody.export_conversation(thread, messages)
+    second = custody.export_conversation(thread, messages)
+
+    expected = (
+        b'{"canonical_json":"tinyassets-canonical-json/v1","custody_mode":"private_universe",'
+        b'"messages":[{"created_at":"2026-08-03T12:00:01.000001Z","kind":"text",'
+        b'"message_id":"message_1","ordinal":1,"participant_ref":"slack:user_1",'
+        b'"payload":{"text":"hello","unknown":[1,true]},'
+        b'"payload_digest":"sha256:4f2111c5f527321f6cc054e6c1058ee25cfebf12f7764b248463378e5d577adc",'
+        b'"reply_to_message_id":null,"source_event_ref":"slack:event_1"},'
+        b'{"created_at":"2026-08-03T12:00:02.000002Z","kind":"text",'
+        b'"message_id":"message_2","ordinal":2,"participant_ref":"agent:agent_binding_1",'
+        b'"payload":{"text":"hi","unknown":[1,true]},'
+        b'"payload_digest":"sha256:9f6e57e293e2f28174b45a7891799e27a90aee41441ff44e7cc63b5945a496de",'
+        b'"reply_to_message_id":"message_1","source_event_ref":"slack:event_2"}],'
+        b'"schema":"conversation-custody/v1","thread":{"agent_binding_id":"agent_binding_1",'
+        b'"conversation_id":"conversation_1","created_at":"2026-08-03T12:00:00.000001Z",'
+        b'"interlocutor_ref":"slack:user_1","owner_user_id":"owner_1",'
+        b'"retention_until":"2030-01-02T03:04:05.000006Z","universe_id":"universe_1"}}'
+    )
+    assert first.content == expected
+    assert first == second
+    assert first.digest == (
+        "sha256:53085850ce0e6e7c2e68ed014d0a7a84de115226a00247fef8db0a953e7c1f91"
+    )
+    assert b'"digest"' not in first.content
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        (),
+        ("wrong-thread",),
+        ("gap",),
+        ("reply-missing",),
+        ("reply-forward",),
+    ],
+)
+def test_export_refuses_incomplete_or_invalid_message_sequences(messages) -> None:
+    custody = _custody()
+    thread = _thread(custody)
+    cases = {
+        (): (_message(custody, ordinal=2),),
+        ("wrong-thread",): (
+            custody.ConversationMessage(
+                conversation_id="conversation_2",
+                message_id="message_1",
+                ordinal=1,
+                kind="text",
+                participant_ref="slack:user_1",
+                source_event_ref="slack:event_1",
+                payload={},
+                reply_to_message_id=None,
+                created_at="2026-08-03T12:00:01.000001Z",
+            ),
+        ),
+        ("gap",): (_message(custody), _message(custody, ordinal=3)),
+        ("reply-missing",): (
+            _message(custody),
+            _message(custody, ordinal=2, reply_to_message_id="message_9"),
+        ),
+        ("reply-forward",): (
+            _message(custody, reply_to_message_id="message_2"),
+            _message(custody, ordinal=2),
+        ),
+    }
+
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        custody.export_conversation(thread, cases[messages])

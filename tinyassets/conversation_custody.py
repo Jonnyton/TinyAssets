@@ -7,27 +7,44 @@ consumed here.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
 import stat
 import threading
+import unicodedata
 import weakref
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 
 PRIVATE_UNIVERSE_MODE = "private_universe"
+CONVERSATION_CUSTODY_SCHEMA = "conversation-custody/v1"
+CANONICAL_JSON_SCHEMA = "tinyassets-canonical-json/v1"
 
 _ACTIONS = frozenset(
     {"create_thread", "append_message", "read_thread", "export_thread", "delete_thread"}
 )
 _MUTATIONS = frozenset({"create_thread", "append_message", "delete_thread"})
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+_KIND = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_IDEMPOTENCY_KEY = re.compile(r"^ik_[A-Za-z0-9_-]{43}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+
+MAX_CANONICAL_DEPTH = 16
+MAX_CANONICAL_MAPPING_MEMBERS = 128
+MAX_CANONICAL_LIST_ITEMS = 256
+MAX_CANONICAL_NODES = 4_096
+MAX_CANONICAL_KEY_BYTES = 256
+MAX_CANONICAL_STRING_BYTES = 32_768
+MAX_CANONICAL_PAYLOAD_BYTES = 65_536
 
 
 class ConversationCustodyValidationError(ValueError):
@@ -64,6 +81,408 @@ def _parsed_timestamp(value: object, name: str) -> datetime:
     if parsed.second >= 60:
         raise ConversationCustodyValidationError(f"{name} cannot contain a leap second")
     return parsed
+
+
+def _normalized_scalar(value: str, name: str, *, maximum_bytes: int) -> str:
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ConversationCustodyValidationError(f"{name} contains a surrogate code point")
+    if unicodedata.normalize("NFC", value) != value:
+        raise ConversationCustodyValidationError(f"{name} must already be NFC normalized")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ConversationCustodyValidationError(f"{name} is not Unicode scalar text") from exc
+    if size > maximum_bytes:
+        raise ConversationCustodyValidationError(f"{name} exceeds {maximum_bytes} UTF-8 bytes")
+    return value
+
+
+def _normalized_json(value: object, *, depth: int, nodes: list[int], name: str) -> object:
+    if depth > MAX_CANONICAL_DEPTH:
+        raise ConversationCustodyValidationError("canonical JSON exceeds depth 16")
+    nodes[0] += 1
+    if nodes[0] > MAX_CANONICAL_NODES:
+        raise ConversationCustodyValidationError("canonical JSON exceeds 4096 value nodes")
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        if value < -(2**63) or value > 2**63 - 1:
+            raise ConversationCustodyValidationError("canonical JSON integer exceeds int64")
+        return value
+    if type(value) is str:
+        return _normalized_scalar(
+            value,
+            name,
+            maximum_bytes=MAX_CANONICAL_STRING_BYTES,
+        )
+    if type(value) is list:
+        if len(value) > MAX_CANONICAL_LIST_ITEMS:
+            raise ConversationCustodyValidationError("canonical JSON list exceeds 256 items")
+        return [
+            _normalized_json(child, depth=depth + 1, nodes=nodes, name=f"{name}[{index}]")
+            for index, child in enumerate(value)
+        ]
+    if type(value) is dict:
+        if len(value) > MAX_CANONICAL_MAPPING_MEMBERS:
+            raise ConversationCustodyValidationError("canonical JSON mapping exceeds 128 members")
+        normalized: dict[str, object] = {}
+        for key, child in value.items():
+            if type(key) is not str:
+                raise ConversationCustodyValidationError("canonical JSON keys must be strings")
+            normalized_key = _normalized_scalar(
+                key,
+                f"{name}.key",
+                maximum_bytes=MAX_CANONICAL_KEY_BYTES,
+            )
+            normalized[normalized_key] = _normalized_json(
+                child,
+                depth=depth + 1,
+                nodes=nodes,
+                name=f"{name}.{normalized_key}",
+            )
+        return normalized
+    raise ConversationCustodyValidationError(
+        "canonical JSON accepts only null, bool, int64, NFC strings, lists, and mappings"
+    )
+
+
+def canonical_json_bytes(payload: object) -> bytes:
+    """Return exact ``tinyassets-canonical-json/v1`` bytes for one mapping."""
+
+    if type(payload) is not dict:
+        raise ConversationCustodyValidationError("canonical JSON root must be a mapping")
+    normalized = _normalized_json(payload, depth=0, nodes=[0], name="payload")
+    encoded = _encode_canonical_json(normalized)
+    if len(encoded) > MAX_CANONICAL_PAYLOAD_BYTES:
+        raise ConversationCustodyValidationError("canonical JSON exceeds 65536 bytes")
+    return encoded
+
+
+def _encode_canonical_json(normalized: object) -> bytes:
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def canonical_json_digest(payload: object) -> str:
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+
+
+def idempotency_key_digest(key: object) -> str:
+    if not isinstance(key, str) or _IDEMPOTENCY_KEY.fullmatch(key) is None:
+        raise ConversationCustodyValidationError("idempotency key wire form is invalid")
+    suffix = key[3:]
+    try:
+        decoded = base64.urlsafe_b64decode(suffix + "=")
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise ConversationCustodyValidationError("idempotency key is invalid base64url") from exc
+    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+    if len(decoded) != 32 or not hmac.compare_digest(canonical, suffix):
+        raise ConversationCustodyValidationError("idempotency key is not canonical base64url")
+    return f"sha256:{hashlib.sha256(key.encode('ascii')).hexdigest()}"
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationCustodyScope:
+    owner_user_id: str
+    universe_id: str
+    agent_binding_id: str
+
+    def __post_init__(self) -> None:
+        _required_ref(self.owner_user_id, "owner_user_id")
+        _required_ref(self.universe_id, "universe_id")
+        _required_ref(self.agent_binding_id, "agent_binding_id")
+
+
+def _scope(scope: object) -> ConversationCustodyScope:
+    if type(scope) is not ConversationCustodyScope:
+        raise ConversationCustodyValidationError("scope must be ConversationCustodyScope")
+    return scope
+
+
+def _scope_mapping(scope: ConversationCustodyScope) -> dict[str, str]:
+    return {
+        "agent_binding_id": scope.agent_binding_id,
+        "owner_user_id": scope.owner_user_id,
+        "universe_id": scope.universe_id,
+    }
+
+
+def create_thread_request_digest(
+    scope: ConversationCustodyScope,
+    *,
+    interlocutor_ref: str,
+    retention_until: str | None,
+) -> str:
+    selected = _scope(scope)
+    interlocutor = _required_ref(interlocutor_ref, "interlocutor_ref")
+    if retention_until is not None:
+        _parsed_timestamp(retention_until, "retention_until")
+    return canonical_json_digest(
+        {
+            **_scope_mapping(selected),
+            "custody_mode": PRIVATE_UNIVERSE_MODE,
+            "domain": "conversation-custody/create-thread/v1",
+            "interlocutor_ref": interlocutor,
+            "retention_until": retention_until,
+        }
+    )
+
+
+def append_message_request_digest(
+    scope: ConversationCustodyScope,
+    *,
+    conversation_id: str,
+    kind: str,
+    participant_ref: str,
+    source_event_ref: str,
+    payload: object,
+    reply_to_message_id: str | None,
+) -> str:
+    selected = _scope(scope)
+    conversation = _required_ref(conversation_id, "conversation_id")
+    participant = _required_ref(participant_ref, "participant_ref")
+    source = _required_ref(source_event_ref, "source_event_ref")
+    if not isinstance(kind, str) or _KIND.fullmatch(kind) is None:
+        raise ConversationCustodyValidationError("kind is not canonical")
+    reply = None
+    if reply_to_message_id is not None:
+        reply = _required_ref(reply_to_message_id, "reply_to_message_id")
+    normalized_payload = json.loads(canonical_json_bytes(payload))
+    return canonical_json_digest(
+        {
+            **_scope_mapping(selected),
+            "conversation_id": conversation,
+            "domain": "conversation-custody/append-message/v1",
+            "kind": kind,
+            "participant_ref": participant,
+            "payload": normalized_payload,
+            "reply_to_message_id": reply,
+            "source_event_ref": source,
+        }
+    )
+
+
+def thread_request_digest(
+    action: str,
+    scope: ConversationCustodyScope,
+    *,
+    conversation_id: str,
+) -> str:
+    if action not in {"read_thread", "export_thread"}:
+        raise ConversationCustodyValidationError(
+            "thread action must be read_thread or export_thread"
+        )
+    selected = _scope(scope)
+    conversation = _required_ref(conversation_id, "conversation_id")
+    operation = action.removesuffix("_thread").replace("_", "-")
+    return canonical_json_digest(
+        {
+            **_scope_mapping(selected),
+            "conversation_id": conversation,
+            "domain": f"conversation-custody/{operation}-thread/v1",
+        }
+    )
+
+
+def _deleted_target_mapping(
+    scope: ConversationCustodyScope,
+    conversation_id: str,
+) -> dict[str, str]:
+    selected = _scope(scope)
+    return {
+        **_scope_mapping(selected),
+        "conversation_id": _required_ref(conversation_id, "conversation_id"),
+        "domain": "conversation-custody/deleted-target/v1",
+    }
+
+
+def deleted_target_digest(
+    scope: ConversationCustodyScope,
+    *,
+    conversation_id: str,
+) -> str:
+    return canonical_json_digest(_deleted_target_mapping(scope, conversation_id))
+
+
+def delete_thread_request_digest(
+    scope: ConversationCustodyScope,
+    *,
+    conversation_id: str,
+    reason: str,
+) -> str:
+    if reason not in {"owner_request", "retention_expired"}:
+        raise ConversationCustodyValidationError("deletion reason is unsupported")
+    return canonical_json_digest(
+        {
+            "deleted_target_digest": deleted_target_digest(
+                scope,
+                conversation_id=conversation_id,
+            ),
+            "domain": "conversation-custody/delete-thread/v1",
+            "reason": reason,
+        }
+    )
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(child) for key, child in value.items()})
+    if type(value) is list:
+        return tuple(_freeze_json(child) for child in value)
+    return value
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(child) for key, child in value.items()}
+    if type(value) is tuple:
+        return [_thaw_json(child) for child in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationThread:
+    """Immutable identity and scope for one private conversation."""
+
+    conversation_id: str
+    owner_user_id: str
+    universe_id: str
+    agent_binding_id: str
+    interlocutor_ref: str
+    retention_until: str | None
+    created_at: str
+    custody_mode: str = field(default=PRIVATE_UNIVERSE_MODE, init=False)
+    schema: str = field(default=CONVERSATION_CUSTODY_SCHEMA, init=False)
+
+    def __post_init__(self) -> None:
+        _required_ref(self.conversation_id, "conversation_id")
+        _required_ref(self.owner_user_id, "owner_user_id")
+        _required_ref(self.universe_id, "universe_id")
+        _required_ref(self.agent_binding_id, "agent_binding_id")
+        _required_ref(self.interlocutor_ref, "interlocutor_ref")
+        if self.retention_until is not None:
+            _parsed_timestamp(self.retention_until, "retention_until")
+        _parsed_timestamp(self.created_at, "created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationMessage:
+    """Immutable append result with a detached canonical payload."""
+
+    conversation_id: str
+    message_id: str
+    ordinal: int
+    kind: str
+    participant_ref: str
+    source_event_ref: str
+    payload: Mapping[str, object]
+    reply_to_message_id: str | None
+    created_at: str
+    payload_digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _required_ref(self.conversation_id, "conversation_id")
+        _required_ref(self.message_id, "message_id")
+        if type(self.ordinal) is not int or self.ordinal < 1:
+            raise ConversationCustodyValidationError("ordinal must be an integer >= 1")
+        if not isinstance(self.kind, str) or _KIND.fullmatch(self.kind) is None:
+            raise ConversationCustodyValidationError("kind is not canonical")
+        _required_ref(self.participant_ref, "participant_ref")
+        _required_ref(self.source_event_ref, "source_event_ref")
+        if self.reply_to_message_id is not None:
+            _required_ref(self.reply_to_message_id, "reply_to_message_id")
+        _parsed_timestamp(self.created_at, "created_at")
+        payload_bytes = canonical_json_bytes(self.payload)
+        normalized_payload = json.loads(payload_bytes)
+        object.__setattr__(self, "payload", _freeze_json(normalized_payload))
+        object.__setattr__(
+            self,
+            "payload_digest",
+            f"sha256:{hashlib.sha256(payload_bytes).hexdigest()}",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationExport:
+    """Deterministic private export bytes plus their detached digest."""
+
+    content: bytes
+    digest: str
+
+
+def _thread_export_mapping(thread: ConversationThread) -> dict[str, object]:
+    return {
+        "agent_binding_id": thread.agent_binding_id,
+        "conversation_id": thread.conversation_id,
+        "created_at": thread.created_at,
+        "interlocutor_ref": thread.interlocutor_ref,
+        "owner_user_id": thread.owner_user_id,
+        "retention_until": thread.retention_until,
+        "universe_id": thread.universe_id,
+    }
+
+
+def _message_export_mapping(message: ConversationMessage) -> dict[str, object]:
+    return {
+        "created_at": message.created_at,
+        "kind": message.kind,
+        "message_id": message.message_id,
+        "ordinal": message.ordinal,
+        "participant_ref": message.participant_ref,
+        "payload": _thaw_json(message.payload),
+        "payload_digest": message.payload_digest,
+        "reply_to_message_id": message.reply_to_message_id,
+        "source_event_ref": message.source_event_ref,
+    }
+
+
+def export_conversation(
+    thread: ConversationThread,
+    messages: tuple[ConversationMessage, ...] | list[ConversationMessage],
+) -> ConversationExport:
+    """Build the exact deterministic export envelope for an intact thread."""
+
+    if type(thread) is not ConversationThread:
+        raise ConversationCustodyValidationError("thread must be ConversationThread")
+    if type(messages) not in {tuple, list}:
+        raise ConversationCustodyValidationError("messages must be an ordered sequence")
+    observed_message_ids: set[str] = set()
+    envelope_messages: list[dict[str, object]] = []
+    for expected_ordinal, message in enumerate(messages, start=1):
+        if type(message) is not ConversationMessage:
+            raise ConversationCustodyValidationError("message record is invalid")
+        if message.conversation_id != thread.conversation_id:
+            raise ConversationCustodyValidationError("message belongs to another thread")
+        if message.ordinal != expected_ordinal:
+            raise ConversationCustodyValidationError("message ordinals are not contiguous")
+        if message.message_id in observed_message_ids:
+            raise ConversationCustodyValidationError("message identifiers are not unique")
+        if (
+            message.reply_to_message_id is not None
+            and message.reply_to_message_id not in observed_message_ids
+        ):
+            raise ConversationCustodyValidationError("reply target is not an earlier message")
+        observed_message_ids.add(message.message_id)
+        envelope_messages.append(_message_export_mapping(message))
+
+    content = _encode_canonical_json(
+        {
+            "canonical_json": CANONICAL_JSON_SCHEMA,
+            "custody_mode": PRIVATE_UNIVERSE_MODE,
+            "messages": envelope_messages,
+            "schema": CONVERSATION_CUSTODY_SCHEMA,
+            "thread": _thread_export_mapping(thread),
+        }
+    )
+    return ConversationExport(
+        content=content,
+        digest=f"sha256:{hashlib.sha256(content).hexdigest()}",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,13 +725,28 @@ def consume_operation_grant(
 
 
 __all__ = [
+    "CANONICAL_JSON_SCHEMA",
+    "CONVERSATION_CUSTODY_SCHEMA",
     "PRIVATE_UNIVERSE_MODE",
     "ConversationCustodyAuthorizationError",
+    "ConversationCustodyScope",
     "ConversationCustodyGrantEvidence",
     "ConversationCustodyOperationGrant",
     "ConversationCustodyStorageLocation",
     "ConversationCustodyValidationError",
+    "ConversationExport",
+    "ConversationMessage",
+    "ConversationThread",
     "StorageFileIdentity",
+    "append_message_request_digest",
+    "canonical_json_bytes",
+    "canonical_json_digest",
     "consume_operation_grant",
+    "create_thread_request_digest",
+    "delete_thread_request_digest",
+    "deleted_target_digest",
+    "export_conversation",
+    "idempotency_key_digest",
+    "thread_request_digest",
     "validate_private_universe_location",
 ]
