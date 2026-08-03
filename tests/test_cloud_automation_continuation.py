@@ -696,6 +696,61 @@ def test_claimed_epoch2_task_claims_same_background_attempt(tmp_path: Path) -> N
     assert provider.record.work_item_id == result.record.attempt_id
 
 
+def test_runtime_claim_and_provider_receipt_rehydrate_from_prepared_authority(
+    tmp_path: Path,
+) -> None:
+    """A restarted worker must not need a second mutable definition store."""
+    fixture, continuation, admission, audience, attempt, task = _claimable_cloud_path(tmp_path)
+    claim_resolver = PreparedCloudContinuationClaimResolver(
+        None,
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=_AudienceResolver(audience),
+        clock=lambda: NOW,
+    )
+
+    claimed = BackgroundBranchAttemptClaimService(
+        fixture[3],
+        claim_resolver,
+    ).claim(
+        expected=BackgroundBranchAttemptFence(attempt),
+        executor_audience=audience,
+        claimed_at=_background_timestamp(task.claimed_at),
+        lease_expires_at=_background_timestamp(task.lease_expires_at),
+    ).record
+
+    assert claimed is not None
+    receipt = ProviderWorkReceiptService(
+        fixture[4],
+        PreparedCloudContinuationProviderResolver(
+            None,
+            continuation=continuation,
+            activation_store=fixture[2],
+            background_store=fixture[3],
+            provider_store=fixture[4],
+            continuation_store=fixture[6],
+            clock=lambda: NOW + timedelta(seconds=1),
+        ),
+    ).issue(
+        ProviderUniverseWorkRoot(
+            work_item_kind="background_attempt",
+            work_item_id=claimed.attempt_id,
+        )
+    ).record
+
+    assert receipt is not None
+    assert receipt.principal_id == continuation.principal_id
+    assert receipt.branch_def_id == continuation.branch_def_id
+    assert receipt.branch_version_id == continuation.branch_version_id
+    assert receipt.max_invocations == 2
+    assert receipt.max_tokens == 100_000
+    assert receipt.max_cost_microunits == 5_000_000
+
+
 def test_concurrent_cloud_claims_have_one_task_custody_winner(
     tmp_path: Path,
 ) -> None:
@@ -888,7 +943,7 @@ def test_activation_compositor_converges_to_one_epoch2_admission_and_attempt(
     assert task["automation_id"] == first.activation.automation_id
     assert task["automation_activation_epoch"] == first.activation.epoch
     assert task["automation_lease_id"] == first.activation.lease_id
-    assert EPOCH2_QUEUE_CONSUMER_READY is False
+    assert EPOCH2_QUEUE_CONSUMER_READY is True
     assert (
         len(
             fixture[3]

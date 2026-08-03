@@ -102,6 +102,16 @@ def _branch_execution_subject(
     )
 
 
+def _continuation_execution_subject(
+    continuation: PreparedCloudContinuation,
+) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.BRANCH_VERSION,
+        ref=continuation.branch_version_id,
+        digest=continuation.branch_content_digest,
+    )
+
+
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("clock must return a timezone-aware datetime")
@@ -793,7 +803,7 @@ class PreparedCloudContinuationAttemptResolver:
 
     def __init__(
         self,
-        definition: RepositorySpecWorkDefinition,
+        definition: RepositorySpecWorkDefinition | None,
         *,
         continuation: PreparedCloudContinuation,
         admission: Mapping[str, object],
@@ -815,8 +825,11 @@ class PreparedCloudContinuationAttemptResolver:
         )
         from tinyassets.storage.request_admissions import RequestAdmissionStore
 
-        if not isinstance(definition, RepositorySpecWorkDefinition):
-            raise ValueError("definition must be a RepositorySpecWorkDefinition")
+        if definition is not None and not isinstance(
+            definition,
+            RepositorySpecWorkDefinition,
+        ):
+            raise ValueError("definition must be a RepositorySpecWorkDefinition or None")
         if not isinstance(continuation, PreparedCloudContinuation):
             raise ValueError("continuation must be a PreparedCloudContinuation")
         if not isinstance(admission, Mapping):
@@ -838,7 +851,10 @@ class PreparedCloudContinuationAttemptResolver:
             raise ValueError(
                 "audience_resolver must implement CloudContinuationAttemptAudienceResolver"
             )
-        if continuation.definition_digest != definition.definition_digest:
+        if (
+            definition is not None
+            and continuation.definition_digest != definition.definition_digest
+        ):
             raise ValueError("continuation does not match the immutable definition")
         self._definition = definition
         self._continuation = continuation
@@ -874,6 +890,8 @@ class PreparedCloudContinuationAttemptResolver:
         )
         continuation = self._continuation
         definition = self._definition
+        if definition is None:
+            return None
         try:
             current_continuation = self._continuation_store.get(
                 universe_id=continuation.universe_id,
@@ -1430,6 +1448,14 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
         now = now.astimezone(timezone.utc)
         continuation = self._continuation
         definition = self._definition
+        definition_exact = definition is None or (
+            continuation.definition_digest == definition.definition_digest
+            and continuation.principal_id == definition.principal_id
+            and continuation.universe_id == definition.universe_id
+            and continuation.branch_def_id == definition.branch_def_id
+            and continuation.branch_version_id == definition.branch_version_id
+            and continuation.branch_content_digest == definition.branch_content_digest
+        )
         attempt = request.attempt
         try:
             current_continuation = self._continuation_store.get(
@@ -1519,26 +1545,22 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
         heartbeat_at = heartbeat_at.astimezone(timezone.utc)
         task_lease = task_lease.astimezone(timezone.utc)
         exact = (
+            definition_exact,
             current_continuation == continuation,
             continuation.state is CloudContinuationState.PREPARED,
-            continuation.principal_id == definition.principal_id,
-            continuation.universe_id == definition.universe_id,
-            continuation.branch_def_id == definition.branch_def_id,
-            continuation.branch_version_id == definition.branch_version_id,
-            continuation.branch_content_digest == definition.branch_content_digest,
             activation.state is AutomationActivationState.ACTIVE,
             activation.executor_class is AutomationActivationExecutor.CLOUD,
             activation.epoch == continuation.activation_epoch + 1,
-            activation.subject == _branch_execution_subject(definition),
-            task["tenant_id"] == definition.principal_id,
-            task["actor_id"] == definition.principal_id,
-            task["universe_id"] == definition.universe_id,
-            task["branch_def_id"] == definition.branch_def_id,
+            activation.subject == _continuation_execution_subject(continuation),
+            task["tenant_id"] == continuation.principal_id,
+            task["actor_id"] == continuation.principal_id,
+            task["universe_id"] == continuation.universe_id,
+            task["branch_def_id"] == continuation.branch_def_id,
             task["directed_daemon_id"] == audience.daemon_id,
             task["automation_id"] == continuation.automation_id,
             task["automation_activation_epoch"] == activation.epoch,
             task["automation_executor_class"] == "cloud",
-            task["automation_branch_version"] == definition.branch_version_id,
+            task["automation_branch_version"] == continuation.branch_version_id,
             task["automation_lease_id"] == activation.lease_id,
             task["status"] == "running",
             task["queue_epoch"] == 2,
@@ -1553,26 +1575,26 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
             binding.binding_id == continuation.background_binding_id,
             binding.generation == continuation.background_binding_generation,
             binding.binding_digest == continuation.background_binding_digest,
-            binding.authorizing_principal_id == definition.principal_id,
-            binding.universe_id == definition.universe_id,
-            binding.branch_def_id == definition.branch_def_id,
+            binding.authorizing_principal_id == continuation.principal_id,
+            binding.universe_id == continuation.universe_id,
+            binding.branch_def_id == continuation.branch_def_id,
             binding.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
             binding.source_kind is BackgroundBranchSourceKind.REQUEST_ADMISSION,
             binding.source_id == self._request_id,
             binding.source_revision == str(task["grant_generation"]),
             binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
-            binding.pinned_branch_version_id == definition.branch_version_id,
+            binding.pinned_branch_version_id == continuation.branch_version_id,
             binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,),
             attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
             attempt.binding_id == binding.binding_id,
             attempt.binding_generation == binding.generation,
             attempt.binding_digest == binding.binding_digest,
             attempt.logical_attempt_key == expected_logical_key,
-            attempt.authorizing_principal_id == definition.principal_id,
-            attempt.universe_id == definition.universe_id,
-            attempt.branch_def_id == definition.branch_def_id,
-            attempt.branch_version_id == definition.branch_version_id,
-            attempt.branch_content_digest == definition.branch_content_digest,
+            attempt.authorizing_principal_id == continuation.principal_id,
+            attempt.universe_id == continuation.universe_id,
+            attempt.branch_def_id == continuation.branch_def_id,
+            attempt.branch_version_id == continuation.branch_version_id,
+            attempt.branch_content_digest == continuation.branch_content_digest,
             attempt.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
             attempt.source_kind is BackgroundBranchSourceKind.REQUEST_ADMISSION,
             attempt.source_id == self._request_id,
@@ -1602,7 +1624,7 @@ class PreparedCloudContinuationProviderResolver:
 
     def __init__(
         self,
-        definition: RepositorySpecWorkDefinition,
+        definition: RepositorySpecWorkDefinition | None,
         *,
         continuation: PreparedCloudContinuation,
         activation_store: Any,
@@ -1624,8 +1646,11 @@ class PreparedCloudContinuationProviderResolver:
             SQLiteProviderWorkAuthorityStore,
         )
 
-        if not isinstance(definition, RepositorySpecWorkDefinition):
-            raise ValueError("definition must be a RepositorySpecWorkDefinition")
+        if definition is not None and not isinstance(
+            definition,
+            RepositorySpecWorkDefinition,
+        ):
+            raise ValueError("definition must be a RepositorySpecWorkDefinition or None")
         if not isinstance(continuation, PreparedCloudContinuation):
             raise ValueError("continuation must be a PreparedCloudContinuation")
         stores = (
@@ -1638,7 +1663,10 @@ class PreparedCloudContinuationProviderResolver:
             raise ValueError("cloud provider resolver requires canonical stores")
         if len({Path(store.base_path).resolve() for store, _expected in stores}) != 1:
             raise ValueError("cloud provider resolver stores must share one control plane")
-        if continuation.definition_digest != definition.definition_digest:
+        if (
+            definition is not None
+            and continuation.definition_digest != definition.definition_digest
+        ):
             raise ValueError("continuation does not match the immutable definition")
         self._definition = definition
         self._continuation = continuation
@@ -1694,6 +1722,29 @@ class PreparedCloudContinuationProviderResolver:
         assert background is not None
         assert provider is not None
 
+        definition_exact = definition is None or (
+            continuation.definition_digest == definition.definition_digest
+            and continuation.principal_id == definition.principal_id
+            and continuation.universe_id == definition.universe_id
+            and continuation.branch_def_id == definition.branch_def_id
+            and continuation.branch_version_id == definition.branch_version_id
+            and continuation.branch_content_digest == definition.branch_content_digest
+            and provider.max_invocations == definition.max_attempts
+            and provider.max_tokens == definition.max_tokens
+            and provider.max_cost_microunits == definition.max_cost_microunits
+        )
+        max_invocations = (
+            definition.max_attempts
+            if definition is not None
+            else min(provider.max_invocations, attempt.remaining_count)
+        )
+        max_tokens = definition.max_tokens if definition is not None else provider.max_tokens
+        max_cost_microunits = (
+            definition.max_cost_microunits
+            if definition is not None
+            else min(provider.max_cost_microunits, attempt.remaining_cost_microunits)
+        )
+
         lease_expires_at = attempt.lease_expires_at
         if lease_expires_at is None:
             return None
@@ -1705,17 +1756,13 @@ class PreparedCloudContinuationProviderResolver:
         except ValueError:
             return None
         exact = (
+            definition_exact,
             current_continuation == continuation,
             continuation.state is CloudContinuationState.PREPARED,
-            continuation.principal_id == definition.principal_id,
-            continuation.universe_id == definition.universe_id,
-            continuation.branch_def_id == definition.branch_def_id,
-            continuation.branch_version_id == definition.branch_version_id,
-            continuation.branch_content_digest == definition.branch_content_digest,
             activation.state is AutomationActivationState.ACTIVE,
             activation.executor_class is AutomationActivationExecutor.CLOUD,
             activation.epoch == continuation.activation_epoch + 1,
-            activation.subject == _branch_execution_subject(definition),
+            activation.subject == _continuation_execution_subject(continuation),
             background.status is BackgroundBranchBindingStatus.ACTIVE,
             background.binding_id == continuation.background_binding_id,
             background.generation == continuation.background_binding_generation,
@@ -1723,11 +1770,11 @@ class PreparedCloudContinuationProviderResolver:
             attempt.binding_id == background.binding_id,
             attempt.binding_generation == background.generation,
             attempt.binding_digest == background.binding_digest,
-            attempt.authorizing_principal_id == definition.principal_id,
-            attempt.universe_id == definition.universe_id,
-            attempt.branch_def_id == definition.branch_def_id,
-            attempt.branch_version_id == definition.branch_version_id,
-            attempt.branch_content_digest == definition.branch_content_digest,
+            attempt.authorizing_principal_id == continuation.principal_id,
+            attempt.universe_id == continuation.universe_id,
+            attempt.branch_def_id == continuation.branch_def_id,
+            attempt.branch_version_id == continuation.branch_version_id,
+            attempt.branch_content_digest == continuation.branch_content_digest,
             attempt.executor_audience.executor_class is BackgroundBranchExecutorClass.CLOUD,
             attempt.lifecycle
             in {
@@ -1735,19 +1782,16 @@ class PreparedCloudContinuationProviderResolver:
                 BackgroundBranchAttemptLifecycle.RUNNING,
             },
             lease_expiry > now,
-            attempt.remaining_count > 0,
-            attempt.remaining_cost_microunits >= definition.max_cost_microunits,
+            max_invocations > 0,
+            attempt.remaining_cost_microunits >= max_cost_microunits,
             provider.state is ProviderWorkBindingState.ACTIVE,
             provider.binding_id == continuation.provider_binding_id,
             provider.generation == continuation.provider_binding_generation,
             provider.binding_digest == continuation.provider_binding_digest,
-            provider.owner_user_id == definition.principal_id,
-            provider.universe_id == definition.universe_id,
+            provider.owner_user_id == continuation.principal_id,
+            provider.universe_id == continuation.universe_id,
             provider.allowed_operations == ("repository_spec_delivery",),
             provider.allowed_roles == ("writer",),
-            provider.max_invocations == definition.max_attempts,
-            provider.max_tokens == definition.max_tokens,
-            provider.max_cost_microunits == definition.max_cost_microunits,
             provider_expiry > now,
         )
         if not all(exact):
@@ -1757,17 +1801,17 @@ class PreparedCloudContinuationProviderResolver:
         return ProviderUniverseWorkAuthority(
             root=root,
             binding=provider,
-            principal_id=definition.principal_id,
+            principal_id=continuation.principal_id,
             actor_id=actor_id,
-            execution_subject=_branch_execution_subject(definition),
-            branch_def_id=definition.branch_def_id,
-            branch_version_id=definition.branch_version_id,
+            execution_subject=_continuation_execution_subject(continuation),
+            branch_def_id=continuation.branch_def_id,
+            branch_version_id=continuation.branch_version_id,
             operation="repository_spec_delivery",
             role="writer",
             executor_class="cloud",
-            max_invocations=definition.max_attempts,
-            max_tokens=definition.max_tokens,
-            max_cost_microunits=definition.max_cost_microunits,
+            max_invocations=max_invocations,
+            max_tokens=max_tokens,
+            max_cost_microunits=max_cost_microunits,
             expires_at=expires_at,
         )
 
