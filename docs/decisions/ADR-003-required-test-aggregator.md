@@ -277,16 +277,20 @@ measured) and this suite takes **~37 min**, so a PR goes stale before its own
 run finishes: only **5% of gaps** are long enough to land. Keeping `strict`
 would have wedged every merge, the drain included.
 
-The obvious escape — require a fast subset instead — was built, measured, and
-**rejected on evidence**. Excluding the 53 files that held 90% of the wall clock
-gave a 4-minute gate, but turned **81 passing tests red** (run 30781261125)
-purely by changing test *order*: this suite is not hermetic, so its results
-depend on which files run. A subset baseline would shift every time anyone adds
-a test file, failing PRs for unrelated reasons — the flaky-required-check trap
-this ADR exists to avoid. The full run's baseline, by contrast, reproduced
-identically twice (483 then 482).
+A fast subset was built and measured: excluding the 53 files that held 90%
+of the wall clock gave a **4-minute** gate (run 30781261125).
 
-So the full suite is required and `strict` is set **false**. PRs do not
+**Correction (cross-family review, same day).** That run's 81 new failures
+were first read as proof the subset destabilised the baseline. It was not:
+every one of the 81 was ALSO failing in the same-tree full run
+(30780762657), so the exclusion caused **zero** of them. The green run I
+compared against was a *different tree* — 32 files, including production
+code, had landed in between. The failures are real regressions carried in
+by `main`, and the subset remains viable. Recorded because the wrong
+inference nearly quarantined 144 real regressions as `flaky`, which would
+have hidden every future pass→fail transition on them.
+
+The full suite is required for now, with `strict` retained. PRs do not
 serialize: each runs its own ~37 min concurrently and merges when green, so
 throughput is unchanged and only per-PR latency rises. The cost is a real
 regression `strict` used to prevent — a PR green against an older `main` can
