@@ -2341,3 +2341,14 @@ Notes:
 - Review gate: all-change strict OpenSpec, semantic presence checks, exact-head security review, required CI.
 - Publish/cleanup: one spec-only corrective PR; no runtime/deploy/authority mutation; remove after verified merge.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-correct-sandbox-admission-contract-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Establish private conversation custody
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/private-conversation-custody-20260803`.
+- Lane state: Active; exact STATUS claim for the missing app-conversation custody prerequisite.
+- Worktree: `C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803`.
+- Purpose: build one exportable `private_universe` custody mode without settling other user-selectable modes or implementing Slack ingress.
+- Review gate: strict OpenSpec, TDD/mutation evidence, mirror parity, exact-head independent security review, required CI.
+- Publish/cleanup: one prerequisite PR; no deploy, app activation, or production-secret mutation; remove after verified merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/_PURPOSE.md`.
