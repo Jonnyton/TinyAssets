@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -508,6 +509,7 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
     results: dict[str, dict] = {}
     call_count = {"n": 0}
     call_lock = threading.Lock()
+    original_subprocess_run = subprocess.run
 
     def fake_run(*args, **kwargs):
         with call_lock:
@@ -557,6 +559,7 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         for t in threads:
             t.join(timeout=5.0)
 
+    assert subprocess.run is original_subprocess_run
     assert call_count["n"] == 0, (
         "An already-finalized receipt must dedup-hit; no thread should "
         "invoke gh."
