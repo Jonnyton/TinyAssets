@@ -175,6 +175,26 @@ remains blocked on its owner-accepted production B2 authority and SHALL NOT
 receive this local secret. The control-plane vault helper SHALL receive no raw
 API key.
 
+For Engine OS execution admission, the active credential-custody owner SHALL
+resolve the trusted logical requirement's opaque
+`credential_requirement_ref` and digest, and the outbound owner SHALL resolve
+its independent `egress_requirement_ref` and digest. The exact resolved
+objects, digests, workload, profile, binding, grant, and proxy authority SHALL
+agree through an owner-published compatible pairing before credential or
+network access. `source_exec/runner_source_exec` SHALL resolve to no credential
+available to the workload. `inference_only/provider_cli` SHALL expose no raw
+key, token, auth file, `native_secret_ref`, `credential_binding_ref`, or other
+recoverable credential material to model-controlled work; local resolution
+remains inside the authorized executor launch boundary and remote HTTP remains
+inside the same-host credential-blind proxy described above. A caller-supplied
+object, replacement digest, opaque binding reference by itself, generic grant,
+or matching name SHALL NOT satisfy the execution-admission credential
+requirement. No profile SHALL be admitted when either binding or the exact
+compatible pairing is absent, stale, mismatched, malformed, unknown, or
+unpublished. This requirement does not claim a complete credential taxonomy or
+compatibility matrix and does not change retained subscription, VCS, or social
+custody.
+
 After the helper returns, the builder SHALL revalidate the complete overlay and
 SHALL refuse an auth-home path that physically resolves outside the canonical
 universe root. An unknown key, non-string value, malformed vault,
@@ -299,6 +319,24 @@ metadata-service and egress controls remain separate boundaries.
 - **WHEN** any caller attempts to deposit a raw or recoverable `llm_api_key` into the universe vault
 - **THEN** the deposit is rejected before vault, config, assignment, or ledger mutation
 - **AND** requester-local native enrollment guidance contains no secret field while separately owned subscription behavior remains unchanged
+
+#### Scenario: source execution resolves no credential
+
+- **WHEN** `source_exec/runner_source_exec` reaches execution admission
+- **THEN** its exact credential requirement resolves to no credential available to the workload
+- **AND** no vault record, native reference, grant, proxy, environment, or caller field widens it
+
+#### Scenario: provider inference requires an exact credential-blind pairing
+
+- **WHEN** `inference_only/provider_cli` reaches execution admission
+- **THEN** its credential reference and digest and the outbound owner's egress reference and digest match an owner-published compatible pairing
+- **AND** model-controlled work receives no recoverable credential material
+
+#### Scenario: opaque references do not imply compatibility
+
+- **WHEN** the credential and egress bindings are each well-formed but their exact compatible pairing is absent or unpublished
+- **THEN** admission remains held before credential resolution or network access
+- **AND** matching names, grants, proxy handles, or opaque references do not infer compatibility
 
 ### Requirement: Credential alias selection and first-record credential resolution are exact
 

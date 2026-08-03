@@ -391,6 +391,35 @@ The full-platform §14 Track J scenarios remain a separate explicit obligation;
 they exercise subscribers, bidding, read storms, and presence rather than
 credential dereference.
 
+### 10. Engine OS consumes an opaque credential requirement
+
+The Engine OS logical `ExecutionRequirement` carries a
+`credential_requirement_ref` plus digest and an independently owned
+`egress_requirement_ref` plus digest. This change owns the credential pair for
+requester-supplied provider API-key custody. The engine caller, graph, provider,
+backend, and adapter treat it as opaque; none may supply the resolved object,
+replace its digest, or treat a `credential_binding_ref` as a bearer grant or as
+the requirement itself.
+
+For `source_exec/runner_source_exec`, an admissible owner-published pairing
+must resolve to no credential available to the workload. For
+`inference_only/provider_cli`, the resolved credential requirement must prove
+that model-controlled work receives no raw key, token, auth file,
+`native_secret_ref`, `credential_binding_ref`, or other recoverable material.
+CLI/local/in-process resolution remains inside the authorized executor launch
+boundary. Remote HTTP remains credential-blind and may resolve the provider
+reference only inside the outbound owner's non-serializable proxy on the same
+attested requester-controlled host as native custody, never through a legacy
+vault `llm_api_key` record.
+
+The credential and outbound owners must publish an exact compatible pairing
+before either profile is admissible. This decision accepts the opaque
+reference/digest handoff but does not publish a complete credential taxonomy or
+compatibility matrix, does not change retained subscription/VCS/social custody,
+and does not answer the still-open classification of provider model calls under
+outbound caps, request-lineage idempotency, reconciliation, receipts, or batch
+holds. Missing or mismatched owner bindings remain held without fallback.
+
 ## Risks / Trade-offs
 
 - **Legacy users lose immediate raw-key setup** → return existing typed

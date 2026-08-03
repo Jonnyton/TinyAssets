@@ -7,7 +7,7 @@
 ## 2. Owner handoffs
 
 - [x] 2.1 Hand concrete backend-to-profile/guarantee binding, request-bound evidence, and the `job_id`-bound sealed outer capsule (or an explicitly versioned successor wire) to `distributed-execution`, preserving the frozen inner runner versions and all existing `JobCapability` values in this lane.
-- [ ] 2.2 Hand owner-defined egress and credential requirement references/digests to `outbound-boundary-layer` and `credential-vault`; neither taxonomy or compatibility matrix may be represented as complete in this lane.
+- [x] 2.2 Hand owner-defined egress and credential requirement references/digests to `outbound-boundary-layer` and `credential-vault`; neither taxonomy or compatibility matrix may be represented as complete in this lane.
 - [ ] 2.3 Hand authoring false-attestation A0 to the active node-authoring owner so `requires_os_isolation` refuses until a real admitted backend binding exists.
 - [ ] 2.4 Confirm #1784 and its three provider-authority successors retain sole ownership of authority and activation: ordinary provider work binds through `ProviderInvocation`/`ProviderExecutor`, while accepted-market work binds through B2/B13 before ordinary routing.
 

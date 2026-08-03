@@ -40,6 +40,52 @@ Adapter code SHALL receive only a scoped domain, verb, and redacted request/resp
 - **WHEN** adapter code attempts to inspect graph state, environment, request metadata, or proxy errors for credential material
 - **THEN** it receives no secret and the attempt is denied and auditable
 
+### Requirement: Execution admission binds opaque egress and credential requirements
+
+The trusted outbound boundary SHALL resolve the
+`egress_requirement_ref` and digest carried by an Engine OS logical
+`ExecutionRequirement`, while the active credential-custody owner resolves its
+`credential_requirement_ref` and digest. The boundary SHALL require the exact
+resolved objects, digests, workload, profile, grant, destination, and proxy
+authority to agree before network or credential access. A caller-supplied
+object, replacement digest, generic connection grant, or proxy handle SHALL NOT
+satisfy either requirement.
+
+An admitted `source_exec/runner_source_exec` pairing SHALL provide deny-all
+egress and no credential to the workload. An admitted
+`inference_only/provider_cli` pairing SHALL expose only a redacted request to a
+credential-blind provider transport and SHALL expose no raw key, token, auth
+file, native-store locator, or other recoverable credential to model-controlled
+work. Requester-owned remote HTTP SHALL use only the non-serializable scoped
+proxy on the same attested requester-controlled host as native custody, and
+that proxy SHALL resolve the provider-custody native reference rather than a
+legacy vault `llm_api_key` record.
+
+No profile SHALL be admissible until the outbound and credential owners publish
+an exact compatible pairing for it. This requirement defines neither a
+complete egress or credential taxonomy nor a complete compatibility matrix.
+Missing, stale, mismatched, malformed, unknown, or unpublished bindings SHALL
+fail before proxy creation, credential access, or network I/O.
+
+#### Scenario: source execution has no outbound or credential path
+
+- **WHEN** `source_exec/runner_source_exec` reaches boundary admission
+- **THEN** its owner-published pairing resolves to deny-all egress and no credential available to the workload
+- **AND** no grant, proxy, ambient route, or caller-supplied reference widens it
+
+#### Scenario: provider inference remains credential-blind
+
+- **WHEN** `inference_only/provider_cli` uses requester-owned remote HTTP
+- **THEN** the exact egress and credential references and digests resolve to a jointly published compatible pairing
+- **AND** only the same-host non-serializable proxy may resolve native custody and perform network I/O
+- **AND** model-controlled work receives no recoverable credential material
+
+#### Scenario: unpublished compatibility fails closed
+
+- **WHEN** either owner binding is absent or valid on its own but no exact compatible pairing is published
+- **THEN** admission fails before proxy creation, credential access, or network I/O
+- **AND** the runtime does not infer compatibility from matching names, grants, or digests
+
 ### Requirement: Non-MCP APIs use reviewed commons adapters
 Native MCP servers SHALL be discovered at connect time from `{server, auth, scopes}` grants. The non-MCP long tail SHALL use reviewed, remixable, attributed commons adapters generated mechanically from OpenAPI into MCP-shaped actions and run as workflows; their generated surfaces SHALL be scoped, typed, cap-aware, and credential-blind before a universe can bind them. Connecting to an API is a universe action, not a platform integration ticket.
 
