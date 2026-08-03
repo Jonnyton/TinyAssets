@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import pickle
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -11,12 +12,14 @@ import pytest
 
 import tinyassets.provider_work_authority as provider_authority
 import tinyassets.storage.provider_work_authority as provider_store
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationLaunchRequest,
     ProviderInvocationReservationRequest,
     ProviderInvocationReservationState,
     ProviderUniverseWorkAuthority,
+    ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
     ProviderWorkBindingFence,
@@ -402,7 +405,13 @@ def _ledger_fixture(tmp_path):
     authority = ProviderUniverseWorkAuthority(
         root=root,
         binding=binding,
+        principal_id="acct_alice",
         actor_id="daemon_cloud_drain",
+        execution_subject=ExecutionSubject(
+            kind=ExecutionSubjectKind.BRANCH_VERSION,
+            ref="branch_cloud_drain@abc12345",
+            digest=f"sha256:{'c' * 64}",
+        ),
         branch_def_id="branch_cloud_drain",
         branch_version_id="branch_cloud_drain@abc12345",
         operation="repository_spec_delivery",
@@ -444,6 +453,112 @@ def test_universe_receipt_is_dark_bounded_and_restart_safe(tmp_path) -> None:
     assert not {"credential", "credential_reference", "token"} & set(payload)
     assert payload["credential_reference_digest"] == (binding.credential_reference_digest)
     assert store.list_reservations(receipt.receipt_id) == ()
+
+
+def test_agent_invocation_receipt_has_manifest_subject_without_branch_lineage(
+    tmp_path,
+) -> None:
+    store = SQLiteProviderWorkAuthorityStore(
+        tmp_path,
+        clock=lambda: NOW,
+        allow_test_fixtures=True,
+    )
+    binding = store.install_test_binding(
+        _seed(
+            allowed_operations=("agent_invocation",),
+            allowed_roles=("agent_runtime",),
+            max_invocations=1,
+            max_tokens=2_000,
+            max_cost_microunits=50_000,
+        )
+    ).record
+    assert binding is not None
+    root = ProviderUniverseWorkRoot(
+        work_item_kind="agent_invocation",
+        work_item_id="agent_invocation_01",
+    )
+    authority = ProviderUniverseWorkAuthority(
+        root=root,
+        binding=binding,
+        principal_id=f"sha256:{'1' * 64}",
+        actor_id="agent_invocation_01",
+        execution_subject=ExecutionSubject(
+            kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
+            ref="agent_manifest_01",
+            digest=f"sha256:{'2' * 64}",
+        ),
+        operation="agent_invocation",
+        role="agent_runtime",
+        executor_class="cloud",
+        max_invocations=1,
+        max_tokens=2_000,
+        max_cost_microunits=50_000,
+        expires_at="2026-08-01T07:00:00.000000Z",
+        agent_invocation_command_id="agent_invocation_command_01",
+        agent_invocation_command_digest=f"sha256:{'3' * 64}",
+        agent_invocation_generation=1,
+    )
+    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+        ProviderWorkReceiptService(
+            store,
+            _UniverseWorkResolver(authority),
+        ).issue(root)
+    receipt = provider_authority._receipt_from_authority(
+        authority,
+        created_at="2026-08-01T06:00:00.000000Z",
+    )
+
+    assert receipt.schema_version == 2
+    assert receipt.execution_subject == authority.execution_subject
+    assert receipt.branch_def_id is None
+    assert receipt.branch_version_id is None
+    assert receipt.agent_invocation_command_id == "agent_invocation_command_01"
+    assert receipt.agent_invocation_generation == 1
+
+
+def test_legacy_v1_branch_receipt_remains_readable(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    current = service.issue(root).record
+    assert current is not None
+    payload = current.to_dict()
+    for key in (
+        "execution_subject",
+        "agent_invocation_command_id",
+        "agent_invocation_command_digest",
+        "agent_invocation_generation",
+    ):
+        del payload[key]
+    payload["schema_version"] = 1
+    payload["receipt_digest"] = f"sha256:{'0' * 64}"
+    provisional = ProviderUniverseWorkReceipt.from_dict(payload)
+    legacy = replace(provisional, receipt_digest=provisional.expected_digest())
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        connection.execute("DELETE FROM provider_work_receipts")
+        connection.execute(
+            """
+            INSERT INTO provider_work_receipts (
+                receipt_id, receipt_digest, generation, state,
+                work_item_kind, work_item_id, universe_id, binding_id,
+                binding_generation, binding_digest, expires_at, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                legacy.receipt_id,
+                legacy.receipt_digest,
+                legacy.generation,
+                legacy.state.value,
+                legacy.work_item_kind,
+                legacy.work_item_id,
+                legacy.universe_id,
+                legacy.binding_id,
+                legacy.binding_generation,
+                legacy.binding_digest,
+                legacy.expires_at,
+                json.dumps(legacy.to_dict(), sort_keys=True, separators=(",", ":")),
+            ),
+        )
+
+    assert store.get_receipt(legacy.receipt_id) == legacy
 
 
 @pytest.mark.parametrize(
@@ -749,9 +864,7 @@ def _armed_carrier_result(tmp_path):
         )
     ).record
     assert reservation is not None
-    result = store.arm_launch(
-        ProviderInvocationLaunchRequest.from_reservation(reservation)
-    )
+    result = store.arm_launch(ProviderInvocationLaunchRequest.from_reservation(reservation))
     assert result.record is not None
     assert result.mint_proof is not None
     return receipt, claim, result
@@ -792,9 +905,7 @@ def _armed_carrier(tmp_path):
         )
     ).record
     assert reservation is not None
-    return store.arm_launch_carrier(
-        ProviderInvocationLaunchRequest.from_reservation(reservation)
-    )
+    return store.arm_launch_carrier(ProviderInvocationLaunchRequest.from_reservation(reservation))
 
 
 def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> None:
@@ -809,10 +920,13 @@ def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> 
     assert carrier.role == "writer"
     assert carrier.max_tokens == 20_000
     assert carrier.assignment_generation == 3
-    assert carrier.validate_for_call(
-        role="writer",
-        operation="repository_spec_delivery",
-    ) == "codex"
+    assert (
+        carrier.validate_for_call(
+            role="writer",
+            operation="repository_spec_delivery",
+        )
+        == "codex"
+    )
     with pytest.raises(PermissionError, match="consumed"):
         carrier.validate_for_call(
             role="writer",
@@ -883,11 +997,17 @@ def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> N
     mint_proof = result.mint_proof
 
     provider_authority._mint_provider_invocation_carrier(
-        receipt, claim, armed, mint_proof,
+        receipt,
+        claim,
+        armed,
+        mint_proof,
     )
     with pytest.raises(PermissionError, match="proof"):
         provider_authority._mint_provider_invocation_carrier(
-            receipt, claim, armed, mint_proof,
+            receipt,
+            claim,
+            armed,
+            mint_proof,
         )
 
 
@@ -907,7 +1027,10 @@ def test_store_mint_proof_rejects_recomputed_reservation_identity(tmp_path) -> N
 
     with pytest.raises(PermissionError, match="another reservation"):
         provider_authority._mint_provider_invocation_carrier(
-            receipt, claim, forged, result.mint_proof,
+            receipt,
+            claim,
+            forged,
+            result.mint_proof,
         )
 
 
@@ -944,10 +1067,13 @@ def test_self_consistent_forged_reservation_cannot_mint_or_validate(tmp_path) ->
         armed,
         result.mint_proof,
     )
-    assert carrier.validate_for_call(
-        role="writer",
-        operation="repository_spec_delivery",
-    ) == "codex"
+    assert (
+        carrier.validate_for_call(
+            role="writer",
+            operation="repository_spec_delivery",
+        )
+        == "codex"
+    )
 
 
 def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
@@ -987,17 +1113,17 @@ def test_abandoned_mint_proof_and_carrier_release_process_registry(tmp_path) -> 
     del result
     del abandoned
     gc.collect()
-    assert (
-        abandoned_id
-        not in provider_store._ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS
-    )
+    assert abandoned_id not in provider_store._ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS
 
     receipt, claim, result = _armed_carrier_result(tmp_path / "minted")
     armed = result.record
     mint_proof = result.mint_proof
     proof_id = mint_proof._proof_id
     carrier = provider_authority._mint_provider_invocation_carrier(
-        receipt, claim, armed, mint_proof,
+        receipt,
+        claim,
+        armed,
+        mint_proof,
     )
     carrier_id = carrier._carrier_id
     assert proof_id not in provider_store._ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS

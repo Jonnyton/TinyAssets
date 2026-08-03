@@ -39,6 +39,21 @@ def review_allows_merge(*, branch: str, head: str, body: str, force: bool = Fals
     )
 
 
+def ledger_edit_needs_receipt(additions: str) -> bool:
+    """Does a `known-failing-tests.txt` edit need an exact-head review receipt?
+
+    Only a provably deletion-only edit is exempt: removing quarantine lines is
+    the maintenance the gate itself forces and only tightens the ratchet.
+    ADDING a line is the bypass direction.
+
+    Decided on the API's `additions` COUNT, never on the diff text: GitHub
+    omits `patch` for binary files and drops it on large diffs, so a
+    patch-grep reads "no additions" and fails OPEN (Codex review 2026-08-02).
+    Anything that is not a clean numeric zero keeps the requirement.
+    """
+    return additions.strip() != "0"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--branch", required=True)
@@ -50,7 +65,21 @@ def main() -> int:
         help="Demand the exact-head review receipt regardless of branch name "
         "(used for PRs touching gate-defining files).",
     )
+    parser.add_argument(
+        "--ledger-additions",
+        metavar="COUNT",
+        help="Ask only whether a known-failing-tests.txt edit with this many "
+        "added lines needs a receipt. Prints exempt/receipt-required and "
+        "exits 0/2. Ignores every other argument's policy.",
+    )
     args = parser.parse_args()
+
+    if args.ledger_additions is not None:
+        if ledger_edit_needs_receipt(args.ledger_additions):
+            print("receipt-required")
+            return 2
+        print("exempt")
+        return 0
 
     try:
         body = args.body_file.read_text(encoding="utf-8")

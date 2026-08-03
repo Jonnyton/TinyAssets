@@ -229,3 +229,54 @@ No workflow was created or run and no external effect was triggered.
 The structured live commons still contained no public definition authored by a
 different creator, so a truthful rendered cross-user blend remains unproven.
 This acceptance traffic is not independent organic-use evidence.
+
+## [2026-08-02 15:54 PDT] UNIVERSE CUSTOM AGENTS FOLDBACK
+
+The canonical public canary passed with the exact seven advertised handles:
+`python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
+--assert-handles --verbose`. A direct supporting status probe reported live
+release `7256335820ef2247c4d7880455a67d88f5dc5c3d`, whose history contains the
+custom-agent implementation merge `ba87b1dd89986ad2c9e37880fc7a34467569f9b5`.
+
+The rendered one-tab, identity-checked incognito Claude.ai conversation above
+is the acceptance proof for this change: it published public definition
+`agent_01kyzgwbw2gxnhqzdkqmnsg71b`, created and privately read back binding
+`agent_binding_01kyzgwjgnfb98f1c7wht4kpgm`, and exported the definition with
+its fingerprint and safe origin metadata intact.
+
+A freshness check of public GitHub issues/PRs and the available production
+status evidence found no independent post-fix custom-agent use. The rendered
+acceptance traffic is synthetic and is not counted as organic use. Clean
+organic use therefore remains unproven and is retained as a STATUS monitoring
+item rather than overstated as acceptance evidence.
+
+## [2026-08-02 16:25 PDT] CHATGPT OAUTH CONTINUITY RETRY
+
+TAB HYGIENE: 1 host-visible ChatGPT tab throughout; Temporary Chat was on,
+model was Instant, and TinyAssets was visibly attached before each prompt.
+
+Asked: `i added TinyAssets — can you check whether my connector is working and
+tell me what it can see?`
+
+ChatGPT rendered `Reconnect TinyAssets` because the connection had expired.
+Reconnect and Connect completed successfully in the same tab and returned
+through `link_success=true`. The original call did not resume into a rendered
+tool result.
+
+## [2026-08-02 16:29 PDT] USER BUG post-OAuth call still has no result
+
+Returned to the exact conversation, visibly reattached TinyAssets, and asked:
+`can you try that TinyAssets connector check again now?` The user turn was
+preserved, but no assistant or tool result rendered before the 120-second
+driver timeout. No principal fingerprint was shown, so the authenticated-call
+acceptance did not pass. Full driver trace is local and ignored at
+`output/chatgpt_chat_trace.md`.
+
+## [2026-08-02 16:32 PDT] POST-FIX WATCH
+
+Freshness check: `origin/main`
+`9f8975ea51b063d868b89f25b080fe03606feb8b`; public repository issues/PRs plus
+the available session and audit evidence showed no independent clean ChatGPT
+OAuth use. This synthetic failed retry is not organic-use evidence. Keep the
+STATUS monitoring watch open and leave both OpenSpec acceptance checkboxes
+unchecked.

@@ -133,6 +133,12 @@ The system MUST persist separate canonical activation, agent-invocation, provide
 - **THEN** recovery reconciles the same activation, agent-invocation, provider-work, and continuation identities before any retry
 - **AND** a stale or alternate executor cannot spend or finalize output under an invalid epoch or lease
 
+#### Scenario: Concurrent launch contenders observe one authoritative call
+- **WHEN** multiple current workers concurrently execute the same admitted invocation
+- **THEN** exactly one worker may cross the provider-call boundary
+- **AND** contenders observing an unclosed launch receive a typed concurrent-launch blocker rather than raw storage authority errors
+- **AND** contenders observing the terminal outcome replay that exact outcome without another provider call
+
 #### Scenario: Runtime retries without progress
 - **WHEN** heartbeats or retries continue without a manifest, admitted invocation, provider result, terminal typed output, or explicit durable blocker transition within the configured bound
 - **THEN** private health reports no useful progress and raises the configured alarm

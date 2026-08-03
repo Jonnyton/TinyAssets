@@ -1399,3 +1399,85 @@ fresh-host rollback edges found later.
   OpenSpec change remains incomplete.
 - **What I would do differently:** separate ambient fleet counters from tracked
   source state before dispatch so a foldback worker starts with a clean tree.
+
+## 2026-08-02 — bounded custom-agent provider outcome
+
+- **What surprised me:** initializing a SQLite schema with `executescript`
+  inside the finalization fence silently committed the caller's transaction;
+  the RED test exposed that the apparent atomic write no longer had a live
+  transaction.
+- **Pattern worth capturing:** initialize schemas before opening a mutation
+  fence, then CAS the launched reservation and insert its inert typed outcome
+  in one transaction. If authority disappears after the paid call returns,
+  persist an indeterminate blocker and discard the output.
+- **What I would do differently:** include transaction-liveness and
+  authority-loss-during-call tests in the first test batch, alongside timeout
+  and oversized-output cases.
+
+## 2026-08-02 — uncertain provider-call restart fence
+
+- **What surprised me:** the persisted `launch_started` state is enough to
+  prevent remint, but not enough to decide when a previous process has really
+  stopped; the original durable claim expiry supplies that missing time fence.
+- **Pattern worth capturing:** pre-launch recovery may resume the same IDs,
+  while post-launch recovery must first refuse normal execution, wait out the
+  original claim window, and then close the same reservation as indeterminate.
+- **What I would do differently:** make each restart test construct a fresh
+  service from the beginning; reusing the original object proves replay but
+  does not prove restart recovery.
+
+## 2026-08-02 — no-mint useful-progress health
+
+- **What surprised me:** reusing the transition validator from an observation
+  path briefly registered a spend-capable grant even though the caller never
+  received it. Read-only projections need validation factored below minting.
+- **Pattern worth capturing:** progress is the newest exact canonical owner
+  transition, not liveness noise. Bind alarm identity to that record digest
+  plus the configured threshold, and derive alarm time from the milestone so
+  concurrent observers converge byte-for-byte.
+- **What I would do differently:** design observation APIs around a pure
+  authority validator first, then let mutation paths wrap that result in
+  one-shot capabilities.
+## 2026-08-02 — dark background target holds
+
+- **What surprised me:** task 2.6 names queue behavior, but task 5.3 still owns
+  concrete BranchTask shape and runtime wiring; the safe slice is the dark CAS
+  contract both queue generations can implement without activating either.
+  Independent review also exposed that a correct projection is unsafe unless
+  the transition service itself enforces which hold reasons may exit automatically.
+- **Pattern worth capturing:** preserve exact typed binding/attempt fences in a
+  held owner record, then make automatic recovery prove the same records while
+  authenticated repair must rotate the binding and never revive the attempt.
+- **What I would do differently:** start with typed fences rather than duplicate
+  scalar IDs/digests/generations; that would have made the first green diff
+  smaller and stronger.
+
+## 2026-08-02 - Windows lifecycle supervisor escape
+
+- **What surprised me:** the intended private-file capture invariant had
+  regressed into anonymous pipes even though the workflow still advertised a
+  five-minute supervisor bound; descendant-owned pipe handles can outlive that
+  bound without any product process still being the root owner.
+- **Pattern worth capturing:** prove a timeout at the exact output-handle
+  boundary, keep the PR draft until the real Windows runner emits the
+  lifecycle child's replayed phase notices and the supervisor's own terminal
+  checkpoint, and treat a green outer job alone as insufficient evidence.
+- **What I would do differently:** include the workflow path touch and the
+  release-critical declaration in the first PR increment so exact CI evidence
+  and the scope guard start together.
+# Canonical agent admission rejection repair (2026-08-02)
+
+- Surprised: structural digest/link validation still let raw database rows reach a real provider carrier; a witness must be server-sealed, not merely self-consistent.
+- Pattern: bind ephemeral drafts to an exact request nonce, persist a keyed admission witness atomically, and revalidate it on every durable authority read.
+- Differently: test claim expiry with an advanced restart clock from the first recovery slice; same-time restart tests hid the pre-launch dead-end.
+## 2026-08-02 — cloud-agent shaped load
+
+- **What surprised me:** a 64-contender launch exposed a raw storage
+  `PermissionError` that every eight-way unit race had missed; increasing the
+  population changed which side of finalization losing workers observed.
+- **Pattern worth capturing:** load evidence needs both process-visible effect
+  markers and exact blocker assertions. Row-count convergence alone can be
+  green while the service leaks the wrong error or crosses a process boundary.
+- **What I would do differently:** start concurrency acceptance with spawned
+  process single-flight plus revocation-during-replay, then add thread load for
+  density, rather than treating thread contention as a proxy for worker loss.

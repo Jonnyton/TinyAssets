@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "drain_review_gate.py"
 WORKFLOW = (
     Path(__file__).resolve().parents[1]
@@ -67,6 +69,47 @@ def test_require_receipt_denies_ordinary_branch_without_receipt(tmp_path: Path) 
 
     assert completed.returncode == 2
     assert completed.stdout.strip() == "deny"
+
+
+@pytest.mark.parametrize(
+    "additions,expected_rc",
+    [
+        ("0", 0),  # provably deletion-only: the ratchet's own maintenance
+        ("1", 2),
+        ("483", 2),
+        ("", 2),  # API failure / field absent -> fail CLOSED
+        ("null", 2),  # jq emitted null (patch omitted on large/binary diffs)
+        ("  0  ", 0),  # whitespace tolerated, still provably zero
+        ("0x0", 2),  # not a clean numeric zero
+    ],
+)
+def test_ledger_edit_receipt_policy_fails_closed(
+    tmp_path: Path, additions: str, expected_rc: int
+) -> None:
+    # Regression for the fail-open Codex found: deciding from `.patch` text made
+    # an unreadable diff look like "no additions" and waved the edit through.
+    # Exercised through the CLI the workflow actually calls, exit codes included.
+    body = tmp_path / "empty.md"
+    body.write_text("", encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--ledger-additions",
+            additions,
+            "--branch",
+            "fix/ordinary",
+            "--head",
+            HEAD,
+            "--body-file",
+            str(body),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == expected_rc
+    assert completed.stdout.strip() == ("exempt" if expected_rc == 0 else "receipt-required")
 
 
 def test_require_receipt_allows_ordinary_branch_with_receipt(tmp_path: Path) -> None:

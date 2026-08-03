@@ -138,16 +138,27 @@ jobs:
           # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
           # itself forces (stale quarantine entries fail the run) and only
           # tightens the ratchet. ADDING a quarantine line is the bypass
-          # direction and keeps the receipt requirement. Fail closed if the
-          # patch cannot be read.
+          # direction and keeps the receipt requirement.
+          #
+          # Decided on the `additions` COUNT, never on `.patch`: GitHub omits
+          # `patch` for binary files and drops it entirely on large diffs, so a
+          # patch-grep silently sees "no additions" and waves the edit through
+          # (Codex review 2026-08-02, finding 1 — this exact fail-open). The
+          # count is trusted metadata and is always present. Anything that is
+          # not a clean numeric 0 keeps the receipt requirement.
           if [ "$GATE_HITS" = ".github/known-failing-tests.txt" ]; then
-            if LEDGER_PATCH="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
-                --jq '.[] | select(.filename==".github/known-failing-tests.txt") | .patch' 2>/dev/null)"; then
-              ADDED="$(printf '%s\n' "$LEDGER_PATCH" | grep -E '^\+[^+]' | grep -vE '^\+\s*(#|$)' || true)"
-              if [ -z "$ADDED" ]; then
-                echo "scope guard: ledger deletion-only edit — receipt not required"
-                GATE_HITS=""
-              fi
+            LEDGER_ADDS="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
+              --jq '.[] | select(.filename==".github/known-failing-tests.txt") | .additions' \
+              2>/dev/null | head -1)"
+            # The decision itself lives in the policy script so it is unit
+            # tested; this step only supplies the count. Non-numeric or empty
+            # (API failure, omitted field) => receipt required.
+            if python scripts/drain_review_gate.py --ledger-additions "${LEDGER_ADDS}" \
+                --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file /dev/null; then
+              echo "scope guard: ledger deletion-only edit — receipt not required"
+              GATE_HITS=""
+            else
+              echo "ledger edit adds lines (or the count was unreadable) — receipt required"
             fi
           fi
 

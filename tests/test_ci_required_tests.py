@@ -128,6 +128,24 @@ def test_vacuity_floor_is_meaningfully_high():
     assert gate.MIN_RAN_FLOOR >= 5000
 
 
+def test_deselect_everything_attack_is_blocked(tmp_path):
+    """The exact bypass shape: keep a few passing tests, drop the rest.
+
+    Such a run yields zero new failures and zero stale entries — green under
+    the pre-2026-08-02 logic. Only the ran-count floor catches it.
+    """
+    suite = ET.Element("testsuite")
+    for i in range(5):
+        suite.append(_tc(file="tests/test_x.py", classname="tests.test_x", name=f"test_{i}"))
+    junit = tmp_path / "tiny.xml"
+    ET.ElementTree(suite).write(junit, encoding="utf-8")
+
+    failing, ran = gate.collect_outcomes(junit)
+    assert failing == set()  # nothing failed...
+    assert len(ran) == 5  # ...because almost nothing ran
+    assert gate.vacuity_failure(len(ran)) is not None  # and that is the finding
+
+
 def test_repo_quarantine_file_is_wellformed():
     """The committed list must always parse — a malformed line fails the gate."""
     _, _, problems = gate.parse_quarantine(gate.QUARANTINE)

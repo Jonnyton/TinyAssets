@@ -299,9 +299,236 @@ class PreparedCloudContinuation:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentInvocationCloudContinuation:
+    """Prepared canonical continuation for one admitted agent invocation."""
+
+    schema_version: int
+    work_item_kind: str
+    continuation_id: str
+    generation: int
+    continuation_digest: str
+    state: CloudContinuationState
+    principal_id: str
+    universe_id: str
+    automation_id: str
+    activation_epoch: int
+    activation_lease_id: str
+    execution_subject: ExecutionSubject
+    command_id: str
+    command_digest: str
+    invocation_id: str
+    invocation_generation: int
+    invocation_digest: str
+    provider_binding_id: str
+    provider_binding_generation: int
+    provider_binding_digest: str
+    receipt_id: str
+    receipt_digest: str
+    claim_id: str
+    claim_generation: int
+    claim_digest: str
+    reservation_id: str
+    reservation_digest: str
+    typed_input_digest: str
+    max_tokens: int
+    max_cost_microunits: int
+    created_at: str
+    updated_at: str
+
+    _FIELDS = frozenset(
+        {
+            "schema_version",
+            "work_item_kind",
+            "continuation_id",
+            "generation",
+            "continuation_digest",
+            "state",
+            "principal_id",
+            "universe_id",
+            "automation_id",
+            "activation_epoch",
+            "activation_lease_id",
+            "execution_subject",
+            "command_id",
+            "command_digest",
+            "invocation_id",
+            "invocation_generation",
+            "invocation_digest",
+            "provider_binding_id",
+            "provider_binding_generation",
+            "provider_binding_digest",
+            "receipt_id",
+            "receipt_digest",
+            "claim_id",
+            "claim_generation",
+            "claim_digest",
+            "reservation_id",
+            "reservation_digest",
+            "typed_input_digest",
+            "max_tokens",
+            "max_cost_microunits",
+            "created_at",
+            "updated_at",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported schema_version")
+        if self.work_item_kind != "agent_invocation":
+            raise ValueError("work_item_kind must be agent_invocation")
+        if self.state is not CloudContinuationState.PREPARED:
+            raise ValueError("agent continuation must be prepared")
+        for name in (
+            "continuation_id",
+            "principal_id",
+            "universe_id",
+            "automation_id",
+            "activation_lease_id",
+            "command_id",
+            "invocation_id",
+            "provider_binding_id",
+            "receipt_id",
+            "claim_id",
+            "reservation_id",
+        ):
+            _text(getattr(self, name), name)
+        for name in (
+            "generation",
+            "activation_epoch",
+            "invocation_generation",
+            "provider_binding_generation",
+            "claim_generation",
+        ):
+            _integer(getattr(self, name), name, minimum=1)
+        for name in ("max_tokens", "max_cost_microunits"):
+            _integer(getattr(self, name), name, minimum=0)
+        if (
+            not isinstance(self.execution_subject, ExecutionSubject)
+            or self.execution_subject.kind
+            is not ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST
+        ):
+            raise ValueError("execution_subject must be an agent runtime manifest")
+        for name in (
+            "continuation_digest",
+            "command_digest",
+            "invocation_digest",
+            "provider_binding_digest",
+            "receipt_digest",
+            "claim_digest",
+            "reservation_digest",
+            "typed_input_digest",
+        ):
+            _digest(getattr(self, name), name)
+        _timestamp_text(self.created_at, "created_at")
+        _timestamp_text(self.updated_at, "updated_at")
+        if self.continuation_digest != self.expected_digest():
+            raise ValueError("continuation_digest does not match content")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "work_item_kind": self.work_item_kind,
+            "continuation_id": self.continuation_id,
+            "generation": self.generation,
+            "continuation_digest": self.continuation_digest,
+            "state": self.state.value,
+            "principal_id": self.principal_id,
+            "universe_id": self.universe_id,
+            "automation_id": self.automation_id,
+            "activation_epoch": self.activation_epoch,
+            "activation_lease_id": self.activation_lease_id,
+            "execution_subject": self.execution_subject.to_dict(),
+            "command_id": self.command_id,
+            "command_digest": self.command_digest,
+            "invocation_id": self.invocation_id,
+            "invocation_generation": self.invocation_generation,
+            "invocation_digest": self.invocation_digest,
+            "provider_binding_id": self.provider_binding_id,
+            "provider_binding_generation": self.provider_binding_generation,
+            "provider_binding_digest": self.provider_binding_digest,
+            "receipt_id": self.receipt_id,
+            "receipt_digest": self.receipt_digest,
+            "claim_id": self.claim_id,
+            "claim_generation": self.claim_generation,
+            "claim_digest": self.claim_digest,
+            "reservation_id": self.reservation_id,
+            "reservation_digest": self.reservation_digest,
+            "typed_input_digest": self.typed_input_digest,
+            "max_tokens": self.max_tokens,
+            "max_cost_microunits": self.max_cost_microunits,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def build(cls, **values: Any) -> AgentInvocationCloudContinuation:
+        if "continuation_digest" in values:
+            raise ValueError("continuation_digest is server-computed")
+        provisional = object.__new__(cls)
+        for name in cls._FIELDS - {"continuation_digest"}:
+            if name not in values:
+                raise ValueError(f"missing {name}")
+            object.__setattr__(provisional, name, values[name])
+        if set(values) != cls._FIELDS - {"continuation_digest"}:
+            raise ValueError("agent continuation fields do not match schema")
+        object.__setattr__(
+            provisional,
+            "continuation_digest",
+            f"sha256:{'0' * 64}",
+        )
+        object.__setattr__(provisional, "continuation_digest", provisional.expected_digest())
+        provisional.__post_init__()
+        return provisional
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> AgentInvocationCloudContinuation:
+        if not isinstance(value, dict) or set(value) != cls._FIELDS:
+            raise ValueError("agent continuation fields do not match schema")
+        payload = dict(value)
+        payload["state"] = CloudContinuationState(payload["state"])
+        payload["execution_subject"] = ExecutionSubject.from_dict(
+            payload["execution_subject"]
+        )
+        return cls(**payload)
+
+    def expected_digest(self) -> str:
+        payload = self.to_dict()
+        del payload["continuation_digest"]
+        return _content_digest(payload)
+
+    def matches_preparation(self, other: AgentInvocationCloudContinuation) -> bool:
+        if not isinstance(other, AgentInvocationCloudContinuation):
+            return False
+        left = self.to_dict()
+        right = other.to_dict()
+        for payload in (left, right):
+            del payload["continuation_digest"]
+            del payload["created_at"]
+            del payload["updated_at"]
+        return left == right
+
+    def matches_armed_reconciliation(
+        self,
+        other: AgentInvocationCloudContinuation,
+    ) -> bool:
+        """Match immutable lineage after the reservation advances to launch-started."""
+        if not isinstance(other, AgentInvocationCloudContinuation):
+            return False
+        left = self.to_dict()
+        right = other.to_dict()
+        for payload in (left, right):
+            del payload["continuation_digest"]
+            del payload["reservation_digest"]
+            del payload["created_at"]
+            del payload["updated_at"]
+        return left == right
+
+
+@dataclass(frozen=True, slots=True)
 class CloudContinuationWriteResult:
     outcome: CloudContinuationWriteOutcome
-    record: PreparedCloudContinuation | None
+    record: PreparedCloudContinuation | AgentInvocationCloudContinuation | None
 
 
 class CloudContinuationPreparationError(ValueError):
@@ -1158,8 +1385,7 @@ class PreparedCloudContinuationActivationService:
             current is not None and current.state is AutomationActivationState.ACTIVE,
             current is not None and current.executor_class is AutomationActivationExecutor.CLOUD,
             current is not None and current.epoch == continuation.activation_epoch + 1,
-            current is not None
-            and current.subject == _branch_execution_subject(self._definition),
+            current is not None and current.subject == _branch_execution_subject(self._definition),
             current is not None and current.lease_id == request.lease_id,
         )
         if not all(exact):
@@ -1531,7 +1757,9 @@ class PreparedCloudContinuationProviderResolver:
         return ProviderUniverseWorkAuthority(
             root=root,
             binding=provider,
+            principal_id=definition.principal_id,
             actor_id=actor_id,
+            execution_subject=_branch_execution_subject(definition),
             branch_def_id=definition.branch_def_id,
             branch_version_id=definition.branch_version_id,
             operation="repository_spec_delivery",
@@ -1545,6 +1773,7 @@ class PreparedCloudContinuationProviderResolver:
 
 
 __all__ = [
+    "AgentInvocationCloudContinuation",
     "CloudContinuationAttemptAudienceResolver",
     "CloudContinuationActivationError",
     "CloudContinuationActivationRequest",

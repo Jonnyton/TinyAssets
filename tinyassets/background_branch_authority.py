@@ -71,6 +71,7 @@ class BackgroundBranchHoldReason(str, Enum):
     SOURCE_GENERATION_MISMATCH = "source_generation_mismatch"
     INDETERMINATE_PRIOR_ATTEMPT = "indeterminate_prior_attempt"
     BINDING_MISSING = "binding_missing"
+    BINDING_STALE = "binding_stale"
     BINDING_REVOKED = "binding_revoked"
     BINDING_EXPIRED = "binding_expired"
     BINDING_EXHAUSTED = "binding_exhausted"

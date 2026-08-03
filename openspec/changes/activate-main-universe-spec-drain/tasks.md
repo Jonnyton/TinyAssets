@@ -27,5 +27,6 @@
 ## 5. Acceptance and foldback
 
 - [ ] 5.1 Run focused authority, security, collision, restart, receipt-reconciliation, and §14 concurrency/load tests plus the public canary; preserve dated commands, environment, revision, and artifacts.
+  - [x] 5.1a Accept the generic runtime's shaped local prerequisite at reviewed head `dde16358`: cross-process identity/restart and provider single-flight races pass with explicit local-SQLite/provider-double classification. See `docs/audits/2026-08-02-cloud-agent-production-shaped-load.md`. This does not satisfy the live cloud, public-canary, or production-environment portions of 5.1.
 - [ ] 5.2 Through a rendered chatbot conversation, supply a repository plus spec or patch request, create/import/remix and activate the ordinary Branch composition, then—with the tray disabled and Jonathan's computer off—run at least 24 hours of useful cloud progress including a worker restart; capture phone-chatbot inspect/control/evolve/rollback proof and check for post-fix organic use evidence.
 - [ ] 5.3 After all acceptance evidence and independent review are green, sync the delta idempotently into the main spec, archive the change, retire the STATUS activation row, and leave any unmet organic-use proof as a dated monitoring item.
