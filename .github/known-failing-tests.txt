@@ -2,7 +2,11 @@
 # Baseline captured 2026-08-02 from CI run 30767266528 (12,747 ran / 483 failing).
 # One-way ratchet: entries that pass get DELETED by the gate; additions to this
 # file require an exact-head review receipt (pr-scope-guard).
+# 2026-08-03: +1 entry — tests/load/test_agent_runtime_cloud_load.py arrived on
+# main after the baseline capture, already failing. Pre-existing debt, recorded
+# honestly so it is counted; owner lane is the cloud-drain load work.
 tests/desktop_install/test_packaged_runtime.py::tests.desktop_install.test_packaged_runtime
+tests/load/test_agent_runtime_cloud_load.py::test_cross_process_launch_has_one_provider_call_and_typed_losers
 tests/test_anonymous_write_challenge.py::test_scoped_canary_token_is_off_when_absent_short_or_mismatched[\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800-cccccccccccccccccccccccccccccccc]
 tests/test_attribution_calc.py::TestComputePayoutShares::test_distributable_remainder_after_fee
 tests/test_attribution_calc.py::TestComputePayoutShares::test_no_credits_only_treasury

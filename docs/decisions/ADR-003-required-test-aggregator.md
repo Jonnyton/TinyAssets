@@ -231,6 +231,39 @@ gh api --method DELETE \
 Do **not** add `lint`, `actionlint`, or any other path-filtered workflow as a
 required context.
 
+### After the flip: backfill the open PRs
+
+An open PR that has no `required-tests` result sits on "Expected" and cannot
+merge. Push any commit, or `gh pr update-branch <n>` for BEHIND ones, to
+generate the `synchronize` event that produces one. In practice `main` moves
+often enough here that PRs go BEHIND on their own, so this is self-healing —
+but check the open set right after flipping.
+
+**A conflicted PR produces no run at all.** `pull_request` workflows execute
+against the generated merge ref, which GitHub cannot create while the PR
+conflicts with its base — so on a DIRTY PR *every* `pull_request` workflow is
+silently absent while `pull_request_target` ones still run, and the required
+context stays "Expected" forever. Observed on this very PR on 2026-08-02
+(head `54b25d84`: only the two `_target` checks ran; merging `main` restored
+all six immediately). That state is a conflict signal, not a broken gate —
+resolve the conflict, never weaken the check. Check `gh pr view <n> --json
+mergeStateStatus` before diagnosing a missing required check.
+
+## Evidence of record (2026-08-02)
+
+| Claim | Evidence |
+|---|---|
+| Baseline captured honestly | run `30767266528`: 12,747 ran / **483 failing** across 72 files (up from 189 on 2026-07-22 — fifteen days of ungated, review-less merges) |
+| Ledger absorbs exactly the baseline | run `30768520337`: ran 12,747, failing 483, known-broken 483, **NEW 0, stale 0**, `required-tests` = success |
+| Count is deterministic, not flaky | identical 12,747/483 across two independent runs |
+| Gate goes red on a novel failure | run `30773503892` with one injected failure (reverted in the next commit) |
+| Real runtime | ~26 min serial (a 30-min job timeout killed run `30766011005` at 30:15; raised to 50) |
+| Cannot pass vacuously | `MIN_RAN_FLOOR` = 10,000 vs 12,747 measured; a deselect-everything run yields 0 new failures + 0 stale and is caught *only* by the floor (regression test) |
+| Cannot be neutered by its own PR | scope guard demands an exact-head review receipt for edits to `tests.yml`, `ci_required_tests.py`, `known-failing-tests.txt`, `drain_review_gate.py`; deletion-only ledger edits are exempt via the trusted `additions` count (never `.patch`, which GitHub omits on large/binary diffs — that was a fail-open caught in cross-family review) |
+
+Cross-family review: Codex, two rounds, both `adapt`, all findings addressed
+(`.codex-gate-plan.txt`, `.codex-gate-confirm.txt` trails).
+
 ## Consequences
 
 - A PR that breaks a test can no longer auto-merge to production.
