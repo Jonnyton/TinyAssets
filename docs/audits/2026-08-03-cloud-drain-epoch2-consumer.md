@@ -70,12 +70,21 @@ model only after this revalidation.
 The execution boundary also preserves the activation's immutable published
 Branch version. A canonical `run_branch` continuation goes through direct
 Branch execution, the epoch-2 read model retains the complete activation
-tuple, and `execute_branch_version` persists the trusted daemon/runtime/worker
-identity plus queue lineage. A durable nonterminal run is reconciled as the
-same run identity and never starts a second provider/effect execution.
+tuple and immutable admission actor, and `execute_branch_version` persists the
+trusted daemon/runtime/worker identity plus queue lineage. Each queue task
+atomically reserves exactly one run through a private `branch_task_id` unique
+key. Restart and reservation-race reconciliation require an exact match across
+task, run name, Branch definition/version, universe, actor, daemon, runtime,
+and worker. A public caller-created run with the same display name cannot be
+reused, and a durable nonterminal reservation never starts a second
+provider/effect execution.
 
-Epoch-2 task leases use the existing 30-minute long-node safety envelope while
-the independently refreshed worker descriptor remains limited to 90 seconds.
+Epoch-2 task leases use the existing 30-minute safety envelope while a
+dedicated 30-second heartbeat thread renews the lease during blocking provider
+nodes. Missing ownership, renewal exceptions, or a heartbeat thread that
+cannot stop propagate as execution-authority loss; they cannot be logged and
+then reported as successful work. The independently refreshed worker
+descriptor remains limited to 90 seconds for new claim authority.
 Pending tasks for an activation that already has a running or
 cancel-requested task are excluded in the transactional candidate query, so
 they cannot head-of-line block unrelated automations.
@@ -94,20 +103,21 @@ py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_soul_loop_dispatch.py
 ```
 
-Result after review-finding repairs: `250 passed in 37.11s` across the epoch-2
-consumer, cloud worker, transactional adapter/store, and immutable Branch
-version suites. This includes eight fresh-database, two-worker races; each
-race produced exactly one activation-bound claim winner, plus focused
-immutable-version, restart-reconciliation, long-node lease, and
-head-of-line-starvation proofs. The earlier rebased suite remains `255 passed
-in 40.70s` for the broader dispatcher/goal-pool coverage.
+Result after the second review-finding repairs: `356 passed in 40.95s` across
+the epoch-2 consumer, cloud worker, transactional adapter/store, immutable
+Branch version, v1 lease/dispatcher compatibility, and bug-investigation
+integration suites. This includes queue-run reservation races with exactly one
+winner, forged display-name rejection, full recovery-identity mismatch
+rejection, reservation-loser reconciliation, continuous heartbeats beyond an
+hour, and fail-closed lease-loss proof. The earlier activation-claim race and
+head-of-line-starvation proofs remain covered.
 
 ```text
 py -m ruff check tinyassets/branch_tasks_v2.py tinyassets/cloud_worker.py \
   fantasy_daemon/__main__.py tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_cloud_worker.py
 openspec validate activate-main-universe-spec-drain --strict
-py -m scripts.invariants.mirror_parity
+py scripts/invariants_run.py --check mirror-parity
 git diff --check
 ```
 
@@ -124,9 +134,17 @@ is therefore advisory only. It returned `ADAPT` with six findings: canonical
 lease, mutable Branch-head execution and dropped runtime identity, duplicate
 execution after an incomplete run, and activation head-of-line starvation.
 The restart activation and trusted runtime fields were already repaired; the
-remaining four are now covered by the implementation and focused tests above.
-A second fresh-context review of the final exact head is still required. Its
-immutable PR comment is the post-commit authority for the exact head and
+remaining four are covered by the implementation and focused tests above.
+
+The required second fresh-context review then inspected exact head `ff47949c`
+and returned `ADAPT` on two additional concurrency faults: recovery trusted a
+caller-spoofable, non-unique display name without validating the execution
+identity; and node-boundary-only heartbeats allowed a valid long provider node
+to outlive a fixed lease while renewal loss was logged and ignored. Both are
+now repaired by the atomic private task/run reservation, exact identity gate,
+continuous heartbeat guard, and fail-closed authority-loss propagation above.
+A third fresh-context review of the new exact head is required before merge.
+Its immutable PR comment is the post-commit authority for the exact head and
 verdict, avoiding a documentation-only commit that would invalidate the head
 it reviewed.
 
@@ -147,8 +165,8 @@ cloud automation activation tuple.
 
 ## Temporary drain continuity
 
-At 2026-08-02 19:34 PDT, the local watchdog reported the controller alive,
-attempt 17 active, 17 attempts, five completed slices, and zero consecutive
-failures. One attempt-15 admission collision was recorded, then the supervisor
-admitted attempt 16 automatically. The local bridge remains active until cloud
-acceptance is proven.
+At 2026-08-02 20:18 PDT, the local watchdog reported health `running`, the
+controller alive as PID 19300, attempt 19 reached, five completed slices, and
+one consecutive failed slice. The supervisor remained live and responsible
+for automatic retry. The local bridge remains active until cloud acceptance is
+proven.

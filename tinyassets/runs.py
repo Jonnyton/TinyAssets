@@ -70,6 +70,14 @@ class RunCancelledError(Exception):
     reported as ``status=cancelled``."""
 
 
+class RunExecutionAuthorityLost(RuntimeError):
+    """Raised when a queue-backed run can no longer prove its lease authority."""
+
+
+class BranchTaskRunReservationConflict(RuntimeError):
+    """Raised when a queue BranchTask already owns a durable run reservation."""
+
+
 def runs_db_path(base_path: str | Path) -> Path:
     return Path(base_path) / ".runs.db"
 
@@ -261,12 +269,13 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         token_count    INTEGER,
         daemon_id      TEXT,
         runtime_instance_id TEXT,
-        worker_id      TEXT
+        worker_id      TEXT,
+        branch_task_id TEXT,
+        queue_universe_id TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_runs_branch ON runs(branch_def_id);
     CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
-
     CREATE TABLE IF NOT EXISTS run_events (
         run_id         TEXT NOT NULL,
         step_index     INTEGER NOT NULL,
@@ -431,6 +440,8 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             ("daemon_id",     "TEXT"),
             ("runtime_instance_id", "TEXT"),
             ("worker_id",     "TEXT"),
+            ("branch_task_id", "TEXT"),
+            ("queue_universe_id", "TEXT"),
         ):
             if col not in existing_runs:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
@@ -446,6 +457,11 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_branch_version "
             "ON runs(branch_version_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_branch_task "
+            "ON runs(branch_task_id) "
+            "WHERE branch_task_id IS NOT NULL AND branch_task_id != ''"
         )
     return runs_db_path(base_path)
 
@@ -508,6 +524,14 @@ def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
         "branch_version_id": (
             row["branch_version_id"]
             if "branch_version_id" in col_names
+            else None
+        ),
+        "branch_task_id": (
+            row["branch_task_id"] if "branch_task_id" in col_names else None
+        ),
+        "queue_universe_id": (
+            row["queue_universe_id"]
+            if "queue_universe_id" in col_names
             else None
         ),
     }
@@ -756,6 +780,8 @@ def create_run(
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    branch_task_id: str | None = None,
+    queue_universe_id: str | None = None,
 ) -> str:
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
@@ -764,26 +790,35 @@ def create_run(
         if owner_user_id is not None
         else _resolve_owner_user_id(base_path, daemon_id)
     )
-    with _connect(base_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO runs (
-                run_id, branch_def_id, run_name, thread_id,
-                status, actor, owner_user_id, inputs_json, started_at,
-                branch_version_id, daemon_id, runtime_instance_id,
-                worker_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id, branch_def_id, run_name, thread_id,
-                RUN_STATUS_QUEUED, actor, resolved_owner_user_id,
-                json.dumps(inputs, default=str), _now(),
-                branch_version_id,
-                daemon_id,
-                runtime_instance_id,
-                worker_id,
-            ),
-        )
+    try:
+        with _connect(base_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    run_id, branch_def_id, run_name, thread_id,
+                    status, actor, owner_user_id, inputs_json, started_at,
+                    branch_version_id, daemon_id, runtime_instance_id,
+                    worker_id, branch_task_id, queue_universe_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id, branch_def_id, run_name, thread_id,
+                    RUN_STATUS_QUEUED, actor, resolved_owner_user_id,
+                    json.dumps(inputs, default=str), _now(),
+                    branch_version_id,
+                    daemon_id,
+                    runtime_instance_id,
+                    worker_id,
+                    branch_task_id,
+                    queue_universe_id,
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        if branch_task_id and "runs.branch_task_id" in str(exc):
+            raise BranchTaskRunReservationConflict(
+                f"BranchTask {branch_task_id!r} already has a run reservation"
+            ) from exc
+        raise
     return run_id
 
 
@@ -1420,6 +1455,24 @@ def latest_run_by_name(
     return _row_to_run(row) if row is not None else None
 
 
+def get_run_by_branch_task_id(
+    base_path: str | Path,
+    *,
+    branch_task_id: str,
+) -> dict[str, Any] | None:
+    """Return the one run atomically reserved by a queue BranchTask."""
+    initialize_runs_db(base_path)
+    clean_task_id = str(branch_task_id or "").strip()
+    if not clean_task_id:
+        return None
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM runs WHERE branch_task_id = ? LIMIT 1",
+            (clean_task_id,),
+        ).fetchone()
+    return _row_to_run(row) if row is not None else None
+
+
 def record_event(
     base_path: str | Path, event: RunStepEvent,
 ) -> None:
@@ -2020,6 +2073,8 @@ def _prepare_run(
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
+    branch_task_id: str | None = None,
+    queue_universe_id: str | None = None,
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -2041,6 +2096,8 @@ def _prepare_run(
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
+        branch_task_id=branch_task_id,
+        queue_universe_id=queue_universe_id,
     )
     thread_id = run_id
     with _connect(base_path) as conn:
@@ -2158,6 +2215,8 @@ def _invoke_graph(
             return
         try:
             on_node_status(node_id, status)
+        except RunExecutionAuthorityLost:
+            raise
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Run %s node-status callback failed for %s status=%s",
@@ -3169,6 +3228,7 @@ def execute_branch_version(
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
     _origin_branch_task_id: str = "",
+    _queue_branch_task_id: str = "",
 ) -> RunOutcome:
     """Execute an immutable published Branch version and block to completion."""
     branch = _load_branch_version(base_path, branch_version_id)
@@ -3182,6 +3242,8 @@ def execute_branch_version(
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
+        branch_task_id=_queue_branch_task_id or None,
+        queue_universe_id=_enqueue_universe_id or None,
     )
     enqueue_origin = (
         str(_origin_branch_task_id or "").strip()
@@ -4247,9 +4309,11 @@ __all__ = [
     "NODE_STATUS_RAN",
     "NODE_STATUS_FAILED",
     "ACTIONABLE_BY",
+    "BranchTaskRunReservationConflict",
     "ChildRunAttachmentError",
     "ChildRunAwaitTimeout",
     "RunCancelledError",
+    "RunExecutionAuthorityLost",
     "RunOutcome",
     "RunStepEvent",
     "VALID_RECEIPT_TYPES",
@@ -4265,6 +4329,7 @@ __all__ = [
     "get_future",
     "get_lineage",
     "get_run",
+    "get_run_by_branch_task_id",
     "initialize_runs_db",
     "is_cancel_requested",
     "latest_terminal_run",

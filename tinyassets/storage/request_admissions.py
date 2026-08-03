@@ -1326,6 +1326,23 @@ class RequestAdmissionStore:
             ).fetchone()
         return _task_row(row) if row is not None else None
 
+    def get_v2_task_actor_id(self, branch_task_id: str) -> str:
+        """Return the immutable admission actor bound to a queue task."""
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT a.actor_id
+                FROM branch_tasks_v2 AS t
+                JOIN request_admissions AS a
+                  ON a.admission_id = t.admission_id
+                 AND a.branch_task_id = t.branch_task_id
+                WHERE t.branch_task_id = ?
+                LIMIT 1
+                """,
+                (branch_task_id,),
+            ).fetchone()
+        return str(row["actor_id"] or "") if row is not None else ""
+
     def claim_v2_task(
         self,
         branch_task_id: str,

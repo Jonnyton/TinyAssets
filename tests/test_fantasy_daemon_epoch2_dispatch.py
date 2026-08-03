@@ -202,6 +202,7 @@ def test_epoch2_read_model_retains_immutable_activation_execution_fields(
     assert task.automation_subject_digest == active.subject.digest
     assert task.automation_branch_version == active.immutable_branch_version
     assert task.automation_lease_id == active.lease_id
+    assert task.actor_id == "actor-a"
 
 
 def test_worker_claim_context_is_read_from_canonical_runtime_transaction(
@@ -573,8 +574,9 @@ def test_active_automation_does_not_starve_unrelated_pending_work(
     assert unrelated["branch_task_id"] in candidate_ids
 
 
-def test_epoch2_default_lease_survives_a_long_provider_node(
+def test_epoch2_continuous_heartbeat_survives_a_long_provider_node(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     initialize_author_server(tmp_path)
     now = datetime.now(timezone.utc)
@@ -608,10 +610,63 @@ def test_epoch2_default_lease_survives_a_long_provider_node(
         descriptor_reader=lambda _conn, _worker: descriptor,
     )
     assert claimed is not None
-    current["value"] = now + timedelta(seconds=91)
+    monkeypatch.setattr(
+        daemon_main,
+        "_epoch2_adapter_for_universe",
+        lambda _universe: adapter,
+    )
+    heartbeat, _node_status = daemon_main._build_branch_task_observers(
+        tmp_path / "universe-a",
+        claimed,
+    )
+    heartbeat_count = 0
+    renewed_past_hour = threading.Event()
+
+    def advance_and_heartbeat(*, force: bool = False) -> None:
+        nonlocal heartbeat_count
+        current["value"] += timedelta(seconds=1200)
+        heartbeat(force=force)
+        heartbeat_count += 1
+        if heartbeat_count >= 4:
+            renewed_past_hour.set()
+
+    with daemon_main._continuous_branch_task_heartbeat(
+        advance_and_heartbeat,
+        interval_seconds=0.001,
+    ) as assert_authority:
+        assert renewed_past_hour.wait(timeout=2.0)
+        assert_authority()
+
+    running = adapter.get(committed["branch_task_id"])
+    assert current["value"] >= now + timedelta(seconds=4800)
+    current["value"] = datetime.fromisoformat(running.lease_expires_at) - timedelta(
+        seconds=1,
+    )
 
     assert adapter.recover_expired() == []
     assert adapter.get(committed["branch_task_id"]).status == "running"
+
+
+def test_continuous_heartbeat_fails_closed_when_lease_authority_is_lost() -> None:
+    from tinyassets.runs import RunExecutionAuthorityLost
+
+    failed = threading.Event()
+    calls = 0
+
+    def heartbeat(*, force: bool = False) -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            failed.set()
+            raise RuntimeError("lease owner changed")
+
+    with pytest.raises(RunExecutionAuthorityLost, match="lease owner changed"):
+        with daemon_main._continuous_branch_task_heartbeat(
+            heartbeat,
+            interval_seconds=0.001,
+        ) as assert_authority:
+            assert failed.wait(timeout=2.0)
+            assert_authority()
 
 
 def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
@@ -634,7 +689,11 @@ def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
             error="",
         )
 
-    monkeypatch.setattr(runs, "latest_run_by_name", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        runs,
+        "get_run_by_branch_task_id",
+        lambda *_a, **_k: None,
+    )
     monkeypatch.setattr(runs, "execute_branch_version", execute_version)
     task = SimpleNamespace(
         branch_task_id="bt2_" + ("a" * 32),
@@ -648,6 +707,7 @@ def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
         executor_worker_id="worker-a",
         executor_runtime_id="runtime-a",
         automation_branch_version="branch-version-a",
+        actor_id="actor-a",
     )
 
     success, error, metadata = daemon_main._try_execute_claimed_branch_task(
@@ -663,6 +723,297 @@ def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
     assert captured["daemon_id"] == "daemon-a"
     assert captured["runtime_instance_id"] == "runtime-a"
     assert captured["worker_id"] == "worker-a"
+    assert captured["actor"] == "actor-a"
+    assert captured["_queue_branch_task_id"] == task.branch_task_id
+
+
+def test_epoch2_matching_public_run_name_cannot_spoof_queue_reservation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    task_id = "bt2_" + ("f" * 32)
+    forged_run_id = runs.create_run(
+        tmp_path,
+        branch_def_id="attacker-branch",
+        thread_id="attacker-thread",
+        inputs={},
+        run_name=f"branch-task-{task_id}",
+        actor="attacker",
+        branch_version_id="attacker-version",
+    )
+    runs.update_run_status(
+        tmp_path,
+        forged_run_id,
+        status=runs.RUN_STATUS_COMPLETED,
+        output={"forged": True},
+    )
+    captured: dict = {}
+
+    def execute_version(_base_path, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run_id="real-run",
+            status=runs.RUN_STATUS_COMPLETED,
+            output={"forged": False},
+            error="",
+        )
+
+    monkeypatch.setattr(runs, "execute_branch_version", execute_version)
+    task = SimpleNamespace(
+        branch_task_id=task_id,
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        depth=0,
+        origin_branch_task_id="",
+        executor_worker_id="worker-a",
+        executor_runtime_id="runtime-a",
+        automation_branch_version="branch-version-a",
+        actor_id="actor-a",
+    )
+
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+    )
+
+    assert success is True
+    assert error == ""
+    assert metadata["run_id"] == "real-run"
+    assert captured["_queue_branch_task_id"] == task_id
+
+
+def test_epoch2_reserved_run_must_match_full_execution_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    task_id = "bt2_" + ("e" * 32)
+    monkeypatch.setattr(
+        runs,
+        "get_run_by_branch_task_id",
+        lambda *_a, **_k: {
+            "run_id": "wrong-run",
+            "status": runs.RUN_STATUS_COMPLETED,
+            "output": {},
+            "run_name": f"branch-task-{task_id}",
+            "branch_task_id": task_id,
+            "branch_def_id": "ordinary-user-branch",
+            "branch_version_id": "wrong-version",
+            "queue_universe_id": "universe-a",
+            "actor": "actor-a",
+            "daemon_id": "daemon-a",
+            "runtime_instance_id": "runtime-a",
+            "worker_id": "worker-a",
+        },
+    )
+    monkeypatch.setattr(
+        runs,
+        "execute_branch_version",
+        lambda *_a, **_k: pytest.fail("identity mismatch must fail closed"),
+    )
+    task = SimpleNamespace(
+        branch_task_id=task_id,
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        depth=0,
+        origin_branch_task_id="",
+        executor_worker_id="worker-a",
+        executor_runtime_id="runtime-a",
+        automation_branch_version="branch-version-a",
+        actor_id="actor-a",
+    )
+
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+    )
+
+    assert success is False
+    assert error == "existing_run_identity_mismatch"
+    assert metadata["identity_mismatches"] == ["branch_version_id"]
+
+
+def test_queue_branch_task_run_reservation_has_exactly_one_winner(
+    tmp_path: Path,
+) -> None:
+    from tinyassets import runs
+
+    task_id = "bt2_" + ("d" * 32)
+    runs.initialize_runs_db(tmp_path)
+
+    def reserve(index: int) -> str:
+        return runs.create_run(
+            tmp_path,
+            branch_def_id="ordinary-user-branch",
+            thread_id=f"thread-{index}",
+            inputs={},
+            branch_version_id="branch-version-a",
+            branch_task_id=task_id,
+            queue_universe_id="universe-a",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(reserve, index) for index in range(2)]
+
+    winners = [future.result() for future in futures if future.exception() is None]
+    conflicts = [future.exception() for future in futures if future.exception()]
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    assert isinstance(conflicts[0], runs.BranchTaskRunReservationConflict)
+    assert runs.get_run_by_branch_task_id(
+        tmp_path,
+        branch_task_id=task_id,
+    )["run_id"] == winners[0]
+
+
+def test_epoch2_reservation_race_reconciles_only_exact_completed_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    task_id = "bt2_" + ("c" * 32)
+    lookups = 0
+
+    def lookup(_base_path, *, branch_task_id):
+        nonlocal lookups
+        lookups += 1
+        if lookups == 1:
+            return None
+        return {
+            "run_id": "race-winner",
+            "status": runs.RUN_STATUS_COMPLETED,
+            "output": {"winner": True},
+            "run_name": f"branch-task-{task_id}",
+            "branch_task_id": branch_task_id,
+            "branch_def_id": "ordinary-user-branch",
+            "branch_version_id": "branch-version-a",
+            "queue_universe_id": "universe-a",
+            "actor": "actor-a",
+            "daemon_id": "daemon-a",
+            "runtime_instance_id": "runtime-a",
+            "worker_id": "worker-a",
+        }
+
+    monkeypatch.setattr(runs, "get_run_by_branch_task_id", lookup)
+    monkeypatch.setattr(
+        runs,
+        "execute_branch_version",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            runs.BranchTaskRunReservationConflict("lost reservation race")
+        ),
+    )
+    task = SimpleNamespace(
+        branch_task_id=task_id,
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        depth=0,
+        origin_branch_task_id="",
+        executor_worker_id="worker-a",
+        executor_runtime_id="runtime-a",
+        automation_branch_version="branch-version-a",
+        actor_id="actor-a",
+    )
+
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+    )
+
+    assert success is True
+    assert error == ""
+    assert metadata["run_id"] == "race-winner"
+    assert metadata["reused_existing_run"] is True
+
+
+def test_epoch2_execution_fails_when_background_heartbeat_loses_authority(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        daemon_main,
+        "_branch_task_heartbeat_interval_seconds",
+        lambda: 0.001,
+    )
+    monkeypatch.setattr(
+        runs,
+        "get_run_by_branch_task_id",
+        lambda *_a, **_k: None,
+    )
+    authority_lost = threading.Event()
+    heartbeat_calls = 0
+
+    def heartbeat(*, force: bool = False) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls >= 2:
+            authority_lost.set()
+            raise RuntimeError("worker no longer owns lease")
+
+    def execute_version(_base_path, **_kwargs):
+        assert authority_lost.wait(timeout=2.0)
+        return SimpleNamespace(
+            run_id="must-not-succeed",
+            status=runs.RUN_STATUS_COMPLETED,
+            output={},
+            error="",
+        )
+
+    monkeypatch.setattr(runs, "execute_branch_version", execute_version)
+    task = SimpleNamespace(
+        branch_task_id="bt2_" + ("9" * 32),
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        depth=0,
+        origin_branch_task_id="",
+        executor_worker_id="worker-a",
+        executor_runtime_id="runtime-a",
+        automation_branch_version="branch-version-a",
+        actor_id="actor-a",
+    )
+
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+        branch_task_heartbeat=heartbeat,
+    )
+
+    assert success is False
+    assert error == "branch_task_authority_lost"
+    assert "worker no longer owns lease" in metadata["authority_error"]
 
 
 def test_execute_branch_version_threads_identity_and_queue_lineage(
@@ -727,12 +1078,20 @@ def test_epoch2_incomplete_run_is_reconciled_without_second_execution(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(
         runs,
-        "latest_run_by_name",
+        "get_run_by_branch_task_id",
         lambda *_a, **_k: {
             "run_id": "run-existing",
             "status": runs.RUN_STATUS_INTERRUPTED,
             "output": {},
-            "actor": "owner-a",
+            "run_name": "branch-task-bt2_" + ("b" * 32),
+            "branch_task_id": "bt2_" + ("b" * 32),
+            "branch_def_id": "ordinary-user-branch",
+            "branch_version_id": "branch-version-a",
+            "queue_universe_id": "universe-a",
+            "actor": "actor-a",
+            "daemon_id": "daemon-a",
+            "runtime_instance_id": "",
+            "worker_id": "",
         },
     )
     monkeypatch.setattr(
@@ -748,6 +1107,7 @@ def test_epoch2_incomplete_run_is_reconciled_without_second_execution(
         request_type="run_branch",
         queue_epoch=2,
         automation_branch_version="branch-version-a",
+        actor_id="actor-a",
     )
 
     success, error, metadata = daemon_main._try_execute_claimed_branch_task(

@@ -41,6 +41,7 @@ class Epoch2BranchTask(BranchTask):
 
     admission_id: str = ""
     request_id: str = ""
+    actor_id: str = ""
     queue_epoch: int = QUEUE_EPOCH
     protocol_version: int = QUEUE_PROTOCOL_VERSION
     automation_id: str = ""
@@ -312,7 +313,17 @@ class Epoch2BranchTaskAdapter:
 
     def get(self, branch_task_id: str) -> Epoch2BranchTask | None:
         row = self._store.get_v2_task(branch_task_id)
-        return _as_epoch2_task(row) if row is not None else None
+        return self._as_execution_task(row) if row is not None else None
+
+    def _as_execution_task(
+        self,
+        row: Mapping[str, Any],
+    ) -> Epoch2BranchTask:
+        hydrated = dict(row)
+        hydrated["linked_admission_actor_id"] = (
+            self._store.get_v2_task_actor_id(str(row["branch_task_id"]))
+        )
+        return _as_epoch2_task(hydrated)
 
     def claim(
         self,
@@ -346,7 +357,7 @@ class Epoch2BranchTaskAdapter:
             lease_seconds=lease_seconds,
             claim_check=transaction_check,
         )
-        return _as_epoch2_task(row) if row is not None else None
+        return self._as_execution_task(row) if row is not None else None
 
     def resume(
         self,
@@ -377,7 +388,7 @@ class Epoch2BranchTaskAdapter:
             worker_id=descriptor.worker_id,
             resume_check=transaction_check,
         )
-        return _as_epoch2_task(row) if row is not None else None
+        return self._as_execution_task(row) if row is not None else None
 
     def heartbeat(
         self,
@@ -1385,6 +1396,7 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
         terminal_at=str(row.get("terminal_at") or ""),
         admission_id=str(row["admission_id"]),
         request_id=str(row["request_id"]),
+        actor_id=str(row.get("linked_admission_actor_id") or ""),
         queue_epoch=int(row["queue_epoch"]),
         protocol_version=int(row["protocol_version"]),
         automation_id=str(row.get("automation_id") or ""),
