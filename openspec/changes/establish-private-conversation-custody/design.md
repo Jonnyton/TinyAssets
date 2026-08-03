@@ -64,7 +64,7 @@ evidence binding:
 - owner, universe, agent binding, and selected custody mode;
 - custody-selection generation, authority-registered absolute universe path,
   and trusted platform data-root identity;
-- a digest of a server-issued high-entropy idempotency key;
+- a digest of a server-issued high-entropy idempotency key for mutations;
 - grant nonce, issue time, and expiry.
 
 The consumer must live-check the selection, binding, and registered path when it
@@ -203,13 +203,27 @@ export-time timestamp, so unchanged exports are byte-for-byte stable.
 
 ### 5. Idempotency has an exact namespace and an explicit deletion transition
 
-The future authority supplies a server-generated key with at least 128 bits of
-entropy; raw provider event IDs are not idempotency keys. Only the SHA-256 key
-digest is persisted. Mutating-operation uniqueness is `(owner_user_id,
+The future authority supplies each mutating operation a cryptographically
+random 32-byte value encoded as exactly 43 unpadded base64url characters with
+the prefix `ik_`. The complete 46-character ASCII key must match
+`^ik_[A-Za-z0-9_-]{43}$`, its suffix must decode without padding to exactly 32
+bytes, and raw provider event IDs are never keys. The persisted key digest is
+lowercase `sha256:<64 hex>` over the UTF-8/ASCII bytes of the complete `ik_...`
+string, not over the decoded random bytes. Test-only vector
+`ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` decodes to 32 zero bytes and
+hashes to
+`sha256:7c02713014568e7c6a23ccce8e98f0d6e165f7f779f274859610460060faf803`;
+production issuers must never use that zero-entropy value.
+
+The logical mutating namespace is `(universe_id, owner_user_id,
 operation_kind, idempotency_key_digest)`, where operation kind is
-`create_thread`, `append_message`, or `delete_thread`. The authority/action
-domain additionally contains `read_thread` and `export_thread`, which have
-request digests but no idempotency key or ledger row.
+`create_thread`, `append_message`, or `delete_thread`. Each provider database is
+bound to exactly one universe and enforces the remaining tuple locally; no
+cross-universe uniqueness claim is made. High-entropy issuance prevents
+accidental collision, while deliberate reuse in another universe is an
+independent operation. The authority/action domain additionally contains
+`read_thread` and `export_thread`, which have request digests but no key or
+ledger row.
 
 Every operation request digest is lowercase `sha256:<64 hex>` over the exact
 `tinyassets-canonical-json/v1` bytes of one domain-separated mapping:

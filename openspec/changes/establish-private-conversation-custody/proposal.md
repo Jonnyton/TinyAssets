@@ -13,7 +13,7 @@ letting an app adapter become the canonical store.
   boundary.
 - Persist immutable thread identity plus append-only message records with
   universe, agent binding, interlocutor, source-event, and reply lineage.
-- Require owner-scoped idempotency, strict reads, bounded content, explicit
+- Require universe-and-owner-scoped idempotency, strict reads, bounded content, explicit
   retention, export, and deletion receipts.
 - Keep credentials, app installation authority, delivery effects, provider
   output, and public agent definition/remix data outside this store.
