@@ -123,8 +123,13 @@ witnesses depend on the current key. If the key crosses an execution boundary,
 first ship the reviewed daemon-only boundary correction, replace the repository
 secret, then manually dispatch that same correction image with
 `rotate_request_idempotency_hmac=true`. Incident rotation intentionally
-invalidates witnesses signed by the exposed key; verify the running worker
-environments and canonical MCP health before resuming activation.
+invalidates witnesses signed by the exposed key. The rotation workflow requires
+the resolved target to match the exact immutable image already running on the
+daemon and four workers, proves the worker identities lack minting authority in
+host-controlled Docker configuration metadata before the stop-writer fence,
+then reads state by those immutable IDs and repeats the name-to-ID check before
+it transmits the replacement. Verify the restarted worker environments and
+canonical MCP health before resuming activation.
 
 Generate a unique daemon-only agent interchange key without printing it to the
 terminal. This writes canonical single-line base64 for 48 random bytes:

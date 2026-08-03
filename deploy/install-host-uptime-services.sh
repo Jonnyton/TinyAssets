@@ -23,6 +23,7 @@ TIMERS=(
     tinyassets-backup.timer
     tinyassets-prune.timer
     tinyassets-disk-watch.timer
+    tinyassets-ship-logs.timer
 )
 SERVICES=(
     tinyassets-watchdog.service
@@ -30,6 +31,7 @@ SERVICES=(
     tinyassets-backup.service
     tinyassets-prune.service
     tinyassets-disk-watch.service
+    tinyassets-ship-logs.service
 )
 UNIT_FILES=(
     tinyassets-watchdog.service tinyassets-watchdog.timer
@@ -37,10 +39,12 @@ UNIT_FILES=(
     tinyassets-backup.service tinyassets-backup.timer
     tinyassets-prune.service tinyassets-prune.timer
     tinyassets-disk-watch.service tinyassets-disk-watch.timer
+    tinyassets-ship-logs.service tinyassets-ship-logs.timer
 )
 RUNTIME_FILES=(
     deploy/daemon-watchdog.sh
     deploy/backup.sh
+    deploy/ship-logs.sh
     scripts/__init__.py
     scripts/watchdog.py
     scripts/mcp_public_canary.py
@@ -317,6 +321,16 @@ fi
 ln -s "releases/${RELEASE_ID}" "${RUNTIME_ROOT}/.current.new.$$"
 mv -Tf "${RUNTIME_ROOT}/.current.new.$$" "${RUNTIME_ROOT}/current"
 POINTER_SWITCHED=1
+
+for relative in "${RUNTIME_FILES[@]}"; do
+    installed_file="${RUNTIME_ROOT}/current/${relative}"
+    cmp -s "${SOURCE_ROOT}/${relative}" "${installed_file}" \
+        || fail "installed runtime hash mismatch: ${relative}"
+done
+for unit in "${UNIT_FILES[@]}"; do
+    cmp -s "${SOURCE_ROOT}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}" \
+        || fail "installed unit hash mismatch: ${unit}"
+done
 
 "${SYSTEMCTL_BIN}" daemon-reload
 "${SYSTEMCTL_BIN}" enable --now "${TIMERS[@]}"
