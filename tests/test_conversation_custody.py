@@ -783,14 +783,16 @@ def _append_grant(
     payload: dict[str, object],
     reply_to_message_id: str | None = None,
     scope=None,
+    participant_ref: str = "slack:user_1",
+    source_event_ref: str = "slack:event_1",
 ):
     selected_scope = scope or _scope(custody)
     request_digest = custody.append_message_request_digest(
         selected_scope,
         conversation_id=conversation_id,
         kind="text",
-        participant_ref="slack:user_1",
-        source_event_ref="slack:event_1",
+        participant_ref=participant_ref,
+        source_event_ref=source_event_ref,
         payload=payload,
         reply_to_message_id=reply_to_message_id,
     )
@@ -2187,6 +2189,78 @@ def test_private_store_concurrent_delete_keys_return_one_receipt(tmp_path: Path)
     with ThreadPoolExecutor(max_workers=8) as executor:
         receipts = tuple(executor.map(delete, zip(keys, grants, strict=True)))
     assert len(set(receipts)) == 1
+
+
+def test_private_store_production_shaped_concurrent_load(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = _key(90)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:load_user",
+            key=create_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:load_user",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    inputs = tuple((_key(index), {"load_index": index}) for index in range(100, 164))
+
+    def call(item):
+        key, payload = item
+        return storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                key=key,
+                payload=payload,
+                participant_ref="slack:load_user",
+                source_event_ref="slack:load_event",
+            ),
+            scope=_scope(custody),
+            idempotency_key=key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:load_user",
+            source_event_ref="slack:load_event",
+            payload=payload,
+            reply_to_message_id=None,
+            now="2026-08-03T12:01:01.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        created = tuple(executor.map(call, inputs))
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        replayed = tuple(executor.map(call, inputs))
+
+    assert [message.message_id for message in replayed] == [
+        message.message_id for message in created
+    ]
+    assert sorted(message.ordinal for message in created) == list(range(1, 65))
+    snapshot = storage.read_thread(
+        _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        scope=_scope(custody),
+        conversation_id=thread.conversation_id,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    exported = storage.export_thread(
+        _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        scope=_scope(custody),
+        conversation_id=thread.conversation_id,
+        now="2026-08-03T12:01:03.000000Z",
+    )
+    assert tuple(message.ordinal for message in snapshot.messages) == tuple(range(1, 65))
+    assert exported == custody.export_conversation(snapshot.thread, snapshot.messages)
 
 
 def test_packaged_runtime_mirrors_exist_and_are_byte_identical() -> None:
