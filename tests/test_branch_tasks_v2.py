@@ -664,7 +664,7 @@ def test_claim_uses_transaction_time_for_descriptor_freshness(
             committed["branch_task_id"],
             descriptor=live,
             descriptor_reader=lambda _conn, _worker_id: live,
-            lease_seconds=91,
+            lease_seconds=1801,
         )
     task = adapter.get(committed["branch_task_id"])
     assert task is not None

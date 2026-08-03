@@ -489,6 +489,33 @@ def _seed_epoch2_worker_capacity(
     return universe, daemon, runtime
 
 
+def test_register_worker_runtime_marks_server_owned_cloud_executor(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(cw, "_subscription_auth_available", lambda _name: True)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Cloud Project Loop",
+        created_by="owner-a",
+        soul_text="Run ordinary user-authored Branch work.",
+        metadata={"project_loop_default": True},
+    )
+
+    runtime_id = cw._register_worker_runtime(universe, "codex")
+
+    assert runtime_id
+    runtime = daemon_registry.list_runtime_instances(
+        tmp_path,
+        universe_id="universe-a",
+    )[0]
+    assert runtime["metadata"]["automation_executor_class"] == "cloud"
+
+
 def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
     from tinyassets.branch_tasks import BranchTask, append_task
 
@@ -545,35 +572,28 @@ def test_running_guard_fails_closed_for_partial_epoch2_schema(
     assert cw._queue_has_running_branch_task(universe) is True
 
 
-def test_epoch2_wakeup_stays_inert_until_daemon_claim_consumer_exists(
+def test_epoch2_wakeup_publishes_capacity_only_with_release_and_runtime(
     tmp_path,
     monkeypatch,
 ):
     from tinyassets import branch_tasks_v2
 
-    assert branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is False
-    assert cw._epoch2_claim_consumer_ready() is False
+    assert branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is True
+    assert cw._epoch2_claim_consumer_ready() is True
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
     cw._snapshot_worker_protocol_identity_at_boot()
 
-    assert cw._worker_queue_descriptor(
+    descriptor = cw._worker_queue_descriptor(
         tmp_path / "universe-a",
         runtime_instance_id="runtime-a",
-    ) is None
+    )
+    assert descriptor is not None
+    assert descriptor["runtime_instance_id"] == "runtime-a"
     universe = tmp_path / "universe-a"
     universe.mkdir()
-
-    def unexpected_recovery(*_args, **_kwargs):
-        raise AssertionError("disabled epoch-2 path touched storage")
-
-    monkeypatch.setattr(
-        branch_tasks_v2.Epoch2BranchTaskAdapter,
-        "recover_expired",
-        unexpected_recovery,
-    )
     assert cw._queue_has_running_branch_task(universe) is False
 
 

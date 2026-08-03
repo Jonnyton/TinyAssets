@@ -41,8 +41,17 @@ class Epoch2BranchTask(BranchTask):
 
     admission_id: str = ""
     request_id: str = ""
+    actor_id: str = ""
     queue_epoch: int = QUEUE_EPOCH
     protocol_version: int = QUEUE_PROTOCOL_VERSION
+    automation_id: str = ""
+    automation_activation_epoch: int = 0
+    automation_executor_class: str = ""
+    automation_subject_kind: str = ""
+    automation_subject_ref: str = ""
+    automation_subject_digest: str = ""
+    automation_branch_version: str = ""
+    automation_lease_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,16 +70,28 @@ class WorkerClaimDescriptor:
     executor_class: AutomationActivationExecutor | None = None
 
 
+@dataclass(frozen=True)
+class WorkerClaimContext:
+    """Canonical runtime identity paired with its immutable daemon owner."""
+
+    descriptor: WorkerClaimDescriptor
+    daemon_id: str
+
+
 DescriptorReader = Callable[
     [sqlite3.Connection, str],
     WorkerClaimDescriptor | None,
 ]
 DESCRIPTOR_VALIDITY_SECONDS = 90
+# A provider node can legally run for 15 minutes.  Claims therefore retain
+# the established v1 30-minute safety envelope between node-boundary
+# heartbeats; the short descriptor TTL still fences new claim authority.
+EPOCH2_TASK_LEASE_SECONDS = 1800
 # Flip only in the same change that wires the supervised daemon's selector,
 # claim, and lifecycle paths to this adapter.  This constant is bundled with
 # every runtime mirror, so capability publication never depends on an
 # optional domain package.
-EPOCH2_QUEUE_CONSUMER_READY = False
+EPOCH2_QUEUE_CONSUMER_READY = True
 logger = logging.getLogger(__name__)
 _IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -246,9 +267,63 @@ class Epoch2BranchTaskAdapter:
             worker_id=worker_id,
         )
 
+    def list_worker_active_tasks(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int = 2,
+    ) -> list[Epoch2BranchTask]:
+        """Return live running/cancel-requested tasks for reconciliation."""
+        return [
+            _as_epoch2_task(row)
+            for row in self._store.list_live_owned_v2_tasks(
+                universe_id=universe_id,
+                worker_id=worker_id,
+                limit=limit,
+                integrity_check=lambda row: (
+                    _classify_epoch2_row(row) is None
+                ),
+            )
+        ]
+
+    def worker_claim_context(
+        self,
+        *,
+        worker_id: str,
+        runtime_instance_id: str,
+        universe_id: str,
+    ) -> WorkerClaimContext | None:
+        """Read the exact server-owned worker tuple from canonical storage."""
+        with self._store.connection() as conn:
+            context = read_worker_claim_context(conn, worker_id)
+        if context is None:
+            return None
+        descriptor = context.descriptor
+        if (
+            descriptor.runtime_instance_id != runtime_instance_id
+            or descriptor.universe_id != universe_id
+            or not _descriptor_is_live(
+                descriptor,
+                transaction_at=self._clock().isoformat(),
+            )
+        ):
+            return None
+        return context
+
     def get(self, branch_task_id: str) -> Epoch2BranchTask | None:
         row = self._store.get_v2_task(branch_task_id)
-        return _as_epoch2_task(row) if row is not None else None
+        return self._as_execution_task(row) if row is not None else None
+
+    def _as_execution_task(
+        self,
+        row: Mapping[str, Any],
+    ) -> Epoch2BranchTask:
+        hydrated = dict(row)
+        hydrated["linked_admission_actor_id"] = (
+            self._store.get_v2_task_actor_id(str(row["branch_task_id"]))
+        )
+        return _as_epoch2_task(hydrated)
 
     def claim(
         self,
@@ -256,7 +331,7 @@ class Epoch2BranchTaskAdapter:
         *,
         descriptor: WorkerClaimDescriptor,
         descriptor_reader: DescriptorReader,
-        lease_seconds: int = 90,
+        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
     ) -> Epoch2BranchTask | None:
         if not _descriptor_shape_is_valid(descriptor):
             return None
@@ -266,50 +341,12 @@ class Epoch2BranchTaskAdapter:
             task: Mapping[str, Any],
             transaction_at: str,
         ) -> bool:
-            if _classify_epoch2_row(task) is not None:
-                return False
-            if task["universe_id"] != descriptor.universe_id:
-                return False
-            trusted = descriptor_reader(conn, descriptor.worker_id)
-            if not (
-                trusted == descriptor
-                and trusted is not None
-                and _descriptor_is_live(
-                    trusted,
-                    transaction_at=transaction_at,
-                )
-            ):
-                return False
-            activation_fields = (
-                task.get("automation_id"),
-                task.get("automation_activation_epoch"),
-                task.get("automation_executor_class"),
-                task.get("automation_subject_kind"),
-                task.get("automation_subject_ref"),
-                task.get("automation_subject_digest"),
-                task.get("automation_branch_version"),
-                task.get("automation_lease_id"),
-            )
-            if not any(value is not None for value in activation_fields):
-                return True
-            if (
-                trusted.executor_class is None
-                or trusted.executor_class.value
-                != task["automation_executor_class"]
-            ):
-                return False
-            return AutomationActivationStore.validate_claim_in_transaction(
+            return _transaction_allows_epoch2_lifecycle(
                 conn,
-                universe_id=str(task["universe_id"]),
-                automation_id=str(task["automation_id"]),
-                epoch=int(task["automation_activation_epoch"]),
-                executor_class=trusted.executor_class,
-                subject=ExecutionSubject.from_dict({
-                    "kind": task["automation_subject_kind"],
-                    "ref": task["automation_subject_ref"],
-                    "digest": task["automation_subject_digest"],
-                }),
-                lease_id=str(task["automation_lease_id"]),
+                task,
+                transaction_at=transaction_at,
+                descriptor=descriptor,
+                descriptor_reader=descriptor_reader,
             )
 
         row = self._store.claim_v2_task(
@@ -320,14 +357,45 @@ class Epoch2BranchTaskAdapter:
             lease_seconds=lease_seconds,
             claim_check=transaction_check,
         )
-        return _as_epoch2_task(row) if row is not None else None
+        return self._as_execution_task(row) if row is not None else None
+
+    def resume(
+        self,
+        branch_task_id: str,
+        *,
+        descriptor: WorkerClaimDescriptor,
+        descriptor_reader: DescriptorReader,
+    ) -> Epoch2BranchTask | None:
+        """Revalidate a live claim before material work resumes."""
+        if not _descriptor_shape_is_valid(descriptor):
+            return None
+
+        def transaction_check(
+            conn: sqlite3.Connection,
+            task: Mapping[str, Any],
+            transaction_at: str,
+        ) -> bool:
+            return _transaction_allows_epoch2_lifecycle(
+                conn,
+                task,
+                transaction_at=transaction_at,
+                descriptor=descriptor,
+                descriptor_reader=descriptor_reader,
+            )
+
+        row = self._store.read_live_v2_task_for_resume(
+            branch_task_id,
+            worker_id=descriptor.worker_id,
+            resume_check=transaction_check,
+        )
+        return self._as_execution_task(row) if row is not None else None
 
     def heartbeat(
         self,
         branch_task_id: str,
         *,
         worker_id: str,
-        lease_seconds: int = 90,
+        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
     ) -> Epoch2BranchTask | None:
         row = self._store.heartbeat_v2_task(
             branch_task_id,
@@ -361,6 +429,7 @@ class Epoch2BranchTaskAdapter:
                 new_status=status,
                 detail=detail,
                 worker_id=worker_id,
+                cancel_wins=True,
             )
         )
 
@@ -673,6 +742,172 @@ def _descriptor_shape_is_valid(
     ):
         return False
     return _parse_timestamp(descriptor.expires_at) is not None
+
+
+def read_worker_claim_context(
+    conn: sqlite3.Connection,
+    worker_id: str,
+) -> WorkerClaimContext | None:
+    """Resolve one live-capable runtime using the caller's transaction.
+
+    Queue possession never creates this identity.  The runtime registry and
+    its supervisor-refreshed release descriptor are read inside the same
+    transaction that conditionally claims the task.
+    """
+    clean_worker_id = str(worker_id or "").strip()
+    if not clean_worker_id:
+        return None
+    try:
+        rows = conn.execute(
+            """
+            SELECT instance_id, universe_id, author_id, status, metadata_json
+            FROM author_runtime_instances
+            WHERE status = 'provisioned'
+            ORDER BY created_at DESC, instance_id DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+
+    owned: list[
+        tuple[Mapping[str, Any], Mapping[str, Any], Any]
+    ] = []
+    for row in rows:
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if str(metadata.get("worker_id") or "").strip() != clean_worker_id:
+            continue
+        raw_descriptor = metadata.get("queue_protocol_descriptor")
+        if raw_descriptor is not None:
+            owned.append((row, metadata, raw_descriptor))
+    if len(owned) != 1:
+        return None
+    row, metadata, raw_descriptor = owned[0]
+    if not isinstance(raw_descriptor, dict):
+        return None
+    try:
+        executor_class = AutomationActivationExecutor(
+            str(metadata.get("automation_executor_class") or "")
+        )
+        capabilities = raw_descriptor["capabilities"]
+        if not isinstance(capabilities, list):
+            return None
+        descriptor = WorkerClaimDescriptor(
+            queue_protocol_version=int(
+                raw_descriptor["queue_protocol_version"]
+            ),
+            capabilities=frozenset(str(value) for value in capabilities),
+            worker_id=str(raw_descriptor["worker_id"]),
+            runtime_instance_id=str(raw_descriptor["runtime_instance_id"]),
+            boot_id=str(raw_descriptor["boot_id"]),
+            build_sha=str(raw_descriptor["build_sha"]),
+            config_hash=str(raw_descriptor["config_hash"]),
+            universe_id=str(raw_descriptor["universe_id"]),
+            expires_at=str(raw_descriptor["expires_at"]),
+            executor_class=executor_class,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    instance_id = str(row["instance_id"])
+    universe_id = str(row["universe_id"])
+    author_id = str(row["author_id"])
+    daemon_id = (
+        "daemon::" + author_id[len("author::"):]
+        if author_id.startswith("author::")
+        else author_id
+    )
+    if (
+        descriptor.worker_id != clean_worker_id
+        or descriptor.runtime_instance_id != instance_id
+        or descriptor.universe_id != universe_id
+        or not daemon_id
+    ):
+        return None
+    return WorkerClaimContext(descriptor=descriptor, daemon_id=daemon_id)
+
+
+def read_worker_claim_descriptor(
+    conn: sqlite3.Connection,
+    worker_id: str,
+) -> WorkerClaimDescriptor | None:
+    context = read_worker_claim_context(conn, worker_id)
+    return context.descriptor if context is not None else None
+
+
+def _transaction_allows_epoch2_lifecycle(
+    conn: sqlite3.Connection,
+    task: Mapping[str, Any],
+    *,
+    transaction_at: str,
+    descriptor: WorkerClaimDescriptor,
+    descriptor_reader: DescriptorReader,
+) -> bool:
+    if _classify_epoch2_row(task) is not None:
+        return False
+    if task["universe_id"] != descriptor.universe_id:
+        return False
+    trusted = descriptor_reader(conn, descriptor.worker_id)
+    if not (
+        trusted == descriptor
+        and trusted is not None
+        and _descriptor_is_live(
+            trusted,
+            transaction_at=transaction_at,
+        )
+    ):
+        return False
+    activation_fields = (
+        task.get("automation_id"),
+        task.get("automation_activation_epoch"),
+        task.get("automation_executor_class"),
+        task.get("automation_subject_kind"),
+        task.get("automation_subject_ref"),
+        task.get("automation_subject_digest"),
+        task.get("automation_branch_version"),
+        task.get("automation_lease_id"),
+    )
+    if not any(value is not None for value in activation_fields):
+        return True
+    if (
+        trusted.executor_class is None
+        or trusted.executor_class.value != task["automation_executor_class"]
+    ):
+        return False
+    active = conn.execute(
+        """
+        SELECT 1
+        FROM branch_tasks_v2
+        WHERE universe_id = ? AND automation_id = ?
+          AND branch_task_id != ?
+          AND status IN ('running', 'cancel_requested')
+          AND disabled = 0
+        LIMIT 1
+        """,
+        (
+            task["universe_id"],
+            task["automation_id"],
+            task["branch_task_id"],
+        ),
+    ).fetchone()
+    if active is not None:
+        return False
+    return AutomationActivationStore.validate_claim_in_transaction(
+        conn,
+        universe_id=str(task["universe_id"]),
+        automation_id=str(task["automation_id"]),
+        epoch=int(task["automation_activation_epoch"]),
+        executor_class=trusted.executor_class,
+        subject=ExecutionSubject.from_dict({
+            "kind": task["automation_subject_kind"],
+            "ref": task["automation_subject_ref"],
+            "digest": task["automation_subject_digest"],
+        }),
+        lease_id=str(task["automation_lease_id"]),
+    )
 
 
 def _descriptor_is_live(
@@ -1162,8 +1397,27 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
         terminal_at=str(row.get("terminal_at") or ""),
         admission_id=str(row["admission_id"]),
         request_id=str(row["request_id"]),
+        actor_id=str(row.get("linked_admission_actor_id") or ""),
         queue_epoch=int(row["queue_epoch"]),
         protocol_version=int(row["protocol_version"]),
+        automation_id=str(row.get("automation_id") or ""),
+        automation_activation_epoch=int(
+            row.get("automation_activation_epoch") or 0
+        ),
+        automation_executor_class=str(
+            row.get("automation_executor_class") or ""
+        ),
+        automation_subject_kind=str(
+            row.get("automation_subject_kind") or ""
+        ),
+        automation_subject_ref=str(row.get("automation_subject_ref") or ""),
+        automation_subject_digest=str(
+            row.get("automation_subject_digest") or ""
+        ),
+        automation_branch_version=str(
+            row.get("automation_branch_version") or ""
+        ),
+        automation_lease_id=str(row.get("automation_lease_id") or ""),
     )
 
 
@@ -1172,7 +1426,11 @@ __all__ = [
     "Epoch2BranchTaskAdapter",
     "Epoch2ClaimedRequest",
     "Epoch2OperationalRead",
+    "EPOCH2_TASK_LEASE_SECONDS",
     "QuarantineMaintenanceResult",
     "QuarantineReceipt",
     "WorkerClaimDescriptor",
+    "WorkerClaimContext",
+    "read_worker_claim_context",
+    "read_worker_claim_descriptor",
 ]

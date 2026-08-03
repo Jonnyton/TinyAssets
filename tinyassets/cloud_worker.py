@@ -511,6 +511,7 @@ def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
             metadata={
                 "container_host": socket.gethostname(),
                 "worker_provider": provider_name,
+                "automation_executor_class": "cloud",
             },
         )
         logger.info(
