@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
 import importlib
+import multiprocessing
 import os
+import sqlite3
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -9,6 +13,75 @@ import pytest
 
 def _custody():
     return importlib.import_module("tinyassets.conversation_custody")
+
+
+def _storage():
+    return importlib.import_module("tinyassets.storage.conversation_custody")
+
+
+def _scope(custody, *, universe_id: str = "universe_1"):
+    return custody.ConversationCustodyScope(
+        owner_user_id="owner_1",
+        universe_id=universe_id,
+        agent_binding_id="agent_binding_1",
+    )
+
+
+def _key(value: int) -> str:
+    encoded = base64.urlsafe_b64encode(bytes([value]) * 32).decode("ascii").rstrip("=")
+    return f"ik_{encoded}"
+
+
+def _process_create_thread(args: tuple[str, str, str]) -> str:
+    root_raw, universe_raw, key = args
+    custody = _custody()
+    storage = _storage()
+    root = Path(root_raw)
+    universe = Path(universe_raw)
+    return storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    ).conversation_id
+
+
+def _process_append_reply(args: tuple[str, str, str, str, str, int]) -> tuple[int, str]:
+    root_raw, universe_raw, conversation_id, reply_to_message_id, key, index = args
+    custody = _custody()
+    storage = _storage()
+    root = Path(root_raw)
+    universe = Path(universe_raw)
+    payload = {"process": index}
+    message = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=conversation_id,
+            key=key,
+            payload=payload,
+            reply_to_message_id=reply_to_message_id,
+        ),
+        scope=_scope(custody),
+        idempotency_key=key,
+        conversation_id=conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=reply_to_message_id,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    return message.ordinal, message.reply_to_message_id
 
 
 def _evidence(
@@ -19,14 +92,16 @@ def _evidence(
     action: str = "read_thread",
     request_digest: str = "sha256:" + "a" * 64,
     key_digest: str | None = None,
+    scope=None,
 ):
+    selected_scope = scope or _scope(custody)
     return custody.ConversationCustodyGrantEvidence(
         action=action,
         request_digest=request_digest,
         idempotency_key_digest=key_digest,
-        owner_user_id="owner_1",
-        universe_id="universe_1",
-        agent_binding_id="agent_binding_1",
+        owner_user_id=selected_scope.owner_user_id,
+        universe_id=selected_scope.universe_id,
+        agent_binding_id=selected_scope.agent_binding_id,
         custody_mode="private_universe",
         selection_generation=1,
         registered_universe_path=str(universe.resolve()),
@@ -129,6 +204,24 @@ def test_expired_or_revoked_grant_fails_closed(
             now=now,
         )
     assert blocked.value.code == expected_code
+
+
+def test_grant_cannot_be_consumed_before_its_issue_time(tmp_path: Path) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.consume_operation_grant(
+            _grant(custody, evidence),
+            expected_action=evidence.action,
+            expected_request_digest=evidence.request_digest,
+            expected_idempotency_key_digest=None,
+            now="2026-08-03T11:59:59.999999Z",
+        )
+    assert blocked.value.code == "grant_not_yet_valid"
     assert not (universe / ".tinyassets.db").exists()
 
 
@@ -645,3 +738,814 @@ def test_export_refuses_incomplete_or_invalid_message_sequences(messages) -> Non
 
     with pytest.raises(custody.ConversationCustodyValidationError):
         custody.export_conversation(thread, cases[messages])
+
+
+def _create_grant(
+    custody,
+    root: Path,
+    universe: Path,
+    *,
+    interlocutor_ref: str,
+    key: str,
+    scope=None,
+):
+    selected_scope = scope or _scope(custody)
+    request_digest = custody.create_thread_request_digest(
+        selected_scope,
+        interlocutor_ref=interlocutor_ref,
+        retention_until=None,
+    )
+    return _grant(
+        custody,
+        _evidence(
+            custody,
+            root,
+            universe,
+            action="create_thread",
+            request_digest=request_digest,
+            key_digest=custody.idempotency_key_digest(key),
+            scope=selected_scope,
+        ),
+    )
+
+
+def _append_grant(
+    custody,
+    root: Path,
+    universe: Path,
+    *,
+    conversation_id: str,
+    key: str,
+    payload: dict[str, object],
+    reply_to_message_id: str | None = None,
+    scope=None,
+):
+    selected_scope = scope or _scope(custody)
+    request_digest = custody.append_message_request_digest(
+        selected_scope,
+        conversation_id=conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=reply_to_message_id,
+    )
+    return _grant(
+        custody,
+        _evidence(
+            custody,
+            root,
+            universe,
+            action="append_message",
+            request_digest=request_digest,
+            key_digest=custody.idempotency_key_digest(key),
+            scope=selected_scope,
+        ),
+    )
+
+
+def _read_grant(
+    custody,
+    root: Path,
+    universe: Path,
+    *,
+    conversation_id: str,
+    scope=None,
+):
+    selected_scope = scope or _scope(custody)
+    request_digest = custody.thread_request_digest(
+        "read_thread",
+        selected_scope,
+        conversation_id=conversation_id,
+    )
+    return _grant(
+        custody,
+        _evidence(
+            custody,
+            root,
+            universe,
+            action="read_thread",
+            request_digest=request_digest,
+            scope=selected_scope,
+        ),
+    )
+
+
+def test_private_store_creates_replays_and_reads_exact_thread(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    key = "ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+    created = storage.create_thread(
+        _create_grant(custody, root, universe, interlocutor_ref="slack:user_1", key=key),
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    replayed = storage.create_thread(
+        _create_grant(custody, root, universe, interlocutor_ref="slack:user_1", key=key),
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    snapshot = storage.read_thread(
+        _read_grant(custody, root, universe, conversation_id=created.conversation_id),
+        scope=_scope(custody),
+        conversation_id=created.conversation_id,
+        now="2026-08-03T12:01:01.000000Z",
+    )
+
+    assert created == replayed == snapshot.thread
+    assert created.conversation_id.startswith("conversation_")
+    assert created.created_at == "2026-08-03T12:01:00.000000Z"
+    assert snapshot.messages == ()
+    assert (universe / ".tinyassets.db").is_file()
+    assert not (root / ".tinyassets.db").exists()
+
+
+def test_private_store_create_idempotency_conflict_preserves_original(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    key = "ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    original = storage.create_thread(
+        _create_grant(custody, root, universe, interlocutor_ref="slack:user_1", key=key),
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+
+    with pytest.raises(storage.ConversationCustodyConflict):
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=key,
+            ),
+            scope=_scope(custody),
+            idempotency_key=key,
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+            now="2026-08-03T12:01:01.000000Z",
+        )
+    snapshot = storage.read_thread(
+        _read_grant(custody, root, universe, conversation_id=original.conversation_id),
+        scope=_scope(custody),
+        conversation_id=original.conversation_id,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    assert snapshot.thread == original
+
+
+def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = "ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    append_key = "ik_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    second_key = "ik_AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    payload = {"text": "hello"}
+    first = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=append_key,
+            payload=payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=append_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:01.000000Z",
+    )
+    replay = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=append_key,
+            payload=payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=append_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    assert replay == first
+
+    changed = {"text": "changed"}
+    with pytest.raises(storage.ConversationCustodyConflict):
+        storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                key=append_key,
+                payload=changed,
+            ),
+            scope=_scope(custody),
+            idempotency_key=append_key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload=changed,
+            reply_to_message_id=None,
+            now="2026-08-03T12:01:03.000000Z",
+        )
+
+    second_payload = {"text": "reply"}
+    second = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=second_key,
+            payload=second_payload,
+            reply_to_message_id=first.message_id,
+        ),
+        scope=_scope(custody),
+        idempotency_key=second_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=second_payload,
+        reply_to_message_id=first.message_id,
+        now="2026-08-03T12:01:04.000000Z",
+    )
+    assert second.ordinal == 2
+    assert second.reply_to_message_id == first.message_id
+
+
+def test_private_store_missing_reply_fails_without_consuming_ordinal(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = "ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    bad_key = "ik_AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"
+    good_key = "ik_BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    payload = {"text": "hello"}
+    with pytest.raises(storage.ConversationCustodyReplyError):
+        storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                key=bad_key,
+                payload=payload,
+                reply_to_message_id="message_missing",
+            ),
+            scope=_scope(custody),
+            idempotency_key=bad_key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload=payload,
+            reply_to_message_id="message_missing",
+            now="2026-08-03T12:01:01.000000Z",
+        )
+    appended = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=good_key,
+            payload=payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=good_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    assert appended.ordinal == 1
+
+
+def test_private_store_rejects_malformed_input_before_grant_consumption(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    key = _key(5)
+    grant = _create_grant(
+        custody,
+        root,
+        universe,
+        interlocutor_ref="slack:user_1",
+        key=key,
+    )
+
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        storage.create_thread(
+            grant,
+            scope=_scope(custody),
+            idempotency_key=key,
+            interlocutor_ref="slack:user_1",
+            retention_until=None,
+            now="not-a-time",
+        )
+    created = storage.create_thread(
+        grant,
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    assert created.conversation_id.startswith("conversation_")
+
+
+def test_private_store_same_key_is_independent_across_universes(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe_1 = root / "universes" / "u1"
+    universe_2 = root / "universes" / "u2"
+    universe_1.mkdir(parents=True)
+    universe_2.mkdir(parents=True)
+    key = _key(6)
+
+    created = []
+    for universe_id, universe in (("universe_1", universe_1), ("universe_2", universe_2)):
+        scope = _scope(custody, universe_id=universe_id)
+        created.append(
+            storage.create_thread(
+                _create_grant(
+                    custody,
+                    root,
+                    universe,
+                    interlocutor_ref="slack:user_1",
+                    key=key,
+                    scope=scope,
+                ),
+                scope=scope,
+                idempotency_key=key,
+                interlocutor_ref="slack:user_1",
+                retention_until=None,
+                now="2026-08-03T12:01:00.000000Z",
+            )
+        )
+
+    assert created[0].conversation_id != created[1].conversation_id
+    assert created[0].universe_id == "universe_1"
+    assert created[1].universe_id == "universe_2"
+
+
+def test_private_store_concurrent_identical_create_has_one_result(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    key = _key(7)
+    grants = [
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=key,
+        )
+        for _ in range(8)
+    ]
+
+    def create(grant):
+        return storage.create_thread(
+            grant,
+            scope=_scope(custody),
+            idempotency_key=key,
+            interlocutor_ref="slack:user_1",
+            retention_until=None,
+            now="2026-08-03T12:01:00.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = tuple(executor.map(create, grants))
+
+    assert len({result.conversation_id for result in results}) == 1
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT COUNT(*) FROM conversation_custody_idempotency").fetchone()[0] == 1
+        )
+
+
+def test_private_store_concurrent_distinct_appends_are_contiguous(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = _key(8)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    calls = []
+    for index in range(9, 17):
+        payload = {"index": index}
+        key = _key(index)
+        calls.append(
+            (
+                _append_grant(
+                    custody,
+                    root,
+                    universe,
+                    conversation_id=thread.conversation_id,
+                    key=key,
+                    payload=payload,
+                ),
+                key,
+                payload,
+            )
+        )
+
+    def append(call):
+        grant, key, payload = call
+        return storage.append_message(
+            grant,
+            scope=_scope(custody),
+            idempotency_key=key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload=payload,
+            reply_to_message_id=None,
+            now="2026-08-03T12:01:01.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = tuple(executor.map(append, calls))
+
+    assert sorted(result.ordinal for result in results) == list(range(1, 9))
+    snapshot = storage.read_thread(
+        _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
+        scope=_scope(custody),
+        conversation_id=thread.conversation_id,
+        now="2026-08-03T12:01:02.000000Z",
+    )
+    assert tuple(message.ordinal for message in snapshot.messages) == tuple(range(1, 9))
+
+
+def test_private_store_concurrent_identical_append_has_one_result(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = _key(28)
+    append_key = _key(29)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    payload = {"same": True}
+    grants = [
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=append_key,
+            payload=payload,
+        )
+        for _ in range(8)
+    ]
+
+    def append(grant):
+        return storage.append_message(
+            grant,
+            scope=_scope(custody),
+            idempotency_key=append_key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload=payload,
+            reply_to_message_id=None,
+            now="2026-08-03T12:01:01.000000Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = tuple(executor.map(append, grants))
+    assert len({result.message_id for result in results}) == 1
+    assert {result.ordinal for result in results} == {1}
+
+
+def test_private_store_cross_thread_reply_fails_without_ordinal(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    threads = []
+    for index in (30, 31):
+        key = _key(index)
+        threads.append(
+            storage.create_thread(
+                _create_grant(
+                    custody,
+                    root,
+                    universe,
+                    interlocutor_ref=f"slack:user_{index}",
+                    key=key,
+                ),
+                scope=_scope(custody),
+                idempotency_key=key,
+                interlocutor_ref=f"slack:user_{index}",
+                retention_until=None,
+                now="2026-08-03T12:01:00.000000Z",
+            )
+        )
+    first_payload = {"thread": 1}
+    first = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=threads[0].conversation_id,
+            key=_key(32),
+            payload=first_payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=_key(32),
+        conversation_id=threads[0].conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=first_payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:01.000000Z",
+    )
+    reply_payload = {"thread": 2}
+    with pytest.raises(storage.ConversationCustodyReplyError):
+        storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=threads[1].conversation_id,
+                key=_key(33),
+                payload=reply_payload,
+                reply_to_message_id=first.message_id,
+            ),
+            scope=_scope(custody),
+            idempotency_key=_key(33),
+            conversation_id=threads[1].conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload=reply_payload,
+            reply_to_message_id=first.message_id,
+            now="2026-08-03T12:01:02.000000Z",
+        )
+    appended = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=threads[1].conversation_id,
+            key=_key(34),
+            payload=reply_payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=_key(34),
+        conversation_id=threads[1].conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=reply_payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:03.000000Z",
+    )
+    assert appended.ordinal == 1
+
+
+def test_private_store_cross_process_create_append_and_reply_races(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = _key(20)
+    context = multiprocessing.get_context("spawn")
+    create_args = (str(root), str(universe), create_key)
+    with ProcessPoolExecutor(max_workers=4, mp_context=context) as executor:
+        conversation_ids = tuple(executor.map(_process_create_thread, (create_args,) * 6))
+    assert len(set(conversation_ids)) == 1
+    conversation_id = conversation_ids[0]
+
+    first_key = _key(21)
+    first_payload = {"seed": True}
+    first = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=conversation_id,
+            key=first_key,
+            payload=first_payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=first_key,
+        conversation_id=conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=first_payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:01.000000Z",
+    )
+    append_args = tuple(
+        (
+            str(root),
+            str(universe),
+            conversation_id,
+            first.message_id,
+            _key(index),
+            index,
+        )
+        for index in range(22, 28)
+    )
+    with ProcessPoolExecutor(max_workers=4, mp_context=context) as executor:
+        replies = tuple(executor.map(_process_append_reply, append_args))
+
+    assert sorted(ordinal for ordinal, _reply in replies) == list(range(2, 8))
+    assert {reply for _ordinal, reply in replies} == {first.message_id}
+
+
+def test_private_store_detects_indexed_and_payload_tampering(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    create_key = _key(17)
+    append_key = _key(18)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+    payload = {"private_sentinel": "do-not-leak"}
+    storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=append_key,
+            payload=payload,
+        ),
+        scope=_scope(custody),
+        idempotency_key=append_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=payload,
+        reply_to_message_id=None,
+        now="2026-08-03T12:01:01.000000Z",
+    )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute(
+            "UPDATE conversation_custody_messages SET payload_digest = ?",
+            ("sha256:" + "0" * 64,),
+        )
+
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.read_thread(
+            _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
+            scope=_scope(custody),
+            conversation_id=thread.conversation_id,
+            now="2026-08-03T12:01:02.000000Z",
+        )
+
+
+def test_private_store_is_not_exported_and_uses_required_sqlite_mode(tmp_path: Path) -> None:
+    custody = _custody()
+    storage_package = importlib.import_module("tinyassets.storage")
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    key = _key(19)
+    _storage().create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=key,
+        ),
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+        now="2026-08-03T12:01:00.000000Z",
+    )
+
+    assert not hasattr(storage_package, "create_thread")
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        foreign_keys = conn.execute(
+            "PRAGMA foreign_key_list(conversation_custody_messages)"
+        ).fetchall()
+        assert any(row[2] == "conversation_custody_threads" for row in foreign_keys)

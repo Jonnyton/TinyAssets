@@ -415,6 +415,19 @@ class ConversationExport:
     digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationSnapshot:
+    """One integrity-checked thread and its complete ordered messages."""
+
+    thread: ConversationThread
+    messages: tuple[ConversationMessage, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.messages) is not tuple:
+            raise ConversationCustodyValidationError("snapshot messages must be a tuple")
+        export_conversation(self.thread, self.messages)
+
+
 def _thread_export_mapping(thread: ConversationThread) -> dict[str, object]:
     return {
         "agent_binding_id": thread.agent_binding_id,
@@ -710,6 +723,10 @@ def consume_operation_grant(
             "grant_mismatch", "conversation custody grant does not match the request"
         )
     observed_at = _parsed_timestamp(now, "now")
+    if observed_at < _parsed_timestamp(evidence.issued_at, "issued_at"):
+        raise ConversationCustodyAuthorizationError(
+            "grant_not_yet_valid", "custody grant is not valid before its issue time"
+        )
     if observed_at >= _parsed_timestamp(evidence.expires_at, "expires_at"):
         raise ConversationCustodyAuthorizationError("grant_expired", "custody grant expired")
     try:
@@ -736,6 +753,7 @@ __all__ = [
     "ConversationCustodyValidationError",
     "ConversationExport",
     "ConversationMessage",
+    "ConversationSnapshot",
     "ConversationThread",
     "StorageFileIdentity",
     "append_message_request_digest",
