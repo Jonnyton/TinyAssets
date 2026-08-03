@@ -10,7 +10,7 @@ useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
 Latest implementation commit after reconciliation onto `origin/main`
-`773315ff`: `0397774f`. The
+`773315ff`: `6bc8b4ac`. The
 immutable PR comment records the final exact PR head, including this evidence
 document.
 
