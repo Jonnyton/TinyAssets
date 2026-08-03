@@ -600,22 +600,34 @@ def write_graph(
     agent_stage_id: str = "",
     payload_json: str = "",
     expected_revision: int = 0,
+    goal_id: str = "",
+    branch_version_id: str = "",
+    scope: str = "",
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
         target: What to write: goal, request, branch, universe, agent, or
-            agent_binding. The founder's home universe is auto-created on
-            first contact; use target=universe to create an additional universe
-            (or the home when a create-scoped sign-in declined auto-birth).
-        operation: With target=agent, publish/remix/import/stage_import/
-            publish_stage/convert_export. With target=agent_binding, bind/update.
+            agent_binding. With target=goal, the default operation proposes a
+            Goal; operation=set_canonical sets or unsets a canonical binding.
+            The founder's home universe is auto-created on first contact; use
+            target=universe to create an additional universe (or the home when
+            a create-scoped sign-in declined auto-birth).
+        operation: With target=goal, set_canonical. With target=agent,
+            publish/remix/import/stage_import/publish_stage/convert_export.
+            With target=agent_binding, bind/update.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
         visibility: Shared-goal visibility, usually public.
         text: Request text to queue (or optional purpose with target=universe).
         graph_id: Optional target graph/universe identifier.
+        goal_id: With target=goal operation=set_canonical, the Goal identifier.
+        branch_version_id: With target=goal operation=set_canonical, the active
+            published Branch version to bind; empty unsets the selected scope.
+        scope: With target=goal operation=set_canonical, the authenticated
+            actor ID for a personal binding. Empty retains author/capability-
+            gated default-canonical behavior. Cross-actor values are rejected.
         request_type: TinyAssets request type.
         branch_id: Target branch identifier; with target=branch it is the
             branch_def_id to patch.
@@ -718,6 +730,21 @@ def write_graph(
             ),
         })
     if normalized == "goal":
+        goal_operation = (operation or "propose").strip().lower()
+        if goal_operation == "set_canonical":
+            return _goals_impl(
+                action="set_canonical",
+                goal_id=goal_id,
+                branch_version_id=branch_version_id,
+                scope=scope,
+            )
+        if goal_operation != "propose":
+            return json.dumps({
+                "error": "unknown_goal_operation",
+                "target": "goal",
+                "operation": operation,
+                "allowed_operations": ["propose", "set_canonical"],
+            })
         return _goals_impl(
             action="propose",
             name=name,
@@ -838,21 +865,39 @@ _mcp_write_graph = _register_structured_tool(
 
 
 def run_graph(
-    branch_def_id: str,
+    branch_def_id: str = "",
     inputs_json: str = "",
     run_name: str = "",
     graph_id: str = "",
     recursion_limit_override: int = 0,
+    goal_id: str = "",
 ) -> str:
-    """Run a TinyAssets graph branch — the only verb that produces a Run.
+    """Run a TinyAssets graph branch or the caller's Goal canonical.
 
     Args:
-        branch_def_id: Branch definition identifier to run.
+        branch_def_id: Branch definition identifier to run. Leave empty when
+            running a Goal canonical.
         inputs_json: Optional JSON object containing run inputs.
         run_name: Optional display name for the run.
         graph_id: Optional graph/universe identifier.
         recursion_limit_override: Optional per-run recursion limit.
+        goal_id: Optional Goal whose current caller-scoped canonical should run.
+            The caller's personal binding is preferred before the Goal default.
     """
+    if goal_id:
+        if branch_def_id:
+            return json.dumps({
+                "error": "run_target_ambiguous",
+                "branch_def_id": branch_def_id,
+                "goal_id": goal_id,
+            })
+        return _goals_impl(
+            action="run_canonical",
+            goal_id=goal_id,
+            inputs_json=inputs_json,
+            run_name=run_name,
+            recursion_limit_override=recursion_limit_override,
+        )
     return _extensions_impl(
         action="run_branch",
         branch_def_id=branch_def_id,
@@ -1869,6 +1914,9 @@ def goals(
     production_only: bool = False,
     protocol_json: str = "",
     force: bool = False,
+    inputs_json: str = "",
+    run_name: str = "",
+    recursion_limit_override: int = 0,
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
 
@@ -1930,6 +1978,9 @@ def goals(
         scope=scope,
         production_only=production_only,
         protocol_json=protocol_json,
+        inputs_json=inputs_json,
+        run_name=run_name,
+        recursion_limit_override=recursion_limit_override,
         force=force,
     )
 

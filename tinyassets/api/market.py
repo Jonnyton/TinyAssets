@@ -2640,6 +2640,9 @@ def goals(
     production_only: bool = False,
     protocol_json: str = "",
     force: bool = False,
+    inputs_json: str = "",
+    run_name: str = "",
+    recursion_limit_override: int = 0,
 ) -> str:
     """Goals — first-class shared primitives above workflow Branches.
 
@@ -2729,6 +2732,8 @@ def goals(
       production_only: list filter for fresh-user discovery. Keeps
         public Goals and filters RETRACTED/smoke/disposable entries.
       protocol_json: JSON list for define_protocol.
+      inputs_json/run_name/recursion_limit_override: run_canonical options
+        forwarded to the immutable Branch-version runner.
       author: list filter.
       limit: cap on returned rows.
       force: override `local_edit_conflict` refusal on propose/update/bind
@@ -2755,6 +2760,9 @@ def goals(
         "scope": scope,
         "production_only": production_only,
         "protocol_json": protocol_json,
+        "inputs_json": inputs_json,
+        "run_name": run_name,
+        "recursion_limit_override": recursion_limit_override,
         "force": force,
     }
     canonical_action = _canonical_goal_action(action)

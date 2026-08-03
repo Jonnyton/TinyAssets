@@ -10,17 +10,13 @@ The April audit described three blocking gaps, but current code has moved:
 - `tinyassets/api/runs.py::_action_run_branch_version` and
   `tinyassets/runs.py::execute_branch_version_async` already reconstruct and run
   an immutable published snapshot. `run_canonical` already delegates to it.
-- `tinyassets/evaluation.EvalVerdict` still has only
-  `pass | fail | skip | error`; no route-back decision or typed patch-notes
-  payload is implemented.
+- `tinyassets/evaluation.EvalVerdict` now includes the landed route-back
+  decision and typed patch-notes payload.
 
-The implementation must be additive, preserve existing author/capability
-authority, and avoid `tinyassets/api/universe.py` and `universe_server.py`.
-That boundary leaves actor-scoped writes and canonical runs reachable only
-through CLI/internal Goal actions in this slice. The advertised canonical MCP
-surface exposes the actor-aware read result, but `write_graph` and `run_graph`
-do not yet route `set_canonical` or `run_canonical`. User-facing reachability is
-therefore a named follow-up, not part of the shipped claim for this slice.
+The implementation is additive and preserves existing author/capability
+authority. The canonical MCP surface routes actor-scoped writes and runs through
+the same Goal dispatcher; it adds no new advertised handle and does not change
+`tinyassets/api/universe.py`.
 
 ## Goals / Non-Goals
 
@@ -32,19 +28,19 @@ therefore a named follow-up, not part of the shipped claim for this slice.
 - Prefer the actor's binding when resolving or running a Goal canonical, then
   fall back to the default binding and legacy column.
 - Keep default author/capability writes compatible throughout the transition.
-- Define the full Goal-aware gate route-back and immutable-runner contract even
-  if only the personal canonical-to-runner slice lands now.
+- Define and implement the Goal-aware gate route-back and immutable-runner
+  contract.
+- Expose personal canonical binding and execution through the advertised
+  canonical MCP handles.
 
 **Non-Goals:**
 
 - Removing `goals.canonical_branch_version_id` or the pre-existing
   `canonical_bindings` table.
 - Adding team, tier, delegated, or arbitrary cross-actor canonical authority.
-- Implementing gate route-back, typed patch notes, or contribution attribution
-  in the first vertical slice.
 - Changing leaderboard selection policy or allowing it to overwrite personal
   actor bindings.
-- Editing either forbidden universe routing module.
+- Adding another MCP handle for Goal canonical operations.
 
 ## Decisions
 
@@ -132,7 +128,17 @@ different actor. The handler appends route history, rejects repeated
 Missing bindings, malformed notes, missing artifacts, and loops terminate with
 structured errors rather than silently falling through to a live definition.
 
-This decision is specified now but remains unimplemented in this slice.
+This decision is implemented by the completed route-back tasks in section 4.
+
+### 7. Canonical handles adapt to the existing Goal dispatcher
+
+`write_graph target=goal operation=set_canonical` forwards `goal_id`,
+`branch_version_id`, and `scope` to the existing tighten-only Goal action.
+`run_graph goal_id=...` forwards run inputs and limits to `run_canonical`, which
+derives the current actor and dispatches the resolved immutable version. A call
+that supplies both `branch_def_id` and `goal_id` is rejected as ambiguous. This
+keeps authorization, attribution, and canonical resolution in their existing
+owners while preserving the advertised handle set.
 
 ## Risks / Trade-offs
 
