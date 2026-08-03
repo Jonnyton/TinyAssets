@@ -441,9 +441,7 @@ class _ProductionVaultCredentialResolver:
         self._universe_dir = Path(universe_dir)
         self._provider = provider.strip().lower()
         self._destination = destination.strip().lower()
-        normalized = self._destination.removeprefix("https://")
-        normalized = normalized.removeprefix("http://").strip("/")
-        self._repository = normalized.removeprefix("github.com/")
+        self._repository = _github_repository_from_destination(self._destination)
 
     def __call__(self, credential_ref: str) -> str:
         if self._provider != "github":
@@ -576,7 +574,35 @@ class _ProductionGitHubNetworkDriver:
         verb: str,
         request: object,
     ) -> Any:
-        if provider != "github" or verb != "pull_requests:read_for_commit":
+        if provider != "github":
+            raise PermissionError("provider verb has no trusted outbound transport")
+        repository = _github_repository_from_destination(destination)
+        if verb == "pull_requests:write":
+            if not isinstance(request, dict):
+                raise PermissionError("GitHub write request shape is not permitted")
+            requested_repository = str(request.get("repository", "")).strip().lower()
+            if requested_repository != repository:
+                raise PermissionError("GitHub request repository is outside the grant")
+            from tinyassets.effectors.github_pr import (
+                _prepare_scoped_github_commit,
+                _publish_scoped_github_pull_request,
+            )
+
+            operation = request.get("operation")
+            if operation == "prepare_commit":
+                return _prepare_scoped_github_commit(
+                    request=request,
+                    destination=repository,
+                    capability_token=credential,
+                )
+            if operation == "publish_pull_request":
+                return _publish_scoped_github_pull_request(
+                    request=request,
+                    destination=repository,
+                    capability_token=credential,
+                )
+            raise PermissionError("GitHub write operation is not permitted")
+        if verb != "pull_requests:read_for_commit":
             raise PermissionError("provider verb has no trusted outbound transport")
         if not isinstance(request, dict) or set(request) != {
             "repository",
@@ -584,7 +610,6 @@ class _ProductionGitHubNetworkDriver:
             "per_page",
         }:
             raise PermissionError("GitHub request shape is not permitted")
-        repository = _github_repository_from_destination(destination)
         requested_repository = str(request["repository"]).strip().lower()
         if requested_repository != repository:
             raise PermissionError("GitHub request repository is outside the grant")

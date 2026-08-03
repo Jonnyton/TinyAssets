@@ -73,7 +73,12 @@ from tinyassets.storage.background_branch_authority import (
 from tinyassets.storage.cloud_automation_continuation import (
     SQLiteCloudAutomationContinuationStore,
 )
-from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+from tinyassets.storage.outbound_connections import (
+    ActionCap,
+    ConnectionLedger,
+    GrantResolutionError,
+    ScopedConnectionProxy,
+)
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
@@ -888,6 +893,224 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
             "SELECT state FROM provider_invocation_reservations ORDER BY ordinal"
         ).fetchall()
     assert [row["state"] for row in reservation_states] == ["launch_started"] * 4
+
+
+def test_claimed_cloud_session_executes_effect_through_exact_destination_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    session = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=lambda *_args, **_kwargs: "unused",
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert session is not None
+    resolved = []
+
+    class _Channel:
+        def request(self, verb, request):
+            if verb == "pull_requests:read_for_commit":
+                return []
+            if request["operation"] == "prepare_commit":
+                return {"commit_sha": "a" * 40, "tree_sha": "b" * 40}
+            return {
+                "pr_url": "https://github.com/example/project/pull/17",
+                "pr_number": 17,
+                "commit_sha": "a" * 40,
+            }
+
+        def close(self):
+            return None
+
+    def resolve_exact(ledger, **kwargs):
+        resolved.append(kwargs)
+        return ScopedConnectionProxy(
+            grant_id=fixture[0].destination_grant_id,
+            provider="github",
+            destination="github.com/example/project",
+            scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+            _channel=_Channel(),
+        )
+
+    monkeypatch.setattr(ConnectionLedger, "resolve_exact_scoped_proxy", resolve_exact)
+    evidence = session.execute_github_pull_request_effect(
+        packet={
+            "sink": "github_pull_request",
+            "destination": "example/project",
+            "payload": {
+                "title": "Ship",
+                "body": "Reviewed",
+                "base_branch": "main",
+                "changes_json": {"README.md": "updated\n"},
+            },
+        },
+        run_id="run-cloud-effect",
+    )
+
+    assert evidence["status"] == "succeeded"
+    assert resolved == [{
+        "universe_id": "universe_alice",
+        "grant_id": fixture[0].destination_grant_id,
+        "connection_id": "conn_tinyassets",
+    }]
+
+
+@pytest.mark.parametrize("fault", ("grant", "connection"))
+def test_claimed_cloud_effect_revalidates_destination_before_credential_access(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    session = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=lambda *_args, **_kwargs: "unused",
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert session is not None
+    if fault == "grant":
+        fixture[5].revoke_grant(fixture[0].destination_grant_id)
+    else:
+        fixture[5].revoke_connection("conn_tinyassets")
+
+    with pytest.raises(GrantResolutionError, match="revoked"):
+        session.execute_github_pull_request_effect(
+            packet={
+                "sink": "github_pull_request",
+                "destination": "example/project",
+                "payload": {
+                    "title": "Must not write",
+                    "changes_json": {"README.md": "blocked\n"},
+                },
+            },
+            run_id="run-revoked-effect",
+        )
+
+
+def test_claimed_cloud_effect_rejects_removed_unprompted_action_cap(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    session = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=lambda *_args, **_kwargs: "unused",
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert session is not None
+    with fixture[5]._connect() as connection:
+        connection.execute(
+            "UPDATE outbound_connection_grants "
+            "SET unprompted_action_cap_json = NULL WHERE grant_id = ?",
+            (fixture[0].destination_grant_id,),
+        )
+
+    with pytest.raises(PermissionError, match="action cap"):
+        session.execute_github_pull_request_effect(
+            packet={
+                "sink": "github_pull_request",
+                "destination": "example/project",
+                "payload": {
+                    "title": "Must not write",
+                    "changes_json": {"README.md": "blocked\n"},
+                },
+            },
+            run_id="run-cap-removed",
+        )
+
+
+def test_external_effect_dispatch_uses_only_claimed_cloud_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.branches import BranchDefinition, NodeDefinition
+    from tinyassets.runs import (
+        _claimed_cloud_effect_session,
+        _run_external_write_effectors,
+    )
+
+    _fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    session = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=lambda *_args, **_kwargs: "unused",
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert session is not None
+    assert _claimed_cloud_effect_session(session) is session
+
+    class _ForgedSession:
+        def execute_github_pull_request_effect(self, *_args, **_kwargs):
+            return None
+
+    assert _claimed_cloud_effect_session(_ForgedSession()) is None
+    calls = []
+
+    def execute_effect(self, *, packet, run_id):
+        assert self is session
+        calls.append((packet, run_id))
+        return {"status": "succeeded", "pr_number": 17}
+
+    monkeypatch.setattr(
+        type(session),
+        "execute_github_pull_request_effect",
+        execute_effect,
+    )
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "example/project",
+        "payload": {"title": "Ship"},
+    }
+    branch = BranchDefinition(name="cloud-effect", entry_point="write")
+    branch.node_defs = [
+        NodeDefinition(
+            node_id="write",
+            display_name="Write",
+            output_keys=["packet"],
+            effects=["github_pull_request"],
+        )
+    ]
+
+    evidence = _run_external_write_effectors(
+        branch,
+        {"packet": packet},
+        base_path=tmp_path,
+        run_id="run-cloud-dispatch",
+        cloud_effect_session=session,
+    )
+
+    assert evidence["write"]["github_pull_request"]["pr_number"] == 17
+    assert calls == [(packet, "run-cloud-dispatch")]
 
 
 def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(

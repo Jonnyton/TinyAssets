@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tinyassets.effectors import github_pr
@@ -162,6 +164,263 @@ def test_connection_destination_url_normalizes_to_exact_repository():
 
     assert result["status"] == "succeeded"
     assert channel.calls[0]["request"]["repository"] == "owner/repo"
+
+
+def test_scoped_cloud_effect_reserves_exact_identity_before_visible_publish(tmp_path):
+    intended_sha = "b" * 40
+
+    class _EffectChannel:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, verb, request):
+            self.calls.append({"verb": verb, "request": request})
+            if verb == "pull_requests:read_for_commit":
+                return []
+            if request["operation"] == "prepare_commit":
+                return {"commit_sha": intended_sha, "tree_sha": "c" * 40}
+            assert request["operation"] == "publish_pull_request"
+            return {
+                "pr_url": "https://github.com/owner/repo/pull/17",
+                "pr_number": 17,
+                "commit_sha": intended_sha,
+            }
+
+    channel = _EffectChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship the slice",
+            "body": "Reviewed change.",
+            "base_branch": "main",
+            "changes_json": {"README.md": "updated\n"},
+            "draft": True,
+        },
+        "idempotency_hint": "branch-authored-key-must-not-own-cloud-effect",
+    }
+
+    evidence = github_pr._execute_scoped_cloud_github_pr_effect(
+        universe_dir=tmp_path,
+        universe_id="universe-42",
+        automation_id="automation-7",
+        claim_id="claim-3",
+        repository="owner/repo",
+        packet=packet,
+        proxy=proxy,
+        run_id="run-1",
+    )
+
+    assert evidence["status"] == "succeeded"
+    assert evidence["result"]["pr_number"] == 17
+    assert len(channel.calls) == 2
+    prepare = channel.calls[0]
+    publish = channel.calls[1]
+    assert prepare["request"]["operation"] == "prepare_commit"
+    assert publish["request"]["operation"] == "publish_pull_request"
+    assert publish["request"]["intended_head_sha"] == intended_sha
+    assert publish["request"]["head_branch"].startswith("tinyassets/cloud-")
+    assert "branch-authored-key" not in str(publish)
+    identity = github_pr.GitHubPullRequestEffectIdentity(
+        universe_id="universe-42",
+        automation_id="automation-7",
+        claim_id="claim-3",
+        repository="owner/repo",
+        intended_head_sha=intended_sha,
+    )
+    assert github_pr.github_pr_effect_marker(identity) in publish["request"]["body"]
+
+
+def test_scoped_cloud_effect_reconciles_ambiguous_publish_without_second_write(tmp_path):
+    intended_sha = "b" * 40
+    identity = github_pr.GitHubPullRequestEffectIdentity(
+        universe_id="universe-42",
+        automation_id="automation-7",
+        claim_id="claim-3",
+        repository="owner/repo",
+        intended_head_sha=intended_sha,
+    )
+
+    class _AmbiguousChannel:
+        def __init__(self):
+            self.publish_count = 0
+
+        def request(self, verb, request):
+            if verb == "pull_requests:read_for_commit":
+                return [_pull(identity)]
+            if request["operation"] == "prepare_commit":
+                return {"commit_sha": intended_sha, "tree_sha": "c" * 40}
+            self.publish_count += 1
+            raise github_pr.AmbiguousProxyOutcome("connection dropped after send")
+
+    channel = _AmbiguousChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship",
+            "body": "Reviewed",
+            "base_branch": "main",
+            "changes_json": {"README.md": "updated\n"},
+        },
+    }
+
+    evidence = github_pr._execute_scoped_cloud_github_pr_effect(
+        universe_dir=tmp_path,
+        universe_id=identity.universe_id,
+        automation_id=identity.automation_id,
+        claim_id=identity.claim_id,
+        repository=identity.repository,
+        packet=packet,
+        proxy=proxy,
+        run_id="run-ambiguous",
+    )
+
+    assert evidence["status"] == "succeeded"
+    assert evidence["reconciled"] is True
+    assert evidence["pr_number"] == 17
+    assert channel.publish_count == 1
+
+
+def test_scoped_cloud_effect_replay_reuses_journaled_prepared_commit(tmp_path):
+    prepared_shas = iter(("b" * 40, "d" * 40))
+
+    class _ReplayChannel:
+        def __init__(self):
+            self.prepare_count = 0
+            self.publish_count = 0
+
+        def request(self, verb, request):
+            assert verb != "pull_requests:read_for_commit"
+            if request["operation"] == "prepare_commit":
+                self.prepare_count += 1
+                return {"commit_sha": next(prepared_shas), "tree_sha": "c" * 40}
+            self.publish_count += 1
+            return {
+                "pr_url": "https://github.com/owner/repo/pull/17",
+                "pr_number": 17,
+                "commit_sha": request["intended_head_sha"],
+            }
+
+    channel = _ReplayChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship",
+            "body": "Reviewed",
+            "base_branch": "main",
+            "changes_json": {"README.md": "updated\n"},
+        },
+    }
+    kwargs = {
+        "universe_dir": tmp_path,
+        "universe_id": "universe-42",
+        "automation_id": "automation-7",
+        "claim_id": "claim-3",
+        "repository": "owner/repo",
+        "packet": packet,
+        "proxy": proxy,
+    }
+
+    first = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-first",
+    )
+    replay = github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        run_id="run-replay",
+    )
+
+    assert first["status"] == "succeeded"
+    assert replay["status"] == "succeeded"
+    assert replay["replay"] is True
+    assert channel.prepare_count == 1
+    assert channel.publish_count == 1
+
+
+def test_scoped_cloud_effect_claim_freezes_first_effect_intent(tmp_path):
+    class _FrozenChannel:
+        def __init__(self):
+            self.prepare_count = 0
+            self.publish_count = 0
+
+        def request(self, verb, request):
+            assert verb != "pull_requests:read_for_commit"
+            if request["operation"] == "prepare_commit":
+                self.prepare_count += 1
+                return {"commit_sha": "b" * 40, "tree_sha": "c" * 40}
+            self.publish_count += 1
+            return {
+                "pr_url": "https://github.com/owner/repo/pull/17",
+                "pr_number": 17,
+                "commit_sha": request["intended_head_sha"],
+            }
+
+    channel = _FrozenChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    base_packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship",
+            "body": "Reviewed",
+            "base_branch": "main",
+            "changes_json": {"README.md": "first\n"},
+        },
+    }
+    kwargs = {
+        "universe_dir": tmp_path,
+        "universe_id": "universe-42",
+        "automation_id": "automation-7",
+        "claim_id": "claim-3",
+        "repository": "owner/repo",
+        "proxy": proxy,
+    }
+    github_pr._execute_scoped_cloud_github_pr_effect(
+        **kwargs,
+        packet=base_packet,
+        run_id="run-first",
+    )
+    changed_packet = json.loads(json.dumps(base_packet))
+    changed_packet["payload"]["changes_json"]["README.md"] = "second\n"
+
+    with pytest.raises(PermissionError, match="intent changed"):
+        github_pr._execute_scoped_cloud_github_pr_effect(
+            **kwargs,
+            packet=changed_packet,
+            run_id="run-changed",
+        )
+
+    assert channel.prepare_count == 1
+    assert channel.publish_count == 1
 
 
 def test_authoritative_empty_commit_association_is_terminal_absence():

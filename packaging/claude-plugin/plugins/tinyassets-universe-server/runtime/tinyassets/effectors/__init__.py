@@ -87,6 +87,7 @@ def run_effects_for_branch(
     base_path=None,
     run_id="",
     dry_run=None,
+    cloud_effect_session=None,
 ):
     """Dispatch all branch effects, including the PR-175 merge effector."""
     evidence_map = _run_github_pr_effects_for_branch(
@@ -95,6 +96,7 @@ def run_effects_for_branch(
         base_path=base_path,
         run_id=run_id,
         dry_run=dry_run,
+        cloud_effect_session=cloud_effect_session,
     )
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])

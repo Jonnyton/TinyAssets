@@ -296,6 +296,56 @@ def test_production_github_driver_reads_only_exact_commit_repository(monkeypatch
         )
 
 
+def test_production_github_driver_routes_scoped_prepare_and_publish(monkeypatch):
+    from tinyassets.effectors import github_pr
+
+    calls = []
+
+    def prepare(*, request, destination, capability_token):
+        calls.append(("prepare", request, destination, capability_token))
+        return {"commit_sha": "a" * 40, "tree_sha": "b" * 40}
+
+    def publish(*, request, destination, capability_token):
+        calls.append(("publish", request, destination, capability_token))
+        return {"pr_number": 17, "pr_url": "https://github.com/acme/widgets/pull/17"}
+
+    monkeypatch.setattr(github_pr, "_prepare_scoped_github_commit", prepare)
+    monkeypatch.setattr(github_pr, "_publish_scoped_github_pull_request", publish)
+    driver_type = getattr(
+        __import__(
+            "tinyassets.storage.outbound_connections",
+            fromlist=["_ProductionGitHubNetworkDriver"],
+        ),
+        "_ProductionGitHubNetworkDriver",
+    )
+    driver = driver_type()
+    prepare_request = {
+        "operation": "prepare_commit",
+        "repository": "acme/widgets",
+    }
+    publish_request = {
+        "operation": "publish_pull_request",
+        "repository": "acme/widgets",
+    }
+
+    assert driver(
+        credential="requester-owned-secret",
+        provider="github",
+        destination="github.com/acme/widgets",
+        verb="pull_requests:write",
+        request=prepare_request,
+    )["commit_sha"] == "a" * 40
+    assert driver(
+        credential="requester-owned-secret",
+        provider="github",
+        destination="github.com/acme/widgets",
+        verb="pull_requests:write",
+        request=publish_request,
+    )["pr_number"] == 17
+    assert [call[0] for call in calls] == ["prepare", "publish"]
+    assert all(call[2:] == ("acme/widgets", "requester-owned-secret") for call in calls)
+
+
 def test_resolve_scoped_proxy_refuses_caller_supplied_owner_identity(tmp_path):
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
