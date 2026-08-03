@@ -34,16 +34,22 @@ is dropped, which a per-worker patch got for free.
 
 **What this detector is.** A deliberately narrow lint, not a proof.
 
-Covered: `threading.Thread(target=…)` — keyword or positional — where the target
-is a named function, a `functools.partial` of one, or an inline `lambda`; and
-`patch` spelled bare, under an import alias, as `mock.patch`, or as
-`patch.object`, plus `monkeypatch.<verb>()`.
+Covered: a `threading.Thread(target=…)` — keyword or positional — whose target is
+a named function, a `functools.partial` of one, or an inline `lambda`, entering
+`unittest.mock.patch` (bare, aliased, as `mock.patch`, or as `patch.object`) or
+any `monkeypatch.<verb>()`.
+
+**Bindings are resolved from imports, never from spelling.** `Thread` must come
+from `threading` and `patch` from `unittest.mock`/`mock`. Review found three
+false positives when this matched by name — an unrelated `widgets.Thread(...)`,
+a locally-defined `patch()` helper, and `from custom_package import mock` —
+each of which would have wedged a correct PR.
 
 **Not covered, and pinned by tests below so this list cannot drift:**
 
 * `ThreadPoolExecutor.submit` / `.map` and other executor APIs;
 * indirection — a thread target that calls a helper which patches;
-* dynamically-built or aliased `Thread` constructors.
+* dynamically-built `Thread` constructors (e.g. `getattr(threading, "Thread")`).
 
 Those exclusions are chosen, not accidental. An earlier revision did try to
 resolve executors, and review found every broadening unsound: builtin
@@ -67,20 +73,37 @@ import pytest
 
 _TESTS = Path(__file__).resolve().parent
 
-# Callables that mutate PROCESS-GLOBAL state on enter and restore it on exit.
-# Entering one from more than one thread is the unsafe pattern.
+# Two shapes mutate PROCESS-GLOBAL state on enter and restore it on exit, and
+# are deliberately matched by different rules rather than one name set:
 #
-# Two separate shapes, deliberately not merged into one name set:
+#   * `patch(...)` / `mock.patch(...)` / `patch.object(...)` — resolved from
+#     imports, never from spelling;
+#   * `monkeypatch.<verb>(...)` — pytest's fixture, equally process-global.
+#     The verbs are matched ONLY on a `monkeypatch`/`mp` receiver, because
+#     matching them by bare name flags builtin `setattr(obj, "x", 1)` on a
+#     thread-local object, which is perfectly safe.
 #
-#   * bare `patch(...)` / `mock.patch(...)` / `mock.patch.object(...)`
-#   * `monkeypatch.<verb>(...)` — pytest's fixture, equally process-global
-#
-# `setattr` etc. are matched ONLY on a `monkeypatch` receiver. Matching them by
-# bare name would flag builtin `setattr(obj, "x", 1)` on a thread-local object,
-# which is perfectly safe — a false-positive gate is worse than no gate, since
-# it blocks correct code and trains people to delete the check.
-_PATCH_NAMES = {"patch"}
-_MONKEYPATCH_VERBS = {"setattr", "setenv", "delenv", "delattr", "chdir", "syspath_prepend"}
+# Only these modules bind the real `patch`. Matching any module whose name ends
+# in "mock" flagged `from custom_package import mock`, and matching a bare
+# `patch()` with no import at all flagged a locally-defined helper called
+# `patch` — both wedge correct PRs.
+_MOCK_MODULES = {"unittest.mock", "mock"}
+
+# pytest's MonkeyPatch, which is process-global exactly like mock.patch.
+# The full mutating surface, so the docstring's claim is true rather than
+# approximately true. `undo` is included because calling it from one thread
+# reverts another thread's patches.
+_MONKEYPATCH_VERBS = {
+    "setattr",
+    "delattr",
+    "setitem",
+    "delitem",
+    "setenv",
+    "delenv",
+    "chdir",
+    "syspath_prepend",
+    "undo",
+}
 _MONKEYPATCH_RECEIVERS = {"monkeypatch", "mp"}
 
 
@@ -104,6 +127,7 @@ def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
     """
     names: set[str] = set()
     lambdas: list[ast.Lambda] = []
+    ctor_names, ctor_modules = _thread_ctor_names(tree)
 
     def record(expr: ast.expr) -> None:
         if isinstance(expr, ast.Lambda):
@@ -119,13 +143,19 @@ def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
             if callee == "partial" and expr.args:
                 record(expr.args[0])
 
+    def is_threading_thread(func: ast.expr) -> bool:
+        if isinstance(func, ast.Name):
+            return func.id in ctor_names
+        if isinstance(func, ast.Attribute):
+            return func.attr == "Thread" and (
+                getattr(func.value, "id", None) in ctor_modules
+            )
+        return False
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        callee = getattr(node.func, "id", None) or getattr(
-            node.func, "attr", None
-        )
-        if callee != "Thread":
+        if not is_threading_thread(node.func):
             continue
         for kw in node.keywords:
             if kw.arg == "target":
@@ -139,28 +169,49 @@ def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
 def _patch_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
     """(names bound to `mock.patch`, names bound to the `mock` MODULE).
 
-    Both halves matter. Without the second, any attribute call spelled `.patch`
-    matches — so an unrelated `quilt.patch(hole)` inside a thread target was
-    flagged as mock patching, which would wedge a correct PR. The receiver has
-    to be a name actually bound to the mock module.
+    Resolved from actual imports, not from spelling. Name-based matching
+    produced three separate false positives in review — an unrelated
+    `quilt.patch(hole)`, a locally-defined `patch()` helper, and
+    `from custom_package import mock` — each of which would wedge a correct PR.
     """
-    aliases = set(_PATCH_NAMES)
+    aliases: set[str] = set()
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
             for a in node.names:
-                if module.endswith("mock") and a.name == "patch":
+                # `from unittest.mock import patch [as p]`
+                if module in _MOCK_MODULES and a.name == "patch":
                     aliases.add(a.asname or a.name)
-                # `from unittest import mock`
-                if a.name == "mock":
+                # `from unittest import mock [as m]`
+                if module == "unittest" and a.name == "mock":
                     modules.add(a.asname or a.name)
         elif isinstance(node, ast.Import):
             for a in node.names:
                 # `import mock` / `import unittest.mock as m`
-                if a.name == "mock" or a.name.endswith(".mock"):
+                if a.name in _MOCK_MODULES:
                     modules.add(a.asname or a.name.split(".")[-1])
     return aliases, modules
+
+
+def _thread_ctor_names(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """(names bound to `threading.Thread`, names bound to `threading`).
+
+    Matching any callee spelled `Thread` flagged an unrelated
+    `widgets.Thread(...)`. The constructor has to come from `threading`.
+    """
+    names: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "threading":
+            for a in node.names:
+                if a.name == "Thread":
+                    names.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "threading":
+                    modules.add(a.asname or a.name)
+    return names, modules
 
 
 def _offenders(path: Path) -> list[str]:
@@ -200,10 +251,12 @@ def _unsafe_call_name(
         return f"{func.id}()"
     if isinstance(func, ast.Attribute):
         receiver = getattr(func.value, "id", None)
-        # mock.patch(...) — ONLY on a receiver bound to the mock module. A bare
-        # `.patch` match flags any unrelated object with a `patch` method.
-        if func.attr in aliases and receiver in mock_modules:
-            return f"{receiver}.{func.attr}()"
+        # mock.patch(...) — the attribute is literally `patch` and the receiver
+        # is a name bound to the mock MODULE. (`aliases` is the separate
+        # from-import binding; a module-attribute access does not use it.) A
+        # bare `.patch` match flags any unrelated object with a patch method.
+        if func.attr == "patch" and receiver in mock_modules:
+            return f"{receiver}.patch()"
         # patch.object(...) / patch.dict(...) — receiver is `patch` itself
         inner = func.value
         if isinstance(inner, ast.Name) and inner.id in aliases:
@@ -211,7 +264,7 @@ def _unsafe_call_name(
         # mock.patch.object(...)
         if (
             isinstance(inner, ast.Attribute)
-            and inner.attr in aliases
+            and inner.attr == "patch"
             and getattr(inner.value, "id", None) in mock_modules
         ):
             return f"{inner.attr}.{func.attr}()"
@@ -348,6 +401,49 @@ def worker():
 def test_x():
     ex = ProcessPoolExecutor()
     ex.submit(worker)
+"""),
+    # Three false positives found in round-3 review; each would wedge a
+    # correct PR, which is why binding is now resolved from imports.
+    (False, "unrelated widgets.Thread is not threading.Thread", """
+import widgets
+from unittest.mock import patch
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    widgets.Thread(target=worker).start()
+"""),
+    (False, "locally-defined patch() helper is not mock.patch", """
+import threading
+from contextlib import contextmanager
+@contextmanager
+def patch(x):
+    yield
+def worker():
+    with patch('anything'): pass
+def test_x():
+    threading.Thread(target=worker).start()
+"""),
+    (False, "from custom_package import mock is not unittest.mock", """
+import threading
+from custom_package import mock
+def worker():
+    with mock.patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=worker).start()
+"""),
+    (True, "monkeypatch.setitem mutates process-global state too", """
+import threading, os
+def worker(monkeypatch):
+    monkeypatch.setitem(os.environ, 'X', '1')
+def test_x(monkeypatch):
+    threading.Thread(target=worker, args=(monkeypatch,)).start()
+"""),
+    (True, "monkeypatch.undo reverts another thread's patches", """
+import threading
+def worker(monkeypatch):
+    monkeypatch.undo()
+def test_x(monkeypatch):
+    threading.Thread(target=worker, args=(monkeypatch,)).start()
 """),
     (False, "patch outside any thread target", """
 import threading
