@@ -12,6 +12,8 @@ Codex checker key: PR #1144.
 
 from __future__ import annotations
 
+import urllib.error
+
 from tinyassets.effectors import github_pr
 
 _DEST = "Jonnyton/TinyAssets"
@@ -105,6 +107,99 @@ def test_api_call_order(monkeypatch):
         ("POST", "commits"),
         ("POST", "refs"),
     ]
+
+
+def test_prepare_only_creates_content_addressed_commit_without_visible_ref(monkeypatch):
+    fake = _scripted_api(_happy_responses())
+    monkeypatch.setattr(github_pr, "_git_data_api", fake)
+
+    result = github_pr._materialize_branch(
+        changes_json={"README_PROBE.md": "probe\n"},
+        destination=_DEST,
+        base_branch=_BASE,
+        head_branch=_HEAD,
+        commit_message="Probe",
+        capability_token="tok",
+        publish_ref=False,
+    )
+
+    assert result == {
+        "prepared": True,
+        "commit_sha": "newcommitsha",
+        "tree_sha": "newtreesha",
+    }
+    assert not any(path.endswith("/git/refs") for _method, path, _body in fake.calls)
+
+
+def test_scoped_publish_binds_exact_prepared_commit_before_opening_pr(monkeypatch):
+    calls = []
+    head = "tinyassets/cloud-" + "d" * 24
+
+    def fake_git_api(*, method, path, capability_token, body=None):
+        calls.append((method, path, capability_token, body))
+        return {"ref": f"refs/heads/{_HEAD}"}, None
+
+    def fake_create(*, payload, destination, capability_token):
+        calls.append(("PR", destination, capability_token, payload))
+        return {
+            "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/17",
+            "pr_number": 17,
+            "invocation_mode": "github_api",
+        }
+
+    monkeypatch.setattr(github_pr, "_git_data_api", fake_git_api)
+    monkeypatch.setattr(github_pr, "_invoke_github_api_pr_create", fake_create)
+    request = {
+        "operation": "publish_pull_request",
+        "repository": _DEST.lower(),
+        "intended_head_sha": "a" * 40,
+        "head_branch": head,
+        "base_branch": _BASE,
+        "title": "Ship",
+        "body": "Reviewed\n\n<!-- tinyassets-github-pr-effect:v1:" + "e" * 64 + " -->",
+        "labels": ["automation"],
+        "draft": True,
+    }
+
+    result = github_pr._publish_scoped_github_pull_request(
+        request=request,
+        destination=_DEST,
+        capability_token="tok",
+    )
+
+    assert result["pr_number"] == 17
+    assert result["commit_sha"] == "a" * 40
+    assert calls[0] == (
+        "POST",
+        f"/repos/{_DEST.lower()}/git/refs",
+        "tok",
+        {"ref": f"refs/heads/{head}", "sha": "a" * 40},
+    )
+    assert calls[1][0] == "PR"
+    assert calls[1][3]["head_branch"] == head
+
+
+def test_github_api_pr_network_loss_is_marked_ambiguous(monkeypatch):
+    def disconnected(**_kwargs):
+        raise urllib.error.URLError("connection reset after send")
+
+    monkeypatch.setattr(github_pr, "_github_api_request", disconnected)
+
+    result = github_pr._invoke_github_api_pr_create(
+        payload={
+            "title": "Ship",
+            "body": "Reviewed",
+            "base_branch": "main",
+            "head_branch": "tinyassets/cloud-" + "d" * 24,
+            "labels": [],
+            "draft": True,
+        },
+        destination="owner/repo",
+        capability_token="tok",
+    )
+
+    assert result["error_kind"] == "github_api_error"
+    assert result["outcome_ambiguous"] is True
 
 
 def test_base_tree_passed_to_tree_create(monkeypatch):

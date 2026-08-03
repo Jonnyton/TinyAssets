@@ -62,6 +62,7 @@ def _definition_payload() -> dict[str, object]:
         "destination_grant_id": "destination_grant_project",
         "destination_purpose": "pull_request",
         "max_attempts": 2,
+        "max_provider_invocations": 4,
         "max_wall_time_seconds": 3600,
         "max_tokens": 100_000,
         "max_cost_microunits": 5_000_000,
@@ -122,7 +123,7 @@ def _cloud_authority_fixture(
         "allowed_roles": ("writer",),
         "assignment_generation": 2,
         "assignment_digest": f"sha256:{'8' * 64}",
-        "max_invocations": 2,
+        "max_invocations": 4,
         "max_tokens": 100_000,
         "max_cost_microunits": 5_000_000,
         "expires_at": "2026-08-02T00:00:00Z",
@@ -267,6 +268,39 @@ def test_work_definition_is_generic_immutable_and_content_addressed() -> None:
     assert automation.RepositorySpecWorkDefinition.from_dict(payload) == definition
     with pytest.raises(FrozenInstanceError):
         definition.repository = "other/project"
+
+
+@pytest.mark.parametrize("value", (0, 65))
+def test_work_definition_rejects_invalid_provider_invocation_budget(value: int) -> None:
+    payload = _definition_payload()
+    payload["max_provider_invocations"] = value
+
+    with pytest.raises(ValueError, match="max_provider_invocations"):
+        _automation().RepositorySpecWorkDefinition.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("max_tokens", 3, "max_tokens.*max_provider_invocations"),
+        ("max_cost_microunits", 0, "max_cost_microunits.*>= 1"),
+        (
+            "max_cost_microunits",
+            3,
+            "max_cost_microunits.*max_provider_invocations",
+        ),
+    ),
+)
+def test_work_definition_requires_positive_budget_for_every_provider_call(
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    payload = _definition_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        _automation().RepositorySpecWorkDefinition.from_dict(payload)
 
 
 @pytest.mark.parametrize(
@@ -592,8 +626,7 @@ def test_inactive_cloud_authority_rejects_revoked_provider_binding(
     ("provider_overrides", "connection_scopes", "action_cap"),
     [
         ({"allowed_operations": ("repository_spec_delivery", "admin")}, None, _DEFAULT_ACTION_CAP),
-        ({"allowed_roles": ("writer", "admin")}, None, _DEFAULT_ACTION_CAP),
-        ({"max_invocations": 3}, None, _DEFAULT_ACTION_CAP),
+        ({"max_invocations": 5}, None, _DEFAULT_ACTION_CAP),
         ({"max_tokens": 100_001}, None, _DEFAULT_ACTION_CAP),
         ({"max_cost_microunits": 5_000_001}, None, _DEFAULT_ACTION_CAP),
         ({"expires_at": "2026-07-31T19:00:00Z"}, None, _DEFAULT_ACTION_CAP),
@@ -632,6 +665,24 @@ def test_inactive_cloud_authority_rejects_broader_or_unusable_authority(
             provider_store=provider_store,
             connection_ledger=ledger,
         )
+
+
+def test_inactive_cloud_authority_accepts_additional_declared_provider_roles(
+    tmp_path: Path,
+) -> None:
+    automation = _automation()
+    definition, provider_store, ledger = _cloud_authority_fixture(
+        tmp_path,
+        provider_overrides={"allowed_roles": ("writer", "judge", "extract")},
+    )
+
+    resolved = automation.resolve_inactive_cloud_authority(
+        definition,
+        provider_store=provider_store,
+        connection_ledger=ledger,
+    )
+
+    assert resolved.provider_binding_id == definition.provider_binding_id
 
 
 @pytest.mark.parametrize(

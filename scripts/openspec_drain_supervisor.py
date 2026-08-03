@@ -1135,7 +1135,10 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
    review. Do not invoke `gh pr merge` directly; the trusted repository workflow
    owns auto-merge enrollment.
 7. Verify the coordination PR is actually merged. Return PARTIAL for a pending
-   row or BLOCKED for a current-main blocked row using the exact assigned target."""
+   row or BLOCKED for a current-main blocked row using the exact assigned target.
+   If an older open PR already owns the exact assigned target, the FAILED marker
+   MUST include that exact PR URL rather than a dash so the controller can
+   verify ownership without trusting prose."""
         if refinery_mode
         else """5. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
@@ -1264,6 +1267,76 @@ def verify_merged(
     ):
         return False
     return True
+
+
+def verify_preexisting_open_pr_owner(
+    pr_url: str,
+    *,
+    assigned_target: str,
+    started_at: str,
+    repo: Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> bool:
+    """Return true only for an exact-repository open PR older than this run."""
+    pr_match = PR_RE.fullmatch(pr_url)
+    if not pr_match:
+        return False
+    try:
+        if repo is not None:
+            origin = runner(
+                ["git", "-C", str(repo), "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            expected_slug = _github_repo_slug(origin.stdout) if origin.returncode == 0 else None
+            actual_slug = f"{pr_match.group('owner')}/{pr_match.group('repo')}".lower()
+            if expected_slug is None or actual_slug != expected_slug:
+                return False
+        result = runner(
+            [
+                "gh",
+                "pr",
+                "view",
+                pr_url,
+                "--json",
+                "state,createdAt,headRefName",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        payload = json.loads(result.stdout)
+        if not isinstance(payload, dict):
+            return False
+        created_at = payload.get("createdAt")
+        head_ref = payload.get("headRefName")
+        if (
+            payload.get("state") != "OPEN"
+            or not isinstance(created_at, str)
+            or not isinstance(head_ref, str)
+        ):
+            return False
+        branch_leaf = head_ref.rsplit("/", 1)[-1]
+        attempt_branch = re.fullmatch(
+            rf"{re.escape(assigned_target)}-a[0-9]{{3}}",
+            branch_leaf,
+        )
+        if branch_leaf != assigned_target and attempt_branch is None:
+            return False
+        return _parse_timestamp(created_at) < _parse_timestamp(started_at)
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        subprocess.SubprocessError,
+        json.JSONDecodeError,
+    ):
+        return False
 
 
 def _github_repo_slug(remote_url: str) -> str | None:
@@ -1410,8 +1483,9 @@ def apply_duplicate_merge_suppression(
     ]
     if result.target != "-":
         consumed.append(result.target)
-    state["recent_consumed_targets"] = consumed[-MAX_RECENT_BLOCKED:]
+    state["recent_consumed_targets"] = consumed
     state["admission"] = None
+    state["refinery_assignment"] = None
     state["resume_target"] = None
     state["last_result"] = {
         "status": "INVALID_DUPLICATE_MERGE",
@@ -1421,6 +1495,35 @@ def apply_duplicate_merge_suppression(
     }
     state["last_consumed_attempt"] = attempt
     state["status"] = "duplicate-merge-suppressed"
+
+
+def apply_preexisting_open_pr_suppression(
+    state: dict[str, Any],
+    result: DrainResult,
+    *,
+    attempt: int,
+) -> None:
+    """Skip refinery work already owned before this drain run began."""
+    state["consecutive_transients"] = 0
+    state["consecutive_failures"] = 0
+    consumed = [
+        target
+        for target in state.get("recent_consumed_targets", [])
+        if target != result.target
+    ]
+    consumed.append(result.target)
+    state["recent_consumed_targets"] = consumed
+    state["admission"] = None
+    state["refinery_assignment"] = None
+    state["resume_target"] = None
+    state["last_result"] = {
+        "status": "PREEXISTING_OPEN_PR_OWNER",
+        "attempt": attempt,
+        "target": result.target,
+        "pr": result.pr,
+    }
+    state["last_consumed_attempt"] = attempt
+    state["status"] = "live-owned-refinery-suppressed"
 
 
 def infer_legacy_merged_prs(
@@ -1650,21 +1753,21 @@ def recover_unconsumed_result(
     results_dir: Path,
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
+    preexisting_owner_verifier: Callable[..., bool] = (
+        verify_preexisting_open_pr_owner
+    ),
     blocked_snapshot_inspector: Callable[..., CandidateSnapshot] | None = None,
 ) -> bool:
     """Apply a valid current-attempt artifact left behind by a dead controller."""
     admission_data = state.get("admission")
+    refinery_data = state.get("refinery_assignment")
     attempt = _unconsumed_result_attempt(state)
-    if attempt is None or not isinstance(admission_data, dict):
+    if attempt is None or not (
+        isinstance(admission_data, dict) or isinstance(refinery_data, dict)
+    ):
         return False
     try:
         started_at = str(state["started_at"])
-        admission = Admission(
-            target=str(admission_data["target"]),
-            task_label=str(admission_data["task_label"]),
-            worktree=Path(admission_data["worktree"]),
-            branch=str(admission_data["branch"]),
-        )
         result = parse_result(
             (results_dir / f"{attempt:03d}.md").read_text(
                 encoding="utf-8",
@@ -1672,6 +1775,55 @@ def recover_unconsumed_result(
             )
         )
     except (KeyError, TypeError, ValueError, OSError):
+        return False
+
+    if not isinstance(admission_data, dict):
+        try:
+            if refinery_data["classification"] != "REFINERY":
+                return False
+            files_data = refinery_data["files"]
+            if not isinstance(files_data, list) or not all(
+                isinstance(path, str) for path in files_data
+            ):
+                return False
+            refinery = CandidateHint(
+                classification="REFINERY",
+                task_label=str(refinery_data["task_label"]),
+                files=tuple(files_data),
+                line_no=int(refinery_data.get("line_no", 0)),
+                status=str(refinery_data.get("status", "")),
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if refinery_result_rejection(result, refinery):
+            return False
+        if result.status != "FAILED":
+            return False
+        if preexisting_owner_verifier(
+            result.pr,
+            assigned_target=result.target,
+            repo=repo,
+            started_at=started_at,
+        ):
+            apply_preexisting_open_pr_suppression(
+                state,
+                result,
+                attempt=attempt,
+            )
+        else:
+            apply_result(state, result)
+            state["refinery_assignment"] = None
+            state["last_consumed_attempt"] = attempt
+        return True
+
+    try:
+        admission = Admission(
+            target=str(admission_data["target"]),
+            task_label=str(admission_data["task_label"]),
+            worktree=Path(admission_data["worktree"]),
+            branch=str(admission_data["branch"]),
+        )
+    except (KeyError, TypeError, ValueError):
         return False
     if admission_result_rejection(result, admission):
         return False
@@ -2415,6 +2567,17 @@ def _run(args: argparse.Namespace) -> int:
             state["attempt_kind"] = (
                 "refinery" if assigned_refinery is not None else "delivery"
             )
+            state["refinery_assignment"] = (
+                {
+                    "classification": assigned_refinery.classification,
+                    "task_label": assigned_refinery.task_label,
+                    "files": list(assigned_refinery.files),
+                    "line_no": assigned_refinery.line_no,
+                    "status": assigned_refinery.status,
+                }
+                if assigned_refinery is not None
+                else None
+            )
             prompt_path.write_text(
                 build_worker_prompt(
                     state,
@@ -2530,6 +2693,28 @@ def _run(args: argparse.Namespace) -> int:
                         break
                     continue
 
+                if result.status == "FAILED" and verify_preexisting_open_pr_owner(
+                    result.pr,
+                    assigned_target=result.target,
+                    repo=args.repo,
+                    started_at=state["started_at"],
+                ):
+                    apply_preexisting_open_pr_suppression(
+                        state,
+                        result,
+                        attempt=attempt,
+                    )
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        "suppress attempt="
+                        f"{attempt} pre-existing open PR owner "
+                        f"target={result.target} pr={result.pr}",
+                    )
+                    if args.once:
+                        break
+                    continue
+
             duplicate_rejection = duplicate_merge_rejection(result, state)
             if duplicate_rejection:
                 apply_duplicate_merge_suppression(
@@ -2640,6 +2825,8 @@ def _run(args: argparse.Namespace) -> int:
                         break
                     continue
             apply_result(state, result, merge_verified=verified)
+            if assigned_refinery is not None:
+                state["refinery_assignment"] = None
             state["last_consumed_attempt"] = attempt
             if result.status == "BLOCKED" or (
                 result.status == "MERGED" and verified

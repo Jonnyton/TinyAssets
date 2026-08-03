@@ -42,6 +42,34 @@ class _FakeRouter:
         return _FakeResult(self._text, self._provider)
 
 
+class _AuthorityAwareRouter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def call_sync(
+        self,
+        role: str,
+        prompt: str,
+        system: str,
+        *,
+        operation: str,
+        universe_context: object,
+    ) -> _FakeResult:
+        self.calls.append({
+            "role": role,
+            "prompt": prompt,
+            "system": system,
+            "operation": operation,
+            "universe_context": universe_context,
+        })
+        return _FakeResult("authorized-output", "codex")
+
+
+class _FailingAuthorityRouter:
+    def call_sync(self, *_args, **_kwargs):
+        raise RuntimeError("governed provider failed")
+
+
 def test_force_mock_returns_fallback_then_placeholder() -> None:
     provider_call.set_force_mock(True)
     assert provider_call.call_provider("p", fallback_response="FB") == "FB"
@@ -56,6 +84,53 @@ def test_injected_router_is_used_by_call_provider() -> None:
     out = provider_call.call_provider("hello", "sys", role="writer")
     assert out == "injected-output"
     assert fake.calls == [("writer", "hello", "sys")]
+
+
+def test_provider_operation_and_universe_context_reach_router() -> None:
+    """The bridge must preserve the server-minted provider authority carrier."""
+    provider_call.set_force_mock(False)
+    fake = _AuthorityAwareRouter()
+    provider_call.set_provider_router(fake)
+    context = object()
+
+    out = provider_call.call_provider(
+        "continue the accepted specification",
+        "bounded cloud worker",
+        role="writer",
+        operation="repository_spec_delivery",
+        universe_context=context,
+    )
+
+    assert out == "authorized-output"
+    assert fake.calls == [{
+        "role": "writer",
+        "prompt": "continue the accepted specification",
+        "system": "bounded cloud worker",
+        "operation": "repository_spec_delivery",
+        "universe_context": context,
+    }]
+
+
+def test_governed_provider_call_rejects_force_mock_and_fallback() -> None:
+    context = object()
+    provider_call.set_force_mock(True)
+    with pytest.raises(PermissionError, match="governed provider"):
+        provider_call.call_provider(
+            "prompt",
+            fallback_response="must-not-return",
+            operation="repository_spec_delivery",
+            universe_context=context,
+        )
+
+    provider_call.set_force_mock(False)
+    provider_call.set_provider_router(_FailingAuthorityRouter())
+    with pytest.raises(RuntimeError, match="governed provider failed"):
+        provider_call.call_provider(
+            "prompt",
+            fallback_response="must-not-return",
+            operation="repository_spec_delivery",
+            universe_context=context,
+        )
 
 
 def test_get_last_provider_reflects_latest_call_not_snapshot() -> None:
