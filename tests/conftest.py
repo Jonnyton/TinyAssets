@@ -169,6 +169,28 @@ def _reset_runtime():
 
 
 @pytest.fixture(autouse=True)
+def _reset_git_enabled_probe():
+    """Re-probe ``git_bridge.is_enabled`` for every test.
+
+    The probe result is cached in a MODULE GLOBAL, so it leaks across the whole
+    process: any earlier test that stubs ``shutil.which`` to None (e.g.
+    test_api_status.py pinning endpoint_hint) latches ``False``, and every
+    later git-touching test then silently no-ops with "git not enabled".
+    A few files carried their own local version of this fixture; the cache is
+    process-global, so its reset has to be too.
+
+    Found 2026-08-03 by the `required-tests` gate itself: new tests arriving on
+    main shifted collection order and turned 138 passing tests red at once,
+    with no code change to any of them.
+    """
+    from tinyassets import git_bridge
+
+    git_bridge.invalidate_cache()
+    yield
+    git_bridge.invalidate_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_storage_backend(monkeypatch):
     """Pin the storage backend to ``sqlite_only`` by default for every test.
 
