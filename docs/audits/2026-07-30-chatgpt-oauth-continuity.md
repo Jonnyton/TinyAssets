@@ -20,8 +20,9 @@ A second rendered attempt on 2026-08-01 reached ChatGPT's
 `link_success=true` return but did not retain TinyAssets in the returned
 conversation's plugin picker. A complete, non-truncated production journal
 window for that attempt contained no sanitized token-rejection category. This
-attempt therefore failed before the instrumented bearer validator; it is not
-evidence for relaxing or changing JWT validation.
+attempt therefore produced no rejected-bearer evidence and does not establish
+whether an accepted bearer reached validation. It is not evidence for relaxing
+or changing JWT validation.
 
 A third rendered attempt on 2026-08-02 reattached TinyAssets successfully
 through the same-tab OAuth return. The original call did not resume, and an
@@ -35,8 +36,10 @@ card with `Always allow`. ChatGPT then rendered `Resource not found:
 TinyAssets.converse`: connector discovery and the advertised action were
 visible, but invocation failed before identity or universe resolution. The
 complete correlated production journal window contained no bounded validator
-category. This localizes task 1.2 to ChatGPT's connector action-registration or
-attachment seam, not the bearer validator; correction task 2.1 remains pending.
+category. The rendered action-resolution failure makes ChatGPT's connector
+action-registration or attachment seam the next repair boundary without
+establishing whether an accepted bearer reached validation; correction task 2.1
+remains pending.
 
 ## Rendered reproduction
 
@@ -140,9 +143,11 @@ Freshness check 2026-08-02 20:52 PDT:
 - that deployed revision contains #2037 merge
   `3c6a497dd4977f2b805a8cdef362ef7466eda03d`.
 
-The public resource and deployed audience therefore match. The observed
-`TinyAssets.converse` lookup failure occurred before a bearer reached the
-validator and does not justify changing any JWT check.
+The public resource and deployed audience therefore match. No rejected-bearer
+category was observed; the rendered `TinyAssets.converse` lookup failure makes
+connector registration/attachment the next repair boundary without
+establishing whether an accepted bearer reached validation. It does not justify
+changing any JWT check.
 
 ## Diagnostic implementation
 
@@ -208,8 +213,9 @@ exact 2026-08-03T03:47:00Z through 03:51:45Z retry window at current-main head
 `input_truncated=false`, 142 source lines, and
 `oauth_rejection_categories=[]`; raw journal text was neither printed nor
 published. Coupled with ChatGPT's rendered `Resource not found:
-TinyAssets.converse`, the empty category localizes this attempt before the
-instrumented bearer validator.
+TinyAssets.converse`, the empty category makes connector action registration or
+attachment the next investigation boundary, but does not establish whether an
+accepted bearer reached validation.
 
 ## Production rollout and rollback
 
@@ -237,8 +243,9 @@ There is no data migration and no persistent-state rollback.
 
 Task 1.2's post-#2037 retry is complete. The rendered
 `Resource not found: TinyAssets.converse` result plus an empty, non-truncated
-bounded validator category localizes the next repair to ChatGPT's connector
-action-registration or attachment seam—not JWT validation. Before task 2.1
+bounded validator category makes ChatGPT's connector action-registration or
+attachment seam the next repair boundary without establishing validator
+ordering. Before task 2.1
 changes anything, reconcile ChatGPT's registered `TinyAssets.converse` action
 with the live canonical `converse` handle and identify why the client-visible
 action cannot resolve even while the public canary advertises the handle. Only

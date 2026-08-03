@@ -322,6 +322,8 @@ Sanitized production run 30782860916 covered 2026-08-03T03:47:00Z through
 03:51:45Z: `input_truncated=false`, 142 source lines, and
 `oauth_rejection_categories=[]`. Public metadata and successful deploy run
 30780952337 both used resource `https://tinyassets.io/mcp`; WorkOS was enabled
-and production audience bypass remained forced off. This localizes the failure
-before the bearer validator at ChatGPT's connector action-registration or
-attachment seam; it is not authenticated-continuity acceptance evidence.
+and production audience bypass remained forced off. No rejected-bearer category
+was observed; the rendered action-resolution failure makes ChatGPT's connector
+registration/attachment seam the next repair boundary without establishing
+whether an accepted bearer reached validation. It is not
+authenticated-continuity acceptance evidence.
