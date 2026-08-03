@@ -1,0 +1,66 @@
+# Files excluded from the REQUIRED `required-tests` gate because they
+# dominate its wall clock. They still run in `full-tests` on every main
+# push, with the same quarantine ledger.
+#
+# Why a subset gates merges: main takes a commit every ~10 min (median,
+# measured 2026-08-03 over 39 gaps). A required check must finish inside
+# that window or `strict` freshness makes the PR stale before its own run
+# lands -- at the full suite's 37 min only 5% of gaps are long enough to
+# merge at all. At ~5 min, 79% are.
+#
+# Selection is measured, not guessed: every file whose tests totalled
+# >3.0s in CI run 30779149822 (12,978 tests / 35.6 min). Regenerate after
+# a big suite change; keeping a fast file here only costs coverage.
+tests/command_center/test_server.py
+tests/load/test_agent_runtime_cloud_load.py
+tests/test_api.py
+tests/test_api_edge_cases.py
+tests/test_background_authority_inventory.py
+tests/test_branch_authoring_actions.py
+tests/test_branch_evaluation_iteration.py
+tests/test_branch_runner.py
+tests/test_branch_tasks_v2.py
+tests/test_canonical_dispatch.py
+tests/test_claude_chat_recovery.py
+tests/test_cloud_automation_continuation.py
+tests/test_composite_branch_actions.py
+tests/test_cross_run_state_query.py
+tests/test_daemon_dashboard.py
+tests/test_deploy_prod_workflow.py
+tests/test_execution_authority_import_boundary.py
+tests/test_first_contact.py
+tests/test_gates_claim_from_branch_run.py
+tests/test_goals_run_canonical.py
+tests/test_goals_surface.py
+tests/test_handoff_concurrency.py
+tests/test_host_uptime_installers.py
+tests/test_import_graph_smoke.py
+tests/test_integration.py
+tests/test_interlocutor_tier.py
+tests/test_invariants_framework.py
+tests/test_llm_policy_override.py
+tests/test_mcp_instruction_surfaces.py
+tests/test_node_enqueue_concurrency.py
+tests/test_node_ref_reuse.py
+tests/test_nodes_real.py
+tests/test_operator_priority_authority.py
+tests/test_outcome_gate_claims.py
+tests/test_outcome_gates.py
+tests/test_packaging_build.py
+tests/test_patch_branch_metadata.py
+tests/test_patch_branch_node_keys.py
+tests/test_payments_escrow_mcp.py
+tests/test_provider_retry.py
+tests/test_provider_work_authority.py
+tests/test_public_goal_visibility.py
+tests/test_quality_leaderboard_auth_boundary.py
+tests/test_request_admission_surface.py
+tests/test_retire_cheat_loop_deploy_fence.py
+tests/test_routing_evidence.py
+tests/test_scoped_identity_reset.py
+tests/test_stability.py
+tests/test_storage_phase7_git_integration.py
+tests/test_universe_cycle_noop_guardrail.py
+tests/test_universe_server_isolation.py
+tests/test_universe_visibility.py
+tests/test_writer_tools.py
