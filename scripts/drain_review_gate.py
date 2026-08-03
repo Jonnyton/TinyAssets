@@ -47,14 +47,49 @@ def ledger_entries(text: str) -> set[str]:
     """
     entries: set[str] = set()
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
+        # `split("#", 1)[0]` exactly as parse_quarantine does — it strips
+        # TRAILING comments too, so `X  # note` and `X` are one entry there and
+        # must be one entry here. Any divergence between the two parsers is a
+        # seam where an entry counts as "not new" for the exemption while the
+        # gate honours it as quarantine.
+        line = raw.split("#", 1)[0].strip()
+        if not line:
             continue
-        if line.startswith("flaky "):
-            line = line[len("flaky ") :].strip()
-        if line:
-            entries.add(line)
+        # The `flaky ` label is kept as PART of the token, deliberately: moving
+        # an entry plain -> flaky exempts it from stale detection, which weakens
+        # the ratchet, so a human vouches for that too.
+        entries.add(line)
     return entries
+
+
+_REGULAR_BLOB_MODES = frozenset({"100644", "100755"})
+
+
+def ledger_fetch_is_trustworthy(mode: str, expected_size: str, actual_bytes: int) -> bool:
+    """Is the fetched head ledger the real, complete, regular file?
+
+    Three ways the fetch lies, all found in cross-family review:
+
+    * **symlink / submodule** — the Contents API dereferences a symlink, so
+      swapping the ledger for a link to identical content looks like a no-op
+      edit. A later PR then edits the *link target*, whose path is not
+      gate-protected, and adds effective quarantine entries with no receipt.
+      Only a regular blob (`100644`/`100755`) is accepted; `120000` (symlink)
+      and `160000` (submodule) are refused.
+    * **truncation** — GitHub returns empty content for some blobs over 1 MB.
+      A partial decode is a SUBSET of base, which reads as a deletion.
+    * **failed fetch** — 404/oversize yields nothing, which against an empty
+      base also reads as a deletion.
+
+    Comparing the decoded byte count against the tree's own `size` catches the
+    last two; anything unparseable is refused.
+    """
+    if mode not in _REGULAR_BLOB_MODES:
+        return False
+    size = expected_size.strip()
+    if not size.isdigit():
+        return False
+    return int(size) == actual_bytes
 
 
 def ledger_edit_needs_receipt(base_text: str | None, head_text: str | None) -> bool:
@@ -108,21 +143,43 @@ def main() -> int:
         "asks only whether that edit needs a receipt: prints "
         "exempt/receipt-required and exits 0/2.",
     )
+    parser.add_argument(
+        "--ledger-head-mode",
+        default="",
+        help="Git tree mode of the head ledger blob. Only a regular blob is "
+        "trusted; a symlink or submodule is refused.",
+    )
+    parser.add_argument(
+        "--ledger-head-size",
+        default="",
+        help="Git tree size of the head ledger blob, compared against the "
+        "bytes actually fetched to catch truncation and failed fetches.",
+    )
     args = parser.parse_args()
 
     if args.ledger_head_file is not None:
-        def _read(path: Path | None) -> str | None:
+        def _read_bytes(path: Path | None) -> bytes | None:
             if path is None:
                 return None
             try:
-                # errors="replace": a NUL-poisoned "binary" ledger must still be
-                # parsed and compared, never treated as unreadable.
-                return path.read_text(encoding="utf-8", errors="replace")
+                return path.read_bytes()
             except OSError:
                 return None
 
-        base_text = _read(args.ledger_base_file) or ""
-        if ledger_edit_needs_receipt(base_text, _read(args.ledger_head_file)):
+        head_bytes = _read_bytes(args.ledger_head_file)
+        if head_bytes is None or not ledger_fetch_is_trustworthy(
+            args.ledger_head_mode, args.ledger_head_size, len(head_bytes)
+        ):
+            print("receipt-required")
+            return 2
+
+        base_bytes = _read_bytes(args.ledger_base_file) or b""
+        # errors="replace": a NUL-poisoned "binary" ledger must still be parsed
+        # and compared, never treated as unreadable.
+        if ledger_edit_needs_receipt(
+            base_bytes.decode("utf-8", errors="replace"),
+            head_bytes.decode("utf-8", errors="replace"),
+        ):
             print("receipt-required")
             return 2
         print("exempt")

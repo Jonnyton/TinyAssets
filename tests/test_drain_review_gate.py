@@ -77,14 +77,23 @@ _BASE_LEDGER = (
 
 
 def _run_ledger_gate(
-    tmp_path: Path, *, base: str | None, head: bytes | None
+    tmp_path: Path,
+    *,
+    base: str | None,
+    head: bytes | None,
+    mode: str = "100644",
+    size: str | None = None,
+    head_path_override: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     base_path = tmp_path / "base-ledger.txt"
     head_path = tmp_path / "head-ledger.txt"
     if base is not None:
         base_path.write_text(base, encoding="utf-8")
     # Bytes, not text: a "binary" ledger is one of the bypasses under test.
-    head_path.write_bytes(head if head is not None else b"")
+    payload = head if head is not None else b""
+    head_path.write_bytes(payload)
+    # Default: the tree's size agrees with what was fetched (an honest fetch).
+    declared = str(len(payload)) if size is None else size
     return subprocess.run(
         [
             sys.executable,
@@ -92,7 +101,11 @@ def _run_ledger_gate(
             "--ledger-base-file",
             str(base_path),
             "--ledger-head-file",
-            str(head_path),
+            str(head_path_override or head_path),
+            "--ledger-head-mode",
+            mode,
+            "--ledger-head-size",
+            declared,
             "--branch",
             "fix/ordinary",
             "--head",
@@ -104,6 +117,47 @@ def _run_ledger_gate(
         capture_output=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize(
+    "mode,size,why",
+    [
+        ("120000", None, "symlink: Contents API dereferences it; target path is unprotected"),
+        ("160000", None, "submodule/gitlink"),
+        ("040000", None, "tree, not a file"),
+        ("", None, "tree lookup failed entirely"),
+        ("100644", "999999", "declared size > bytes fetched: truncated (>1MB blobs)"),
+        ("100644", "0", "declared 0 but bytes present: response did not match the blob"),
+        ("100644", "not-a-number", "unparseable size"),
+        ("100644", "", "size missing"),
+    ],
+)
+def test_untrustworthy_head_blob_always_requires_receipt(
+    tmp_path: Path, mode: str, size: str | None, why: str
+) -> None:
+    # A deletion-only edit — the one shape that WOULD be exempt — must still be
+    # refused when the fetch itself cannot be trusted.
+    deletion_only = b"# header\ntests/a.py::test_one\n"
+    completed = _run_ledger_gate(
+        tmp_path, base=_BASE_LEDGER, head=deletion_only, mode=mode, size=size
+    )
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "receipt-required"
+
+
+def test_genuinely_unreadable_head_file_requires_receipt(tmp_path: Path) -> None:
+    # Not merely empty — absent. The earlier version of this test wrote an
+    # empty file, which never exercised the unreadable path at all.
+    completed = _run_ledger_gate(
+        tmp_path,
+        base=_BASE_LEDGER,
+        head=b"# header\n",
+        head_path_override=tmp_path / "does-not-exist.txt",
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "receipt-required"
 
 
 @pytest.mark.parametrize(
@@ -127,8 +181,19 @@ def _run_ledger_gate(
         (
             b"# header\ntests/a.py::test_one\nflaky tests/b.py::test_two\n"
             b"flaky tests/c.py::test_three\n",
+            2,
+            "plain -> flaky exempts an entry from stale detection: weakens the ratchet",
+        ),
+        (
+            b"# header\ntests/a.py::test_one  # still broken\ntests/b.py::test_two\n"
+            b"flaky tests/c.py::test_three\n",
             0,
-            "re-labelling an existing entry flaky is not a new entry",
+            "trailing comment is stripped by BOTH parsers, so this is not a new entry",
+        ),
+        (
+            _BASE_LEDGER.encode() + b"tests/d.py::test_new  # looks like a comment\n",
+            2,
+            "trailing comment cannot disguise an addition",
         ),
     ],
 )
@@ -142,6 +207,53 @@ def test_ledger_edit_receipt_policy_fails_closed(
 
     assert completed.returncode == expected_rc, why
     assert completed.stdout.strip() == ("exempt" if expected_rc == 0 else "receipt-required")
+
+
+def test_ledger_parsers_have_no_seam(tmp_path: Path) -> None:
+    """Every entry the GATE honours must be visible to the EXEMPTION check.
+
+    The two live in different files; if they ever disagree on a line shape,
+    an entry could count as "not new" for the exemption while still being
+    honoured as quarantine — a smuggling seam. This pins them together.
+    """
+    import importlib.util
+
+    def _load(rel: str, name: str):
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parents[1] / rel
+        )
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    gate = _load("scripts/drain_review_gate.py", "gate_policy")
+    aggregator = _load("scripts/ci_required_tests.py", "aggregator")
+
+    text = "\n".join(
+        [
+            "tests/a.py::t",
+            "flaky tests/b.py::t",
+            "tests/c.py::t # trailing note",
+            "  tests/d.py::t  ",
+            "# whole-line comment",
+            "",
+            "flaky tests/e.py::t  # both",
+            "tests/f.py::t\x00",  # NUL-poisoned, still an entry
+        ]
+    )
+    ledger = tmp_path / "ledger.txt"
+    ledger.write_text(text, encoding="utf-8")
+
+    tolerated, flaky, _ = aggregator.parse_quarantine(ledger)
+    honoured = tolerated | flaky
+    seen = {
+        e[len("flaky ") :] if e.startswith("flaky ") else e
+        for e in gate.ledger_entries(text)
+    }
+
+    assert honoured, "fixture must produce entries or the test proves nothing"
+    assert not (honoured - seen), "gate honours entries the exemption cannot see"
 
 
 def test_ledger_gate_missing_base_treats_every_entry_as_new(tmp_path: Path) -> None:

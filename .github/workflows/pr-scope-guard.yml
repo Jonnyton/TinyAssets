@@ -150,21 +150,41 @@ jobs:
             # Compare CONTENT, not diff metadata. GitHub reports additions: 0
             # for binary files and for pure renames alike, so a NUL-poisoned
             # ledger or a pre-planted file renamed into place both read as
-            # "no additions" (verified on PRs #2041/#2172). The base copy comes
-            # from the trusted checkout above; the head copy is fetched by sha.
+            # "no additions" (verified on PRs #2041/#2172).
+            #
+            # Read through the GIT TREE, not the Contents API: that API
+            # DEREFERENCES symlinks, so swapping the ledger for a link to
+            # identical content reads as a no-op — and the link target is not
+            # a gate-protected path, so a later PR edits it freely. The tree
+            # gives the true blob mode and size; the blob endpoint gives the
+            # bytes of that exact blob. Every failure below leaves GATE_HITS
+            # intact, i.e. requires a receipt.
             HEAD_LEDGER="$RUNNER_TEMP/head-ledger.txt"
             : > "$HEAD_LEDGER"
-            gh api "repos/${REPO}/contents/.github/known-failing-tests.txt?ref=${HEAD_OID}" \
-              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > "$HEAD_LEDGER" 2>/dev/null || true
-            # The decision lives in the policy script so it is unit tested.
+            LEDGER_MODE=""; LEDGER_SIZE=""
+            if TREE_ROW="$(gh api "repos/${REPO}/git/trees/${HEAD_OID}:.github" \
+                --jq '.tree[] | select(.path=="known-failing-tests.txt") | "\(.mode) \(.size) \(.sha)"' \
+                2>/dev/null)" && [ "$(printf '%s\n' "$TREE_ROW" | wc -l)" -eq 1 ]; then
+              LEDGER_MODE="$(printf '%s' "$TREE_ROW" | cut -d' ' -f1)"
+              LEDGER_SIZE="$(printf '%s' "$TREE_ROW" | cut -d' ' -f2)"
+              LEDGER_SHA="$(printf '%s' "$TREE_ROW" | cut -d' ' -f3)"
+              if ! gh api "repos/${REPO}/git/blobs/${LEDGER_SHA}" --jq '.content' 2>/dev/null \
+                  | tr -d '\n' | base64 -d > "$HEAD_LEDGER" 2>/dev/null; then
+                : > "$HEAD_LEDGER"   # partial decode must not read as a deletion
+              fi
+            fi
+            # The decision (mode/size trust + entry comparison) lives in the
+            # policy script so every branch of it is unit tested.
             if python scripts/drain_review_gate.py \
                 --ledger-base-file .github/known-failing-tests.txt \
                 --ledger-head-file "$HEAD_LEDGER" \
+                --ledger-head-mode "${LEDGER_MODE}" \
+                --ledger-head-size "${LEDGER_SIZE}" \
                 --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file "$HEAD_LEDGER"; then
               echo "scope guard: ledger edit removes entries only — receipt not required"
               GATE_HITS=""
             else
-              echo "ledger edit adds entries (or head content was unreadable) — receipt required"
+              echo "ledger edit adds entries, or the head blob was not a trustworthy regular file — receipt required"
             fi
           fi
 
