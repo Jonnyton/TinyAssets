@@ -363,6 +363,145 @@ rendered acceptance test:
 D0 is not eligible for live acceptance because it intentionally has no live
 surface.
 
+### 13. Bind execution admission outside the frozen inner runner wire
+
+`engine-os-sandbox` defines the closed logical requirement and guarantee-set
+comparison. Distributed execution owns the concrete binding and evidence
+contract that can satisfy it. That contract has four versioned records:
+
+```text
+BackendProfileBindingV1 {
+  schema_version = execution-backend-binding/v1
+  binding_id
+  backend_id + backend_release_digest
+  backend_protocol_version
+  supported_workload_profile_pairs
+  supported_inner_request_schema_versions
+  supported_inner_result_schema_versions
+  supported_job_capabilities
+  guaranteed_property_ids
+  policy_binding_verifier_id
+  projection_binding_verifier_id
+  egress_binding_verifier_id
+  credential_binding_verifier_id
+  preflight_evidence_verifier_id
+  launch_evidence_verifier_id
+  trust_set_id
+}
+
+BackendPreflightEvidenceV1 {
+  schema_version = execution-backend-preflight/v1
+  binding_digest
+  backend_release_digest
+  capability_self_test_digest
+  planned_launch_digest
+  observed_at + expires_at
+}
+
+ExecutionAdmissionCapsuleV1 {
+  schema_version = execution-admission-capsule/v1
+  signing_key_id
+  capsule_id
+  job_id
+  inner_request_schema_version
+  inner_request_digest
+  requirement_contract_version
+  execution_requirement_digest
+  backend_binding_digest
+  planned_launch_digest
+  preflight_evidence_digest
+  authority_evidence_digest
+  issued_at + expires_at
+}
+
+BackendExecutionEvidenceV1 {
+  schema_version = execution-backend-evidence/v1
+  admission_capsule_digest
+  job_id + backend_execution_id
+  backend_binding_digest
+  actual_launch_digest
+  inner_result_digest
+  proved_property_ids
+  property_evidence: sorted (property_id, evidence_ref, evidence_digest) tuples
+  started_at + finished_at
+  cleanup_evidence_ref + cleanup_evidence_digest
+}
+```
+
+These four records are the runner-backed instantiation of the contract.
+Ordinary provider and accepted-market owners must prove the same logical
+properties with their own request identity and owner-native carrier; they do
+not acquire a synthetic runner `job_id` or reuse this sidecar.
+
+The binding is a release-pinned trusted registry record, never selected or
+modified by a request, worker descriptor, queue row, provider response,
+environment variable, or cached diagnostic. Its guarantee identifiers are the
+closed properties defined by `engine-os-sandbox`. The exact serialized base
+set is `kernel_process_boundary`, `filesystem_default_deny`,
+`network_default_deny`, `cpu_limit`, `memory_limit`, `process_limit`,
+`wall_time_limit`, `output_limit`, `platform_secrets_absent`,
+`undeclared_devices_absent`, `bounded_cleanup`, and
+`request_bound_evidence`. The VM set adds `guest_kernel_boundary` and
+`host_devices_default_deny`. Unknown identifiers deny. A label such as
+`os_isolated` or `vm_isolated` is derived only after the proved property set
+includes the relevant closed set. Owner-defined policy, projection, egress,
+and credential objects remain opaque; the binding names fixed reviewed
+verifiers for their exact reference/digest pairs instead of inventing their
+taxonomies or claiming a complete compatibility matrix here.
+
+Pre-launch admission resolves the trusted logical requirement, the selected
+release-pinned binding, and all owner-defined references; derives the exact
+backend launch configuration; obtains fresh capability/self-test evidence;
+and canonicalizes the existing inner request. It then seals an
+`ExecutionAdmissionCapsuleV1` under a purpose-separated, release-pinned M1
+domain. The capsule authenticates admission bindings only: it does not grant
+provider, B2, credential, scheduling, payment, or effect authority and cannot
+replace the independently verified authority evidence whose digest it binds.
+Test-owned roots may exercise this carrier in dark tests. Production
+construction remains absent until task 7.2's trust-manifest distribution,
+purpose-separated signer custody, rotation, revocation, and persistent-store
+boundary receive explicit host approval and are implemented.
+
+For runner-backed work, the trusted transport carries the unchanged
+`runner-job/v1` request plus the outer capsule and preflight evidence as a
+sidecar. The backend verifies the seal, expiry, exact `job_id`, inner request
+digest, binding, planned configuration, and authority-evidence digest before
+launch. `JOB_REQUEST_SCHEMA_VERSION`, `JOB_RESULT_SCHEMA_VERSION`,
+`SandboxJobRequest`, `SandboxJobResult`, `EnforcementReceipt`, and every
+`JobCapability` remain unchanged. Ordinary provider work continues to use the
+#1784-owned `ProviderInvocation`; accepted-market work continues to use the
+B2/B13 carrier. Those owners consume the same binding/evidence semantics but
+do not route through this runner sidecar.
+
+After launch, the backend emits authenticated `BackendExecutionEvidenceV1`
+under the verifier and trust set fixed by the binding. Distributed execution
+recomputes the inner result digest, verifies capsule/job/execution/configuration
+bindings, verifies every property-specific evidence reference, and proves
+closed-set inclusion before exposing output to a caller. Only this validated
+actual-launch evidence can prove the complete guarantee set. A
+`RunnerCapabilities` report, `isolation_enforced` boolean, installed-executable
+probe, `EnforcementReceipt`, label, queue/admission receipt, or valid outer
+seal without launch evidence can veto or diagnose but cannot prove execution.
+
+Any absent, stale, malformed, mismatched, unsupported, or unverified binding,
+sidecar, planned configuration, preflight record, or launch record maps to the
+shared terminal `ExecutionAdmissionError` taxonomy before output is accepted.
+Unknown fields, versions, properties, verifiers, trust sets, or evidence kinds
+fail closed. Backend execution failure with valid complete evidence remains a
+backend result; evidence failure never becomes provider fallback or successful
+output.
+
+Alternative rejected: add the requirement and evidence to the current inner
+runner request/result. Those wire versions are already shipped and explicitly
+frozen. A versioned outer sidecar preserves existing consumers while making
+the complete admission relationship explicit and independently reviewable.
+
+Alternative rejected: extend the existing B2 `ExecutionCapsuleV1`. That record
+grants signed execution authority and has an immutable domain contract. The
+admission capsule is purpose-separated and non-promotable: valid admission
+binding without the independently required B2/provider authority still cannot
+execute.
+
 ## Risks / Trade-offs
 
 - **Risk: a dark fake is later wired accidentally.** -> Use a test-only package,
@@ -395,6 +534,13 @@ surface.
 - **Risk: later live migration harms uptime.** -> Use bounded shadow/dual-verify
   windows, per-surface host go/no-go, pending-on-failure behavior, and explicit
   rollback without authority downgrade.
+- **Risk: the admission sidecar is mistaken for execution authority.** -> Use a
+  purpose-separated domain, bind an independently verified authority-evidence
+  digest, and mutation-prove that a valid sidecar without B2/provider authority
+  cannot dispatch.
+- **Risk: preflight evidence is mistaken for proof of the future launch.** ->
+  Limit it to current capability, self-test, and exact planned configuration;
+  require authenticated actual-launch evidence before accepting any output.
 - **Trade-off: the complete ledger is large.** -> Keep it because prior
   unbundling lost work and falsely marked open branches as landed. A row leaves
   only with landed proof or an approved superseding decision.

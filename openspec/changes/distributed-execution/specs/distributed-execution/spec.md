@@ -270,6 +270,165 @@ terminal authority.
 - **AND** it cannot mint a B2 grant, credential, payment right, accepted
   candidate, or terminal fact
 
+### Requirement: Backend admission is bound outside the frozen runner wire
+
+Distributed execution SHALL maintain a release-pinned
+`BackendProfileBindingV1` registry that binds an exact backend identity and
+release digest to its protocol version, supported workload/profile pairs,
+supported inner request/result schemas and `JobCapability` values, closed
+guarantee-property set, fixed owner-reference verifiers, preflight and
+actual-launch evidence verifiers, and trust-set identity. A request, worker,
+queue row, provider/backend response, environment variable, mutable diagnostic,
+or caller-selected value SHALL NOT create, select, modify, or widen a binding.
+
+The exact closed `os_isolated` guarantee-property identifiers SHALL be
+`kernel_process_boundary`, `filesystem_default_deny`,
+`network_default_deny`, `cpu_limit`, `memory_limit`, `process_limit`,
+`wall_time_limit`, `output_limit`, `platform_secrets_absent`,
+`undeclared_devices_absent`, `bounded_cleanup`, and
+`request_bound_evidence`. A `vm_isolated` binding SHALL prove that entire set
+plus `guest_kernel_boundary` and `host_devices_default_deny`. Unknown property
+identifiers SHALL deny. Admission SHALL use proved property-set inclusion;
+`os_isolated`, `vm_isolated`, or another label SHALL be derived shorthand only
+and SHALL NOT substitute for the property set.
+Policy, projection, egress, credential, and authority objects SHALL remain
+owner-defined opaque reference/digest pairs. This capability SHALL bind fixed
+verifiers for those pairs but SHALL NOT define their taxonomies, reveal their
+contents, or claim a complete compatibility matrix.
+
+Pre-launch admission SHALL resolve the trusted logical
+`ExecutionRequirement`, its owner-defined reference/digest pairs, the exact
+release-pinned backend binding, and the exact planned launch configuration. It
+SHALL obtain fresh authenticated `BackendPreflightEvidenceV1` covering the
+binding/release, capability self-test, planned-configuration digest, and
+freshness interval. Preflight evidence SHALL prove only current capability and
+the exact planned configuration; it SHALL NOT attest a future process,
+enforcement event, cleanup, result, or complete guarantee set.
+
+For an existing runner job, distributed execution SHALL canonicalize the
+unchanged `runner-job/v1` request and seal a purpose-separated
+`ExecutionAdmissionCapsuleV1` that binds at least the exact inner `job_id`,
+inner request schema/digest, logical requirement contract/digest, backend
+binding digest, planned-launch digest, preflight-evidence digest,
+independently verified authority-evidence digest, issuance/expiry, capsule ID,
+and signing-key ID. The trusted transport SHALL carry that capsule and
+preflight evidence beside—not inside—the inner request. The backend SHALL
+verify the seal, expiry, and every binding before launch.
+
+The outer admission capsule SHALL authenticate admission facts only. It SHALL
+NOT mint, wrap, replace, or widen provider, B2, credential, scheduling,
+payment, or effect authority. Ordinary provider work SHALL retain the
+#1784-owned `ProviderInvocation` carrier; accepted-market work SHALL retain the
+B2/B13 carrier; runner-backed work SHALL use the admission sidecar only in
+addition to its independently required authority evidence.
+
+These four records SHALL define the runner-backed instantiation. Ordinary
+provider and accepted-market owners SHALL bind equivalent request-specific
+evidence through their native carriers and SHALL NOT invent a runner `job_id`
+or reuse the runner sidecar.
+
+After launch, the selected backend SHALL emit authenticated
+`BackendExecutionEvidenceV1` under the verifier and trust set fixed by the
+binding. That evidence SHALL bind the admission-capsule digest, inner `job_id`,
+backend execution identity, binding digest, actual-launch digest, inner-result
+digest, proved property identifiers, a sorted tuple of exact
+`(property_id, evidence_ref, evidence_digest)` entries, timestamps, and
+cleanup-evidence reference/digest. Distributed execution SHALL
+recompute the inner-result digest and verify every binding and
+property-specific proof before any output becomes a successful runner, graph,
+NodeBid, provider, or fallback result.
+
+`RUNNER_PROTOCOL_VERSION`, `JOB_REQUEST_SCHEMA_VERSION`,
+`JOB_RESULT_SCHEMA_VERSION`, `SandboxJobRequest`, `SandboxJobResult`,
+`EnforcementReceipt`, every `JobCapability`, and the capability/action mapping
+SHALL remain unchanged. `RunnerCapabilities`, `isolation_enforced`, installed
+executable probes, `EnforcementReceipt`, tier labels, queue/admission receipts,
+and a valid admission seal without verified actual-launch evidence MAY reject
+or diagnose but SHALL NOT prove the complete guarantee set.
+
+Missing, stale, malformed, mismatched, unsupported, unknown, caller-controlled,
+or unverifiable binding, reference, verifier, trust set, sidecar, preflight
+record, planned configuration, property, or launch record SHALL fail closed
+through the shared terminal `ExecutionAdmissionError` taxonomy. Invalid
+actual-launch evidence SHALL use
+`ExecutionAdmissionError(reason=backend_evidence_invalid)`, and no backend
+output SHALL become success or fallback input. A backend failure after valid
+dispatch with complete valid evidence SHALL remain a backend result rather
+than an admission error.
+
+Test-owned roots MAY exercise these records in dark verification. A production
+admission capsule or evidence verifier SHALL remain unavailable until the
+task-7.2 production trust-manifest distribution, purpose-separated signer
+custody, rotation/revocation, and persistent-store boundary are explicitly
+host-approved and implemented. Missing production custody SHALL NOT fall back
+to a test key, generated local key, unsigned sidecar, or mutable registry row.
+
+#### Scenario: a caller cannot choose a stronger binding
+
+- **WHEN** a request, worker, queue row, provider response, environment value,
+  or diagnostic names a backend/profile/property set different from the
+  release-pinned binding selected by trusted admission
+- **THEN** admission fails before launch with shared `ExecutionAdmissionError`
+- **AND** no caller label or boolean upgrades the proved guarantee set
+
+#### Scenario: the outer capsule binds the unchanged inner job
+
+- **WHEN** trusted code admits an existing `runner-job/v1` source-exec request
+- **THEN** the sealed outer capsule binds its exact `job_id`, schema, canonical
+  request digest, logical requirement, backend binding, planned configuration,
+  preflight evidence, and independent authority evidence
+- **AND** the inner request/result schemas, `EnforcementReceipt`, capabilities,
+  actions, and statuses remain unchanged
+
+#### Scenario: preflight cannot attest the future execution
+
+- **WHEN** fresh capability and self-test evidence matches the selected binding
+  and exact planned launch configuration
+- **THEN** pre-launch admission may authorize dispatch to proceed
+- **AND** it does not prove actual enforcement, cleanup, result integrity, or
+  the complete guarantee set
+
+#### Scenario: actual-launch evidence is request-bound
+
+- **WHEN** a backend returns output and execution evidence
+- **THEN** distributed execution verifies the capsule, job, execution,
+  binding, actual configuration, result digest, complete property set, and
+  cleanup evidence before accepting output
+- **AND** evidence copied from another job, capsule, configuration, backend,
+  execution, or result fails closed
+
+#### Scenario: diagnostic receipts cannot prove containment
+
+- **WHEN** `RunnerCapabilities`, an installed-executable probe, or the inner
+  `EnforcementReceipt` reports isolation or cleanup without valid bound
+  `BackendExecutionEvidenceV1`
+- **THEN** it grants no guarantee property and no successful output
+- **AND** the run terminates through shared `ExecutionAdmissionError`
+
+#### Scenario: admission binding does not promote authority
+
+- **WHEN** an admission capsule and complete backend evidence are valid but the
+  independently required provider or B2 authority is absent, stale, or wrong
+- **THEN** no provider call, external execution lease, candidate, or terminal
+  fact is created
+- **AND** the admission records cannot be wrapped or promoted into that
+  authority
+
+#### Scenario: production cannot fall back to a test admission seal
+
+- **WHEN** production dispatch is attempted before the approved production
+  trust set, signer custody, and persistent-store boundary exist
+- **THEN** admission fails before capsule creation or backend launch
+- **AND** no test key, generated key, unsigned sidecar, or mutable binding row
+  is used
+
+#### Scenario: a VM label with weaker properties is rejected
+
+- **WHEN** a binding says `vm_isolated` but lacks one base guarantee, a distinct
+  guest-kernel boundary, or default-deny host-device passthrough
+- **THEN** property-set inclusion fails before output acceptance
+- **AND** the tier label cannot override the missing proof
+
 ### Requirement: Stale PRs are extracted onto current main, not integrated wholesale
 
 Implementation SHALL port only reviewed behavior and non-vacuous mutation tests

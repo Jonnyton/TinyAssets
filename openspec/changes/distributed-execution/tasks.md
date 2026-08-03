@@ -1,7 +1,7 @@
 # Tasks - distributed execution
 
-Current-main execution ledger, refreshed through `origin/main@61da7f21` on
-2026-08-02. A checked task means its behavior or required evidence is present
+Current-main execution ledger, refreshed through `origin/main@840dd667` on
+2026-08-03. A checked task means its behavior or required evidence is present
 on main, not merely implemented on a draft branch. The #1485 runner seam, D0
 authority spine, evidence non-promotion types, and recovered extraction
 provenance are checked below; later runtime and live obligations remain open.
@@ -93,6 +93,38 @@ Recovered D0 provenance and current-main replacement evidence are recorded in
 - [x] 2.9 Diff the extraction result against #1697 and prove its exact
   server-derived epoch-2 worker descriptor, heartbeat, lifecycle, and
   contested-registration behavior remains intact.
+
+## 2A. Engine OS admission handoff
+
+- [x] 2A.1 Accept the spec-only `engine-os-sandbox` task 2.1 handoff by
+  defining `BackendProfileBindingV1`, `BackendPreflightEvidenceV1`, the
+  `job_id`-bound `ExecutionAdmissionCapsuleV1` sidecar, and
+  `BackendExecutionEvidenceV1`; preserve the frozen inner `runner/v1` wire and
+  keep provider/B2 authority in their existing owner-native carriers.
+- [ ] 2A.2 In a separately claimed runtime lane, add a release-pinned trusted
+  backend-binding registry and exact owner-reference verifiers; reject every
+  caller-, worker-, queue-, provider-, environment-, or diagnostic-selected
+  binding before launch.
+- [ ] 2A.3 In a separately claimed runtime lane, implement fresh preflight
+  evidence, exact planned-configuration derivation, canonical inner-request
+  hashing, purpose-separated outer-capsule sealing, and backend-side
+  seal/job/request/configuration verification without changing
+  `SandboxJobRequest`, `SandboxJobResult`, `EnforcementReceipt`, or
+  `JobCapability`; keep production construction absent until task 7.2 is
+  explicitly approved and implemented.
+- [ ] 2A.4 In a separately claimed runtime lane, authenticate and validate
+  actual-launch evidence against the capsule, job, execution, binding,
+  configuration, result digest, complete property set, and cleanup proof
+  before exposing output; map invalid evidence to
+  `ExecutionAdmissionError(reason=backend_evidence_invalid)`.
+- [ ] 2A.5 Add decision-level mutations proving cached diagnostics, capability
+  booleans, inner enforcement receipts, tier labels, copied evidence, and a
+  valid admission sidecar without independent provider/B2 authority cannot
+  admit execution or successful output.
+- [ ] 2A.6 Integrate the binding/evidence semantics through the existing
+  #1784 `ProviderInvocation`, B2/B13 accepted-market capsule, and runner
+  sidecar owners without creating a second authority carrier, provider route,
+  credential/egress taxonomy, or fallback path.
 
 ## 3. Vertical-slice delivery ledger (V1-V8)
 
