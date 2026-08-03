@@ -287,6 +287,24 @@ def _unknown_reconciliation(
     }
 
 
+def _repository_from_scoped_destination(destination: str) -> str:
+    """Normalize the connection-ledger GitHub destination to ``owner/repo``."""
+    if not isinstance(destination, str):
+        raise ValueError("GitHub destination must be a string")
+    normalized = destination.strip().lower().removeprefix("https://")
+    normalized = normalized.removeprefix("http://").strip("/")
+    if normalized.startswith("github.com/"):
+        normalized = normalized.removeprefix("github.com/")
+    parts = normalized.split("/")
+    if (
+        len(parts) != 2
+        or _GITHUB_REPOSITORY_RE.fullmatch(normalized) is None
+        or any(part in {".", ".."} for part in parts)
+    ):
+        raise ValueError("GitHub destination must identify one repository")
+    return normalized
+
+
 def reconcile_github_pull_request_effect(
     identity: GitHubPullRequestEffectIdentity,
     *,
@@ -303,7 +321,11 @@ def reconcile_github_pull_request_effect(
         raise TypeError("identity must be a server-authored PR effect identity")
     if not isinstance(proxy, ScopedConnectionProxy):
         raise TypeError("proxy must be a credential-blind scoped connection")
-    if proxy.provider != "github" or proxy.destination.lower() != identity.repository:
+    try:
+        proxy_repository = _repository_from_scoped_destination(proxy.destination)
+    except ValueError:
+        proxy_repository = ""
+    if proxy.provider != "github" or proxy_repository != identity.repository:
         return _unknown_reconciliation(
             identity,
             "destination_authority_mismatch",

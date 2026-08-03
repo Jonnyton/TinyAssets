@@ -5,11 +5,13 @@ import hashlib
 import inspect
 import json
 import os
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from tinyassets.credential_vault import write_credential_vault
 from tinyassets.storage.outbound_connections import (
     AmbiguousProxyOutcome,
     ConnectionLedger,
@@ -180,6 +182,118 @@ def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
     assert "dispatch_factory" not in parameters
     assert "dispatch_config" not in parameters
     assert "owner_user_id" not in parameters
+
+
+def test_resolve_exact_scoped_proxy_uses_named_grant_not_class_ambiguity(tmp_path):
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
+    )
+    _grant_github_connection(ledger)
+    _grant_github_connection(
+        ledger,
+        connection_id="conn-github-2",
+        grant_id="grant-github-2",
+    )
+
+    proxy = ledger.resolve_exact_scoped_proxy(
+        universe_id="universe-1",
+        grant_id="grant-github",
+        connection_id="conn-github",
+    )
+
+    assert proxy.grant_id == "grant-github"
+    assert proxy.destination == "github.com/acme/widgets"
+    proxy.close()
+
+
+def test_production_vault_resolver_is_exact_to_universe_repo_and_reference(tmp_path):
+    universe_dir = tmp_path / "universe-1"
+    write_credential_vault(
+        universe_dir,
+        [{
+            "credential_type": "vcs",
+            "service": "github",
+            "destination": "acme/widgets",
+            "purpose": "write",
+            "token": "requester-owned-secret",
+        }],
+    )
+    resolver_type = getattr(
+        __import__(
+            "tinyassets.storage.outbound_connections",
+            fromlist=["_ProductionVaultCredentialResolver"],
+        ),
+        "_ProductionVaultCredentialResolver",
+    )
+    resolver = resolver_type(
+        universe_dir=universe_dir,
+        provider="github",
+        destination="github.com/acme/widgets",
+    )
+
+    assert resolver("vault://github/acme/widgets") == "requester-owned-secret"
+    with pytest.raises(RuntimeError, match="credential reference"):
+        resolver("vault://github/acme/other")
+
+
+def test_production_github_driver_reads_only_exact_commit_repository(monkeypatch):
+    seen = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'[{"number":17}]'
+
+    def fake_urlopen(request, timeout):
+        seen.append((request, timeout))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    driver_type = getattr(
+        __import__(
+            "tinyassets.storage.outbound_connections",
+            fromlist=["_ProductionGitHubNetworkDriver"],
+        ),
+        "_ProductionGitHubNetworkDriver",
+    )
+    driver = driver_type()
+    result = driver(
+        credential="requester-owned-secret",
+        provider="github",
+        destination="github.com/acme/widgets",
+        verb="pull_requests:read_for_commit",
+        request={
+            "repository": "acme/widgets",
+            "intended_head_sha": "a" * 40,
+            "per_page": 100,
+        },
+    )
+
+    assert result == [{"number": 17}]
+    request, timeout = seen[0]
+    assert request.full_url.endswith(
+        "/repos/acme/widgets/commits/" + "a" * 40 + "/pulls?per_page=100"
+    )
+    assert timeout > 0
+    with pytest.raises(PermissionError, match="repository"):
+        driver(
+            credential="requester-owned-secret",
+            provider="github",
+            destination="github.com/acme/widgets",
+            verb="pull_requests:read_for_commit",
+            request={
+                "repository": "acme/other",
+                "intended_head_sha": "a" * 40,
+                "per_page": 100,
+            },
+        )
 
 
 def test_resolve_scoped_proxy_refuses_caller_supplied_owner_identity(tmp_path):

@@ -148,6 +148,22 @@ def test_exact_commit_marker_and_repository_match_reconciles_success():
     assert "grant-secret-free" not in repr(result)
 
 
+def test_connection_destination_url_normalizes_to_exact_repository():
+    identity = _identity()
+    proxy, channel = _proxy(
+        [_pull(identity)],
+        destination="github.com/Owner/Repo",
+    )
+
+    result = github_pr.reconcile_github_pull_request_effect(
+        identity,
+        proxy=proxy,
+    )
+
+    assert result["status"] == "succeeded"
+    assert channel.calls[0]["request"]["repository"] == "owner/repo"
+
+
 def test_authoritative_empty_commit_association_is_terminal_absence():
     identity = _identity()
     proxy, _channel = _proxy([])
