@@ -61,6 +61,14 @@ class WorkerClaimDescriptor:
     executor_class: AutomationActivationExecutor | None = None
 
 
+@dataclass(frozen=True)
+class WorkerClaimContext:
+    """Canonical runtime identity paired with its immutable daemon owner."""
+
+    descriptor: WorkerClaimDescriptor
+    daemon_id: str
+
+
 DescriptorReader = Callable[
     [sqlite3.Connection, str],
     WorkerClaimDescriptor | None,
@@ -70,7 +78,7 @@ DESCRIPTOR_VALIDITY_SECONDS = 90
 # claim, and lifecycle paths to this adapter.  This constant is bundled with
 # every runtime mirror, so capability publication never depends on an
 # optional domain package.
-EPOCH2_QUEUE_CONSUMER_READY = False
+EPOCH2_QUEUE_CONSUMER_READY = True
 logger = logging.getLogger(__name__)
 _IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -246,6 +254,30 @@ class Epoch2BranchTaskAdapter:
             worker_id=worker_id,
         )
 
+    def worker_claim_context(
+        self,
+        *,
+        worker_id: str,
+        runtime_instance_id: str,
+        universe_id: str,
+    ) -> WorkerClaimContext | None:
+        """Read the exact server-owned worker tuple from canonical storage."""
+        with self._store.connection() as conn:
+            context = read_worker_claim_context(conn, worker_id)
+        if context is None:
+            return None
+        descriptor = context.descriptor
+        if (
+            descriptor.runtime_instance_id != runtime_instance_id
+            or descriptor.universe_id != universe_id
+            or not _descriptor_is_live(
+                descriptor,
+                transaction_at=self._clock().isoformat(),
+            )
+        ):
+            return None
+        return context
+
     def get(self, branch_task_id: str) -> Epoch2BranchTask | None:
         row = self._store.get_v2_task(branch_task_id)
         return _as_epoch2_task(row) if row is not None else None
@@ -297,6 +329,24 @@ class Epoch2BranchTaskAdapter:
                 or trusted.executor_class.value
                 != task["automation_executor_class"]
             ):
+                return False
+            active = conn.execute(
+                """
+                SELECT 1
+                FROM branch_tasks_v2
+                WHERE universe_id = ? AND automation_id = ?
+                  AND branch_task_id != ?
+                  AND status IN ('running', 'cancel_requested')
+                  AND disabled = 0
+                LIMIT 1
+                """,
+                (
+                    task["universe_id"],
+                    task["automation_id"],
+                    task["branch_task_id"],
+                ),
+            ).fetchone()
+            if active is not None:
                 return False
             return AutomationActivationStore.validate_claim_in_transaction(
                 conn,
@@ -673,6 +723,100 @@ def _descriptor_shape_is_valid(
     ):
         return False
     return _parse_timestamp(descriptor.expires_at) is not None
+
+
+def read_worker_claim_context(
+    conn: sqlite3.Connection,
+    worker_id: str,
+) -> WorkerClaimContext | None:
+    """Resolve one live-capable runtime using the caller's transaction.
+
+    Queue possession never creates this identity.  The runtime registry and
+    its supervisor-refreshed release descriptor are read inside the same
+    transaction that conditionally claims the task.
+    """
+    clean_worker_id = str(worker_id or "").strip()
+    if not clean_worker_id:
+        return None
+    try:
+        rows = conn.execute(
+            """
+            SELECT instance_id, universe_id, author_id, status, metadata_json
+            FROM author_runtime_instances
+            WHERE status = 'provisioned'
+            ORDER BY created_at DESC, instance_id DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+
+    owned: list[
+        tuple[Mapping[str, Any], Mapping[str, Any], Any]
+    ] = []
+    for row in rows:
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if str(metadata.get("worker_id") or "").strip() != clean_worker_id:
+            continue
+        raw_descriptor = metadata.get("queue_protocol_descriptor")
+        if raw_descriptor is not None:
+            owned.append((row, metadata, raw_descriptor))
+    if len(owned) != 1:
+        return None
+    row, metadata, raw_descriptor = owned[0]
+    if not isinstance(raw_descriptor, dict):
+        return None
+    try:
+        executor_class = AutomationActivationExecutor(
+            str(metadata.get("automation_executor_class") or "")
+        )
+        capabilities = raw_descriptor["capabilities"]
+        if not isinstance(capabilities, list):
+            return None
+        descriptor = WorkerClaimDescriptor(
+            queue_protocol_version=int(
+                raw_descriptor["queue_protocol_version"]
+            ),
+            capabilities=frozenset(str(value) for value in capabilities),
+            worker_id=str(raw_descriptor["worker_id"]),
+            runtime_instance_id=str(raw_descriptor["runtime_instance_id"]),
+            boot_id=str(raw_descriptor["boot_id"]),
+            build_sha=str(raw_descriptor["build_sha"]),
+            config_hash=str(raw_descriptor["config_hash"]),
+            universe_id=str(raw_descriptor["universe_id"]),
+            expires_at=str(raw_descriptor["expires_at"]),
+            executor_class=executor_class,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    instance_id = str(row["instance_id"])
+    universe_id = str(row["universe_id"])
+    author_id = str(row["author_id"])
+    daemon_id = (
+        "daemon::" + author_id[len("author::"):]
+        if author_id.startswith("author::")
+        else author_id
+    )
+    if (
+        descriptor.worker_id != clean_worker_id
+        or descriptor.runtime_instance_id != instance_id
+        or descriptor.universe_id != universe_id
+        or not daemon_id
+    ):
+        return None
+    return WorkerClaimContext(descriptor=descriptor, daemon_id=daemon_id)
+
+
+def read_worker_claim_descriptor(
+    conn: sqlite3.Connection,
+    worker_id: str,
+) -> WorkerClaimDescriptor | None:
+    context = read_worker_claim_context(conn, worker_id)
+    return context.descriptor if context is not None else None
 
 
 def _descriptor_is_live(
@@ -1175,4 +1319,7 @@ __all__ = [
     "QuarantineMaintenanceResult",
     "QuarantineReceipt",
     "WorkerClaimDescriptor",
+    "WorkerClaimContext",
+    "read_worker_claim_context",
+    "read_worker_claim_descriptor",
 ]
