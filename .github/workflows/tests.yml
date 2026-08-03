@@ -27,6 +27,52 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
+  # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.
+  # (`workflow_dispatch` below is also non-PR, but it needs a human to press it,
+  # so it cannot carry a tripwire. Stated precisely because the first draft of
+  # this comment claimed push was the only non-PR trigger, which is false.)
+  #
+  # `push: branches: [main]` looks like it covers every merge. It does not:
+  # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
+  # GitHub performs the merge as `app/github-actions`, and events raised by
+  # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
+  # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
+  # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
+  # So `push` fires on the rare human merge and never on the normal path — the
+  # tripwire read as coverage while providing none, the same failure shape as the
+  # concurrency bug fixed above.
+  #
+  # `schedule` is used because it is the one trigger empirically proven to fire
+  # here (26 of the last 200 runs). Runners are free on a public repo, so the
+  # cadence is chosen for detection latency, not cost.
+  #
+  # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
+  # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
+  # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
+  # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read this as "a few times
+  # a day, unpredictably", not "every 3 hours". That is acceptable for a
+  # tripwire whose alternative is never running at all; it would NOT be
+  # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
+  # via `pull_request`, where the trigger is deterministic.
+  #
+  # Accepted side effect: `required-tests` and `slow-tests` have no job-level
+  # `if:`, so they run on the schedule too. `full-tests` is a strict superset of
+  # `required-tests`, so that is duplicated work. It is deliberate — runners are
+  # free here, and the alternative is a job-level `if:` on the REQUIRED job.
+  #
+  # That would fail OPEN, not closed. A skipped job reports
+  # `conclusion=skipped`, and branch protection accepts a skipped required check
+  # as satisfied — so a condition that was wrong in some edge case would merge
+  # untested code silently. (Verified empirically 2026-08-03: `full-tests`
+  # reported COMPLETED/SKIPPED on PR #2197, not pending. An earlier draft of
+  # this comment claimed a job-level `if:` would strand PRs on "Expected"; that
+  # is the behaviour of a *trigger-level* `paths:` filter, not a job `if:`, and
+  # cross-family review corrected it.)
+  #
+  # Wasting a free runner is the cheaper failure than a required check that can
+  # quietly pass without running.
+  schedule:
+    - cron: '17 */3 * * *'
   workflow_dispatch:
 
 # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
@@ -38,12 +84,20 @@ permissions:
   contents: read
 
 concurrency:
-  # PRs cancel superseded runs (only the latest head matters). Main pushes are
-  # keyed per-SHA and NEVER cancel: grouping them by ref meant each push killed
-  # the previous main run, so with a commit every ~10 min the post-merge
+  # PRs cancel superseded runs (only the latest head matters). Non-PR runs are
+  # keyed per-RUN and never collide at all: grouping them by ref meant each push
+  # killed the previous main run, so with a commit every ~10 min the post-merge
   # tripwire almost never finished — it looked like coverage while providing
   # none (found in cross-family review 2026-08-03).
-  group: tests-${{ github.event.pull_request.number || github.sha }}
+  #
+  # `run_id` rather than `sha`, per a second review round: keying by SHA still
+  # collides when several scheduled runs land on an UNCHANGED main, and GitHub
+  # replaces an existing *pending* run with a newer one — so a queued tripwire
+  # run can be silently dropped. The 3h cadence vs the 60-min timeout makes that
+  # rare, but "rare silent drop" is the exact failure mode this block already
+  # got wrong once. run_id makes every non-PR run unique, so there is nothing to
+  # drop. cancel-in-progress stays conditional as defence in depth.
+  group: tests-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -97,7 +151,10 @@ jobs:
           #
           # Excluding them was VERIFIED safe, not assumed: every failure the
           # exclusion run reported was also failing in the same-tree full run.
-          # The excluded files still run in `full-tests` on every main push.
+          # The excluded files still run in `full-tests`, on a best-effort
+          # schedule of a few times a day — NOT "on every main push", which was
+          # the original claim here and was wrong: app-performed merges raise no
+          # push event. See the `schedule:` trigger comment.
           python scripts/ci_required_tests.py --junit junit.xml \
             --exclude-from .github/heavy-test-files.txt \
             --min-ran 10700
@@ -110,12 +167,16 @@ jobs:
           path: junit.xml
           if-no-files-found: warn
 
-  # The other half of the split: the COMPLETE surface, on every main push.
+  # The other half of the split: the COMPLETE surface, on a best-effort
+  # schedule (a few times a day — see the `schedule:` trigger comment).
   # NOT required — this is the post-merge tripwire, not the merge gate. It
   # exists because `required-tests` deliberately trades coverage for a wall
   # clock that fits main's commit cadence; without this the excluded files
   # would have no CI at all. Same quarantine ledger, so a failure here is a
   # real regression rather than baseline noise.
+  #
+  # `github.event_name != 'pull_request'` therefore admits schedule, push and
+  # workflow_dispatch — schedule is what actually carries it (see above).
   full-tests:
     name: full-tests
     if: github.event_name != 'pull_request'
