@@ -15,7 +15,17 @@ canary = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(canary)
 
 
-def _scripted_post(tool_names, status_payload=None, *, structured_status=False):
+def _scripted_post(
+    tool_names,
+    status_payload=None,
+    *,
+    structured_status=False,
+    converse_status=401,
+    converse_challenge=(
+        'Bearer resource_metadata="https://example/mcp/'
+        '.well-known/oauth-protected-resource"'
+    ),
+):
     """Return a fake _post that replays an MCP handshake advertising tool_names."""
     if status_payload is None:
         status_payload = {
@@ -25,7 +35,13 @@ def _scripted_post(tool_names, status_payload=None, *, structured_status=False):
             "identity_evidence": {"status": "available"},
         }
 
-    def _post(url, payload, timeout, session_id=None):
+    def _post(
+        url,
+        payload,
+        timeout,
+        session_id=None,
+        accepted_http_statuses=frozenset(),
+    ):
         method = payload.get("method")
         if method == "initialize":
             body = json.dumps({
@@ -45,6 +61,22 @@ def _scripted_post(tool_names, status_payload=None, *, structured_status=False):
             }).encode()
             return 200, {}, body
         if method == "tools/call":
+            if payload["params"]["name"] == "converse":
+                assert payload["params"] == {
+                    "name": "converse",
+                    "arguments": {"message": "mcp-public-canary auth boundary probe"},
+                }
+                assert 401 in accepted_http_statuses
+                if converse_status == 401:
+                    return 401, {"www-authenticate": converse_challenge}, (
+                        b'{"error":"authentication_required"}'
+                    )
+                body = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "error": {"code": -32602, "message": "Resource not found"},
+                }).encode()
+                return converse_status, {}, body
             assert payload["params"] == {"name": "get_status", "arguments": {}}
             result = {
                 "content": [
@@ -128,6 +160,48 @@ def test_advertised_tool_names_round_trips(monkeypatch):
     monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
     names = canary.advertised_tool_names("https://example/mcp", 5.0)
     assert names == set(_CANONICAL_PLUS_STATUS)
+
+
+def test_converse_auth_gate_reaches_canonical_bearer_challenge(monkeypatch):
+    monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
+
+    canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+
+def test_converse_auth_gate_rejects_resource_not_found(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, converse_status=200),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert exc.value.code == 6
+    assert "expected HTTP 401" in exc.value.msg
+
+
+def test_converse_auth_gate_rejects_protected_resource_metadata_drift(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(
+            _CANONICAL_PLUS_STATUS,
+            converse_challenge=(
+                'Bearer resource_metadata="https://wrong.example/'
+                '.well-known/oauth-protected-resource"'
+            ),
+        ),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert exc.value.code == 6
+    assert "resource metadata drift" in exc.value.msg
 
 
 def test_status_surface_assertion_calls_get_status_and_checks_uptime_fields(
@@ -238,12 +312,18 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
     good = _scripted_post(_CANONICAL_PLUS_STATUS)
     calls = {"n": 0}
 
-    def flaky(url, payload, timeout, session_id=None):
+    def flaky(
+        url,
+        payload,
+        timeout,
+        session_id=None,
+        accepted_http_statuses=frozenset(),
+    ):
         if payload.get("method") == "initialize":
             calls["n"] += 1
             if calls["n"] == 1:
                 raise canary.CanaryError(2, "transient unreachable")
-        return good(url, payload, timeout, session_id)
+        return good(url, payload, timeout, session_id, accepted_http_statuses)
 
     monkeypatch.setattr(canary, "_post", flaky)
     # Should pass on the 2nd attempt; no real sleeping.

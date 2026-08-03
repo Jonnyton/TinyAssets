@@ -10,7 +10,7 @@
 ## 2. Exact continuity repair
 
 - [ ] 2.1 Test-first, repair only the evidence-identified connector action-registration/attachment, validator, or WorkOS/AuthKit configuration boundary; retain negative coverage for algorithm, signature, issuer, audience, expiry, subject, missing claims, and production audience-bypass refusal, and do not change JWT acceptance without a bounded rejection category that identifies that boundary.
-- [ ] 2.2 Add an automated parity/continuity check for every boundary that can be verified without secrets, and durably document any unavoidable WorkOS control-plane setting.
+- [x] 2.2 Add an automated parity/continuity check for every boundary that can be verified without secrets, and durably document any unavoidable WorkOS control-plane setting. Completed 2026-08-03 on Windows against `https://tinyassets.io/mcp`: three regression tests failed before implementation, then all 23 focused canary tests and Ruff passed. `--assert-handles` now proves `converse` is advertised and a direct unauthenticated call reaches the endpoint-derived Bearer protected-resource challenge; the live probe returned HTTP 401 `authentication_required` with `resource_metadata="https://tinyassets.io/mcp/.well-known/oauth-protected-resource"`. This localizes the prior ChatGPT `Resource not found: TinyAssets.converse` result beyond public server registration and the pre-dispatch auth gate, while leaving ChatGPT attachment and authenticated continuity for tasks 2.1/3.2. No WorkOS control-plane mutation was identified or authorized; the unavoidable dashboard/client setting remains documented as the canonical `https://tinyassets.io/mcp` resource indicator with authorization-code/refresh support and PKCE S256.
 
 ## 3. Live acceptance
 

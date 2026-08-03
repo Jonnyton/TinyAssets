@@ -149,6 +149,29 @@ connector registration/attachment the next repair boundary without
 establishing whether an accepted bearer reached validation. It does not justify
 changing any JWT check.
 
+Secret-free boundary refinement on 2026-08-03 (Windows, worktree based on
+`origin/main` `340f5ebf`):
+
+- `python -m pytest tests/test_mcp_public_canary.py -q` returned `23 passed`;
+- `python -m ruff check scripts/mcp_public_canary.py
+  tests/test_mcp_public_canary.py` returned `All checks passed!`; and
+- `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
+  --assert-handles --assert-handles-retries 1 --verbose` proved that the public
+  server advertises the canonical `converse` handle and that a direct anonymous
+  `tools/call converse` reaches the pre-dispatch Bearer gate. The live response
+  was HTTP 401 `authentication_required` with
+  `resource_metadata="https://tinyassets.io/mcp/.well-known/oauth-protected-resource"`.
+
+The automated assertion now fails separately if `converse` disappears, if its
+direct call returns a 200/JSON-RPC action-resolution result instead of the 401
+gate, or if the challenge points at non-canonical protected-resource metadata.
+This proves public server registration plus auth-gate routing without a token;
+it does not prove ChatGPT attachment or authenticated continuity. No WorkOS
+control-plane mutation is identified or authorized by this evidence. The
+unavoidable dashboard/client contract remains the canonical
+`https://tinyassets.io/mcp` resource indicator, authorization-code and refresh
+support, and PKCE S256, as recorded above.
+
 ## Diagnostic implementation
 
 `WorkOSAuthProvider` now maps validation failures to an allowlisted category:
@@ -245,12 +268,12 @@ Task 1.2's post-#2037 retry is complete. The rendered
 `Resource not found: TinyAssets.converse` result plus an empty, non-truncated
 bounded validator category makes ChatGPT's connector action-registration or
 attachment seam the next repair boundary without establishing validator
-ordering. Before task 2.1
-changes anything, reconcile ChatGPT's registered `TinyAssets.converse` action
-with the live canonical `converse` handle and identify why the client-visible
-action cannot resolve even while the public canary advertises the handle. Only
-implement the smallest evidence-backed correction; do not relax token
-acceptance.
+ordering. The 2026-08-03 secret-free refinement proves more than advertisement:
+a direct public `converse` call also reaches the canonical server auth
+challenge. Task 2.1 must therefore inspect and repair only ChatGPT's connector
+attachment or client-side action resolution before changing any validator or
+WorkOS setting. Only implement the smallest evidence-backed correction; do not
+relax token acceptance.
 
 Final acceptance requires both an immediate authenticated call and a later
 continued/refreshed call to the same owner/universe from a rendered chatbot,
