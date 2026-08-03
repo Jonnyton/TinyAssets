@@ -10,7 +10,7 @@ The production deployment SHALL provide `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
 
 #### Scenario: stale shared duplicate fails closed
 - **WHEN** the fenced deploy prepares `/etc/tinyassets/env` before recreating the fleet
-- **THEN** it deletes any request-idempotency HMAC entry from the shared file
+- **THEN** it deletes request-idempotency HMAC entries written as canonical assignments, `export` assignments, leading-whitespace assignments, or assignments with whitespace before `=`
 - **AND** it fails before Compose synchronization if the shared file is unreadable or still contains that key
 
 #### Scenario: running workers prove the boundary
@@ -41,19 +41,19 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 - **AND** the operator must complete the ordinary corrected-boundary deploy first
 
 ### Requirement: Protected-stdin installation creates no named plaintext value file
-The environment installer SHALL pass its protected-stdin value to the content builder without placing it in process arguments, child environment, or a named plaintext filesystem object, and MUST NOT print the protected value.
+The environment installer SHALL construct updated content in the current Bash process without placing its protected-stdin value in process arguments, child environment, or a named plaintext filesystem object, and MUST NOT print the protected value.
 
 #### Scenario: normal and error exits create no residue
 - **WHEN** protected-stdin installation succeeds or its content builder fails
 - **THEN** no matching value file exists beside the target environment file
 - **AND** stdout and stderr contain no protected value
 
-#### Scenario: parent-only termination cannot strand plaintext
-- **WHEN** TERM reaches the installer while the content-builder child remains blocked
-- **THEN** no named plaintext value file exists while the child is still running or after the process group terminates
+#### Scenario: construction has no child custody lifecycle
+- **WHEN** the installer rewrites a protected value
+- **THEN** no content-builder child or named plaintext value file exists to outlive the installer
 
-#### Scenario: duplicate immutable assignments fail before mutation
-- **WHEN** `set-once` reads more than one assignment for its target key, including a non-empty assignment followed by an empty assignment
+#### Scenario: Compose-valid duplicate immutable assignments fail before mutation
+- **WHEN** `set-once` reads more than one Compose-recognized assignment for its target key, including `export`, leading whitespace, whitespace before `=`, or a non-empty assignment followed by an empty assignment
 - **THEN** it exits with immutable-refusal status before writing the environment file
 - **AND** neither existing nor proposed values appear in output
 

@@ -35,15 +35,15 @@ Ordinary automatic and manual deploys continue using `set-once`. A boolean workf
 
 Alternatives considered were deleting the host file by hand and adding a permanent multi-key ring. Manual deletion creates an untracked mutation window, while a verification ring expands runtime/security scope and preserves trust in witnesses minted under an exposed key.
 
-### Reject duplicate immutable assignments before mutation
+### Parse Docker Compose env declarations once and fail closed
 
-`set-once` counts matching assignments while reading the existing file and exits with the immutable-refusal code on the second match, without writing or printing either value. A single empty assignment remains the documented bootstrap case. This closes the malformed `KEY=old` followed by `KEY=` bypass in which last-match-wins comparison could permit a replacement before later validation failed.
+One Bash helper recognizes the production Compose grammar relevant to key identity: optional leading whitespace, optional `export` plus whitespace, and optional whitespace before `=`. `set`, `set-once`, `delete`, and the read-only `assert-absent` command all use that helper. `set-once` counts matching assignments and exits with the immutable-refusal code on the second match, without writing or printing either value. `delete` removes every recognized shape, and both scrub and rotation invoke `assert-absent` before any worker recreation or key transmission. A single empty assignment remains the documented bootstrap case.
 
 ### Never create a named plaintext value file
 
-The installer passes the protected shell value to awk through an inherited pipe on file descriptor 3. The key is not placed in awk argv, the child environment, or a named filesystem object, so a parent-only signal cannot strand plaintext while Bash defers a trap waiting for awk.
+The installer reads and reconstructs the small environment file entirely in the current Bash process. The protected value is appended directly to a shell string and enters only `install(1)` through stdin during the atomic target write. It is never placed in child argv/environment or a named intermediate filesystem object, and there is no content-builder child to outlive a signal.
 
-An EXIT/signal cleanup trap around the prior `mktemp` design was implemented first and rejected by independent review: Bash defers the trap while a foreground command substitution blocks. Tracking and killing the child would add more signal-state machinery while retaining a named secret file; a pipe removes the custody hazard instead and preserves multiline reconstruction.
+An EXIT/signal cleanup trap around the prior `mktemp` design and a later PID-tracked pipe builder were both rejected during review. In-process construction removes both the plaintext custody hazard and the child-lifecycle machinery while preserving multiline values.
 
 ### Archive explicit production container identities
 
@@ -52,7 +52,7 @@ An EXIT/signal cleanup trap around the prior `mktemp` design was implemented fir
 ## Risks / Trade-offs
 
 - **[Rotation invalidates witnesses signed by the exposed key]** -> Accept fail-closed invalidation because the runtime is dark and trusting an exposed issuer is worse; verify daemon health and canonical canaries after cutover.
-- **[`/dev/fd/3` is unavailable on a target shell]** -> The deploy helper requires Bash on supported Linux/macOS hosts; POSIX tests execute the real fd handoff and deployment shell syntax is gated before merge.
+- **[Compose env grammar grows beyond the recognized key forms]** -> Keep one parser helper, exercise every currently accepted Compose assignment shape against the installed Compose version, and fail closed through actual running-worker environment proof after deploy.
 - **[Compose inheritance changes later]** -> Parse the actual compose document in regression tests and assert the secret file is absent from every non-daemon service, not only the base worker.
 - **[Automatic deploy races the secret update]** -> Merge only after exact-head review, complete and verify the ordinary corrected-boundary deploy first, replace the repository secret immediately before the second manual rotation deploy, and use the production mutation concurrency group.
 - **[Log collection names drift with fleet topology]** -> Keep the expected identities in one default string and assert the complete current fleet in tests.

@@ -717,7 +717,7 @@ def test_deploy_scrubs_and_fails_closed_on_shared_request_hmac_duplicate():
 
     assert "delete TINYASSETS_WIKI_PATH" in run_script
     assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
-    assert "grep -q '^TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY='" in run_script
+    assert "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
     assert "shared env still contains request admission minting authority" in run_script
 
 
@@ -1679,24 +1679,22 @@ def test_request_hmac_rotation_requires_deployed_corrected_boundary():
     wf = _load()
     install = _step_named(wf, "Install daemon-only request idempotency HMAC secret")
     script = install.get("run", "") or ""
-    rotation_guard = script.index('if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ]')
     secret_write = script.index(
         'printf \'%s\' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"'
     )
-
-    assert rotation_guard < secret_write
-    assert "sha256sum deploy/compose.yml" in script
-    assert "sudo sha256sum /opt/tinyassets/compose.yml" in script
-    assert "rotation requires the corrected Compose file" in script
-    assert "grep -q '^TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY='" in script
-    for container in (
+    prerequisite_tokens = (
+        "sha256sum deploy/compose.yml",
+        "sudo sha256sum /opt/tinyassets/compose.yml",
+        "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
         "tinyassets-worker",
         "tinyassets-worker-codex-2",
         "tinyassets-worker-claude-1",
         "tinyassets-worker-claude-2",
-    ):
-        assert container in script
-    assert "in os.environ" in script
+        "in os.environ",
+    )
+    for token in prerequisite_tokens:
+        assert script.index(token) < secret_write, token
+    assert "rotation requires the corrected Compose file" in script
     assert "rotation prerequisite failed" in script
 
 

@@ -60,6 +60,8 @@
 #   3  install(1) failed.
 #   4  post-write readability assert failed (tinyassets user cannot read).
 #   5  set-once refused replacement of an existing non-empty value.
+#   6  assert-absent found a Compose-recognized target assignment or could
+#      not read the target file.
 
 set -euo pipefail
 
@@ -70,28 +72,7 @@ ENV_MODE="${TINYASSETS_ENV_MODE-640}"
 ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
-ACTIVE_BUILDER_PID=""
-
-stop_content_builder() {
-    if [ -n "${ACTIVE_BUILDER_PID}" ]; then
-        kill -TERM "${ACTIVE_BUILDER_PID}" 2>/dev/null || true
-        wait "${ACTIVE_BUILDER_PID}" 2>/dev/null || true
-        ACTIVE_BUILDER_PID=""
-    fi
-    return 0
-}
-
-handle_signal() {
-    local signal="$1"
-    stop_content_builder
-    trap - "${signal}"
-    kill -s "${signal}" "$$"
-}
-
-trap stop_content_builder EXIT
-trap 'handle_signal HUP' HUP
-trap 'handle_signal INT' INT
-trap 'handle_signal TERM' TERM
+COMPOSE_ASSIGNMENT=""
 
 usage() {
     cat >&2 <<'EOF'
@@ -99,6 +80,7 @@ Usage:
   install-tinyassets-env.sh set <KEY>           # value on stdin
   install-tinyassets-env.sh set-once <KEY>      # immutable value on stdin
   install-tinyassets-env.sh delete <KEY> [KEY...]
+  install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
 EOF
     exit 1
 }
@@ -112,6 +94,22 @@ validate_key() {
         echo "::error::invalid env key: ${key}" >&2
         exit 1
     fi
+}
+
+# Docker Compose accepts optional leading whitespace, an optional `export`
+# prefix, and whitespace before `=` in env files. Normalize only enough to
+# identify the declared key; preserve the original line for unrelated entries.
+compose_line_assigns_key() {
+    local line="$1"
+    local key="$2"
+    local normalized="${line}"
+    normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+    if [[ "${normalized}" =~ ^export[[:space:]]+ ]]; then
+        normalized="${normalized#export}"
+        normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+    fi
+    COMPOSE_ASSIGNMENT="${normalized}"
+    [[ "${normalized}" =~ ^${key}[[:space:]]*(=|$) ]]
 }
 
 env_owner_user() {
@@ -296,16 +294,20 @@ cmd_set() {
         local assignment_count=0
         local line
         while IFS= read -r line || [ -n "${line}" ]; do
-            case "${line}" in
-                "${key}="*)
-                    assignment_count=$((assignment_count + 1))
-                    if [ "${assignment_count}" -gt 1 ]; then
-                        echo "::error::set-once refused duplicate assignments for ${key}" >&2
-                        exit 5
-                    fi
-                    existing="${line#*=}"
-                    ;;
-            esac
+            if compose_line_assigns_key "${line}" "${key}"; then
+                assignment_count=$((assignment_count + 1))
+                if [ "${assignment_count}" -gt 1 ]; then
+                    echo "::error::set-once refused duplicate assignments for ${key}" >&2
+                    exit 5
+                fi
+                local remainder="${COMPOSE_ASSIGNMENT#"${key}"}"
+                remainder="${remainder#"${remainder%%[![:space:]]*}"}"
+                if [[ "${remainder}" == =* ]]; then
+                    existing="${remainder#=}"
+                else
+                    existing=""
+                fi
+            fi
         done < "${ENV_FILE}"
         if [ -n "${existing}" ]; then
             if [ "${existing}" != "${value}" ]; then
@@ -315,48 +317,26 @@ cmd_set() {
         fi
     fi
 
-    # Build new content: replace the existing KEY= line, or append if absent.
-    # Pass the protected value through an inherited pipe on fd 3 rather than
-    # awk argv, environment, or a named plaintext file. Awk reconstructs
-    # multi-line values to preserve the existing `set` behavior.
+    # Build new content in this shell: replace every Compose-recognized target
+    # assignment with one canonical line, or append when absent. The protected
+    # value never enters child argv/environment or a named plaintext file.
     local new_content=""
-    local builder_fd
-    local builder_status
-    coproc CONTENT_BUILDER {
-        exec awk -v k="${key}" '
-        BEGIN {
-            found = 0
-            value_seen = 0
-            while ((getline value_line < "/dev/fd/3") > 0) {
-                v = v (value_seen ? ORS : "") value_line
-                value_seen = 1
-            }
-            close("/dev/fd/3")
-        }
-        $0 ~ "^" k "=" { print k "=" v; found = 1; next }
-        { print }
-        END { if (!found) print k "=" v }
-        ' "${ENV_FILE}" 3< <(printf '%s' "${value}")
-    }
-    ACTIVE_BUILDER_PID="${CONTENT_BUILDER_PID}"
-    builder_fd="${CONTENT_BUILDER[0]}"
-    IFS= read -r -d '' new_content <&"${builder_fd}" || true
-    exec {builder_fd}<&-
-    while [[ "${new_content}" == *$'\n' ]]; do
-        new_content="${new_content%$'\n'}"
-    done
-    if wait "${ACTIVE_BUILDER_PID}"; then
-        builder_status=0
-    else
-        builder_status=$?
-    fi
-    ACTIVE_BUILDER_PID=""
-    if [ "${builder_status}" -ne 0 ]; then
-        echo "::error::failed constructing updated ${ENV_FILE}" >&2
-        exit 3
+    local found="false"
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if compose_line_assigns_key "${line}" "${key}"; then
+            if [ "${found}" = "false" ]; then
+                new_content+="${key}=${value}"$'\n'
+                found="true"
+            fi
+        else
+            new_content+="${line}"$'\n'
+        fi
+    done < "${ENV_FILE}"
+    if [ "${found}" = "false" ]; then
+        new_content+="${key}=${value}"$'\n'
     fi
 
-    atomic_install "${new_content}"$'\n'
+    atomic_install "${new_content}"
     assert_readable
     echo "set ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
 }
@@ -364,22 +344,46 @@ cmd_set() {
 cmd_delete() {
     local key
     ensure_env_file
-
-    # Build a single awk filter that drops every requested KEY= line
-    # in one pass.
-    local awk_expr=""
     for key in "$@"; do
         validate_key "${key}"
-        awk_expr+="\$0 ~ \"^${key}=\" { next } "
     done
-    awk_expr+="{ print }"
 
-    local new_content
-    new_content="$(awk "${awk_expr}" "${ENV_FILE}")"
+    local new_content=""
+    local drop
+    local line
+    while IFS= read -r line || [ -n "${line}" ]; do
+        drop="false"
+        for key in "$@"; do
+            if compose_line_assigns_key "${line}" "${key}"; then
+                drop="true"
+                break
+            fi
+        done
+        if [ "${drop}" = "false" ]; then
+            new_content+="${line}"$'\n'
+        fi
+    done < "${ENV_FILE}"
 
-    atomic_install "${new_content}"$'\n'
+    atomic_install "${new_content}"
     assert_readable
     echo "deleted: $* (${ENV_FILE} $(owner_label) ${ENV_MODE})"
+}
+
+cmd_assert_absent() {
+    local key="$1"
+    validate_key "${key}"
+    if [ ! -r "${ENV_FILE}" ]; then
+        echo "::error::cannot assert ${key} absence: ${ENV_FILE} is unreadable" >&2
+        exit 6
+    fi
+    local line
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if compose_line_assigns_key "${line}" "${key}"; then
+            echo "::error::Compose-recognized assignment for ${key} remains in ${ENV_FILE}" >&2
+            exit 6
+        fi
+    done < "${ENV_FILE}"
+    echo "absent ${key} (${ENV_FILE})"
 }
 
 [ $# -ge 1 ] || usage
@@ -398,6 +402,10 @@ case "${subcmd}" in
     delete)
         [ $# -ge 1 ] || usage
         cmd_delete "$@"
+        ;;
+    assert-absent)
+        [ $# -eq 1 ] || usage
+        cmd_assert_absent "$1"
         ;;
     *)
         usage

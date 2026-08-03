@@ -7,8 +7,8 @@ PR #2178 merged and automatically deployed a production compose shape that gives
 - Make the request/admission HMAC file daemon-only; legacy graph workers receive no minting key from the dedicated or shared environment, and the deploy proves the absence in running workers.
 - Add a deployment regression that exercises the worker environment boundary and proves the key is absent, including after compose inheritance/merge.
 - Add an explicit manual-only, two-phase rotation path: deploy and prove the corrected worker boundary first, then rotate the exposed production key.
-- Make immutable secret installation reject duplicate key assignments before any write.
-- Make protected-stdin secret installation avoid named plaintext temporary files entirely.
+- Make immutable secret installation reject duplicate key assignments across Docker Compose's accepted env-file grammar before any write.
+- Make protected-stdin secret installation build content entirely in the current Bash process, without a child or named plaintext temporary file.
 - Include every production worker in the offsite log archive and correct stale service/archive identities in the operator runbook.
 - Keep custom-agent execution dark and prohibit production redeploy until exact-head security review passes.
 
