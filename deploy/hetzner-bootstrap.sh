@@ -230,6 +230,17 @@ fi
 chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"
 chmod 640 "${ENV_DIR}/agent-interchange.env"
 
+if [[ ! -f "${ENV_DIR}/request-idempotency.env" ]]; then
+    log "creating ${ENV_DIR}/request-idempotency.env from daemon+worker template..."
+    cp "${TINYASSETS_HOME}/deploy/request-idempotency-env.template" \
+        "${ENV_DIR}/request-idempotency.env"
+    log "  → fill ${ENV_DIR}/request-idempotency.env once with a distinct canonical-base64 key before starting the service"
+else
+    log "${ENV_DIR}/request-idempotency.env already present; leaving contents alone"
+fi
+chown "root:${TINYASSETS_USER}" "${ENV_DIR}/request-idempotency.env"
+chmod 640 "${ENV_DIR}/request-idempotency.env"
+
 # ----- 6. systemd unit install --------------------------------------------
 
 SYSTEMD_UNIT="/etc/systemd/system/tinyassets-daemon.service"
@@ -307,10 +318,13 @@ Next steps (host action required):
   2. Generate the daemon-only agent interchange key:
        follow Step 3 in deploy/DEPLOY.md for ${ENV_DIR}/agent-interchange.env
 
-  3. Start the service:
+  3. Generate the immutable daemon+worker request-admission key:
+       follow Step 3 in deploy/DEPLOY.md for ${ENV_DIR}/request-idempotency.env
+
+  4. Start the service:
        sudo systemctl start tinyassets-daemon
 
-  4. Tail logs:
+  5. Tail logs:
        sudo journalctl -u tinyassets-daemon -f
 
   4. Verify canary green:

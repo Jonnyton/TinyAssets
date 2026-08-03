@@ -12,17 +12,15 @@
 # /etc/tinyassets/env and restart compose. No config change needed.
 
 # ---------------------------------------------------------------------
-# Sources: Docker container logs
+# Sources: Docker's async Fluent logging driver. The listener is published on
+# host loopback only; Vector receives log events without Docker API access.
 # ---------------------------------------------------------------------
 
 sources:
-  docker_logs:
-    type: docker_logs
-    # Scope to only our containers — don't spam Better Stack with
-    # every Docker container on the box (if any).
-    include_containers:
-      - tinyassets-daemon
-      - tinyassets-tunnel
+  fluent_logs:
+    type: fluent
+    address: 0.0.0.0:24224
+    mode: tcp
 
 # ---------------------------------------------------------------------
 # Transforms: add metadata
@@ -31,14 +29,16 @@ sources:
 transforms:
   enriched:
     type: remap
-    inputs: [docker_logs]
+    inputs: [fluent_logs]
     source: |
       .service = "tinyassets"
-      # Derive role from container name so Better Stack can filter.
-      if .container_name == "tinyassets-daemon" {
+      # Docker Compose forwards {{.Name}} as the Fluent tag.
+      if .tag == "tinyassets-daemon" {
         .role = "daemon"
-      } else if .container_name == "tinyassets-tunnel" {
+      } else if .tag == "tinyassets-tunnel" {
         .role = "cloudflared"
+      } else if starts_with!(.tag, "tinyassets-worker") {
+        .role = "worker"
       } else {
         .role = "other"
       }
