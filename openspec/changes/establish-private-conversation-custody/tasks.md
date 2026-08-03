@@ -1,6 +1,6 @@
 ## 1. Contract Admission
 
-- [ ] 1.1 Strict-validate this proposal/design/spec/task set, obtain an independent exact-head architecture and security review, and fold every blocking finding before production-code implementation. Acceptance: the review explicitly covers custody placement, authenticated context, cross-scope disclosure, idempotency/races, export, deletion residue, and the dark integration boundary. Verification: `openspec validate establish-private-conversation-custody --strict`, `openspec validate --all --strict`, and `python scripts/openspec_flow.py check-change establish-private-conversation-custody --provider codex-gpt5-desktop` all exit zero at the reviewed head.
+- [x] 1.1 Strict-validate this proposal/design/spec/task set, obtain an independent exact-head architecture and security review, and fold every blocking finding before production-code implementation. Completed at approved exact head `21d5bbae935a8afc9f8648656f3c816f43318153`: seven review rounds closed every custody, authority, path, canonicalization, idempotency, deletion, concurrency, export, task, and packaging blocker; the independent Codex fallback recomputed every vector and approved with no Critical/Important finding after two Claude CLI attempts failed with exit 1 and empty stderr. `openspec validate establish-private-conversation-custody --strict`, all 70 strict validations, flow admission, and `git diff --check` passed.
 
 ## 2. Typed Authority and Custody Contract
 
