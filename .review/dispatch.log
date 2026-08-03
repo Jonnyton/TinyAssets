@@ -1,0 +1,1630 @@
+[codex_review] dispatching to Codex (read-only); verdict -> C:/Users/Jonathan/Projects/wf-required-test-gate/.review/codex-2197.md
+OpenAI Codex v0.146.0
+--------
+workdir: C:\Users\Jonathan\Projects\wf-required-test-gate
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019fc8c8-c55a-77b0-8d4d-07086ae9deaa
+--------
+user
+You are performing an opposite-provider (cross-family) code review. Be adversarial: try to find the reason this is wrong before you approve it. Re-check the actual code and any cited sources — do not rubber-stamp. Finish with a single line 'VERDICT: approve' | 'VERDICT: adapt' | 'VERDICT: reject', then the concrete findings / required adaptations (most important first).
+
+Do NOT run any orientation ritual, do NOT read AGENTS.md/STATUS.md/PLAN.md, do NOT run session-start scripts. Answer only the question below.
+
+Your job is to REFUTE this claim, not confirm it. Be adversarial.
+
+CLAIM: PR #2197 on Jonnyton/TinyAssets (branch ci/full-tests-schedule, head cb73b4eb) correctly fixes a dead CI trigger. It asserts:
+(a) '.github/workflows/tests.yml' had 'push: branches: [main]' as the only non-PR trigger, and that trigger never fires when auto-merge lands a PR, because auto-enroll-merge.yml enrols with GITHUB_TOKEN and GitHub then merges as app/github-actions, and GITHUB_TOKEN-raised events do not start workflow runs.
+(b) Therefore the 'full-tests' job (if: github.event_name != 'pull_request') never ran, leaving the 47 files listed in .github/heavy-test-files.txt with NO CI coverage.
+(c) Adding 'schedule: cron 17 */3 * * *' fixes it, and schedule is best-effort (measured: release-reconcile declares */15 and fired 16 times in 24h).
+(d) tests/test_tests_workflow.py correctly pins the invariants and can actually fail.
+
+Verify against the ACTUAL files in this checkout. Specifically try to refute by checking:
+1. Does 'full-tests' now actually run on the schedule event? Read its 'if:' condition. Is there any OTHER job-level or workflow-level condition that would still skip it?
+2. Does the concurrency block ('group: tests-${{ github.event.pull_request.number || github.sha }}', cancel-in-progress conditional) cause scheduled runs on an UNCHANGED main sha to queue behind or cancel each other, defeating the fix?
+3. Is cron '17 */3 * * *' valid, and does it collide badly with the repo's other schedules?
+4. Read tests/test_tests_workflow.py. Is any assertion vacuous, tautological, or unable to fail? Does test_full_tests_job_runs_on_the_scheduled_trigger actually prove what its name says, given it only checks for '!=' in the string?
+5. Does adding 'schedule' cause required-tests / slow-tests to run on schedule too, and is that harmful (cost, noise, or a required-check side effect)?
+6. Any security concern: does schedule change the token/secret context vs pull_request?
+
+OUTPUT CONTRACT — end your reply with exactly one line, no pipes, no brackets:
+VERDICT: approve
+or
+VERDICT: adapt
+or
+VERDICT: reject
+Then under a heading 'FINDINGS' list each concrete defect with file:line. If you find none, say 'no defects found' explicitly.
+codex
+I’m using the project’s code-review skill because this is an exact-head, adversarial review; I’ll inspect only the requested implementation, tests, workflow schedules, and relevant Git history/source evidence.
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Raw '.agents/skills/code-review-and-quality/SKILL.md'" in C:\Users\Jonathan\Projects\wf-required-test-gate
+ succeeded in 153ms:
+---
+name: code-review-and-quality
+description: Conducts, requests, and responds to code review, and gates completion claims on evidence. Use when merging any change, when evaluating code from yourself/another agent/a human, when receiving review feedback, or before claiming work is done.
+---
+
+# Code Review and Quality
+
+## Overview
+
+Every change gets reviewed before merge â€” no exceptions. This skill covers the
+full loop: conducting a review, requesting one, responding to feedback, and the
+non-negotiable verification gate before any "done" claim.
+
+**Approval standard:** approve when a change *definitely improves overall code
+health*, even if imperfect. Don't block because it isn't how you'd have written
+it. Perfect code doesn't exist; the goal is continuous improvement.
+
+---
+
+## Verification before completion (the gate)
+
+```
+NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
+```
+
+Claiming work is done without verifying is dishonesty, not efficiency. Before any
+success/completion claim or expression of satisfaction ("Done!", "Perfect!"):
+identify the command that proves the claim, run it fresh and complete, read the
+full output and exit code, and only then state the claim *with* the evidence.
+
+| Claim | Requires | Not sufficient |
+|-------|----------|----------------|
+| Tests pass | Test output: 0 failures | Previous run, "should pass" |
+| Build succeeds | Build exit 0 | Linter passed |
+| Bug fixed | Original symptom test passes | Code changed, assumed fixed |
+| Regression test works | Redâ†’green verified (revert fix â†’ must fail) | Passes once |
+| Agent completed | VCS diff shows the changes | Agent reports "success" |
+
+"Should work", "I'm confident", "just this once", "I'm tired" are not evidence.
+Run the command, read the output, then claim.
+
+---
+
+## Conducting a review
+
+### Five axes
+
+1. **Correctness** â€” matches spec; edge cases (null/empty/boundary) and error
+   paths handled; tests actually test the right thing; no off-by-one / races /
+   state bugs.
+2. **Readability & simplicity** â€” clear, consistent names (no bare
+   `temp`/`data`/`result`); straightforward control flow; could it be far fewer
+   lines? are abstractions earning their complexity (don't generalize before the
+   third use)? any dead code / no-op shims?
+3. **Architecture** â€” fits existing patterns; clean module boundaries; no
+   needless duplication or circular dependencies; appropriate abstraction level.
+4. **Security** â€” input validated at boundaries; no secrets in code/logs;
+   authz/authn where needed; parameterized queries; external data treated as
+   untrusted. Deep guidance: `security-and-hardening`.
+5. **Performance** â€” no N+1, unbounded loops/fetches, missing pagination, or
+   heavy work in hot paths. Deep guidance: `performance-optimization`.
+
+### Severity labels (required on every comment)
+
+`Critical:` blocks merge (security, data loss, broken function) Â· *(no prefix)*
+required before merge Â· `Nit:` optional style Â· `Optional:`/`Consider:`
+suggestion Â· `FYI` informational. Unlabeled feedback makes everything look
+mandatory.
+
+### Change sizing
+
+~100 lines = good, ~300 = acceptable if one logical change, ~1000 = split it.
+Separate refactoring from feature work (two changes). Split by stacking, file
+group, horizontal (shared first), or vertical slices. Large auto-refactors and
+full deletions are OK when the reviewer only verifies intent.
+
+### Dead-code hygiene & dependency discipline
+
+After refactors, list orphaned code explicitly and **ask before deleting**.
+Before adding any dependency: does the existing stack solve it? size, maintenance,
+`npm audit`, license? Prefer stdlib/existing utilities â€” every dependency is a
+liability.
+
+### AI-generated code â€” extra scrutiny
+
+Most code here is agent-written, so review for the failure modes *generation*
+introduces, not just human ones (SDLC whitepaper, the "80% problem"):
+
+- **Hallucinated / slopsquatted dependencies.** Every imported package must be
+  real and the *intended* one â€” AI invents plausible names and attackers squat
+  them. Verify each new import resolves to a known, existing package, not a
+  typo-neighbor. (`check imports for real packages`.)
+- **"Looks right, passes basic tests, still wrong."** The dangerous class is now
+  conceptual, not syntactic: wrong business-logic assumptions, missing edge
+  cases, unstated requirements. Check the change against *intent*, not just green
+  tests.
+- **Skipped-verification trajectory.** Fluent output that quietly skipped a check
+  is worse than a visible error â€” confirm the claimed evidence is real (ties to
+  the gate above). A second model (`mcp__codex__codex`) is a cheap way to catch
+  what the author's blind spots miss.
+- **Be skeptical of anything that looks clever.** Code the team can't explain is
+  debugging debt it can't afford.
+
+### Honesty
+
+Don't rubber-stamp ("LGTM" without review), don't soften real issues, quantify
+when possible ("~50ms per item", not "could be slow"), push back on flawed
+approaches, and accept a well-reasoned override gracefully. Comment on code, not
+people.
+
+---
+
+## Over-engineering pass (optional, focused)
+
+A complexity-only sweep of a diff â€” one line per finding, goal is a *shorter*
+diff. Tags: `delete:` (dead/speculative), `stdlib:` (hand-rolled what the
+stdlib ships â€” name it), `native:` (dep doing what the platform does), `yagni:`
+(abstraction with one impl, config nobody sets), `shrink:` (same logic, fewer
+lines â€” show it). End with `net: -N lines possible` or `Lean already. Ship.`
+Correctness/security/performance are out of scope for this pass â€” route those to
+a normal review. Never flag a single smoke test / `assert` self-check as bloat.
+
+---
+
+## Requesting a review (subagent)
+
+Dispatch a reviewer subagent with precisely-crafted context â€” never your session
+history â€” so it focuses on the work product and preserves your context. Get
+`BASE_SHA`/`HEAD_SHA`, dispatch a `general-purpose` subagent with the
+[code-reviewer.md](code-reviewer.md) template (description, requirements, SHAs).
+Review early and often: after each task in subagent-driven development, after a
+major feature, before merge. Different models have different blind spots â€” a
+second model catches what the author's misses.
+
+---
+
+## Receiving review feedback
+
+Evaluate technically; don't perform. **Verify before implementing, ask before
+assuming.**
+
+- **Read fully â†’ restate the requirement in your own words â†’ verify against the
+  actual codebase â†’ evaluate if it's right *for this codebase* â†’ respond.**
+- **No performative agreement.** Never "You're absolutely right!", "Great
+  point!", or "Thanks for catching that!" Just state the fix ("Fixed â€” changed X
+  in Y") or push back with technical reasoning. Actions over words.
+- **Unclear feedback â†’ STOP, clarify all items first.** Items may be related;
+  partial understanding yields wrong implementation.
+- **Push back** when a suggestion breaks functionality, the reviewer lacks
+  context, it violates YAGNI (grep â€” is it even used?), it's wrong for this
+  stack, or it conflicts with prior architectural decisions. Use reasoning and
+  reference working tests, not defensiveness.
+- **Implement** blocking â†’ simple â†’ complex, testing each individually, no
+  regressions. External feedback = suggestions to evaluate, not orders to follow.
+
+---
+
+## Red Flags
+
+PRs merged with no review Â· review that only checks tests pass Â· "LGTM" without
+evidence Â· large "too big to review" PRs Â· bug fix PRs without a regression test Â·
+comments without severity labels Â· accepting "I'll fix it later" Â· performative
+agreement to feedback Â· **any completion claim without fresh verification.**
+
+## Verification
+
+- [ ] Reviewed across all five axes; findings severity-labeled
+- [ ] All Critical issues resolved; Important resolved or deferred with reason
+- [ ] Tests pass, build succeeds â€” confirmed by fresh command output
+- [ ] Verification story documented (what changed, how verified)
+
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --abbrev-ref HEAD; git rev-parse HEAD; git status --short' in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$paths = @('"'.github/workflows/tests.yml','tests/test_tests_workflow.py','.github/workflows/auto-enroll-merge.yml','.github/heavy-test-files.txt'); foreach ("'$p in $paths) { if (Test-Path $p) { "### $p"; $n=0; Get-Content $p | ForEach-Object { $n++; '"'{0,4}: {1}' -f "'$n, $_ } } else { "MISSING $p" } }' in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n -U \"schedule:\\s*\\r?\\n(?:\\s+["'^'"\\r\\n]*\\r?\\n)*?\\s*- cron:\" .github/workflows; rg -n \"cron:\" .github/workflows" in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show --stat --oneline --decorate cb73b4eb; git show --format=fuller --find-renames cb73b4eb -- .github/workflows/tests.yml tests/test_tests_workflow.py' in C:\Users\Jonathan\Projects\wf-required-test-gate
+ succeeded in 270ms:
+ci/full-tests-schedule
+cb73b4eb412fedc8ee25deb5e784bc91e95a4122
+?? .review/
+
+ succeeded in 262ms:
+### .github/workflows/tests.yml
+   1: name: Tests
+   2: 
+   3: # Why this exists
+   4: # ---------------
+   5: # Until this workflow landed, NEITHER required status check on `main` tested code
+   6: # behaviour:
+   7: #
+   8: #   * `policy` (daemon-request-policy.yml) only reads writer:/checker: labels. A
+   9: #     PR carrying none of them passes it trivially.
+  10: #   * `Diff scope declared` (pr-scope-guard.yml) is a scope-DECLARATION gate and
+  11: #     says so in its own honesty note.
+  12: #
+  13: # Since the repo auto-merges any non-draft PR once required checks pass, and
+  14: # merges flow on to production, code could reach live users without a single
+  15: # behavioural gate. This workflow is that gate.
+  16: #
+  17: # MUST run unconditionally â€” no `paths:` filter, no job-level `if:`.
+  18: # A REQUIRED status check that is path-filtered never reports at all on PRs
+  19: # outside those paths, and the PR then hangs forever on "Expected â€” waiting for
+  20: # status". That is why `lint`/actionlint is path-filtered and must NEVER be made
+  21: # required. Every `exit` path below produces a conclusion for the same check name.
+  22: 
+  23: on:
+  24:   pull_request:
+  25:     # No `paths:` â€” see above. Drafts get `opened`/`synchronize` too, so the gate
+  26:     # gives signal before a PR is marked ready and becomes auto-merge eligible.
+  27:     types: [opened, reopened, synchronize, ready_for_review]
+  28:   push:
+  29:     branches: [main]
+  30:   # The post-merge tripwire's ONLY reliable trigger on this repo.
+  31:   #
+  32:   # `push: branches: [main]` looks like it covers every merge. It does not:
+  33:   # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
+  34:   # GitHub performs the merge as `app/github-actions`, and events raised by
+  35:   # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
+  36:   # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
+  37:   # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
+  38:   # So `push` fires on the rare human merge and never on the normal path â€” the
+  39:   # tripwire read as coverage while providing none, the same failure shape as the
+  40:   # concurrency bug fixed above.
+  41:   #
+  42:   # `schedule` is used because it is the one trigger empirically proven to fire
+  43:   # here (26 of the last 200 runs). Runners are free on a public repo, so the
+  44:   # cadence is chosen for detection latency, not cost.
+  45:   #
+  46:   # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
+  47:   # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
+  48:   # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
+  49:   # 16 in 24h â€” a 6x shortfall, with one 3h47m gap. So read this as "a few times
+  50:   # a day, unpredictably", not "every 3 hours". That is acceptable for a
+  51:   # tripwire whose alternative is never running at all; it would NOT be
+  52:   # acceptable for a merge gate, which is why `required-tests` stays on
+  53:   # `pull_request` where the trigger is deterministic.
+  54:   schedule:
+  55:     - cron: '17 */3 * * *'
+  56:   workflow_dispatch:
+  57: 
+  58: # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
+  59: # EXECUTING the PR's code, so it must run in the untrusted-by-default context
+  60: # where the token is read-only and secrets are withheld. The scope guard uses
+  61: # _target for the opposite reason â€” it only reads metadata and must not be
+  62: # editable by the PR it judges.
+  63: permissions:
+  64:   contents: read
+  65: 
+  66: concurrency:
+  67:   # PRs cancel superseded runs (only the latest head matters). Main pushes are
+  68:   # keyed per-SHA and NEVER cancel: grouping them by ref meant each push killed
+  69:   # the previous main run, so with a commit every ~10 min the post-merge
+  70:   # tripwire almost never finished â€” it looked like coverage while providing
+  71:   # none (found in cross-family review 2026-08-03).
+  72:   group: tests-${{ github.event.pull_request.number || github.sha }}
+  73:   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  74: 
+  75: jobs:
+  76:   required-tests:
+  77:     # This exact string is the branch-protection context. Renaming the job
+  78:     # ORPHANS the old required context: it stays "Expected â€” waiting for
+  79:     # status" forever and every PR blocks indefinitely (it does NOT fail open;
+  80:     # corrected 2026-08-02 per Codex review). Change the name only together
+  81:     # with the `gh api` protection update in
+  82:     # docs/decisions/ADR-003-required-test-aggregator.md.
+  83:     name: required-tests
+  84:     runs-on: ubuntu-latest
+  85:     # 30 was measured against the 2026-07-22 suite (25:48) and the suite has
+  86:     # since outgrown it â€” run 30766011005 was killed at exactly 30:15 with the
+  87:     # tests still going. 50 buys headroom for one honest full measurement; the
+  88:     # ADR documents the fast-subset escape hatch if the latency bites.
+  89:     timeout-minutes: 50
+  90: 
+  91:     steps:
+  92:       - uses: actions/checkout@v4
+  93: 
+  94:       - uses: actions/setup-python@v5
+  95:         with:
+  96:           python-version: '3.11'
+  97:           cache: pip
+  98:           cache-dependency-path: pyproject.toml
+  99: 
+ 100:       - name: Install
+ 101:         run: |
+ 102:           python -m pip install --upgrade pip
+ 103:           pip install -e '.[dev]'
+ 104: 
+ 105:       - name: Run the required test surface
+ 106:         env:
+ 107:           # Keep the suite off the real repo tree and off any host state. The
+ 108:           # conftest already forces mock providers and sqlite_only storage; this
+ 109:           # is belt-and-braces for anything that reads the env directly.
+ 110:           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
+ 111:         run: |
+ 112:           mkdir -p "$TINYASSETS_DATA_DIR"
+ 113:           # The script owns the pytest invocation AND the pass/fail decision:
+ 114:           # it fails on any failure not listed in .github/known-failing-tests.txt.
+ 115:           # No `|| true`, no `continue-on-error` â€” its exit code IS the gate.
+ 116:           #
+ 117:           # --exclude-from drops the 47 files holding ~90% of the wall clock,
+ 118:           # taking this from ~37 min to ~4. That matters because `strict`
+ 119:           # protection requires a PR to be up to date at merge time and main
+ 120:           # takes a commit every ~10 min: at 37 min only 5% of gaps are long
+ 121:           # enough to land anything, which would wedge every merge including
+ 122:           # the drain. At ~4 min, 79% are.
+ 123:           #
+ 124:           # Excluding them was VERIFIED safe, not assumed: every failure the
+ 125:           # exclusion run reported was also failing in the same-tree full run.
+ 126:           # The excluded files still run in `full-tests`, on a best-effort
+ 127:           # schedule of a few times a day â€” NOT "on every main push", which was
+ 128:           # the original claim here and was wrong: app-performed merges raise no
+ 129:           # push event. See the `schedule:` trigger comment.
+ 130:           python scripts/ci_required_tests.py --junit junit.xml \
+ 131:             --exclude-from .github/heavy-test-files.txt \
+ 132:             --min-ran 10700
+ 133: 
+ 134:       - name: Upload junit
+ 135:         if: always()
+ 136:         uses: actions/upload-artifact@v4
+ 137:         with:
+ 138:           name: junit-required-tests
+ 139:           path: junit.xml
+ 140:           if-no-files-found: warn
+ 141: 
+ 142:   # The other half of the split: the COMPLETE surface, on a best-effort
+ 143:   # schedule (a few times a day â€” see the `schedule:` trigger comment).
+ 144:   # NOT required â€” this is the post-merge tripwire, not the merge gate. It
+ 145:   # exists because `required-tests` deliberately trades coverage for a wall
+ 146:   # clock that fits main's commit cadence; without this the excluded files
+ 147:   # would have no CI at all. Same quarantine ledger, so a failure here is a
+ 148:   # real regression rather than baseline noise.
+ 149:   #
+ 150:   # `github.event_name != 'pull_request'` therefore admits schedule, push and
+ 151:   # workflow_dispatch â€” schedule is what actually carries it (see above).
+ 152:   full-tests:
+ 153:     name: full-tests
+ 154:     if: github.event_name != 'pull_request'
+ 155:     runs-on: ubuntu-latest
+ 156:     timeout-minutes: 60
+ 157:     steps:
+ 158:       - uses: actions/checkout@v4
+ 159:       - uses: actions/setup-python@v5
+ 160:         with:
+ 161:           python-version: '3.11'
+ 162:           cache: pip
+ 163:           cache-dependency-path: pyproject.toml
+ 164:       - name: Install
+ 165:         run: |
+ 166:           python -m pip install --upgrade pip
+ 167:           pip install -e '.[dev]'
+ 168:       - name: Run the complete test surface
+ 169:         env:
+ 170:           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-full
+ 171:         run: |
+ 172:           mkdir -p "$TINYASSETS_DATA_DIR"
+ 173:           # No --exclude-from: this is everything.
+ 174:           python scripts/ci_required_tests.py --junit junit-full.xml --min-ran 12800
+ 175:       - name: Upload junit
+ 176:         if: always()
+ 177:         uses: actions/upload-artifact@v4
+ 178:         with:
+ 179:           name: junit-full-tests
+ 180:           path: junit-full.xml
+ 181:           if-no-files-found: warn
+ 182: 
+ 183:   # NOT a required check (yet). The repo's `slow` marker guards stress/race
+ 184:   # tests, and `required-tests` deselects them to stay fast â€” which left the 9
+ 185:   # concurrency tests in test_activity_log_parity.py and test_node_bid_claim_stress.py
+ 186:   # with NO CI runner at all, against an AGENTS.md rule that uptime work ships
+ 187:   # with a concurrency/load proof. This job gives them one. It is reported but
+ 188:   # not required until it has a clean track record, because stress tests are the
+ 189:   # likeliest source of flake and a flaky REQUIRED check trains people to
+ 190:   # re-run until green â€” which is how a gate stops meaning anything.
+ 191:   slow-tests:
+ 192:     name: slow-tests
+ 193:     runs-on: ubuntu-latest
+ 194:     timeout-minutes: 30
+ 195:     steps:
+ 196:       - uses: actions/checkout@v4
+ 197:       - uses: actions/setup-python@v5
+ 198:         with:
+ 199:           python-version: '3.11'
+ 200:           cache: pip
+ 201:           cache-dependency-path: pyproject.toml
+ 202:       - name: Install
+ 203:         run: |
+ 204:           python -m pip install --upgrade pip
+ 205:           pip install -e '.[dev]'
+ 206:       - name: Run slow/stress/race tests
+ 207:         env:
+ 208:           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-slow
+ 209:         run: |
+ 210:           mkdir -p "$TINYASSETS_DATA_DIR"
+ 211:           # Serial on purpose: these assert cross-process/locking behaviour and
+ 212:           # sharing a worker pool with them would test the pool, not the code.
+ 213:           # Both ignores are tray imports that die at COLLECTION on a headless
+ 214:           # runner (Xlib "Bad display name") and take the whole job down with
+ 215:           # an Interrupted â€” required-tests survives the same files only via
+ 216:           # --continue-on-collection-errors.
+ 217:           pytest -m slow -q --no-header -rfE --durations=10 \
+ 218:             --ignore=tests/test_tinyassets_tray.py \
+ 219:             --ignore=tests/desktop_install/test_packaged_runtime.py
+### tests/test_tests_workflow.py
+   1: """Trigger-shape invariants for the Tests workflow.
+   2: 
+   3: These exist because a trigger that never fires is indistinguishable from
+   4: coverage until you go looking. Two such bugs were found in this workflow on
+   5: 2026-08-03, both of which read as "the full suite guards main" while guarding
+   6: nothing:
+   7: 
+   8:   1. `concurrency` grouped main runs by ref, so each push killed the previous
+   9:      main run and the post-merge job almost never finished.
+  10:   2. `push: branches: [main]` does not fire at all on the normal merge path.
+  11:      auto-enroll-merge.yml enrols PRs with the repo's GITHUB_TOKEN, so GitHub
+  12:      performs the merge as `app/github-actions`, and events raised by
+  13:      GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14). Of the
+  14:      last 6 merges, the 5 app-performed ones produced ZERO push runs; only the
+  15:      one merged by a human PAT produced a run.
+  16: 
+  17: So the assertions below are not style checks. Each one pins a property whose
+  18: absence silently converts a gate into decoration.
+  19: """
+  20: 
+  21: from __future__ import annotations
+  22: 
+  23: from pathlib import Path
+  24: 
+  25: import pytest
+  26: 
+  27: try:
+  28:     import yaml
+  29: 
+  30:     _YAML_AVAILABLE = True
+  31: except ImportError:
+  32:     _YAML_AVAILABLE = False
+  33: 
+  34: _REPO = Path(__file__).resolve().parent.parent
+  35: _WORKFLOW = _REPO / ".github" / "workflows" / "tests.yml"
+  36: 
+  37: pytestmark = pytest.mark.skipif(
+  38:     not _YAML_AVAILABLE, reason="pyyaml not installed"
+  39: )
+  40: 
+  41: 
+  42: def _load() -> dict:
+  43:     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+  44: 
+  45: 
+  46: def _triggers(wf: dict) -> dict:
+  47:     # PyYAML parses a bare `on:` key as the boolean True.
+  48:     return wf[True] if True in wf else wf["on"]
+  49: 
+  50: 
+  51: def test_full_suite_has_a_trigger_that_fires_on_app_merges() -> None:
+  52:     """The post-merge tripwire needs a trigger `push:` cannot provide.
+  53: 
+  54:     Regression guard for bug (2) above. `push: branches: [main]` is allowed to
+  55:     stay â€” it still catches the rare human-PAT merge â€” but it must never be the
+  56:     ONLY non-PR trigger, or the full suite reverts to never running.
+  57:     """
+  58:     triggers = _triggers(_load())
+  59:     non_pr = set(triggers) - {"pull_request", "pull_request_target", "push"}
+  60:     assert non_pr, (
+  61:         "tests.yml has no trigger that fires on an app-performed merge. "
+  62:         "`push: branches: [main]` does NOT fire when auto-merge lands a PR "
+  63:         "via GITHUB_TOKEN, so the full-tests tripwire would never run. "
+  64:         "Add `schedule:` (or another non-push trigger) back."
+  65:     )
+  66:     assert "schedule" in triggers, (
+  67:         "expected `schedule:` specifically â€” it is the trigger empirically "
+  68:         "proven to fire on this repo"
+  69:     )
+  70: 
+  71: 
+  72: def test_full_tests_job_runs_on_the_scheduled_trigger() -> None:
+  73:     """A schedule trigger is useless if the job's `if:` excludes it."""
+  74:     job = _load()["jobs"]["full-tests"]
+  75:     condition = str(job.get("if", ""))
+  76:     assert "pull_request" in condition, (
+  77:         "full-tests should be gated on event name, not run everywhere"
+  78:     )
+  79:     # The guard must EXCLUDE pull_request, not require it â€” `== 'pull_request'`
+  80:     # would flip the meaning and strand the tripwire again.
+  81:     assert "!=" in condition, (
+  82:         f"full-tests `if:` must exclude pull_request, got: {condition!r}"
+  83:     )
+  84: 
+  85: 
+  86: def test_main_runs_are_not_cancelled_by_later_pushes() -> None:
+  87:     """Regression guard for bug (1): per-SHA grouping, no cancel off PRs."""
+  88:     concurrency = _load()["concurrency"]
+  89:     assert "github.sha" in concurrency["group"], (
+  90:         "main runs must be keyed per-SHA; grouping by ref lets each push "
+  91:         "cancel the previous main run"
+  92:     )
+  93:     assert "pull_request" in str(concurrency["cancel-in-progress"]), (
+  94:         "cancel-in-progress must be conditional on the event being a "
+  95:         "pull_request; `true` would cancel main runs too"
+  96:     )
+  97: 
+  98: 
+  99: def test_required_tests_job_name_matches_the_protection_context() -> None:
+ 100:     """Renaming this job orphans the required context and blocks every PR.
+ 101: 
+ 102:     It does not fail open: the old context stays "Expected â€” waiting for
+ 103:     status" forever.
+ 104:     """
+ 105:     assert _load()["jobs"]["required-tests"]["name"] == "required-tests"
+ 106: 
+ 107: 
+ 108: def test_required_tests_is_not_path_filtered() -> None:
+ 109:     """A path-filtered REQUIRED check never reports on out-of-path PRs."""
+ 110:     triggers = _triggers(_load())
+ 111:     assert "paths" not in (triggers.get("pull_request") or {}), (
+ 112:         "a `paths:` filter on the required check's trigger hangs every PR "
+ 113:         "outside those paths on 'Expected â€” waiting for status'"
+ 114:     )
+ 115: 
+ 116: 
+ 117: def test_required_tests_enforces_a_vacuity_floor() -> None:
+ 118:     """The subset gate must assert a minimum test count.
+ 119: 
+ 120:     Without `--min-ran`, deselecting or erroring out of every test yields a
+ 121:     green gate.
+ 122:     """
+ 123:     steps = _load()["jobs"]["required-tests"]["steps"]
+ 124:     run_block = " ".join(str(s.get("run", "")) for s in steps)
+ 125:     assert "--min-ran" in run_block, (
+ 126:         "required-tests must pass --min-ran so a mass-deselect cannot pass"
+ 127:     )
+### .github/workflows/auto-enroll-merge.yml
+   1: name: Auto-enroll merge
+   2: 
+   3: # Why this exists
+   4: # ---------------
+   5: # Branch protection + repo auto-merge only get you so far: SOMEONE still has to
+   6: # enroll each PR with `gh pr merge --auto`. That left a human (or an agent that
+   7: # cannot merge) in the loop for every single PR, which defeats the point.
+   8: #
+   9: # This workflow does the enrolling. From here: open a PR, and when its required
+  10: # checks go green GitHub merges it. No human step, no agent step.
+  11: #
+  12: # Safety is delegated to branch protection, which is the right place for it:
+  13: #   - required checks `policy` and `Diff scope declared` must pass
+  14: #   - `strict` means the branch must be current with main
+  15: #   - a PR that fails ANY required check simply never merges; enrolment is not a
+  16: #     bypass, it is a standing instruction to merge WHEN allowed
+  17: #
+  18: # The scope guard is what makes this safe to automate. Without it, auto-enrolment
+  19: # would have merged PR #1491 â€” 386 files including deploy-prod.yml and Dockerfile,
+  20: # presented as a two-file auth fix, with CI green on everything it looked at.
+  21: 
+  22: on:
+  23:   # pull_request_target so this always runs the trusted copy from the default
+  24:   # branch and has a token that can enrol. We never check out or execute PR code.
+  25:   pull_request_target:
+  26:     types: [opened, reopened, ready_for_review, synchronize, edited, labeled, unlabeled]
+  27: 
+  28: permissions:
+  29:   contents: write
+  30:   pull-requests: write
+  31: 
+  32: concurrency:
+  33:   group: auto-enroll-${{ github.event.pull_request.number }}
+  34:   cancel-in-progress: true
+  35: 
+  36: jobs:
+  37:   enroll:
+  38:     name: Enroll for auto-merge
+  39:     runs-on: ubuntu-latest
+  40:     timeout-minutes: 5
+  41:     # Forks are excluded deliberately: a fork PR is untrusted contribution and
+  42:     # should not carry a standing merge instruction. Drafts are excluded because
+  43:     # draft means "not finished" â€” marking ready fires `ready_for_review` and
+  44:     # enrols it then.
+  45:     if: >-
+  46:       github.event.pull_request.draft == false &&
+  47:       github.event.pull_request.head.repo.full_name == github.repository &&
+  48:       github.event.pull_request.base.ref == 'main'
+  49:     steps:
+  50:       - name: Check out trusted enrollment policy
+  51:         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+  52:         with:
+  53:           ref: ${{ github.event.pull_request.base.sha }}
+  54:           persist-credentials: false
+  55: 
+  56:       - name: Enable auto-merge
+  57:         env:
+  58:           GH_TOKEN: ${{ github.token }}
+  59:           PR: ${{ github.event.pull_request.number }}
+  60:           REPO: ${{ github.repository }}
+  61:         shell: bash
+  62:         run: |
+  63:           set -euo pipefail
+  64: 
+  65:           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
+  66:             --json autoMergeRequest,body,headRefName,headRefOid)"
+  67:           STATE="$(jq -r \
+  68:             'if .autoMergeRequest == null then "no" else "yes" end' \
+  69:             <<<"$PR_JSON")"
+  70:           HEAD_REF="$(jq -r '.headRefName' <<<"$PR_JSON")"
+  71:           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
+  72:           jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
+  73: 
+  74:           if python scripts/drain_review_gate.py \
+  75:               --branch "$HEAD_REF" \
+  76:               --head "$HEAD_OID" \
+  77:               --body-file "$RUNNER_TEMP/pr-body.md"; then
+  78:             REVIEW_GATE="allow"
+  79:           else
+  80:             REVIEW_GATE="deny"
+  81:           fi
+  82: 
+  83:           if [ "$REVIEW_GATE" = "deny" ]; then
+  84:             if [ "$STATE" = "yes" ]; then
+  85:               gh pr merge "$PR" --repo "$REPO" --disable-auto
+  86:               echo "Disabled stale or unreviewed drain auto-merge."
+  87:             else
+  88:               echo "Drain PR remains unenrolled pending exact-head review."
+  89:             fi
+  90:             {
+  91:               echo "### Auto-merge"
+  92:               echo ""
+  93:               echo "Not enrolled: drain PR needs exactly one current review receipt:"
+  94:               echo "\`Drain-Review-Verdict: APPROVE\`"
+  95:               echo "\`Drain-Review-Head: <40-character lowercase head SHA>\`"
+  96:               echo "\`Drain-Review-Artifact: <docs path or GitHub URL>\`"
+  97:             } >> "$GITHUB_STEP_SUMMARY"
+  98:             exit 0
+  99:           fi
+ 100: 
+ 101:           # Idempotent: re-running on a later event is a no-op if already enrolled.
+ 102:           if [ "$STATE" = "yes" ]; then
+ 103:             echo "PR #${PR} is already enrolled for auto-merge."
+ 104:             echo "already enrolled" >> "$GITHUB_STEP_SUMMARY"
+ 105:             exit 0
+ 106:           fi
+ 107: 
+ 108:           # `|| true`: enrolment can legitimately fail â€” e.g. the PR is already
+ 109:           # mergeable and protection is satisfied, or the branch is behind. Those
+ 110:           # are not this workflow's problem and must not fail the PR's checks.
+ 111:           if gh pr merge "$PR" --repo "$REPO" --auto --squash \
+ 112:               --match-head-commit "$HEAD_OID" 2>err.txt; then
+ 113:             echo "PR #${PR} enrolled for auto-merge (squash)."
+ 114:             {
+ 115:               echo "### Auto-merge"
+ 116:               echo ""
+ 117:               echo "Enrolled. This PR will merge itself once required checks pass:"
+ 118:               echo "\`policy\` and \`Diff scope declared\`."
+ 119:             } >> "$GITHUB_STEP_SUMMARY"
+ 120:           else
+ 121:             echo "Could not enrol PR #${PR} â€” not fatal, leaving it to the humans:"
+ 122:             sed 's/^/    /' err.txt || true
+ 123:             {
+ 124:               echo "### Auto-merge"
+ 125:               echo ""
+ 126:               echo "Could not enrol automatically. This does not block the PR."
+ 127:               echo ""
+ 128:               echo '```'
+ 129:               cat err.txt || true
+ 130:               echo '```'
+ 131:             } >> "$GITHUB_STEP_SUMMARY"
+ 132:           fi
+ 133: 
+ 134: # Note on blast radius
+ 135: # --------------------
+ 136: # This makes merging the DEFAULT for any non-draft, same-repo PR targeting main.
+ 137: # The protection against a bad merge is entirely the required-check set, so those
+ 138: # checks are now load-bearing in a way they were not before. Weakening or removing
+ 139: # a required check silently widens what merges itself â€” treat changes to
+ 140: # `policy` or `Diff scope declared` as changes to the merge policy itself.
+### .github/heavy-test-files.txt
+   1: # Excluded from the REQUIRED `required-tests` gate: these files hold ~90%
+   2: # of its wall clock. They still run in `full-tests` on every main push,
+   3: # against the same quarantine ledger.
+   4: #
+   5: # WHY a subset gates merges: `strict` branch protection requires a PR to be
+   6: # up to date at merge time. main takes a commit every ~10 min (median, 39
+   7: # gaps measured 2026-08-03), so a required check must finish inside that
+   8: # window. At the full suite's ~37 min only 5% of gaps are long enough to
+   9: # land anything; at ~4 min, 79% are.
+  10: #
+  11: # Excluding these is SAFE, and that was verified rather than assumed: every
+  12: # failure the exclusion run reported was also failing in the same-tree full
+  13: # run, so the exclusion introduced none. Do not re-derive that claim from a
+  14: # run on a different tree â€” that mistake nearly quarantined 144 real
+  15: # regressions as flaky.
+  16: #
+  17: # Measured: every file whose tests totalled >3.0s in CI run 30780762657
+  18: # (12991 tests / 34.0 min). Regenerate after a big suite change.
+  19: tests/command_center/test_server.py
+  20: tests/load/test_agent_runtime_cloud_load.py
+  21: tests/test_api.py
+  22: tests/test_api_edge_cases.py
+  23: tests/test_background_authority_inventory.py
+  24: tests/test_branch_authoring_actions.py
+  25: tests/test_branch_evaluation_iteration.py
+  26: tests/test_branch_runner.py
+  27: tests/test_branch_tasks_v2.py
+  28: tests/test_canonical_dispatch.py
+  29: tests/test_claude_chat_recovery.py
+  30: tests/test_cloud_automation_continuation.py
+  31: tests/test_composite_branch_actions.py
+  32: tests/test_cross_run_state_query.py
+  33: tests/test_daemon_dashboard.py
+  34: tests/test_deploy_prod_workflow.py
+  35: tests/test_first_contact.py
+  36: tests/test_gates_claim_from_branch_run.py
+  37: tests/test_goals_surface.py
+  38: tests/test_handoff_concurrency.py
+  39: tests/test_host_uptime_installers.py
+  40: tests/test_integration.py
+  41: tests/test_interlocutor_tier.py
+  42: tests/test_llm_policy_override.py
+  43: tests/test_mcp_instruction_surfaces.py
+  44: tests/test_node_enqueue_concurrency.py
+  45: tests/test_node_ref_reuse.py
+  46: tests/test_node_reuse_discovery.py
+  47: tests/test_nodes_real.py
+  48: tests/test_outcome_gate_claims.py
+  49: tests/test_outcome_gates.py
+  50: tests/test_outcome_mcp.py
+  51: tests/test_patch_branch_metadata.py
+  52: tests/test_patch_branch_node_keys.py
+  53: tests/test_patch_nodes.py
+  54: tests/test_payments_escrow_mcp.py
+  55: tests/test_provider_retry.py
+  56: tests/test_provider_work_authority.py
+  57: tests/test_public_goal_visibility.py
+  58: tests/test_retire_cheat_loop_deploy_fence.py
+  59: tests/test_routing_evidence.py
+  60: tests/test_scoped_identity_reset.py
+  61: tests/test_stability.py
+  62: tests/test_universe_cycle_noop_guardrail.py
+  63: tests/test_universe_server_isolation.py
+  64: tests/test_universe_visibility.py
+  65: tests/test_writer_tools.py
+  66: # --- excluded for ORDER-COUPLING, not for speed ---------------------
+  67: # These two assert that EPOCH2_QUEUE_CONSUMER_READY is False. Under the
+  68: # subset they see it True and fail; in the full run they pass. Every
+  69: # writer of that global uses monkeypatch (which restores), so the leak is
+  70: # not yet located -- tracked as its own STATUS row.
+  71: #
+  72: # This is NOT quarantining: their assertions are untouched and they still
+  73: # run, and gate, in `full-tests` on every main push. Excluding a test that
+  74: # only misbehaves in the artificial subset context is honest; adding it to
+  75: # known-failing-tests.txt would NOT be, because it would also mask the
+  76: # test failing for real reasons.
+  77: tests/test_dispatcher_queue.py
+  78: tests/test_distributed_execution_authority.py
+
+ succeeded in 410ms:
+cb73b4eb (HEAD -> ci/full-tests-schedule, origin/ci/full-tests-schedule) ci: give full-tests a trigger that actually fires (push never does)
+ .github/workflows/tests.yml  |  37 ++++++++++++-
+ tests/test_tests_workflow.py | 127 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 162 insertions(+), 2 deletions(-)
+commit cb73b4eb412fedc8ee25deb5e784bc91e95a4122
+Author:     cowork-agent <jonathan.m.farnsworth@gmail.com>
+AuthorDate: Mon Aug 3 10:56:42 2026 -0700
+Commit:     cowork-agent <jonathan.m.farnsworth@gmail.com>
+CommitDate: Mon Aug 3 10:56:42 2026 -0700
+
+    ci: give full-tests a trigger that actually fires (push never does)
+    
+    The post-merge tripwire added in #2188 has never run and never would have.
+    `push: branches: [main]` does not fire on this repo's normal merge path:
+    auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so GitHub
+    performs the merge as `app/github-actions`, and events raised by GITHUB_TOKEN
+    do not start workflow runs (AGENTS.md hard rule 14).
+    
+    Measured: of the last 6 merges, the 5 performed by the app produced ZERO push
+    runs; only #2191, merged by a human PAT, produced one. Every run on main in the
+    last 24h was `schedule` or `workflow_run`.
+    
+    That made the 47 files excluded from the required subset uncovered rather than
+    deferred, and made the previous commit's "still gated by full-tests" false.
+    
+    Adds `schedule:` — the trigger empirically proven to fire here — and documents
+    it honestly as best-effort: release-reconcile declares every-15-min and actually
+    fired 16 times in 24h, a 6x shortfall with a 3h47m gap. Good enough for a
+    tripwire, explicitly not good enough for a gate, which is why required-tests
+    stays on `pull_request`.
+    
+    tests/test_tests_workflow.py pins this and the earlier concurrency fix as
+    invariants, so a regression fails a test instead of silently going quiet.
+    Mutation-probed: removing the schedule trigger turns it red.
+    
+    Not fixed here, and deliberately: build-image.yml has the same dead push:main
+    trigger, but release-reconcile.yml's path-aware drift check already covers it
+    (last decision: "in sync — deploy 64f27fe7 contains 64f27fe7").
+
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index eb5896d7..8c4df415 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -27,6 +27,32 @@ on:
+     types: [opened, reopened, synchronize, ready_for_review]
+   push:
+     branches: [main]
++  # The post-merge tripwire's ONLY reliable trigger on this repo.
++  #
++  # `push: branches: [main]` looks like it covers every merge. It does not:
++  # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
++  # GitHub performs the merge as `app/github-actions`, and events raised by
++  # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
++  # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
++  # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
++  # So `push` fires on the rare human merge and never on the normal path — the
++  # tripwire read as coverage while providing none, the same failure shape as the
++  # concurrency bug fixed above.
++  #
++  # `schedule` is used because it is the one trigger empirically proven to fire
++  # here (26 of the last 200 runs). Runners are free on a public repo, so the
++  # cadence is chosen for detection latency, not cost.
++  #
++  # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
++  # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
++  # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
++  # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read this as "a few times
++  # a day, unpredictably", not "every 3 hours". That is acceptable for a
++  # tripwire whose alternative is never running at all; it would NOT be
++  # acceptable for a merge gate, which is why `required-tests` stays on
++  # `pull_request` where the trigger is deterministic.
++  schedule:
++    - cron: '17 */3 * * *'
+   workflow_dispatch:
+ 
+ # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
+@@ -97,7 +123,10 @@ jobs:
+           #
+           # Excluding them was VERIFIED safe, not assumed: every failure the
+           # exclusion run reported was also failing in the same-tree full run.
+-          # The excluded files still run in `full-tests` on every main push.
++          # The excluded files still run in `full-tests`, on a best-effort
++          # schedule of a few times a day — NOT "on every main push", which was
++          # the original claim here and was wrong: app-performed merges raise no
++          # push event. See the `schedule:` trigger comment.
+           python scripts/ci_required_tests.py --junit junit.xml \
+             --exclude-from .github/heavy-test-files.txt \
+             --min-ran 10700
+@@ -110,12 +139,16 @@ jobs:
+           path: junit.xml
+           if-no-files-found: warn
+ 
+-  # The other half of the split: the COMPLETE surface, on every main push.
++  # The other half of the split: the COMPLETE surface, on a best-effort
++  # schedule (a few times a day — see the `schedule:` trigger comment).
+   # NOT required — this is the post-merge tripwire, not the merge gate. It
+   # exists because `required-tests` deliberately trades coverage for a wall
+   # clock that fits main's commit cadence; without this the excluded files
+   # would have no CI at all. Same quarantine ledger, so a failure here is a
+   # real regression rather than baseline noise.
++  #
++  # `github.event_name != 'pull_request'` therefore admits schedule, push and
++  # workflow_dispatch — schedule is what actually carries it (see above).
+   full-tests:
+     name: full-tests
+     if: github.event_name != 'pull_request'
+diff --git a/tests/test_tests_workflow.py b/tests/test_tests_workflow.py
+new file mode 100644
+index 00000000..650fc2ae
+--- /dev/null
++++ b/tests/test_tests_workflow.py
+@@ -0,0 +1,127 @@
++"""Trigger-shape invariants for the Tests workflow.
++
++These exist because a trigger that never fires is indistinguishable from
++coverage until you go looking. Two such bugs were found in this workflow on
++2026-08-03, both of which read as "the full suite guards main" while guarding
++nothing:
++
++  1. `concurrency` grouped main runs by ref, so each push killed the previous
++     main run and the post-merge job almost never finished.
++  2. `push: branches: [main]` does not fire at all on the normal merge path.
++     auto-enroll-merge.yml enrols PRs with the repo's GITHUB_TOKEN, so GitHub
++     performs the merge as `app/github-actions`, and events raised by
++     GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14). Of the
++     last 6 merges, the 5 app-performed ones produced ZERO push runs; only the
++     one merged by a human PAT produced a run.
++
++So the assertions below are not style checks. Each one pins a property whose
++absence silently converts a gate into decoration.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++try:
++    import yaml
++
++    _YAML_AVAILABLE = True
++except ImportError:
++    _YAML_AVAILABLE = False
++
++_REPO = Path(__file__).resolve().parent.parent
++_WORKFLOW = _REPO / ".github" / "workflows" / "tests.yml"
++
++pytestmark = pytest.mark.skipif(
++    not _YAML_AVAILABLE, reason="pyyaml not installed"
++)
++
++
++def _load() -> dict:
++    return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
++
++
++def _triggers(wf: dict) -> dict:
++    # PyYAML parses a bare `on:` key as the boolean True.
++    return wf[True] if True in wf else wf["on"]
++
++
++def test_full_suite_has_a_trigger_that_fires_on_app_merges() -> None:
++    """The post-merge tripwire needs a trigger `push:` cannot provide.
++
++    Regression guard for bug (2) above. `push: branches: [main]` is allowed to
++    stay — it still catches the rare human-PAT merge — but it must never be the
++    ONLY non-PR trigger, or the full suite reverts to never running.
++    """
++    triggers = _triggers(_load())
++    non_pr = set(triggers) - {"pull_request", "pull_request_target", "push"}
++    assert non_pr, (
++        "tests.yml has no trigger that fires on an app-performed merge. "
++        "`push: branches: [main]` does NOT fire when auto-merge lands a PR "
++        "via GITHUB_TOKEN, so the full-tests tripwire would never run. "
++        "Add `schedule:` (or another non-push trigger) back."
++    )
++    assert "schedule" in triggers, (
++        "expected `schedule:` specifically — it is the trigger empirically "
++        "proven to fire on this repo"
++    )
++
++
++def test_full_tests_job_runs_on_the_scheduled_trigger() -> None:
++    """A schedule trigger is useless if the job's `if:` excludes it."""
++    job = _load()["jobs"]["full-tests"]
++    condition = str(job.get("if", ""))
++    assert "pull_request" in condition, (
++        "full-tests should be gated on event name, not run everywhere"
++    )
++    # The guard must EXCLUDE pull_request, not require it — `== 'pull_request'`
++    # would flip the meaning and strand the tripwire again.
++    assert "!=" in condition, (
++        f"full-tests `if:` must exclude pull_request, got: {condition!r}"
++    )
++
++
++def test_main_runs_are_not_cancelled_by_later_pushes() -> None:
++    """Regression guard for bug (1): per-SHA grouping, no cancel off PRs."""
++    concurrency = _load()["concurrency"]
++    assert "github.sha" in concurrency["group"], (
++        "main runs must be keyed per-SHA; grouping by ref lets each push "
++        "cancel the previous main run"
++    )
++    assert "pull_request" in str(concurrency["cancel-in-progress"]), (
++        "cancel-in-progress must be conditional on the event being a "
++        "pull_request; `true` would cancel main runs too"
++    )
++
++
++def test_required_tests_job_name_matches_the_protection_context() -> None:
++    """Renaming this job orphans the required context and blocks every PR.
++
++    It does not fail open: the old context stays "Expected — waiting for
++    status" forever.
++    """
++    assert _load()["jobs"]["required-tests"]["name"] == "required-tests"
++
++
++def test_required_tests_is_not_path_filtered() -> None:
++    """A path-filtered REQUIRED check never reports on out-of-path PRs."""
++    triggers = _triggers(_load())
++    assert "paths" not in (triggers.get("pull_request") or {}), (
++        "a `paths:` filter on the required check's trigger hangs every PR "
++        "outside those paths on 'Expected — waiting for status'"
++    )
++
++
++def test_required_tests_enforces_a_vacuity_floor() -> None:
++    """The subset gate must assert a minimum test count.
++
++    Without `--min-ran`, deselecting or erroring out of every test yields a
++    green gate.
++    """
++    steps = _load()["jobs"]["required-tests"]["steps"]
++    run_block = " ".join(str(s.get("run", "")) for s in steps)
++    assert "--min-ran" in run_block, (
++        "required-tests must pass --min-ran so a mass-deselect cannot pass"
++    )
+
+ succeeded in 618ms:
+.github/workflows\branch-janitor.yml:13:  schedule:
+.github/workflows\branch-janitor.yml:14:    - cron: '17 9 * * *'   # 09:17 UTC daily
+.github/workflows\claude-auth-keepalive.yml:7:  schedule:
+.github/workflows\claude-auth-keepalive.yml:8:    - cron: "30 9 * * 1"
+.github/workflows\codex-auth-keepalive.yml:8:  schedule:
+.github/workflows\codex-auth-keepalive.yml:9:    - cron: "0 9 * * 1"
+.github/workflows\community-loop-watch.yml:9:  schedule:
+.github/workflows\community-loop-watch.yml:10:    - cron: "*/15 * * * *"
+.github/workflows\dns-canary.yml:12:  schedule:
+.github/workflows\dns-canary.yml:13:    # Every 15 min. DNS failures are rare but consequential —
+.github/workflows\dns-canary.yml:14:    # 15 min is fine-grained enough to catch propagation issues quickly.
+.github/workflows\dns-canary.yml:15:    - cron: '*/15 * * * *'
+.github/workflows\llm-binding-canary.yml:17:  schedule:
+.github/workflows\llm-binding-canary.yml:18:    # Every 6 hours — binding changes are slow-drift, not transient blips.
+.github/workflows\llm-binding-canary.yml:19:    - cron: '0 */6 * * *'
+.github/workflows\release-reconcile.yml:41:  schedule:
+.github/workflows\release-reconcile.yml:42:    # Every 15 minutes. This best-effort check is lightweight; not checking cost
+.github/workflows\release-reconcile.yml:43:    # us a storage data-loss fix sitting unshipped on main.
+.github/workflows\release-reconcile.yml:44:    - cron: '*/15 * * * *'
+.github/workflows\secrets-expiry-check.yml:4:  schedule:
+.github/workflows\secrets-expiry-check.yml:5:    - cron: "23 10 1 * *"
+.github/workflows\tests.yml:54:  schedule:
+.github/workflows\tests.yml:55:    - cron: '17 */3 * * *'
+.github/workflows\tier3-oss-clone-nightly.yml:8:  schedule:
+.github/workflows\tier3-oss-clone-nightly.yml:9:    - cron: '17 7 * * *'  # 07:17 UTC daily — avoid top-of-hour contention
+.github/workflows\uptime-canary.yml:24:  schedule:
+.github/workflows\uptime-canary.yml:25:    # Every 5 min — GHA cron granularity. Drift tolerance: ±1 min per
+.github/workflows\uptime-canary.yml:26:    # GHA's best-effort schedule policy.
+.github/workflows\uptime-canary.yml:27:    - cron: '*/5 * * * *'
+.github/workflows\community-loop-watch.yml:10:    - cron: "*/15 * * * *"
+.github/workflows\codex-auth-keepalive.yml:9:    - cron: "0 9 * * 1"
+.github/workflows\claude-auth-keepalive.yml:8:    - cron: "30 9 * * 1"
+.github/workflows\branch-janitor.yml:14:    - cron: '17 9 * * *'   # 09:17 UTC daily
+.github/workflows\dns-canary.yml:15:    - cron: '*/15 * * * *'
+.github/workflows\llm-binding-canary.yml:19:    - cron: '0 */6 * * *'
+.github/workflows\secrets-expiry-check.yml:5:    - cron: "23 10 1 * *"
+.github/workflows\tests.yml:55:    - cron: '17 */3 * * *'
+.github/workflows\release-reconcile.yml:44:    - cron: '*/15 * * * *'
+.github/workflows\uptime-canary.yml:27:    - cron: '*/5 * * * *'
+.github/workflows\tier3-oss-clone-nightly.yml:9:    - cron: '17 7 * * *'  # 07:17 UTC daily — avoid top-of-hour contention
+
+codex
+The implementation does admit `schedule` into `full-tests`, but the regression tests already show a likely gap: several assert only substrings, so logically opposite conditions can pass. I’m now mutation-probing those tests and checking the repository’s actual run history, cron overlap, and trigger provenance.
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'python -m pytest tests/test_tests_workflow.py -q' in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "if (Get-Command actionlint -ErrorAction SilentlyContinue) { actionlint .github/workflows/tests.yml } else { 'actionlint unavailable' }" in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show cb73b4eb''^:.github/workflows/tests.yml | Select-Object -First 230' in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$entries = Get-Content .github/heavy-test-files.txt | Where-Object { $_ -match '"'"'^tests/'"' }; \"heavy_entries="'$($entries.Count)"; git diff --check cb73b4eb''^ cb73b4eb; git diff --unified=3 cb73b4eb''^ cb73b4eb -- .github/workflows/tests.yml tests/test_tests_workflow.py' in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "@'
+import copy
+import tests.test_tests_workflow as m
+
+wf=m._load()
+probes=[]
+
+def probe(name, func, mutant):
+    old=m._load
+    m._load=lambda: mutant
+    try:
+        func()
+    except AssertionError as e:
+        probes.append((name,'FAILS (good)',str(e)))
+    else:
+        probes.append((name,'PASSES (false positive)',''))
+    finally:
+        m._load=old
+
+bad=copy.deepcopy(wf)
+bad['jobs']['full-tests']['if']=\"github.event_name "'!= '"'pull_request' && github.event_name "'!= '"'schedule'\"
+probe('schedule explicitly excluded',m.test_full_tests_job_runs_on_the_scheduled_trigger,bad)
+
+bad=copy.deepcopy(wf)
+tr=m._triggers(bad)
+tr['schedule']=None
+probe('schedule null/no cron',m.test_full_suite_has_a_trigger_that_fires_on_app_merges,bad)
+
+bad=copy.deepcopy(wf)
+bad['concurrency']['group']=\"tests-"'${{ github.ref }} # github.sha"
+bad['"'concurrency']['cancel-in-progress']=\""'${{ github.event_name != '"'pull_request' }}\"
+probe('wrong concurrency semantics with magic substrings',m.test_main_runs_are_not_cancelled_by_later_pushes,bad)
+
+for row in probes:
+    print(': '.join(row))
+'@ | python -" in C:\Users\Jonathan\Projects\wf-required-test-gate
+ succeeded in 225ms:
+actionlint unavailable
+
+ succeeded in 281ms:
+name: Tests
+
+# Why this exists
+# ---------------
+# Until this workflow landed, NEITHER required status check on `main` tested code
+# behaviour:
+#
+#   * `policy` (daemon-request-policy.yml) only reads writer:/checker: labels. A
+#     PR carrying none of them passes it trivially.
+#   * `Diff scope declared` (pr-scope-guard.yml) is a scope-DECLARATION gate and
+#     says so in its own honesty note.
+#
+# Since the repo auto-merges any non-draft PR once required checks pass, and
+# merges flow on to production, code could reach live users without a single
+# behavioural gate. This workflow is that gate.
+#
+# MUST run unconditionally — no `paths:` filter, no job-level `if:`.
+# A REQUIRED status check that is path-filtered never reports at all on PRs
+# outside those paths, and the PR then hangs forever on "Expected — waiting for
+# status". That is why `lint`/actionlint is path-filtered and must NEVER be made
+# required. Every `exit` path below produces a conclusion for the same check name.
+
+on:
+  pull_request:
+    # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
+    # gives signal before a PR is marked ready and becomes auto-merge eligible.
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
+# EXECUTING the PR's code, so it must run in the untrusted-by-default context
+# where the token is read-only and secrets are withheld. The scope guard uses
+# _target for the opposite reason — it only reads metadata and must not be
+# editable by the PR it judges.
+permissions:
+  contents: read
+
+concurrency:
+  # PRs cancel superseded runs (only the latest head matters). Main pushes are
+  # keyed per-SHA and NEVER cancel: grouping them by ref meant each push killed
+  # the previous main run, so with a commit every ~10 min the post-merge
+  # tripwire almost never finished — it looked like coverage while providing
+  # none (found in cross-family review 2026-08-03).
+  group: tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  required-tests:
+    # This exact string is the branch-protection context. Renaming the job
+    # ORPHANS the old required context: it stays "Expected — waiting for
+    # status" forever and every PR blocks indefinitely (it does NOT fail open;
+    # corrected 2026-08-02 per Codex review). Change the name only together
+    # with the `gh api` protection update in
+    # docs/decisions/ADR-003-required-test-aggregator.md.
+    name: required-tests
+    runs-on: ubuntu-latest
+    # 30 was measured against the 2026-07-22 suite (25:48) and the suite has
+    # since outgrown it — run 30766011005 was killed at exactly 30:15 with the
+    # tests still going. 50 buys headroom for one honest full measurement; the
+    # ADR documents the fast-subset escape hatch if the latency bites.
+    timeout-minutes: 50
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Run the required test surface
+        env:
+          # Keep the suite off the real repo tree and off any host state. The
+          # conftest already forces mock providers and sqlite_only storage; this
+          # is belt-and-braces for anything that reads the env directly.
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          # The script owns the pytest invocation AND the pass/fail decision:
+          # it fails on any failure not listed in .github/known-failing-tests.txt.
+          # No `|| true`, no `continue-on-error` — its exit code IS the gate.
+          #
+          # --exclude-from drops the 47 files holding ~90% of the wall clock,
+          # taking this from ~37 min to ~4. That matters because `strict`
+          # protection requires a PR to be up to date at merge time and main
+          # takes a commit every ~10 min: at 37 min only 5% of gaps are long
+          # enough to land anything, which would wedge every merge including
+          # the drain. At ~4 min, 79% are.
+          #
+          # Excluding them was VERIFIED safe, not assumed: every failure the
+          # exclusion run reported was also failing in the same-tree full run.
+          # The excluded files still run in `full-tests` on every main push.
+          python scripts/ci_required_tests.py --junit junit.xml \
+            --exclude-from .github/heavy-test-files.txt \
+            --min-ran 10700
+
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-required-tests
+          path: junit.xml
+          if-no-files-found: warn
+
+  # The other half of the split: the COMPLETE surface, on every main push.
+  # NOT required — this is the post-merge tripwire, not the merge gate. It
+  # exists because `required-tests` deliberately trades coverage for a wall
+  # clock that fits main's commit cadence; without this the excluded files
+  # would have no CI at all. Same quarantine ledger, so a failure here is a
+  # real regression rather than baseline noise.
+  full-tests:
+    name: full-tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Run the complete test surface
+        env:
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-full
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          # No --exclude-from: this is everything.
+          python scripts/ci_required_tests.py --junit junit-full.xml --min-ran 12800
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-full-tests
+          path: junit-full.xml
+          if-no-files-found: warn
+
+  # NOT a required check (yet). The repo's `slow` marker guards stress/race
+  # tests, and `required-tests` deselects them to stay fast — which left the 9
+  # concurrency tests in test_activity_log_parity.py and test_node_bid_claim_stress.py
+  # with NO CI runner at all, against an AGENTS.md rule that uptime work ships
+  # with a concurrency/load proof. This job gives them one. It is reported but
+  # not required until it has a clean track record, because stress tests are the
+  # likeliest source of flake and a flaky REQUIRED check trains people to
+  # re-run until green — which is how a gate stops meaning anything.
+  slow-tests:
+    name: slow-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Run slow/stress/race tests
+        env:
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-slow
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          # Serial on purpose: these assert cross-process/locking behaviour and
+          # sharing a worker pool with them would test the pool, not the code.
+          # Both ignores are tray imports that die at COLLECTION on a headless
+          # runner (Xlib "Bad display name") and take the whole job down with
+          # an Interrupted — required-tests survives the same files only via
+          # --continue-on-collection-errors.
+          pytest -m slow -q --no-header -rfE --durations=10 \
+            --ignore=tests/test_tinyassets_tray.py \
+            --ignore=tests/desktop_install/test_packaged_runtime.py
+
+ succeeded in 312ms:
+heavy_entries=49
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index eb5896d7..8c4df415 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -27,6 +27,32 @@ on:
+     types: [opened, reopened, synchronize, ready_for_review]
+   push:
+     branches: [main]
++  # The post-merge tripwire's ONLY reliable trigger on this repo.
++  #
++  # `push: branches: [main]` looks like it covers every merge. It does not:
++  # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
++  # GitHub performs the merge as `app/github-actions`, and events raised by
++  # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
++  # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
++  # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
++  # So `push` fires on the rare human merge and never on the normal path — the
++  # tripwire read as coverage while providing none, the same failure shape as the
++  # concurrency bug fixed above.
++  #
++  # `schedule` is used because it is the one trigger empirically proven to fire
++  # here (26 of the last 200 runs). Runners are free on a public repo, so the
++  # cadence is chosen for detection latency, not cost.
++  #
++  # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
++  # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
++  # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
++  # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read this as "a few times
++  # a day, unpredictably", not "every 3 hours". That is acceptable for a
++  # tripwire whose alternative is never running at all; it would NOT be
++  # acceptable for a merge gate, which is why `required-tests` stays on
++  # `pull_request` where the trigger is deterministic.
++  schedule:
++    - cron: '17 */3 * * *'
+   workflow_dispatch:
+ 
+ # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
+@@ -97,7 +123,10 @@ jobs:
+           #
+           # Excluding them was VERIFIED safe, not assumed: every failure the
+           # exclusion run reported was also failing in the same-tree full run.
+-          # The excluded files still run in `full-tests` on every main push.
++          # The excluded files still run in `full-tests`, on a best-effort
++          # schedule of a few times a day — NOT "on every main push", which was
++          # the original claim here and was wrong: app-performed merges raise no
++          # push event. See the `schedule:` trigger comment.
+           python scripts/ci_required_tests.py --junit junit.xml \
+             --exclude-from .github/heavy-test-files.txt \
+             --min-ran 10700
+@@ -110,12 +139,16 @@ jobs:
+           path: junit.xml
+           if-no-files-found: warn
+ 
+-  # The other half of the split: the COMPLETE surface, on every main push.
++  # The other half of the split: the COMPLETE surface, on a best-effort
++  # schedule (a few times a day — see the `schedule:` trigger comment).
+   # NOT required — this is the post-merge tripwire, not the merge gate. It
+   # exists because `required-tests` deliberately trades coverage for a wall
+   # clock that fits main's commit cadence; without this the excluded files
+   # would have no CI at all. Same quarantine ledger, so a failure here is a
+   # real regression rather than baseline noise.
++  #
++  # `github.event_name != 'pull_request'` therefore admits schedule, push and
++  # workflow_dispatch — schedule is what actually carries it (see above).
+   full-tests:
+     name: full-tests
+     if: github.event_name != 'pull_request'
+diff --git a/tests/test_tests_workflow.py b/tests/test_tests_workflow.py
+new file mode 100644
+index 00000000..650fc2ae
+--- /dev/null
++++ b/tests/test_tests_workflow.py
+@@ -0,0 +1,127 @@
++"""Trigger-shape invariants for the Tests workflow.
++
++These exist because a trigger that never fires is indistinguishable from
++coverage until you go looking. Two such bugs were found in this workflow on
++2026-08-03, both of which read as "the full suite guards main" while guarding
++nothing:
++
++  1. `concurrency` grouped main runs by ref, so each push killed the previous
++     main run and the post-merge job almost never finished.
++  2. `push: branches: [main]` does not fire at all on the normal merge path.
++     auto-enroll-merge.yml enrols PRs with the repo's GITHUB_TOKEN, so GitHub
++     performs the merge as `app/github-actions`, and events raised by
++     GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14). Of the
++     last 6 merges, the 5 app-performed ones produced ZERO push runs; only the
++     one merged by a human PAT produced a run.
++
++So the assertions below are not style checks. Each one pins a property whose
++absence silently converts a gate into decoration.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++try:
++    import yaml
++
++    _YAML_AVAILABLE = True
++except ImportError:
++    _YAML_AVAILABLE = False
++
++_REPO = Path(__file__).resolve().parent.parent
++_WORKFLOW = _REPO / ".github" / "workflows" / "tests.yml"
++
++pytestmark = pytest.mark.skipif(
++    not _YAML_AVAILABLE, reason="pyyaml not installed"
++)
++
++
++def _load() -> dict:
++    return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
++
++
++def _triggers(wf: dict) -> dict:
++    # PyYAML parses a bare `on:` key as the boolean True.
++    return wf[True] if True in wf else wf["on"]
++
++
++def test_full_suite_has_a_trigger_that_fires_on_app_merges() -> None:
++    """The post-merge tripwire needs a trigger `push:` cannot provide.
++
++    Regression guard for bug (2) above. `push: branches: [main]` is allowed to
++    stay — it still catches the rare human-PAT merge — but it must never be the
++    ONLY non-PR trigger, or the full suite reverts to never running.
++    """
++    triggers = _triggers(_load())
++    non_pr = set(triggers) - {"pull_request", "pull_request_target", "push"}
++    assert non_pr, (
++        "tests.yml has no trigger that fires on an app-performed merge. "
++        "`push: branches: [main]` does NOT fire when auto-merge lands a PR "
++        "via GITHUB_TOKEN, so the full-tests tripwire would never run. "
++        "Add `schedule:` (or another non-push trigger) back."
++    )
++    assert "schedule" in triggers, (
++        "expected `schedule:` specifically — it is the trigger empirically "
++        "proven to fire on this repo"
++    )
++
++
++def test_full_tests_job_runs_on_the_scheduled_trigger() -> None:
++    """A schedule trigger is useless if the job's `if:` excludes it."""
++    job = _load()["jobs"]["full-tests"]
++    condition = str(job.get("if", ""))
++    assert "pull_request" in condition, (
++        "full-tests should be gated on event name, not run everywhere"
++    )
++    # The guard must EXCLUDE pull_request, not require it — `== 'pull_request'`
++    # would flip the meaning and strand the tripwire again.
++    assert "!=" in condition, (
++        f"full-tests `if:` must exclude pull_request, got: {condition!r}"
++    )
++
++
++def test_main_runs_are_not_cancelled_by_later_pushes() -> None:
++    """Regression guard for bug (1): per-SHA grouping, no cancel off PRs."""
++    concurrency = _load()["concurrency"]
++    assert "github.sha" in concurrency["group"], (
++        "main runs must be keyed per-SHA; grouping by ref lets each push "
++        "cancel the previous main run"
++    )
++    assert "pull_request" in str(concurrency["cancel-in-progress"]), (
++        "cancel-in-progress must be conditional on the event being a "
++        "pull_request; `true` would cancel main runs too"
++    )
++
++
++def test_required_tests_job_name_matches_the_protection_context() -> None:
++    """Renaming this job orphans the required context and blocks every PR.
++
++    It does not fail open: the old context stays "Expected — waiting for
++    status" forever.
++    """
++    assert _load()["jobs"]["required-tests"]["name"] == "required-tests"
++
++
++def test_required_tests_is_not_path_filtered() -> None:
++    """A path-filtered REQUIRED check never reports on out-of-path PRs."""
++    triggers = _triggers(_load())
++    assert "paths" not in (triggers.get("pull_request") or {}), (
++        "a `paths:` filter on the required check's trigger hangs every PR "
++        "outside those paths on 'Expected — waiting for status'"
++    )
++
++
++def test_required_tests_enforces_a_vacuity_floor() -> None:
++    """The subset gate must assert a minimum test count.
++
++    Without `--min-ran`, deselecting or erroring out of every test yields a
++    green gate.
++    """
++    steps = _load()["jobs"]["required-tests"]["steps"]
++    run_block = " ".join(str(s.get("run", "")) for s in steps)
++    assert "--min-ran" in run_block, (
++        "required-tests must pass --min-ran so a mass-deselect cannot pass"
++    )
+
+ succeeded in 496ms:
+schedule explicitly excluded: PASSES (false positive): 
+schedule null/no cron: PASSES (false positive): 
+wrong concurrency semantics with magic substrings: PASSES (false positive): 
+
+ succeeded in 1823ms:
+......                                                                   [100%]
+6 passed in 0.21s
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'gh pr view 2197 --repo Jonnyton/TinyAssets --json number,state,isDraft,headRefName,headRefOid,baseRefName,url,author,commits,statusCheckRollup' in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "gh api --paginate 'repos/Jonnyton/TinyAssets/actions/workflows/tests.yml/runs?per_page=100' --jq '.workflow_runs[] | [.id,.event,.status,.conclusion,.head_branch,.head_sha,.created_at,.updated_at,.actor.login,.triggering_actor.login] | @tsv' | Select-Object -First 100" in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "gh api 'repos/Jonnyton/TinyAssets/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=20' --jq '.[] | select(.merged_at "'!= null) | [.number,.merged_at,.merged_by.login,.merge_commit_sha,.head.sha] | @tsv'"' | Select-Object -First 10" in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "gh api repos/Jonnyton/TinyAssets/actions/workflows/tests.yml --jq '{id,name,state,path,created_at,updated_at}'" in C:\Users\Jonathan\Projects\wf-required-test-gate
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "@'
+from pathlib import Path
+import re
+files=[Path(x.strip()) for x in Path('.github/heavy-test-files.txt').read_text().splitlines() if x.startswith('tests/')]
+for p in files:
+    text=p.read_text(encoding='utf-8', errors='ignore')
+    if re.search(r'pytest\\.mark\\.slow|@pytest\\.mark\\.slow|pytestmark\\s*=.*slow', text):
+        print(p)
+'@ | python -" in C:\Users\Jonathan\Projects\wf-required-test-gate
+ succeeded in 334ms:
+ succeeded in 659ms:
+{"created_at":"2026-07-21T18:25:36.000-07:00","id":317832377,"name":"Tests","path":".github/workflows/tests.yml","state":"active","updated_at":"2026-08-02T20:02:37.000-07:00"}
+
+ succeeded in 945ms:
+{"author":{"id":"MDQ6VXNlcjIzMDYwODgz","is_bot":false,"login":"Jonnyton","name":""},"baseRefName":"main","commits":[{"authoredDate":"2026-08-03T17:56:42Z","authors":[{"email":"jonathan.m.farnsworth@gmail.com","id":"MDQ6VXNlcjIzMDYwODgz","login":"Jonnyton","name":"cowork-agent"}],"committedDate":"2026-08-03T17:56:42Z","messageBody":"The post-merge tripwire added in #2188 has never run and never would have.\n`push: branches: [main]` does not fire on this repo's normal merge path:\nauto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so GitHub\nperforms the merge as `app/github-actions`, and events raised by GITHUB_TOKEN\ndo not start workflow runs (AGENTS.md hard rule 14).\n\nMeasured: of the last 6 merges, the 5 performed by the app produced ZERO push\nruns; only #2191, merged by a human PAT, produced one. Every run on main in the\nlast 24h was `schedule` or `workflow_run`.\n\nThat made the 47 files excluded from the required subset uncovered rather than\ndeferred, and made the previous commit's \"still gated by full-tests\" false.\n\nAdds `schedule:` — the trigger empirically proven to fire here — and documents\nit honestly as best-effort: release-reconcile declares every-15-min and actually\nfired 16 times in 24h, a 6x shortfall with a 3h47m gap. Good enough for a\ntripwire, explicitly not good enough for a gate, which is why required-tests\nstays on `pull_request`.\n\ntests/test_tests_workflow.py pins this and the earlier concurrency fix as\ninvariants, so a regression fails a test instead of silently going quiet.\nMutation-probed: removing the schedule trigger turns it red.\n\nNot fixed here, and deliberately: build-image.yml has the same dead push:main\ntrigger, but release-reconcile.yml's path-aware drift check already covers it\n(last decision: \"in sync — deploy 64f27fe7 contains 64f27fe7\").","messageHeadline":"ci: give full-tests a trigger that actually fires (push never does)","oid":"cb73b4eb412fedc8ee25deb5e784bc91e95a4122"}],"headRefName":"ci/full-tests-schedule","headRefOid":"cb73b4eb412fedc8ee25deb5e784bc91e95a4122","isDraft":false,"number":2197,"state":"OPEN","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-08-03T17:58:50Z","conclusion":"FAILURE","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839162404/job/91771697436","name":"Diff scope declared","startedAt":"2026-08-03T17:58:41Z","status":"COMPLETED","workflowName":"PR scope guard"},{"__typename":"CheckRun","completedAt":"0001-01-01T00:00:00Z","conclusion":"","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839164095/job/91771703458","name":"required-tests","startedAt":"2026-08-03T17:58:42Z","status":"IN_PROGRESS","workflowName":"Tests"},{"__typename":"CheckRun","completedAt":"2026-08-03T17:58:51Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839162809/job/91771698551","name":"Enroll for auto-merge","startedAt":"2026-08-03T17:58:41Z","status":"COMPLETED","workflowName":"Auto-enroll merge"},{"__typename":"CheckRun","completedAt":"2026-08-03T17:58:46Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839162555/job/91771697453","name":"policy","startedAt":"2026-08-03T17:58:41Z","status":"COMPLETED","workflowName":"Daemon request policy"},{"__typename":"CheckRun","completedAt":"2026-08-03T17:58:54Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839163470/job/91771699940","name":"lint","startedAt":"2026-08-03T17:58:41Z","status":"COMPLETED","workflowName":"actionlint"},{"__typename":"CheckRun","completedAt":"2026-08-03T17:59:00Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839160604/job/91771690956","name":"Preview trust-boundary contract","startedAt":"2026-08-03T17:58:45Z","status":"COMPLETED","workflowName":"preview-security"},{"__typename":"CheckRun","completedAt":"2026-08-03T17:58:40Z","conclusion":"SKIPPED","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839164095/job/91771704093","name":"full-tests","startedAt":"2026-08-03T17:58:40Z","status":"COMPLETED","workflowName":"Tests"},{"__typename":"CheckRun","completedAt":"2026-08-03T17:59:48Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/Jonnyton/TinyAssets/actions/runs/30839164095/job/91771703397","name":"slow-tests","startedAt":"2026-08-03T17:58:42Z","status":"COMPLETED","workflowName":"Tests"}],"url":"https://github.com/Jonnyton/TinyAssets/pull/2197"}
+
+ succeeded in 1246ms:
+2188	2026-08-03T17:41:59Z		6af2c859e1ae43d0dcb5b9fcace866fc09f1ed43	4e3af3d72f911801c53f7fe0b3195ab02e32f9ac
+2192	2026-08-03T04:55:51Z		a36ba8af0ac6bcbdb62ae90af1b0be15ec13a4ec	fcb64da16ec1fb6fd852539d37016c241cf95f6c
+2182	2026-08-03T04:24:54Z		64f27fe7dc2adc1f1e09f85399b0bc5eb45b0d8b	38c42933a721358c9f762e4ab9911e20411cd295
+2191	2026-08-03T03:44:11Z		773315ffb5cb87975e37be727ee8568a244e7b8c	571c4b3622ac285671730a25b265dfc517c89b29
+2190	2026-08-03T03:37:56Z		bd1e74292a0d7cd13ca52826fad6459164bb7ce3	915b9859a944affd98436e093c3474bb3a629758
+2189	2026-08-03T03:28:25Z		add74248ab9553eb2ff7dd2507eed209b927ded1	ef83d5b9342539b37f3309fc90274278c08538e1
+2186	2026-08-03T03:14:41Z		22ec647ecfb6f6890659ada13daaec78cc15a675	4b694118e668b4724fb01814a392aff974cc09ab
+1502	2026-08-03T03:02:36Z		8365cec39b398ffadc828d5698d12dcf48311c70	988bbc8a72c48faba90b540687067057a8a096d9
+
+ succeeded in 2705ms:
+30839357574	pull_request	in_progress		fix/cloud-admission-rotation-recovery	f5e27508703268564ac5454fa8ce68426234bd51	2026-08-03T18:01:09Z	2026-08-03T18:01:18Z	Jonnyton	Jonnyton
+30839170274	pull_request	in_progress		drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a023	b055786abf109cdf4ef687ebaa341a521ea4b654	2026-08-03T17:58:44Z	2026-08-03T17:58:54Z	Jonnyton	Jonnyton
+30839164095	pull_request	in_progress		ci/full-tests-schedule	cb73b4eb412fedc8ee25deb5e784bc91e95a4122	2026-08-03T17:58:39Z	2026-08-03T17:58:43Z	Jonnyton	Jonnyton
+30838598270	workflow_dispatch	in_progress		main	6af2c859e1ae43d0dcb5b9fcace866fc09f1ed43	2026-08-03T17:51:07Z	2026-08-03T17:51:18Z	Jonnyton	Jonnyton
+30788477817	pull_request	completed	success	ci/required-test-gate	4e3af3d72f911801c53f7fe0b3195ab02e32f9ac	2026-08-03T05:54:20Z	2026-08-03T05:59:00Z	Jonnyton	Jonnyton
+30787972658	pull_request	completed	success	ci/required-test-gate	6ff1615eaf5b80022ee612859cbd6336f77e7551	2026-08-03T05:43:37Z	2026-08-03T05:50:36Z	Jonnyton	Jonnyton
+30787606820	pull_request	completed	failure	ci/required-test-gate	dd09ec4ee3407136734d4b1c51670a304dd7ee32	2026-08-03T05:35:42Z	2026-08-03T05:41:05Z	Jonnyton	Jonnyton
+30787473796	pull_request	completed	failure	fix/cloud-admission-rotation-recovery	9e2c8d1ff8759ac93c85fcc50d3b45f9a3f20e30	2026-08-03T05:32:59Z	2026-08-03T06:09:14Z	Jonnyton	Jonnyton
+30787467590	pull_request	completed	cancelled	ci/required-test-gate	fb013feb9f03a91c1a9856b8cc9de560570202a2	2026-08-03T05:32:51Z	2026-08-03T05:35:59Z	Jonnyton	Jonnyton
+30787089320	pull_request	completed	failure	ci/required-test-gate	8714883f1d524f9fb775c7e680b054b1b84b10f9	2026-08-03T05:24:41Z	2026-08-03T05:29:38Z	Jonnyton	Jonnyton
+30786388204	pull_request	completed	failure	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a023	ca7b06bd57ac2291fc2c468f8af3257e20ac9ee7	2026-08-03T05:10:22Z	2026-08-03T06:29:04Z	Jonnyton	Jonnyton
+30786366067	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a023	ca7b06bd57ac2291fc2c468f8af3257e20ac9ee7	2026-08-03T05:09:59Z	2026-08-03T05:10:27Z	Jonnyton	Jonnyton
+30786224492	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a023	ca7b06bd57ac2291fc2c468f8af3257e20ac9ee7	2026-08-03T05:06:59Z	2026-08-03T05:10:15Z	Jonnyton	Jonnyton
+30785869542	pull_request	completed	cancelled	fix/cloud-admission-rotation-recovery	8cb00641083e75698b4a6949ef464dbda0673b50	2026-08-03T04:58:55Z	2026-08-03T05:33:15Z	Jonnyton	Jonnyton
+30785731073	pull_request	completed	failure	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a022	fcb64da16ec1fb6fd852539d37016c241cf95f6c	2026-08-03T04:55:34Z	2026-08-03T05:32:04Z	Jonnyton	Jonnyton
+30785719307	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a022	fcb64da16ec1fb6fd852539d37016c241cf95f6c	2026-08-03T04:55:19Z	2026-08-03T04:55:49Z	Jonnyton	Jonnyton
+30784782483	pull_request	completed	failure	ci/required-test-gate	db2bde0cbba860f666b4e96d908279482d27f098	2026-08-03T04:33:50Z	2026-08-03T05:11:26Z	Jonnyton	Jonnyton
+30784670574	pull_request	completed	cancelled	fix/cloud-admission-rotation-recovery	2429bfd9ab9b3b7138d338fa388865228800a873	2026-08-03T04:31:22Z	2026-08-03T04:59:11Z	Jonnyton	Jonnyton
+30784353363	pull_request	completed	failure	codex/cloud-drain-epoch2-consumer-20260802	38c42933a721358c9f762e4ab9911e20411cd295	2026-08-03T04:24:38Z	2026-08-03T04:59:20Z	Jonnyton	Jonnyton
+30784100104	pull_request	completed	cancelled	ci/required-test-gate	57d4cba7982fbe2614ec956db288ed10d72fbcb0	2026-08-03T04:19:30Z	2026-08-03T04:34:06Z	Jonnyton	Jonnyton
+30783776477	pull_request	completed	cancelled	codex/cloud-drain-epoch2-consumer-20260802	38c42933a721358c9f762e4ab9911e20411cd295	2026-08-03T04:13:00Z	2026-08-03T04:24:53Z	Jonnyton	Jonnyton
+30783431644	pull_request	completed	cancelled	fix/cloud-admission-rotation-recovery	d56b25945d001b118e47a6ebdc82ea8c707da73f	2026-08-03T04:05:14Z	2026-08-03T04:31:40Z	Jonnyton	Jonnyton
+30783387176	pull_request	completed	failure	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a022	5d1ca575e24e2d644ff55c169dc72926153668e2	2026-08-03T04:04:17Z	2026-08-03T04:40:25Z	Jonnyton	Jonnyton
+30783309579	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a022	5d1ca575e24e2d644ff55c169dc72926153668e2	2026-08-03T04:02:30Z	2026-08-03T04:04:32Z	Jonnyton	Jonnyton
+30783228511	pull_request	completed	cancelled	codex/cloud-drain-epoch2-consumer-20260802	9caa1449792feebe6c89d1e56a33fef0ff33360a	2026-08-03T04:00:39Z	2026-08-03T04:13:16Z	Jonnyton	Jonnyton
+30783073154	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-openspec-repair-chatgpt-connecto-afa767e5-a022	7a250bd0358f71325749eb2ac455b148db880854	2026-08-03T03:56:54Z	2026-08-03T04:02:46Z	Jonnyton	Jonnyton
+30782649360	pull_request	completed	cancelled	fix/cloud-admission-rotation-recovery	2559d7380a5f93c5dae1008100fe8b3948b79a33	2026-08-03T03:46:44Z	2026-08-03T04:05:30Z	Jonnyton	Jonnyton
+30782543381	push	completed	failure	main	773315ffb5cb87975e37be727ee8568a244e7b8c	2026-08-03T03:44:13Z	2026-08-03T04:19:43Z	Jonnyton	Jonnyton
+30782528773	pull_request	completed	failure	claude/status-gate-note	571c4b3622ac285671730a25b265dfc517c89b29	2026-08-03T03:43:54Z	2026-08-03T04:19:31Z	Jonnyton	Jonnyton
+30782452450	pull_request	completed	success	ci/required-test-gate	0f45d5c1fba362dfdfa3434d6d4f8e9f48bb98f0	2026-08-03T03:42:04Z	2026-08-03T04:18:49Z	Jonnyton	Jonnyton
+30782281988	pull_request	completed	failure	drain/20260802-132145-5c093f/refine-chatgpt-oauth-a017	915b9859a944affd98436e093c3474bb3a629758	2026-08-03T03:37:40Z	2026-08-03T04:12:31Z	Jonnyton	Jonnyton
+30782198830	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-chatgpt-oauth-a017	915b9859a944affd98436e093c3474bb3a629758	2026-08-03T03:35:39Z	2026-08-03T03:37:58Z	Jonnyton	Jonnyton
+30781884085	pull_request	completed	failure	drain/20260802-132145-5c093f/refine-cloud-secret-b90e3677	ef83d5b9342539b37f3309fc90274278c08538e1	2026-08-03T03:28:07Z	2026-08-03T04:05:46Z	Jonnyton	Jonnyton
+30781803703	pull_request	completed	cancelled	codex/cloud-drain-epoch2-consumer-20260802	bc58e72c7b1c459dc9d8648b3819a517eeeb8cf1	2026-08-03T03:26:04Z	2026-08-03T04:00:55Z	Jonnyton	Jonnyton
+30781741546	pull_request	completed	cancelled	fix/cloud-admission-rotation-recovery	2a831981a94f4faa5e07fb440220b9192e3c8818	2026-08-03T03:24:35Z	2026-08-03T03:47:02Z	Jonnyton	Jonnyton
+30781658220	pull_request	completed	cancelled	drain/20260802-132145-5c093f/refine-cloud-secret-b90e3677	ef83d5b9342539b37f3309fc90274278c08538e1	2026-08-03T03:22:39Z	2026-08-03T03:28:23Z	Jonnyton	Jonnyton
+30781605495	pull_request	completed	cancelled	ci/required-test-gate	06f5f5978692a560077be1c1510e836972a2a37b	2026-08-03T03:21:19Z	2026-08-03T03:42:20Z	Jonnyton	Jonnyton
+30781261125	pull_request	completed	failure	ci/required-test-gate	ffd3810af4f14b28e6325b2d76bb2912cf5c84a4	2026-08-03T03:13:05Z	2026-08-03T03:18:04Z	Jonnyton	Jonnyton
+30780844925	pull_request	completed	failure	drain/20260802-132145-5c093f/refine-openspec-per-user-goal-canonicals-a016	4b694118e668b4724fb01814a392aff974cc09ab	2026-08-03T03:04:30Z	2026-08-03T03:39:29Z	Jonnyton	Jonnyton
+30780762657	push	completed	failure	main	8365cec39b398ffadc828d5698d12dcf48311c70	2026-08-03T03:02:38Z	2026-08-03T03:38:16Z	Jonnyton	Jonnyton
+30780754645	pull_request	completed	failure	ci/required-test-gate	988bbc8a72c48faba90b540687067057a8a096d9	2026-08-03T03:02:26Z	2026-08-03T03:39:52Z	Jonnyton	Jonnyton
+30780707760	pull_request	completed	cancelled	ci/required-test-gate	1842aa3ec637483d02170eaf2e8aa6e058b5a191	2026-08-03T03:01:19Z	2026-08-03T03:02:43Z	Jonnyton	Jonnyton
+30779149822	pull_request	completed	success	ci/required-test-gate	1842aa3ec637483d02170eaf2e8aa6e058b5a191	2026-08-03T02:22:47Z	2026-08-03T03:00:08Z	Jonnyton	Jonnyton
+30777622526	pull_request	completed	failure	ci/required-test-gate	396e8f39360219d3f4dcdf79cf5597475d17e438	2026-08-03T01:45:08Z	2026-08-03T02:22:00Z	Jonnyton	Jonnyton
+30775942638	pull_request	completed	failure	ci/required-test-gate	ff23ba9ceb3514ebc724ca5f228c4e89cf3f0e96	2026-08-03T01:03:36Z	2026-08-03T01:41:32Z	Jonnyton	Jonnyton
+30775520979	pull_request	completed	cancelled	ci/required-test-gate	51ace6d4caa2518919f7b209a752a77f427da222	2026-08-03T00:53:19Z	2026-08-03T01:03:54Z	Jonnyton	Jonnyton
+30775051471	pull_request	completed	cancelled	ci/required-test-gate	a2f1eecb040d8ab48b90c136288b32ef6256f250	2026-08-03T00:41:03Z	2026-08-03T00:53:36Z	Jonnyton	Jonnyton
+30773503892	pull_request	completed	failure	ci/required-test-gate	6d87850a39aa7bb9a293532f340dddf4eab37ac0	2026-08-03T00:01:57Z	2026-08-03T00:39:20Z	Jonnyton	Jonnyton
+30768520337	pull_request	completed	failure	ci/required-test-gate	70576539641086afa693430d81a9b95bda14215f	2026-08-02T21:43:27Z	2026-08-02T22:14:37Z	Jonnyton	Jonnyton
+30767266528	pull_request	completed	failure	ci/required-test-gate	b50375555201e0e121ecb34c01291792130c827f	2026-08-02T21:09:57Z	2026-08-02T21:41:09Z	Jonnyton	Jonnyton
+30767257618	pull_request	completed	cancelled	ci/required-test-gate	d3e0ba34167a87cc2684619a23f6fd70d806d988	2026-08-02T21:09:43Z	2026-08-02T21:10:15Z	Jonnyton	Jonnyton
+30766011005	pull_request	completed	failure	ci/required-test-gate	c1e1a721ca8661b8767fd491e66704be595b72f5	2026-08-02T20:36:35Z	2026-08-02T21:07:13Z	Jonnyton	Jonnyton
+30765806757	pull_request	completed	cancelled	ci/required-test-gate	f0cb0572005e4622e98739b991dd0a6af1e86e0d	2026-08-02T20:31:09Z	2026-08-02T20:36:51Z	Jonnyton	Jonnyton
+29884182377	pull_request	completed	failure	ci/required-test-gate	7e1b668f859b352b93a4e765d64255118b4b1e63	2026-07-22T01:50:16Z	2026-07-22T02:16:45Z	Jonnyton	Jonnyton
+29884074723	pull_request	completed	failure	ci/required-test-gate	4194813bc0fee2f3af9ca661b278df14512f8794	2026-07-22T01:47:50Z	2026-07-22T01:49:11Z	Jonnyton	Jonnyton
+29883791545	pull_request	completed	failure	ci/required-test-gate	c7651f1ea46a1e84ea903d989e990bb93b007a88	2026-07-22T01:41:36Z	2026-07-22T01:44:55Z	Jonnyton	Jonnyton
+29883382108	pull_request	completed	failure	ci/required-test-gate-redproof	9f05c676c69001b7f4ca63ff3601eda5586573bd	2026-07-22T01:32:44Z	2026-07-22T01:36:18Z	Jonnyton	Jonnyton
+29883373691	pull_request	completed	failure	ci/required-test-gate	140a960c4b1b74824e2b2d46d0e39ab0070a3c58	2026-07-22T01:32:34Z	2026-07-22T01:36:17Z	Jonnyton	Jonnyton
+29883082407	pull_request	completed	failure	ci/required-test-gate-redproof	8718edd625a2139c1c05d9d73a6dc667b2961152	2026-07-22T01:26:05Z	2026-07-22T01:28:32Z	Jonnyton	Jonnyton
+29883061196	pull_request	completed	failure	ci/required-test-gate	4f8e5d34414b92454ea8585a72cb87f06016e267	2026-07-22T01:25:36Z	2026-07-22T01:28:02Z	Jonnyton	Jonnyton
+
