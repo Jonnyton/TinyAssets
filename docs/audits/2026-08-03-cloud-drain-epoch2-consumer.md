@@ -9,7 +9,8 @@ fleet and ordinary epoch-2 Branch tasks. It does not claim chatbot activation,
 useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
-Implementation commit after the final current-main rebase: pending. The
+Implementation commit before the final current-main reconciliation:
+`297398a1`. The
 immutable PR comment records the final exact PR head, including this evidence
 document.
 
@@ -124,8 +125,10 @@ lease, mutable Branch-head execution and dropped runtime identity, duplicate
 execution after an incomplete run, and activation head-of-line starvation.
 The restart activation and trusted runtime fields were already repaired; the
 remaining four are now covered by the implementation and focused tests above.
-A second fresh-context review of the final exact head is still required. The
-verdict and immutable PR comment must be added here before merge.
+A second fresh-context review of the final exact head is still required. Its
+immutable PR comment is the post-commit authority for the exact head and
+verdict, avoiding a documentation-only commit that would invalidate the head
+it reviewed.
 
 ## Deployment and acceptance state
 
