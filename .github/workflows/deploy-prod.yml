@@ -530,6 +530,8 @@ jobs:
       - name: Prove request HMAC rotation boundary before quiescence
         id: rotation-boundary
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac }}
+        env:
+          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
         run: |
           set -euo pipefail
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -554,8 +556,8 @@ jobs:
           fi
           fleet_ids="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture')" || {
-            echo "::error::rotation prerequisite failed: worker fleet is absent or exposes request admission authority"
+              "sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'")" || {
+            echo "::error::rotation prerequisite failed: runtime fleet is absent, uses another image, or exposes request admission authority"
             exit 1
           }
           mapfile -t expected_ids <<< "${fleet_ids}"
@@ -573,8 +575,9 @@ jobs:
             echo 'fleet_ids<<EOF'
             printf '%s\n' "${expected_ids[@]}"
             echo 'EOF'
+            echo "proved_image_ref=${TARGET_IMAGE}"
           } >> "${GITHUB_OUTPUT}"
-          echo "rotation running-fleet boundary proved before quiescence"
+          echo "rotation running-fleet boundary and exact correction image proved before quiescence"
 
       # TRANSITIONAL retire-cheat-loop task 2.1 fence. Remove the helper and
       # these orchestration steps after task 2.5's locked migration.
@@ -671,6 +674,8 @@ jobs:
           TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
           REQUEST_HMAC_INSTALL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac && 'set' || 'set-once' }}
           ROTATION_FLEET_IDS: ${{ steps.rotation-boundary.outputs.fleet_ids }}
+          ROTATION_PROVED_IMAGE_REF: ${{ steps.rotation-boundary.outputs.proved_image_ref }}
+          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
         run: |
           case "${REQUEST_HMAC_INSTALL_MODE}" in
             set-once|set) ;;
@@ -690,6 +695,11 @@ jobs:
               deploy/verify-request-hmac-rotation-fleet.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/verify-request-hmac-rotation-fleet.sh"
           if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ]; then
+            if [ -z "${ROTATION_PROVED_IMAGE_REF}" ] \
+                || [ "${ROTATION_PROVED_IMAGE_REF}" != "${TARGET_IMAGE}" ]; then
+              echo "::error::rotation target image differs from the pre-proved correction image"
+              exit 1
+            fi
             expected_compose_sha="$(sha256sum deploy/compose.yml | cut -d ' ' -f 1)"
             actual_compose_sha="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -1356,6 +1366,8 @@ jobs:
           exit 0
 
       - name: Verify cloud worker is running
+        env:
+          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
         run: |
           worker_containers="tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2"
           for container in ${worker_containers}; do
@@ -1389,7 +1401,7 @@ jobs:
           done
           if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture >/dev/null'; then
+              "sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}' >/dev/null"; then
             echo "::error::running workers expose request admission minting authority or could not be verified from host-controlled Docker metadata"
             exit 1
           fi

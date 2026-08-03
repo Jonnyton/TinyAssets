@@ -771,8 +771,10 @@ def test_deploy_proves_running_workers_lack_request_hmac():
     wf = _load()
     worker_step = _step_named(wf, "Verify cloud worker is running")
     run_script = worker_step.get("run", "") or ""
+    step_env = worker_step.get("env") or {}
 
-    assert "verify-request-hmac-rotation-fleet.sh capture" in run_script
+    assert "steps.tag.outputs.image_ref" in str(step_env.get("TARGET_IMAGE", ""))
+    assert "verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'" in run_script
     assert "docker exec ${container} python -c" not in run_script
     assert "in os.environ" not in run_script
 
@@ -1698,11 +1700,14 @@ def test_request_hmac_rotation_requires_deployed_corrected_boundary():
     proof = _step_named(wf, proof_name)
     proof_condition = str(proof.get("if", ""))
     proof_script = proof.get("run", "") or ""
+    proof_env = proof.get("env") or {}
     assert "github.event_name == 'workflow_dispatch'" in proof_condition
     assert "inputs.rotate_request_idempotency_hmac" in proof_condition
+    assert "steps.tag.outputs.image_ref" in str(proof_env.get("TARGET_IMAGE", ""))
     assert "deploy/verify-request-hmac-rotation-fleet.sh" in proof_script
-    assert "verify-request-hmac-rotation-fleet.sh capture" in proof_script
+    assert "verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'" in proof_script
     assert "fleet_ids<<EOF" in proof_script
+    assert "proved_image_ref=${TARGET_IMAGE}" in proof_script
 
     install = _step_named(wf, "Install daemon-only request idempotency HMAC secret")
     script = install.get("run", "") or ""
@@ -1710,6 +1715,10 @@ def test_request_hmac_rotation_requires_deployed_corrected_boundary():
     assert "steps.rotation-boundary.outputs.fleet_ids" in str(
         install_env.get("ROTATION_FLEET_IDS", "")
     )
+    assert "steps.rotation-boundary.outputs.proved_image_ref" in str(
+        install_env.get("ROTATION_PROVED_IMAGE_REF", "")
+    )
+    assert "steps.tag.outputs.image_ref" in str(install_env.get("TARGET_IMAGE", ""))
     secret_write = script.index(
         'printf \'%s\' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"'
     )
@@ -1718,6 +1727,9 @@ def test_request_hmac_rotation_requires_deployed_corrected_boundary():
         "sudo sha256sum /opt/tinyassets/compose.yml",
         "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
         "ROTATION_FLEET_IDS",
+        "ROTATION_PROVED_IMAGE_REF",
+        "TARGET_IMAGE",
+        "rotation target image differs from the pre-proved correction image",
         "deploy/verify-request-hmac-rotation-fleet.sh",
         "verify-request-hmac-rotation-fleet.sh assert-quiesced",
     )

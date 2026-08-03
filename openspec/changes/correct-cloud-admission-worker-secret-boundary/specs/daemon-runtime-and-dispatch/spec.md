@@ -37,14 +37,14 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 
 #### Scenario: reviewed correction rotates the exposed trust root
 - **WHEN** an operator manually dispatches the reviewed correction with rotation enabled and a newly generated repository secret
-- **THEN** before quiescence the workflow proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, and host-controlled Docker metadata shows all four running workers lack the key, and it records their exact container IDs
+- **THEN** before quiescence the workflow proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, the running daemon and all four workers use the resolved immutable correction image, and host-controlled Docker metadata shows all four workers lack the key and records their exact container IDs
 - **AND** the stop-writer preflight disables restart paths and stops that fleet
-- **AND** immediately before transmission the workflow rechecks the Compose/shared-env boundary and proves those same four recorded IDs remain present and stopped
+- **AND** immediately before transmission the workflow requires the target image to equal the pre-proved correction digest, rechecks the Compose/shared-env boundary, reads each recorded identity's state by immutable ID, verifies every name still maps to its expected ID, and repeats the complete name-to-ID pass before accepting those same four containers as stopped
 - **AND** the workflow replaces the host request-idempotency HMAC only after all pre-quiescence and post-quiescence prerequisites pass
 - **AND** the rotation path is visible in workflow inputs and run history without exposing the key
 
 #### Scenario: stale or unproved boundary blocks rotation
-- **WHEN** the deployed Compose hash differs, the shared env contains the key, a worker is absent, a running worker contains the key, a recorded worker identity changes, or a recorded worker restarts after quiescence
+- **WHEN** the deployed Compose hash differs, the shared env contains the key, the target differs from the running correction digest, a runtime container is absent or uses another image, a running worker contains the key, a recorded worker identity changes, or a recorded worker restarts after quiescence
 - **THEN** the manual rotation run fails before transmitting or replacing the host key
 - **AND** the operator must complete the ordinary corrected-boundary deploy first
 
