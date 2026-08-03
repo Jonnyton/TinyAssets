@@ -581,17 +581,22 @@ def _execute_scoped_cloud_github_pr_effect(
             }
         return {"status": "succeeded", "evidence": {}}
 
-    frozen_intent = execute_replay_safe_effect(
-        universe_dir=universe_dir,
-        effect_key=f"github-pr-intent:{preparation_identity_digest}",
-        sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
-        run_id=run_id,
-        invoke=lambda: {"effect_intent_digest": effect_intent_digest},
-        reconcile=reconcile_frozen_intent,
-        reservation_evidence={
-            "result": {"effect_intent_digest": effect_intent_digest},
-        },
-    )
+    def reserve_frozen_intent() -> dict[str, Any]:
+        return execute_replay_safe_effect(
+            universe_dir=universe_dir,
+            effect_key=f"github-pr-intent:{preparation_identity_digest}",
+            sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
+            run_id=run_id,
+            invoke=lambda: {"effect_intent_digest": effect_intent_digest},
+            reconcile=reconcile_frozen_intent,
+            reservation_evidence={
+                "result": {"effect_intent_digest": effect_intent_digest},
+            },
+        )
+
+    frozen_intent = reserve_frozen_intent()
+    if frozen_intent.get("reason") == "legacy_intent_reservation_missing_digest":
+        frozen_intent = reserve_frozen_intent()
     if frozen_intent.get("status") != "succeeded":
         raise ProxyRequestError("cloud GitHub effect intent reservation did not complete")
     frozen_intent_result = frozen_intent.get("result")

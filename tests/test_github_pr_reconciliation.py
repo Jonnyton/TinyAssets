@@ -799,14 +799,9 @@ def test_scoped_cloud_effect_migrates_legacy_empty_intent_reservation(tmp_path):
         ),
     }
 
-    with pytest.raises(ProxyRequestError, match="reservation did not complete"):
-        github_pr._execute_scoped_cloud_github_pr_effect(
-            **kwargs,
-            run_id="migration-observed",
-        )
     recovered = github_pr._execute_scoped_cloud_github_pr_effect(
         **kwargs,
-        run_id="migration-retry",
+        run_id="migration-recovered",
     )
 
     assert recovered["status"] == "succeeded"
