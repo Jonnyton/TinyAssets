@@ -561,33 +561,43 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
             threading.Thread(target=worker, args=("run-A",)),
             threading.Thread(target=worker, args=("run-B",)),
         ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=join_timeout)
-
-        # The patch MUST outlive every worker. `join(timeout=...)` returns
-        # whether or not the thread finished, so leaving this `with` block with
-        # a worker still running would drop the mock and let that worker reach
-        # the REAL subprocess.run — i.e. actually shell out to `gh`. The
+        # The patch MUST outlive every STARTED worker. `join(timeout=...)`
+        # returns whether or not the thread finished, so leaving this `with`
+        # block while a worker runs would drop the mock and let that worker
+        # reach the REAL subprocess.run — i.e. actually shell out to `gh`. The
         # per-worker patch this replaced could not have that problem, so the
         # hoist has to re-establish the guarantee explicitly.
         #
-        # Note an assertion here would NOT be enough: raising inside the block
-        # still unwinds the context manager and restores the real
-        # `subprocess.run` while the straggler runs on. So a straggler is
-        # re-joined WITHOUT a timeout, deliberately.
+        # An assertion would NOT be enough: raising inside the block still
+        # unwinds the context manager and restores the real `subprocess.run`
+        # while the straggler runs on. Hence `finally`, and a re-join with NO
+        # timeout.
+        #
+        # `started` rather than `threads`, and `finally` rather than a straight
+        # line, because the second `t.start()` can raise (RuntimeError: can't
+        # start new thread) after the first worker is already running — that
+        # exception would otherwise exit the block with a live worker and no
+        # mock.
         #
         # The trade is explicit: a genuinely wedged worker hangs this test
         # (caught by the job timeout) instead of silently invoking the real gh
         # CLI. Loud and slow beats quiet and wrong. These workers only take a
-        # dedup path, so the bounded join above is the expected case and this is
-        # a safety net, not the norm.
-        slow = [t.name for t in threads if t.is_alive()]
-        for t in threads:
-            if t.is_alive():
-                t.join()
-        assert not [t for t in threads if t.is_alive()]
+        # dedup path, so the bounded join is the expected case and the unbounded
+        # one is a safety net.
+        started: list[threading.Thread] = []
+        slow: list[str] = []
+        try:
+            for t in threads:
+                t.start()
+                started.append(t)
+            for t in started:
+                t.join(timeout=join_timeout)
+            slow = [t.name for t in started if t.is_alive()]
+        finally:
+            for t in started:
+                if t.is_alive():
+                    t.join()
+        assert not [t for t in started if t.is_alive()]
 
     # Raised only after the patch has been dropped, which is now safe because
     # every worker is provably finished by this point.
