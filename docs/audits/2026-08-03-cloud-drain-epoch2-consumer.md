@@ -9,8 +9,8 @@ fleet and ordinary epoch-2 Branch tasks. It does not claim chatbot activation,
 useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
-Implementation commit before the final current-main reconciliation:
-`13885b0a`. The
+Implementation commit after reconciliation onto `origin/main` `22ec647e`:
+`f543a8f4`. The
 immutable PR comment records the final exact PR head, including this evidence
 document.
 
@@ -92,7 +92,7 @@ they cannot head-of-line block unrelated automations.
 ## Local evidence
 
 Environment: Windows PowerShell, Python 3.14.3, repository worktree based on
-`origin/main` at `d8dea1a9`.
+`origin/main` at `22ec647e`.
 
 Commands run at implementation head:
 
@@ -103,7 +103,8 @@ py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_soul_loop_dispatch.py
 ```
 
-Result after the second review-finding repairs: `356 passed in 40.95s` across
+Result after the second review-finding repairs and current-main rebase:
+`356 passed in 33.36s` across
 the epoch-2 consumer, cloud worker, transactional adapter/store, immutable
 Branch version, v1 lease/dispatcher compatibility, and bug-investigation
 integration suites. This includes queue-run reservation races with exactly one
@@ -165,8 +166,8 @@ cloud automation activation tuple.
 
 ## Temporary drain continuity
 
-At 2026-08-02 20:18 PDT, the local watchdog reported health `running`, the
-controller alive as PID 19300, attempt 19 reached, five completed slices, and
+At 2026-08-02 20:25 PDT, the local watchdog reported health `running`, the
+controller alive as PID 19300, attempt 20 running, five completed slices, and
 one consecutive failed slice. The supervisor remained live and responsible
 for automatic retry. The local bridge remains active until cloud acceptance is
 proven.
