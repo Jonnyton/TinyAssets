@@ -1008,6 +1008,10 @@ class ProviderInvocationCarrier:
         return self._reservation.max_tokens
 
     @property
+    def max_cost_microunits(self) -> int:
+        return self._reservation.max_cost_microunits
+
+    @property
     def assignment_generation(self) -> int:
         return self._receipt.assignment_generation
 

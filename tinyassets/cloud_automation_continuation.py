@@ -1991,10 +1991,16 @@ class _ClaimedCloudProviderSession:
             f"cloud-branch:{self._branch_task_id}:{ordinal}:"
             f"{_content_digest({'prompt': prompt, 'system': system})}"
         )
-        max_tokens = self._receipt.max_tokens // self._receipt.max_invocations
-        max_cost = (
-            self._receipt.max_cost_microunits // self._receipt.max_invocations
+        token_share, token_remainder = divmod(
+            self._receipt.max_tokens,
+            self._receipt.max_invocations,
         )
+        cost_share, cost_remainder = divmod(
+            self._receipt.max_cost_microunits,
+            self._receipt.max_invocations,
+        )
+        max_tokens = token_share + int(ordinal <= token_remainder)
+        max_cost = cost_share + int(ordinal <= cost_remainder)
         request = ProviderInvocationReservationRequest(
             receipt_id=self._receipt.receipt_id,
             receipt_digest=self._receipt.receipt_digest,

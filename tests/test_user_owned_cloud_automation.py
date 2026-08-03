@@ -280,6 +280,30 @@ def test_work_definition_rejects_invalid_provider_invocation_budget(value: int) 
 
 
 @pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("max_tokens", 3, "max_tokens.*max_provider_invocations"),
+        ("max_cost_microunits", 0, "max_cost_microunits.*>= 1"),
+        (
+            "max_cost_microunits",
+            3,
+            "max_cost_microunits.*max_provider_invocations",
+        ),
+    ),
+)
+def test_work_definition_requires_positive_budget_for_every_provider_call(
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    payload = _definition_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        _automation().RepositorySpecWorkDefinition.from_dict(payload)
+
+
+@pytest.mark.parametrize(
     "runtime_field",
     [
         "activation_epoch",

@@ -162,12 +162,17 @@ class RepositorySpecWorkDefinition:
         if provider_invocations > 64:
             raise ValueError("max_provider_invocations must be <= 64")
         _positive_int(self.max_wall_time_seconds, "max_wall_time_seconds")
-        _positive_int(self.max_tokens, "max_tokens")
-        _positive_int(
+        max_tokens = _positive_int(self.max_tokens, "max_tokens")
+        max_cost_microunits = _positive_int(
             self.max_cost_microunits,
             "max_cost_microunits",
-            minimum=0,
         )
+        if max_tokens < provider_invocations:
+            raise ValueError("max_tokens must be >= max_provider_invocations")
+        if max_cost_microunits < provider_invocations:
+            raise ValueError(
+                "max_cost_microunits must be >= max_provider_invocations"
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RepositorySpecWorkDefinition:

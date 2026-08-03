@@ -921,6 +921,7 @@ def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> 
     assert carrier.provider == "codex"
     assert carrier.role == "writer"
     assert carrier.max_tokens == 20_000
+    assert carrier.max_cost_microunits == 1_000_000
     assert carrier.assignment_generation == 3
     assert (
         carrier.validate_for_call(

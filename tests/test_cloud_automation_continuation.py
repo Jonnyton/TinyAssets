@@ -87,7 +87,12 @@ BRANCH_TASK_ID = f"bt2_{'3' * 32}"
 EVENT_ID = f"evt_{'4' * 32}"
 
 
-def _definition(provider_binding_id: str) -> RepositorySpecWorkDefinition:
+def _definition(
+    provider_binding_id: str,
+    *,
+    max_tokens: int = 100_000,
+    max_cost_microunits: int = 5_000_000,
+) -> RepositorySpecWorkDefinition:
     return RepositorySpecWorkDefinition.from_dict(
         {
             "schema_version": 1,
@@ -108,8 +113,8 @@ def _definition(provider_binding_id: str) -> RepositorySpecWorkDefinition:
             "max_attempts": 2,
             "max_provider_invocations": 4,
             "max_wall_time_seconds": 3600,
-            "max_tokens": 100_000,
-            "max_cost_microunits": 5_000_000,
+            "max_tokens": max_tokens,
+            "max_cost_microunits": max_cost_microunits,
         }
     )
 
@@ -176,6 +181,8 @@ def _fixture(
     *,
     create_activation: bool = True,
     background_binding: BackgroundBranchBinding | None = None,
+    max_tokens: int = 100_000,
+    max_cost_microunits: int = 5_000_000,
 ) -> tuple[
     RepositorySpecWorkDefinition,
     PreparedCloudContinuationRequest,
@@ -193,7 +200,9 @@ def _fixture(
         )
 
     background_store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
-    binding = background_binding or _background_binding()
+    binding = background_binding or _background_binding(
+        remaining_cost_microunits=max_cost_microunits
+    )
     with background_store.transaction() as transaction:
         inserted = transaction.insert_binding(binding)
     assert inserted.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
@@ -214,14 +223,18 @@ def _fixture(
             assignment_generation=2,
             assignment_digest=f"sha256:{'8' * 64}",
             max_invocations=4,
-            max_tokens=100_000,
-            max_cost_microunits=5_000_000,
+            max_tokens=max_tokens,
+            max_cost_microunits=max_cost_microunits,
             expires_at="2026-08-30T00:00:00Z",
         )
     )
     provider_binding = installed.record
     assert provider_binding is not None
-    definition = _definition(provider_binding.binding_id)
+    definition = _definition(
+        provider_binding.binding_id,
+        max_tokens=max_tokens,
+        max_cost_microunits=max_cost_microunits,
+    )
 
     ledger = ConnectionLedger(
         tmp_path / "outbound.db",
@@ -636,6 +649,8 @@ def _claimable_cloud_path(
     tmp_path: Path,
     *,
     display_name: str = "Cloud claim test daemon",
+    max_tokens: int = 100_000,
+    max_cost_microunits: int = 5_000_000,
 ):
     daemon = create_daemon(
         tmp_path,
@@ -678,7 +693,12 @@ def _claimable_cloud_path(
     )
     fixture = _fixture(
         tmp_path,
-        background_binding=_background_binding(daemon_id=audience.daemon_id),
+        background_binding=_background_binding(
+            daemon_id=audience.daemon_id,
+            remaining_cost_microunits=max_cost_microunits,
+        ),
+        max_tokens=max_tokens,
+        max_cost_microunits=max_cost_microunits,
     )
     continuation = _prepare(fixture).record
     assert continuation is not None
@@ -864,6 +884,45 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
             "SELECT state FROM provider_invocation_reservations ORDER BY ordinal"
         ).fetchall()
     assert [row["state"] for row in reservation_states] == ["launch_started"] * 4
+
+
+def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
+    tmp_path: Path,
+) -> None:
+    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(
+            tmp_path,
+            max_tokens=5,
+            max_cost_microunits=6,
+        )
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    budgets: list[tuple[int, int]] = []
+
+    def provider_call(_prompt, _system="", *, role="writer", **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        budgets.append((carrier.max_tokens, carrier.max_cost_microunits))
+        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        return "authorized"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert authorized_call is not None
+
+    for ordinal in range(4):
+        assert authorized_call(f"call {ordinal}") == "authorized"
+
+    assert budgets == [(2, 2), (1, 2), (1, 1), (1, 1)]
+    assert sum(tokens for tokens, _cost in budgets) == 5
+    assert sum(cost for _tokens, cost in budgets) == 6
 
 
 def test_claimed_cloud_task_governs_policy_provider_call(
