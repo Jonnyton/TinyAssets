@@ -196,6 +196,18 @@ process liveness. It reports last useful progress, current claim, retry time,
 blocker, authority source, budget state, and a no-progress alarm. Repeated
 retries without a useful state transition remain unhealthy.
 
+Until cutover, the temporary tray drain remains the active fallback. If its
+coordination-only refinery worker discovers that an older open pull request
+already owns the exact assigned target, the supervisor suppresses that target
+for the entire bounded run and immediately considers the next candidate.
+Suppression requires fresh open state plus a PR creation time before the run
+start; missing, closed, merged, malformed, or same-run PR evidence remains a
+real failure. The exact refinery assignment is persisted before dispatch, and
+restart recovery reruns the same verification before consuming a result left
+behind by a crash. This prevents a correct duplicate-lane refusal from
+consuming the two-strike failure budget while avoiding false progress or broad
+open-PR trust.
+
 ## Risks / Trade-offs
 
 - **[Prerequisite lanes expose incompatible authority shapes]** → Recheck their
