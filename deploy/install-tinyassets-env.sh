@@ -293,10 +293,18 @@ cmd_set() {
             exit 1
         fi
         local existing=""
+        local assignment_count=0
         local line
         while IFS= read -r line || [ -n "${line}" ]; do
             case "${line}" in
-                "${key}="*) existing="${line#*=}" ;;
+                "${key}="*)
+                    assignment_count=$((assignment_count + 1))
+                    if [ "${assignment_count}" -gt 1 ]; then
+                        echo "::error::set-once refused duplicate assignments for ${key}" >&2
+                        exit 5
+                    fi
+                    existing="${line#*=}"
+                    ;;
             esac
         done < "${ENV_FILE}"
         if [ -n "${existing}" ]; then

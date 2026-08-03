@@ -633,6 +633,42 @@ jobs:
             echo "::error::request HMAC rotation is manual-dispatch only"
             exit 1
           fi
+          if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ]; then
+            expected_compose_sha="$(sha256sum deploy/compose.yml | cut -d ' ' -f 1)"
+            actual_compose_sha="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo sha256sum /opt/tinyassets/compose.yml 2>/dev/null | cut -d ' ' -f 1" || true)"
+            if [ -z "${actual_compose_sha}" ] || [ "${actual_compose_sha}" != "${expected_compose_sha}" ]; then
+              echo "::error::rotation requires the corrected Compose file to be deployed first"
+              exit 1
+            fi
+            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                'sudo bash -s' <<'SH'
+          set -euo pipefail
+          shared_env=/etc/tinyassets/env
+          test -r "${shared_env}"
+          if grep -q '^TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=' "${shared_env}"; then
+            exit 1
+          fi
+          for container in \
+              tinyassets-worker \
+              tinyassets-worker-codex-2 \
+              tinyassets-worker-claude-1 \
+              tinyassets-worker-claude-2; do
+            running="$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null || true)"
+            [ "${running}" = "true" ]
+            docker exec "${container}" python -c \
+                'import os, sys; sys.exit(1 if "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in os.environ else 0)'
+          done
+          SH
+            then
+              echo "rotation boundary prerequisite proved"
+            else
+              echo "::error::rotation prerequisite failed: shared env or running worker still exposes request admission authority"
+              exit 1
+            fi
+          fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"

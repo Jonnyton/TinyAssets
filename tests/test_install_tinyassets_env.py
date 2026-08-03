@@ -135,6 +135,46 @@ def test_set_once_same_value_still_uses_permission_repair_path():
     assert "atomic_install" in text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
 
 
+def test_set_once_has_duplicate_assignment_guard_before_write():
+    text = _SCRIPT.read_text(encoding="utf-8")
+    set_body = text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]
+    immutable_block = text.split('if [ "${immutable}" = "true" ]', 1)[1].split(
+        "# Build new content", 1
+    )[0]
+    assert "assignment_count" in immutable_block
+    assert "duplicate assignments" in immutable_block
+    assert set_body.index("duplicate assignments") < set_body.index("atomic_install")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="shell helper is exercised on POSIX CI; Windows test stays structural",
+)
+def test_set_once_rejects_duplicate_assignments_before_mutation(tmp_path):
+    env_file = tmp_path / "tinyassets" / "request-idempotency.env"
+    legacy_file = tmp_path / "never" / "legacy"
+    env_file.parent.mkdir(parents=True)
+    original = (
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret\n"
+        "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=\n"
+    )
+    env_file.write_text(original, encoding="utf-8")
+    replacement = "replacement-secret"
+
+    result = _run_helper(
+        tmp_path,
+        ["set-once", "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"],
+        stdin=replacement,
+        env_file=env_file,
+        legacy_file=legacy_file,
+    )
+
+    assert result.returncode == 5
+    assert env_file.read_text(encoding="utf-8") == original
+    assert "old-secret" not in result.stdout + result.stderr
+    assert replacement not in result.stdout + result.stderr
+
+
 def test_protected_value_never_uses_a_named_plaintext_file():
     text = _SCRIPT.read_text(encoding="utf-8")
     set_body = text.split("cmd_set()", 1)[1].split("cmd_delete()", 1)[0]

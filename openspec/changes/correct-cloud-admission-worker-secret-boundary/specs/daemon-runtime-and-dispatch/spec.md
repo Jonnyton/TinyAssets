@@ -31,8 +31,14 @@ The production deploy workflow SHALL preserve immutable request-idempotency HMAC
 
 #### Scenario: reviewed correction rotates the exposed trust root
 - **WHEN** an operator manually dispatches the reviewed correction with rotation enabled and a newly generated repository secret
-- **THEN** the workflow replaces the host request-idempotency HMAC before recreating the corrected fleet
+- **THEN** the workflow first proves the deployed Compose file exactly matches the reviewed correction, the shared env lacks the key, and all four running workers lack the key
+- **AND** the workflow replaces the host request-idempotency HMAC only after those prerequisites pass
 - **AND** the rotation path is visible in workflow inputs and run history without exposing the key
+
+#### Scenario: stale or unproved boundary blocks rotation
+- **WHEN** the deployed Compose hash differs, the shared env contains the key, a worker is absent, or a running worker contains the key
+- **THEN** the manual rotation run fails before transmitting or replacing the host key
+- **AND** the operator must complete the ordinary corrected-boundary deploy first
 
 ### Requirement: Protected-stdin installation creates no named plaintext value file
 The environment installer SHALL pass its protected-stdin value to the content builder without placing it in process arguments, child environment, or a named plaintext filesystem object, and MUST NOT print the protected value.
@@ -45,6 +51,11 @@ The environment installer SHALL pass its protected-stdin value to the content bu
 #### Scenario: parent-only termination cannot strand plaintext
 - **WHEN** TERM reaches the installer while the content-builder child remains blocked
 - **THEN** no named plaintext value file exists while the child is still running or after the process group terminates
+
+#### Scenario: duplicate immutable assignments fail before mutation
+- **WHEN** `set-once` reads more than one assignment for its target key, including a non-empty assignment followed by an empty assignment
+- **THEN** it exits with immutable-refusal status before writing the environment file
+- **AND** neither existing nor proposed values appear in output
 
 ### Requirement: Offsite production logs cover the complete runtime fleet
 The default offsite archive SHALL collect the daemon, tunnel, and every fixed production worker container, and the operator runbook MUST use the deployed TinyAssets service, container, metadata, and archive identities.

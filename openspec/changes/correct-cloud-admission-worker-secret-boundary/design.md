@@ -31,9 +31,13 @@ The same deploy slice also writes protected stdin to a plaintext temporary file 
 
 ### Rotate through an explicit manual deploy input
 
-Ordinary automatic and manual deploys continue using `set-once`. A boolean workflow-dispatch input permits `set` only for an intentional rotation run, and the script rejects rotation mode for non-manual events. This makes the exceptional authority change visible in GitHub history and prevents routine deployments from silently rotating a trust root. The repository secret is replaced before the correction deploy; that exact manual run atomically replaces the host value before recreating the daemon and workers.
+Ordinary automatic and manual deploys continue using `set-once`. A boolean workflow-dispatch input permits `set` only for an intentional rotation run, and the script rejects rotation mode for non-manual events. Before transmitting the replacement key, rotation compares the deployed `/opt/tinyassets/compose.yml` hash with the reviewed source file, requires the shared env to lack the key, and proves all four running workers lack it. This forces a two-phase recovery: first deploy and verify the corrected boundary with the old key, then replace the repository secret and rotate using the same correction image. Any failure after replacement can recover only through the already-corrected host Compose file.
 
 Alternatives considered were deleting the host file by hand and adding a permanent multi-key ring. Manual deletion creates an untracked mutation window, while a verification ring expands runtime/security scope and preserves trust in witnesses minted under an exposed key.
+
+### Reject duplicate immutable assignments before mutation
+
+`set-once` counts matching assignments while reading the existing file and exits with the immutable-refusal code on the second match, without writing or printing either value. A single empty assignment remains the documented bootstrap case. This closes the malformed `KEY=old` followed by `KEY=` bypass in which last-match-wins comparison could permit a replacement before later validation failed.
 
 ### Never create a named plaintext value file
 
@@ -50,17 +54,18 @@ An EXIT/signal cleanup trap around the prior `mktemp` design was implemented fir
 - **[Rotation invalidates witnesses signed by the exposed key]** -> Accept fail-closed invalidation because the runtime is dark and trusting an exposed issuer is worse; verify daemon health and canonical canaries after cutover.
 - **[`/dev/fd/3` is unavailable on a target shell]** -> The deploy helper requires Bash on supported Linux/macOS hosts; POSIX tests execute the real fd handoff and deployment shell syntax is gated before merge.
 - **[Compose inheritance changes later]** -> Parse the actual compose document in regression tests and assert the secret file is absent from every non-daemon service, not only the base worker.
-- **[Automatic deploy races the secret update]** -> Merge only after exact-head review, replace the repository secret immediately before a manual rotation deploy, and use the production mutation concurrency group.
+- **[Automatic deploy races the secret update]** -> Merge only after exact-head review, complete and verify the ordinary corrected-boundary deploy first, replace the repository secret immediately before the second manual rotation deploy, and use the production mutation concurrency group.
 - **[Log collection names drift with fleet topology]** -> Keep the expected identities in one default string and assert the complete current fleet in tests.
 
 ## Migration Plan
 
 1. Merge the correction only after focused tests and independent exact-head security/deploy review pass.
 2. Confirm no production mutation workflow is in progress.
-3. Replace the repository request-idempotency HMAC secret with a newly generated canonical-base64 value without printing or persisting it locally.
-4. Manually dispatch the correction image with the rotation input enabled. The deploy replaces the host key before syncing and recreating the corrected Compose fleet.
-5. Verify the shared env lacks the key, daemon health, exact public MCP handles, resolved worker environments, and production release receipt. Confirm workers do not contain the key name or value.
-6. Preserve custom-agent execution as dark; resume the V1 app/workflow lane only after the security gate closes.
+3. Build and ordinarily deploy the reviewed correction with the existing key; verify the exact corrected Compose hash, shared-env absence, and running-worker absence proof.
+4. Replace the repository request-idempotency HMAC secret with a newly generated canonical-base64 value without printing or persisting it locally.
+5. Manually dispatch the same correction image with the rotation input enabled. The deploy re-proves the already-live boundary before transmitting and replacing the host key.
+6. Verify daemon health, exact public MCP handles, worker environments, and the production release receipt after rotation.
+7. Preserve custom-agent execution as dark; resume the V1 app/workflow lane only after the security gate closes.
 
 Rollback uses the prior image only after fencing workers. Because the prior image reintroduces worker access, it MUST NOT be restored with the rotated key mounted; an emergency rollback must keep workers stopped or use a corrected Compose override until a safe image is available.
 
