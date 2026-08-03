@@ -727,6 +727,75 @@ def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
     assert captured["_queue_branch_task_id"] == task.branch_task_id
 
 
+def test_cloud_automation_execution_uses_requester_owned_provider_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import cloud_automation_continuation, runs
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    captured: dict = {}
+    authorized_provider = object()
+
+    def prepare_provider(base_path, **kwargs):
+        captured["provider_base_path"] = base_path
+        captured["provider_task"] = kwargs["claimed_task"]
+        captured["provider_daemon_id"] = kwargs["daemon_id"]
+        captured["raw_provider_call"] = kwargs["provider_call"]
+        return authorized_provider
+
+    def execute_version(_base_path, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run_id="run-cloud-authorized",
+            status=runs.RUN_STATUS_COMPLETED,
+            output={},
+            error="",
+        )
+
+    monkeypatch.setattr(
+        cloud_automation_continuation,
+        "prepare_claimed_cloud_provider_call",
+        prepare_provider,
+    )
+    monkeypatch.setattr(runs, "get_run_by_branch_task_id", lambda *_a, **_k: None)
+    monkeypatch.setattr(runs, "execute_branch_version", execute_version)
+    task = SimpleNamespace(
+        branch_task_id="bt2_" + ("7" * 32),
+        admission_id="adm_" + ("6" * 32),
+        request_id="req_" + ("5" * 32),
+        branch_def_id="ordinary-user-branch",
+        universe_id="universe-a",
+        inputs={},
+        request_type="run_branch",
+        queue_epoch=2,
+        depth=0,
+        origin_branch_task_id="",
+        executor_worker_id="worker-a",
+        executor_runtime_id="runtime-a",
+        automation_id="automation-user-workflow",
+        automation_executor_class="cloud",
+        automation_branch_version="branch-version-a",
+        actor_id="actor-a",
+    )
+
+    success, error, _metadata = daemon_main._try_execute_claimed_branch_task(
+        universe,
+        task,
+        "daemon-a",
+    )
+
+    assert success is True
+    assert error == ""
+    assert captured["provider_base_path"] == tmp_path
+    assert captured["provider_task"] is task
+    assert captured["provider_daemon_id"] == "daemon-a"
+    assert callable(captured["raw_provider_call"])
+    assert captured["provider_call"] is authorized_provider
+
+
 def test_epoch2_matching_public_run_name_cannot_spoof_queue_reservation(
     tmp_path: Path,
     monkeypatch,

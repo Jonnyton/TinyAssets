@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -22,6 +23,7 @@ import rfc8785
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
+    BackgroundBranchAttemptFence,
     BackgroundBranchAttemptLifecycle,
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBindingStatus,
@@ -38,6 +40,7 @@ from tinyassets.background_branch_authority_service import (
     BackgroundBranchAttemptClaimAction,
     BackgroundBranchAttemptClaimRequest,
     BackgroundBranchAttemptClaimResolution,
+    BackgroundBranchAttemptClaimService,
     BackgroundBranchAttemptIssuanceRequest,
     BackgroundBranchAttemptIssuanceResolution,
     BackgroundBranchAttemptIssuanceService,
@@ -45,14 +48,20 @@ from tinyassets.background_branch_authority_service import (
 )
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
+    ProviderInvocationLaunchRequest,
+    ProviderInvocationReservationRequest,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
+    ProviderWorkAuthorityWriteOutcome,
     ProviderWorkBindingState,
+    ProviderWorkExecutionClaimRequest,
+    ProviderWorkReceiptService,
 )
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
     AutomationActivationExecutor,
     AutomationActivationState,
+    AutomationActivationStore,
 )
 from tinyassets.user_owned_cloud_automation import (
     AutomationAdmissionError,
@@ -1816,6 +1825,323 @@ class PreparedCloudContinuationProviderResolver:
         )
 
 
+class _ClaimedCloudProviderSession:
+    """Process-local provider call owner for one claimed cloud Branch task."""
+
+    _OPERATION = "repository_spec_delivery"
+    _ROLE = "writer"
+
+    def __init__(
+        self,
+        *,
+        base_path: Path,
+        continuation: PreparedCloudContinuation,
+        branch_task_id: str,
+        receipt: Any,
+        claim: Any,
+        provider_store: Any,
+        provider_call: Callable[..., str],
+    ) -> None:
+        self._base_path = base_path
+        self._continuation = continuation
+        self._branch_task_id = branch_task_id
+        self._receipt = receipt
+        self._claim = claim
+        self._provider_store = provider_store
+        self._provider_call = provider_call
+        self._call_ordinal = 0
+        self._lock = threading.Lock()
+
+    def __call__(
+        self,
+        prompt: str,
+        system: str = "",
+        *,
+        role: str = _ROLE,
+        **kwargs: Any,
+    ) -> str:
+        from tinyassets.config import load_universe_config
+        from tinyassets.providers.base import UniverseContext
+
+        if role != self._ROLE:
+            raise PermissionError("cloud provider role is outside prepared authority")
+        with self._lock:
+            self._call_ordinal += 1
+            ordinal = self._call_ordinal
+        invocation_key = (
+            f"cloud-branch:{self._branch_task_id}:{ordinal}:"
+            f"{_content_digest({'prompt': prompt, 'system': system})}"
+        )
+        max_tokens = self._receipt.max_tokens // self._receipt.max_invocations
+        max_cost = (
+            self._receipt.max_cost_microunits // self._receipt.max_invocations
+        )
+        reserved = self._provider_store.reserve(
+            ProviderInvocationReservationRequest(
+                receipt_id=self._receipt.receipt_id,
+                receipt_digest=self._receipt.receipt_digest,
+                claim_id=self._claim.claim_id,
+                claim_digest=self._claim.claim_digest,
+                claim_generation=self._claim.generation,
+                invocation_key=invocation_key,
+                operation=self._OPERATION,
+                role=self._ROLE,
+                max_tokens=max_tokens,
+                max_cost_microunits=max_cost,
+            )
+        ).record
+        if reserved is None:
+            raise PermissionError("provider invocation budget or authority is unavailable")
+        carrier = self._provider_store.arm_launch_carrier(
+            ProviderInvocationLaunchRequest.from_reservation(reserved)
+        )
+        universe_dir = self._base_path / self._continuation.universe_id
+        universe_config = load_universe_config(universe_dir)
+        call_kwargs = dict(kwargs)
+        call_kwargs.update(
+            operation=self._OPERATION,
+            universe_context=UniverseContext(
+                universe_dir=universe_dir,
+                config=universe_config,
+                provider_invocation=carrier,
+            ),
+        )
+        return self._provider_call(
+            prompt,
+            system,
+            role=role,
+            **call_kwargs,
+        )
+
+
+def prepare_claimed_cloud_provider_call(
+    base_path: str | Path,
+    *,
+    claimed_task: Any,
+    daemon_id: str,
+    provider_call: Callable[..., str],
+    clock: Callable[[], datetime] | None = None,
+) -> Callable[..., str] | None:
+    """Claim exact background/provider authority for one cloud queue task.
+
+    Returns ``None`` for ordinary non-automation tasks. Cloud automation tasks
+    fail closed when any prepared, queue, attempt, activation, or provider
+    authority record is absent or stale.
+    """
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+    from tinyassets.storage.cloud_automation_continuation import (
+        SQLiteCloudAutomationContinuationStore,
+    )
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+    from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+    automation_id = str(getattr(claimed_task, "automation_id", "") or "").strip()
+    if not automation_id:
+        return None
+    if str(getattr(claimed_task, "automation_executor_class", "") or "") != "cloud":
+        raise PermissionError("cloud automation task has the wrong executor class")
+    now_clock = clock or (lambda: datetime.now(timezone.utc))
+    now = now_clock()
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("clock must return a timezone-aware datetime")
+    now = now.astimezone(timezone.utc)
+    root_path = Path(base_path)
+    universe_id = _text(getattr(claimed_task, "universe_id", None), "universe_id")
+    branch_task_id = _text(
+        getattr(claimed_task, "branch_task_id", None),
+        "branch_task_id",
+    )
+    admission_id = _text(getattr(claimed_task, "admission_id", None), "admission_id")
+    request_id = _text(getattr(claimed_task, "request_id", None), "request_id")
+    worker_id = _text(
+        getattr(claimed_task, "executor_worker_id", None),
+        "executor_worker_id",
+    )
+    runtime_id = _text(
+        getattr(claimed_task, "executor_runtime_id", None),
+        "executor_runtime_id",
+    )
+    daemon_id = _text(daemon_id, "daemon_id")
+    admission_store = RequestAdmissionStore(root_path, clock=now_clock)
+    with admission_store.connection() as conn:
+        admission_row = conn.execute(
+            """
+            SELECT a.body_digest, a.grant_generation,
+                   a.receipt_json, t.claimed_at, t.lease_expires_at
+            FROM request_admissions AS a
+            JOIN branch_tasks_v2 AS t
+              ON t.admission_id = a.admission_id
+             AND t.request_id = a.request_id
+             AND t.branch_task_id = a.branch_task_id
+            WHERE a.admission_id = ? AND a.request_id = ? AND a.branch_task_id = ?
+            LIMIT 1
+            """,
+            (admission_id, request_id, branch_task_id),
+        ).fetchone()
+    if admission_row is None:
+        raise PermissionError("cloud task admission is unavailable")
+    try:
+        admission_receipt = json.loads(str(admission_row["receipt_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PermissionError("cloud task admission receipt is invalid") from exc
+    continuation_id = str(admission_receipt.get("continuation_id") or "").strip()
+    if not continuation_id:
+        return None
+    continuation_store = SQLiteCloudAutomationContinuationStore(
+        root_path,
+        clock=now_clock,
+    )
+    continuation = continuation_store.get(
+        universe_id=universe_id,
+        automation_id=automation_id,
+    )
+    if continuation is None or continuation.continuation_id != continuation_id:
+        raise PermissionError("prepared cloud continuation is unavailable")
+    audience = BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id=daemon_id,
+        runtime_id=runtime_id,
+        worker_id=worker_id,
+    )
+
+    class _AudienceResolver:
+        def resolve(self, *, continuation: Any, branch_task_id: str):
+            if continuation != expected_continuation or branch_task_id != expected_task_id:
+                return None
+            return audience
+
+    expected_continuation = continuation
+    expected_task_id = branch_task_id
+    logical_key = build_request_task_attempt_key(
+        tenant_id=continuation.principal_id,
+        request_id=request_id,
+        admission_id=admission_id,
+        task_id=branch_task_id,
+        body_digest=str(admission_row["body_digest"]),
+        admission_generation=int(admission_row["grant_generation"]),
+    )
+    background_store = SQLiteBackgroundBranchAuthorityStore(root_path)
+    attempt = background_store.get_attempt_by_logical_key(logical_key)
+    if attempt is None:
+        raise PermissionError("cloud background attempt is unavailable")
+    def canonical_task_timestamp(value: object, name: str) -> str:
+        raw = _text(value, name)
+        parsed = datetime.fromisoformat(
+            raw.removesuffix("Z") + "+00:00" if raw.endswith("Z") else raw
+        )
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError(f"{name} must include a timezone")
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    claimed_at = canonical_task_timestamp(admission_row["claimed_at"], "claimed_at")
+    lease_expires_at = canonical_task_timestamp(
+        admission_row["lease_expires_at"],
+        "lease_expires_at",
+    )
+    claim_resolver = PreparedCloudContinuationClaimResolver(
+        None,
+        continuation=continuation,
+        admission={
+            "admission_id": admission_id,
+            "request_id": request_id,
+            "branch_task_id": branch_task_id,
+        },
+        activation_store=AutomationActivationStore(root_path, clock=now_clock),
+        background_store=background_store,
+        continuation_store=continuation_store,
+        request_admission_store=admission_store,
+        audience_resolver=_AudienceResolver(),
+        clock=now_clock,
+    )
+    if attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED:
+        attempt = BackgroundBranchAttemptClaimService(
+            background_store,
+            claim_resolver,
+        ).claim(
+            expected=BackgroundBranchAttemptFence(attempt),
+            executor_audience=audience,
+            claimed_at=claimed_at,
+            lease_expires_at=lease_expires_at,
+        ).record
+    elif not (
+        attempt.lifecycle
+        in {
+            BackgroundBranchAttemptLifecycle.CLAIMED,
+            BackgroundBranchAttemptLifecycle.RUNNING,
+        }
+        and attempt.executor_audience == audience
+        and attempt.lease_expires_at == lease_expires_at
+    ):
+        raise PermissionError("cloud background attempt custody is stale")
+    if attempt is None:
+        raise PermissionError("cloud background attempt claim failed")
+    provider_store = SQLiteProviderWorkAuthorityStore(root_path, clock=now_clock)
+    receipt = ProviderWorkReceiptService(
+        provider_store,
+        PreparedCloudContinuationProviderResolver(
+            None,
+            continuation=continuation,
+            activation_store=AutomationActivationStore(root_path, clock=now_clock),
+            background_store=background_store,
+            provider_store=provider_store,
+            continuation_store=continuation_store,
+            clock=now_clock,
+        ),
+    ).issue(
+        ProviderUniverseWorkRoot(
+            work_item_kind="background_attempt",
+            work_item_id=attempt.attempt_id,
+        )
+    ).record
+    if receipt is None:
+        raise PermissionError("cloud provider receipt is unavailable")
+    task_lease = datetime.fromisoformat(lease_expires_at.removesuffix("Z") + "+00:00")
+    receipt_expiry = datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00")
+    lease_seconds = min(3600, int((min(task_lease, receipt_expiry) - now).total_seconds()))
+    if lease_seconds < 1:
+        raise PermissionError("cloud provider claim lease is expired")
+    provider_claim = provider_store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id=worker_id,
+            runtime_id=runtime_id,
+            claim_nonce_digest=_content_digest(
+                {
+                    "continuation_digest": continuation.continuation_digest,
+                    "domain": "cloud-branch-provider-claim-v1",
+                    "runtime_id": runtime_id,
+                    "task_id": branch_task_id,
+                    "worker_id": worker_id,
+                }
+            ),
+            lease_seconds=lease_seconds,
+        )
+    )
+    if (
+        provider_claim.outcome
+        not in {
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            ProviderWorkAuthorityWriteOutcome.REPLAYED,
+        }
+        or provider_claim.record is None
+    ):
+        raise PermissionError("cloud provider execution claim is unavailable")
+    return _ClaimedCloudProviderSession(
+        base_path=root_path,
+        continuation=continuation,
+        branch_task_id=branch_task_id,
+        receipt=receipt,
+        claim=provider_claim.record,
+        provider_store=provider_store,
+        provider_call=provider_call,
+    )
+
+
 __all__ = [
     "AgentInvocationCloudContinuation",
     "CloudContinuationAttemptAudienceResolver",
@@ -1832,5 +2158,6 @@ __all__ = [
     "PreparedCloudContinuationClaimResolver",
     "PreparedCloudContinuationProviderResolver",
     "PreparedCloudContinuationRequest",
+    "prepare_claimed_cloud_provider_call",
     "prepare_inactive_cloud_continuation",
 ]

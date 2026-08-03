@@ -43,6 +43,7 @@ from tinyassets.cloud_automation_continuation import (
     PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
+    prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
 )
 from tinyassets.daemon_registry import create_daemon
@@ -445,6 +446,7 @@ def _admit_claimable_cloud_task(
     fixture: tuple[object, ...],
     active,
     *,
+    continuation_id: str,
     daemon_id: str,
     daemon_soul_hash: str,
 ) -> dict[str, object]:
@@ -496,6 +498,7 @@ def _admit_claimable_cloud_task(
         receipt={
             "authority": "request-local",
             "branch_def_id": "branch_repo_spec_loop",
+            "continuation_id": continuation_id,
             "grant_generation": 4,
             "priority_policy_version": "operator-priority-v1",
             "directed_assignment": {
@@ -637,6 +640,7 @@ def _claimable_cloud_path(
     admission = _admit_claimable_cloud_task(
         fixture,
         active,
+        continuation_id=continuation.continuation_id,
         daemon_id=audience.daemon_id,
         daemon_soul_hash=str(daemon["soul_hash"]),
     )
@@ -749,6 +753,75 @@ def test_runtime_claim_and_provider_receipt_rehydrate_from_prepared_authority(
     assert receipt.max_invocations == 2
     assert receipt.max_tokens == 100_000
     assert receipt.max_cost_microunits == 5_000_000
+
+
+def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(tmp_path)
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    calls: list[dict[str, object]] = []
+
+    def provider_call(prompt, system="", *, role="writer", **kwargs):
+        context = kwargs["universe_context"]
+        carrier = context.provider_invocation
+        calls.append(
+            {
+                "prompt": prompt,
+                "system": system,
+                "role": role,
+                "operation": kwargs["operation"],
+                "provider": carrier.validate_for_call(
+                    role=role,
+                    operation=kwargs["operation"],
+                ),
+            }
+        )
+        return f"authorized-{len(calls)}"
+
+    authorized_call = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+
+    assert authorized_call is not None
+    assert authorized_call("first", "system") == "authorized-1"
+    assert authorized_call("second", "system") == "authorized-2"
+    assert calls == [
+        {
+            "prompt": "first",
+            "system": "system",
+            "role": "writer",
+            "operation": "repository_spec_delivery",
+            "provider": "codex",
+        },
+        {
+            "prompt": "second",
+            "system": "system",
+            "role": "writer",
+            "operation": "repository_spec_delivery",
+            "provider": "codex",
+        },
+    ]
+    with pytest.raises(PermissionError, match="provider invocation"):
+        authorized_call("over budget", "system")
+
+    with fixture[4].connection() as conn:
+        reservation_states = conn.execute(
+            "SELECT state FROM provider_invocation_reservations ORDER BY ordinal"
+        ).fetchall()
+    assert [row["state"] for row in reservation_states] == [
+        "launch_started",
+        "launch_started",
+    ]
 
 
 def test_concurrent_cloud_claims_have_one_task_custody_winner(
