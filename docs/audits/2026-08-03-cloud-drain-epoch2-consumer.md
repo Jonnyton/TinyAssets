@@ -9,8 +9,8 @@ fleet and ordinary epoch-2 Branch tasks. It does not claim chatbot activation,
 useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
-Implementation commit after reconciliation onto `origin/main` `22ec647e`:
-`f543a8f4`. The
+Latest implementation commit after reconciliation onto `origin/main`
+`773315ff`: `0397774f`. The
 immutable PR comment records the final exact PR head, including this evidence
 document.
 
@@ -92,7 +92,7 @@ they cannot head-of-line block unrelated automations.
 ## Local evidence
 
 Environment: Windows PowerShell, Python 3.14.3, repository worktree based on
-`origin/main` at `22ec647e`.
+`origin/main` at `773315ff`.
 
 Commands run at implementation head:
 
@@ -105,7 +105,7 @@ py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
 ```
 
 Result after the third review-finding repair:
-`357 passed in 39.27s` across
+`357 passed in 31.75s` across
 the epoch-2 consumer, cloud worker, transactional adapter/store, immutable
 Branch version, v1 lease/dispatcher compatibility, and bug-investigation
 integration suites. This includes queue-run reservation races with exactly one
