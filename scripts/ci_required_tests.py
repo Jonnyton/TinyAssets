@@ -164,6 +164,26 @@ def main() -> int:
         help="extra arg passed through to pytest (repeatable)",
     )
     ap.add_argument(
+        "--exclude-from",
+        metavar="FILE",
+        help=(
+            "File listing test paths to --ignore (blank lines and # comments "
+            "skipped). Used by the fast REQUIRED gate to drop the handful of "
+            "files that dominate its wall clock; `full-tests` omits this and "
+            "runs everything."
+        ),
+    )
+    ap.add_argument(
+        "--min-ran",
+        type=int,
+        default=MIN_RAN_FLOOR,
+        help=(
+            "Vacuity floor: fail if fewer than this many tests actually ran. "
+            "Must be set per job — the fast gate and the full suite have "
+            f"different honest totals (default {MIN_RAN_FLOOR})."
+        ),
+    )
+    ap.add_argument(
         "--emit-quarantine",
         metavar="JUNIT",
         help=(
@@ -220,8 +240,20 @@ def main() -> int:
         "-o",
         "junit_family=xunit1",
         f"--junitxml={junit}",
-        *args.pytest_arg,
     ]
+    if args.exclude_from:
+        excluded = [
+            line.strip()
+            for line in Path(args.exclude_from).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if not excluded:
+            # An empty list means the file was truncated or mis-parsed. Running
+            # everything is the safe direction, but say so — silently widening
+            # the gate is how a "fast" job quietly becomes a 37-minute one.
+            print(f"WARNING: {args.exclude_from} listed no paths", flush=True)
+        cmd += [f"--ignore={path}" for path in excluded]
+    cmd += [*args.pytest_arg]
     print("+ " + " ".join(cmd), flush=True)
     proc = subprocess.run(cmd, cwd=REPO_ROOT)
     print(f"pytest exit code: {proc.returncode}", flush=True)
@@ -311,7 +343,7 @@ def main() -> int:
     if new_failures or stale or problems:
         return 1
 
-    vacuous = vacuity_failure(len(ran))
+    vacuous = vacuity_failure(len(ran), args.min_ran)
     if vacuous:
         summarise(["", f"**FAILED — {vacuous}**"])
         return 1

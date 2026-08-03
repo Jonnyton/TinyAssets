@@ -269,6 +269,46 @@ Cross-family review: Codex, two rounds, both `adapt`, all findings addressed
 - A PR that breaks a test can no longer auto-merge to production.
 - Repo test debt becomes a visible, counted, one-way-ratcheted number instead of
   an unknown.
+### Why `strict: false`, and why not a fast subset (2026-08-03)
+
+`Require branches to be up to date` (`strict`) means a PR must be current with
+`main` *at merge time*. `main` takes a commit every **~10 min** (median, 39 gaps
+measured) and this suite takes **~37 min**, so a PR goes stale before its own
+run finishes: only **5% of gaps** are long enough to land. Keeping `strict`
+would have wedged every merge, the drain included.
+
+A fast subset was built and measured: excluding the 53 files that held 90%
+of the wall clock gave a **4-minute** gate (run 30781261125).
+
+**Correction (cross-family review, same day).** That run's 81 new failures
+were first read as proof the subset destabilised the baseline. It was not:
+every one of the 81 was ALSO failing in the same-tree full run
+(30780762657), so the exclusion caused **zero** of them. The green run I
+compared against was a *different tree* — 32 files, including production
+code, had landed in between. The failures are real regressions carried in
+by `main`, and the subset remains viable. Recorded because the wrong
+inference nearly quarantined 144 real regressions as `flaky`, which would
+have hidden every future pass→fail transition on them.
+
+**Resolution: the fast subset is the required gate, and `strict` stays true.**
+`required-tests` excludes the 47 heaviest files (~4 min, 83.7% of tests
+kept); `full-tests` runs everything on every main push as the tripwire.
+This keeps latest-main integration testing — which `strict: false` would
+have given up, permitting a stale-green PR to merge after an incompatible
+`main` change — while fitting inside main's commit cadence. PRs do not
+serialize: each runs its own ~37 min concurrently and merges when green, so
+throughput is unchanged and only per-PR latency rises. The cost is a real
+regression `strict` used to prevent — a PR green against an older `main` can
+merge after a compatible-looking invariant changed underneath it. That is
+detected by the per-SHA `push: main` run, which now actually completes (main
+runs used to share one concurrency group and cancel each other, so the
+"tripwire" had never once finished).
+
+**Unblocking a subset gate, parallelism, and `strict` all reduce to one thing:
+making the suite order-independent.** Two leaks are already fixed (the
+`git_bridge.is_enabled` process cache; the headless tray collection abort); the
+xdist note above and these 81 failures are the same class.
+
 - Every PR pays the serial suite: measured **~26 minutes** on 2026-08-02
   (25:48 of tests; the original ~3-minute estimate predated the suite's growth
   to ~9,100 tests and was wrong). Accepted trade: it was ~0 minutes of
