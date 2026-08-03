@@ -244,8 +244,30 @@ def main() -> int:
     # sins they did not commit.
     #
     # Serial does not fix the underlying leak — it makes it deterministic, which
-    # is what a gate needs. Fixing the leak is tracked separately; when it is
-    # fixed, parallelism can come back and cut the runtime ~4x.
+    # is what a gate needs.
+    #
+    # The "~4x" this comment used to promise on the other side of that fix was a
+    # HYPOTHESIS, and it is wrong. Measured 2026-08-03 on a 20-logical-CPU
+    # machine, this exact subset, same tree, `-n auto --dist loadfile`:
+    #
+    #     serial        10:04   214 failing
+    #     xdist run A   11:40   219 failing
+    #     xdist run B    9:53   218 failing
+    #
+    # No speedup — run A was SLOWER than serial — and the two parallel runs
+    # disagreed on 7 tests, with 1 failing only under parallelism. Per-worker
+    # interpreter startup and `--dist loadfile` granularity appear to eat the
+    # whole gain on a subset this shape.
+    #
+    # The 7 disagreements are also NOT the patch-leak class fixed in #2199.
+    # They are resource contention: a 5s `subprocess` timeout expiring under CPU
+    # saturation, process-spawn failures during setup, a shared database sidecar
+    # (`ScopedResetBlocked`), and two order-sensitive assertions.
+    #
+    # So do not reach for xdist here expecting a win. If parallelism is ever
+    # revisited, measure the FULL suite first — the 47 files excluded from this
+    # subset hold ~90% of its wall clock and are the only place file-level
+    # distribution has real headroom. That is unmeasured.
     cmd = [
         sys.executable,
         "-m",
