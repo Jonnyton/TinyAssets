@@ -326,6 +326,7 @@ def execute_replay_safe_effect(
     invoke: Any,
     reconcile: Any | None = None,
     max_failed_retries: int | None = None,
+    reservation_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Journal before fire and reconcile every ambiguous/pending replay."""
     if not effect_key.strip():
@@ -336,6 +337,7 @@ def execute_replay_safe_effect(
         sink=sink,
         run_id=run_id,
         max_failed_retries=max_failed_retries,
+        reservation_evidence=reservation_evidence,
     )
     status = reservation["status"]
     if status == "duplicate":

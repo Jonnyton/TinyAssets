@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -613,6 +614,119 @@ def test_scoped_cloud_effect_freezes_intent_before_failed_preparation(tmp_path):
         )
 
     assert channel.prepare_count == 1
+
+
+def test_scoped_cloud_effect_recovers_crash_after_atomic_intent_reservation(tmp_path):
+    packet = {
+        "sink": "github_pull_request",
+        "destination": "owner/repo",
+        "payload": {
+            "title": "Ship",
+            "body": "Original body",
+            "base_branch": "main",
+            "changes_json": {"README.md": "first\n"},
+            "labels": ["automation"],
+            "draft": True,
+        },
+    }
+    prepare_request = {
+        "operation": "prepare_commit",
+        "repository": "owner/repo",
+        "base_branch": "main",
+        "changes_json": {"README.md": "first\n"},
+        "edits_json": None,
+        "commit_message": "Ship",
+    }
+    effect_intent_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "prepare": prepare_request,
+                "pull_request": {
+                    "base_branch": "main",
+                    "body": "Original body",
+                    "draft": True,
+                    "labels": ["automation"],
+                    "title": "Ship",
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    preparation_identity_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "automation_id": "automation-7",
+                "claim_id": "claim-3",
+                "effect_kind": github_pr._GITHUB_PR_EFFECT_KIND,
+                "repository": "owner/repo",
+                "universe_id": "universe-42",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    intent_key = f"github-pr-intent:{preparation_identity_digest}"
+    reservation = external_write_receipts.try_reserve_receipt(
+        tmp_path,
+        idempotency_hint=intent_key,
+        sink="github_pull_request.intent",
+        run_id="run-crashed",
+        reservation_evidence={
+            "result": {"effect_intent_digest": effect_intent_digest},
+        },
+    )
+    assert reservation["row"]["evidence"] == {
+        "result": {"effect_intent_digest": effect_intent_digest},
+    }
+    with external_write_receipts._connect(tmp_path) as conn:
+        conn.execute(
+            "UPDATE external_write_receipts SET created_at = 0 "
+            "WHERE idempotency_hint = ? AND sink = ?",
+            (intent_key, "github_pull_request.intent"),
+        )
+        conn.commit()
+
+    class _RecoveredChannel:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, verb, request):
+            self.calls.append((verb, request["operation"]))
+            if request["operation"] == "prepare_commit":
+                return {"commit_sha": "b" * 40, "tree_sha": "c" * 40}
+            return {
+                "pr_url": "https://github.com/owner/repo/pull/17",
+                "pr_number": 17,
+                "commit_sha": request["intended_head_sha"],
+            }
+
+    channel = _RecoveredChannel()
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-cloud",
+        provider="github",
+        destination="github.com/owner/repo",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+        _channel=channel,
+    )
+    evidence = github_pr._execute_scoped_cloud_github_pr_effect(
+        universe_dir=tmp_path,
+        universe_id="universe-42",
+        automation_id="automation-7",
+        claim_id="claim-3",
+        repository="owner/repo",
+        packet=packet,
+        proxy=proxy,
+        run_id="run-recovered",
+    )
+
+    assert evidence["status"] == "succeeded"
+    assert channel.calls == [
+        ("pull_requests:write", "prepare_commit"),
+        ("pull_requests:write", "publish_pull_request"),
+    ]
 
 
 def test_scoped_cloud_effect_stale_retry_keeps_failure_count(tmp_path):

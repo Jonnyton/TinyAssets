@@ -562,6 +562,10 @@ def _execute_scoped_cloud_github_pr_effect(
         sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
         run_id=run_id,
         invoke=lambda: {"effect_intent_digest": effect_intent_digest},
+        reconcile=lambda _effect_key: {"status": "succeeded", "evidence": {}},
+        reservation_evidence={
+            "result": {"effect_intent_digest": effect_intent_digest},
+        },
     )
     if frozen_intent.get("status") != "succeeded":
         raise ProxyRequestError("cloud GitHub effect intent reservation did not complete")

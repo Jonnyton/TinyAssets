@@ -370,6 +370,7 @@ def try_reserve_receipt(
     now: float | None = None,
     stale_after_seconds: float = STALE_PENDING_THRESHOLD_SECONDS,
     max_failed_retries: int | None = None,
+    reservation_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically reserve a receipt slot for ``(idempotency_hint, sink)``.
 
@@ -407,6 +408,11 @@ def try_reserve_receipt(
     """
     if max_failed_retries is not None and max_failed_retries < 0:
         raise ValueError("max_failed_retries must be non-negative")
+    reservation_payload = json.dumps(
+        dict(reservation_evidence or {}),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     if not idempotency_hint:
         return {"status": "no_hint"}
     initialize_receipts_db(universe_dir)
@@ -424,10 +430,17 @@ def try_reserve_receipt(
             INSERT INTO external_write_receipts (
                 idempotency_hint, sink, evidence_json, run_id,
                 created_at, status
-            ) VALUES (?, ?, '{}', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(idempotency_hint, sink) DO NOTHING
             """,
-            (idempotency_hint, sink, run_id, ts, STATUS_PENDING),
+            (
+                idempotency_hint,
+                sink,
+                reservation_payload,
+                run_id,
+                ts,
+                STATUS_PENDING,
+            ),
         )
         rowcount = cursor.rowcount
         if rowcount > 0:
@@ -437,10 +450,17 @@ def try_reserve_receipt(
                     INSERT INTO external_write_receipts (
                         idempotency_hint, sink, evidence_json, run_id,
                         created_at, status
-                    ) VALUES (?, ?, '{}', ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(idempotency_hint, sink) DO NOTHING
                     """,
-                    (peer_key, sink, run_id, ts, STATUS_PENDING),
+                    (
+                        peer_key,
+                        sink,
+                        reservation_payload,
+                        run_id,
+                        ts,
+                        STATUS_PENDING,
+                    ),
                 )
                 if peer_cursor.rowcount != 1:
                     conn.rollback()
@@ -478,10 +498,17 @@ def try_reserve_receipt(
                 INSERT INTO external_write_receipts (
                     idempotency_hint, sink, evidence_json, run_id,
                     created_at, status
-                ) VALUES (?, ?, '{}', ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(idempotency_hint, sink) DO NOTHING
                 """,
-                (idempotency_hint, sink, run_id, ts, STATUS_PENDING),
+                (
+                    idempotency_hint,
+                    sink,
+                    reservation_payload,
+                    run_id,
+                    ts,
+                    STATUS_PENDING,
+                ),
             )
             conn.commit()
             row = conn.execute(
@@ -528,14 +555,13 @@ def try_reserve_receipt(
                 and failed_attempts > max_failed_retries
             ):
                 return {"status": "retry_exhausted", "row": existing}
-            pending_evidence = (
-                json.dumps(
-                    {"failed_attempts": failed_attempts},
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                if max_failed_retries is not None
-                else "{}"
+            pending_payload = dict(reservation_evidence or {})
+            if max_failed_retries is not None:
+                pending_payload["failed_attempts"] = failed_attempts
+            pending_evidence = json.dumps(
+                pending_payload,
+                sort_keys=True,
+                separators=(",", ":"),
             )
             # Failed-prior policy: a retry under the same hint replaces
             # the failed row with a fresh reservation. UPDATE WHERE
