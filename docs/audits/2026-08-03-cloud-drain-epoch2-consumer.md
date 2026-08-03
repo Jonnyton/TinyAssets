@@ -9,8 +9,9 @@ fleet and ordinary epoch-2 Branch tasks. It does not claim chatbot activation,
 useful repository delivery, tray cutover, or the required 24-hour PC-off
 acceptance.
 
-Implementation head before the final independent review: `210e8896` plus this
-evidence-only commit.
+Implementation commit after the final current-main rebase: `bcc9dbbf`. The
+immutable PR comment records the final exact PR head, including this evidence
+document.
 
 Owning change: `activate-main-universe-spec-drain`.
 
@@ -68,7 +69,7 @@ model only after this revalidation.
 ## Local evidence
 
 Environment: Windows PowerShell, Python 3.14.3, repository worktree based on
-`origin/main` at `c743d30d`.
+`origin/main` at `d8dea1a9`.
 
 Commands run at implementation head:
 
@@ -79,7 +80,7 @@ py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_soul_loop_dispatch.py
 ```
 
-Result after the restart-authority amendment: `255 passed in 38.92s`. This
+Result after the final current-main rebase: `255 passed in 40.70s`. This
 includes eight
 fresh-database, two-worker races; each race produced exactly one
 activation-bound claim winner.
@@ -100,10 +101,10 @@ parity passed; diff check clean.
 
 Fresh-context same-provider review is permitted by the host after the opposite
 provider reported its hard subscription limit. An initial review of
-`5dca7056` is in progress, but that head was superseded by the proactive
-restart-authority amendment at `210e8896`. A second fresh-context review of the
-final exact head is required. The verdict and immutable PR comment must be
-added here before merge.
+`5dca7056` was started before the proactive restart-authority amendments and
+is therefore advisory only. A second fresh-context review of the final exact
+head is required. The verdict and immutable PR comment must be added here
+before merge.
 
 ## Deployment and acceptance state
 
