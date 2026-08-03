@@ -43,11 +43,46 @@ def test_logs_service_restart_policy():
     assert restart == "unless-stopped", f"restart policy should be unless-stopped, got: {restart}"
 
 
-def test_logs_service_mounts_docker_socket():
+def test_logs_service_has_no_docker_socket_or_container_control():
     data = _load_compose()
     volumes = data["services"]["logs"].get("volumes", [])
     socket_mounts = [v for v in volumes if "/var/run/docker.sock" in str(v)]
-    assert socket_mounts, "logs service must mount /var/run/docker.sock"
+    assert not socket_mounts, "logging sidecar must not receive Docker control access"
+
+
+def test_runtime_containers_forward_logs_without_docker_socket():
+    data = _load_compose()
+    services = data["services"]
+    for name in (
+        "daemon",
+        "cloudflared",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    ):
+        logging = services[name].get("logging") or {}
+        assert logging.get("driver") == "fluentd", name
+        options = logging.get("options") or {}
+        assert options.get("fluentd-address") == "127.0.0.1:24224", name
+        assert str(options.get("fluentd-async")).lower() == "true", name
+
+    ports = services["logs"].get("ports") or []
+    assert "127.0.0.1:24224:24224" in ports
+
+
+def test_sidecars_receive_only_their_required_secret():
+    services = _load_compose()["services"]
+    expected = {
+        "cloudflared": {"CLOUDFLARE_TUNNEL_TOKEN"},
+        "logs": {"BETTERSTACK_SOURCE_TOKEN"},
+    }
+    for name, allowed in expected.items():
+        service = services[name]
+        assert not (service.get("env_file") or []), name
+        environment = service.get("environment") or {}
+        assert set(environment) == allowed, name
+        assert all("${" in str(value) for value in environment.values()), name
 
 
 def test_logs_service_mounts_vector_config():
@@ -77,35 +112,23 @@ def _load_vector() -> dict:
     return yaml.safe_load(VECTOR_YAML.read_text(encoding="utf-8"))
 
 
-def test_vector_docker_logs_source():
+def test_vector_fluent_source_has_no_docker_api_dependency():
     data = _load_vector()
     sources = data.get("sources", {})
-    docker_source = next(
-        (v for v in sources.values() if v.get("type") == "docker_logs"), None
-    )
-    assert docker_source is not None, "vector.yaml must have a docker_logs source"
+    assert all(source.get("type") != "docker_logs" for source in sources.values())
+    fluent = next((v for v in sources.values() if v.get("type") == "fluent"), None)
+    assert fluent is not None
+    assert fluent.get("address") == "0.0.0.0:24224"
+    assert fluent.get("mode") == "tcp"
 
 
-def test_vector_tails_workflow_daemon():
+def test_vector_classifies_forwarded_runtime_tags():
     data = _load_vector()
-    sources = data.get("sources", {})
-    docker_source = next(
-        (v for v in sources.values() if v.get("type") == "docker_logs"), None
-    )
-    assert docker_source is not None
-    containers = docker_source.get("include_containers", [])
-    assert "tinyassets-daemon" in containers, "docker_logs source must include tinyassets-daemon"
-
-
-def test_vector_tails_workflow_tunnel():
-    data = _load_vector()
-    sources = data.get("sources", {})
-    docker_source = next(
-        (v for v in sources.values() if v.get("type") == "docker_logs"), None
-    )
-    assert docker_source is not None
-    containers = docker_source.get("include_containers", [])
-    assert "tinyassets-tunnel" in containers, "docker_logs source must include tinyassets-tunnel"
+    transform = data["transforms"]["enriched"]
+    source = transform.get("source", "")
+    assert "tinyassets-daemon" in source
+    assert "tinyassets-tunnel" in source
+    assert "tinyassets-worker" in source
 
 
 def test_vector_has_stdout_sink():

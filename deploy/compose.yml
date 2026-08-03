@@ -21,6 +21,15 @@
 # provisions that file with chmod 600 per HETZNER-DEPLOY.md. Never
 # commit real values to this repo.
 #
+# Log forwarding uses Docker's asynchronous Fluent driver to a loopback-only
+# Vector listener. No sidecar receives the Docker control socket.
+x-tinyassets-log-forwarding: &tinyassets_log_forwarding
+  driver: fluentd
+  options:
+    fluentd-address: "127.0.0.1:24224"
+    fluentd-async: "true"
+    tag: "{{.Name}}"
+
 # Dev use:
 #   # Render this compose against a local env file for smoke tests.
 #   cp deploy/tinyassets-env.template /tmp/tinyassets-env
@@ -34,6 +43,7 @@ services:
     image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
     container_name: tinyassets-daemon
     restart: unless-stopped
+    logging: *tinyassets_log_forwarding
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
@@ -75,6 +85,7 @@ services:
     env_file:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env
+      - /etc/tinyassets/request-idempotency.env
     volumes:
       - tinyassets-data:/data
     healthcheck:
@@ -96,6 +107,7 @@ services:
     image: cloudflare/cloudflared:2026.3.0@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0
     container_name: tinyassets-tunnel
     restart: unless-stopped
+    logging: *tinyassets_log_forwarding
     # cloudflared runs in host network namespace so that the tunnel's
     # dashboard-configured ingress rule `http://localhost:8001` resolves
     # to the daemon's loopback-published port (127.0.0.1:8001 on the
@@ -107,8 +119,8 @@ services:
     network_mode: host
     # Tunnel token auth (shape A per Row C).
     command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    env_file:
-      - /etc/tinyassets/env
+    environment:
+      CLOUDFLARE_TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       daemon:
         condition: service_healthy
@@ -116,8 +128,9 @@ services:
       org.tinyassets.component: tunnel
       org.tinyassets.role: cloudflare-ingress
 
-  # Row K — log aggregation sidecar. Tails daemon + cloudflared stdout
-  # via the Docker socket. Ships to Better Stack when
+  # Row K — log aggregation sidecar. Receives daemon, tunnel, and worker
+  # stdout through Docker's asynchronous Fluent logging driver. The listener
+  # is host-loopback-only and Vector has no Docker control socket. Ships to Better Stack when
   # BETTERSTACK_SOURCE_TOKEN is set in /etc/tinyassets/env; otherwise
   # logs are captured by compose stdout (journald) only.
   #
@@ -129,16 +142,15 @@ services:
     image: timberio/vector:0.40.0-alpine@sha256:7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2
     container_name: tinyassets-logs
     restart: unless-stopped
-    env_file:
-      - /etc/tinyassets/env
+    environment:
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+    ports:
+      - "127.0.0.1:24224:24224"
     entrypoint: ["/bin/sh", "/etc/vector/vector-entrypoint.sh"]
     volumes:
       - /opt/tinyassets/deploy/vector.yaml:/etc/vector/vector.yaml:ro
       - /opt/tinyassets/deploy/vector-betterstack.yaml:/etc/vector/vector-betterstack.yaml:ro
       - /opt/tinyassets/deploy/vector-entrypoint.sh:/etc/vector/vector-entrypoint.sh:ro
-      # Docker socket access so vector's docker_logs source can tail
-      # container stdout. Read-only — we never modify containers.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - daemon
     labels:
@@ -162,6 +174,7 @@ services:
     image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
     container_name: tinyassets-worker
     restart: unless-stopped
+    logging: *tinyassets_log_forwarding
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
@@ -186,6 +199,7 @@ services:
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-1
     env_file:
       - /etc/tinyassets/env
+      - /etc/tinyassets/request-idempotency.env
     volumes:
       - tinyassets-data:/data
     depends_on:

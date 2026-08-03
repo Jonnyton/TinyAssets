@@ -1,0 +1,8 @@
+# TinyAssets daemon + worker request-admission secret.
+#
+# Install as /etc/tinyassets/request-idempotency.env with owner
+# root:tinyassets and mode 640. Do not inject it into tunnel/logging sidecars.
+# Generate canonical base64 for 48 random bytes and never reuse the
+# daemon-only agent-interchange key. Once admitted records exist, this key is
+# immutable until versioned dual-read rotation support ships.
+TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=

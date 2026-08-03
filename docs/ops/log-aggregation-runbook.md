@@ -10,7 +10,7 @@ TinyAssets uses a two-layer logging strategy on the self-hosted Droplet:
 
 | Layer | Tool | What it does |
 |-------|------|--------------|
-| Real-time forwarding | Vector sidecar (`deploy/vector.yaml`) | Tails `tinyassets-daemon` + `workflow-tunnel` container stdout via Docker socket; ships to Better Stack when `BETTERSTACK_SOURCE_TOKEN` is set; always echoes to compose stdout (journald) |
+| Real-time forwarding | Vector sidecar (`deploy/vector.yaml`) | Receives daemon, tunnel, and worker stdout from Docker's async Fluent driver on host-loopback port 24224; has no Docker socket; ships to Better Stack when `BETTERSTACK_SOURCE_TOKEN` is set |
 | Offsite archiving | `deploy/ship-logs.sh` + systemd timer | Pulls last 24 h of container logs, archives as `.tar.gz`, uploads to `LOG_DEST` (Hetzner Storage Box or DO Spaces), prunes archives older than 30 days |
 
 ---
@@ -34,7 +34,7 @@ BETTERSTACK_SOURCE_TOKEN=<your-token>
 docker compose -f /opt/tinyassets/deploy/compose.yml restart logs
 ```
 
-Logs from `tinyassets-daemon` and `workflow-tunnel` will appear in Better Stack within seconds.
+Logs from the daemon, tunnel, and workers will appear in Better Stack within seconds.
 
 ### 2. Offsite archive via ship-logs.sh
 
@@ -78,15 +78,9 @@ Optional env vars: `DISK_WATCH_PATH`, `DISK_WARN_PCT`, `GITHUB_REPOSITORY`.
 ### Query today's logs (live on Droplet)
 
 ```bash
-# Last hour — daemon only
-docker logs tinyassets-daemon --since 1h
-
-# Last 24 h — both services
-docker logs tinyassets-daemon --since 24h
-docker logs workflow-tunnel --since 24h
-
-# Tail live
-docker logs tinyassets-daemon -f
+# Vector's local forwarded stream (daemon, tunnel, and workers)
+docker logs tinyassets-logs --since 1h
+docker logs tinyassets-logs -f
 ```
 
 ### Query via journald (compose captures Vector's stdout)
