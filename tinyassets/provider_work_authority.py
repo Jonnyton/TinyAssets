@@ -401,7 +401,7 @@ class ProviderUniverseWorkAuthority:
     max_cost_microunits: int
     expires_at: str
     execution_subject: ExecutionSubject
-    allowed_roles: tuple[str, ...] = ()
+    allowed_roles: tuple[str, ...] | None = None
     branch_def_id: str | None = None
     branch_version_id: str | None = None
     agent_invocation_command_id: str | None = None
@@ -417,7 +417,7 @@ class ProviderUniverseWorkAuthority:
             _reference(getattr(self, name), name)
         allowed_roles = (
             (self.role,)
-            if not self.allowed_roles
+            if self.allowed_roles is None
             else _closed_tuple(self.allowed_roles, "allowed_roles")
         )
         if self.role not in allowed_roles:

@@ -459,6 +459,9 @@ def test_universe_receipt_is_dark_bounded_and_restart_safe(tmp_path) -> None:
 
 def test_universe_receipt_preserves_exact_authorized_role_set(tmp_path) -> None:
     store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
+    with pytest.raises(ValueError, match="allowed_roles"):
+        replace(authority, allowed_roles=())
+
     multi_role = replace(
         authority,
         allowed_roles=("writer", "reviewer"),
