@@ -336,94 +336,63 @@ def universe_input() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Process-global patch leak detector
+# Process-global patch leak detector — see tests/_global_leak_guard.py
 # ---------------------------------------------------------------------------
-#
-# Watched callables are process-global. A test that patches one and fails to
-# restore it corrupts every later test in the same interpreter, and the damage
-# surfaces in the VICTIMS, never in the culprit — which reads as flaky ordering.
-#
-# Two measured incidents in this repo:
-#
-#   * a threaded `patch("...github_pr.subprocess.run")` leaked, and ~70
-#     unrelated tests then received its canned stdout
-#     `https://github.com/x/x/pull/99` from what they believed were real
-#     subprocess calls. 111 quarantine entries flipped between two CI runs whose
-#     trees differed by two test functions (#2197, #2199).
-#   * a `shutil.which` stub latched `git_bridge.is_enabled` to False and
-#     silently no-opped 138 tests (see `_reset_git_enabled_probe` above).
-#
-# This checks the CONDITION rather than the spelling. An earlier attempt used an
-# AST lint to spot the unsafe pattern; five review rounds each found a fresh
-# false positive in it (method targets, shadowed imports, `functools.partial`
-# lookalikes, a parameter named `patch`), because deciding what a name refers to
-# is real scope analysis. Checking what actually leaked is both simpler and
-# strictly stronger: it catches any spelling, and correct code cannot trip it,
-# because correct code restores what it patches.
-_LEAK_WATCHED = (
-    ("subprocess", "run"),
-    ("subprocess", "Popen"),
-    ("subprocess", "check_output"),
-    ("subprocess", "check_call"),
-    ("shutil", "which"),
-)
 
-_leak_baseline: dict[tuple[str, str], object] = {}
+from tests import _global_leak_guard as _leak_guard  # noqa: E402
+
+_LEAK_STASH = pytest.StashKey[dict]()
 
 
-def _snapshot_globals() -> dict[tuple[str, str], object]:
-    import importlib
-
-    snap: dict[tuple[str, str], object] = {}
-    for module_name, attr in _LEAK_WATCHED:
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:  # pragma: no cover - stdlib, but stay fail-soft
-            continue
-        snap[(module_name, attr)] = getattr(module, attr, None)
-    return snap
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        f"{_leak_guard.MARKER}(*targets): this test's fixture legitimately owns "
+        "a process-global (e.g. 'subprocess.run') for its whole scope; do not "
+        "flag or repair it.",
+    )
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
-    """Baseline BEFORE the test's own fixtures run."""
-    _leak_baseline.clear()
-    _leak_baseline.update(_snapshot_globals())
+    """Baseline before the test's own fixtures run.
 
-
-@pytest.hookimpl(hookwrapper=True, trylast=True)
-def pytest_runtest_teardown(item, nextitem):
-    """Compare AFTER every finalizer, including `monkeypatch`'s undo.
-
-    This is a teardown hookwrapper rather than an autouse fixture for a
-    measured reason: as a fixture it ran BEFORE `monkeypatch` restored its
-    patches, so it reported patches pytest was about to put back — a false
-    positive on completely correct tests. The code after `yield` here runs once
-    all finalizers are done.
+    Stored on `item.stash`, not a module global: a process-wide slot would be
+    clobbered by a nested runtest protocol or an in-process threaded runner.
     """
-    import importlib
+    item.stash[_LEAK_STASH] = _leak_guard.snapshot()
 
-    yield
 
-    if not _leak_baseline:
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Compare after every finalizer has run.
+
+    `tryfirst`, NOT `trylast`. Hook wrappers unwind in reverse, so the wrapper
+    that runs FIRST before the yield resumes LAST after it — which is where
+    this check has to be, or it can flag a plugin before that plugin restores
+    its own patch. Getting this backwards was a real defect (cross-family
+    review 2026-08-03), as was an earlier autouse-fixture version that ran
+    before `monkeypatch`'s undo and produced 34 false positives.
+    """
+    outcome = yield
+
+    baseline = item.stash.get(_LEAK_STASH, None)
+    if not baseline:
         return
-    leaked = []
-    for (module_name, attr), original in _leak_baseline.items():
-        module = importlib.import_module(module_name)
-        current = getattr(module, attr, None)
-        if current is not original:
-            leaked.append(f"{module_name}.{attr} -> {current!r}")
-            # Repair, so ONE offender does not cascade into a wall of unrelated
-            # failures. The point is to attribute the leak, not to punish its
-            # victims.
-            setattr(module, attr, original)
-    _leak_baseline.clear()
-    if leaked:
-        raise AssertionError(
-            f"{item.nodeid} left a process-global patched, which silently "
-            f"corrupts every later test in this process: " + "; ".join(leaked)
-            + ". A common cause is entering `patch(...)` from inside a thread "
-            "worker: the swap is not thread-local, so two threads can "
-            "interleave and leave the mock installed permanently. Hoist the "
-            "patch to wrap the whole concurrent section on the calling thread."
-        )
+    exempt = set()
+    for marker in item.iter_markers(name=_leak_guard.MARKER):
+        exempt |= _leak_guard.exempt_targets(marker.args)
+
+    changed = _leak_guard.diff(baseline, exempt)
+    if not changed:
+        return
+    message = _leak_guard.describe(item.nodeid, changed)
+    _leak_guard.repair(changed)
+
+    # NEVER mask an exception teardown already raised. Replacing it would hide
+    # the more informative failure behind this diagnostic; the leak is reported
+    # as an extra section instead.
+    if outcome.excinfo is not None:
+        item.add_report_section("teardown", "global-patch-leak", message)
+        return
+    raise AssertionError(message)
