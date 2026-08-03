@@ -246,9 +246,12 @@ def test_ship_logs_requires_a_complete_readable_fleet_archive():
     )[0]
     assert "docker ps" not in collect
     assert "{{.State.Status}}" in collect
+    assert "{{.Id}}" in collect
     assert "fleet-manifest.tsv" in text
     assert "docker logs" in collect
     assert "|| true" not in collect
+    assert 'docker logs "${container_id}"' in collect
+    assert 'current_id="$(docker inspect' in collect
 
 
 def test_log_runbook_uses_current_production_identities():
@@ -327,7 +330,7 @@ def test_ship_logs_missing_log_dest_exits_1(tmp_path):
 
 
 @pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
-@pytest.mark.parametrize("failure", [None, "missing", "unreadable"])
+@pytest.mark.parametrize("failure", [None, "missing", "unreadable", "recreated"])
 def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
     bin_dir = tmp_path / "bin"
     capture_dir = tmp_path / "capture"
@@ -339,22 +342,44 @@ def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
         "set -euo pipefail\n"
         "case \"$1\" in\n"
         "  inspect)\n"
+        "    format=$3\n"
         "    name=$4\n"
         "    if [ \"${SHIP_LOG_FAILURE-}\" = missing ] "
         "&& [ \"$name\" = worker-b ]; then exit 1; fi\n"
-        "    if [ \"$name\" = worker-b ]; then printf 'exited\\n'; else printf 'running\\n'; fi\n"
+        "    id=$(cat \"${SHIP_LOG_STATE:?}/$name.id\")\n"
+        "    status=$(cat \"${SHIP_LOG_STATE:?}/$name.status\")\n"
+        "    case \"$format\" in\n"
+        "      '{{.Id}} {{.State.Status}}')\n"
+        "        printf '%s %s\\n' \"$id\" \"$status\"\n"
+        "        if [ \"${SHIP_LOG_FAILURE-}\" = recreated ] "
+        "&& [ \"$name\" = worker-b ]; then printf '%064x' 99 > \"$SHIP_LOG_STATE/$name.id\"; fi\n"
+        "        ;;\n"
+        "      '{{.Id}}') printf '%s\\n' \"$id\" ;;\n"
+        "      *) exit 91 ;;\n"
+        "    esac\n"
         "    ;;\n"
         "  logs)\n"
-        "    name=$2\n"
+        "    id=$2\n"
         "    if [ \"${SHIP_LOG_FAILURE-}\" = unreadable ] "
-        "&& [ \"$name\" = worker-b ]; then exit 1; fi\n"
-        "    printf 'logs for %s\\n' \"$name\"\n"
+        "&& [ \"$id\" = \"$(cat \"$SHIP_LOG_STATE/worker-b.id\")\" ]; then exit 1; fi\n"
+        "    printf 'logs for %s\\n' \"$id\"\n"
         "    ;;\n"
         "  *) exit 90 ;;\n"
         "esac\n",
         encoding="utf-8",
     )
     docker.chmod(0o755)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    worker_ids = {
+        "worker-a": f"{1:064x}",
+        "worker-b": f"{2:064x}",
+    }
+    for name, container_id in worker_ids.items():
+        (state_dir / f"{name}.id").write_text(container_id, encoding="utf-8")
+        (state_dir / f"{name}.status").write_text(
+            "exited" if name == "worker-b" else "running", encoding="utf-8"
+        )
     rclone = bin_dir / "rclone"
     rclone.write_text(
         "#!/usr/bin/env bash\n"
@@ -375,6 +400,7 @@ def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
             "LOG_DIR": str(tmp_path / "scratch"),
             "SHIP_LOG_CAPTURE": str(capture_dir),
             "SHIP_LOG_FAILURE": failure or "",
+            "SHIP_LOG_STATE": str(state_dir),
         }
     )
 
@@ -402,5 +428,5 @@ def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
         manifest = archive.extractfile("fleet-manifest.tsv")
         assert manifest is not None
         contents = manifest.read().decode("utf-8")
-    assert "worker-a\trunning\tworker-a.log" in contents
-    assert "worker-b\texited\tworker-b.log" in contents
+    assert f"worker-a\t{worker_ids['worker-a']}\trunning\tworker-a.log" in contents
+    assert f"worker-b\t{worker_ids['worker-b']}\texited\tworker-b.log" in contents

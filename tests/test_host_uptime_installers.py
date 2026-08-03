@@ -27,12 +27,14 @@ TIMERS = (
     "tinyassets-backup.timer",
     "tinyassets-prune.timer",
     "tinyassets-disk-watch.timer",
+    "tinyassets-ship-logs.timer",
 )
 SERVICES = tuple(name.removesuffix(".timer") + ".service" for name in TIMERS)
 UNIT_FILES = tuple(item for pair in zip(SERVICES, TIMERS, strict=True) for item in pair)
 RUNTIME_FILES = (
     "deploy/daemon-watchdog.sh",
     "deploy/backup.sh",
+    "deploy/ship-logs.sh",
     "scripts/__init__.py",
     "scripts/watchdog.py",
     "scripts/mcp_public_canary.py",
@@ -763,11 +765,16 @@ def test_fresh_install_converges_exact_manifest(tmp_path):
         "daemon-watchdog.service",
         "tinyassets-backup.service",
         "tinyassets-disk-watch.service",
+        "tinyassets-ship-logs.service",
     ):
         text = (systemd / service).read_text(encoding="utf-8")
         assert "/opt/tinyassets-host-uptime/current/" in text
         assert "/opt/tinyassets/scripts/" not in text
         assert "/opt/tinyassets/deploy/" not in text
+    for relative in RUNTIME_FILES:
+        assert (current / relative).read_bytes() == (REPO / relative).read_bytes()
+    for unit in UNIT_FILES:
+        assert (systemd / unit).read_bytes() == (REPO / "deploy" / unit).read_bytes()
     disk_watch = (systemd / "tinyassets-disk-watch.service").read_text(
         encoding="utf-8"
     )

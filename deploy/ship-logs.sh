@@ -82,20 +82,33 @@ trap 'rm -rf "${LOG_DIR}"' EXIT
 
 echo "[ship-logs] collecting logs for containers: ${LOG_CONTAINERS}"
 manifest="${LOG_DIR}/fleet-manifest.tsv"
-printf 'container\tstatus\tlog_file\n' > "${manifest}"
+printf 'container\tcontainer_id\tstatus\tlog_file\n' > "${manifest}"
 archive_files=("$(basename -- "${manifest}")")
 for container in ${LOG_CONTAINERS}; do
     log_file="${LOG_DIR}/${container}.log"
-    if ! status="$(docker inspect -f '{{.State.Status}}' "${container}" 2>/dev/null)"; then
+    if ! identity_state="$(
+        docker inspect -f '{{.Id}} {{.State.Status}}' "${container}" 2>/dev/null
+    )"; then
         echo "ERROR: required log container ${container} is missing" >&2
         exit 1
     fi
-    if ! docker logs "${container}" --since "${LOG_SINCE}" >"${log_file}" 2>&1; then
+    read -r container_id status extra <<< "${identity_state}"
+    if [[ ! "${container_id}" =~ ^[0-9a-f]{64}$ || -z "${status}" || -n "${extra:-}" ]]; then
+        echo "ERROR: required log container ${container} has malformed identity state" >&2
+        exit 1
+    fi
+    if ! docker logs "${container_id}" --since "${LOG_SINCE}" >"${log_file}" 2>&1; then
         echo "ERROR: logs for required container ${container} are unreadable" >&2
         exit 1
     fi
+    if ! current_id="$(docker inspect -f '{{.Id}}' "${container}" 2>/dev/null)" \
+        || [ "${current_id}" != "${container_id}" ]; then
+        echo "ERROR: required log container ${container} changed generation during collection" >&2
+        exit 1
+    fi
     log_name="$(basename -- "${log_file}")"
-    printf '%s\t%s\t%s\n' "${container}" "${status}" "${log_name}" >> "${manifest}"
+    printf '%s\t%s\t%s\t%s\n' \
+        "${container}" "${container_id}" "${status}" "${log_name}" >> "${manifest}"
     archive_files+=("${log_name}")
     lines=$(wc -l <"${log_file}")
     echo "[ship-logs] ${container}: status=${status}; ${lines} lines (since ${LOG_SINCE})"

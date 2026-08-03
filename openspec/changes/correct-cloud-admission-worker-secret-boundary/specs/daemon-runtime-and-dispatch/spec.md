@@ -84,8 +84,14 @@ The default offsite archive SHALL collect the daemon, tunnel, and every fixed pr
 
 #### Scenario: stopped workers remain visible and omissions fail closed
 - **WHEN** a required container is stopped but inspectable
-- **THEN** its logs and stopped state appear in the uploaded fleet manifest and archive
-- **AND** if any required container is missing or its logs cannot be read, the script fails before upload instead of publishing a partial archive
+- **THEN** the collector pins its exact container ID, reads logs by that immutable ID, rechecks the name still maps to the same ID, and records its ID, stopped state, and log filename in the uploaded fleet manifest and archive
+- **AND** if any required container is missing, changes generation during collection, or has unreadable logs, the script fails before upload instead of publishing a partial archive
+
+#### Scenario: normal production deployment installs the reviewed log closure
+- **WHEN** a successful production deploy triggers host-services convergence
+- **THEN** the content-addressed host release includes `deploy/ship-logs.sh` and its service/timer units
+- **AND** the service executes the script through `/opt/tinyassets-host-uptime/current`
+- **AND** installation fails before timer acceptance if any installed runtime or unit differs from the reviewed source
 
 #### Scenario: operator examples match deployed identities
 - **WHEN** an operator follows the logging runbook to query, download, extract, or troubleshoot logs

@@ -507,6 +507,7 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
     packet = _make_packet(idempotency_hint="hint-already-done")
 
     results: dict[str, dict] = {}
+    errors: dict[str, BaseException] = {}
     call_count = {"n": 0}
     call_lock = threading.Lock()
     original_subprocess_run = subprocess.run
@@ -520,13 +521,16 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         )
 
     def worker(run_id: str) -> None:
-        results[run_id] = run_github_pr_effector(
-            node_id="emit",
-            output_keys=["pr_packet"],
-            run_state={"pr_packet": packet},
-            base_path=universe,
-            run_id=run_id,
-        )
+        try:
+            results[run_id] = run_github_pr_effector(
+                node_id="emit",
+                output_keys=["pr_packet"],
+                run_state={"pr_packet": packet},
+                base_path=universe,
+                run_id=run_id,
+            )
+        except BaseException as exc:
+            errors[run_id] = exc
 
     # The patch is installed ONCE, on this thread, around the whole concurrent
     # section — it must never be entered from inside `worker`.
@@ -558,6 +562,9 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
             t.start()
         for t in threads:
             t.join(timeout=5.0)
+        assert not any(t.is_alive() for t in threads)
+        assert errors == {}
+        assert set(results) == {"run-A", "run-B"}
 
     assert subprocess.run is original_subprocess_run
     assert call_count["n"] == 0, (

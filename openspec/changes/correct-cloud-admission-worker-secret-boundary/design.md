@@ -47,7 +47,7 @@ EXIT/HUP/INT/TERM cleanup removes an incomplete transaction, and signal handling
 
 ### Archive explicit production container identities
 
-`ship-logs.sh` defaults to the daemon, tunnel, and four fixed worker container names. It inspects every named container whether running or stopped, fails the entire archive before upload when a member is missing or its logs are unreadable, and includes a fleet manifest with each container's state and log filename. The runbook uses the current `tinyassets` systemd/project, `tinyassets-logs-*` archive prefix, and `tinyassets-logs` Vector container.
+`ship-logs.sh` defaults to the daemon, tunnel, and four fixed worker container names. It captures each name's exact 64-hex container ID and state, reads logs by immutable ID, and rechecks name-to-ID continuity before accepting the file. It fails the entire archive before upload when a member is missing, changes generation, or has unreadable logs, and includes a fleet manifest with each name, ID, state, and log filename. The script plus service/timer join the content-addressed host-uptime release; the service executes through its atomic `current` symlink, the post-deploy host-services workflow installs it after every successful production deploy, and the installer compares every installed runtime/unit byte-for-byte with the reviewed source before enabling timers. The runbook uses the current `tinyassets` systemd/project, `tinyassets-logs-*` archive prefix, and `tinyassets-logs` Vector container.
 
 ## Risks / Trade-offs
 

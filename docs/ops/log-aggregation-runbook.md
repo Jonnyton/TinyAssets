@@ -38,7 +38,7 @@ Logs from the daemon, tunnel, and workers will appear in Better Stack within sec
 
 ### 2. Offsite archive via ship-logs.sh
 
-`ship-logs.sh` uses rclone. Each archive includes `fleet-manifest.tsv` with the state and log filename for the daemon, tunnel, and four workers. Stopped containers are included; a missing container or unreadable log fails the run before upload so a partial fleet archive cannot appear successful. Configure the same remote as Row J backups (see `docs/ops/backup-restore-runbook.md`).
+`ship-logs.sh` uses rclone. Each archive includes `fleet-manifest.tsv` with the exact container ID, state, and log filename for the daemon, tunnel, and four workers. Logs are read by immutable ID and the name-to-ID mapping is rechecked, so a concurrent Compose recreation fails the run instead of silently mixing generations. Stopped containers are included; a missing container or unreadable log also fails before upload. The script and timer are installed through the content-addressed host-uptime release after every successful production deploy. Configure the same remote as Row J backups (see `docs/ops/backup-restore-runbook.md`).
 
 Add to `/etc/tinyassets/env`:
 
