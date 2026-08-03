@@ -2,6 +2,7 @@
 
 ### Requirement: Direct runs accept immutable Branch version targets
 The runner SHALL accept a published `branch_version_id` as a first-class run target, reconstruct the Branch definition from that immutable snapshot, execute it through the shared run executor, and persist the version ID on the run record. It MUST NOT redirect a version-targeted run through the current live `branch_def_id` definition.
+The advertised `run_graph` handle SHALL accept `goal_id` as an alternative to `branch_def_id`, route that request through the Goal canonical dispatcher, and forward inputs, run name, and recursion-limit options to the selected immutable version. Supplying both target identifiers SHALL fail loudly as ambiguous.
 
 #### Scenario: Published version executes after live definition changes
 - **WHEN** a caller starts a run with a published `branch_version_id` after the corresponding live Branch definition has changed
@@ -10,6 +11,14 @@ The runner SHALL accept a published `branch_version_id` as a first-class run tar
 #### Scenario: Unknown version fails loudly
 - **WHEN** a caller starts a version-targeted run with an unknown `branch_version_id`
 - **THEN** the runner rejects the request without starting the current live Branch definition
+
+#### Scenario: Advertised handle runs the actor's Goal canonical
+- **WHEN** an authenticated actor invokes `run_graph` with a `goal_id` and no `branch_def_id`
+- **THEN** the handle routes through `run_canonical` and executes the actor-resolved immutable Branch version
+
+#### Scenario: Advertised handle rejects ambiguous run targets
+- **WHEN** a caller supplies both `branch_def_id` and `goal_id` to `run_graph`
+- **THEN** the handle rejects the request without dispatching either target
 
 ### Requirement: Gate rejection can route typed patch notes to the actor's Goal canonical
 The evaluation contract SHALL support a `route_back` rejection decision containing a `goal_id` and typed `PatchNotes`. The route handler MUST derive `scope_actor` from the originating run actor, append the current `(goal_id, scope_actor)` hop to typed route history, resolve that actor's canonical with default and legacy fallback, and synchronously execute the resolved immutable `branch_version_id` with the patch notes as input. The decision MUST fail loudly for malformed notes, missing canonical/artifact, repeated hops, or route depth greater than three and MUST NOT accept caller-selected authority for another actor.
