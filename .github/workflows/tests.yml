@@ -58,10 +58,19 @@ on:
   # Accepted side effect: `required-tests` and `slow-tests` have no job-level
   # `if:`, so they run on the schedule too. `full-tests` is a strict superset of
   # `required-tests`, so that is duplicated work. It is deliberate — runners are
-  # free here, and the alternative (a job-level `if:` on the REQUIRED job) is
-  # what the header warns against, since an `if:` that ever evaluates false on a
-  # pull_request strands every PR on "Expected — waiting for status" forever.
-  # Wasting a free runner is the cheaper failure than wedging the merge queue.
+  # free here, and the alternative is a job-level `if:` on the REQUIRED job.
+  #
+  # That would fail OPEN, not closed. A skipped job reports
+  # `conclusion=skipped`, and branch protection accepts a skipped required check
+  # as satisfied — so a condition that was wrong in some edge case would merge
+  # untested code silently. (Verified empirically 2026-08-03: `full-tests`
+  # reported COMPLETED/SKIPPED on PR #2197, not pending. An earlier draft of
+  # this comment claimed a job-level `if:` would strand PRs on "Expected"; that
+  # is the behaviour of a *trigger-level* `paths:` filter, not a job `if:`, and
+  # cross-family review corrected it.)
+  #
+  # Wasting a free runner is the cheaper failure than a required check that can
+  # quietly pass without running.
   schedule:
     - cron: '17 */3 * * *'
   workflow_dispatch:
