@@ -13,6 +13,10 @@
 # reported was ALSO failing in the same-tree full run, so the exclusion
 # caused none of them. Recorded as ordinary ratcheted entries so a later
 # fix shows up as a stale line that must be deleted.
+# 2026-08-03: +2 epoch2-consumer tests, arrived from the cloud-drain lane
+# after the baseline. This PR touches only CI config and docs, so it
+# cannot be their cause. Illustrates the treadmill: while nothing gates,
+# every hour adds debt here. Flipping the gate is what stops the growth.
 tests/desktop_install/test_packaged_runtime.py::tests.desktop_install.test_packaged_runtime
 tests/load/test_agent_runtime_cloud_load.py::test_cross_process_launch_has_one_provider_call_and_typed_losers
 tests/test_anonymous_write_challenge.py::test_scoped_canary_token_is_off_when_absent_short_or_mismatched[\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800-cccccccccccccccccccccccccccccccc]
@@ -165,6 +169,8 @@ tests/test_desktop.py::TestTrayExtendedStatus::test_update_extended_status_tunne
 tests/test_desktop.py::TestTrayExtendedStatus::test_update_extended_status_universe
 tests/test_desktop.py::TestTrayExtendedStatus::test_update_extended_status_words
 tests/test_desktop.py::TestTrayThrottling::test_update_status_throttles_menu_rebuild
+tests/test_dispatcher_queue.py::test_queue_list_discloses_staged_epoch2_consumer_not_ready
+tests/test_distributed_execution_authority.py::test_epoch2_claim_remains_outside_execution_while_consumer_gate_is_closed
 tests/test_estimate_run_cost.py::TestEstimateRunCostConfidence::test_five_completed_runs_returns_high_confidence
 tests/test_estimate_run_cost.py::TestEstimateRunCostConfidence::test_four_completed_runs_returns_medium_confidence
 tests/test_estimate_run_cost.py::TestEstimateRunCostConfidence::test_never_run_branch_returns_low_confidence
