@@ -1827,7 +1827,7 @@ class PreparedCloudContinuationProviderResolver:
             provider.owner_user_id == continuation.principal_id,
             provider.universe_id == continuation.universe_id,
             provider.allowed_operations == ("repository_spec_delivery",),
-            provider.allowed_roles == ("writer",),
+            "writer" in provider.allowed_roles,
             provider_expiry > now,
         )
         if not all(exact):
@@ -1843,6 +1843,7 @@ class PreparedCloudContinuationProviderResolver:
             branch_version_id=continuation.branch_version_id,
             operation="repository_spec_delivery",
             role="writer",
+            allowed_roles=provider.allowed_roles,
             executor_class="cloud",
             max_invocations=max_invocations,
             max_tokens=max_tokens,
@@ -2074,7 +2075,7 @@ class _ClaimedCloudProviderSession:
         from tinyassets.config import load_universe_config
         from tinyassets.providers.base import UniverseContext
 
-        if role != self._ROLE:
+        if role not in self._receipt.allowed_roles:
             raise PermissionError("cloud provider role is outside prepared authority")
         with self._lock:
             self._refresh_background_authority()
@@ -2111,7 +2112,7 @@ class _ClaimedCloudProviderSession:
                     claim_generation=current_claim.generation,
                     invocation_key=invocation_key,
                     operation=self._OPERATION,
-                    role=self._ROLE,
+                    role=role,
                     max_tokens=(
                         token_share + int(ordinal <= token_remainder)
                     ),
@@ -2552,6 +2553,7 @@ def prepare_claimed_cloud_provider_call(
             authority.branch_version_id == continuation.branch_version_id,
             authority.operation == "repository_spec_delivery",
             authority.role == "writer",
+            authority.allowed_roles == authority.binding.allowed_roles,
             authority.executor_class == "cloud",
         )
         if not all(exact):
@@ -2641,7 +2643,7 @@ def prepare_claimed_cloud_provider_call(
             request.claim_digest == provider_claim_record[0].claim_digest,
             request.claim_generation == provider_claim_record[0].generation,
             request.operation == "repository_spec_delivery",
-            request.role == "writer",
+            request.role in receipt.allowed_roles,
         )
         if not all(request_exact):
             raise PermissionError("cloud provider authority is no longer current")

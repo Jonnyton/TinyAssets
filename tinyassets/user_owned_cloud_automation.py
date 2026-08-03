@@ -361,7 +361,7 @@ def resolve_inactive_cloud_authority(
         bounded = (
             binding.state is ProviderWorkBindingState.ACTIVE,
             binding.allowed_operations == ("repository_spec_delivery",),
-            binding.allowed_roles == ("writer",),
+            "writer" in binding.allowed_roles,
             binding.max_invocations == definition.max_provider_invocations,
             binding.max_tokens == definition.max_tokens,
             binding.max_cost_microunits == definition.max_cost_microunits,

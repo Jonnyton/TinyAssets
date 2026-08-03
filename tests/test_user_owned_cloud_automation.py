@@ -626,7 +626,6 @@ def test_inactive_cloud_authority_rejects_revoked_provider_binding(
     ("provider_overrides", "connection_scopes", "action_cap"),
     [
         ({"allowed_operations": ("repository_spec_delivery", "admin")}, None, _DEFAULT_ACTION_CAP),
-        ({"allowed_roles": ("writer", "admin")}, None, _DEFAULT_ACTION_CAP),
         ({"max_invocations": 5}, None, _DEFAULT_ACTION_CAP),
         ({"max_tokens": 100_001}, None, _DEFAULT_ACTION_CAP),
         ({"max_cost_microunits": 5_000_001}, None, _DEFAULT_ACTION_CAP),
@@ -666,6 +665,24 @@ def test_inactive_cloud_authority_rejects_broader_or_unusable_authority(
             provider_store=provider_store,
             connection_ledger=ledger,
         )
+
+
+def test_inactive_cloud_authority_accepts_additional_declared_provider_roles(
+    tmp_path: Path,
+) -> None:
+    automation = _automation()
+    definition, provider_store, ledger = _cloud_authority_fixture(
+        tmp_path,
+        provider_overrides={"allowed_roles": ("writer", "judge", "extract")},
+    )
+
+    resolved = automation.resolve_inactive_cloud_authority(
+        definition,
+        provider_store=provider_store,
+        connection_ledger=ledger,
+    )
+
+    assert resolved.provider_binding_id == definition.provider_binding_id
 
 
 @pytest.mark.parametrize(

@@ -184,6 +184,7 @@ def _fixture(
     background_binding: BackgroundBranchBinding | None = None,
     max_tokens: int = 100_000,
     max_cost_microunits: int = 5_000_000,
+    allowed_roles: tuple[str, ...] = ("writer",),
 ) -> tuple[
     RepositorySpecWorkDefinition,
     PreparedCloudContinuationRequest,
@@ -220,7 +221,7 @@ def _fixture(
             provider="codex",
             credential_reference_digest=f"sha256:{'9' * 64}",
             allowed_operations=("repository_spec_delivery",),
-            allowed_roles=("writer",),
+            allowed_roles=allowed_roles,
             assignment_generation=2,
             assignment_digest=f"sha256:{'8' * 64}",
             max_invocations=4,
@@ -652,6 +653,7 @@ def _claimable_cloud_path(
     display_name: str = "Cloud claim test daemon",
     max_tokens: int = 100_000,
     max_cost_microunits: int = 5_000_000,
+    allowed_roles: tuple[str, ...] = ("writer",),
 ):
     daemon = create_daemon(
         tmp_path,
@@ -700,6 +702,7 @@ def _claimable_cloud_path(
         ),
         max_tokens=max_tokens,
         max_cost_microunits=max_cost_microunits,
+        allowed_roles=allowed_roles,
     )
     continuation = _prepare(fixture).record
     assert continuation is not None
@@ -1333,6 +1336,44 @@ def test_claimed_cloud_task_governs_policy_provider_call(
     ]
 
 
+def test_claimed_cloud_task_accepts_only_binding_declared_roles(
+    tmp_path: Path,
+) -> None:
+    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = (
+        _claimable_cloud_path(
+            tmp_path,
+            allowed_roles=("writer", "judge", "extract"),
+        )
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    received: list[str] = []
+
+    def provider_call(_prompt, _system="", *, role="writer", **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        received.append(role)
+        return role
+
+    session = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=provider_call,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    assert session is not None
+
+    assert session("draft", role="writer") == "writer"
+    assert session("score", role="judge") == "judge"
+    assert session("parse", role="extract") == "extract"
+    with pytest.raises(PermissionError, match="role"):
+        session("undeclared", role="embed")
+    assert received == ["writer", "judge", "extract"]
+
+
 def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
     tmp_path: Path,
 ) -> None:
@@ -1393,7 +1434,7 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
     from tinyassets.graph_compiler import compile_branch
 
     _fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+        _claimable_cloud_path(tmp_path, allowed_roles=("writer", "judge"))
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1428,6 +1469,7 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
         prompt_template="Implement {request}",
         input_keys=["request"],
         output_keys=["result"],
+        model_hint="judge",
         llm_policy={"preferred": {"provider": "codex"}},
     )
     branch = BranchDefinition(name="governed-policy", entry_point="draft")

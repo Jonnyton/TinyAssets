@@ -582,6 +582,7 @@ class _Transaction:
             receipt_expires <= binding_expires,
             authority.operation in binding.allowed_operations,
             authority.role in binding.allowed_roles,
+            set(authority.allowed_roles).issubset(binding.allowed_roles),
             authority.executor_class == "cloud",
             authority.max_invocations <= binding.max_invocations,
             authority.max_tokens <= binding.max_tokens,
@@ -593,7 +594,7 @@ class _Transaction:
             candidate.assignment_generation == binding.assignment_generation,
             candidate.assignment_digest == binding.assignment_digest,
             candidate.allowed_operations == (authority.operation,),
-            candidate.allowed_roles == (authority.role,),
+            candidate.allowed_roles == authority.allowed_roles,
             candidate.receipt_digest == candidate.expected_digest(),
             candidate.receipt_id
             == provider_work_receipt_id(

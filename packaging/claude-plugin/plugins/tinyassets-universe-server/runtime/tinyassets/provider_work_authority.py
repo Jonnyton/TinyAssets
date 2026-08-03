@@ -401,6 +401,7 @@ class ProviderUniverseWorkAuthority:
     max_cost_microunits: int
     expires_at: str
     execution_subject: ExecutionSubject
+    allowed_roles: tuple[str, ...] = ()
     branch_def_id: str | None = None
     branch_version_id: str | None = None
     agent_invocation_command_id: str | None = None
@@ -414,6 +415,14 @@ class ProviderUniverseWorkAuthority:
             raise ValueError("binding must be a ProviderWorkBinding")
         for name in ("principal_id", "actor_id", "operation", "role"):
             _reference(getattr(self, name), name)
+        allowed_roles = (
+            (self.role,)
+            if not self.allowed_roles
+            else _closed_tuple(self.allowed_roles, "allowed_roles")
+        )
+        if self.role not in allowed_roles:
+            raise ValueError("role must be included in allowed_roles")
+        object.__setattr__(self, "allowed_roles", allowed_roles)
         if not isinstance(self.execution_subject, ExecutionSubject):
             raise ValueError("execution_subject must be typed")
         _validate_work_lineage(
@@ -1244,7 +1253,7 @@ def _receipt_from_authority(
         assignment_digest=binding.assignment_digest,
         executor_class=authority.executor_class,
         allowed_operations=(authority.operation,),
-        allowed_roles=(authority.role,),
+        allowed_roles=authority.allowed_roles,
         max_invocations=authority.max_invocations,
         max_tokens=authority.max_tokens,
         max_cost_microunits=authority.max_cost_microunits,
@@ -1484,6 +1493,7 @@ class ProviderWorkReceiptService:
             binding.state is ProviderWorkBindingState.ACTIVE,
             authority.operation in binding.allowed_operations,
             authority.role in binding.allowed_roles,
+            set(authority.allowed_roles).issubset(binding.allowed_roles),
             authority.executor_class == "cloud",
             authority.max_invocations <= binding.max_invocations,
             authority.max_tokens <= binding.max_tokens,

@@ -457,6 +457,31 @@ def test_universe_receipt_is_dark_bounded_and_restart_safe(tmp_path) -> None:
     assert store.list_reservations(receipt.receipt_id) == ()
 
 
+def test_universe_receipt_preserves_exact_authorized_role_set(tmp_path) -> None:
+    store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
+    multi_role = replace(
+        authority,
+        allowed_roles=("writer", "reviewer"),
+    )
+    receipt = ProviderWorkReceiptService(
+        store,
+        _UniverseWorkResolver(multi_role),
+    ).issue(root).record
+
+    assert receipt is not None
+    assert receipt.allowed_roles == ("writer", "reviewer")
+
+    excessive = replace(
+        authority,
+        allowed_roles=("writer", "admin"),
+    )
+    with pytest.raises(PermissionError, match="exceeds binding"):
+        ProviderWorkReceiptService(
+            store,
+            _UniverseWorkResolver(excessive),
+        ).issue(root)
+
+
 def test_agent_invocation_receipt_has_manifest_subject_without_branch_lineage(
     tmp_path,
 ) -> None:
@@ -579,7 +604,10 @@ def test_universe_receipt_rejects_widened_authority(
     value: object,
 ) -> None:
     store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
-    widened = replace(authority, **{field: value})
+    changes = {field: value}
+    if field == "role":
+        changes["allowed_roles"] = (value,)
+    widened = replace(authority, **changes)
 
     with pytest.raises(PermissionError, match="authority"):
         ProviderWorkReceiptService(
