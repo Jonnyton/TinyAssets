@@ -584,15 +584,18 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         # CLI. Loud and slow beats quiet and wrong. These workers only take a
         # dedup path, so the bounded join is the expected case and the unbounded
         # one is a safety net.
-        started: list[threading.Thread] = []
+        # Recorded BEFORE `start()`, not after: an interruption arriving
+        # between `start()` and an append would hide a live worker from the
+        # cleanup below. `ident` is None until a thread has actually started,
+        # so cleanup can still tell a launched worker from one that never ran.
+        launched: list[threading.Thread] = list(threads)
         slow: list[str] = []
         try:
             for t in threads:
                 t.start()
-                started.append(t)
-            for t in started:
+            for t in threads:
                 t.join(timeout=join_timeout)
-            slow = [t.name for t in started if t.is_alive()]
+            slow = [t.name for t in threads if t.is_alive()]
         finally:
             # Each join is individually guarded: a BaseException raised by ONE
             # join (KeyboardInterrupt being the realistic one) would otherwise
@@ -600,16 +603,26 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
             # the very hazard the loop exists to prevent. Every started worker
             # gets joined; the first interruption is preserved and re-raised
             # once cleanup is complete.
+            # The ENTIRE per-thread loop is guarded, not just `join()`: an
+            # interruption can be delivered at any bytecode boundary, including
+            # the `is_alive()` check, and one escaping here would abort cleanup
+            # with workers still running — the hazard this block exists to
+            # prevent. Every launched worker is confirmed dead before the first
+            # interruption is re-raised.
             interrupted: BaseException | None = None
-            for t in started:
-                while t.is_alive():
+            for t in launched:
+                if t.ident is None:
+                    continue  # never started; join() would raise RuntimeError
+                while True:
                     try:
+                        if not t.is_alive():
+                            break
                         t.join()
                     except BaseException as exc:  # noqa: BLE001 — re-raised below
                         interrupted = interrupted or exc
             if interrupted is not None:
                 raise interrupted
-        assert not [t for t in started if t.is_alive()]
+        assert not [t for t in launched if t.is_alive()]
 
     # Raised only after the patch has been dropped, which is now safe because
     # every worker is provably finished by this point.
