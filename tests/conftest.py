@@ -338,61 +338,34 @@ def universe_input() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Process-global patch leak detector — see tests/_global_leak_guard.py
 # ---------------------------------------------------------------------------
+#
+# Session-scoped ON PURPOSE. Two per-test versions were built and both broke
+# correct code, because at the end of a test you cannot distinguish "leaked"
+# from "a module/session fixture still legitimately owns this". By session
+# finish every fixture has finalized, so anything still altered really did
+# escape — no exemptions needed, and nothing is ever repaired.
 
 from tests import _global_leak_guard as _leak_guard  # noqa: E402
 
-_LEAK_STASH = pytest.StashKey[dict]()
+_LEAK_SESSION_BASELINE: dict[tuple[str, str], object] = {}
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        f"{_leak_guard.MARKER}(*targets): this test's fixture legitimately owns "
-        "a process-global (e.g. 'subprocess.run') for its whole scope; do not "
-        "flag or repair it.",
-    )
+def pytest_sessionstart(session):
+    _LEAK_SESSION_BASELINE.clear()
+    _LEAK_SESSION_BASELINE.update(_leak_guard.snapshot())
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_setup(item):
-    """Baseline before the test's own fixtures run.
-
-    Stored on `item.stash`, not a module global: a process-wide slot would be
-    clobbered by a nested runtest protocol or an in-process threaded runner.
-    """
-    item.stash[_LEAK_STASH] = _leak_guard.snapshot()
-
-
-@pytest.hookimpl(hookwrapper=True, tryfirst=True)
-def pytest_runtest_teardown(item, nextitem):
-    """Compare after every finalizer has run.
-
-    `tryfirst`, NOT `trylast`. Hook wrappers unwind in reverse, so the wrapper
-    that runs FIRST before the yield resumes LAST after it — which is where
-    this check has to be, or it can flag a plugin before that plugin restores
-    its own patch. Getting this backwards was a real defect (cross-family
-    review 2026-08-03), as was an earlier autouse-fixture version that ran
-    before `monkeypatch`'s undo and produced 34 false positives.
-    """
-    outcome = yield
-
-    baseline = item.stash.get(_LEAK_STASH, None)
-    if not baseline:
+def pytest_sessionfinish(session, exitstatus):
+    if not _LEAK_SESSION_BASELINE:
         return
-    exempt = set()
-    for marker in item.iter_markers(name=_leak_guard.MARKER):
-        exempt |= _leak_guard.exempt_targets(marker.args)
-
-    changed = _leak_guard.diff(baseline, exempt)
-    if not changed:
+    leaked = _leak_guard.escaped(_LEAK_SESSION_BASELINE)
+    if not leaked:
         return
-    message = _leak_guard.describe(item.nodeid, changed)
-    _leak_guard.repair(changed)
-
-    # NEVER mask an exception teardown already raised. Replacing it would hide
-    # the more informative failure behind this diagnostic; the leak is reported
-    # as an extra section instead.
-    if outcome.excinfo is not None:
-        item.add_report_section("teardown", "global-patch-leak", message)
-        return
-    raise AssertionError(message)
+    message = _leak_guard.describe(leaked)
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "process-global patch leak", red=True)
+        reporter.write_line(message)
+    # Fail the run: a leak means every test after the culprit ran against
+    # corrupted globals, so the whole result is untrustworthy.
+    session.exitstatus = 1

@@ -1,7 +1,4 @@
-"""Detect a test that leaves a process-global patched.
-
-Lives in its own module, not inline in ``conftest.py``, so the lifecycle
-semantics can be unit-tested rather than asserted about.
+"""Detect a process-global patch that escaped the whole test session.
 
 Why this exists
 ---------------
@@ -14,24 +11,40 @@ its canned stdout (#2199), and a ``shutil.which`` stub latched
 ``git_bridge.is_enabled`` and silently no-opped 138 tests. In both, the guilty
 test passed.
 
-What it is, precisely
----------------------
-A **five-attribute** detector, not a general process-global leak detector. It
-notices rebinding of the module attributes in :data:`WATCHED` and nothing else.
-Invisible to it: a consumer alias captured by ``from subprocess import run``, a
-mutation performed after the check, and a patch already active before setup.
-Those are chosen limits, not oversights — a broad "diff every module attribute"
-sweep would be slow and noisy.
+Why this is SESSION-scoped, not per-test
+----------------------------------------
+Per-test detection was tried and abandoned, twice, for the same reason: at the
+moment a test ends you cannot tell "leaked" from "a longer-lived fixture still
+legitimately owns this".
 
-Opting out
-----------
-A fixture that deliberately owns one of these attributes for a whole module or
-session is legitimate, and repairing it mid-scope would BREAK it. Mark such
-tests::
+* As an autouse fixture it ran before ``monkeypatch``'s undo and produced **34
+  false positives**.
+* Rebuilt as a teardown hookwrapper with an opt-out marker, it still broke
+  module/session fixtures: ownership spans *items* while a marker is per-*item*,
+  so an unmarked test repaired an active module fixture, and a session fixture
+  finalizing in a different module could not be protected at all. Both were
+  reproduced under real pytest in cross-family review.
 
-    @pytest.mark.allow_global_patch("subprocess.run")
+Comparing at session start/finish has none of that ambiguity. Every legitimate
+fixture — function, module, package, session — has finalized by then, so
+anything still altered genuinely escaped. **No exemption mechanism is needed,
+and nothing is ever repaired**, which is what made the earlier versions
+dangerous.
 
-That suppresses both the failure and the repair for exactly those attributes.
+What it costs
+-------------
+Attribution. This says *that* something leaked, not *which* test did it. That is
+the deliberate trade: a check that cannot cry wolf, versus one that names a
+culprit but corrupts correct fixtures. To attribute a reported leak, re-run with
+``-p no:randomly`` and bisect, or use the message's watched-attribute name to
+grep for patches of it.
+
+Scope
+-----
+A **five-attribute** detector. It notices rebinding of the module attributes in
+:data:`WATCHED` and nothing else. Invisible to it: a consumer alias captured by
+``from subprocess import run``, and any mutation that is restored before the
+session ends.
 """
 
 from __future__ import annotations
@@ -47,8 +60,6 @@ WATCHED = (
     ("shutil", "which"),
 )
 
-MARKER = "allow_global_patch"
-
 
 def snapshot() -> dict[tuple[str, str], object]:
     """Current value of every watched attribute."""
@@ -62,61 +73,29 @@ def snapshot() -> dict[tuple[str, str], object]:
     return snap
 
 
-def exempt_targets(marker_args: tuple[object, ...]) -> set[str]:
-    """Attribute names an ``allow_global_patch`` marker declares ownership of.
+def escaped(baseline: dict[tuple[str, str], object]) -> list[str]:
+    """Watched attributes still altered relative to ``baseline``.
 
-    ``@pytest.mark.allow_global_patch("subprocess.run", "shutil.which")`` ->
-    ``{"subprocess.run", "shutil.which"}``. A bare marker with no arguments
-    exempts everything, which is blunt but explicit.
+    Returns human-readable descriptions. Deliberately does NOT repair: at
+    session finish there is nothing left to protect, and repairing was the
+    mechanism by which earlier versions broke correct fixtures.
     """
-    if not marker_args:
-        return {f"{m}.{a}" for m, a in WATCHED}
-    return {str(arg) for arg in marker_args}
-
-
-def diff(
-    baseline: dict[tuple[str, str], object],
-    exempt: set[str] | None = None,
-) -> list[tuple[str, str, object]]:
-    """Watched attributes whose value changed since ``baseline``.
-
-    Returns ``(module, attr, original)`` so the caller can decide whether to
-    repair. Exempt targets are skipped entirely — neither reported nor
-    repaired, because repairing one would break the fixture that owns it.
-    """
-    exempt = exempt or set()
-    changed: list[tuple[str, str, object]] = []
+    out: list[str] = []
     for (module_name, attr), original in baseline.items():
-        if f"{module_name}.{attr}" in exempt:
-            continue
-        module = importlib.import_module(module_name)
-        if getattr(module, attr, None) is not original:
-            changed.append((module_name, attr, original))
-    return changed
+        current = getattr(importlib.import_module(module_name), attr, None)
+        if current is not original:
+            out.append(f"{module_name}.{attr} -> {current!r}")
+    return out
 
 
-def repair(changed: list[tuple[str, str, object]]) -> None:
-    """Put the originals back.
-
-    One offender should not cascade into a wall of unrelated failures; the
-    point of this guard is to *attribute* the leak, not to punish its victims.
-    """
-    for module_name, attr, original in changed:
-        setattr(importlib.import_module(module_name), attr, original)
-
-
-def describe(node_id: str, changed: list[tuple[str, str, object]]) -> str:
-    leaked = ", ".join(
-        f"{m}.{a} -> {getattr(importlib.import_module(m), a, None)!r}"
-        for m, a, _ in changed
-    )
+def describe(leaked: list[str]) -> str:
     return (
-        f"{node_id} left a process-global patched, which silently corrupts "
-        f"every later test in this process: {leaked}. A common cause is "
-        f"entering `patch(...)` from inside a thread worker — that swap is not "
-        f"thread-local, so two threads can interleave and leave the mock "
-        f"installed permanently. Hoist the patch to wrap the whole concurrent "
-        f"section on the calling thread. If a fixture legitimately owns this "
-        f"attribute for its whole scope, mark the test "
-        f"`@pytest.mark.{MARKER}(\"<module>.<attr>\")`."
+        "A test left a process-global patched for the rest of this session, "
+        "which silently corrupts every test that ran after it: "
+        + "; ".join(leaked)
+        + ". A common cause is entering `patch(...)` from inside a thread "
+        "worker — that swap is not thread-local, so two threads can interleave "
+        "and leave the mock installed permanently. Hoist the patch to wrap the "
+        "whole concurrent section on the calling thread. To find the culprit, "
+        "grep the suite for patches of the named attribute, or bisect."
     )

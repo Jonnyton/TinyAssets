@@ -1,14 +1,11 @@
-"""Lifecycle semantics of the process-global leak guard.
+"""Behaviour of the session-scoped process-global leak guard.
 
-Cross-family review rated "no committed tests for its own lifecycle" as
-blocking, and it was right: the previous evidence was an ad-hoc probe covering
-three easy cases, while three separate defects lived in the parts it did not
-touch — scope ownership, teardown-error masking, and wrapper ordering.
-
-The pure helpers are unit-tested here. The hook wiring that uses them is
-exercised end-to-end by `test_guard_integration_*`, which run a real pytest in
-a subprocess so the actual hook ordering is what gets checked, not a
-reimplementation of it.
+Every integration test here runs the same probe suite **twice** — once with the
+repo conftest active and once with a bare conftest — and asserts the difference.
+That shape is deliberate: cross-family review found that the previous
+integration tests passed unchanged when the hooks were completely absent, so
+they proved nothing. A one-sided assertion on a subprocess run cannot tell
+"the guard worked" from "the guard never ran".
 """
 
 from __future__ import annotations
@@ -24,178 +21,140 @@ import pytest
 from tests import _global_leak_guard as guard
 
 _REPO = Path(__file__).resolve().parent.parent
+_LEAK_BANNER = "left a process-global patched"
 
 
 def test_snapshot_captures_every_watched_attribute() -> None:
     snap = guard.snapshot()
-    assert set(snap) == {pair for pair in guard.WATCHED}
+    assert set(snap) == set(guard.WATCHED)
     assert snap[("subprocess", "run")] is subprocess.run
     assert snap[("shutil", "which")] is shutil.which
 
 
-def test_diff_is_empty_when_nothing_changed() -> None:
-    assert guard.diff(guard.snapshot()) == []
+def test_escaped_is_empty_when_nothing_changed() -> None:
+    assert guard.escaped(guard.snapshot()) == []
 
 
-def test_diff_reports_a_rebound_attribute() -> None:
+def test_escaped_reports_a_rebound_attribute() -> None:
     baseline = guard.snapshot()
     original = subprocess.run
     try:
         subprocess.run = lambda *a, **k: None
-        changed = guard.diff(baseline)
+        leaked = guard.escaped(baseline)
     finally:
         subprocess.run = original
-    assert [(m, a) for m, a, _ in changed] == [("subprocess", "run")]
+    assert len(leaked) == 1 and leaked[0].startswith("subprocess.run -> ")
 
 
-def test_repair_restores_the_original() -> None:
-    baseline = guard.snapshot()
-    original = subprocess.run
-    subprocess.run = lambda *a, **k: None
-    guard.repair(guard.diff(baseline))
-    assert subprocess.run is original
-
-
-def test_exempt_targets_defaults_to_everything_when_bare() -> None:
-    """A bare marker is blunt but explicit; a specific one is narrow."""
-    assert guard.exempt_targets(()) == {f"{m}.{a}" for m, a in guard.WATCHED}
-    assert guard.exempt_targets(("subprocess.run",)) == {"subprocess.run"}
-
-
-def test_exempt_target_is_neither_reported_nor_repaired() -> None:
-    """The whole point: a scope-owning fixture must not be broken.
-
-    Repairing an attribute a module/session fixture still owns would restore
-    the original mid-scope and corrupt the tests that follow — which is exactly
-    what the first version of this guard did.
-    """
+def test_escaped_never_repairs() -> None:
+    """Repairing is what made the per-test versions dangerous."""
     baseline = guard.snapshot()
     original = subprocess.run
     replacement = lambda *a, **k: None  # noqa: E731
     try:
         subprocess.run = replacement
-        changed = guard.diff(baseline, exempt={"subprocess.run"})
-        assert changed == []
-        guard.repair(changed)
-        assert subprocess.run is replacement, (
-            "an exempt attribute must be left alone, not repaired"
-        )
+        guard.escaped(baseline)
+        assert subprocess.run is replacement
     finally:
         subprocess.run = original
 
 
-def test_describe_names_the_node_and_the_attribute() -> None:
-    baseline = guard.snapshot()
-    original = subprocess.run
-    try:
-        subprocess.run = lambda *a, **k: None
-        text = guard.describe("tests/x.py::test_y", guard.diff(baseline))
-    finally:
-        subprocess.run = original
-    assert "tests/x.py::test_y" in text
+def test_describe_names_the_attribute_and_the_usual_cause() -> None:
+    text = guard.describe(["subprocess.run -> <lambda>"])
     assert "subprocess.run" in text
-    assert guard.MARKER in text, "the message must say how to opt out"
+    assert "thread" in text
 
 
-def _run_pytest(tmp_path: Path, body: str) -> subprocess.CompletedProcess:
-    """Run a real pytest against `body`, with the repo's conftest active."""
-    test_file = tmp_path / "test_probe.py"
-    test_file.write_text(textwrap.dedent(body), encoding="utf-8")
-    conftest = tmp_path / "conftest.py"
-    conftest.write_text(
+def _run(tmp_path: Path, body: str, *, with_guard: bool) -> subprocess.CompletedProcess:
+    """Run a probe suite in a subprocess, with or without the repo conftest."""
+    root = tmp_path / ("guarded" if with_guard else "bare")
+    root.mkdir()
+    (root / "test_probe.py").write_text(textwrap.dedent(body), encoding="utf-8")
+    shim = (
         "import sys\n"
         f"sys.path.insert(0, {str(_REPO)!r})\n"
-        "from tests.conftest import *  # noqa: F401,F403\n",
-        encoding="utf-8",
-    )
+        "from tests.conftest import *  # noqa: F401,F403\n"
+    ) if with_guard else "# no guard\n"
+    (root / "conftest.py").write_text(shim, encoding="utf-8")
     return subprocess.run(
-        [sys.executable, "-m", "pytest", str(test_file), "-q", "--no-header",
+        [sys.executable, "-m", "pytest", "test_probe.py", "-q", "--no-header",
          "-p", "no:cacheprovider"],
-        capture_output=True, text=True, cwd=str(tmp_path), timeout=180,
+        capture_output=True, text=True, cwd=str(root), timeout=180,
     )
 
 
-@pytest.mark.slow
-def test_guard_integration_catches_a_leak_and_spares_correct_patching(
-    tmp_path: Path,
-) -> None:
-    result = _run_pytest(tmp_path, """
-        import subprocess
-        from unittest.mock import patch
+_LEAKING_SUITE = """
+    import subprocess
 
-        def test_leaks():
-            subprocess.run = lambda *a, **k: None
+    def test_leaks():
+        subprocess.run = lambda *a, **k: None
+"""
 
-        def test_monkeypatch_is_fine(monkeypatch):
-            monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+_CORRECT_SUITE = """
+    import subprocess
+    from unittest.mock import patch
 
-        def test_context_manager_is_fine():
-            with patch("subprocess.run"):
-                pass
-    """)
-    out = result.stdout + result.stderr
-    assert "left a process-global patched" in out, out[-2000:]
-    assert "test_leaks" in out
-    assert "3 passed" in out or "2 passed" in out, (
-        f"only the leaking test may be reported:\n{out[-2000:]}"
-    )
-    assert "test_monkeypatch_is_fine" not in out.split("short test summary")[-1]
+    def test_monkeypatch(monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
 
-
-@pytest.mark.slow
-def test_guard_integration_does_not_mask_an_existing_teardown_error(
-    tmp_path: Path,
-) -> None:
-    """A finalizer that raises must still be visible.
-
-    The guard runs after every finalizer; if it replaced their exception with
-    its own, the more informative failure would vanish.
-    """
-    result = _run_pytest(tmp_path, """
-        import subprocess
-        import pytest
-
-        @pytest.fixture
-        def leaky_finalizer():
-            yield
-            subprocess.run = lambda *a, **k: None
-            raise RuntimeError("ORIGINAL TEARDOWN FAILURE")
-
-        def test_x(leaky_finalizer):
+    def test_context_manager():
+        with patch("subprocess.run"):
             pass
-    """)
-    out = result.stdout + result.stderr
-    assert "ORIGINAL TEARDOWN FAILURE" in out, (
-        f"the finalizer's own error was masked:\n{out[-2000:]}"
+
+    def test_module_scoped_owner_restores(module_owner):
+        assert subprocess.run is not None
+
+    import pytest
+
+    REPLACEMENT = lambda *a, **k: "owned"
+
+    @pytest.fixture(scope="module")
+    def module_owner():
+        original = subprocess.run
+        subprocess.run = REPLACEMENT
+        yield
+        subprocess.run = original
+"""
+
+
+@pytest.mark.slow
+def test_a_leak_is_reported_and_only_because_of_the_guard(tmp_path: Path) -> None:
+    """Two-sided: the banner must appear WITH the guard and not without it."""
+    guarded = _run(tmp_path, _LEAKING_SUITE, with_guard=True)
+    bare = _run(tmp_path, _LEAKING_SUITE, with_guard=False)
+
+    guarded_out = guarded.stdout + guarded.stderr
+    bare_out = bare.stdout + bare.stderr
+
+    assert _LEAK_BANNER in guarded_out, (
+        f"guard did not report the leak:\n{guarded_out[-2000:]}"
+    )
+    assert "subprocess.run" in guarded_out
+    assert guarded.returncode != 0, "a leaked global must fail the run"
+
+    # The control: without the guard the identical suite is silently green.
+    # If this ever starts reporting, the assertion above proves nothing.
+    assert _LEAK_BANNER not in bare_out
+    assert bare.returncode == 0, (
+        f"the probe suite must pass on its own merits:\n{bare_out[-2000:]}"
     )
 
 
 @pytest.mark.slow
-def test_guard_integration_respects_the_opt_out_marker(tmp_path: Path) -> None:
-    """A module-scoped fixture that owns the attribute stays intact."""
-    result = _run_pytest(tmp_path, """
-        import subprocess
-        import pytest
+def test_correct_patching_is_not_reported(tmp_path: Path) -> None:
+    """monkeypatch, `with patch(...)`, and a module-scoped owner that restores.
 
-        REPLACEMENT = lambda *a, **k: "owned"
-
-        @pytest.fixture(scope="module", autouse=True)
-        def owns_subprocess_run():
-            original = subprocess.run
-            subprocess.run = REPLACEMENT
-            yield
-            subprocess.run = original
-
-        pytestmark = pytest.mark.allow_global_patch("subprocess.run")
-
-        def test_first():
-            assert subprocess.run is REPLACEMENT
-
-        def test_second_still_sees_the_fixtures_patch():
-            assert subprocess.run is REPLACEMENT
-    """)
-    out = result.stdout + result.stderr
-    assert "2 passed" in out, (
-        f"a scope-owning fixture must not be flagged or repaired:\n{out[-2000:]}"
+    The module-scoped case is the one that broke both per-test designs: its
+    patch is legitimately live across items and is restored at module teardown.
+    Session-scoped comparison sees it restored, so there is nothing to report
+    and no exemption mechanism is needed.
+    """
+    guarded = _run(tmp_path, _CORRECT_SUITE, with_guard=True)
+    out = guarded.stdout + guarded.stderr
+    assert _LEAK_BANNER not in out, (
+        f"correct patching was flagged:\n{out[-2000:]}"
     )
-    assert "left a process-global patched" not in out
+    assert guarded.returncode == 0, (
+        f"correct patching must not fail the run:\n{out[-2000:]}"
+    )
+    assert "3 passed" in out, out[-2000:]
