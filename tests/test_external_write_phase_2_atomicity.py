@@ -517,14 +517,23 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
             stderr="",
         )
 
+    errors: dict[str, BaseException] = {}
+    join_timeout = 5.0
+
     def worker(run_id: str) -> None:
-        results[run_id] = run_github_pr_effector(
-            node_id="emit",
-            output_keys=["pr_packet"],
-            run_state={"pr_packet": packet},
-            base_path=universe,
-            run_id=run_id,
-        )
+        # A bare exception here would otherwise die inside the thread, leaving
+        # `results` short an entry and every `for r in results.values()` check
+        # below passing vacuously.
+        try:
+            results[run_id] = run_github_pr_effector(
+                node_id="emit",
+                output_keys=["pr_packet"],
+                run_state={"pr_packet": packet},
+                base_path=universe,
+                run_id=run_id,
+            )
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the main thread
+            errors[run_id] = exc
 
     # The patch is installed ONCE, on this thread, around the whole concurrent
     # section — it must never be entered from inside `worker`.
@@ -555,8 +564,30 @@ def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=5.0)
+            t.join(timeout=join_timeout)
 
+        # Checked INSIDE the patch, deliberately. `join(timeout=...)` returns
+        # whether or not the thread finished, so leaving the `with` block with a
+        # worker still running would drop the mock and let that worker reach the
+        # REAL subprocess.run — i.e. actually shell out to `gh`. The per-worker
+        # patch this replaced could not have that problem, so the hoist has to
+        # re-establish the guarantee explicitly rather than inherit it.
+        stragglers = [t.name for t in threads if t.is_alive()]
+        assert not stragglers, (
+            f"worker threads still running after "
+            f"join(timeout={join_timeout}): "
+            f"{stragglers}. Refusing to continue — dropping the patch now "
+            f"would let a live worker invoke the real gh CLI."
+        )
+
+    if errors:
+        raise AssertionError(
+            f"worker thread(s) raised: "
+            f"{ {k: repr(v) for k, v in errors.items()} }"
+        )
+    assert set(results) == {"run-A", "run-B"}, (
+        f"expected a result from both workers, got {sorted(results)}"
+    )
     assert call_count["n"] == 0, (
         "An already-finalized receipt must dedup-hit; no thread should "
         "invoke gh."

@@ -18,19 +18,36 @@ integration, packaging, invariants, release-reconcile, worktree status).
 
 The visible cost: 111 quarantine-ledger entries flipped between two CI runs
 whose trees differed by two test functions (#2197), because collection order
-determined which tests ran while the mock was installed. That is what made the
-suite look "order-dependent" and forced `scripts/ci_required_tests.py` to run
-serially.
+determined which tests ran while the mock was installed.
+
+**Scope of that claim, stated precisely.** This mechanism explains the measured
+URL-poisoning and the 111-entry flip; it is *not* established that it was the
+suite's only isolation defect, or that removing it makes the suite
+order-independent enough to restore xdist. Those are separate questions,
+answered by running the suite, not by this file.
 
 The fix is always the same shape: hoist the patch out of the worker and wrap
 the whole concurrent section on the calling thread. That keeps the mock in
-force for the threads while making install/restore single-threaded.
+force for the threads while making install/restore single-threaded — and the
+hoisted version must then assert the workers actually finished before the patch
+is dropped, which a per-worker patch got for free.
+
+**What this detector is.** A lint over the common spellings, not a proof. It
+resolves `Thread(target=…)` (keyword and positional), `functools.partial`
+targets, inline `lambda` targets, `submit`/`map`/`apply_async` on a pool that is
+not a `ProcessPoolExecutor` (a separate process cannot leak into this one), and
+`patch` under an import alias, `patch.object`, or `mock.patch`. It does **not**
+follow indirection — a thread target that calls a helper which patches is not
+detected — and it cannot resolve dynamically-built callables. Treat a green
+result as "the obvious spellings are absent", not "the pattern is impossible".
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+
+import pytest
 
 _TESTS = Path(__file__).resolve().parent
 
@@ -51,29 +68,100 @@ _MONKEYPATCH_VERBS = {"setattr", "setenv", "delenv", "delattr", "chdir", "syspat
 _MONKEYPATCH_RECEIVERS = {"monkeypatch", "mp"}
 
 
-def _thread_target_names(tree: ast.Module) -> set[str]:
-    """Function names handed to a thread/executor as the callable to run."""
+def _process_pool_vars(tree: ast.Module) -> set[str]:
+    """Variables bound to a PROCESS pool.
+
+    `ProcessPoolExecutor.submit` runs the callable in a separate process, so a
+    patch there cannot leak into this interpreter. Flagging it would be a false
+    positive.
+    """
     names: set[str] = set()
+
+    def ctor_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Call):
+            return getattr(node.func, "id", None) or getattr(
+                node.func, "attr", None
+            )
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            tgt = node.targets[0]
+            if isinstance(tgt, ast.Name) and ctor_name(node.value) == (
+                "ProcessPoolExecutor"
+            ):
+                names.add(tgt.id)
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if ctor_name(item.context_expr) == "ProcessPoolExecutor":
+                    if isinstance(item.optional_vars, ast.Name):
+                        names.add(item.optional_vars.id)
+    return names
+
+
+def _callable_names(node: ast.expr) -> set[str]:
+    """Names a callable-valued expression could refer to.
+
+    Handles a bare name, a method reference, and `functools.partial(fn, ...)`.
+    """
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.Attribute):
+        return {node.attr}
+    if isinstance(node, ast.Call):
+        callee = getattr(node.func, "id", None) or getattr(
+            node.func, "attr", None
+        )
+        if callee == "partial" and node.args:
+            return _callable_names(node.args[0])
+    return set()
+
+
+def _thread_target_names(tree: ast.Module) -> tuple[set[str], list[ast.Lambda]]:
+    """Callables handed to a thread/thread-pool, plus inline lambda targets."""
+    names: set[str] = set()
+    lambdas: list[ast.Lambda] = []
+    process_pools = _process_pool_vars(tree)
+
+    def record(expr: ast.expr) -> None:
+        if isinstance(expr, ast.Lambda):
+            lambdas.append(expr)
+        else:
+            names.update(_callable_names(expr))
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func_repr = ast.dump(node.func)
-        if "Thread" in func_repr:
+        callee = getattr(node.func, "id", None) or getattr(
+            node.func, "attr", None
+        )
+        if callee == "Thread":
             for kw in node.keywords:
                 if kw.arg == "target":
-                    if isinstance(kw.value, ast.Name):
-                        names.add(kw.value.id)
-                    elif isinstance(kw.value, ast.Attribute):
-                        names.add(kw.value.attr)
-        # executor.submit(fn, ...) / executor.map(fn, ...)
-        if isinstance(node.func, ast.Attribute) and node.func.attr in {
-            "submit",
-            "map",
-        }:
-            for arg in node.args:
-                if isinstance(arg, ast.Name):
-                    names.add(arg.id)
-    return names
+                    record(kw.value)
+            # Positional: Thread(group, target, name, args, ...)
+            if len(node.args) >= 2:
+                record(node.args[1])
+        elif callee in {"submit", "map", "apply_async"}:
+            receiver = getattr(node.func, "value", None)
+            if isinstance(receiver, ast.Name) and receiver.id in process_pools:
+                continue  # separate process — cannot leak into this one
+            if node.args:
+                record(node.args[0])
+    return names, lambdas
+
+
+def _patch_aliases(tree: ast.Module) -> set[str]:
+    """Local names bound to `unittest.mock.patch`, including aliases."""
+    aliases = set(_PATCH_NAMES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
+            "mock"
+        ):
+            for a in node.names:
+                if a.name == "patch":
+                    aliases.add(a.asname or a.name)
+    return aliases
 
 
 def _offenders(path: Path) -> list[str]:
@@ -81,38 +169,44 @@ def _offenders(path: Path) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError):
         return []
-    targets = _thread_target_names(tree)
-    if not targets:
+    targets, lambdas = _thread_target_names(tree)
+    if not targets and not lambdas:
         return []
+    aliases = _patch_aliases(tree)
     found: list[str] = []
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if func.name not in targets:
-            continue
-        for sub in ast.walk(func):
+
+    def scan(body: ast.AST, where: str) -> None:
+        for sub in ast.walk(body):
             if not isinstance(sub, ast.Call):
                 continue
-            name = _unsafe_call_name(sub.func)
+            name = _unsafe_call_name(sub.func, aliases)
             if name:
-                found.append(
-                    f"{path.name}:{sub.lineno} — {name} inside thread target "
-                    f"{func.name!r}"
-                )
+                found.append(f"{path.name}:{sub.lineno} — {name} inside {where}")
+
+    for func in ast.walk(tree):
+        if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if func.name in targets:
+                scan(func, f"thread target {func.name!r}")
+    for lam in lambdas:
+        scan(lam, "an inline lambda thread target")
     return found
 
 
-def _unsafe_call_name(func: ast.expr) -> str | None:
+def _unsafe_call_name(func: ast.expr, aliases: set[str]) -> str | None:
     """Return a label if this call mutates process-global state, else None."""
-    # patch(...)
-    if isinstance(func, ast.Name) and func.id in _PATCH_NAMES:
+    # patch(...) — including `from unittest.mock import patch as p`
+    if isinstance(func, ast.Name) and func.id in aliases:
         return f"{func.id}()"
     if isinstance(func, ast.Attribute):
-        # mock.patch(...) / mock.patch.object(...) / monkeypatch.setattr(...)
-        if func.attr in _PATCH_NAMES:
+        # mock.patch(...)
+        if func.attr in aliases:
             return f"{func.attr}()"
-        if isinstance(func.value, ast.Attribute) and func.value.attr in _PATCH_NAMES:
-            return f"{func.value.attr}.{func.attr}()"
+        # patch.object(...) / mock.patch.dict(...)
+        inner = func.value
+        if isinstance(inner, ast.Name) and inner.id in aliases:
+            return f"{inner.id}.{func.attr}()"
+        if isinstance(inner, ast.Attribute) and inner.attr in aliases:
+            return f"{inner.attr}.{func.attr}()"
         receiver = getattr(func.value, "id", None)
         if func.attr in _MONKEYPATCH_VERBS and receiver in _MONKEYPATCH_RECEIVERS:
             return f"{receiver}.{func.attr}()"
@@ -132,70 +226,158 @@ def test_no_patching_from_inside_a_thread_target() -> None:
     )
 
 
-def test_the_detector_can_actually_fire(tmp_path: Path) -> None:
-    """Guard the guard: a scanner that never matches proves nothing."""
-    sample = tmp_path / "test_sample.py"
-    sample.write_text(
-        "import threading\n"
-        "from unittest.mock import patch\n"
-        "def worker():\n"
-        "    with patch('subprocess.run'):\n"
-        "        pass\n"
-        "def test_x():\n"
-        "    t = threading.Thread(target=worker)\n"
-        "    t.start(); t.join()\n",
-        encoding="utf-8",
-    )
-    assert _offenders(sample), "detector failed to flag the known-bad pattern"
+# (bad?, source) — every construct the docstring claims to support, both ways.
+_DETECTOR_CASES = [
+    (True, "kwarg target", """
+import threading
+from unittest.mock import patch
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=worker).start()
+"""),
+    (True, "positional target", """
+import threading
+from unittest.mock import patch
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(None, worker).start()
+"""),
+    (True, "functools.partial target", """
+import threading, functools
+from unittest.mock import patch
+def worker(x):
+    with patch('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=functools.partial(worker, 1)).start()
+"""),
+    (True, "inline lambda target", """
+import threading
+from unittest.mock import patch
+def test_x():
+    threading.Thread(target=lambda: patch('subprocess.run').start()).start()
+"""),
+    (True, "aliased patch import", """
+import threading
+from unittest.mock import patch as p
+def worker():
+    with p('subprocess.run'): pass
+def test_x():
+    threading.Thread(target=worker).start()
+"""),
+    (True, "patch.object", """
+import threading
+from unittest.mock import patch
+def worker():
+    with patch.object(threading, 'Thread'): pass
+def test_x():
+    threading.Thread(target=worker).start()
+"""),
+    (True, "ThreadPoolExecutor.submit", """
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    ex = ThreadPoolExecutor()
+    ex.submit(worker)
+"""),
+    (True, "monkeypatch.setattr in a thread", """
+import threading
+def worker(monkeypatch):
+    monkeypatch.setattr('subprocess.run', None)
+def test_x(monkeypatch):
+    threading.Thread(target=worker, args=(monkeypatch,)).start()
+"""),
+    (False, "correctly hoisted patch", """
+import threading
+from unittest.mock import patch
+def worker(): pass
+def test_x():
+    with patch('subprocess.run'):
+        t = threading.Thread(target=worker)
+        t.start(); t.join()
+"""),
+    (False, "builtin setattr on a local object", """
+import threading
+class B: pass
+def worker(b):
+    setattr(b, 'ready', True)
+def test_x():
+    threading.Thread(target=worker, args=(B(),)).start()
+"""),
+    (False, "ProcessPoolExecutor.submit (separate process)", """
+from concurrent.futures import ProcessPoolExecutor
+from unittest.mock import patch
+def worker():
+    with patch('subprocess.run'): pass
+def test_x():
+    ex = ProcessPoolExecutor()
+    ex.submit(worker)
+"""),
+    (False, "patch outside any thread target", """
+import threading
+from unittest.mock import patch
+def helper():
+    with patch('subprocess.run'): pass
+def test_x():
+    helper()
+"""),
+    (False, "no threading at all", """
+from unittest.mock import patch
+def test_x():
+    with patch('subprocess.run'): pass
+"""),
+]
 
-    safe = tmp_path / "test_safe.py"
-    safe.write_text(
-        "import threading\n"
-        "from unittest.mock import patch\n"
-        "def worker():\n"
-        "    pass\n"
-        "def test_x():\n"
-        "    with patch('subprocess.run'):\n"
-        "        t = threading.Thread(target=worker)\n"
-        "        t.start(); t.join()\n",
-        encoding="utf-8",
-    )
-    assert not _offenders(safe), "detector flagged the correct hoisted pattern"
 
+@pytest.mark.parametrize(
+    "should_flag,label,source",
+    _DETECTOR_CASES,
+    ids=[c[1].replace(" ", "-") for c in _DETECTOR_CASES],
+)
+def test_detector_matrix(
+    should_flag: bool, label: str, source: str, tmp_path: Path
+) -> None:
+    """Guard the guard, in BOTH directions.
 
-def test_builtin_setattr_in_a_thread_is_not_flagged(tmp_path: Path) -> None:
-    """False positives block correct code, which is worse than no check.
-
-    Builtin `setattr` on a thread-local object is safe and common; only
-    `monkeypatch.setattr`, which mutates process-global state, is unsafe.
+    A scanner that never matches proves nothing; a scanner that matches
+    everything is a false-positive gate that gets deleted. Each construct the
+    module docstring claims to support appears here, and so does every safe
+    lookalike that must not be flagged.
     """
-    sample = tmp_path / "test_builtin.py"
+    sample = tmp_path / "test_sample.py"
+    sample.write_text(source, encoding="utf-8")
+    flagged = bool(_offenders(sample))
+    assert flagged is should_flag, (
+        f"{label}: expected {'a finding' if should_flag else 'no finding'}, "
+        f"got {_offenders(sample) or 'none'}"
+    )
+
+
+def test_indirection_is_a_known_blind_spot(tmp_path: Path) -> None:
+    """Documented limitation, pinned so the docstring cannot drift from truth.
+
+    A thread target that calls a helper which patches is NOT detected. If this
+    ever starts passing, the detector got smarter and the docstring's "does not
+    follow indirection" caveat should be removed.
+    """
+    sample = tmp_path / "test_indirect.py"
     sample.write_text(
-        "import threading\n"
-        "class Box: pass\n"
-        "def worker(box):\n"
-        "    setattr(box, 'done', True)\n"
-        "def test_x():\n"
-        "    b = Box()\n"
-        "    t = threading.Thread(target=worker, args=(b,))\n"
-        "    t.start(); t.join()\n",
+        """
+import threading
+from unittest.mock import patch
+def helper():
+    return patch('subprocess.run')
+def worker():
+    with helper(): pass
+def test_x():
+    threading.Thread(target=worker).start()
+""",
         encoding="utf-8",
     )
     assert not _offenders(sample), (
-        "builtin setattr on a local object must not be flagged"
+        "detector unexpectedly followed indirection — update the docstring"
     )
-
-
-def test_monkeypatch_setattr_in_a_thread_is_flagged(tmp_path: Path) -> None:
-    """The receiver is what makes it unsafe, not the verb."""
-    sample = tmp_path / "test_mp.py"
-    sample.write_text(
-        "import threading\n"
-        "def worker(monkeypatch):\n"
-        "    monkeypatch.setattr('subprocess.run', None)\n"
-        "def test_x(monkeypatch):\n"
-        "    t = threading.Thread(target=worker, args=(monkeypatch,))\n"
-        "    t.start(); t.join()\n",
-        encoding="utf-8",
-    )
-    assert _offenders(sample), "monkeypatch.setattr in a thread must be flagged"
