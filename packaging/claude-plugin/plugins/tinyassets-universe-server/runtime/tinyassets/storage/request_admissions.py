@@ -1703,6 +1703,7 @@ class RequestAdmissionStore:
         at: str = "",
         detail: Mapping[str, Any] | None = None,
         worker_id: str = "",
+        cancel_wins: bool = False,
     ) -> dict[str, Any]:
         if not expected_statuses:
             raise ValueError("expected_statuses must not be empty")
@@ -1744,8 +1745,15 @@ class RequestAdmissionStore:
                     >= _epoch_seconds(row["lease_expires_at"])
                 ):
                     raise PermissionError("branch_task_lease_expired")
+                effective_status = new_status
+                effective_detail = dict(detail or {})
+                if cancel_wins and row["status"] == "cancel_requested":
+                    effective_status = "cancelled"
+                    effective_detail["reason"] = "cancel_requested"
                 terminal_at = (
-                    effective_at if new_status in TERMINAL_STATUSES else None
+                    effective_at
+                    if effective_status in TERMINAL_STATUSES
+                    else None
                 )
                 conn.execute(
                     """
@@ -1755,9 +1763,9 @@ class RequestAdmissionStore:
                     WHERE branch_task_id = ?
                     """,
                     (
-                        new_status,
+                        effective_status,
                         terminal_at,
-                        _json(dict(detail or {})),
+                        _json(effective_detail),
                         branch_task_id,
                     ),
                 )
@@ -1777,7 +1785,7 @@ class RequestAdmissionStore:
                         WHERE request_id = ?
                         """,
                         (
-                            new_status,
+                            effective_status,
                             _epoch_seconds(effective_at),
                             row["request_id"],
                         ),
@@ -1785,9 +1793,9 @@ class RequestAdmissionStore:
                 self._append_task_event(
                     conn,
                     row,
-                    event_type=new_status,
+                    event_type=effective_status,
                     event_at=effective_at,
-                    detail=dict(detail or {}),
+                    detail=effective_detail,
                 )
                 updated = conn.execute(
                     "SELECT * FROM branch_tasks_v2 "

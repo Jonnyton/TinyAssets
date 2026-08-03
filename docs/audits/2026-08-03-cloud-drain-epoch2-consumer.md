@@ -104,8 +104,8 @@ py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_run_branch_version.py tests/test_bug_investigation_dispatcher.py
 ```
 
-Result after the third review-finding repair:
-`357 passed in 31.75s` across
+Result after the fourth review-finding repair:
+`359 passed in 24.79s` across
 the epoch-2 consumer, cloud worker, transactional adapter/store, immutable
 Branch version, v1 lease/dispatcher compatibility, and bug-investigation
 integration suites. This includes queue-run reservation races with exactly one
@@ -149,11 +149,16 @@ A third fresh-context review of exact head `bc58e72c` independently validated
 the two race repairs and the six earlier advisories, then returned `ADAPT`
 because cancellation requested during a blocking node could be renewed and
 the completed provider result could still finalize the task as succeeded. The
-repair now treats observed cancellation as a typed execution stop, propagates
-it through node-status callbacks and the continuous heartbeat guard, and
-rereads cancellation at final settlement so the task can only become
-`cancelled`. A fourth fresh-context review of the new exact head is required
-before merge.
+repair now treats observed cancellation as a typed execution stop and
+propagates it through node-status callbacks and the continuous heartbeat
+guard. A fourth review validated that path but returned `ADAPT` on the smaller
+read-then-write window between the final cancellation check and success
+transition, and on swallowed terminalization errors. Settlement now resolves
+both states in the task-store transaction: `running` may become `succeeded`,
+while `cancel_requested` can only become `cancelled`; store failures propagate.
+Deterministic last-moment cancellation injection and terminal-store failure
+tests cover both findings. A fifth fresh-context review of the new exact head
+is required before merge.
 Its immutable PR comment is the post-commit authority for the exact head and
 verdict, avoiding a documentation-only commit that would invalidate the head
 it reviewed.

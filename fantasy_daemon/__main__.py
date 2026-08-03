@@ -826,7 +826,7 @@ def _finalize_claimed_task(
     *,
     success: bool,
     error: str = "",
-) -> None:
+) -> str:
     """Mark a claimed BranchTask ``succeeded`` or ``failed``.
 
     Invoked after the graph stream completes (or errors out). A crash
@@ -835,40 +835,39 @@ def _finalize_claimed_task(
     pending on next daemon boot.
     """
     if claimed is None:
-        return
-    try:
-        if _is_epoch2_branch_task(claimed):
-            adapter = _epoch2_adapter_for_universe(universe_path)
-            if adapter is None:
-                raise RuntimeError("epoch2 adapter unavailable")
-            detail = {"error": str(error)[:2000]} if error else None
-            adapter.finish(
-                claimed.branch_task_id,
-                worker_id=_branch_task_owner_id(claimed),
-                status="succeeded" if success else "failed",
-                detail=detail,
-            )
-            logger.info(
-                "dispatcher_pick: finalized epoch2 %s -> %s",
-                claimed.branch_task_id,
-                "succeeded" if success else "failed",
-            )
-            return
-        from tinyassets.branch_tasks import mark_status
-
-        mark_status(
-            universe_path,
+        return ""
+    requested_status = "succeeded" if success else "failed"
+    if _is_epoch2_branch_task(claimed):
+        adapter = _epoch2_adapter_for_universe(universe_path)
+        if adapter is None:
+            raise RuntimeError("epoch2 adapter unavailable")
+        detail = {"error": str(error)[:2000]} if error else None
+        settled = adapter.finish(
             claimed.branch_task_id,
-            status="succeeded" if success else "failed",
-            error=error,
+            worker_id=_branch_task_owner_id(claimed),
+            status=requested_status,
+            detail=detail,
         )
         logger.info(
-            "dispatcher_pick: finalized %s -> %s",
+            "dispatcher_pick: finalized epoch2 %s -> %s",
             claimed.branch_task_id,
-            "succeeded" if success else "failed",
+            settled.status,
         )
-    except Exception:  # noqa: BLE001
-        logger.exception("_finalize_claimed_task failed")
+        return settled.status
+    from tinyassets.branch_tasks import mark_status
+
+    mark_status(
+        universe_path,
+        claimed.branch_task_id,
+        status=requested_status,
+        error=error,
+    )
+    logger.info(
+        "dispatcher_pick: finalized %s -> %s",
+        claimed.branch_task_id,
+        requested_status,
+    )
+    return requested_status
 
 
 def _branch_task_cancel_requested(
@@ -927,18 +926,23 @@ def _settle_claimed_direct_branch_task(
     error: str,
 ) -> tuple[bool, str]:
     """Settle direct execution without ever attesting canceled work."""
-    if (
-        error == "branch_task_cancel_requested"
-        or _branch_task_cancel_requested(universe_path, claimed)
+    if error == "branch_task_cancel_requested":
+        _cancel_claimed_task(universe_path, claimed)
+        return False, "branch_task_cancel_requested"
+    if not _is_epoch2_branch_task(claimed) and _branch_task_cancel_requested(
+        universe_path,
+        claimed,
     ):
         _cancel_claimed_task(universe_path, claimed)
         return False, "branch_task_cancel_requested"
-    _finalize_claimed_task(
+    settled_status = _finalize_claimed_task(
         universe_path,
         claimed,
         success=success,
         error=error,
     )
+    if settled_status == "cancelled":
+        return False, "branch_task_cancel_requested"
     return success, error
 
 

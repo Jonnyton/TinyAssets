@@ -429,6 +429,7 @@ class Epoch2BranchTaskAdapter:
                 new_status=status,
                 detail=detail,
                 worker_id=worker_id,
+                cancel_wins=True,
             )
         )
 

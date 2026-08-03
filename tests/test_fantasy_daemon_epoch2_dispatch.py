@@ -1101,6 +1101,88 @@ def test_epoch2_mid_run_cancel_cannot_finalize_completed_provider_as_success(
     ).status == "cancelled"
 
 
+def test_epoch2_atomic_settlement_makes_last_moment_cancel_win(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    committed = _commit_epoch2(
+        tmp_path,
+        key="settlement-cancel-race",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=_active_cloud_automation(tmp_path),
+    )
+    claimed, _inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+    assert claimed is not None
+    original_finish = Epoch2BranchTaskAdapter.finish
+    cancellation_injected = False
+
+    def finish_after_cancel(self, branch_task_id, **kwargs):
+        nonlocal cancellation_injected
+        if not cancellation_injected:
+            cancellation_injected = True
+            self.request_cancel(branch_task_id)
+        return original_finish(self, branch_task_id, **kwargs)
+
+    monkeypatch.setattr(Epoch2BranchTaskAdapter, "finish", finish_after_cancel)
+
+    success, error = daemon_main._settle_claimed_direct_branch_task(
+        universe,
+        claimed,
+        success=True,
+        error="",
+    )
+
+    assert cancellation_injected is True
+    assert success is False
+    assert error == "branch_task_cancel_requested"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(
+        committed["branch_task_id"]
+    ).status == "cancelled"
+
+
+def test_epoch2_terminalization_failure_propagates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    _commit_epoch2(
+        tmp_path,
+        key="settlement-failure",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=_active_cloud_automation(tmp_path),
+    )
+    claimed, _inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+    assert claimed is not None
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter,
+        "finish",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RuntimeError("terminal store unavailable")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="terminal store unavailable"):
+        daemon_main._settle_claimed_direct_branch_task(
+            universe,
+            claimed,
+            success=True,
+            error="",
+        )
+
+
 def test_execute_branch_version_threads_identity_and_queue_lineage(
     tmp_path: Path,
     monkeypatch,
