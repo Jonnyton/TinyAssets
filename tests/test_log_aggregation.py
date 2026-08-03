@@ -71,6 +71,20 @@ def test_runtime_containers_forward_logs_without_docker_socket():
     assert "127.0.0.1:24224:24224" in ports
 
 
+def test_sidecars_receive_only_their_required_secret():
+    services = _load_compose()["services"]
+    expected = {
+        "cloudflared": {"CLOUDFLARE_TUNNEL_TOKEN"},
+        "logs": {"BETTERSTACK_SOURCE_TOKEN"},
+    }
+    for name, allowed in expected.items():
+        service = services[name]
+        assert not (service.get("env_file") or []), name
+        environment = service.get("environment") or {}
+        assert set(environment) == allowed, name
+        assert all("${" in str(value) for value in environment.values()), name
+
+
 def test_logs_service_mounts_vector_config():
     data = _load_compose()
     volumes = data["services"]["logs"].get("volumes", [])
