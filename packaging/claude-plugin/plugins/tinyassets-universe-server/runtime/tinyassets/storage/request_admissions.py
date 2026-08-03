@@ -897,6 +897,82 @@ class RequestAdmissionStore:
             )
         return records
 
+    def list_live_owned_v2_tasks(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int,
+        integrity_check: Callable[[Mapping[str, Any]], bool],
+    ) -> list[dict[str, Any]]:
+        """Return running or cancel-requested tasks owned by one worker."""
+        requested = min(max(1, int(limit)), MAX_OPERATIONAL_SCAN_ROWS)
+        with self.connection() as conn:
+            rows = self._v2_integrity_cursor(
+                conn,
+                universe_id=_required(universe_id, "universe_id"),
+                pending_only=False,
+                include_linked_universe_scope=True,
+                live_owned_by=_required(worker_id, "worker_id"),
+                live_owned_at=_clock_iso(self._clock),
+                limit=requested,
+            ).fetchall()
+        tasks: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            if not integrity_check(raw):
+                continue
+            task_only = {
+                key: value
+                for key, value in raw.items()
+                if not key.startswith("linked_")
+                and key != "source_rowid"
+            }
+            tasks.append(_task_row(task_only))
+        return tasks
+
+    def read_live_v2_task_for_resume(
+        self,
+        branch_task_id: str,
+        *,
+        worker_id: str,
+        resume_check: Callable[
+            [sqlite3.Connection, Mapping[str, Any], str],
+            bool,
+        ],
+    ) -> dict[str, Any] | None:
+        """Revalidate one live claim and its authority in one transaction."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                at = _clock_iso(self._clock)
+                row = self._v2_integrity_cursor(
+                    conn,
+                    pending_only=False,
+                    branch_task_id=_required(
+                        branch_task_id,
+                        "branch_task_id",
+                    ),
+                    live_claimed_by=_required(worker_id, "worker_id"),
+                    live_claim_at=at,
+                    include_linked_universe_scope=True,
+                    limit=1,
+                ).fetchone()
+                if row is None or not resume_check(conn, dict(row), at):
+                    conn.commit()
+                    return None
+                task_only = {
+                    key: value
+                    for key, value in dict(row).items()
+                    if not key.startswith("linked_")
+                    and key != "source_rowid"
+                }
+                conn.commit()
+                return _task_row(task_only)
+            except Exception:
+                conn.rollback()
+                raise
+
     def has_active_v2_claim(
         self,
         *,
@@ -1065,6 +1141,8 @@ class RequestAdmissionStore:
         uncompacted_only: bool = False,
         live_claimed_by: str = "",
         live_claim_at: str = "",
+        live_owned_by: str = "",
+        live_owned_at: str = "",
         limit: int | None = None,
         rowid_order: bool = False,
     ) -> sqlite3.Cursor:
@@ -1110,6 +1188,18 @@ class RequestAdmissionStore:
                 "julianday(t.lease_expires_at) > julianday(?)",
             ])
             params.extend([live_claimed_by, live_claim_at])
+        if live_owned_by:
+            if not live_owned_at:
+                raise ValueError(
+                    "live_owned_at is required with live_owned_by"
+                )
+            clauses.extend([
+                "t.status IN ('running', 'cancel_requested')",
+                "t.claimed_by = ?",
+                "t.lease_expires_at IS NOT NULL",
+                "julianday(t.lease_expires_at) > julianday(?)",
+            ])
+            params.extend([live_owned_by, live_owned_at])
         if terminal_before:
             clauses.append("a.terminal_at IS NOT NULL")
             clauses.append("a.terminal_at < ?")

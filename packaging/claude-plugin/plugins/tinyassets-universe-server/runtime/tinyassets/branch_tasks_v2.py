@@ -254,6 +254,26 @@ class Epoch2BranchTaskAdapter:
             worker_id=worker_id,
         )
 
+    def list_worker_active_tasks(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int = 2,
+    ) -> list[Epoch2BranchTask]:
+        """Return live running/cancel-requested tasks for reconciliation."""
+        return [
+            _as_epoch2_task(row)
+            for row in self._store.list_live_owned_v2_tasks(
+                universe_id=universe_id,
+                worker_id=worker_id,
+                limit=limit,
+                integrity_check=lambda row: (
+                    _classify_epoch2_row(row) is None
+                ),
+            )
+        ]
+
     def worker_claim_context(
         self,
         *,
@@ -298,68 +318,12 @@ class Epoch2BranchTaskAdapter:
             task: Mapping[str, Any],
             transaction_at: str,
         ) -> bool:
-            if _classify_epoch2_row(task) is not None:
-                return False
-            if task["universe_id"] != descriptor.universe_id:
-                return False
-            trusted = descriptor_reader(conn, descriptor.worker_id)
-            if not (
-                trusted == descriptor
-                and trusted is not None
-                and _descriptor_is_live(
-                    trusted,
-                    transaction_at=transaction_at,
-                )
-            ):
-                return False
-            activation_fields = (
-                task.get("automation_id"),
-                task.get("automation_activation_epoch"),
-                task.get("automation_executor_class"),
-                task.get("automation_subject_kind"),
-                task.get("automation_subject_ref"),
-                task.get("automation_subject_digest"),
-                task.get("automation_branch_version"),
-                task.get("automation_lease_id"),
-            )
-            if not any(value is not None for value in activation_fields):
-                return True
-            if (
-                trusted.executor_class is None
-                or trusted.executor_class.value
-                != task["automation_executor_class"]
-            ):
-                return False
-            active = conn.execute(
-                """
-                SELECT 1
-                FROM branch_tasks_v2
-                WHERE universe_id = ? AND automation_id = ?
-                  AND branch_task_id != ?
-                  AND status IN ('running', 'cancel_requested')
-                  AND disabled = 0
-                LIMIT 1
-                """,
-                (
-                    task["universe_id"],
-                    task["automation_id"],
-                    task["branch_task_id"],
-                ),
-            ).fetchone()
-            if active is not None:
-                return False
-            return AutomationActivationStore.validate_claim_in_transaction(
+            return _transaction_allows_epoch2_lifecycle(
                 conn,
-                universe_id=str(task["universe_id"]),
-                automation_id=str(task["automation_id"]),
-                epoch=int(task["automation_activation_epoch"]),
-                executor_class=trusted.executor_class,
-                subject=ExecutionSubject.from_dict({
-                    "kind": task["automation_subject_kind"],
-                    "ref": task["automation_subject_ref"],
-                    "digest": task["automation_subject_digest"],
-                }),
-                lease_id=str(task["automation_lease_id"]),
+                task,
+                transaction_at=transaction_at,
+                descriptor=descriptor,
+                descriptor_reader=descriptor_reader,
             )
 
         row = self._store.claim_v2_task(
@@ -369,6 +333,37 @@ class Epoch2BranchTaskAdapter:
             capabilities=descriptor.capabilities,
             lease_seconds=lease_seconds,
             claim_check=transaction_check,
+        )
+        return _as_epoch2_task(row) if row is not None else None
+
+    def resume(
+        self,
+        branch_task_id: str,
+        *,
+        descriptor: WorkerClaimDescriptor,
+        descriptor_reader: DescriptorReader,
+    ) -> Epoch2BranchTask | None:
+        """Revalidate a live claim before material work resumes."""
+        if not _descriptor_shape_is_valid(descriptor):
+            return None
+
+        def transaction_check(
+            conn: sqlite3.Connection,
+            task: Mapping[str, Any],
+            transaction_at: str,
+        ) -> bool:
+            return _transaction_allows_epoch2_lifecycle(
+                conn,
+                task,
+                transaction_at=transaction_at,
+                descriptor=descriptor,
+                descriptor_reader=descriptor_reader,
+            )
+
+        row = self._store.read_live_v2_task_for_resume(
+            branch_task_id,
+            worker_id=descriptor.worker_id,
+            resume_check=transaction_check,
         )
         return _as_epoch2_task(row) if row is not None else None
 
@@ -817,6 +812,78 @@ def read_worker_claim_descriptor(
 ) -> WorkerClaimDescriptor | None:
     context = read_worker_claim_context(conn, worker_id)
     return context.descriptor if context is not None else None
+
+
+def _transaction_allows_epoch2_lifecycle(
+    conn: sqlite3.Connection,
+    task: Mapping[str, Any],
+    *,
+    transaction_at: str,
+    descriptor: WorkerClaimDescriptor,
+    descriptor_reader: DescriptorReader,
+) -> bool:
+    if _classify_epoch2_row(task) is not None:
+        return False
+    if task["universe_id"] != descriptor.universe_id:
+        return False
+    trusted = descriptor_reader(conn, descriptor.worker_id)
+    if not (
+        trusted == descriptor
+        and trusted is not None
+        and _descriptor_is_live(
+            trusted,
+            transaction_at=transaction_at,
+        )
+    ):
+        return False
+    activation_fields = (
+        task.get("automation_id"),
+        task.get("automation_activation_epoch"),
+        task.get("automation_executor_class"),
+        task.get("automation_subject_kind"),
+        task.get("automation_subject_ref"),
+        task.get("automation_subject_digest"),
+        task.get("automation_branch_version"),
+        task.get("automation_lease_id"),
+    )
+    if not any(value is not None for value in activation_fields):
+        return True
+    if (
+        trusted.executor_class is None
+        or trusted.executor_class.value != task["automation_executor_class"]
+    ):
+        return False
+    active = conn.execute(
+        """
+        SELECT 1
+        FROM branch_tasks_v2
+        WHERE universe_id = ? AND automation_id = ?
+          AND branch_task_id != ?
+          AND status IN ('running', 'cancel_requested')
+          AND disabled = 0
+        LIMIT 1
+        """,
+        (
+            task["universe_id"],
+            task["automation_id"],
+            task["branch_task_id"],
+        ),
+    ).fetchone()
+    if active is not None:
+        return False
+    return AutomationActivationStore.validate_claim_in_transaction(
+        conn,
+        universe_id=str(task["universe_id"]),
+        automation_id=str(task["automation_id"]),
+        epoch=int(task["automation_activation_epoch"]),
+        executor_class=trusted.executor_class,
+        subject=ExecutionSubject.from_dict({
+            "kind": task["automation_subject_kind"],
+            "ref": task["automation_subject_ref"],
+            "digest": task["automation_subject_digest"],
+        }),
+        lease_id=str(task["automation_lease_id"]),
+    )
 
 
 def _descriptor_is_live(

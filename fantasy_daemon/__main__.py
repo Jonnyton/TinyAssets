@@ -483,7 +483,7 @@ def _try_dispatcher_pick(
                     )
 
         if epoch2_adapter is not None and epoch2_context is not None:
-            live = epoch2_adapter.list_live_claimed_requests(
+            live = epoch2_adapter.list_worker_active_tasks(
                 universe_id=universe_path.name,
                 worker_id=worker_id,
                 limit=2,
@@ -495,27 +495,39 @@ def _try_dispatcher_pick(
                 )
                 return None, {}
             if live:
-                resumed = epoch2_adapter.get(live[0].branch_task_id)
-                if resumed is None:
-                    logger.error(
-                        "dispatcher_pick: live epoch2 claim disappeared %s",
-                        live[0].branch_task_id,
-                    )
-                    return None, {}
-                if resumed.status == "cancel_requested":
+                active_task = live[0]
+                if active_task.status == "cancel_requested":
                     epoch2_adapter.finish(
-                        resumed.branch_task_id,
+                        active_task.branch_task_id,
                         worker_id=worker_id,
                         status="cancelled",
                         detail={"reason": "cancel_reconciled_on_restart"},
                     )
-                else:
-                    logger.info(
-                        "dispatcher_pick: resumed epoch2 %s worker=%s",
-                        resumed.branch_task_id,
-                        worker_id,
+                    return None, {}
+                resumed = epoch2_adapter.resume(
+                    active_task.branch_task_id,
+                    descriptor=epoch2_context.descriptor,
+                    descriptor_reader=read_worker_claim_descriptor,
+                )
+                if resumed is None:
+                    epoch2_adapter.finish(
+                        active_task.branch_task_id,
+                        worker_id=worker_id,
+                        status="failed",
+                        detail={"error": "resume_authority_invalid"},
                     )
-                    return resumed, dict(resumed.inputs or {})
+                    logger.error(
+                        "dispatcher_pick: refused invalid epoch2 resume %s",
+                        active_task.branch_task_id,
+                    )
+                    return None, {}
+                _bind_epoch2_executor(resumed, epoch2_context)
+                logger.info(
+                    "dispatcher_pick: resumed epoch2 %s worker=%s",
+                    resumed.branch_task_id,
+                    worker_id,
+                )
+                return resumed, dict(resumed.inputs or {})
 
             # Recovery is queue-owner maintenance over the canonical store.
             # It grants no execution authority; each recovered task must still
@@ -533,6 +545,7 @@ def _try_dispatcher_pick(
                     descriptor_reader=read_worker_claim_descriptor,
                 )
                 if claimed is not None:
+                    _bind_epoch2_executor(claimed, epoch2_context)
                     logger.info(
                         "dispatcher_pick: recovered epoch2 %s worker=%s",
                         claimed.branch_task_id,
@@ -561,6 +574,7 @@ def _try_dispatcher_pick(
                     picked.branch_task_id,
                 )
                 return None, {}
+            _bind_epoch2_executor(claimed, epoch2_context)
             logger.info(
                 "dispatcher_pick: claimed epoch2 %s branch=%s worker=%s",
                 claimed.branch_task_id,
@@ -602,6 +616,13 @@ def _branch_task_owner_id(claimed_task: Any) -> str:
         or getattr(claimed_task, "claimed_by", "")
         or ""
     )
+
+
+def _bind_epoch2_executor(claimed_task: Any, context: Any) -> None:
+    """Attach trusted runtime identity to the in-memory execution read model."""
+    descriptor = context.descriptor
+    claimed_task.executor_worker_id = descriptor.worker_id
+    claimed_task.executor_runtime_id = descriptor.runtime_instance_id
 
 
 def _is_epoch2_branch_task(claimed_task: Any) -> bool:

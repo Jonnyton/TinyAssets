@@ -232,6 +232,8 @@ def test_dispatch_claims_activation_bound_epoch2_task(
     assert claimed is not None
     assert claimed.branch_task_id == committed["branch_task_id"]
     assert claimed.queue_epoch == 2
+    assert claimed.executor_worker_id == "worker-a"
+    assert claimed.executor_runtime_id == _runtime["runtime_instance_id"]
     assert inputs["request_id"] == committed["request_id"]
     assert Epoch2BranchTaskAdapter(tmp_path).get(
         committed["branch_task_id"]
@@ -278,6 +280,40 @@ def test_dispatch_resumes_live_epoch2_claim_before_selecting_new_work(
     assert Epoch2BranchTaskAdapter(tmp_path).get(
         pending_id
     ).status == "pending"
+
+
+def test_restart_refuses_live_claim_after_activation_is_stopped(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    active = _active_cloud_automation(tmp_path)
+    committed = _commit_epoch2(
+        tmp_path,
+        key="stopped-on-restart",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=active,
+    )
+    claimed, _inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+    assert claimed is not None
+    assert AutomationActivationStore(tmp_path).stop(expected=active) is not None
+
+    resumed, inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+
+    assert resumed is None
+    assert inputs == {}
+    assert Epoch2BranchTaskAdapter(tmp_path).get(
+        committed["branch_task_id"]
+    ).status == "failed"
 
 
 def test_epoch2_observers_heartbeat_and_finalize_transactional_task(
@@ -469,6 +505,38 @@ def test_epoch2_cancel_request_finishes_without_legacy_queue_mutation(
     assert daemon_main._branch_task_cancel_requested(universe, claimed) is True
     daemon_main._cancel_claimed_task(universe, claimed)
 
+    assert adapter.get(committed["branch_task_id"]).status == "cancelled"
+
+
+def test_restart_reconciles_cancel_requested_before_new_selection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    committed = _commit_epoch2(
+        tmp_path,
+        key="cancel-on-restart",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=_active_cloud_automation(tmp_path),
+    )
+    claimed, _inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+    assert claimed is not None
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    adapter.request_cancel(committed["branch_task_id"])
+
+    resumed, inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+
+    assert resumed is None
+    assert inputs == {}
     assert adapter.get(committed["branch_task_id"]).status == "cancelled"
 
 
