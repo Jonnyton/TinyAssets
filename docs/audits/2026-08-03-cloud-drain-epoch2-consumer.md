@@ -100,11 +100,12 @@ Commands run at implementation head:
 py -m pytest -q tests/test_fantasy_daemon_epoch2_dispatch.py \
   tests/test_branch_tasks_v2.py tests/test_cloud_worker.py \
   tests/test_goal_pool.py tests/test_fantasy_daemon_branch_task_lease.py \
-  tests/test_soul_loop_dispatch.py
+  tests/test_soul_loop_dispatch.py tests/test_request_admission_store.py \
+  tests/test_run_branch_version.py tests/test_bug_investigation_dispatcher.py
 ```
 
-Result after the second review-finding repairs and current-main rebase:
-`356 passed in 33.36s` across
+Result after the third review-finding repair:
+`357 passed in 39.27s` across
 the epoch-2 consumer, cloud worker, transactional adapter/store, immutable
 Branch version, v1 lease/dispatcher compatibility, and bug-investigation
 integration suites. This includes queue-run reservation races with exactly one
@@ -144,7 +145,15 @@ identity; and node-boundary-only heartbeats allowed a valid long provider node
 to outlive a fixed lease while renewal loss was logged and ignored. Both are
 now repaired by the atomic private task/run reservation, exact identity gate,
 continuous heartbeat guard, and fail-closed authority-loss propagation above.
-A third fresh-context review of the new exact head is required before merge.
+A third fresh-context review of exact head `bc58e72c` independently validated
+the two race repairs and the six earlier advisories, then returned `ADAPT`
+because cancellation requested during a blocking node could be renewed and
+the completed provider result could still finalize the task as succeeded. The
+repair now treats observed cancellation as a typed execution stop, propagates
+it through node-status callbacks and the continuous heartbeat guard, and
+rereads cancellation at final settlement so the task can only become
+`cancelled`. A fourth fresh-context review of the new exact head is required
+before merge.
 Its immutable PR comment is the post-commit authority for the exact head and
 verdict, avoiding a documentation-only commit that would invalidate the head
 it reviewed.

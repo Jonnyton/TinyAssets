@@ -2215,7 +2215,7 @@ def _invoke_graph(
             return
         try:
             on_node_status(node_id, status)
-        except RunExecutionAuthorityLost:
+        except (RunCancelledError, RunExecutionAuthorityLost):
             raise
         except Exception:  # noqa: BLE001
             logger.exception(

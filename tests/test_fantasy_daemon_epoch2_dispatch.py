@@ -1016,6 +1016,91 @@ def test_epoch2_execution_fails_when_background_heartbeat_loses_authority(
     assert "worker no longer owns lease" in metadata["authority_error"]
 
 
+def test_epoch2_mid_run_cancel_cannot_finalize_completed_provider_as_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tinyassets import runs
+
+    initialize_author_server(tmp_path)
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    committed = _commit_epoch2(
+        tmp_path,
+        key="mid-run-cancel",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        activation=_active_cloud_automation(tmp_path),
+    )
+    claimed, _inputs = daemon_main._try_dispatcher_pick(
+        universe,
+        daemon["daemon_id"],
+    )
+    assert claimed is not None
+    monkeypatch.setattr(
+        daemon_main,
+        "_branch_task_heartbeat_interval_seconds",
+        lambda: 0.001,
+    )
+    monkeypatch.setattr(
+        runs,
+        "get_run_by_branch_task_id",
+        lambda *_a, **_k: None,
+    )
+    provider_started = threading.Event()
+    cancellation_observed = threading.Event()
+    heartbeat, node_status = daemon_main._build_branch_task_observers(
+        universe,
+        claimed,
+    )
+
+    def observed_heartbeat(*, force: bool = False) -> None:
+        try:
+            heartbeat(force=force)
+        except runs.RunCancelledError:
+            cancellation_observed.set()
+            raise
+
+    def execute_version(_base_path, **_kwargs):
+        provider_started.set()
+        assert cancellation_observed.wait(timeout=2.0)
+        return SimpleNamespace(
+            run_id="provider-finished-after-cancel",
+            status=runs.RUN_STATUS_COMPLETED,
+            output={},
+            error="",
+        )
+
+    monkeypatch.setattr(runs, "execute_branch_version", execute_version)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            daemon_main._try_execute_claimed_branch_task,
+            universe,
+            claimed,
+            daemon["daemon_id"],
+            node_status,
+            observed_heartbeat,
+        )
+        assert provider_started.wait(timeout=2.0)
+        Epoch2BranchTaskAdapter(tmp_path).request_cancel(
+            committed["branch_task_id"]
+        )
+        success, error, metadata = future.result(timeout=3.0)
+
+    assert success is False
+    assert error == "branch_task_cancel_requested"
+    assert metadata["cancel_requested"] is True
+    daemon_main._settle_claimed_direct_branch_task(
+        universe,
+        claimed,
+        success=success,
+        error=error,
+    )
+    assert Epoch2BranchTaskAdapter(tmp_path).get(
+        committed["branch_task_id"]
+    ).status == "cancelled"
+
+
 def test_execute_branch_version_threads_identity_and_queue_lineage(
     tmp_path: Path,
     monkeypatch,

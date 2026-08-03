@@ -675,7 +675,7 @@ def _continuous_branch_task_heartbeat(
     failure is retained and raised on the execution thread so a run cannot be
     reported successful after its worker stopped owning the task.
     """
-    from tinyassets.runs import RunExecutionAuthorityLost
+    from tinyassets.runs import RunCancelledError, RunExecutionAuthorityLost
 
     interval = max(
         0.001,
@@ -684,11 +684,11 @@ def _continuous_branch_task_heartbeat(
         else _branch_task_heartbeat_interval_seconds(),
     )
     stop = threading.Event()
-    failure: list[RunExecutionAuthorityLost] = []
+    failure: list[Exception] = []
     failure_lock = threading.Lock()
 
-    def as_authority_loss(exc: Exception) -> RunExecutionAuthorityLost:
-        if isinstance(exc, RunExecutionAuthorityLost):
+    def as_execution_stop(exc: Exception) -> Exception:
+        if isinstance(exc, (RunCancelledError, RunExecutionAuthorityLost)):
             return exc
         return RunExecutionAuthorityLost(str(exc) or type(exc).__name__)
 
@@ -705,14 +705,14 @@ def _continuous_branch_task_heartbeat(
             except Exception as exc:  # noqa: BLE001
                 with failure_lock:
                     if not failure:
-                        failure.append(as_authority_loss(exc))
+                        failure.append(as_execution_stop(exc))
                 stop.set()
                 return
 
     try:
         heartbeat(force=True)
     except Exception as exc:  # noqa: BLE001
-        raise as_authority_loss(exc) from exc
+        raise as_execution_stop(exc) from exc
     thread = threading.Thread(
         target=renew_loop,
         name="branch-task-heartbeat",
@@ -744,7 +744,7 @@ def _build_branch_task_observers(
 
     def refresh_heartbeat(*, force: bool = False) -> None:
         nonlocal last_heartbeat
-        from tinyassets.runs import RunExecutionAuthorityLost
+        from tinyassets.runs import RunCancelledError, RunExecutionAuthorityLost
 
         if not task_id:
             return
@@ -763,7 +763,13 @@ def _build_branch_task_observers(
                 if refreshed is None:
                     raise RuntimeError("lease is no longer owned by this worker")
                 last_heartbeat = now_mono
+                if refreshed.status == "cancel_requested":
+                    raise RunCancelledError(
+                        f"BranchTask {task_id} cancellation requested"
+                    )
                 return
+            except RunCancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "epoch2 branch_task lease renewal failed for %s owner=%s",
@@ -911,6 +917,29 @@ def _cancel_claimed_task(universe_path: Path, claimed: Any) -> None:
         claimed.branch_task_id,
         status="cancelled",
     )
+
+
+def _settle_claimed_direct_branch_task(
+    universe_path: Path,
+    claimed: Any,
+    *,
+    success: bool,
+    error: str,
+) -> tuple[bool, str]:
+    """Settle direct execution without ever attesting canceled work."""
+    if (
+        error == "branch_task_cancel_requested"
+        or _branch_task_cancel_requested(universe_path, claimed)
+    ):
+        _cancel_claimed_task(universe_path, claimed)
+        return False, "branch_task_cancel_requested"
+    _finalize_claimed_task(
+        universe_path,
+        claimed,
+        success=success,
+        error=error,
+    )
+    return success, error
 
 
 def _node_bid_lookup_factory(repo_root: Path):
@@ -1236,6 +1265,7 @@ def _try_execute_claimed_branch_task(
         from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             BranchTaskRunReservationConflict,
+            RunCancelledError,
             RunExecutionAuthorityLost,
             execute_branch,
             execute_branch_version,
@@ -1468,6 +1498,13 @@ def _try_execute_claimed_branch_task(
                     "branch_version_id": branch_version_id,
                 }
             return reconcile_existing_run(reserved_run)
+        except RunCancelledError as exc:
+            return False, "branch_task_cancel_requested", {
+                "branch_def_id": branch_def_id,
+                "branch_version_id": branch_version_id,
+                "cancel_requested": True,
+                "cancel_detail": str(exc),
+            }
         except RunExecutionAuthorityLost as exc:
             return False, "branch_task_authority_lost", {
                 "branch_def_id": branch_def_id,
@@ -2251,6 +2288,14 @@ class DaemonController:
                 )
                 if not _is_epoch2_branch_task(claimed_task):
                     branch_task_heartbeat(force=True)
+                branch_success, branch_error = (
+                    _settle_claimed_direct_branch_task(
+                        output_dir,
+                        claimed_task,
+                        success=branch_success,
+                        error=branch_error,
+                    )
+                )
                 _record_loop_daemon_signal(
                     loop_daemon_context,
                     universe_path=output_dir,
@@ -2267,10 +2312,6 @@ class DaemonController:
                         "trigger_source": claimed_task.trigger_source,
                         **branch_metadata,
                     },
-                )
-                _finalize_claimed_task(
-                    output_dir, claimed_task,
-                    success=branch_success, error=branch_error,
                 )
                 claimed_task = None  # prevent wrapper finalization
                 self._cleanup()
