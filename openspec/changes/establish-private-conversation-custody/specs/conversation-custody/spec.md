@@ -8,12 +8,12 @@ The system SHALL represent private conversation custody with a versioned open pr
 - **THEN** the provider derives storage only from that registered path and labels records and exports with the selected mode
 
 #### Scenario: Caller-selected or stable substituted path is refused
-- **WHEN** a directory/database/sidecar path is caller-supplied, relative, the platform data root, not the current registered association, nonexistent, non-regular, symlinked, a Windows reparse point, or hard-linked, or an existing primary database changes device/file identity across open
+- **WHEN** the registered universe directory is nonexistent, or a directory/database/sidecar path is caller-supplied, relative, the platform data root, not the current registered association, non-regular, symlinked, a Windows reparse point, or hard-linked, or an existing primary database changes device/file identity across open
 - **THEN** the system refuses the operation before returning private state or completing a write
 
 #### Scenario: SQLite sidecar lifecycle is explicit
-- **WHEN** WAL or SHM sidecars are created, deleted, or replaced during normal SQLite lifecycle
-- **THEN** identity continuity is not required for a sidecar, but every sidecar present at a pre-open, post-open, or pre-cleanup check must be regular, single-linked, non-symlink, and non-reparse
+- **WHEN** the primary database or WAL/SHM sidecar is absent on first use, or sidecars are created, deleted, or replaced during normal SQLite lifecycle
+- **THEN** absence is permitted and SQLite may create the file; identity continuity is not required for a sidecar, but every database/sidecar present at a pre-open, post-open, or pre-cleanup check must be regular, single-linked, non-symlink, and non-reparse
 
 #### Scenario: Same-account mutation is inside this mode's trust boundary
 - **WHEN** another process running as the same OS account races pathname validation and SQLite open
@@ -27,7 +27,7 @@ The system SHALL represent private conversation custody with a versioned open pr
 The system SHALL require and consume a one-use, unforgeable, action-bound grant from the future authenticated app-conversation authority owner for every create, append, read, export, and delete, and matching identifiers alone SHALL NOT authorize access.
 
 #### Scenario: Valid grant and exact request succeed
-- **WHEN** a current grant binds the normalized action digest, owner, universe, agent binding, selected mode/generation, registered path, trusted platform data root, and server-issued idempotency-key digest
+- **WHEN** a current grant binds the normalized action digest, owner, universe, agent binding, selected mode/generation, registered path, trusted platform data root, and a server-issued idempotency-key digest for mutations or explicit null for read/export
 - **THEN** the internal facade may perform that one exact operation
 
 #### Scenario: Matching strings without authority fail
@@ -41,6 +41,21 @@ The system SHALL require and consume a one-use, unforgeable, action-bound grant 
 #### Scenario: Raw transport identity is not authority
 - **WHEN** a future app adapter authenticates a provider event
 - **THEN** its authority owner mints normalized internal references and a grant; the custody store persists no app credential, installation grant, or raw provider authority object
+
+### Requirement: Operation request digests are exact and domain-separated
+The system SHALL compute every action-bound request digest as lowercase `sha256:<64 hex>` over `tinyassets-canonical-json/v1` bytes with an exact per-operation member set and domain: create has `agent_binding_id,custody_mode,domain,interlocutor_ref,owner_user_id,retention_until,universe_id`; append has `agent_binding_id,conversation_id,domain,kind,owner_user_id,participant_ref,payload,reply_to_message_id,source_event_ref,universe_id`; read/export each have `agent_binding_id,conversation_id,domain,owner_user_id,universe_id`; delete has `deleted_target_digest,domain,reason`.
+
+#### Scenario: Optional request values remain explicit
+- **WHEN** create has no retention boundary or append has no reply target
+- **THEN** its exact mapping contains the relevant member with JSON null rather than omitting it
+
+#### Scenario: Operation domains cannot collide
+- **WHEN** the same scope/target is read, exported, or deleted
+- **THEN** the exact domain is respectively `conversation-custody/read-thread/v1`, `conversation-custody/export-thread/v1`, or `conversation-custody/delete-thread/v1`, so the canonical preimages and digests differ
+
+#### Scenario: Request digest vectors are normative
+- **WHEN** the sample values in the design are canonicalized
+- **THEN** create, append, read, export, and delete digests are respectively `sha256:2e16d89e186ea01130b06c77c544394f1bdc84159d7fd816419acd65826dd78f`, `sha256:03d0dce3eba96d9efa1c8bf8ab383c90a2724c6c6e4a935201653649805fc3d5`, `sha256:6b9114c5a4161548e7bca566a340d73f7ddab83c21527f53a375c2c47531b143`, `sha256:f0d5c9697fbac581b93f42a4c52750388e1cb8c825fe653d52d2e91b902bef42`, and `sha256:a326ce1489645ec9083d739e9a27bfb2c88870a63cf7e833877b77a59acb00be`
 
 ### Requirement: Threads are immutable and request-bound
 The system SHALL create an immutable thread with a server-generated identifier, exact contract/mode, owner, universe, agent binding, normalized interlocutor reference, explicit retention boundary, and canonical UTC creation time under owner-and-operation-scoped idempotency.

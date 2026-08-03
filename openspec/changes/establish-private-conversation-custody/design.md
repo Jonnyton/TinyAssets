@@ -205,9 +205,62 @@ export-time timestamp, so unchanged exports are byte-for-byte stable.
 
 The future authority supplies a server-generated key with at least 128 bits of
 entropy; raw provider event IDs are not idempotency keys. Only the SHA-256 key
-digest is persisted. Uniqueness is `(owner_user_id, operation_kind,
-idempotency_key_digest)`, where operation kind is `create_thread`,
-`append_message`, or `delete_thread`.
+digest is persisted. Mutating-operation uniqueness is `(owner_user_id,
+operation_kind, idempotency_key_digest)`, where operation kind is
+`create_thread`, `append_message`, or `delete_thread`. The authority/action
+domain additionally contains `read_thread` and `export_thread`, which have
+request digests but no idempotency key or ledger row.
+
+Every operation request digest is lowercase `sha256:<64 hex>` over the exact
+`tinyassets-canonical-json/v1` bytes of one domain-separated mapping:
+
+```text
+create_thread = {
+  "agent_binding_id", "custody_mode": "private_universe",
+  "domain": "conversation-custody/create-thread/v1", "interlocutor_ref",
+  "owner_user_id", "retention_until", "universe_id"
+}
+append_message = {
+  "agent_binding_id", "conversation_id",
+  "domain": "conversation-custody/append-message/v1", "kind",
+  "owner_user_id", "participant_ref", "payload", "reply_to_message_id",
+  "source_event_ref", "universe_id"
+}
+read_thread = {
+  "agent_binding_id", "conversation_id",
+  "domain": "conversation-custody/read-thread/v1", "owner_user_id",
+  "universe_id"
+}
+export_thread = {
+  "agent_binding_id", "conversation_id",
+  "domain": "conversation-custody/export-thread/v1", "owner_user_id",
+  "universe_id"
+}
+delete_thread = {
+  "deleted_target_digest",
+  "domain": "conversation-custody/delete-thread/v1", "reason"
+}
+```
+
+The braces above name exact member sets; no member is optional except that
+`retention_until` and `reply_to_message_id` carry JSON null when absent. Grant
+evidence binds the operation kind, this request digest, and the separately
+carried idempotency-key digest where the operation is mutating.
+
+Normative vector values are: owner `owner_1`, universe `universe_1`, binding
+`agent_binding_1`, conversation `conversation_1`, interlocutor
+`interlocutor_1`, participant `participant_1`, source event `event_1`, message
+kind `text`, payload `{"text":"hello\nworld"}`, null reply, retention
+`2030-01-02T03:04:05.000006Z`, delete reason `owner_request`, and the deleted
+target digest from the vector below. Their request digests are:
+
+```text
+create_thread  sha256:2e16d89e186ea01130b06c77c544394f1bdc84159d7fd816419acd65826dd78f
+append_message sha256:03d0dce3eba96d9efa1c8bf8ab383c90a2724c6c6e4a935201653649805fc3d5
+read_thread    sha256:6b9114c5a4161548e7bca566a340d73f7ddab83c21527f53a375c2c47531b143
+export_thread  sha256:f0d5c9697fbac581b93f42a4c52750388e1cb8c825fe653d52d2e91b902bef42
+delete_thread  sha256:a326ce1489645ec9083d739e9a27bfb2c88870a63cf7e833877b77a59acb00be
+```
 
 For active create/append operations, the ledger retains the canonical request
 digest and result identity. Identical concurrent or later retries return the
