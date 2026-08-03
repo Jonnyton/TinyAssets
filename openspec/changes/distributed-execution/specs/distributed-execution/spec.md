@@ -270,6 +270,77 @@ terminal authority.
 - **AND** it cannot mint a B2 grant, credential, payment right, accepted
   candidate, or terminal fact
 
+### Requirement: Backend bindings and request-bound evidence are sealed outside runner/v1
+
+Distributed execution SHALL own immutable, versioned
+`ExecutionAdmissionCapsuleV1`, `BackendBindingV1`, and
+`BackendLaunchEvidenceV1` contracts. `ExecutionAdmissionCapsuleV1` SHALL bind
+its schema and purpose, the complete trusted logical execution requirement by
+canonical value and digest, the selected backend-binding digest, the inner
+`SandboxJobRequest.job_id`, and the applicable B2/B13 authority-evidence
+reference and digest before dispatch. The capsule SHALL remain outside the
+inner request and result wires.
+
+Each `BackendBindingV1` SHALL identify one reviewed backend implementation and
+protocol version, exactly one closed execution profile, the exact enforcement
+properties it can prove, current capability/self-test evidence, the exact
+planned-launch-configuration digest, and the versioned launch-evidence
+contract it promises to return. A backend SHALL support a requirement only
+when the binding's proved property set includes every required property and
+every policy, isolation, projection, egress, credential, authority, backend,
+and planned-configuration reference and digest matches.
+
+Pre-launch admission SHALL verify the trusted requirement, outer capsule,
+backend binding, current capability/self-test evidence, exact planned launch
+configuration, property-set inclusion, and protocol commitment to return
+request-bound evidence. Pre-launch evidence SHALL prove only capability and
+the planned configuration; it SHALL NOT attest the future process or remote
+execution, enforcement, cleanup, or result.
+
+After dispatch, `BackendLaunchEvidenceV1` SHALL bind the outer-capsule digest,
+inner `job_id`, backend-binding and planned-configuration digests, actual
+process or remote-execution identity, policy/projection/egress/resource/secret/
+device enforcement, cleanup, result digest, and complete proved property set.
+Output SHALL be accepted only after fresh evidence verifies against the same
+capsule, inner job, actual execution, and result and proves every required
+guarantee. Missing or invalid actual-launch evidence SHALL raise
+`ExecutionAdmissionError(reason=backend_evidence_invalid)` and SHALL NOT
+produce a successful result, accepted candidate, or fallback input.
+
+This outer contract SHALL NOT change `runner/v1`, request schema
+`runner-job/v1`, result schema `runner-result/v1`, `SandboxJobRequest`,
+`SandboxJobResult`, or `EnforcementReceipt`. `JobCapability` SHALL remain
+exactly `source_exec`, `repo_read`, `repo_exec`, and `coding`, with its current
+immutable action mapping. `inference_only` and `provider_cli` SHALL NOT become
+runner capabilities. A backend without a reviewed binding and valid
+request-bound evidence SHALL remain unavailable for execution admission.
+
+#### Scenario: pre-launch proof cannot attest a future execution
+
+- **WHEN** a backend binding and current self-test prove every required
+  mechanism and bind the exact planned configuration
+- **THEN** pre-launch admission may establish capability and configuration
+  support for that request
+- **AND** it does not prove the future launch, enforcement, cleanup, or result
+
+#### Scenario: outer capsule preserves the frozen inner runner wire
+
+- **WHEN** admitted `source_exec` work is dispatched through `SandboxRunner`
+- **THEN** `ExecutionAdmissionCapsuleV1` binds the complete requirement and
+  selected backend binding to the unchanged inner `job_id`
+- **AND** the inner schemas remain `runner-job/v1` and `runner-result/v1`
+- **AND** no admission field or new `JobCapability` is added
+
+#### Scenario: returned evidence must prove the actual execution
+
+- **WHEN** a backend returns output without valid launch evidence bound to the
+  admitted capsule, inner `job_id`, planned configuration, actual execution,
+  complete required property set, and result digest
+- **THEN** admission fails with
+  `ExecutionAdmissionError(reason=backend_evidence_invalid)`
+- **AND** the output creates no successful runner result, accepted candidate,
+  or fallback input
+
 ### Requirement: Stale PRs are extracted onto current main, not integrated wholesale
 
 Implementation SHALL port only reviewed behavior and non-vacuous mutation tests
