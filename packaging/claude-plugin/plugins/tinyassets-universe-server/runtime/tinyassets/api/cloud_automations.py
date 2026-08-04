@@ -405,7 +405,18 @@ def cloud_automations(
         return _not_found()
     store = CloudAutomationControlStore(_base_path())
 
-    if normalized in {"bind_provider", "reconcile_provider", "rebind", "rebind_provider"}:
+    provider_rebind_alias = False
+    if normalized == "rebind":
+        candidate = payload
+        if isinstance(payload, str):
+            try:
+                candidate = json.loads(payload)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                candidate = None
+        provider_rebind_alias = isinstance(candidate, dict) and (
+            "provider" in candidate and "definition" not in candidate
+        )
+    if normalized in {"bind_provider", "reconcile_provider", "rebind_provider"} or provider_rebind_alias:
         try:
             document = json.loads(payload) if isinstance(payload, str) else payload
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -435,7 +446,7 @@ def cloud_automations(
                 universe_id=uid,
                 provider=provider,
             )
-            if normalized in {"rebind", "rebind_provider"}:
+            if normalized == "rebind_provider" or provider_rebind_alias:
                 matching = [
                     item
                     for item in provider_store.list_bindings(
