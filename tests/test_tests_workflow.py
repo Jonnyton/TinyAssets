@@ -155,35 +155,40 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
                 )
 
 
-def test_schedule_declares_at_most_one_nominal_start_per_hour() -> None:
-    """Cadence policy: one scheduled start per hour, nominally.
+def test_schedule_declares_one_nominal_slot_per_hour() -> None:
+    """Cadence policy: the schedule declares one nominal slot per hour.
 
     `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
     runs do NOT displace each other — the sibling concurrency test pins non-PR
     runs to a unique group with cancel-in-progress false, deliberately, so a
     queued tripwire run cannot be silently dropped. The consequence is that a
-    sub-hourly cron does not "run more often"; it stacks overlapping copies of
-    a 38-minute job.
+    sub-hourly cron does not "run more often"; it makes overlapping copies of a
+    38-minute job the norm rather than the exception.
 
-    **NOMINAL, not a guarantee of non-overlap.** GitHub delays scheduled events
-    as well as dropping them — the two runs cited above were dispatched 59 and
-    17 minutes late — so two nominally-hourly events can still start minutes
-    apart. Overlap is tolerated (free runners, duplicated work, nothing
-    corrupted), not prevented. This test pins the declared policy, which is the
-    only part of it the repo controls.
+    **This pins the DECLARED cadence, and nothing more.** GitHub documents that
+    scheduled events may be delayed or dropped; it does not guarantee any
+    minimum spacing between the starts it does deliver. The two runs cited
+    above were dispatched 59 and 17 minutes late, so even one nominal slot per
+    hour can produce starts minutes apart. Overlap is therefore tolerated (free
+    runners, duplicated work, nothing corrupted), not prevented — do not read
+    this test as proving runs cannot overlap. The declaration is the only part
+    of the cadence the repo controls, so it is the only part testable here.
 
-    Two deliberate conservatisms, both of which would otherwise make this
+    Three deliberate conservatisms, all of which would otherwise make this
     vacuous or wrong:
 
     * The check is on the WHOLE schedule, not per entry. `17 * * * *` plus
-      `47 * * * *` each satisfy "one fixed minute" while collectively starting
-      twice an hour, so a per-entry check does not enforce its own headline —
-      cross-family review caught exactly that.
+      `47 * * * *` each satisfy "one fixed minute" while collectively declaring
+      two slots an hour, so a per-entry check does not enforce its own headline
+      — cross-family review caught exactly that.
+    * ALL multi-entry schedules are rejected, not merely collectively
+      sub-hourly ones. Disjoint weekday/weekend entries whose union never
+      exceeds one slot per hour would be legitimate and are refused anyway.
     * A bare fixed minute is required, so legitimate once-per-hour forms like
       `59/5 * * * *` are rejected too. Evaluating real cron occurrences to
-      admit them would mean re-implementing GitHub's scheduler here, which an
-      earlier version of this file got wrong; a conservative policy that is
-      easy to read beats a clever one that is subtly wrong.
+      admit either case would mean re-implementing GitHub's scheduler here,
+      which an earlier version of this file got wrong; a conservative policy
+      that is easy to read beats a clever one that is subtly wrong.
 
     If `full-tests` is ever made materially faster, relax this in the same
     commit that proves the new duration — do not delete it, because the

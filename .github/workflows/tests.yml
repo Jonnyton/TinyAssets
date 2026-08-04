@@ -46,11 +46,12 @@ on:
   # here (26 of the last 200 runs). Runners are free on a public repo, so the
   # cadence is chosen for detection latency, not cost.
   #
-  # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
+  # It is BEST-EFFORT. The cron declares NOMINAL SLOTS, not a delivered rate:
   # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
   # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
   # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read the cron below as a
-  # CEILING, not a promise: "at most hourly, unpredictably". That is acceptable
+  # declaration of one nominal slot per hour, not a promise about how many
+  # runs arrive or how far apart they land. That is acceptable
   # for a
   # tripwire whose alternative is never running at all; it would NOT be
   # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
@@ -75,7 +76,8 @@ on:
   #
   # WHY HOURLY, and why not tighter. Detection latency for a regression in the
   # excluded files is NOT bounded by this interval — dropped runs make both the
-  # delivered rate and the latency unbounded. The interval only sets a ceiling,
+  # delivered rate and the latency unbounded. The interval sets the nominal
+  # slot spacing only,
   # and because delivery is fractional the declared rate has to sit well above
   # the rate you actually want. `17 */3` (8/day declared) delivered 2 runs in
   # the first ~11h it was live. Tripling the declared rate is expected to raise
@@ -83,7 +85,8 @@ on:
   # `gh run list --event schedule` once this has been live a day.
   #
   # The floor is the job's own runtime: `full-tests` measured 36 and 38 minutes.
-  # Scheduling faster than it finishes stacks overlapping runs — non-PR runs get
+  # Scheduling faster than it finishes makes overlap the NORM rather than the
+  # exception — non-PR runs get
   # a unique concurrency group (`github.run_id`) with cancel-in-progress false,
   # so they do NOT displace each other, they pile up.
   #
@@ -185,7 +188,7 @@ jobs:
           # Excluding them was VERIFIED safe, not assumed: every failure the
           # exclusion run reported was also failing in the same-tree full run.
           # The excluded files still run in `full-tests`, on a best-effort
-          # schedule of at most hourly — NOT "on every main push", which was
+          # schedule of one nominal slot per hour — NOT "on every main push", which was
           # the original claim here and was wrong: app-performed merges raise no
           # push event. See the `schedule:` trigger comment.
           python scripts/ci_required_tests.py --junit junit.xml \
@@ -201,7 +204,8 @@ jobs:
           if-no-files-found: warn
 
   # The other half of the split: the COMPLETE surface, on a best-effort
-  # schedule (at most hourly, often less — see the `schedule:` trigger comment).
+  # schedule (one nominal slot per hour, fewer delivered — see the `schedule:`
+  # trigger comment).
   # NOT required — this is the post-merge tripwire, not the merge gate. It
   # exists because `required-tests` deliberately trades coverage for a wall
   # clock that fits main's commit cadence; without this the excluded files
