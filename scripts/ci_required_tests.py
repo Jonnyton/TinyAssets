@@ -231,20 +231,27 @@ def main() -> int:
 
     # SERIAL ON PURPOSE — do not "optimise" this back to pytest-xdist.
     #
-    # Under `-n auto --dist loadfile` this suite is NOT deterministic. Some test
-    # leaks global state (a patched subprocess, most likely) and poisons every
-    # later test on the same worker: one measured run had 70 of its 149 failures
-    # on worker gw2 alone, against 5/11/6 on the other three, including a
-    # `git diff --cached` that returned another test's PR URL.
+    # HISTORICAL, pre-#2199. Under `-n auto --dist loadfile` this suite was not
+    # deterministic: a test leaked global state and poisoned every later test on
+    # the same worker. One measured run had 70 of its 149 failures on gw2 alone,
+    # against 5/11/6 on the other three, including a `git diff --cached` that
+    # returned another test's PR URL.
     #
-    # Which tests land on the poisoned worker depends on the file list, so
+    # Which tests landed on the poisoned worker depended on the file list, so
     # simply ADDING a test file moved ~34 tests in and out of the failure set
     # between two runs of otherwise-identical code. A gate whose verdict depends
     # on scheduling cannot support a committed baseline, and would fail PRs for
     # sins they did not commit.
     #
-    # Serial does not fix the underlying leak — it makes it deterministic, which
-    # is what a gate needs.
+    # That specific leak is FIXED (#2199: a `patch()` entered inside a thread
+    # worker, which is process-global rather than thread-local). Do not read the
+    # paragraphs above as evidence of a leak that still exists — they are the
+    # reason this call went serial, not a current diagnosis. Whether any further
+    # isolation problem remains is undiagnosed; see the measurement below, whose
+    # run-to-run disagreements have no established cause.
+    #
+    # Serial remains the choice here because a gate needs a deterministic
+    # verdict.
     #
     # The "~4x" this comment used to promise on the other side of that fix was a
     # HYPOTHESIS. It was never measured, and one measurement does not support it.
@@ -256,10 +263,19 @@ def main() -> int:
     #     xdist run A   11:40   219 failing
     #     xdist run B    9:53   218 failing
     #
-    # Two things that measurement DOES support. Run A was slower than serial, so
-    # no speedup was demonstrated here. And the three runs disagree on which
-    # tests fail — which on its own disqualifies parallelism for a gate, because
-    # a committed baseline needs a deterministic verdict, not merely a fast one.
+    # What that measurement supports, stated no more strongly than it earns:
+    #
+    # No REPEATABLE or MATERIAL speedup. Run A was ~16% slower than serial; run
+    # B was 11 seconds faster, which is noise on a ten-minute job. "No speedup
+    # at all" would be wrong — B did beat serial — and the honest reading is
+    # that the two parallel runs bracket serial rather than beating it.
+    #
+    # The failure SETS differ. Cardinalities alone (214 / 219 / 218) prove that
+    # much without any node IDs. What it does NOT prove is that the gate's
+    # VERDICT would differ: a disagreement confined to entries already in
+    # .github/known-failing-tests.txt changes nothing the gate reports. So the
+    # claim here is only that this configuration is not established as safe for
+    # a committed-baseline gate — not that it is proven unsafe.
     #
     # Deliberately NOT claimed: any causal account of the disagreements. An
     # earlier version of this comment attributed them to resource contention and
