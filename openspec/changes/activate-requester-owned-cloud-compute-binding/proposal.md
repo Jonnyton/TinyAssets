@@ -22,4 +22,4 @@ The cloud automation is deployed with durable continuation and GitHub destinatio
 
 ## Impact
 
-Affected modules are `tinyassets/provider_work_authority.py`, a new provider enrollment resolver/store, `tinyassets/api/cloud_automations.py`, `tinyassets/universe_server.py`, plugin mirror runtime files, and focused tests. Deployment must provide an explicit server-only enrollment manifest; no raw provider secret is stored in the manifest or accepted through chat.
+Affected modules are `tinyassets/provider_work_authority.py`, a new provider enrollment resolver/store, `tinyassets/api/cloud_automations.py`, `tinyassets/universe_server.py`, `.github/workflows/deploy-prod.yml`, plugin mirror runtime files, and focused tests. Deployment must provide an explicit server-only enrollment manifest through the production secret-install path; no raw provider secret is stored in the manifest or accepted through chat.

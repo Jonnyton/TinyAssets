@@ -12,4 +12,4 @@
 
 - [x] 3.1 Expose only redacted provider-binding state and actionable next steps through `read_graph`/prompts; regenerate the packaged mirror and prove parity.
 - [ ] 3.2 Run focused tests, Ruff, strict OpenSpec validation, and the §14 concurrency proof; obtain independent security/domain review before merge.
-- [ ] 3.3 Deploy the dark bind path and run the public canary; reconcile one explicit owner enrollment through the rendered phone connector before activation/cutover.
+- [ ] 3.3 Deploy the dark bind path (including `.github/workflows/deploy-prod.yml` secret propagation) and run the public canary; reconcile one explicit owner enrollment through the rendered phone connector before activation/cutover.
