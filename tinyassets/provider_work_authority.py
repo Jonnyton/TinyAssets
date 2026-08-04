@@ -1463,6 +1463,55 @@ class ProviderWorkBindingService:
         with self._store.transaction() as transaction:
             return transaction.compare_and_swap(expected, replacement)
 
+    def rebind(
+        self,
+        expected: ProviderWorkBindingFence,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingWriteResult:
+        """Atomically replace an active binding's server-resolved assignment.
+
+        Rebinding preserves the deterministic binding identity while advancing
+        its generation.  It must never revoke first and then attempt issuance:
+        issuance of the same identity is intentionally a conflict.
+        """
+        if not isinstance(expected, ProviderWorkBindingFence):
+            raise ValueError("expected must be a ProviderWorkBindingFence")
+        if not isinstance(root, ProviderWorkBindingRoot):
+            raise ValueError("root must be a ProviderWorkBindingRoot")
+        if self._resolver is None:
+            raise PermissionError("server-owned provider assignment is unavailable")
+        seed = self._resolver.resolve(root)
+        if not isinstance(seed, ProviderWorkBindingSeed) or (
+            seed.owner_user_id != root.owner_user_id
+            or seed.universe_id != root.universe_id
+            or seed.provider != root.provider
+        ):
+            raise PermissionError("server-owned provider assignment is unavailable")
+        current = expected.expected_record
+        if current.state is not ProviderWorkBindingState.ACTIVE:
+            return ProviderWorkBindingWriteResult(
+                ProviderWorkAuthorityWriteOutcome.CONFLICT, current
+            )
+        replacement = replace(
+            current,
+            generation=current.generation + 1,
+            state=ProviderWorkBindingState.ACTIVE,
+            credential_reference_digest=seed.credential_reference_digest,
+            allowed_operations=seed.allowed_operations,
+            allowed_roles=seed.allowed_roles,
+            assignment_generation=seed.assignment_generation,
+            assignment_digest=seed.assignment_digest,
+            max_invocations=seed.max_invocations,
+            max_tokens=seed.max_tokens,
+            max_cost_microunits=seed.max_cost_microunits,
+            expires_at=seed.expires_at,
+            updated_at=self._store.timestamp(),
+            binding_digest=_PLACEHOLDER_DIGEST,
+        )
+        replacement = replace(replacement, binding_digest=replacement.expected_digest())
+        with self._store.transaction() as transaction:
+            return transaction.compare_and_swap(expected, replacement)
+
 
 class ProviderWorkReceiptService:
     """Issue inert receipts only from a trusted server-owned resolver."""
