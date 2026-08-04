@@ -306,6 +306,39 @@ def test_production_binding_issuance_uses_only_trusted_resolved_assignment(
     assert not hasattr(store, "issue_binding")
 
 
+def test_rebind_recovers_revoked_binding_and_applies_new_budget(tmp_path) -> None:
+    root = ProviderWorkBindingRoot(
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        provider="codex",
+    )
+    original_seed = _seed()
+    store = SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW)
+    service = ProviderWorkBindingService(store, _BindingResolver(original_seed))
+    created = service.issue(root)
+    assert created.record is not None
+    revoked = service.revoke(ProviderWorkBindingFence(created.record))
+    assert revoked.record is not None
+
+    updated_seed = replace(
+        original_seed,
+        assignment_generation=2,
+        assignment_digest=f"sha256:{'b' * 64}",
+        max_cost_microunits=64,
+    )
+    rebound = ProviderWorkBindingService(
+        store,
+        _BindingResolver(updated_seed),
+    ).rebind(ProviderWorkBindingFence(revoked.record), root)
+
+    assert rebound.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED
+    assert rebound.record is not None
+    assert rebound.record.binding_id == created.record.binding_id
+    assert rebound.record.generation == revoked.record.generation + 1
+    assert rebound.record.state is ProviderWorkBindingState.ACTIVE
+    assert rebound.record.max_cost_microunits == 64
+
+
 @pytest.mark.parametrize(
     "seed",
     [
