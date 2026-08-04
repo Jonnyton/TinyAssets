@@ -1161,11 +1161,17 @@ def test_phone_create_returns_actionable_setup_when_connections_are_missing(
             "read_graph target=automations"
         ),
         "prerequisites": {
-            "provider_bindings": [],
-            "destination_grants": [],
-            "ready": False,
-        },
-    }
+                "provider_bindings": [],
+                "destination_grants": [],
+                "ready": False,
+                "connection_action": {
+                    "target": "connection",
+                    "operation": "connect",
+                    "required_fields": ["destination"],
+                    "next": "authorize GitHub, then reconcile the same destination",
+                },
+            },
+        }
 
 
 def test_stale_worker_cannot_reactivate_after_owner_stop(tmp_path, monkeypatch) -> None:
