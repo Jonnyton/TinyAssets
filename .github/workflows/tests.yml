@@ -85,8 +85,10 @@ on:
   # `gh run list --event schedule` once this has been live a day.
   #
   # The floor is the job's own runtime: `full-tests` measured 36 and 38 minutes.
-  # Scheduling faster than it finishes makes overlap the NORM rather than the
-  # exception — non-PR runs get
+  # Scheduling faster than the job finishes declares more OPPORTUNITIES for
+  # overlap; whether overlap actually occurs is a delivery property GitHub
+  # does not specify. What is certain is the consequence when it does occur:
+  # non-PR runs get
   # a unique concurrency group (`github.run_id`) with cancel-in-progress false,
   # so they do NOT displace each other, they pile up.
   #
@@ -127,10 +129,12 @@ concurrency:
   # `run_id` rather than `sha`, per a second review round: keying by SHA still
   # collides when several scheduled runs land on an UNCHANGED main, and GitHub
   # replaces an existing *pending* run with a newer one — so a queued tripwire
-  # run can be silently dropped. At the previous 3h cadence that was rare; at
-  # the hourly cadence, against a 36-38 min job and GitHub's habit of
-  # dispatching scheduled events tens of minutes late, it would stop being rare
-  # — which is now the main argument for run_id rather than a defensive one.
+  # run can be silently dropped. Shortening the interval from 3h to 1h against
+  # a 36-38 min job increases that RISK — the two scheduled runs observed so
+  # far were dispatched 59 and 17 minutes after their slot, so slot spacing is
+  # not delivered spacing. How often it would actually bite is unmeasured;
+  # raising the risk at all is enough to make run_id the main argument here
+  # rather than a defensive one.
   # run_id makes every non-PR run unique, so there is nothing to drop.
   # cancel-in-progress stays conditional as defence in depth.
   group: tests-${{ github.event.pull_request.number || github.run_id }}

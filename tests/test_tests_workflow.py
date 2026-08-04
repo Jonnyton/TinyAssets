@@ -161,9 +161,10 @@ def test_schedule_declares_one_nominal_slot_per_hour() -> None:
     `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
     runs do NOT displace each other — the sibling concurrency test pins non-PR
     runs to a unique group with cancel-in-progress false, deliberately, so a
-    queued tripwire run cannot be silently dropped. The consequence is that a
-    sub-hourly cron does not "run more often"; it makes overlapping copies of a
-    38-minute job the norm rather than the exception.
+    queued tripwire run cannot be silently dropped. So a sub-hourly cron does
+    not straightforwardly "run more often" — it declares more opportunities
+    for a 38-minute job to overlap itself, and any overlap that is delivered
+    runs concurrently rather than being cancelled.
 
     **This pins the DECLARED cadence, and nothing more.** GitHub documents that
     scheduled events may be delayed or dropped; it does not guarantee any
