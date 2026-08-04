@@ -10,15 +10,28 @@ auto-merge does not update the branch for you**. The PR then sits at
 is handling it. Observed 2026-08-04: two PRs each needed two manual re-syncs.
 
 The obvious fix — a scheduled workflow calling the ``update-branch`` API — is
-a trap in THIS repo. That call would use the default ``GITHUB_TOKEN``, and
-events raised by ``GITHUB_TOKEN`` do not start workflow runs (AGENTS.md hard
-rule 14; the same mechanism that leaves merges un-deployed here). The
-resulting ``pull_request: synchronize`` would therefore start no
-``required-tests`` run, the required check would never report for the new
-head, and the PR would be up to date and permanently BLOCKED — a silent wedge
-strictly worse than the manual step it replaced. Fixing it *in CI* needs a
-token that is not ``GITHUB_TOKEN`` (a PAT or GitHub App), or a merge queue —
-both repo-owner decisions.
+a trap in THIS repo, and the reason is narrower than "GITHUB_TOKEN suppresses
+everything" (that formulation is wrong; corrected by cross-family review
+2026-08-04). What GitHub actually does with a default-``GITHUB_TOKEN``-caused
+event:
+
+* ``pull_request`` ``opened`` / ``synchronize`` / ``reopened`` **do** create
+  runs — but they land in an **approval-required** state.
+* ``push``, ``pull_request_target``, and other ``pull_request`` activity types
+  create **no** run at all.
+
+So an updater using the default token wedges the PR in two different ways at
+once. ``required-tests`` (``tests.yml``, ``pull_request: synchronize``) would
+sit waiting for a human to approve it, and ``Diff scope declared``
+(``pull_request_target``) would never run at all — and required checks must
+pass for the LATEST sha, so the earlier results cannot carry over. Net: up to
+date, still blocked, now needing two manual interventions instead of one.
+
+Fixing it *in CI* needs a credential that is not the default token — a
+dedicated GitHub App installation token (best fit) or a fine-grained PAT. A
+merge queue is the better long-term model but is not available here: merge
+queues need an organization-owned repository and this one is personal-account
+owned. All of those are repo-owner decisions.
 
 So this is a local helper, not CI. It runs under YOUR ``gh`` credentials, so
 the push is attributed to a real user and the PR's checks re-run normally.
