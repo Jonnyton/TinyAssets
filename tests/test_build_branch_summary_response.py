@@ -11,6 +11,50 @@ Verifies:
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_root(tmp_path, monkeypatch, authenticate_request):
+    """Give every test in this file a real, private, writable data root.
+
+    Two problems this solves, in the order they were found.
+
+    1. These tests call `_ext_branch_build` / `_ext_branch_patch` directly,
+       below the MCP scope layer, but those still resolve the writer through
+       `_request_branch_actor`. Without a credential they short-circuit to
+       `{"error": "Authenticated branch subject required."}` and every
+       assertion dies on `KeyError: 'status'` before the response-shape
+       contract under test is reached.
+
+    2. The base path is set through `TINYASSETS_DATA_DIR` rather than by
+       patching anything, because BOTH patch targets tried here were wrong.
+
+       Patching `tinyassets.api.helpers._base_path` leaks: about a dozen
+       modules bind that name at module level, and any first imported inside
+       the patch window captures the MagicMock PERMANENTLY — `patch` restores
+       the attribute it replaced, not the copies others already took. Six
+       modules ended up holding it (permissions, evaluation, market, runs,
+       runtime_ops, extensions), which silently broke 14 tests in
+       test_routing_evidence.py that then read runs from a path that did not
+       exist and saw `count == 0`.
+
+       Patching `tinyassets.storage.data_dir` to return `Path("/fake")` fixes
+       the leak but breaks something else, found in cross-family review: the
+       patch tests reach real `publish_branch_version`, which creates a
+       SQLite database under that root. On Windows `/fake` resolves to
+       `C:ake` and the run really does write `.tinyassets.db` and
+       `.runs.db` there; on Linux CI creating `/fake` needs root, so the
+       tests would fail there while passing locally.
+
+    `TINYASSETS_DATA_DIR` is the documented, supported way to relocate the
+    root, `data_dir()` reads it on every call, and no module can capture a
+    stale binding of an env lookup. Nothing is mocked, so nothing can leak.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "output"))
+    (tmp_path / "output").mkdir()
+    authenticate_request("tester")
+
 
 def _make_node(node_id="n1", display_name="node_1"):
     return {
@@ -79,7 +123,6 @@ def _call_build(spec_dict, verbose=None):
 
     with (
         patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
     ):
         result = _ext_branch_build(kwargs)
@@ -108,7 +151,6 @@ def _call_patch(branch_before, branch_after, changes_json, verbose=None):
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_before),
         patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         patch(
             "tinyassets.api.engine_helpers._current_actor",
@@ -168,8 +210,7 @@ class TestBuildBranchSummaryDefault:
         save_mock = MagicMock(return_value=saved)
         with (
             patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
-            patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
+                patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         ):
             result = json.loads(_ext_branch_build(
                 {"spec_json": json.dumps(spec), "verbose": "true"}

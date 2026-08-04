@@ -25,11 +25,25 @@ from tinyassets.api.helpers import _base_path as _helpers_base_path
 
 
 @pytest.fixture
-def p5_env(tmp_path, monkeypatch):
+def p5_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin only, and the scope check is per-family:
+    # this file drives `goals` too, so it needs the goals scopes explicitly.
+    # `extensions.costly` and `goals.costly` are deliberately withheld.
+    authenticate_request("tester", capabilities=[
+        "tinyassets.extensions.read",
+        "tinyassets.extensions.write",
+        "tinyassets.extensions.admin",
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+    ])
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -158,16 +172,23 @@ def test_update_by_author_succeeds(p5_env):
     assert result["goal"]["description"] == "Updated description"
 
 
-def test_update_by_non_author_rejected(p5_env, monkeypatch):
+def test_update_by_non_author_rejected(p5_env, authenticate_request):
     us, _ = p5_env
     # Author = tester per fixture
     gid = _call(us, "goals", "propose", name="Owned")["goal"]["goal_id"]
-    # Switch actor
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    importlib.reload(us)
+    # Switch actor by re-authenticating, NOT via UNIVERSE_SERVER_USER:
+    # `_current_actor` prefers the request identity and only falls back to
+    # the env var when there is none, so the old env switch was silently
+    # ignored — tester updated her own goal and this test asserted nothing.
+    authenticate_request("alice", capabilities=[
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+    ])
     result = _call(us, "goals", "update",
                    goal_id=gid, name="Stolen")
-    assert result["status"] == "rejected"
+    assert result["status"] == "rejected", (
+        "alice does not author this goal, so update must be refused"
+    )
     assert "author" in result["error"].lower()
 
 

@@ -38,14 +38,36 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+# `claim_from_branch_run` is `gates.costly` and `define_ladder` is
+# `gates.admin` (`_GATES_COSTLY_ACTIONS` / `_GATES_ADMIN_ACTIONS` in
+# tinyassets/auth/provider.py). No test in this file asserts a *scope*
+# refusal — every `status == "rejected"` here is a validation shape
+# (run_not_found, unknown_rung, ...) — so granting the full set costs no
+# assertion strength. Without a credential, `extensions create_branch`
+# returns `{"error": "Authenticated branch subject required."}` and the
+# seed helpers die before reaching the action under test.
+_TESTER_SCOPES = [
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
+    "tinyassets.extensions.admin",
+    "tinyassets.gates.read",
+    "tinyassets.gates.write",
+    "tinyassets.gates.costly",
+    "tinyassets.gates.admin",
+    "tinyassets.goals.read",
+    "tinyassets.goals.write",
+]
+
+
 @pytest.fixture
-def us_env(tmp_path, monkeypatch):
+def us_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("GATES_ENABLED", "1")
     monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
+    authenticate_request("tester", capabilities=_TESTER_SCOPES)
     from tinyassets.catalog import backend as backend_mod
     backend_mod.invalidate_backend_cache()
     from tinyassets import universe_server as us

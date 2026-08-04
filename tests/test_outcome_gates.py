@@ -19,14 +19,35 @@ import json
 
 import pytest
 
+# Scopes every action in this file needs. `gates.costly` covers `claim`;
+# `gates.admin` covers `define_ladder` (`_GATES_COSTLY_ACTIONS` /
+# `_GATES_ADMIN_ACTIONS` in tinyassets/auth/provider.py). Nothing here
+# asserts a *scope* refusal — `test_define_ladder_owner_only` asserts an
+# authorship refusal one layer deeper, in market.py — so granting the full
+# set costs no assertion strength. Without it, `extensions create_branch`
+# returns `{"error": "Authenticated branch subject required."}` and the
+# seed helper dies on `KeyError: 'branch_def_id'`.
+_ALICE_SCOPES = [
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
+    "tinyassets.extensions.admin",
+    "tinyassets.gates.read",
+    "tinyassets.gates.write",
+    "tinyassets.gates.costly",
+    "tinyassets.gates.admin",
+    "tinyassets.goals.read",
+    "tinyassets.goals.write",
+]
+
 
 @pytest.fixture
-def gates_env(tmp_path, monkeypatch):
+def gates_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
+    authenticate_request("alice", capabilities=_ALICE_SCOPES)
     from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
@@ -102,14 +123,25 @@ def test_define_ladder_stores_rungs(gates_env):
     ]
 
 
-def test_define_ladder_owner_only(gates_env, monkeypatch):
+def test_define_ladder_owner_only(gates_env, authenticate_request):
+    """Switch acting user by re-authenticating, not via the env var.
+
+    `_current_actor` prefers the request identity and only falls back to
+    `UNIVERSE_SERVER_USER` when there is none. Once `gates_env` authenticates
+    alice, `monkeypatch.setenv(..., "mallory")` is silently ignored — alice
+    would define her own ladder and this test would assert nothing. Requesting
+    `authenticate_request` here yields the same cached callable the fixture
+    used, so this rebinds the subject the fixture established.
+    """
     us, _ = gates_env
     gid, _ = _seed_goal_and_branch(us)  # owner = alice
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
-    importlib.reload(us)
+    authenticate_request("mallory", capabilities=_ALICE_SCOPES)
     result = json.loads(us.gates(action="define_ladder",
                                  goal_id=gid, ladder=json.dumps(_LADDER)))
-    assert result["status"] == "rejected"
+    assert result["status"] == "rejected", (
+        "mallory does not author this goal and holds no define_gate_ladder "
+        "grant, so define_ladder must be refused"
+    )
     assert "define_gate_ladder" in result["error"]
 
 

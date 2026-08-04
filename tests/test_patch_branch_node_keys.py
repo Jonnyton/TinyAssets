@@ -34,11 +34,19 @@ from tinyassets.branches import BranchDefinition
 
 
 @pytest.fixture
-def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+            authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Branch mutation requires a credential-derived subject. Without one
+    # `extensions build_branch` returns
+    # `{"error": "Authenticated branch subject required."}` and every test
+    # here dies on `KeyError: 'status'` before reaching its own concern.
+    # The conftest default (extensions read/write/admin) is exactly what
+    # this file needs; `extensions.costly` is deliberately NOT granted.
+    authenticate_request("tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)

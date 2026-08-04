@@ -25,11 +25,19 @@ import pytest
 
 
 @pytest.fixture
-def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+            authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Branch mutation requires a credential-derived subject. Without one
+    # `extensions build_branch` returns
+    # `{"error": "Authenticated branch subject required."}` and every test
+    # here dies on `KeyError: 'status'` before reaching its own concern.
+    # The conftest default (extensions read/write/admin) is exactly what
+    # this file needs; `extensions.costly` is deliberately NOT granted.
+    authenticate_request("tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -259,21 +267,17 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         assert nd["description"] == "canonical audit node"
 
     def test_build_branch_node_ref_preserves_standalone_approval(
-        self, ext_env, monkeypatch,
+        self, ext_env, authenticate_request,
     ):
         us, base = ext_env
         _register_standalone(
             us, "approved_recipe", "Approved Recipe",
             source="def run(state): return {'manifest': 'ok'}\n",
         )
-        monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-operator")
-        try:
-            approved = _call(
-                us, "extensions", "approve", node_id="approved_recipe",
-            )
-        finally:
-            monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-        assert approved["approved"] is True
+        approved = _approve_standalone(
+            us, authenticate_request, "approved_recipe",
+        )
+        assert approved["approved"] is True, approved
 
         spec = {
             "name": "approved-node-ref",
@@ -437,15 +441,22 @@ class TestIntentEdgeCases:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _approve_standalone(us, monkeypatch, node_id: str):
+def _approve_standalone(us, authenticate_request, node_id: str):
     """Approve a standalone node as a DISTINCT actor (the gate rejects
     self-approval), then restore the original actor.
+
+    Switches actor by re-authenticating, NOT by setting
+    `UNIVERSE_SERVER_USER`: `_current_actor` prefers the request identity
+    and only falls back to the env var when there is none. Once the fixture
+    authenticates `tester`, the env switch is silently ignored and this
+    becomes a SELF-approval, which the gate correctly refuses — that is why
+    these tests were quarantined, not flakiness.
     """
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-operator")
+    authenticate_request("host-operator")
     try:
         result = _call(us, "extensions", "approve", node_id=node_id)
     finally:
-        monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+        authenticate_request("tester")
     return result
 
 
@@ -465,7 +476,7 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
     # surface. Marker string lets us assert the override actually landed.
     MALICIOUS_SRC = "def run(state): return {'manifest': 'forged-by-pwned'}\n"
 
-    def _approved_standalone(self, us, monkeypatch):
+    def _approved_standalone(self, us, authenticate_request):
         # input/output keys must match the branch state_schema below.
         _call(
             us, "extensions", "register",
@@ -477,16 +488,18 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
             output_keys="manifest",
             source_code=self.APPROVED_SRC,
         )
-        approved = _approve_standalone(us, monkeypatch, "approved_recipe")
+        approved = _approve_standalone(
+            us, authenticate_request, "approved_recipe",
+        )
         assert approved["approved"] is True, approved
         assert approved["approved_source_hash"], approved
         return approved["approved_source_hash"]
 
     def test_node_ref_with_source_override_comes_out_unapproved(
-        self, ext_env, monkeypatch,
+        self, ext_env, authenticate_request,
     ):
         us, base = ext_env
-        self._approved_standalone(us, monkeypatch)
+        self._approved_standalone(us, authenticate_request)
 
         # node_ref the approved node but OVERRIDE its source_code. The
         # inherited approved=True must NOT survive the content change.
@@ -524,10 +537,10 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
         assert not nd.get("approved_source_hash"), nd
 
     def test_node_ref_with_source_override_fails_execution_gate(
-        self, ext_env, monkeypatch,
+        self, ext_env, authenticate_request,
     ):
         us, base = ext_env
-        self._approved_standalone(us, monkeypatch)
+        self._approved_standalone(us, authenticate_request)
         spec = {
             "name": "approval-forge-run-attempt",
             "entry_point": "approved_recipe",
@@ -560,13 +573,13 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
             compile_branch(bdef)
 
     def test_clean_node_ref_copy_stays_approved_and_runs(
-        self, ext_env, monkeypatch,
+        self, ext_env, authenticate_request,
     ):
         """Guard the legit path: a node_ref copy with NO source override
         must keep approval (hash still matches) and compile cleanly.
         """
         us, base = ext_env
-        self._approved_standalone(us, monkeypatch)
+        self._approved_standalone(us, authenticate_request)
         spec = {
             "name": "approval-clean-copy",
             "entry_point": "approved_recipe",
