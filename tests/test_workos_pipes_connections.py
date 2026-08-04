@@ -59,6 +59,11 @@ def test_workos_client_rejects_invalid_user_and_url():
         client.authorization_url(user_id="user_123", return_to="http://insecure")
 
 
+def test_connection_return_target_is_canonical(monkeypatch):
+    monkeypatch.setenv("WORKOS_PIPES_RETURN_TO", "https://stale.example.invalid/callback")
+    assert cloud_connections._return_to() == "https://tinyassets.io/mcp"
+
+
 def test_reconcile_is_owner_scoped_and_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_connections, "_actor", lambda: "user_123")
     monkeypatch.setattr(cloud_connections, "_request_universe", lambda _uid: "universe_1")

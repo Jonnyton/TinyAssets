@@ -1928,7 +1928,7 @@ def _dispatch_run_action(
     run_branch and cancel_run both mutate durable state so they land in
     the global ledger with the run_id as the target.
     """
-    from tinyassets.api.branches import _append_global_ledger
+    from tinyassets.api.branches import _append_global_ledger, ledger_actor
     from tinyassets.api.engine_helpers import _truncate
 
     scope_error = _branch_run_scope_error(action, kwargs)
@@ -1959,6 +1959,7 @@ def _dispatch_run_action(
             summary_bits.append(f"status={result['status']}")
         _append_global_ledger(
             action,
+            actor=ledger_actor(),
             target=str(target),
             summary=_truncate(" ".join(summary_bits)),
             payload=None,

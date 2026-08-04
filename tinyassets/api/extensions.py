@@ -614,9 +614,13 @@ def _extensions_impl(
             try:
                 res = json.loads(result_str)
                 if isinstance(res, dict) and not res.get("error") and not res.get("conflict"):
-                    from tinyassets.api.branches import _append_global_ledger
+                    from tinyassets.api.branches import (
+                        _append_global_ledger,
+                        ledger_actor,
+                    )
                     _append_global_ledger(
                         action=action,
+                        actor=ledger_actor(),
                         target=f"{project_id}/{key}",
                         summary=f"{action} project_id={project_id} key={key}",
                     )
