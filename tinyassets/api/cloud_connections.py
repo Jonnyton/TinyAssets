@@ -15,6 +15,7 @@ from tinyassets.workos_pipes import WorkOSPipesClient, WorkOSPipesError
 
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _SCOPES = ("pull_requests:read_for_commit", "pull_requests:write")
+_CANONICAL_RETURN_TO = "https://tinyassets.io/mcp"
 
 
 def _actor() -> str | None:
@@ -73,7 +74,19 @@ def _ledger(actor: str) -> ConnectionLedger:
 
 
 def _return_to() -> str:
-    return os.environ.get("WORKOS_PIPES_RETURN_TO", "https://tinyassets.io/mcp").strip()
+    """Return the only callback target accepted by the production contract.
+
+    Older deployments allowed an environment override here.  That made a
+    stale or malformed host value reach WorkOS and collapse into its generic
+    ``request failed`` response, leaving phone setup with no actionable URL.
+    The OpenSpec design calls for a fixed canonical MCP return target, so keep
+    the environment name only as a compatibility read and fail closed to the
+    canonical value.
+    """
+    configured = os.environ.get("WORKOS_PIPES_RETURN_TO", "").strip()
+    if configured and configured != _CANONICAL_RETURN_TO:
+        return _CANONICAL_RETURN_TO
+    return _CANONICAL_RETURN_TO
 
 
 def cloud_connections(
