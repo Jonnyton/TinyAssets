@@ -214,6 +214,87 @@ def test_token_after_clause_boundary_is_not_a_precondition(tmp_path, capsys):
     assert "goal-public-commons-catalog" not in capsys.readouterr().out
 
 
+def test_noun_token_before_a_dependency_list_does_not_exempt_it(tmp_path, capsys):
+    """Regression: `design` was briefly a TARGET_VERB.
+
+    Real prose reads "Blocked by its exact ledger dependencies (`design.md`
+    ...): directly on `x-y-z`". Treating `design` as a target verb truncated
+    the clause at `design.md` and silently exempted every dependency after it —
+    a false negative in the one direction that matters.
+    """
+    root = build_repo(
+        tmp_path,
+        changes={
+            "root": (
+                "- [ ] 4.4 Blocked by its exact ledger dependencies "
+                "(`design.md` section): directly on `absent-ledger-dependency` "
+                "and the gate capabilities.\n"
+            )
+        },
+    )
+    assert run(root) == guard.EXIT_MISSING
+    assert "absent-ledger-dependency" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "cue", ["Depend on", "Depends on", "Depending on", "Blocked on", "Requiring"]
+)
+def test_dependency_cue_inflections_are_recognised(tmp_path, cue):
+    """Regression: only `depends on` was matched, so imperative `Depend on`
+    in establish-postgres-control-plane task 4.1 was invisible."""
+    root = build_repo(
+        tmp_path,
+        changes={"root": f"- [ ] 4.1 {cue} the landed `absent-change-name` work.\n"},
+    )
+    assert run(root) == guard.EXIT_MISSING
+
+
+def test_register_target_is_not_a_precondition(tmp_path, capsys):
+    """`register ... scenario ID `x`` produces an identifier, not a change."""
+    root = build_repo(
+        tmp_path,
+        changes={
+            "root": (
+                "- [ ] 6.2 After `some-shared-protocol-change` provides the "
+                "protocol, register scenario ID `branch-authority-isolation` "
+                "with version 1.\n"
+            ),
+            "some-shared-protocol-change": "- [ ] 1.1 Work.\n",
+        },
+    )
+    assert run(root) == guard.EXIT_CLEAN
+    assert "branch-authority-isolation" not in capsys.readouterr().out
+
+
+def test_local_vocabulary_is_flagged_but_still_reported(tmp_path, capsys):
+    """A name the change's own design.md defines gets a hint, not silence.
+
+    No heuristic separates "slice vocabulary that correctly has no change" from
+    "planned successor that should exist and does not" — both appear in their
+    change's design.md. The guard reports both and says where to look.
+    """
+    root = build_repo(
+        tmp_path,
+        changes={"root": "- [ ] 1.1 After `some-ledger-slice-name` lands, go.\n"},
+    )
+    (root / "openspec" / "changes" / "root" / "design.md").write_text(
+        "| `some-ledger-slice-name` | unassigned | ... |\n", encoding="utf-8"
+    )
+    assert run(root) == guard.EXIT_MISSING
+    out = capsys.readouterr().out
+    assert "some-ledger-slice-name" in out
+    assert "may be local vocabulary" in out
+
+
+def test_local_vocabulary_hint_absent_when_prose_does_not_define_it(tmp_path, capsys):
+    root = build_repo(
+        tmp_path,
+        changes={"root": "- [ ] 1.1 After `some-dangling-change-name` lands, go.\n"},
+    )
+    assert run(root) == guard.EXIT_MISSING
+    assert "may be local vocabulary" not in capsys.readouterr().out
+
+
 def test_paths_and_dotted_names_are_ignored(tmp_path):
     root = build_repo(
         tmp_path,

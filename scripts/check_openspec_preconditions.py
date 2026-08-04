@@ -38,8 +38,16 @@ Exit codes
     0  CLEAN    — every precondition reference resolves.
     1  WARNING  — a reference resolves only fuzzily (e.g. it matches an
                   archived change by suffix). Investigate before relying on it.
-    2  MISSING  — a precondition names something that exists nowhere. This is
-                  the defect: the gate can never be satisfied as written.
+    2  MISSING  — a precondition names something that resolves nowhere.
+
+A MISSING finding needs classifying, not blind fixing. It means "this name is
+referenced as a dependency and matches no change, archived change, or
+capability spec." Usually that is the real defect — a gate that can never be
+satisfied as written. Sometimes it is a slice or vocabulary term the change's
+own design prose defines and deliberately leaves unowned. The report marks
+which findings the change's design/proposal also mentions, so you know where to
+look; it does not guess, because both cases appear in design.md and no
+heuristic separates them reliably.
 
 Read-only. Stdlib-only. No network, no git calls.
 """
@@ -64,46 +72,46 @@ EXIT_CLEAN = 0
 EXIT_WARNING = 1
 EXIT_MISSING = 2
 
-# A dependency cue opens a precondition clause. Matched case-insensitively at a
-# clause boundary, so "After core plus X" and "..., once `y` lands" both count.
+# A dependency cue opens a precondition clause. Matched case-insensitively.
+# These are regexes, not literals, because real task prose uses every
+# inflection: "Depend on", "depends on", "depending on" all appear.
 PRECONDITION_CUES = (
-    "after",
-    "once",
-    "following",
-    "depends on",
-    "dependent on",
-    "blocked by",
-    "blocked on",
-    "gated on",
-    "gated by",
-    "requires",
-    "required by",
-    "prerequisite",
-    "precondition",
-    "upon",
+    r"after",
+    r"once",
+    r"following",
+    r"depend(?:s|ed|ing)?\s+on",
+    r"dependent\s+on",
+    r"blocked\s+(?:by|on)",
+    r"gated\s+(?:on|by)",
+    r"requir(?:es|ed|ing)",
+    r"prerequisite",
+    r"precondition",
+    r"upon",
 )
 
 # A target verb closes the precondition clause: whatever follows is the thing
 # this task produces, which is allowed not to exist yet. `sync` belongs here
 # because a change syncs its delta into a capability spec that may not exist
 # until that very sync.
+#
+# Keep this list SHORT and unambiguous. Every entry is a silencer: everything
+# after it in the sentence stops being checked, so a word that also occurs as a
+# noun creates false negatives. `design` was here briefly and had exactly that
+# effect — "its exact ledger dependencies (`design.md` ...)" truncated the
+# clause and exempted the real dependency list that followed. Only verbs that
+# unambiguously mean "this task produces a new change or spec" belong here.
 TARGET_VERBS = (
     "admit",
     "create",
     "author",
     "propose",
-    "open",
     "draft",
     "introduce",
-    "add",
-    "register",
-    "publish",
-    "land",
     "spec out",
     "sync",
-    "fold",
-    "hand",
-    "design",
+    # "register a scenario ID" produces an identifier that is not a change.
+    # Unambiguous as a verb in this prose; a noun "register" does not occur.
+    "register",
 )
 
 # A precondition clause also ends at a clause or sentence boundary. Without
@@ -170,8 +178,8 @@ def _find_cue(text: str) -> int:
     lowered = text.lower()
     best = -1
     for cue in PRECONDITION_CUES:
-        # Require a word boundary so "afterwards" and "reopen" do not match.
-        for match in re.finditer(rf"\b{re.escape(cue)}\b", lowered):
+        # Cues are regexes. Word boundaries stop "afterwards" and "reopen".
+        for match in re.finditer(rf"\b(?:{cue})\b", lowered):
             end = match.end()
             if best == -1 or end < best:
                 best = end
@@ -210,9 +218,8 @@ def referenced_names(span: str, min_segments: int) -> list[str]:
     found: list[str] = []
     for token in _BACKTICKED.findall(span):
         token = token.strip()
-        # Paths, sentences, and code fragments are not change names.
-        if "/" in token or "." in token or " " in token or "_" in token:
-            continue
+        # _KEBAB is anchored, so it already rejects paths (`a/b.py`), dotted
+        # names, spaces, underscores, and capitals. No separate check needed.
         if not _KEBAB.match(token):
             continue
         if token.count("-") + 1 < min_segments:
@@ -265,9 +272,39 @@ def scan_change(change_dir: Path, inv: Inventory, min_segments: int) -> list[dic
                     "name": name,
                     "status": status,
                     "detail": detail,
+                    "local_vocab": (
+                        defines_locally(change_dir, name)
+                        if status == "missing"
+                        else False
+                    ),
                 }
             )
     return findings
+
+
+def defines_locally(change_dir: Path, name: str) -> bool:
+    """Does this change's own design/proposal prose define `name` as a term?
+
+    This is a *classification hint*, not a suppression. Both real cases look
+    identical to a resolver:
+
+      - `pooled-training-ownership` is a row in this change's design.md slice
+        ledger whose owning-change column literally reads `unassigned` — local
+        vocabulary, correctly nonexistent.
+      - `harden-run-branch-access-authority` is also named in its change's
+        design.md, but as a planned successor that should exist and does not.
+
+    No heuristic separates those reliably, so the guard reports both and prints
+    this flag to tell the operator where to look. Guessing here would either
+    hide the real defect or cry wolf.
+    """
+    for fname in ("design.md", "proposal.md"):
+        path = change_dir / fname
+        if path.is_file() and name in path.read_text(
+            encoding="utf-8", errors="replace"
+        ):
+            return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -340,10 +377,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"## MISSING ({len(missing)}) — precondition names nothing that exists")
         for f in missing:
             state = "done" if f["checked"] else "open"
+            hint = (
+                "  [also defined in this change's design/proposal prose"
+                " — may be local vocabulary rather than a change reference]"
+                if f["local_vocab"]
+                else ""
+            )
             print(
                 f"- {f['change']} task {f['task']} ({state}, tasks.md:{f['line']})"
-                f" -> `{f['name']}` does not exist"
+                f" -> `{f['name']}` does not exist{hint}"
             )
+        print()
+        print(
+            "Classify each: a dangling *change* reference is a defect (the gate "
+            "can never be satisfied); a name your design prose defines as a slice "
+            "or vocabulary term is not."
+        )
         print()
 
     if fuzzy:
