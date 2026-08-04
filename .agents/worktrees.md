@@ -2451,13 +2451,12 @@ Notes:
 - Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
 - Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
 
-## 2026-08-04 - Issue founder-mapped app custody grant handoff
+## 2026-08-04 - Fold back app custody grant handoff
 
-- Provider: `codex-gpt5-desktop-custody`.
-- Branch: `feature/custom-agent-custody-issuer-20260804`.
-- Lane state: Active; depends on mapping PR #2256 merge and packaged custody mirror handoff.
-- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-custody-issuer-20260804`.
-- Purpose: resolve one current founder app mapping into a signed, content-free custody grant handoff; no opaque mint, route, reply, runtime, MCP handle, or production side effect.
-- Review gate: strict OpenSpec, focused custody/authority tests, adjacent regression suite, and independent exact-head security review.
-- Publish/cleanup: one dark prerequisite PR; sync/archive only after merge and custody mirror ownership is available.
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-custody-issuer-20260804/_PURPOSE.md`.
+- Provider: `codex-gpt5-desktop-custody-foldback`.
+- Branch: `foldback/issue-app-custody-grants-20260804`.
+- Lane state: Foldback after PR #2260 merged as `3b874d65`.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-custody-foldback-20260804`.
+- Purpose: sync/archive the landed signed custody handoff, retire its active claim, and advance the V1 monitor to packaged opaque mint and governed reply.
+- Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
+- Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
