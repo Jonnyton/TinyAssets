@@ -647,8 +647,9 @@ def write_graph(
         operation: With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update.
-            With target=automation, create/pause/rebind/resume/stop. Rebind a
-            stopped automation to a published immutable Branch version; binding
+            With target=automation, bind_provider/reconcile_provider/create/pause/
+            rebind/resume/stop. Rebind a stopped automation to a published
+            immutable Branch version; binding
             an earlier version rolls back without mutating either version.
             With target=branch, create/remix/patch/publish. Create and remix
             consume a complete Branch spec in payload_json; remix uses its

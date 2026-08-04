@@ -259,6 +259,8 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `read_graph target="automation" automation_id=...` |
    | Connect a GitHub destination    | `write_graph target="connection" operation="connect"` then |
    |                                | `operation="reconcile"` after OAuth consent |
+   | Bind requester-owned compute    | `write_graph target="automation" operation="bind_provider"` |
+   |                                | with `payload_json={"provider":"codex"}` |
    | Inspect connections             | `read_graph target="connections"` |
    | Run while devices are off      | `write_graph target="automation"` with |
    |                                | operation `create` and a frozen definition, |

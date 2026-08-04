@@ -14,6 +14,14 @@ from tinyassets.cloud_automation_control import (
     CloudAutomationTriggerStatus,
     project_cloud_automation_health,
 )
+from tinyassets.provider_work_authority import (
+    ProviderWorkBindingRoot,
+    ProviderWorkBindingService,
+)
+from tinyassets.provider_work_enrollment import (
+    RequesterProviderEnrollmentResolver,
+    enrollment_action,
+)
 from tinyassets.storage.automation_activations import AutomationActivationStore
 from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
 from tinyassets.storage.cloud_automation_inputs import stage_accepted_spec
@@ -141,6 +149,11 @@ def _prerequisite_projection(*, actor: str, universe_id: str) -> dict[str, Any]:
         "provider_bindings": provider_bindings,
         "destination_grants": destination_grants,
         "ready": bool(provider_bindings and destination_grants),
+        "provider_action": (
+            None
+            if provider_bindings
+            else enrollment_action(owner_user_id=actor, universe_id=universe_id)
+        ),
         "connection_action": (
             None
             if destination_grants
@@ -390,6 +403,73 @@ def cloud_automations(
     if not permissions.universe_access_allows(uid, write=True):
         return _not_found()
     store = CloudAutomationControlStore(_base_path())
+
+    if normalized in {"bind_provider", "reconcile_provider"}:
+        try:
+            document = json.loads(payload) if isinstance(payload, str) else payload
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {
+                "error": "provider_binding_setup_invalid",
+                "detail": "payload_json must be a JSON object",
+            }
+        if not isinstance(document, dict):
+            return {
+                "error": "provider_binding_setup_invalid",
+                "detail": "payload_json must be a JSON object",
+            }
+        provider = str(document.get("provider") or "").strip()
+        # All authority fields are deliberately ignored; the resolver derives
+        # the seed from server-owned enrollment and the authenticated actor.
+        if provider not in {"codex", "claude-code"}:
+            return {
+                "error": "provider_binding_setup_invalid",
+                "detail": "provider must be codex or claude-code",
+            }
+        try:
+            resolver = RequesterProviderEnrollmentResolver.from_environment()
+            result = ProviderWorkBindingService(
+                SQLiteProviderWorkAuthorityStore(_base_path()),
+                resolver,
+            ).issue(
+                ProviderWorkBindingRoot(
+                    owner_user_id=actor,
+                    universe_id=uid,
+                    provider=provider,
+                )
+            )
+        except (TypeError, ValueError, PermissionError) as exc:
+            return {
+                "error": "provider_binding_setup_required",
+                "detail": "requester-owned provider enrollment is unavailable",
+                "reason": type(exc).__name__,
+                "prerequisites": _prerequisite_projection(actor=actor, universe_id=uid),
+            }
+        binding = result.record
+        if binding is None:
+            return {
+                "error": "provider_binding_setup_required",
+                "detail": "provider binding was not issued",
+            }
+        return {
+            "status": "provider_bound",
+            "outcome": result.outcome.value,
+            "binding": {
+                "binding_id": binding.binding_id,
+                "generation": binding.generation,
+                "state": binding.state.value,
+                "provider": binding.provider,
+                "allowed_operations": list(binding.allowed_operations),
+                "allowed_roles": list(binding.allowed_roles),
+                "max_invocations": binding.max_invocations,
+                "max_tokens": binding.max_tokens,
+                "max_cost_microunits": binding.max_cost_microunits,
+                "expires_at": binding.expires_at,
+            },
+            "next": (
+                "create or resume the stopped cloud automation after the exact "
+                "GitHub destination is connected"
+            ),
+        }
 
     if normalized == "create":
         try:
