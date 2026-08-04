@@ -85,7 +85,15 @@ def universe_with_log(tmp_path, monkeypatch):
         "[2026-04-19 10:04:00] Worldbuild: 3 canon docs generated\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+    def _fake_universe_dir(uid, _expected="test-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
     # `_default_universe` MOVED to tinyassets.api.helpers and is now
     # reached through `_request_universe`, so patching it on `uni`
     # raised AttributeError and errored these tests at SETUP. Patch it
@@ -155,7 +163,15 @@ def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
         "[2026-04-19 10:01:00] Commit: evaluating scene-1\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+    def _fake_universe_dir(uid, _expected="no-dispatch-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
     # `_default_universe` MOVED to tinyassets.api.helpers and is now
     # reached through `_request_universe`, so patching it on `uni`
     # raised AttributeError and errored these tests at SETUP. Patch it
@@ -181,7 +197,15 @@ def test_dispatch_guard_missing_log_adds_absence_caveat(tmp_path, monkeypatch):
 
     udir = tmp_path / "fresh-dispatch-universe"
     udir.mkdir()
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+    def _fake_universe_dir(uid, _expected="fresh-dispatch-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
     # `_default_universe` MOVED to tinyassets.api.helpers and is now
     # reached through `_request_universe`, so patching it on `uni`
     # raised AttributeError and errored these tests at SETUP. Patch it
@@ -239,7 +263,15 @@ def test_missing_log_returns_empty_with_caveat(tmp_path, monkeypatch):
 
     udir = tmp_path / "fresh-universe"
     udir.mkdir()  # no activity.log inside
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
+    def _fake_universe_dir(uid, _expected="fresh-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
     # `_default_universe` MOVED to tinyassets.api.helpers and is now
     # reached through `_request_universe`, so patching it on `uni`
     # raised AttributeError and errored these tests at SETUP. Patch it

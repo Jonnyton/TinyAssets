@@ -6,7 +6,8 @@ Launcher tests mock tk.Tk to avoid needing a display.
 
 pystray is an OPTIONAL dependency. `tinyassets/desktop/tray.py` tolerates its
 absence by binding `Icon`/`Menu`/`MenuItem` to None, so on a headless runner
-`_build_menu` used to die with `TypeError: 'NoneType' object is not callable`
+`_build_menu` died at `MenuItem(...)` with `TypeError: 'NoneType' object is
+not callable`
 and 13 tests here failed on Linux CI while passing on any dev box with pystray
 installed — which is why they sat quarantined. `_pystray_stubs` below supplies
 faithful stand-ins ONLY when the real package is missing, so CI exercises the
@@ -52,37 +53,57 @@ class TestIconImage:
 
 
 class _StubMenuItem:
-    """Minimal stand-in for `pystray.MenuItem`.
+    """Stand-in for `pystray.MenuItem`, modelled on the real 0.19.5 class.
 
-    Only the surface `_build_menu` constructs and these tests read: `text`,
-    plus the keyword arguments the real class accepts. Deliberately stores
-    `text` verbatim rather than normalizing it — pystray allows a callable
-    there, and the assertions below guard with `isinstance(item.text, str)`,
-    so coercing it here would hide that distinction.
+    Every deviation from the real API here has already produced a false
+    green once, so each choice is deliberate:
+
+    * **Strict signature.** The real `__init__` is
+      `(text, action, checked=None, radio=False, default=False,
+      visible=True, enabled=True)` and rejects anything else — a typo like
+      `enable=False` raises TypeError. An earlier version of this stub took
+      `**kwargs`, which would have let that typo pass CI and fail on a real
+      tray.
+    * **`text` resolves callables.** Real `MenuItem.text` is a property that
+      calls `self._text()` when it is callable. An earlier version stored it
+      verbatim, so `isinstance(item.text, str)` was False for callable text
+      where real pystray returns a str — inverting the label comprehensions
+      below.
     """
 
-    def __init__(self, text, action=None, **kwargs):
-        self.text = text
+    def __init__(self, text, action, checked=None, radio=False,
+                 default=False, visible=True, enabled=True):
+        self._text = text
         self.action = action
-        self.enabled = kwargs.get("enabled", True)
-        self.visible = kwargs.get("visible", True)
-        self.default = kwargs.get("default", False)
-        self.checked = kwargs.get("checked")
+        self.checked = checked
+        self.radio = radio
+        self.default = default
+        self.visible = visible
+        self.enabled = enabled
+
+    @property
+    def text(self):
+        return self._text() if callable(self._text) else self._text
 
 
 class _StubMenu:
-    """Minimal stand-in for `pystray.Menu`.
+    """Stand-in for `pystray.Menu`.
 
-    `_items` matches the real attribute name these tests introspect.
-    `SEPARATOR` is a bare sentinel with no `text`, so the label
-    comprehensions (which filter on `hasattr(item, "text")`) skip it exactly
-    as they do for pystray's real separator.
+    `SEPARATOR` is a real `MenuItem("- - - -", None)`, matching pystray
+    (`pystray/_base.py`), NOT a bare sentinel. That distinction is
+    load-bearing: the separator therefore HAS `.text`, so the label
+    comprehensions below include it exactly as they do under real pystray.
+    A sentinel without `.text` was silently skipped, so the stub and the
+    real package disagreed about the menu's contents.
+
+    `_items` is a tuple, matching the real attribute these tests introspect.
     """
 
-    SEPARATOR = object()
-
     def __init__(self, *items):
-        self._items = list(items)
+        self._items = tuple(items)
+
+
+_StubMenu.SEPARATOR = _StubMenuItem("- - - -", None)
 
 
 @pytest.fixture(autouse=True)
@@ -134,9 +155,10 @@ class TestTrayApp:
         The import guard in tray.py binds Icon/Menu/MenuItem to None so that
         importing the module stays safe in a headless container. Starting a
         tray there cannot work, and before this guard the failure was
-        `TypeError: 'NoneType' object is not callable` — which says nothing
-        about pystray. Forced here rather than skipped, so the check runs on
-        every platform including the dev boxes that DO have pystray.
+        `TypeError: 'NoneType' object is not callable` raised from
+        `MenuItem(...)` inside `_build_menu` — which says nothing about
+        pystray. Forced here rather than skipped, so the check runs on every
+        platform including the dev boxes that DO have pystray.
         """
         from tinyassets.desktop import tray as _tray
 
@@ -1252,10 +1274,22 @@ class TestTrayThrottling:
         app.update_status("Phase 1")
         assert app._status == "Phase 1"
 
-        # Rapid second update should be deferred, not immediate
+        assert app._icon.update_menu.call_count == 1, (
+            "the first update_status should rebuild the menu immediately"
+        )
+
+        # Rapid second update should be deferred, not immediate.
         app.update_status("Phase 2")
         assert app._status == "Phase 2"
-        # Menu was rebuilt at most once immediately (may have a pending timer)
+        # The point of the test. Without this the test asserted only that two
+        # assignments took effect and would have passed with the throttle
+        # removed entirely; the original even said "rebuilt at most once" in
+        # a comment instead of an assertion.
+        assert app._icon.update_menu.call_count == 1, (
+            f"second update within the cooldown rebuilt the menu again "
+            f"({app._icon.update_menu.call_count} rebuilds); it should be "
+            f"deferred to the pending timer"
+        )
 
 
 class TestTrayShowWindow:
