@@ -3,6 +3,15 @@
 The tray tests mock pystray since the actual system tray requires a
 display server.  Dashboard and notification tests run fully in-process.
 Launcher tests mock tk.Tk to avoid needing a display.
+
+pystray is an OPTIONAL dependency. `tinyassets/desktop/tray.py` tolerates its
+absence by binding `Icon`/`Menu`/`MenuItem` to None, so on a headless runner
+`_build_menu` used to die with `TypeError: 'NoneType' object is not callable`
+and 13 tests here failed on Linux CI while passing on any dev box with pystray
+installed — which is why they sat quarantined. `_pystray_stubs` below supplies
+faithful stand-ins ONLY when the real package is missing, so CI exercises the
+same TrayApp logic a dev box does. Reproduce the CI condition locally by making
+the import fail (`sys.modules["pystray"] = None`) before importing the module.
 """
 
 from __future__ import annotations
@@ -11,6 +20,8 @@ import py_compile
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tinyassets.desktop.dashboard import DashboardHandler, DashboardMetrics
 from tinyassets.desktop.host_tray import HostTrayService
@@ -40,6 +51,60 @@ class TestIconImage:
 # =====================================================================
 
 
+class _StubMenuItem:
+    """Minimal stand-in for `pystray.MenuItem`.
+
+    Only the surface `_build_menu` constructs and these tests read: `text`,
+    plus the keyword arguments the real class accepts. Deliberately stores
+    `text` verbatim rather than normalizing it — pystray allows a callable
+    there, and the assertions below guard with `isinstance(item.text, str)`,
+    so coercing it here would hide that distinction.
+    """
+
+    def __init__(self, text, action=None, **kwargs):
+        self.text = text
+        self.action = action
+        self.enabled = kwargs.get("enabled", True)
+        self.visible = kwargs.get("visible", True)
+        self.default = kwargs.get("default", False)
+        self.checked = kwargs.get("checked")
+
+
+class _StubMenu:
+    """Minimal stand-in for `pystray.Menu`.
+
+    `_items` matches the real attribute name these tests introspect.
+    `SEPARATOR` is a bare sentinel with no `text`, so the label
+    comprehensions (which filter on `hasattr(item, "text")`) skip it exactly
+    as they do for pystray's real separator.
+    """
+
+    SEPARATOR = object()
+
+    def __init__(self, *items):
+        self._items = list(items)
+
+
+@pytest.fixture(autouse=True)
+def _pystray_stubs(monkeypatch):
+    """Install stand-ins ONLY when pystray is genuinely unavailable.
+
+    Installing them unconditionally would mean nothing ever exercised the
+    real pystray API, and a stub that quietly drifted from it would keep
+    these tests green while the tray broke. This way a machine WITH pystray
+    keeps testing against the real classes, and the stubs cover only the
+    environment that would otherwise fail outright.
+    """
+    from tinyassets.desktop import tray as _tray
+
+    if _tray.MenuItem is None:
+        monkeypatch.setattr(_tray, "MenuItem", _StubMenuItem)
+    if _tray.Menu is None:
+        monkeypatch.setattr(_tray, "Menu", _StubMenu)
+
+
+
+
 class TestTrayApp:
     def test_init_defaults(self):
         app = TrayApp()
@@ -62,6 +127,25 @@ class TestTrayApp:
 
             MockIcon.assert_called_once()
             mock_icon.run_detached.assert_called_once()
+
+    def test_start_without_pystray_says_why(self, monkeypatch):
+        """Headless `start()` must name the real cause.
+
+        The import guard in tray.py binds Icon/Menu/MenuItem to None so that
+        importing the module stays safe in a headless container. Starting a
+        tray there cannot work, and before this guard the failure was
+        `TypeError: 'NoneType' object is not callable` — which says nothing
+        about pystray. Forced here rather than skipped, so the check runs on
+        every platform including the dev boxes that DO have pystray.
+        """
+        from tinyassets.desktop import tray as _tray
+
+        monkeypatch.setattr(_tray, "Icon", None)
+        app = TrayApp()
+        with pytest.raises(RuntimeError) as excinfo:
+            app.start()
+        assert "pystray" in str(excinfo.value)
+        assert app._icon is None, "a failed start must not leave a half-built icon"
 
     def test_start_is_idempotent(self):
         with patch("tinyassets.desktop.tray.Icon") as MockIcon:
