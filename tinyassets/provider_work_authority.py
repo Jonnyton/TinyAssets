@@ -1488,7 +1488,10 @@ class ProviderWorkBindingService:
         ):
             raise PermissionError("server-owned provider assignment is unavailable")
         current = expected.expected_record
-        if current.state is not ProviderWorkBindingState.ACTIVE:
+        if current.state not in {
+            ProviderWorkBindingState.ACTIVE,
+            ProviderWorkBindingState.REVOKED,
+        }:
             return ProviderWorkBindingWriteResult(
                 ProviderWorkAuthorityWriteOutcome.CONFLICT, current
             )
