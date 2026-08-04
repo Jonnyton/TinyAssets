@@ -231,21 +231,72 @@ def main() -> int:
 
     # SERIAL ON PURPOSE — do not "optimise" this back to pytest-xdist.
     #
-    # Under `-n auto --dist loadfile` this suite is NOT deterministic. Some test
-    # leaks global state (a patched subprocess, most likely) and poisons every
-    # later test on the same worker: one measured run had 70 of its 149 failures
-    # on worker gw2 alone, against 5/11/6 on the other three, including a
-    # `git diff --cached` that returned another test's PR URL.
+    # HISTORICAL, pre-#2199. Under `-n auto --dist loadfile` this suite was not
+    # deterministic: a test leaked global state and poisoned every later test on
+    # the same worker. One measured run had 70 of its 149 failures on gw2 alone,
+    # against 5/11/6 on the other three, including a `git diff --cached` that
+    # returned another test's PR URL.
     #
-    # Which tests land on the poisoned worker depends on the file list, so
+    # Which tests landed on the poisoned worker depended on the file list, so
     # simply ADDING a test file moved ~34 tests in and out of the failure set
     # between two runs of otherwise-identical code. A gate whose verdict depends
     # on scheduling cannot support a committed baseline, and would fail PRs for
     # sins they did not commit.
     #
-    # Serial does not fix the underlying leak — it makes it deterministic, which
-    # is what a gate needs. Fixing the leak is tracked separately; when it is
-    # fixed, parallelism can come back and cut the runtime ~4x.
+    # That specific leak is FIXED (#2199: a `patch()` entered inside a thread
+    # worker, which is process-global rather than thread-local). Do not read the
+    # paragraphs above as evidence of a leak that still exists — they are the
+    # reason this call went serial, not a current diagnosis. Whether any further
+    # isolation problem remains is undiagnosed; see the measurement below, whose
+    # run-to-run disagreements have no established cause.
+    #
+    # Serial remains the choice here because a gate needs a deterministic
+    # verdict.
+    #
+    # The "~4x" this comment used to promise on the other side of that fix was a
+    # HYPOTHESIS. It was never measured, and one measurement does not support it.
+    #
+    # Measured 2026-08-03, Windows, 20 logical CPUs, `-n auto --dist loadfile`,
+    # same tree, on this gate's subset as the exclusion manifest stood that day:
+    #
+    #     serial        10:04   214 failing
+    #     xdist run A   11:40   219 failing
+    #     xdist run B    9:53   218 failing
+    #
+    # What that measurement supports, stated no more strongly than it earns:
+    #
+    # No REPEATABLE speedup. Run A was ~16% slower than serial; run B was 11
+    # seconds (~1.8%) faster, and that was not repeated. "No speedup at all"
+    # would be wrong — B did beat serial — but one run each cannot establish
+    # timing variance, so 11 seconds is reported as the measured delta and NOT
+    # classified as noise. The two parallel runs bracket serial.
+    #
+    # The failure SETS differ. Cardinalities alone (214 / 219 / 218) prove that
+    # much without any node IDs. They do NOT settle what the gate would report,
+    # and the intuition that a disagreement "inside the baseline is harmless" is
+    # wrong here: a plain ledger entry is RATCHETED, so a quarantined test that
+    # runs and PASSES is classified stale and fails the gate — the same
+    # mechanism that deleted 30 entries in #2236. Only a `flaky` entry is
+    # verdict-neutral, and even that shifts the reported count.
+    #
+    # Distinguishing new failures from stale-ratcheted from flaky needs the
+    # node-ID and ran sets, which were not captured. So the claim here is only
+    # that this configuration is not established as safe for a committed-baseline
+    # gate — not that it is proven unsafe.
+    #
+    # Deliberately NOT claimed: any causal account of the disagreements. An
+    # earlier version of this comment attributed them to resource contention and
+    # enumerated causes that summed to six while calling them seven, with no
+    # node-ID sets to back it. Absent those sets the honest statement is that the
+    # runs disagree and the cause is undiagnosed. #2199 fixed one specific
+    # threaded `patch()` leak; it does not prove the remainder is not isolation.
+    #
+    # Scope: this is "no win demonstrated for THIS configuration", not "xdist
+    # cannot help". Fewer workers, another `--dist` scheduler, or a later suite
+    # shape are all untested, as is the full suite post-#2199. Whether the files
+    # in .github/heavy-test-files.txt (deliberately not a count here — the last
+    # one drifted from 47 to 50 and made this comment wrong) are the best
+    # remaining target is likewise unmeasured.
     cmd = [
         sys.executable,
         "-m",
