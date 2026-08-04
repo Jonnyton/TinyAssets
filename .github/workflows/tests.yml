@@ -80,9 +80,11 @@ on:
   # slot spacing only,
   # and because delivery is fractional the declared rate has to sit well above
   # the rate you actually want. `17 */3` (8/day declared) delivered 2 runs in
-  # the first ~11h it was live. Tripling the declared rate is expected to raise
-  # the delivered rate; that is a prediction, and wants checking against
-  # `gh run list --event schedule` once this has been live a day.
+  # the first ~11h it was live. Tripling the declared rate triples the nominal
+  # opportunities. The DELIVERED effect is unknown — GitHub documents no
+  # relationship between declared and delivered rate — so it is to be
+  # measured, not assumed: `gh run list --workflow tests.yml --event schedule`
+  # once this has been live a day.
   #
   # The floor is the job's own runtime: `full-tests` measured 36 and 38 minutes.
   # Scheduling faster than the job finishes declares more OPPORTUNITIES for
@@ -208,8 +210,8 @@ jobs:
           if-no-files-found: warn
 
   # The other half of the split: the COMPLETE surface, on a best-effort
-  # schedule (one nominal slot per hour, fewer delivered — see the `schedule:`
-  # trigger comment).
+  # schedule (one nominal slot per hour; delivered count and spacing are
+  # unspecified — see the `schedule:` trigger comment).
   # NOT required — this is the post-merge tripwire, not the merge gate. It
   # exists because `required-tests` deliberately trades coverage for a wall
   # clock that fits main's commit cadence; without this the excluded files

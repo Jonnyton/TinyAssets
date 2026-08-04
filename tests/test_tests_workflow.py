@@ -155,8 +155,12 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
                 )
 
 
-def test_schedule_declares_one_nominal_slot_per_hour() -> None:
-    """Cadence policy: the schedule declares one nominal slot per hour.
+def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
+    """Cadence policy: the schedule declares AT MOST one nominal slot per hour.
+
+    "At most", not "one": `17 */3 * * *` declares one slot every three hours
+    and is deliberately accepted. The test bounds the declared rate from
+    above; it does not require any particular rate.
 
     `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
     runs do NOT displace each other — the sibling concurrency test pins non-PR
@@ -199,7 +203,7 @@ def test_schedule_declares_one_nominal_slot_per_hour() -> None:
     assert len(schedule) == 1, (
         f"expected exactly one schedule entry, got {len(schedule)}: "
         f"{[e.get('cron') for e in schedule]}. Multiple entries can each look "
-        f"hourly while collectively starting more often, which is what this "
+        f"hourly while collectively declaring more slots, which is what this "
         f"test exists to prevent."
     )
     minute = str(schedule[0]["cron"]).split()[0]
