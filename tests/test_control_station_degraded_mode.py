@@ -41,14 +41,15 @@ def test_prompt_body_matches_module_constant():
     assert _prompt_text() == _CONTROL_STATION_PROMPT
 
 
-def test_control_station_routes_supported_edits_and_reports_creation_gap():
-    """The prompt must use canonical edits and never fake unsupported creation."""
+def test_control_station_routes_supported_creation_without_repo_fallback():
+    """The prompt must create through the canonical graph, never repo YAML."""
     body = _prompt_text()
-    assert "GitHub Actions YAML" in body
+    assert "GitHub Actions YAML" not in body
     assert 'write_graph target="branch"' in body
-    assert "new-workflow creation" in body
-    assert "do not currently expose" in " ".join(body.split())
-    assert "do not imply a design was saved" in " ".join(body.split())
+    assert "operation `create`" in body
+    assert "publish its immutable version before cloud activation" in body
+    assert "standalone node registration" in body
+    assert "unavailable" in body
 
 
 # ---- directive presence ---------------------------------------------------

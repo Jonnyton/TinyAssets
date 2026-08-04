@@ -130,6 +130,17 @@ Concurrent or recovered invocations reuse the automation activation and
 logical claim identities; provider invocation authority remains independently
 reserved by its owner and is never inferred from queue possession.
 
+The persisted Trigger is the generic cadence owner, not provider, queue, or
+effect authority. Each bounded slice has an immutable trigger ordinal and
+frozen definition digest. A SQLite compare-and-swap lease admits exactly one
+worker; lease expiry may advance only that trigger's generation. Settlement
+atomically records one immutable typed terminal receipt, marks the claimed
+trigger emitted, and—only while the exact cloud activation remains current—
+creates the next pending trigger. Replaying settlement returns the same
+receipt and successor. Pause or stop still records already-committed evidence
+but creates no successor. This makes crash recovery explicit without turning
+the repository workflow into a privileged scheduler.
+
 The outbound-boundary owner supplies the GitHub effect's system-derived
 idempotency identity tied to the claim, repository destination, intended head,
 and effect kind. The exact tuple is

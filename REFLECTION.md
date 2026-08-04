@@ -1496,3 +1496,20 @@ fresh-host rollback edges found later.
 - **What I would do differently:** split queue and source reauthorization exit
   shapes at the start; queue recovery must create a fresh attempt, while a
   source owner may safely exit without one.
+
+## 2026-08-03 - Provider-bound physical cloud workers
+
+- **What surprised me:** provider validation at activation still allowed the
+  wrong fleet to lease an already-active Trigger, and queue custody alone did
+  not prove the runtime's provider at launch.
+- **Pattern worth capturing:** validate immutable executor identity before the
+  first mutable lease, then revalidate the same physical worker, runtime, and
+  requester provider binding inside every spend-bearing transaction.
+- **What I would do differently:** model the four physical fleet identities in
+  the first concurrency fixture; a one-worker replacement test hid both the
+  logical-ID collapse and the cross-provider claim race.
+- **Follow-up surprise:** passing the physical identity through one pump was
+  insufficient because the pump rewrites the process environment; the
+  supervisor must freeze and explicitly pass the original identity on every
+  poll. Provider checks likewise belong inside activation/admission write
+  transactions, not only before and after them.

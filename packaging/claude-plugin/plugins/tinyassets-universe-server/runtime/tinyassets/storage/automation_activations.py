@@ -405,6 +405,7 @@ class AutomationActivationStore:
         executor_class: AutomationActivationExecutor,
         subject: ExecutionSubject,
         lease_id: str,
+        authority_check: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> AutomationActivation | None:
         """Activate only from an exact stopped record."""
 
@@ -423,6 +424,7 @@ class AutomationActivationStore:
             subject=subject,
             lease_id=_required(lease_id, "lease_id"),
             state=AutomationActivationState.ACTIVE,
+            authority_check=authority_check,
         )
 
     def activate_in_transaction(
@@ -433,6 +435,7 @@ class AutomationActivationStore:
         executor_class: AutomationActivationExecutor,
         subject: ExecutionSubject,
         lease_id: str,
+        authority_check: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> AutomationActivation | None:
         """Activate an exact stopped row inside the caller's transaction."""
 
@@ -453,6 +456,7 @@ class AutomationActivationStore:
             subject=subject,
             lease_id=_required(lease_id, "lease_id"),
             state=AutomationActivationState.ACTIVE,
+            authority_check=authority_check,
         )
 
     def stop(
@@ -609,6 +613,7 @@ class AutomationActivationStore:
         subject: ExecutionSubject | None,
         lease_id: str | None,
         state: AutomationActivationState,
+        authority_check: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> AutomationActivation | None:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -620,6 +625,7 @@ class AutomationActivationStore:
                     subject=subject,
                     lease_id=lease_id,
                     state=state,
+                    authority_check=authority_check,
                 )
                 conn.commit()
             except Exception:
@@ -636,6 +642,7 @@ class AutomationActivationStore:
         subject: ExecutionSubject | None,
         lease_id: str | None,
         state: AutomationActivationState,
+        authority_check: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> AutomationActivation | None:
         _require_active_transaction(conn)
         at = _timestamp(self._clock())
@@ -645,6 +652,26 @@ class AutomationActivationStore:
             and subject.kind is ExecutionSubjectKind.BRANCH_VERSION
             else None
         )
+        if authority_check is not None and authority_check(conn) is not True:
+            return None
+        if state is AutomationActivationState.ACTIVE:
+            controls_table = conn.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'cloud_automation_controls'
+                """
+            ).fetchone()
+            if controls_table is not None:
+                managed = conn.execute(
+                    """
+                    SELECT desired_state
+                    FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (expected.universe_id, expected.automation_id),
+                ).fetchone()
+                if managed is not None and managed["desired_state"] != "active":
+                    return None
         cursor = conn.execute(
             """
             UPDATE automation_activations

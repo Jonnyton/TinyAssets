@@ -322,7 +322,9 @@ def test_control_station_pins_build_branch_explicit_ask_rule() -> None:
     text = _CONTROL_STATION_PROMPT.lower()
     assert "build_branch" in text or "build" in text
     assert 'read_graph target="graph"' in text
-    assert "new-workflow/node registration is currently unavailable" in text
+    assert 'write_graph target="branch"' in text
+    assert "operation `create`" in text
+    assert "standalone node registration remains unavailable" in text
     # Explicit-ask language at canonical site.
     assert "explicit" in text or "ambiguous" in text
 
@@ -368,7 +370,7 @@ def test_control_station_prompt_has_intent_disambiguation() -> None:
     assert "intent disambiguation" in text
     # Each intent class must be present with at least one cue phrase.
     assert "query" in text and 'read_graph target="graph"' in text
-    assert "build" in text and "new-workflow/node registration" in text
+    assert "build" in text and "standalone node registration" in text
     assert "run" in text and "run_graph" in text
     # Ambiguity → ASK, not write.
     assert "ask" in text

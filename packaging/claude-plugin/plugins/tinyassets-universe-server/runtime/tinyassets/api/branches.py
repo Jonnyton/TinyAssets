@@ -2212,12 +2212,22 @@ def _staged_branch_from_spec(
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
     errors: list[str] = []
+    raw_visibility = spec.get("visibility", "public")
+    if not isinstance(raw_visibility, str) or raw_visibility.strip().lower() not in {
+        "public",
+        "private",
+    }:
+        errors.append("visibility must be 'public' or 'private'")
+        visibility = "private"
+    else:
+        visibility = raw_visibility.strip().lower()
     branch = BranchDefinition(
         name=(spec.get("name") or "").strip(),
         description=spec.get("description") or "",
         domain_id=(spec.get("domain_id") or "").strip() or "workflow",
         goal_id=(spec.get("goal_id") or "").strip(),
         author=_request_branch_actor() or "anonymous",
+        visibility=visibility,
         tags=list(spec.get("tags") or []),
         skills=[],
         fork_from=spec.get("fork_from") or None,
@@ -2351,7 +2361,10 @@ def _build_branch_text(branch: Any, *, truncated: bool) -> str:
 
 
 def _ext_branch_build(kwargs: dict[str, Any]) -> str:
-    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.daemon_server import (
+        create_branch_definition_once,
+        save_branch_definition,
+    )
 
     if _request_branch_actor() is None:
         return json.dumps({"error": "Authenticated branch subject required."})
@@ -2409,6 +2422,15 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         spec,
         fork_version=fork_version,
     )
+    request_id = str(kwargs.get("request_id") or "").strip()
+    if request_id and not 16 <= len(request_id) <= 128:
+        staging_errors.append("request_id must contain 16 to 128 characters")
+    if request_id:
+        actor = _request_branch_actor()
+        assert actor is not None
+        branch.branch_def_id = hashlib.sha256(
+            f"branch-create-v1\0{actor}\0{request_id}".encode("utf-8")
+        ).hexdigest()[:12]
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
@@ -2442,9 +2464,64 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             "attempted_spec": spec,
         })
 
-    saved = save_branch_definition(_base_path(), branch_def=branch.to_dict())
     from tinyassets.branches import BranchDefinition as _BD
 
+    idempotent_replay = False
+    existing = None
+    if request_id:
+        saved, created = create_branch_definition_once(
+            _base_path(),
+            branch_def=branch.to_dict(),
+        )
+        if not created:
+            existing = saved
+    if existing is not None:
+        existing = _BD.from_dict(existing).to_dict()
+        immutable_fields = (
+            "branch_def_id",
+            "name",
+            "description",
+            "author",
+            "domain_id",
+            "goal_id",
+            "tags",
+            "skills",
+            "parent_def_id",
+            "fork_from",
+            "entry_point",
+            "visibility",
+            "graph_nodes",
+            "edges",
+            "conditional_edges",
+            "node_defs",
+            "state_schema",
+            "default_llm_policy",
+            "concurrency_budget",
+        )
+        candidate = branch.to_dict()
+
+        def comparable(value: dict[str, Any], field: str) -> Any:
+            if field in {"goal_id", "parent_def_id", "fork_from"}:
+                return value.get(field) or ""
+            return value.get(field)
+
+        conflicting_fields = [
+            field
+            for field in immutable_fields
+            if comparable(existing, field) != comparable(candidate, field)
+        ]
+        if conflicting_fields:
+            return json.dumps(
+                {
+                    "error": "branch_idempotency_conflict",
+                    "request_id": request_id,
+                    "conflicting_fields": conflicting_fields,
+                }
+            )
+        saved = existing
+        idempotent_replay = True
+    elif not request_id:
+        saved = save_branch_definition(_base_path(), branch_def=branch.to_dict())
     persisted = _BD.from_dict(saved)
     truncated = len(persisted.node_defs) > 12
     text = _build_branch_text(persisted, truncated=truncated)
@@ -2465,6 +2542,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             request_id=kwargs.get("request_id", ""),
         ),
     }
+    payload["batch_receipt"]["idempotent_replay"] = idempotent_replay
     if verbose:
         payload["branch"] = saved
     return json.dumps(payload, default=str)
@@ -3530,16 +3608,16 @@ rejected by the server; in an existing branch patch, pass `node_ref` /
 `intent="copy"` or rename. This is intentional — silent shadowing was a bug
 (#66).
 
-## New-workflow authoring gap
+## New-workflow authoring
 
-The advertised handle set does not currently expose creation of a new branch
-or standalone node. Do NOT call a hidden tool, send community users to GitHub
-Actions YAML/repo files/CI config, or imply a design was stored. Say the
-surface gap plainly. A complete branch design still uses the following
-single-payload shape; it can be applied once a canonical create route exists:
+Create a Branch through `write_graph target="branch" operation="create"` with
+the complete spec below in `payload_json`. To remix, use operation `remix` and
+include a published `fork_from` version in the same spec. After validation,
+freeze it through operation `publish`; cloud automation binds only immutable
+published versions. Standalone node registration remains unavailable.
 
 ```
-spec_json='{
+payload_json='{
   "name": "Recipe tracker",
   "description": "Capture, categorize, archive recipes",
   "entry_point": "capture",
@@ -3573,8 +3651,8 @@ spec_json='{
 }'
 ```
 
-Do not fabricate validation suggestions or a batch receipt for an unsaved new
-design. Receipts exist only after a real supported write completes.
+Do not fabricate validation suggestions or a batch receipt. Receipts exist
+only after a real supported write completes.
 
 ## Branch skills
 
