@@ -2440,3 +2440,13 @@ Notes:
 - Review gate: STATUS budget/janitor check, diff check, merge/check receipt.
 - Publish/cleanup: coordination-only PR; no product code, route, deployment, secret, or production mutation.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-app-ingress-foldback-20260803/_PURPOSE.md`.
+
+## 2026-08-04 - Fold back external app principal mapping
+
+- Provider: `codex-gpt5-desktop-map-foldback`.
+- Branch: `foldback/map-external-app-principals-20260804`.
+- Lane state: Foldback after PR #2256 merged as `6b65b3fc`.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-map-foldback-20260804`.
+- Purpose: sync/archive the landed mapping capability, retire its active claim, and advance the V1 monitor to custody issuance.
+- Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
+- Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
