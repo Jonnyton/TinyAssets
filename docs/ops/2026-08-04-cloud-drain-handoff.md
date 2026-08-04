@@ -36,8 +36,27 @@ Two are fixed and deployed; the fifth is fixed-but-blocked.
 ## Blocked
 
 - **PR #2292** — admit the branch identity shapes production actually mints.
-  Correct fix, **blocked by a CI regression that is not yet explained**. Left as
-  a draft with auto-merge disabled; see the blocker comment on the PR.
+  The diagnosis is right; the **fix as written is not safe to land**. Left as a
+  draft with auto-merge disabled; see the blocker comments on the PR.
+
+  The required gate reports exactly one new failure,
+  `test_cloud_automation_api.py::test_phone_rebinds_and_rolls_back_to_published_branch_versions`,
+  deterministically across four runs. A bisect (#2295, closed) carrying the
+  source change **without** the added tests still fails it, which attributes the
+  regression to the `_reference` change itself and rules out suite
+  ordering/state perturbation from the new test functions.
+
+  This contradicts the natural prediction — the change is strictly more
+  permissive, and that test's fixture ids are `branch_`-prefixed so they
+  short-circuit before the new patterns ever run. Mechanism therefore unknown.
+  Leading hypothesis: more-permissive deserialization lets a record that
+  previously failed to load now load, sending rollback down a "reuse existing
+  binding" path that then fails a CAS/generation check and returns an error
+  dict — consistent with the observed `KeyError: 'status'`.
+
+  The test cannot be attributed locally on Windows: it fails there with **and**
+  without the change for an unrelated reason, masking the signal. A Linux repro
+  is required.
 
 ## The two new issues
 
@@ -91,8 +110,12 @@ pins the closed direction and lets the open direction drift to zero.
 
 ## Resume procedure
 
-1. Land #2292 (see its blocker comment) and deploy. Confirm with `get_status`
-   that `release_state.git_sha` contains it — merged is not deployed.
+1. **First, fix #5 without regressing rollback.** #2292's diagnosis is correct
+   but its fix regresses
+   `test_phone_rebinds_and_rolls_back_to_published_branch_versions`; see the
+   blocker comments on #2292. Reproduce on Linux, find the mechanism, then land
+   and deploy. Confirm with `get_status` that `release_state.git_sha` contains
+   it — merged is not deployed.
 2. Create exactly one **stopped** automation via
    `write_graph target=automation operation=create`:
    - `definition.repository` = `jonnyton/tinyassets`
