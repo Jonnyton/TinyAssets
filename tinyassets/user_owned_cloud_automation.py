@@ -209,6 +209,23 @@ class AutomationAdmissionError(ValueError):
         super().__init__(f"{code}: {detail}")
 
 
+def repository_spec_automation_id(
+    definition: RepositorySpecWorkDefinition,
+) -> str:
+    """Derive the sole activation identity for one repository/spec lineage."""
+    if not isinstance(definition, RepositorySpecWorkDefinition):
+        raise ValueError("definition must be a RepositorySpecWorkDefinition")
+    identity = {
+        "domain": "repository-spec-automation-identity-v1",
+        "principal_id": definition.principal_id,
+        "universe_id": definition.universe_id,
+        "repository": definition.repository.lower(),
+        "accepted_spec_ref": definition.accepted_spec_ref,
+        "branch_def_id": definition.branch_def_id,
+    }
+    return f"automation_repo_{_digest(identity).removeprefix('sha256:')[:32]}"
+
+
 class AutomationProjectionError(ValueError):
     """A supplied authority record does not belong to this definition."""
 
@@ -562,5 +579,6 @@ __all__ = [
     "acceptance_scenario_digest",
     "admit_work_definition",
     "project_operational_state",
+    "repository_spec_automation_id",
     "repository_spec_baseline_scenario",
 ]

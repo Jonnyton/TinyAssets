@@ -470,7 +470,10 @@ def read_graph(
         branch_id: Branch definition identifier for target=branch (read a
             branch's full graph + node configs). Falls back to graph_id.
         automation_id: Private cloud automation identifier for
-            target=automation.
+            target=automation controls. On create, this is only a caller label:
+            the server returns the canonical identity derived from the
+            authenticated owner, universe, repository, accepted-spec reference,
+            and Branch lineage. Use that returned identity for later controls.
         agent_definition_id: Public agent definition identifier for
             target=agent. Falls back to graph_id.
         agent_binding_id: Private universe binding identifier for

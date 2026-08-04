@@ -25,6 +25,7 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 from tinyassets.user_owned_cloud_automation import (
     RepositorySpecWorkDefinition,
     acceptance_scenario_digest,
+    repository_spec_automation_id,
     repository_spec_baseline_scenario,
 )
 
@@ -313,6 +314,7 @@ def cloud_automations(
                 universe_id=uid,
             )
             definition = RepositorySpecWorkDefinition.from_dict(server_definition)
+            server_automation_id = repository_spec_automation_id(definition)
             if "accepted_spec_content" in document:
                 stage_accepted_spec(
                     _base_path(),
@@ -326,7 +328,7 @@ def cloud_automations(
             setup = prepare_cloud_automation(
                 _base_path(),
                 definition,
-                automation_id=automation_id,
+                automation_id=server_automation_id,
                 cadence_seconds=int(document.get("cadence_seconds", 0)),
                 operator_display_name=str(operator.get("display_name") or ""),
                 operator_soul_text=str(operator.get("soul_text") or ""),

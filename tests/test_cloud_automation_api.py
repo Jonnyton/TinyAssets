@@ -624,6 +624,7 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
         definition.input_artifact_digests
     )
     assert result["baseline_evaluation"]["receipt_digest"].startswith("sha256:")
+    server_automation_id = result["automation"]["automation_id"]
     replay = cloud_automations.cloud_automations(
         action="create",
         universe_id="universe_alice",
@@ -639,7 +640,7 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
     )
     assert replay["daemon_id"] == result["daemon_id"]
     activation = AutomationActivationStore(tmp_path).get(
-        "universe_alice", "automation_spec_drain"
+        "universe_alice", server_automation_id
     )
     assert activation is not None and activation.state.value == "stopped"
     daemon = select_project_loop_daemon(
@@ -686,7 +687,7 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
     assert replacement_replay is not None
     assert replacement_replay.branch_task_id == activated.branch_task_id
     active = AutomationActivationStore(tmp_path).get(
-        "universe_alice", "automation_spec_drain"
+        "universe_alice", server_automation_id
     )
     assert active is not None and active.state.value == "active"
 
@@ -1231,3 +1232,93 @@ def test_stale_worker_cannot_reactivate_after_owner_stop(tmp_path, monkeypatch) 
         "automation_spec_drain",
     )
     assert activation is not None and activation.state.value == "stopped"
+
+
+def test_phone_create_aliases_converge_on_one_server_automation_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+
+    definition = _seed_setup_authority(tmp_path)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+    payload = {
+        "definition": definition.to_dict(),
+        "cadence_seconds": 300,
+        "operator": {"soul_text": "Run my accepted repository workflow."},
+    }
+
+    first = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="my-first-label",
+        payload=payload,
+    )
+    second = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="a-different-label-for-the-same-work",
+        payload=payload,
+    )
+    listed = cloud_automations.cloud_automations(
+        action="list",
+        universe_id="universe_alice",
+    )
+
+    assert first["status"] == "activation_requested"
+    assert second["status"] == "activation_requested"
+    assert first["automation"]["automation_id"] == second["automation"]["automation_id"]
+    assert listed["count"] == 1
+
+
+def test_phone_cloud_create_fails_while_canonical_tray_lease_is_active(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+    from tinyassets.storage.automation_activations import (
+        AutomationActivationExecutor,
+        AutomationActivationStore,
+    )
+    from tinyassets.user_owned_cloud_automation import repository_spec_automation_id
+
+    definition = _seed_setup_authority(tmp_path)
+    automation_id = repository_spec_automation_id(definition)
+    activations = AutomationActivationStore(tmp_path, clock=lambda: NOW)
+    stopped = activations.create_stopped(
+        universe_id=definition.universe_id,
+        automation_id=automation_id,
+    )
+    tray = activations.activate(
+        expected=stopped,
+        executor_class=AutomationActivationExecutor.TRAY,
+        subject=ExecutionSubject(
+            kind=ExecutionSubjectKind.BRANCH_VERSION,
+            ref=definition.branch_version_id,
+            digest=definition.branch_content_digest,
+        ),
+        lease_id="tray-local-drain-live",
+    )
+    assert tray is not None
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    result = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="caller-alias-cannot-bypass-tray",
+        payload={
+            "definition": definition.to_dict(),
+            "cadence_seconds": 300,
+            "operator": {"soul_text": "Run my accepted repository workflow."},
+        },
+    )
+
+    assert result["error"] == "automation_setup_invalid"
+    assert result["detail"] == "automation is already active"
+    assert activations.get(definition.universe_id, automation_id) == tray
