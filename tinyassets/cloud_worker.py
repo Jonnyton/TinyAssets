@@ -280,9 +280,11 @@ def _load_worker_release_identity() -> dict[str, str] | None:
     }
 
 
-def _snapshot_worker_protocol_identity_at_boot() -> dict[str, str] | None:
+def _snapshot_worker_protocol_identity_at_boot(
+    physical_worker_id: str = "",
+) -> dict[str, str] | None:
     """Bind terminal release identity and boot ID before supervisor work."""
-    worker_id = _worker_id()
+    worker_id = physical_worker_id.strip() or _worker_id()
     if worker_id in _WORKER_PROTOCOL_IDENTITIES:
         return _WORKER_PROTOCOL_IDENTITIES[worker_id]
     release = _load_worker_release_identity()
@@ -827,13 +829,14 @@ def _pump_cloud_automation_triggers(
     universe: Path,
     *,
     provider_name: str = "",
+    physical_worker_id: str = "",
 ) -> int:
     """Materialize one due persisted Trigger through this exact worker."""
 
     if not universe.name.strip():
         return 0
     try:
-        physical_worker_id = _worker_id()
+        physical_worker_id = physical_worker_id.strip() or _worker_id()
         from tinyassets.background_branch_authority import (
             BackgroundBranchExecutorAudience,
             BackgroundBranchExecutorClass,
@@ -1263,7 +1266,8 @@ def run_supervisor(
     + ``time.sleep`` at call time (not import time), so tests can
     monkeypatch the module attribute freely.
     """
-    _snapshot_worker_protocol_identity_at_boot()
+    physical_worker_id = _worker_id()
+    _snapshot_worker_protocol_identity_at_boot(physical_worker_id)
     if spawn_fn is None:
         if daemon_args:
 
@@ -1410,6 +1414,7 @@ def run_supervisor(
                         appended = _pump_cloud_automation_triggers(
                             universe,
                             provider_name=_provider_from_daemon_args(daemon_args),
+                            physical_worker_id=physical_worker_id,
                         )
                         appended += _pump_branch_task_producers(universe)
                         if appended > 0:

@@ -605,6 +605,7 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
         automation_id="automation_spec_drain",
         payload={
             "definition": raw_definition,
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
             "cadence_seconds": 300,
             "operator": {
                 "display_name": "Alice Cloud Builder",
@@ -631,6 +632,7 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
         automation_id="automation_spec_drain",
         payload={
             "definition": raw_definition,
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
             "cadence_seconds": 300,
             "operator": {
                 "display_name": "Alice Cloud Builder",
@@ -1109,6 +1111,7 @@ def test_phone_create_auto_selects_single_safe_prerequisites(
         automation_id="automation_phone_setup",
         payload={
             "definition": raw,
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
             "cadence_seconds": 300,
             "operator": {
                 "display_name": "Alice Cloud Builder",
@@ -1247,6 +1250,7 @@ def test_phone_create_aliases_converge_on_one_server_automation_identity(
     monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
     payload = {
         "definition": definition.to_dict(),
+        "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
         "cadence_seconds": 300,
         "operator": {"soul_text": "Run my accepted repository workflow."},
     }
@@ -1314,6 +1318,7 @@ def test_phone_cloud_create_fails_while_canonical_tray_lease_is_active(
         automation_id="caller-alias-cannot-bypass-tray",
         payload={
             "definition": definition.to_dict(),
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
             "cadence_seconds": 300,
             "operator": {"soul_text": "Run my accepted repository workflow."},
         },
@@ -1391,6 +1396,108 @@ def test_wrong_provider_worker_cannot_activate_requester_bound_automation(
     assert activation is not None and activation.state.value == "stopped"
 
 
+def test_provider_drift_between_precheck_and_activation_leaves_no_orphan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.background_branch_authority import (
+        BackgroundBranchExecutorAudience,
+        BackgroundBranchExecutorClass,
+    )
+    from tinyassets.cloud_automation_continuation import CloudContinuationActivationError
+    from tinyassets.cloud_automation_runtime import (
+        activate_one_requested_cloud_automation,
+    )
+    from tinyassets.cloud_automation_setup import prepare_cloud_automation
+    from tinyassets.daemon_registry import (
+        ensure_daemon_runtime,
+        select_project_loop_daemon,
+    )
+    from tinyassets.storage.automation_activations import AutomationActivationStore
+    from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+    definition = _seed_setup_authority(tmp_path)
+    prepare_cloud_automation(
+        tmp_path,
+        definition,
+        automation_id="automation_spec_drain",
+        cadence_seconds=300,
+        operator_display_name="Alice Cloud Builder",
+        operator_soul_text="Run Alice's accepted repository workflow.",
+        clock=lambda: NOW,
+    )
+    daemon = select_project_loop_daemon(
+        tmp_path,
+        universe_id=definition.universe_id,
+        owner_user_id=definition.principal_id,
+    )
+    assert daemon is not None
+    runtime = ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id=definition.universe_id,
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-worker",
+        worker_id="worker_codex_1",
+    )
+    audience = BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id=daemon["daemon_id"],
+        runtime_id=runtime["runtime_instance_id"],
+        worker_id="worker_codex_1",
+    )
+
+    from tinyassets import cloud_automation_runtime
+
+    original_resolve = cloud_automation_runtime._ExactAudienceResolver.resolve
+    drifted = False
+
+    def drift_after_precheck(resolver, *, continuation, branch_task_id):
+        nonlocal drifted
+        resolved = original_resolve(
+            resolver,
+            continuation=continuation,
+            branch_task_id=branch_task_id,
+        )
+        if resolved is not None and branch_task_id == "pre_activation_provider_fence":
+            with RequestAdmissionStore(tmp_path).connection() as conn:
+                conn.execute(
+                    "UPDATE author_runtime_instances SET provider_name = 'claude' "
+                    "WHERE instance_id = ?",
+                    (audience.runtime_id,),
+                )
+                conn.commit()
+            drifted = True
+        return resolved
+
+    monkeypatch.setattr(
+        cloud_automation_runtime._ExactAudienceResolver,
+        "resolve",
+        drift_after_precheck,
+    )
+    with pytest.raises(
+        CloudContinuationActivationError,
+        match="executor_audience_unavailable",
+    ):
+        activate_one_requested_cloud_automation(
+            tmp_path,
+            universe_id=definition.universe_id,
+            principal_id=definition.principal_id,
+            audience=audience,
+            clock=lambda: NOW,
+        )
+    assert drifted is True
+    activation = AutomationActivationStore(tmp_path).get(
+        definition.universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None and activation.state.value == "stopped"
+    with RequestAdmissionStore(tmp_path).connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM request_admissions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM branch_tasks_v2").fetchone()[0] == 0
+
+
 def test_phone_create_derives_internal_definition_from_human_inputs(
     tmp_path,
     monkeypatch,
@@ -1433,3 +1540,54 @@ def test_phone_create_derives_internal_definition_from_human_inputs(
     assert result["definition"]["acceptance_scenario_id"] == (
         "scenario:repo-spec-baseline-v1"
     )
+
+
+def test_phone_create_rejects_missing_content_and_internal_authority_inputs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+
+    seeded = _seed_setup_authority(tmp_path)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    missing_content = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="missing-content",
+        payload={
+            "definition": {
+                "repository": seeded.repository,
+                "accepted_spec_ref": seeded.accepted_spec_ref,
+                "accepted_spec_digest": seeded.accepted_spec_digest,
+                "branch_version_id": seeded.branch_version_id,
+            },
+            "cadence_seconds": 300,
+            "operator": {"soul_text": "Run my accepted repository workflow."},
+        },
+    )
+    asserted_authority = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="asserted-authority",
+        payload={
+            "definition": {
+                "repository": seeded.repository,
+                "accepted_spec_ref": seeded.accepted_spec_ref,
+                "branch_version_id": seeded.branch_version_id,
+                "provider_binding_id": "pwb_00000000000000000000000000000000",
+                "destination_grant_id": "destination_grant_not_selected",
+            },
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {"soul_text": "Run my accepted repository workflow."},
+        },
+    )
+
+    assert missing_content["error"] == "automation_setup_invalid"
+    assert "accepted_spec_content is required" in missing_content["detail"]
+    assert asserted_authority["error"] == "automation_setup_invalid"
+    assert "provider binding id assertion" in asserted_authority["detail"]

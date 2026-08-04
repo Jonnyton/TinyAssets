@@ -353,6 +353,7 @@ class AutomationActivationStore:
         executor_class: AutomationActivationExecutor,
         subject: ExecutionSubject,
         lease_id: str,
+        authority_check: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> AutomationActivation | None:
         """Activate only from an exact stopped record."""
 
@@ -371,6 +372,7 @@ class AutomationActivationStore:
             subject=subject,
             lease_id=_required(lease_id, "lease_id"),
             state=AutomationActivationState.ACTIVE,
+            authority_check=authority_check,
         )
 
     def stop(
@@ -527,6 +529,7 @@ class AutomationActivationStore:
         subject: ExecutionSubject | None,
         lease_id: str | None,
         state: AutomationActivationState,
+        authority_check: Callable[[sqlite3.Connection], bool] | None = None,
     ) -> AutomationActivation | None:
         at = _timestamp(self._clock())
         compatibility_branch_version = (
@@ -538,6 +541,9 @@ class AutomationActivationStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if authority_check is not None and authority_check(conn) is not True:
+                    conn.rollback()
+                    return None
                 if state is AutomationActivationState.ACTIVE:
                     controls_table = conn.execute(
                         """

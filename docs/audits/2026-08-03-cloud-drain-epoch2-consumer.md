@@ -188,6 +188,21 @@ passed. Ruff, strict OpenSpec validation, `git diff --check`, and 332-file
 canonical/plugin mirror parity passed. A fresh exact-head review remains the
 next merge gate.
 
+The first whole-change exact review of `017e9565` timed out after 30 minutes
+and supplied no verdict. A new focused exact review completed in 524 seconds
+and returned `ADAPT`: the pump reread its own rewritten logical worker ID on a
+second poll; provider drift after preflight could leave active activation/task
+state before the later check; and legacy phone fields could still select
+provider/destination authority or replace exact spec content with a digest.
+The follow-up freezes physical identity once in the supervisor and passes it
+through every poll, validates requester provider/runtime inside the activation,
+admission, Trigger-claim, and provider-launch transactions, and requires exact
+spec content while deriving provider/destination IDs before comparing any
+legacy assertions. A new exact-head re-review is still required before push.
+Current follow-up evidence: 450 integrated cloud tests, 58 packaged-runtime
+tests, and all three 64-contender shaped-load scenarios pass; Ruff, strict
+OpenSpec, diff checks, and 332-file mirror parity are green.
+
 ## Deployment and acceptance state
 
 - Production dark deployment of this consumer: not yet run.
@@ -205,7 +220,7 @@ cloud automation activation tuple.
 
 ## Temporary drain continuity
 
-At 2026-08-03 19:25 PDT, the local watchdog reported health `running`, the
-supervisor alive as PID 24344, attempt 15 active, five completed slices, zero
-consecutive failures, and merged PRs #2211 through #2223. The local bridge
+At 2026-08-03 20:30 PDT, the local watchdog reported health `running`, the
+supervisor alive, attempt 17 active, six completed slices, zero consecutive
+failures, and merged PRs #2211 through #2226. The local bridge
 remains active until cloud acceptance is proven.

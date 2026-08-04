@@ -1496,7 +1496,7 @@ class PreparedCloudContinuationActivationService:
                 "trusted cloud worker assignment is absent or mismatched",
             )
 
-        activation = self._converge_activation(request)
+        activation = self._converge_activation(request, preflight_audience)
         self._inject("activation_committed")
         identifier_seed = {
             "schema_version": 1,
@@ -1517,42 +1517,59 @@ class PreparedCloudContinuationActivationService:
             id_factory=lambda prefix: ids[prefix],
             clock=self._clock,
         )
-        admission = admission_store.commit_admission(
-            tenant_id=definition.principal_id,
-            actor_id=definition.principal_id,
-            universe_id=definition.universe_id,
-            idempotency_key_hash=_content_digest(
-                {
-                    "domain": "cloud-continuation-admission-v1",
-                    **identifier_seed,
-                }
-            ),
-            body_digest=body_digest,
-            body_digest_version="rfc8785-v1",
-            request_type="run_branch",
-            text=self._REQUEST_TEXT,
-            branch_id=definition.branch_def_id,
-            branch_def_id=definition.branch_def_id,
-            trigger_source=self._TRIGGER_SOURCE,
-            accepted_priority_weight=self._PRIORITY_WEIGHT,
-            policy_version=self._POLICY_VERSION,
-            grant_generation=grant_generation,
-            receipt={
-                "authority": "request-local",
-                "branch_def_id": definition.branch_def_id,
-                "continuation_id": continuation.continuation_id,
-                "grant_generation": grant_generation,
-                "priority_policy_version": self._POLICY_VERSION,
-                "directed_assignment": {
-                    "daemon_id": binding.daemon_id,
-                    "daemon_soul_hash": str(daemon["soul_hash"]),
-                    "authority_scope": "owner",
+        def require_current_worker_provider(conn: sqlite3.Connection) -> None:
+            if not self._worker_provider_current(conn, preflight_audience):
+                raise PermissionError("cloud worker provider is no longer current")
+
+        try:
+            admission = admission_store.commit_admission(
+                tenant_id=definition.principal_id,
+                actor_id=definition.principal_id,
+                universe_id=definition.universe_id,
+                idempotency_key_hash=_content_digest(
+                    {
+                        "domain": "cloud-continuation-admission-v1",
+                        **identifier_seed,
+                    }
+                ),
+                body_digest=body_digest,
+                body_digest_version="rfc8785-v1",
+                request_type="run_branch",
+                text=self._REQUEST_TEXT,
+                branch_id=definition.branch_def_id,
+                branch_def_id=definition.branch_def_id,
+                trigger_source=self._TRIGGER_SOURCE,
+                accepted_priority_weight=self._PRIORITY_WEIGHT,
+                policy_version=self._POLICY_VERSION,
+                grant_generation=grant_generation,
+                receipt={
+                    "authority": "request-local",
+                    "branch_def_id": definition.branch_def_id,
+                    "continuation_id": continuation.continuation_id,
+                    "grant_generation": grant_generation,
+                    "priority_policy_version": self._POLICY_VERSION,
+                    "directed_assignment": {
+                        "daemon_id": binding.daemon_id,
+                        "daemon_soul_hash": str(daemon["soul_hash"]),
+                        "authority_scope": "owner",
+                    },
                 },
-            },
-            directed_daemon_id=binding.daemon_id,
-            created_at=_timestamp(now),
-            automation_activation=activation,
-        )
+                directed_daemon_id=binding.daemon_id,
+                created_at=_timestamp(now),
+                automation_activation=activation,
+                access_check=require_current_worker_provider,
+            )
+        except PermissionError as exc:
+            current = self._activation_store.get(
+                continuation.universe_id,
+                continuation.automation_id,
+            )
+            if current == activation:
+                self._activation_store.stop(expected=activation)
+            raise CloudContinuationActivationError(
+                "executor_audience_unavailable",
+                "trusted cloud worker provider changed before admission",
+            ) from exc
         if admission.get("request_id") != binding.source_id:
             self._fail(
                 "admission_source_mismatch",
@@ -1625,6 +1642,7 @@ class PreparedCloudContinuationActivationService:
     def _converge_activation(
         self,
         request: CloudContinuationActivationRequest,
+        audience: BackgroundBranchExecutorAudience,
     ) -> AutomationActivation:
         continuation = self._continuation
         current = self._activation_store.get(
@@ -1643,11 +1661,23 @@ class PreparedCloudContinuationActivationService:
                 executor_class=AutomationActivationExecutor.CLOUD,
                 subject=_branch_execution_subject(self._definition),
                 lease_id=request.lease_id,
+                authority_check=lambda conn: self._worker_provider_current(
+                    conn,
+                    audience,
+                ),
             )
             current = activated or self._activation_store.get(
                 continuation.universe_id,
                 continuation.automation_id,
             )
+            if activated is None and current is not None and (
+                current.state is AutomationActivationState.STOPPED
+                and current.epoch == continuation.activation_epoch
+            ):
+                self._fail(
+                    "executor_audience_unavailable",
+                    "trusted cloud worker provider changed before activation",
+                )
         exact = (
             current is not None,
             current is not None and current.state is AutomationActivationState.ACTIVE,
@@ -1663,6 +1693,24 @@ class PreparedCloudContinuationActivationService:
             )
         assert current is not None
         return current
+
+    def _worker_provider_current(
+        self,
+        conn: sqlite3.Connection,
+        audience: BackgroundBranchExecutorAudience,
+    ) -> bool:
+        continuation = self._continuation
+        return self._provider_store.validate_worker_runtime_in_transaction(
+            conn,
+            binding_id=continuation.provider_binding_id,
+            binding_generation=continuation.provider_binding_generation,
+            binding_digest=continuation.provider_binding_digest,
+            owner_user_id=continuation.principal_id,
+            universe_id=continuation.universe_id,
+            daemon_id=audience.daemon_id,
+            runtime_id=audience.runtime_id,
+            worker_id=audience.worker_id,
+        )
 
     def _inject(self, phase: str) -> None:
         if self._fault_injector is not None:

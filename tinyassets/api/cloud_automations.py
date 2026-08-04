@@ -196,8 +196,18 @@ def _derive_phone_work_definition(
     universe_id: str,
 ) -> dict[str, Any]:
     """Freeze internal authority and digest fields from human phone inputs."""
+    authority_assertions = {
+        field: raw_definition.get(field)
+        for field in ("provider_binding_id", "destination_grant_id")
+        if field in raw_definition
+    }
+    human_definition = {
+        field: value
+        for field, value in raw_definition.items()
+        if field not in authority_assertions
+    }
     definition = _hydrate_server_owned_prerequisites(
-        raw_definition,
+        human_definition,
         actor=actor,
         universe_id=universe_id,
     )
@@ -213,19 +223,12 @@ def _derive_phone_work_definition(
     version = get_branch_version(_base_path(), branch_version_id)
     if version is None:
         raise ValueError("immutable Branch version does not exist")
-    if accepted_spec_content is not None:
-        if not isinstance(accepted_spec_content, str):
-            raise ValueError("accepted_spec_content must be text")
-        accepted_spec_digest = (
-            "sha256:"
-            + hashlib.sha256(accepted_spec_content.encode("utf-8")).hexdigest()
-        )
-    else:
-        accepted_spec_digest = str(
-            definition.get("accepted_spec_digest") or ""
-        ).strip()
-        if not accepted_spec_digest:
-            raise ValueError("accepted_spec_content is required for first setup")
+    if not isinstance(accepted_spec_content, str) or not accepted_spec_content:
+        raise ValueError("accepted_spec_content is required for setup")
+    accepted_spec_digest = (
+        "sha256:"
+        + hashlib.sha256(accepted_spec_content.encode("utf-8")).hexdigest()
+    )
     provider = SQLiteProviderWorkAuthorityStore(_base_path()).get(
         str(definition["provider_binding_id"])
     )
@@ -249,9 +252,16 @@ def _derive_phone_work_definition(
         "max_wall_time_seconds": 3600,
         "max_tokens": provider.max_tokens,
         "max_cost_microunits": provider.max_cost_microunits,
+        "provider_binding_id": definition["provider_binding_id"],
+        "destination_grant_id": definition["destination_grant_id"],
     }
     for field, value in derived.items():
-        if field in raw_definition and raw_definition[field] != value:
+        asserted = (
+            authority_assertions[field]
+            if field in authority_assertions
+            else raw_definition.get(field)
+        )
+        if field in raw_definition and asserted != value:
             label = field.replace("_", " ")
             raise ValueError(f"{label} assertion does not match server-derived value")
         definition[field] = value

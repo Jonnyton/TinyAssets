@@ -1909,6 +1909,57 @@ class SQLiteProviderWorkAuthorityStore:
             )
         )
 
+    def validate_worker_runtime_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        binding_id: str,
+        binding_generation: int,
+        binding_digest: str,
+        owner_user_id: str,
+        universe_id: str,
+        daemon_id: str,
+        runtime_id: str,
+        worker_id: str,
+    ) -> bool:
+        """Validate exact requester provider and physical runtime in one fence."""
+        try:
+            binding_row = conn.execute(
+                "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                (binding_id,),
+            ).fetchone()
+            runtime_row = conn.execute(
+                "SELECT * FROM author_runtime_instances WHERE instance_id = ?",
+                (runtime_id,),
+            ).fetchone()
+            if binding_row is None or runtime_row is None:
+                return False
+            binding = _record(binding_row)
+            metadata = json.loads(str(runtime_row["metadata_json"]))
+            expires_at = datetime.fromisoformat(
+                binding.expires_at.removesuffix("Z") + "+00:00"
+            )
+            now = self._clock().astimezone(timezone.utc)
+        except (TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
+            return False
+        return all(
+            (
+                binding.state is ProviderWorkBindingState.ACTIVE,
+                binding.binding_id == binding_id,
+                binding.generation == binding_generation,
+                binding.binding_digest == binding_digest,
+                binding.owner_user_id == owner_user_id,
+                binding.universe_id == universe_id,
+                expires_at > now,
+                runtime_row["universe_id"] == universe_id,
+                runtime_row["provider_name"] == binding.provider,
+                runtime_row["status"] == "provisioned",
+                isinstance(metadata, dict),
+                str(metadata.get("daemon_id") or "") == daemon_id,
+                str(metadata.get("worker_id") or "") == worker_id,
+            )
+        )
+
     @staticmethod
     def get_binding_in_transaction(
         conn: sqlite3.Connection,

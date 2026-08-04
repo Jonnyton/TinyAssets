@@ -1313,7 +1313,7 @@ def test_cloud_automation_trigger_pump_keeps_owner_dimension(
     universe = tmp_path / "shared-universe"
     universe.mkdir()
     monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID", raising=False)
-    monkeypatch.setattr(cw, "_worker_id", lambda: "worker_cloud_1")
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker_cloud_1")
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
     monkeypatch.setattr(
         CloudAutomationControlStore,
@@ -1358,8 +1358,10 @@ def test_cloud_automation_trigger_pump_keeps_owner_dimension(
             trigger_id = "cloud_trigger_alice"
 
     observed: dict[str, object] = {}
+    audiences: list[object] = []
 
     def activate(_base, *, universe_id, audience, principal_id=""):
+        audiences.append(audience)
         observed.update(
             universe_id=universe_id,
             audience=audience,
@@ -1376,8 +1378,20 @@ def test_cloud_automation_trigger_pump_keeps_owner_dimension(
         lambda _base, *, universe_id: None,
     )
 
-    assert cw._pump_cloud_automation_triggers(universe, provider_name="codex") == 1
-    assert selected == [("shared-universe", "acct_alice")]
+    assert cw._pump_cloud_automation_triggers(
+        universe,
+        provider_name="codex",
+        physical_worker_id="worker_cloud_1",
+    ) == 1
+    assert cw._pump_cloud_automation_triggers(
+        universe,
+        provider_name="codex",
+        physical_worker_id="worker_cloud_1",
+    ) == 1
+    assert selected == [
+        ("shared-universe", "acct_alice"),
+        ("shared-universe", "acct_alice"),
+    ]
     assert observed["principal_id"] == "acct_alice"
     assert observed["audience"].daemon_id == "daemon_alice"
     assert observed["audience"].runtime_id == "runtime_alice"
@@ -1386,6 +1400,7 @@ def test_cloud_automation_trigger_pump_keeps_owner_dimension(
         "shared-universe",
         "acct_alice",
     )
+    assert audiences[0] == audiences[1]
 
 
 def test_cloud_automation_worker_slot_survives_process_replacement() -> None:
@@ -2133,7 +2148,7 @@ def test_run_supervisor_snapshots_protocol_identity_before_polling(
     monkeypatch.setattr(
         cw,
         "_snapshot_worker_protocol_identity_at_boot",
-        lambda: snapshots.append("boot"),
+        lambda _physical_worker_id="": snapshots.append("boot"),
     )
     monkeypatch.setattr(cw, "threading_is_main", lambda: False)
 

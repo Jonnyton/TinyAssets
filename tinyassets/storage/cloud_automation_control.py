@@ -29,6 +29,9 @@ from tinyassets.storage.automation_activations import (
     AutomationActivationState,
     AutomationActivationStore,
 )
+from tinyassets.storage.provider_work_authority import (
+    SQLiteProviderWorkAuthorityStore,
+)
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
 _CREATE_TRIGGERS = """
@@ -180,6 +183,11 @@ class CloudAutomationControlStore:
         self.base_path = Path(base_path)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._activations = AutomationActivationStore(
+            self.base_path,
+            busy_timeout_ms=busy_timeout_ms,
+            clock=self._clock,
+        )
+        self._providers = SQLiteProviderWorkAuthorityStore(
             self.base_path,
             busy_timeout_ms=busy_timeout_ms,
             clock=self._clock,
@@ -879,41 +887,23 @@ class CloudAutomationControlStore:
                 control = _control(control_row) if control_row is not None else None
                 provider_current = provider_fence is None
                 if provider_fence is not None:
-                    provider_row = conn.execute(
-                        "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
-                        (provider_fence.provider_binding_id,),
-                    ).fetchone()
-                    runtime_row = conn.execute(
-                        "SELECT * FROM author_runtime_instances WHERE instance_id = ?",
-                        (provider_fence.runtime_id,),
-                    ).fetchone()
-                    runtime_metadata: object = None
-                    if runtime_row is not None:
-                        try:
-                            runtime_metadata = json.loads(str(runtime_row["metadata_json"]))
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            pass
                     provider_current = bool(
                         control is not None
-                        and provider_row is not None
-                        and runtime_row is not None
-                        and isinstance(runtime_metadata, dict)
                         and control.definition.provider_binding_id
                         == provider_fence.provider_binding_id
-                        and provider_row["generation"]
-                        == provider_fence.provider_binding_generation
-                        and provider_row["binding_digest"]
-                        == provider_fence.provider_binding_digest
-                        and provider_row["state"] == "active"
-                        and provider_row["owner_user_id"] == control.principal_id
-                        and provider_row["universe_id"] == universe_id
-                        and runtime_row["universe_id"] == universe_id
-                        and runtime_row["provider_name"] == provider_row["provider"]
-                        and runtime_row["status"] == "provisioned"
-                        and str(runtime_metadata.get("daemon_id") or "")
-                        == provider_fence.daemon_id
-                        and str(runtime_metadata.get("worker_id") or "")
-                        == provider_fence.worker_id
+                        and self._providers.validate_worker_runtime_in_transaction(
+                            conn,
+                            binding_id=provider_fence.provider_binding_id,
+                            binding_generation=(
+                                provider_fence.provider_binding_generation
+                            ),
+                            binding_digest=provider_fence.provider_binding_digest,
+                            owner_user_id=control.principal_id,
+                            universe_id=universe_id,
+                            daemon_id=provider_fence.daemon_id,
+                            runtime_id=provider_fence.runtime_id,
+                            worker_id=provider_fence.worker_id,
+                        )
                     )
                 if activation is None or control is None or not provider_current or not all(
                     (
