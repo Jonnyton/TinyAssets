@@ -2451,16 +2451,15 @@ Notes:
 - Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
 - Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
 
-## 2026-08-04 - Authorize founder-mapped app replies
+## 2026-08-04 - Fold back governed app reply authorization
 
-- Provider: `codex-gpt5-desktop-reply`.
-- Branch: `feature/authorize-app-replies-20260804`.
-- Lane state: Active; depends on merged #2260 custody handoff and outbound-boundary owner.
-- Worktree: `C:/Users/Jonathan/Projects/wf-authorize-app-replies-20260804`.
-- Purpose: verify signed custody handoff plus current founder mapping and produce one content-free destination authorization; no body, route, effect, runtime, workflow, MCP handle, or production side effect.
-- Review gate: strict OpenSpec, focused security/concurrency tests, exact-head independent review, and hosted checks.
-- Publish/cleanup: one dark prerequisite PR; packaged mirror and live Slack effect remain downstream.
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-authorize-app-replies-20260804/_PURPOSE.md`.
+- Provider: `codex-gpt5-desktop-reply-foldback`.
+- Branch: `foldback/authorize-app-replies-20260804`.
+- Lane state: Foldback after PR #2268 merged as `f9ef66b5`.
+- Worktree: `C:/Users/Jonathan/Projects/wf-authorize-app-replies-foldback-20260804`.
+- Purpose: sync/archive the landed content-free reply authorization, retire its active claim, and advance the V1 monitor to live outbound adapter and workflow iteration.
+- Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
+- Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
 
 ## 2026-08-04 - Fold back app custody grant handoff
 
