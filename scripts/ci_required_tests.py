@@ -272,11 +272,17 @@ def main() -> int:
     # classified as noise. The two parallel runs bracket serial.
     #
     # The failure SETS differ. Cardinalities alone (214 / 219 / 218) prove that
-    # much without any node IDs. What it does NOT prove is that the gate's
-    # VERDICT would differ: a disagreement confined to entries already in
-    # .github/known-failing-tests.txt changes nothing the gate reports. So the
-    # claim here is only that this configuration is not established as safe for
-    # a committed-baseline gate — not that it is proven unsafe.
+    # much without any node IDs. They do NOT settle what the gate would report,
+    # and the intuition that a disagreement "inside the baseline is harmless" is
+    # wrong here: a plain ledger entry is RATCHETED, so a quarantined test that
+    # runs and PASSES is classified stale and fails the gate — the same
+    # mechanism that deleted 30 entries in #2236. Only a `flaky` entry is
+    # verdict-neutral, and even that shifts the reported count.
+    #
+    # Distinguishing new failures from stale-ratcheted from flaky needs the
+    # node-ID and ran sets, which were not captured. So the claim here is only
+    # that this configuration is not established as safe for a committed-baseline
+    # gate — not that it is proven unsafe.
     #
     # Deliberately NOT claimed: any causal account of the disagreements. An
     # earlier version of this comment attributed them to resource contention and
