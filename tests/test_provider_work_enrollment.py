@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -45,6 +46,26 @@ def test_resolver_requires_exact_nonexpired_entry(monkeypatch) -> None:
     assert resolver.providers(
         owner_user_id="user_alice", universe_id="universe_alice"
     ) == ("codex",)
+
+
+def test_fingerprint_entry_materializes_authenticated_subject(monkeypatch) -> None:
+    key = "k" * 32
+    subject = "user_not_visible_in_chat"
+    monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_KEY", key)
+    fingerprint = "v1:" + hmac.new(
+        key.encode(),
+        f"tinyassets:request-identity:v1\0{subject}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    monkeypatch.setenv(
+        "TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON",
+        json.dumps([_entry(owner=fingerprint)]),
+    )
+    resolver = RequesterProviderEnrollmentResolver.from_environment(now=NOW)
+    seed = resolver.resolve(ProviderWorkBindingRoot(subject, "universe_alice", "codex"))
+    assert seed is not None
+    assert seed.owner_user_id == subject
+    assert resolver.providers(owner_user_id=subject, universe_id="universe_alice") == ("codex",)
 
 
 def test_invalid_or_duplicate_manifest_fails_closed(monkeypatch) -> None:
