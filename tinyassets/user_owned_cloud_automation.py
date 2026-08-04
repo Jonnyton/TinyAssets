@@ -429,7 +429,14 @@ def resolve_inactive_cloud_authority(
             definition.destination_grant_id
         )
         connection = connection_ledger.get_connection(grant.connection_id)
-        expected_destination = f"github.com/{definition.repository}"
+        expected_destination = definition.repository.strip().lower()
+        actual_destination = (
+            connection.destination.strip().lower()
+            .removeprefix("https://")
+            .removeprefix("http://")
+            .removeprefix("github.com/")
+            .strip("/")
+        ) if connection is not None else ""
         expected_scopes = frozenset(
             {"pull_requests:write", "pull_requests:read_for_commit"}
         )
@@ -442,7 +449,7 @@ def resolve_inactive_cloud_authority(
             connection is not None and connection.owner_user_id == definition.principal_id,
             connection is not None and connection.connection_class == "pull-request-writer",
             connection is not None and connection.provider == "github",
-            connection is not None and connection.destination == expected_destination,
+            connection is not None and actual_destination == expected_destination,
             connection is not None
             and len(connection.scopes) == len(expected_scopes)
             and frozenset(connection.scopes) == expected_scopes,
