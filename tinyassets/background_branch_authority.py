@@ -14,6 +14,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ContextManager, Protocol, runtime_checkable
 
+from tinyassets.ids import UNIVERSE_ID_PREFIX
+
 
 class BackgroundBranchBindingStatus(str, Enum):
     ACTIVE = "active"
@@ -184,6 +186,11 @@ _NOMINAL_REFERENCE_PREFIXES = (
     "user::",
     "universe_",
     "universe:",
+    # Production mints universe ids as ``u-`` + a lowercase Crockford ULID
+    # (``tinyassets.ids.UNIVERSE_ID_PREFIX``). Every fixture in this package
+    # uses the ``universe_`` spelling, so omitting this prefix rejected every
+    # REAL universe while the suite stayed green.
+    UNIVERSE_ID_PREFIX,
     "branch_",
     "branch:",
     "schedule_",
