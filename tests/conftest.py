@@ -341,24 +341,82 @@ def universe_input() -> dict[str, Any]:
 #
 # Session-scoped ON PURPOSE. Two per-test versions were built and both broke
 # correct code, because at the end of a test you cannot distinguish "leaked"
-# from "a module/session fixture still legitimately owns this". By session
-# finish every fixture has finalized, so anything still altered really did
-# escape — no exemptions needed, and nothing is ever repaired.
+# from "a module/session fixture still legitimately owns this". Every fixture —
+# function, module, package, session — has finalized before session finish, so
+# there is no ownership ambiguity left and nothing is ever repaired.
+#
+# FIXTURES are not the whole story, though: other *plugins* also run
+# `pytest_sessionfinish`, and one may legitimately restore a patch there. So
+# the check must run after every other finish hook, not merely at finish time.
+# That is why this is a `tryfirst` WRAPPER and the check lives after the yield:
+# wrappers unwind in reverse, so the outermost wrapper's post-yield phase runs
+# last — after plain impls and after `trylast` ones. Checking in a plain
+# `pytest_sessionfinish` produced both a false negative (a `trylast` plugin
+# leaking after the check) and a false positive (a plugin restoring after it).
 
 from tests import _global_leak_guard as _leak_guard  # noqa: E402
 
 _LEAK_SESSION_BASELINE: dict[tuple[str, str], object] = {}
 
+# Controller-side only: leaks harvested from xdist workers as they shut down.
+# A worker's `session.exitstatus` is NOT the process exit status, so a worker
+# that just set it would be silently discarded — `-n 2` exited 0 with the leak
+# reported nowhere. Workers hand findings to the controller via `workeroutput`.
+_WORKER_LEAKS: list[str] = []
 
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session):
+    # `tryfirst` so the baseline is the most pristine state we can observe. A
+    # plugin that patches a watched global in its own `pytest_sessionstart` and
+    # restores it at finish would otherwise be recorded as the baseline and its
+    # correct restore flagged as a leak.
     _LEAK_SESSION_BASELINE.clear()
     _LEAK_SESSION_BASELINE.update(_leak_guard.snapshot())
 
 
+try:  # pragma: no cover - depends on whether xdist is installed
+    import xdist  # noqa: F401
+except ImportError:
+    pass
+else:
+
+    def pytest_testnodedown(node, error):
+        """Harvest a worker's leak report before it disappears."""
+        leaked = (getattr(node, "workeroutput", None) or {}).get("global_patch_leaks")
+        for entry in leaked or ():
+            _WORKER_LEAKS.append(f"[{node.gateway.id}] {entry}")
+
+
+@pytest.hookimpl(tryfirst=True, wrapper=True)
 def pytest_sessionfinish(session, exitstatus):
+    worker = getattr(session.config, "workeroutput", None)
+    if worker is not None:
+        # xdist worker. It has no terminal and its exit status is discarded, so
+        # it hands findings to the controller through `workeroutput` — but xdist
+        # TRANSMITS that dict from its own `pytest_sessionfinish`, so anything
+        # written after the yield is already too late for the wire. Check before
+        # instead. The test loop is over by now, so every test-caused leak is
+        # visible; the residual gap is a leak introduced by another plugin's own
+        # finish hook on a worker, which is unreachable from either process.
+        leaked = _leak_guard.escaped(_LEAK_SESSION_BASELINE)
+        if leaked:
+            worker["global_patch_leaks"] = leaked
+    try:
+        result = yield
+    finally:
+        # `finally`, so an exception raised by an inner finish hook still
+        # propagates (it is the more informative failure) while the leak is
+        # still reported rather than swallowed.
+        if worker is None:
+            _report_global_patch_leaks(session)
+    return result
+
+
+def _report_global_patch_leaks(session):
     if not _LEAK_SESSION_BASELINE:
         return
-    leaked = _leak_guard.escaped(_LEAK_SESSION_BASELINE)
+    leaked = _WORKER_LEAKS + _leak_guard.escaped(_LEAK_SESSION_BASELINE)
     if not leaked:
         return
     message = _leak_guard.describe(leaked)

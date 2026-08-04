@@ -31,6 +31,15 @@ anything still altered genuinely escaped. **No exemption mechanism is needed,
 and nothing is ever repaired**, which is what made the earlier versions
 dangerous.
 
+One correction to that reasoning, from round 3 of review: it holds for
+*fixtures*, but other **plugins** also run ``pytest_sessionfinish`` and one may
+legitimately restore a patch there. "Session finish" is therefore not a single
+instant — the check has to run after every other finish hook. ``conftest.py``
+does this with a ``tryfirst`` hookwrapper whose check lives after the yield,
+because wrappers unwind in reverse. Checking in a plain hook produced a false
+negative (a ``trylast`` plugin leaking after the check) and a false positive (a
+plugin restoring after it).
+
 What it costs
 -------------
 Attribution. This says *that* something leaked, not *which* test did it. That is
