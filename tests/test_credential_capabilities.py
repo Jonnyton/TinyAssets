@@ -13,9 +13,20 @@ admin instead.
 
 from __future__ import annotations
 
-from tests.conftest import _DEFAULT_TEST_CAPABILITIES, _CredentialSubjectProvider
+from tests.conftest import _CredentialSubjectProvider
 
 _COSTLY = "tinyassets.extensions.costly"
+
+# Spelled out here ON PURPOSE, rather than imported from conftest. An earlier
+# version asserted `caps == list(_DEFAULT_TEST_CAPABILITIES)`, which is a
+# tautology: cross-family review deleted `admin` from that constant and this
+# test stayed green while its own docstring was violated. A contract test whose
+# oracle is the implementation cannot detect a change to the implementation.
+_EXPECTED_DEFAULT = [
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
+    "tinyassets.extensions.admin",
+]
 
 
 def _capabilities_for(subject: str, capabilities=None) -> list[str]:
@@ -38,7 +49,7 @@ def test_default_is_read_write_admin_and_excludes_costly() -> None:
     anything, and nothing else in the suite would go red to tell you.
     """
     caps = _capabilities_for("tester")
-    assert caps == list(_DEFAULT_TEST_CAPABILITIES)
+    assert caps == _EXPECTED_DEFAULT
     assert _COSTLY not in caps
 
 
