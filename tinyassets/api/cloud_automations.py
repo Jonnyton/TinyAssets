@@ -15,6 +15,7 @@ from tinyassets.cloud_automation_control import (
     project_cloud_automation_health,
 )
 from tinyassets.provider_work_authority import (
+    ProviderWorkBindingFence,
     ProviderWorkBindingRoot,
     ProviderWorkBindingService,
 )
@@ -404,7 +405,7 @@ def cloud_automations(
         return _not_found()
     store = CloudAutomationControlStore(_base_path())
 
-    if normalized in {"bind_provider", "reconcile_provider"}:
+    if normalized in {"bind_provider", "reconcile_provider", "rebind_provider"}:
         try:
             document = json.loads(payload) if isinstance(payload, str) else payload
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -427,16 +428,27 @@ def cloud_automations(
             }
         try:
             resolver = RequesterProviderEnrollmentResolver.from_environment()
-            result = ProviderWorkBindingService(
-                SQLiteProviderWorkAuthorityStore(_base_path()),
-                resolver,
-            ).issue(
-                ProviderWorkBindingRoot(
-                    owner_user_id=actor,
-                    universe_id=uid,
-                    provider=provider,
-                )
+            provider_store = SQLiteProviderWorkAuthorityStore(_base_path())
+            provider_service = ProviderWorkBindingService(provider_store, resolver)
+            root = ProviderWorkBindingRoot(
+                owner_user_id=actor,
+                universe_id=uid,
+                provider=provider,
             )
+            if normalized == "rebind_provider":
+                matching = [
+                    item
+                    for item in provider_store.list_bindings(
+                        owner_user_id=actor,
+                        universe_id=uid,
+                    )
+                    if item.provider == provider
+                ]
+                if len(matching) > 1:
+                    raise PermissionError("ambiguous provider binding")
+                if matching:
+                    provider_service.revoke(ProviderWorkBindingFence(matching[0]))
+            result = provider_service.issue(root)
         except (TypeError, ValueError, PermissionError) as exc:
             return {
                 "error": "provider_binding_setup_required",
