@@ -46,11 +46,13 @@ on:
   # here (26 of the last 200 runs). Runners are free on a public repo, so the
   # cadence is chosen for detection latency, not cost.
   #
-  # It is BEST-EFFORT, and the cron below is a ceiling rather than a promise:
+  # It is BEST-EFFORT. The cron declares NOMINAL SLOTS, not a delivered rate:
   # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
   # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
-  # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read this as "a few times
-  # a day, unpredictably", not "every 3 hours". That is acceptable for a
+  # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read the cron below as a
+  # declaration of one nominal slot per hour, not a promise about how many
+  # runs arrive or how far apart they land. That is acceptable
+  # for a
   # tripwire whose alternative is never running at all; it would NOT be
   # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
   # via `pull_request`, where the trigger is deterministic.
@@ -71,8 +73,32 @@ on:
   #
   # Wasting a free runner is the cheaper failure than a required check that can
   # quietly pass without running.
+  #
+  # WHY HOURLY. `17 */3` declared 8 slots/day; this declares 24. That is a
+  # change to what the repo DECLARES. GitHub documents that scheduled events
+  # may be delayed or dropped and specifies no relationship between declared
+  # and delivered rate, so the delivered effect is unknown and is to be
+  # measured rather than assumed:
+  #
+  #     gh run list --workflow tests.yml --event schedule
+  #
+  # WHY NOT TIGHTER. `full-tests` measured 36 and 38 minutes, and non-PR runs
+  # get a unique concurrency group (`github.run_id`) with cancel-in-progress
+  # false. Whatever GitHub delivers, this workflow's own concurrency policy
+  # will not replace one non-PR run with another; it does not follow that two
+  # runs execute simultaneously, since runner capacity may serialize them. A
+  # declared interval shorter than the job's runtime is therefore a policy
+  # this file declines to adopt, not a prediction about what would happen.
+  #
+  # A fixed minute is therefore a policy about the DECLARATION only, pinned by
+  # test_schedule_declares_at_most_one_nominal_slot_per_hour. Nothing here
+  # claims runs cannot overlap: two nominally-hourly slots can be dispatched
+  # minutes apart — the two runs above arrived 59 and 17 minutes after theirs.
+  # Overlap is tolerated, not prevented: runners are free on a public repo, so
+  # duplicated tripwire work costs nothing and corrupts nothing.
+  #
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means
@@ -93,10 +119,11 @@ concurrency:
   # `run_id` rather than `sha`, per a second review round: keying by SHA still
   # collides when several scheduled runs land on an UNCHANGED main, and GitHub
   # replaces an existing *pending* run with a newer one — so a queued tripwire
-  # run can be silently dropped. The 3h cadence vs the 60-min timeout makes that
-  # rare, but "rare silent drop" is the exact failure mode this block already
-  # got wrong once. run_id makes every non-PR run unique, so there is nothing to
-  # drop. cancel-in-progress stays conditional as defence in depth.
+  # run can be silently dropped. run_id makes every
+  # non-PR run unique, so THIS workflow's concurrency policy has nothing to
+  # replace — GitHub may still drop a queued job under load, which is a
+  # separate mechanism this key cannot address.
+  # cancel-in-progress stays conditional as defence in depth.
   group: tests-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -152,7 +179,7 @@ jobs:
           # Excluding them was VERIFIED safe, not assumed: every failure the
           # exclusion run reported was also failing in the same-tree full run.
           # The excluded files still run in `full-tests`, on a best-effort
-          # schedule of a few times a day — NOT "on every main push", which was
+          # schedule of one nominal slot per hour — NOT "on every main push", which was
           # the original claim here and was wrong: app-performed merges raise no
           # push event. See the `schedule:` trigger comment.
           python scripts/ci_required_tests.py --junit junit.xml \
@@ -168,7 +195,8 @@ jobs:
           if-no-files-found: warn
 
   # The other half of the split: the COMPLETE surface, on a best-effort
-  # schedule (a few times a day — see the `schedule:` trigger comment).
+  # schedule (one nominal slot per hour; delivered count and spacing are
+  # unspecified — see the `schedule:` trigger comment).
   # NOT required — this is the post-merge tripwire, not the merge gate. It
   # exists because `required-tests` deliberately trades coverage for a wall
   # clock that fits main's commit cadence; without this the excluded files

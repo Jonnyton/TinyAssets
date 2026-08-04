@@ -155,6 +155,73 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
                 )
 
 
+def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
+    """Cadence policy: the schedule declares AT MOST one nominal slot per hour.
+
+    "At most", not "one": `17 */3 * * *` declares one slot every three hours
+    and is deliberately accepted. The test bounds the declared rate from
+    above; it does not require any particular rate.
+
+    `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
+    runs do NOT displace each other — the sibling concurrency test pins non-PR
+    runs to a unique group with cancel-in-progress false, deliberately, so
+    this workflow's own concurrency policy will not replace a queued tripwire
+    run. (GitHub may still drop a queued job under load — a separate
+    mechanism no concurrency key can address.) The narrow guarantee is
+    non-replacement: this workflow will not replace one non-PR run with
+    another. It does not follow that two runs execute simultaneously —
+    runner capacity may serialize them — nor that any particular number of
+    runs is delivered at all.
+
+    **This pins the DECLARED cadence, and nothing more.** GitHub documents that
+    scheduled events may be delayed or dropped; it does not guarantee any
+    minimum spacing between the starts it does deliver. The two runs cited
+    above were dispatched 59 and 17 minutes late, so even one nominal slot per
+    hour can produce starts minutes apart. Overlap is therefore tolerated (free
+    runners, duplicated work, nothing corrupted), not prevented — do not read
+    this test as proving runs cannot overlap. The declaration is the only part
+    of the cadence the repo controls, so it is the only part testable here.
+
+    Three deliberate conservatisms, all of which would otherwise make this
+    vacuous or wrong:
+
+    * The check is on the WHOLE schedule, not per entry. `17 * * * *` plus
+      `47 * * * *` each satisfy "one fixed minute" while collectively declaring
+      two slots an hour, so a per-entry check does not enforce its own headline
+      — cross-family review caught exactly that.
+    * ALL multi-entry schedules are rejected, not merely collectively
+      sub-hourly ones. Disjoint weekday/weekend entries whose union never
+      exceeds one slot per hour would be legitimate and are refused anyway.
+    * A bare fixed minute is required, so legitimate once-per-hour forms like
+      `59/5 * * * *` are rejected too. Evaluating real cron occurrences to
+      admit either case would mean re-implementing GitHub's scheduler here,
+      which an earlier version of this file got wrong; a conservative policy
+      that is easy to read beats a clever one that is subtly wrong.
+
+    If `full-tests` is ever made materially faster, relax this in the same
+    commit that proves the new duration — do not delete it, because the
+    behaviour it prevents is silent.
+    """
+    schedule = _triggers(_load())["schedule"]
+    assert len(schedule) == 1, (
+        f"expected exactly one schedule entry, got {len(schedule)}: "
+        f"{[e.get('cron') for e in schedule]}. Multiple entries can each look "
+        f"hourly while collectively declaring more slots, which is what this "
+        f"test exists to prevent."
+    )
+    minute = str(schedule[0]["cron"]).split()[0]
+    assert re.fullmatch(r"\d{1,2}", minute), (
+        f"cron {schedule[0]['cron']!r} does not use a literal fixed minute "
+        f"(minute field {minute!r}), so this check cannot establish that it "
+        f"declares at most one slot per hour. Some such expressions, e.g. "
+        f"`59/5 * * * *`, ARE once-hourly; the policy is conservative on "
+        f"purpose and refuses them rather than evaluating cron occurrences. "
+        f"`full-tests` runs 36-38 min, and this workflow will not replace one "
+        f"non-PR run with another. Use a single fixed minute, or prove a "
+        f"shorter runtime first."
+    )
+
+
 def test_full_tests_runs_on_every_non_pr_event() -> None:
     """Pinned exactly — a narrower condition would re-strand the tripwire."""
     condition = _expr(_load()["jobs"]["full-tests"].get("if", ""))
