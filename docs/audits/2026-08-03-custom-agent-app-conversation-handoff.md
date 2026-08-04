@@ -1,8 +1,11 @@
 # Custom-agent app-conversation owner handoff audit
 
 **Freshness:** 2026-08-03 PDT, audited against `origin/main`
-`97654c3ebc8d7f866979cb0f9626d031b79c7d25` (PR #2235 foldback), with
-read-only inspection of active OpenSpec changes and current source. This audit
+`97654c3ebc8d7f866979cb0f9626d031b79c7d25` (PR #2235 foldback), then
+revalidated through `74052af11e3dafd8fb96c0012c04d0b0b38ceefe` (PR #2231)
+after inspecting its related connection-ledger and cloud-runtime delta. That
+delta adds an owner/universe grant-list read and no app ingress, Slack adapter,
+external identity mapping, custody issuer, or speaking path. This audit
 authorizes no deployment, app installation, secret mutation, or runtime write.
 
 ## Verdict
