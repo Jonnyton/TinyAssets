@@ -167,10 +167,11 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
     runs to a unique group with cancel-in-progress false, deliberately, so
     this workflow's own concurrency policy will not replace a queued tripwire
     run. (GitHub may still drop a queued job under load — a separate
-    mechanism no concurrency key can address.) So a sub-hourly cron does not
-    straightforwardly "run more often": it declares more opportunities for a
-    38-minute job to overlap itself, and any overlap that IS delivered runs
-    concurrently rather than being cancelled.
+    mechanism no concurrency key can address.) The narrow guarantee is
+    non-replacement: this workflow will not replace one non-PR run with
+    another. It does not follow that two runs execute simultaneously —
+    runner capacity may serialize them — nor that any particular number of
+    runs is delivered at all.
 
     **This pins the DECLARED cadence, and nothing more.** GitHub documents that
     scheduled events may be delayed or dropped; it does not guarantee any
@@ -210,12 +211,14 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
     )
     minute = str(schedule[0]["cron"]).split()[0]
     assert re.fullmatch(r"\d{1,2}", minute), (
-        f"cron {schedule[0]['cron']!r} declares more than one slot per hour "
-        f"(minute field {minute!r}). `full-tests` runs 36-38 min and scheduled "
-        f"runs use a unique concurrency group with cancel-in-progress false, so "
-        f"any runs delivered close together execute concurrently rather than "
-        f"replacing each other. Use a single fixed "
-        f"minute, or prove a shorter runtime first."
+        f"cron {schedule[0]['cron']!r} does not use a literal fixed minute "
+        f"(minute field {minute!r}), so this check cannot establish that it "
+        f"declares at most one slot per hour. Some such expressions, e.g. "
+        f"`59/5 * * * *`, ARE once-hourly; the policy is conservative on "
+        f"purpose and refuses them rather than evaluating cron occurrences. "
+        f"`full-tests` runs 36-38 min, and this workflow will not replace one "
+        f"non-PR run with another. Use a single fixed minute, or prove a "
+        f"shorter runtime first."
     )
 
 

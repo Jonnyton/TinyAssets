@@ -84,10 +84,11 @@ on:
   #
   # WHY NOT TIGHTER. `full-tests` measured 36 and 38 minutes, and non-PR runs
   # get a unique concurrency group (`github.run_id`) with cancel-in-progress
-  # false. So if two runs are ever delivered close together, this workflow's
-  # concurrency policy will not replace either — they execute concurrently.
-  # Declaring slots closer together than the job's runtime adds opportunities
-  # for that; how often it happens is a delivery property, and unknown.
+  # false. Whatever GitHub delivers, this workflow's own concurrency policy
+  # will not replace one non-PR run with another; it does not follow that two
+  # runs execute simultaneously, since runner capacity may serialize them. A
+  # declared interval shorter than the job's runtime is therefore a policy
+  # this file declines to adopt, not a prediction about what would happen.
   #
   # A fixed minute is therefore a policy about the DECLARATION only, pinned by
   # test_schedule_declares_at_most_one_nominal_slot_per_hour. Nothing here
@@ -118,8 +119,7 @@ concurrency:
   # `run_id` rather than `sha`, per a second review round: keying by SHA still
   # collides when several scheduled runs land on an UNCHANGED main, and GitHub
   # replaces an existing *pending* run with a newer one — so a queued tripwire
-  # run can be silently dropped. Declaring more slots adds more chances for
-  # that collision; the delivered effect is unknown. run_id makes every
+  # run can be silently dropped. run_id makes every
   # non-PR run unique, so THIS workflow's concurrency policy has nothing to
   # replace — GitHub may still drop a queued job under load, which is a
   # separate mechanism this key cannot address.
