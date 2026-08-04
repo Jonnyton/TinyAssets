@@ -447,8 +447,13 @@ def cloud_automations(
                 if len(matching) > 1:
                     raise PermissionError("ambiguous provider binding")
                 if matching:
-                    provider_service.revoke(ProviderWorkBindingFence(matching[0]))
-            result = provider_service.issue(root)
+                    result = provider_service.rebind(
+                        ProviderWorkBindingFence(matching[0]), root
+                    )
+                else:
+                    result = provider_service.issue(root)
+            else:
+                result = provider_service.issue(root)
         except (TypeError, ValueError, PermissionError) as exc:
             return {
                 "error": "provider_binding_setup_required",
