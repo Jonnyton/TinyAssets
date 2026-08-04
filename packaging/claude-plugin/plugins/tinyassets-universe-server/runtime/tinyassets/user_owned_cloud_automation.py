@@ -92,6 +92,7 @@ class RepositorySpecWorkDefinition:
     destination_grant_id: str
     destination_purpose: str
     max_attempts: int
+    max_provider_invocations: int
     max_wall_time_seconds: int
     max_tokens: int
     max_cost_microunits: int
@@ -113,6 +114,7 @@ class RepositorySpecWorkDefinition:
         "destination_grant_id",
         "destination_purpose",
         "max_attempts",
+        "max_provider_invocations",
         "max_wall_time_seconds",
         "max_tokens",
         "max_cost_microunits",
@@ -153,13 +155,24 @@ class RepositorySpecWorkDefinition:
         attempts = _positive_int(self.max_attempts, "max_attempts")
         if attempts > 2:
             raise ValueError("max_attempts must be <= 2")
+        provider_invocations = _positive_int(
+            self.max_provider_invocations,
+            "max_provider_invocations",
+        )
+        if provider_invocations > 64:
+            raise ValueError("max_provider_invocations must be <= 64")
         _positive_int(self.max_wall_time_seconds, "max_wall_time_seconds")
-        _positive_int(self.max_tokens, "max_tokens")
-        _positive_int(
+        max_tokens = _positive_int(self.max_tokens, "max_tokens")
+        max_cost_microunits = _positive_int(
             self.max_cost_microunits,
             "max_cost_microunits",
-            minimum=0,
         )
+        if max_tokens < provider_invocations:
+            raise ValueError("max_tokens must be >= max_provider_invocations")
+        if max_cost_microunits < provider_invocations:
+            raise ValueError(
+                "max_cost_microunits must be >= max_provider_invocations"
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RepositorySpecWorkDefinition:
@@ -348,8 +361,8 @@ def resolve_inactive_cloud_authority(
         bounded = (
             binding.state is ProviderWorkBindingState.ACTIVE,
             binding.allowed_operations == ("repository_spec_delivery",),
-            binding.allowed_roles == ("writer",),
-            binding.max_invocations == definition.max_attempts,
+            "writer" in binding.allowed_roles,
+            binding.max_invocations == definition.max_provider_invocations,
             binding.max_tokens == definition.max_tokens,
             binding.max_cost_microunits == definition.max_cost_microunits,
         )

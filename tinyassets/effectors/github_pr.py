@@ -93,7 +93,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tinyassets.auth.provider import vend_github_destination_secret
 from tinyassets.effectors.authority import (
@@ -287,6 +287,24 @@ def _unknown_reconciliation(
     }
 
 
+def _repository_from_scoped_destination(destination: str) -> str:
+    """Normalize the connection-ledger GitHub destination to ``owner/repo``."""
+    if not isinstance(destination, str):
+        raise ValueError("GitHub destination must be a string")
+    normalized = destination.strip().lower().removeprefix("https://")
+    normalized = normalized.removeprefix("http://").strip("/")
+    if normalized.startswith("github.com/"):
+        normalized = normalized.removeprefix("github.com/")
+    parts = normalized.split("/")
+    if (
+        len(parts) != 2
+        or _GITHUB_REPOSITORY_RE.fullmatch(normalized) is None
+        or any(part in {".", ".."} for part in parts)
+    ):
+        raise ValueError("GitHub destination must identify one repository")
+    return normalized
+
+
 def reconcile_github_pull_request_effect(
     identity: GitHubPullRequestEffectIdentity,
     *,
@@ -303,7 +321,11 @@ def reconcile_github_pull_request_effect(
         raise TypeError("identity must be a server-authored PR effect identity")
     if not isinstance(proxy, ScopedConnectionProxy):
         raise TypeError("proxy must be a credential-blind scoped connection")
-    if proxy.provider != "github" or proxy.destination.lower() != identity.repository:
+    try:
+        proxy_repository = _repository_from_scoped_destination(proxy.destination)
+    except ValueError:
+        proxy_repository = ""
+    if proxy.provider != "github" or proxy_repository != identity.repository:
         return _unknown_reconciliation(
             identity,
             "destination_authority_mismatch",
@@ -437,6 +459,234 @@ def reconcile_github_pull_request_effect(
             **exact[0],
         },
     }
+
+
+def _execute_scoped_cloud_github_pr_effect(
+    *,
+    universe_dir: str | Path,
+    universe_id: str,
+    automation_id: str,
+    claim_id: str,
+    repository: str,
+    packet: dict[str, Any],
+    proxy: ScopedConnectionProxy,
+    run_id: str,
+    refresh_claim_id: Callable[[], str] | None = None,
+) -> dict[str, Any]:
+    """Execute one cloud-owned PR through the exact credential-blind proxy."""
+    canonical_repository = _repository_from_scoped_destination(repository)
+    if (
+        not isinstance(packet, dict)
+        or packet.get("sink") != EXTERNAL_WRITE_SINK_GITHUB_PR
+        or _repository_from_scoped_destination(str(packet.get("destination", "")))
+        != canonical_repository
+    ):
+        raise PermissionError("cloud effect destination is outside prepared authority")
+    if (
+        proxy.provider != "github"
+        or _repository_from_scoped_destination(proxy.destination)
+        != canonical_repository
+        or not {
+            "pull_requests:write",
+            "pull_requests:read_for_commit",
+        }.issubset(proxy.scopes)
+    ):
+        raise PermissionError("cloud effect proxy is outside prepared authority")
+    payload = packet.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("cloud GitHub effect payload must be an object")
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("cloud GitHub effect title is required")
+    body = payload.get("body", "") or ""
+    if not isinstance(body, str):
+        raise ValueError("cloud GitHub effect body must be a string")
+    base_branch = payload.get("base_branch") or "main"
+    if not isinstance(base_branch, str) or not base_branch.strip():
+        raise ValueError("cloud GitHub effect base branch is required")
+    prepare_request = {
+        "operation": "prepare_commit",
+        "repository": canonical_repository,
+        "base_branch": base_branch,
+        "changes_json": payload.get("changes_json"),
+        "edits_json": payload.get("edits_json"),
+        "commit_message": title.strip(),
+    }
+    from tinyassets.effectors.outbound_boundary import (
+        AmbiguousEffectOutcome,
+        execute_replay_safe_effect,
+    )
+
+    prepare_request_digest = hashlib.sha256(
+        json.dumps(
+            prepare_request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    effect_intent_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "prepare": prepare_request,
+                "pull_request": {
+                    "base_branch": base_branch,
+                    "body": body,
+                    "draft": bool(payload.get("draft", True)),
+                    "labels": payload.get("labels") or [],
+                    "title": title.strip(),
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    preparation_identity_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "automation_id": automation_id,
+                "claim_id": claim_id,
+                "effect_kind": _GITHUB_PR_EFFECT_KIND,
+                "repository": canonical_repository,
+                "universe_id": universe_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    def reconcile_frozen_intent(effect_key: str) -> dict[str, Any]:
+        from tinyassets.storage.external_write_receipts import lookup_receipt
+
+        receipt = lookup_receipt(
+            universe_dir,
+            idempotency_hint=effect_key,
+            sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
+        )
+        receipt_evidence = receipt.get("evidence") if receipt is not None else None
+        reserved_result = (
+            receipt_evidence.get("result")
+            if isinstance(receipt_evidence, dict)
+            else None
+        )
+        if not isinstance(reserved_result, dict) or not isinstance(
+            reserved_result.get("effect_intent_digest"),
+            str,
+        ):
+            return {
+                "status": "failed",
+                "evidence": {"reason": "legacy_intent_reservation_missing_digest"},
+            }
+        return {"status": "succeeded", "evidence": {}}
+
+    def reserve_frozen_intent() -> dict[str, Any]:
+        return execute_replay_safe_effect(
+            universe_dir=universe_dir,
+            effect_key=f"github-pr-intent:{preparation_identity_digest}",
+            sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.intent",
+            run_id=run_id,
+            invoke=lambda: {"effect_intent_digest": effect_intent_digest},
+            reconcile=reconcile_frozen_intent,
+            reservation_evidence={
+                "result": {"effect_intent_digest": effect_intent_digest},
+            },
+        )
+
+    frozen_intent = reserve_frozen_intent()
+    if frozen_intent.get("reason") == "legacy_intent_reservation_missing_digest":
+        frozen_intent = reserve_frozen_intent()
+    if frozen_intent.get("status") != "succeeded":
+        raise ProxyRequestError("cloud GitHub effect intent reservation did not complete")
+    frozen_intent_result = frozen_intent.get("result")
+    if (
+        not isinstance(frozen_intent_result, dict)
+        or frozen_intent_result.get("effect_intent_digest") != effect_intent_digest
+    ):
+        raise PermissionError("cloud GitHub effect intent changed after claim reservation")
+
+    def prepare() -> dict[str, Any]:
+        result = proxy.request("pull_requests:write", prepare_request)
+        if not isinstance(result, dict):
+            raise ProxyRequestError(
+                "cloud GitHub commit preparation returned invalid evidence"
+            )
+        return {
+            **result,
+            "effect_intent_digest": effect_intent_digest,
+            "prepare_request_digest": prepare_request_digest,
+        }
+
+    preparation = execute_replay_safe_effect(
+        universe_dir=universe_dir,
+        effect_key=f"github-pr-prepare:{preparation_identity_digest}",
+        sink=f"{EXTERNAL_WRITE_SINK_GITHUB_PR}.prepare_commit",
+        run_id=run_id,
+        invoke=prepare,
+        reconcile=lambda _effect_key: {
+            "status": "failed",
+            "evidence": {"reason": "content_addressed_prepare_retryable"},
+        },
+        max_failed_retries=1,
+    )
+    if preparation.get("status") != "succeeded":
+        raise ProxyRequestError("cloud GitHub commit preparation did not complete")
+    prepared = preparation.get("result")
+    if not isinstance(prepared, dict):
+        raise ProxyRequestError("cloud GitHub commit preparation returned invalid evidence")
+    if prepared.get("effect_intent_digest") != effect_intent_digest:
+        raise PermissionError("cloud GitHub effect intent changed after claim reservation")
+    intended_head_sha = prepared.get("commit_sha")
+    if refresh_claim_id is not None:
+        refreshed_claim_id = refresh_claim_id()
+        if refreshed_claim_id != claim_id:
+            raise PermissionError("cloud GitHub effect claim changed during preparation")
+    identity = GitHubPullRequestEffectIdentity(
+        universe_id=universe_id,
+        automation_id=automation_id,
+        claim_id=claim_id,
+        repository=canonical_repository,
+        intended_head_sha=str(intended_head_sha or ""),
+    )
+    head_branch = f"tinyassets/cloud-{identity.digest[:24]}"
+    publish_request = {
+        "operation": "publish_pull_request",
+        "repository": canonical_repository,
+        "intended_head_sha": identity.intended_head_sha,
+        "head_branch": head_branch,
+        "base_branch": base_branch,
+        "title": title.strip(),
+        "body": with_github_pr_effect_marker(body, identity),
+        "labels": payload.get("labels") or [],
+        "draft": bool(payload.get("draft", True)),
+    }
+    def invoke() -> dict[str, Any]:
+        try:
+            result = proxy.request("pull_requests:write", publish_request)
+        except AmbiguousProxyOutcome as exc:
+            raise AmbiguousEffectOutcome("GitHub PR outcome is ambiguous") from exc
+        if not isinstance(result, dict):
+            raise ProxyRequestError("cloud GitHub publish returned invalid evidence")
+        return {
+            **result,
+            "repository": identity.repository,
+            "intended_head_sha": identity.intended_head_sha,
+            "effect_digest": identity.digest,
+        }
+
+    return execute_replay_safe_effect(
+        universe_dir=universe_dir,
+        effect_key=f"github-pr:{identity.digest}",
+        sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+        run_id=run_id,
+        invoke=invoke,
+        reconcile=lambda _effect_key: reconcile_github_pull_request_effect(
+            identity,
+            proxy=proxy,
+        ),
+        max_failed_retries=1,
+    )
 
 
 def _env_truthy(name: str) -> bool:
@@ -1070,6 +1320,7 @@ def _materialize_branch(
     commit_message: str,
     capability_token: str,
     edits_json: Any = None,
+    publish_ref: bool = True,
 ) -> dict[str, Any]:
     """Build a remote head branch from ``changes_json`` via the Git Data API.
 
@@ -1270,6 +1521,13 @@ def _materialize_branch(
             "error_kind": "commit_create_failed",
         }
 
+    if not publish_ref:
+        return {
+            "prepared": True,
+            "commit_sha": new_commit_sha,
+            "tree_sha": new_tree_sha,
+        }
+
     # Step 6: create refs/heads/<head_branch>. If it already exists, this
     # is a retry — reuse ONLY when the existing branch points at a commit
     # whose tree matches what we just built (same materialized content);
@@ -1334,6 +1592,165 @@ def _materialize_branch(
             "refusing to force-update"
         ),
         "error_kind": "head_ref_conflict",
+    }
+
+
+def _validate_scoped_change_paths(value: Any, name: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise PermissionError(f"{name} must be an object")
+    for raw_path in value:
+        if not isinstance(raw_path, str):
+            raise PermissionError(f"{name} paths must be strings")
+        path = raw_path.strip()
+        parts = path.split("/")
+        if (
+            not path
+            or path != raw_path
+            or path.startswith("/")
+            or "\\" in path
+            or len(path) > 1024
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(ord(char) < 32 or ord(char) == 127 for char in path)
+        ):
+            raise PermissionError(f"{name} path is not repository-relative")
+
+
+def _prepare_scoped_github_commit(
+    *,
+    request: object,
+    destination: str,
+    capability_token: str,
+) -> dict[str, Any]:
+    """Create unreachable content-addressed Git objects, but no branch ref."""
+    if not isinstance(request, dict) or set(request) != {
+        "operation",
+        "repository",
+        "base_branch",
+        "changes_json",
+        "edits_json",
+        "commit_message",
+    }:
+        raise PermissionError("scoped GitHub prepare request shape is invalid")
+    repository = _repository_from_scoped_destination(destination)
+    if (
+        request["operation"] != "prepare_commit"
+        or _repository_from_scoped_destination(str(request["repository"]))
+        != repository
+    ):
+        raise PermissionError("scoped GitHub prepare repository is outside the grant")
+    base_branch = request["base_branch"]
+    commit_message = request["commit_message"]
+    if (
+        not isinstance(base_branch, str)
+        or not base_branch.strip()
+        or len(base_branch) > 255
+        or not isinstance(commit_message, str)
+        or not commit_message.strip()
+        or len(commit_message) > 4096
+    ):
+        raise PermissionError("scoped GitHub prepare metadata is invalid")
+    _validate_scoped_change_paths(request["changes_json"], "changes_json")
+    _validate_scoped_change_paths(request["edits_json"], "edits_json")
+    result = _materialize_branch(
+        changes_json=request["changes_json"],
+        edits_json=request["edits_json"],
+        destination=repository,
+        base_branch=base_branch,
+        head_branch="tinyassets/prepared-unpublished",
+        commit_message=commit_message.strip(),
+        capability_token=capability_token,
+        publish_ref=False,
+    )
+    if result.get("error"):
+        raise ProxyRequestError("scoped GitHub commit preparation failed")
+    return result
+
+
+def _publish_scoped_github_pull_request(
+    *,
+    request: object,
+    destination: str,
+    capability_token: str,
+) -> dict[str, Any]:
+    """Publish one exact prepared commit and open its marked pull request."""
+    required = {
+        "operation",
+        "repository",
+        "intended_head_sha",
+        "head_branch",
+        "base_branch",
+        "title",
+        "body",
+        "labels",
+        "draft",
+    }
+    if not isinstance(request, dict) or set(request) != required:
+        raise PermissionError("scoped GitHub publish request shape is invalid")
+    repository = _repository_from_scoped_destination(destination)
+    if (
+        request["operation"] != "publish_pull_request"
+        or _repository_from_scoped_destination(str(request["repository"]))
+        != repository
+    ):
+        raise PermissionError("scoped GitHub publish repository is outside the grant")
+    intended_head_sha = str(request["intended_head_sha"]).strip().lower()
+    head_branch = str(request["head_branch"]).strip()
+    if (
+        _GITHUB_SHA_RE.fullmatch(intended_head_sha) is None
+        or not head_branch.startswith("tinyassets/cloud-")
+        or re.fullmatch(r"tinyassets/cloud-[0-9a-f]{24}", head_branch) is None
+    ):
+        raise PermissionError("scoped GitHub publish identity is invalid")
+    body = request["body"]
+    if (
+        not isinstance(body, str)
+        or len(_GITHUB_PR_EFFECT_MARKER_RE.findall(body)) != 1
+        or body.count(_GITHUB_PR_EFFECT_MARKER_FAMILY) != 1
+    ):
+        raise PermissionError("scoped GitHub publish marker is invalid")
+    _created, error = _git_data_api(
+        method="POST",
+        path=f"/repos/{repository}/git/refs",
+        capability_token=capability_token,
+        body={
+            "ref": f"refs/heads/{head_branch}",
+            "sha": intended_head_sha,
+        },
+    )
+    if error is not None:
+        existing, lookup_error = _git_data_api(
+            method="GET",
+            path=f"/repos/{repository}/git/ref/heads/{head_branch}",
+            capability_token=capability_token,
+        )
+        existing_sha = ((existing or {}).get("object") or {}).get("sha")
+        if lookup_error is not None or existing_sha != intended_head_sha:
+            if error.get("http_status") is None:
+                raise AmbiguousProxyOutcome("GitHub branch publish is ambiguous")
+            raise ProxyRequestError("GitHub branch publish was rejected")
+    payload = {
+        "title": request["title"],
+        "body": body,
+        "base_branch": request["base_branch"],
+        "head_branch": head_branch,
+        "labels": request["labels"],
+        "draft": request["draft"],
+    }
+    result = _invoke_github_api_pr_create(
+        payload=payload,
+        destination=repository,
+        capability_token=capability_token,
+    )
+    if result.get("error"):
+        if result.get("outcome_ambiguous"):
+            raise AmbiguousProxyOutcome("GitHub PR publish is ambiguous")
+        raise ProxyRequestError("GitHub PR publish was rejected")
+    return {
+        **result,
+        "head_branch": head_branch,
+        "commit_sha": intended_head_sha,
     }
 
 
@@ -1409,6 +1826,7 @@ def _invoke_github_api_pr_create(
         return {
             "error": f"GitHub API request failed: {exc}",
             "error_kind": "github_api_error",
+            "outcome_ambiguous": True,
         }
     except (TypeError, ValueError) as exc:
         return {
@@ -1439,6 +1857,7 @@ def run_github_pr_effector(
     base_path: str | Path | None = None,
     run_id: str = "",
     dry_run: bool = True,  # retained for signature compat — ignored
+    cloud_effect_session: Any | None = None,
 ) -> dict[str, Any]:
     """Run the GitHub-PR effector for a single node.
 
@@ -1516,6 +1935,45 @@ def run_github_pr_effector(
     raw_hint = packet.get("idempotency_hint")
     if isinstance(raw_hint, str):
         idempotency_hint = raw_hint.strip()
+
+    if cloud_effect_session is not None:
+        from tinyassets.cloud_automation_continuation import (
+            _ClaimedCloudProviderSession,
+        )
+
+        if type(cloud_effect_session) is not _ClaimedCloudProviderSession:
+            return {
+                "error": "cloud GitHub effect session is not service-issued",
+                "error_kind": "cloud_effect_authority_invalid",
+                "matched_output_key": matched_key,
+            }
+        try:
+            result = cloud_effect_session.execute_github_pull_request_effect(
+                packet=packet,
+                run_id=run_id,
+            )
+        except Exception as exc:
+            logger.exception("cloud GitHub effect failed closed")
+            return {
+                "error": "cloud GitHub effect authority or destination is unavailable",
+                "error_kind": "cloud_effect_authority_unavailable",
+                "failure_type": type(exc).__name__,
+                "matched_output_key": matched_key,
+            }
+        evidence = {
+            **result,
+            "phase": "cloud",
+            "destination": destination,
+            "matched_output_key": matched_key,
+        }
+        if result.get("status") != "succeeded":
+            evidence.update(
+                {
+                    "error": "cloud GitHub effect did not complete",
+                    "error_kind": "cloud_effect_failed",
+                }
+            )
+        return evidence
 
     # Phase 1 backward-compat path.
     # A packet without ``destination`` is a Phase 1 packet by definition
@@ -1840,6 +2298,7 @@ def run_effects_for_branch(
     base_path: str | Path | None = None,
     run_id: str = "",
     dry_run: bool | None = None,
+    cloud_effect_session: Any | None = None,
 ) -> dict[str, Any]:
     """Walk every node on ``branch`` with a declared effect, dispatch.
 
@@ -1879,6 +2338,7 @@ def run_effects_for_branch(
                         run_state=run_state,
                         base_path=base_path,
                         run_id=run_id,
+                        cloud_effect_session=cloud_effect_session,
                     )
                 except Exception as exc:  # defensive — never raise
                     logger.exception(

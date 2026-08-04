@@ -322,6 +322,10 @@ class ProviderRouter:
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
         if invocation_carrier is not None:
+            if invocation_carrier.max_tokens < 1:
+                raise PermissionError("armed provider invocation has no positive token budget")
+            if invocation_carrier.max_cost_microunits < 1:
+                raise PermissionError("armed provider invocation has no positive cost budget")
             if cfg.max_tokens is None:
                 cfg = replace(cfg, max_tokens=invocation_carrier.max_tokens)
             elif (

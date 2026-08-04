@@ -970,9 +970,10 @@ def _build_prompt_template_node(
     LLM. Output is stored under the node's first ``output_keys`` entry
     (or ``<node_id>_output`` if none declared).
 
-    When ``llm_policy`` is set the call is routed through
-    ``ProviderRouter.call_with_policy_sync`` if the router is importable;
-    otherwise falls back to the plain ``provider_call`` callable.
+    When ``llm_policy`` is set, an injected caller that owns a
+    ``call_with_policy_sync`` method retains dispatch authority. Ordinary
+    function callers use the shared ``ProviderRouter`` when available and
+    otherwise fall back to the plain ``provider_call`` callable.
     """
 
     output_key = (
@@ -1015,11 +1016,21 @@ def _build_prompt_template_node(
     # accepts it (protects test stubs / older bridges).
     try:
         import inspect as _inspect
+        _bridge_params = _inspect.signature(provider_call).parameters
         _bridge_takes_config = bool(provider_call) and (
-            "config" in _inspect.signature(provider_call).parameters
+            "config" in _bridge_params
+            or any(
+                parameter.kind == parameter.VAR_KEYWORD
+                for parameter in _bridge_params.values()
+            )
         )
     except (ValueError, TypeError):
         _bridge_takes_config = False
+    _injected_policy_caller = (
+        provider_call
+        if callable(getattr(provider_call, "call_with_policy_sync", None))
+        else None
+    )
 
     def _bridge(_p: str, _s: str) -> str:
         if _bridge_takes_config and _node_cfg is not None:
@@ -1179,7 +1190,11 @@ def _build_prompt_template_node(
             elif effective_policy:
                 # Policy-aware path: route through ProviderRouter.call_with_policy_sync
                 try:
-                    _policy_router = _get_shared_router()
+                    _policy_router = (
+                        _injected_policy_caller
+                        if _injected_policy_caller is not None
+                        else _get_shared_router()
+                    )
                     router_providers = getattr(
                         _policy_router, "available_providers", None,
                     )

@@ -6,9 +6,13 @@ import hashlib
 import json
 import math
 import multiprocessing
+import re
 import sqlite3
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -422,6 +426,63 @@ class _TestFixtureCredentialResolver:
         raise RuntimeError("credential reference has no trusted resolver")
 
 
+class _ProductionVaultCredentialResolver:
+    """Resolve one exact connection-ledger reference inside the broker child."""
+
+    __slots__ = ("_destination", "_provider", "_repository", "_universe_dir")
+
+    def __init__(
+        self,
+        *,
+        universe_dir: str | Path,
+        provider: str,
+        destination: str,
+    ) -> None:
+        self._universe_dir = Path(universe_dir)
+        self._provider = provider.strip().lower()
+        self._destination = destination.strip().lower()
+        self._repository = _github_repository_from_destination(self._destination)
+
+    def __call__(self, credential_ref: str) -> str:
+        if self._provider != "github":
+            raise RuntimeError("credential reference has no trusted resolver")
+        expected_reference = f"vault://github/{self._repository}"
+        if credential_ref != expected_reference:
+            raise RuntimeError("credential reference does not match the connection")
+        from tinyassets.credential_vault import resolve_github_token
+
+        credential = resolve_github_token(
+            self._universe_dir,
+            self._repository,
+            purpose="write",
+        )
+        if not credential:
+            raise RuntimeError("credential reference is unavailable")
+        return credential
+
+
+class _TrustedCredentialResolver:
+    """Select fixture or production resolution without an adapter callback."""
+
+    __slots__ = ("_fixture", "_production", "_provider")
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self._provider = str(config["provider"])
+        self._fixture = _TestFixtureCredentialResolver(
+            allow_test_fixtures=bool(config["allow_test_fixtures"]),
+        )
+        self._production = _ProductionVaultCredentialResolver(
+            universe_dir=config["universe_dir"],
+            provider=self._provider,
+            destination=str(config["destination"]),
+        )
+
+    def __call__(self, credential_ref: str) -> str:
+        if self._provider.startswith("test-fixture."):
+            return self._fixture(credential_ref)
+        return self._production(credential_ref)
+
+
 class _TestFixtureNetworkDriver:
     __slots__ = ("_allow_test_fixtures", "_path")
 
@@ -485,6 +546,129 @@ class _TestFixtureNetworkDriver:
         return {"issue_id": 17}
 
 
+def _github_repository_from_destination(destination: str) -> str:
+    normalized = destination.strip().lower().removeprefix("https://")
+    normalized = normalized.removeprefix("http://").strip("/")
+    normalized = normalized.removeprefix("github.com/")
+    parts = normalized.split("/")
+    if (
+        len(parts) != 2
+        or re.fullmatch(r"[\w.-]+/[\w.-]+", normalized) is None
+        or any(part in {".", ".."} for part in parts)
+    ):
+        raise PermissionError("GitHub destination does not identify one repository")
+    return normalized
+
+
+class _ProductionGitHubNetworkDriver:
+    """Trusted credential-bearing GitHub read transport for scoped proxies."""
+
+    __slots__ = ()
+
+    def __call__(
+        self,
+        *,
+        credential: str,
+        provider: str,
+        destination: str,
+        verb: str,
+        request: object,
+    ) -> Any:
+        if provider != "github":
+            raise PermissionError("provider verb has no trusted outbound transport")
+        repository = _github_repository_from_destination(destination)
+        if verb == "pull_requests:write":
+            if not isinstance(request, dict):
+                raise PermissionError("GitHub write request shape is not permitted")
+            requested_repository = str(request.get("repository", "")).strip().lower()
+            if requested_repository != repository:
+                raise PermissionError("GitHub request repository is outside the grant")
+            from tinyassets.effectors.github_pr import (
+                _prepare_scoped_github_commit,
+                _publish_scoped_github_pull_request,
+            )
+
+            operation = request.get("operation")
+            if operation == "prepare_commit":
+                return _prepare_scoped_github_commit(
+                    request=request,
+                    destination=repository,
+                    capability_token=credential,
+                )
+            if operation == "publish_pull_request":
+                return _publish_scoped_github_pull_request(
+                    request=request,
+                    destination=repository,
+                    capability_token=credential,
+                )
+            raise PermissionError("GitHub write operation is not permitted")
+        if verb != "pull_requests:read_for_commit":
+            raise PermissionError("provider verb has no trusted outbound transport")
+        if not isinstance(request, dict) or set(request) != {
+            "repository",
+            "intended_head_sha",
+            "per_page",
+        }:
+            raise PermissionError("GitHub request shape is not permitted")
+        requested_repository = str(request["repository"]).strip().lower()
+        if requested_repository != repository:
+            raise PermissionError("GitHub request repository is outside the grant")
+        intended_head_sha = str(request["intended_head_sha"]).strip().lower()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", intended_head_sha) is None:
+            raise PermissionError("GitHub request commit is invalid")
+        per_page = request["per_page"]
+        if not isinstance(per_page, int) or isinstance(per_page, bool) or not 1 <= per_page <= 100:
+            raise PermissionError("GitHub request page size is invalid")
+        path = (
+            f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
+            + urllib.parse.urlencode({"per_page": per_page})
+        )
+        outbound = urllib.request.Request(
+            f"https://api.github.com{path}",
+            method="GET",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {credential}",
+                "User-Agent": "tinyassets-outbound-broker/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(outbound, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ProxyRequestError("GitHub destination read failed") from exc
+        if not isinstance(payload, list):
+            raise ProxyRequestError("GitHub destination returned an invalid response")
+        return payload
+
+
+class _TrustedNetworkDriver:
+    """Select fixture or production transport entirely inside the broker."""
+
+    __slots__ = ("_fixture", "_production")
+
+    def __init__(self, config: dict[str, Any], runtime_root: Path) -> None:
+        self._fixture = _TestFixtureNetworkDriver(
+            runtime_root,
+            allow_test_fixtures=bool(config["allow_test_fixtures"]),
+        )
+        self._production = _ProductionGitHubNetworkDriver()
+
+    def __call__(self, **kwargs: Any) -> Any:
+        provider = str(kwargs.get("provider", ""))
+        if provider.startswith("test-fixture."):
+            return self._fixture(**kwargs)
+        return self._production(**kwargs)
+
+
 class _JsonlAuditWriter:
     __slots__ = ("_path",)
 
@@ -503,13 +687,8 @@ def _build_credential_broker_dispatch(
     runtime_root.mkdir(parents=True, exist_ok=True)
     broker = CredentialBlindBroker(
         ConnectionLedger(config["ledger_db_path"]),
-        resolve_credential=_TestFixtureCredentialResolver(
-            allow_test_fixtures=config["allow_test_fixtures"],
-        ),
-        network_request=_TestFixtureNetworkDriver(
-            runtime_root,
-            allow_test_fixtures=config["allow_test_fixtures"],
-        ),
+        resolve_credential=_TrustedCredentialResolver(config),
+        network_request=_TrustedNetworkDriver(config, runtime_root),
         audit=_JsonlAuditWriter(str(runtime_root / "audit.jsonl")),
     )
     return broker.dispatch
@@ -880,13 +1059,63 @@ class ConnectionLedger:
         if len(active) != 1:
             raise GrantResolutionError("ambiguous outbound connection grants")
         row = active[0]
+        return self._start_scoped_proxy(
+            grant_id=row["grant_id"],
+            universe_id=universe_id,
+            provider=row["provider"],
+            destination=row["destination"],
+            scopes=tuple(json.loads(row["scopes_json"])),
+        )
+
+    def resolve_exact_scoped_proxy(
+        self,
+        *,
+        universe_id: str,
+        grant_id: str,
+        connection_id: str,
+    ) -> ScopedConnectionProxy:
+        """Resolve one named current grant and connection for the principal."""
+        owner_user_id = self.require_authenticated_principal_id()
+        grant = self.require_active_grant(_required("grant_id", grant_id))
+        resource = self.get_connection(_required("connection_id", connection_id))
+        if resource is None:
+            raise GrantResolutionError("absent outbound connection resource")
+        exact = (
+            grant.connection_id == resource.connection_id,
+            grant.owner_user_id == owner_user_id,
+            grant.universe_id == _required("universe_id", universe_id),
+            resource.owner_user_id == owner_user_id,
+            resource.revoked_at is None,
+        )
+        if not all(exact):
+            raise GrantResolutionError("outbound connection grant identity mismatch")
+        return self._start_scoped_proxy(
+            grant_id=grant.grant_id,
+            universe_id=grant.universe_id,
+            provider=resource.provider,
+            destination=resource.destination,
+            scopes=resource.scopes,
+        )
+
+    def _start_scoped_proxy(
+        self,
+        *,
+        grant_id: str,
+        universe_id: str,
+        provider: str,
+        destination: str,
+        scopes: tuple[str, ...],
+    ) -> ScopedConnectionProxy:
         factory_reference = "credential_broker_v1"
         grant_runtime_id = hashlib.sha256(
-            row["grant_id"].encode("utf-8")
+            grant_id.encode("utf-8")
         ).hexdigest()
         factory_config = {
             "allow_test_fixtures": self._allow_test_fixtures,
             "ledger_db_path": str(self._db_path.resolve()),
+            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
+            "provider": provider,
+            "destination": destination,
             "runtime_root": str(
                 (
                     self._db_path.parent
@@ -903,11 +1132,11 @@ class ConnectionLedger:
                 server_channel,
                 factory_reference,
                 factory_config,
-                row["grant_id"],
-                tuple(json.loads(row["scopes_json"])),
+                grant_id,
+                scopes,
             ),
             daemon=True,
-            name=f"outbound-proxy-{row['grant_id']}",
+            name=f"outbound-proxy-{grant_id}",
         )
         worker.start()
         server_channel.close()
@@ -923,10 +1152,10 @@ class ConnectionLedger:
             worker.join(timeout=1.0)
             raise ProxyRequestError("outbound proxy failed to start")
         return ScopedConnectionProxy(
-            grant_id=row["grant_id"],
-            provider=row["provider"],
-            destination=row["destination"],
-            scopes=tuple(json.loads(row["scopes_json"])),
+            grant_id=grant_id,
+            provider=provider,
+            destination=destination,
+            scopes=scopes,
             _channel=_ProxyChannel(client_channel, worker),
         )
 

@@ -1426,6 +1426,34 @@ def _try_execute_claimed_branch_task(
             )
         except ImportError:
             provider_call = None
+        automation_id = str(
+            getattr(claimed_task, "automation_id", "") or ""
+        ).strip()
+        if is_epoch2 and automation_id:
+            if provider_call is None:
+                return False, "cloud_provider_bridge_unavailable", {
+                    "automation_id": automation_id,
+                    "branch_task_id": str(claimed_task.branch_task_id),
+                }
+            try:
+                from tinyassets.cloud_automation_continuation import (
+                    prepare_claimed_cloud_provider_call,
+                )
+
+                governed_provider_call = prepare_claimed_cloud_provider_call(
+                    base_path,
+                    claimed_task=claimed_task,
+                    daemon_id=daemon_id,
+                    provider_call=provider_call,
+                )
+            except (OSError, PermissionError, ValueError) as exc:
+                return False, "cloud_provider_authority_unavailable", {
+                    "automation_id": automation_id,
+                    "branch_task_id": str(claimed_task.branch_task_id),
+                    "authority_error": str(exc),
+                }
+            if governed_provider_call is not None:
+                provider_call = governed_provider_call
 
         execution_kwargs = {
             "inputs": _branch_task_inputs_for_execution(claimed_task),

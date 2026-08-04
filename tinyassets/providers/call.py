@@ -177,6 +177,7 @@ def _call_router_with_retry(
     system: str,
     config: Any = None,
     universe_context: Any = None,
+    operation: str | None = None,
 ) -> str:
     """Call the installed router with tenacity retry on transient exhaustion.
 
@@ -200,6 +201,8 @@ def _call_router_with_retry(
         kwargs: dict[str, Any] = {}
         if universe_context is not None:
             kwargs["universe_context"] = universe_context
+        if operation is not None:
+            kwargs["operation"] = operation
         if config is not None:
             result = _real_router.call_sync(role, prompt, system, config, **kwargs)
         else:
@@ -218,6 +221,7 @@ def call_provider(
     fallback_response: str | None = None,
     config: Any = None,
     universe_context: Any = None,
+    operation: str | None = None,
 ) -> str:
     """Call an LLM provider with automatic fallback.
 
@@ -243,8 +247,14 @@ def call_provider(
         base.UniverseContext`) threaded through to ``call_sync`` so engine
         preference + vault auth resolve for the given universe instead of the
         process globals.
+    operation:
+        Optional server-owned operation bound to a provider authority carrier.
+        Omit for ordinary unarmed calls.
     """
+    governed = operation is not None
     if _force_mock:
+        if governed:
+            raise PermissionError("governed provider calls cannot use force-mock output")
         if fallback_response is not None:
             return fallback_response
         # Preserve the exact legacy string (callers/tests may assert on it).
@@ -255,7 +265,7 @@ def call_provider(
     if _real_router is not None:
         try:
             return _call_router_with_retry(
-                role, prompt, system, config, universe_context,
+                role, prompt, system, config, universe_context, operation,
             )
         except Exception as e:
             provider_error = e
@@ -263,7 +273,9 @@ def call_provider(
                 "All providers exhausted for role=%s after retries: %s", role, e,
             )
 
-    if fallback_response is not None:
+    if governed and provider_error is not None:
+        raise provider_error
+    if fallback_response is not None and not governed:
         logger.warning(
             "Using fallback response for role=%s (%d chars)",
             role, len(fallback_response),

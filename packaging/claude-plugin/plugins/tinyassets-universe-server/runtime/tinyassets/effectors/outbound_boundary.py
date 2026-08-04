@@ -325,6 +325,8 @@ def execute_replay_safe_effect(
     run_id: str,
     invoke: Any,
     reconcile: Any | None = None,
+    max_failed_retries: int | None = None,
+    reservation_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Journal before fire and reconcile every ambiguous/pending replay."""
     if not effect_key.strip():
@@ -334,6 +336,8 @@ def execute_replay_safe_effect(
         idempotency_hint=effect_key,
         sink=sink,
         run_id=run_id,
+        max_failed_retries=max_failed_retries,
+        reservation_evidence=reservation_evidence,
     )
     status = reservation["status"]
     if status == "duplicate":
@@ -349,8 +353,18 @@ def execute_replay_safe_effect(
             sink=sink,
             run_id=run_id,
             reconcile=reconcile,
-            base_evidence=None,
+            base_evidence=dict(reservation["row"]["evidence"]),
+            track_failed_attempts=max_failed_retries is not None,
         )
+    if status == "retry_exhausted":
+        evidence = dict(reservation["row"]["evidence"])
+        return {
+            **evidence,
+            "status": STATUS_FAILED,
+            "terminal": True,
+            "reason": "retry_limit_exhausted",
+            "replay": True,
+        }
     if status not in ("reserved", "reserved_after_failed"):
         raise RuntimeError(f"effect reservation failed closed: {status}")
 
@@ -361,6 +375,12 @@ def execute_replay_safe_effect(
         run_id=run_id,
         invoke=invoke,
         reconcile=reconcile,
+        base_evidence=(
+            dict(reservation["row"]["evidence"])
+            if status == "reserved_after_failed"
+            else None
+        ),
+        track_failed_attempts=max_failed_retries is not None,
     )
 
 
@@ -373,6 +393,7 @@ def _invoke_reserved_effect(
     invoke: Any,
     reconcile: Any | None,
     base_evidence: dict[str, Any] | None = None,
+    track_failed_attempts: bool = False,
 ) -> dict[str, Any]:
     """Invoke only after the caller atomically acquired the pending journal."""
     preserved = dict(base_evidence or {})
@@ -386,6 +407,7 @@ def _invoke_reserved_effect(
             run_id=run_id,
             reconcile=reconcile,
             base_evidence=preserved,
+            track_failed_attempts=track_failed_attempts,
         )
     except Exception as exc:
         evidence = {
@@ -396,6 +418,10 @@ def _invoke_reserved_effect(
             "error_type": type(exc).__name__,
             "replay": False,
         }
+        if track_failed_attempts:
+            evidence["failed_attempts"] = int(
+                preserved.get("failed_attempts", 0)
+            ) + 1
         finalized = finalize_receipt(
             universe_dir,
             idempotency_hint=effect_key,
@@ -436,6 +462,7 @@ def _reconcile_effect(
     run_id: str,
     reconcile: Any | None,
     base_evidence: dict[str, Any] | None = None,
+    track_failed_attempts: bool = False,
 ) -> dict[str, Any]:
     preserved = dict(base_evidence or {})
     if reconcile is None:
@@ -506,6 +533,10 @@ def _reconcile_effect(
         "reconciled": True,
         "replay": False,
     }
+    if track_failed_attempts and result_status == STATUS_FAILED:
+        evidence["failed_attempts"] = int(
+            preserved.get("failed_attempts", 0)
+        ) + 1
     _persist_reconciliation(
         universe_dir,
         effect_key,

@@ -224,9 +224,19 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
     (
         "isolation-honesty",
         "tinyassets/authoring/sandbox.py",
-        '    os_isolated = bool(probe.get("bwrap_available"))',
-        "    os_isolated = True",
-        [SANDBOX],
+        '        "os_isolated": False,',
+        '        "os_isolated": bool(probe.get("bwrap_available")),',
+        [f"{SANDBOX}::test_positive_host_probe_cannot_admit_authoring_os_isolation"],
+    ),
+    (
+        "service-isolation-gate",
+        "tinyassets/authoring/service.py",
+        "    isolation = authoring_sandbox.require_isolation(policy)",
+        "    isolation = authoring_sandbox.isolation_report()",
+        [
+            f"{SANDBOX}::"
+            "test_positive_host_probe_denies_os_isolation_before_draft_execution"
+        ],
     ),
     (
         "evaluator-chain-coverage",
