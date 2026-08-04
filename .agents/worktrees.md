@@ -2386,6 +2386,17 @@ Notes:
 - Publish/cleanup: one evidence PR; no runtime route, deployment, effect, or production mutation.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-20260803/_PURPOSE.md`.
 
+## 2026-08-03 - Audit custom-agent app-conversation handoffs
+
+- Provider: `codex-gpt5-desktop-handoff`.
+- Branch: `feature/custom-agent-app-conversation-handoff-20260803`.
+- Lane state: Active; audit-only prerequisite for the separately admitted app-conversation successor.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-app-conversation-handoff-20260803`.
+- Purpose: identify the exact current boundary, organization, interlocutor, custody, personification, and runtime seams for one authenticated Slack ingress-to-reply path.
+- Review gate: strict OpenSpec, evidence-backed current-main audit, independent architecture/security review.
+- Publish/cleanup: one audit/fold-forward PR; no runtime, deployment, external-app, secret, or production mutation.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-app-conversation-handoff-20260803/_PURPOSE.md`.
+
 ## 2026-08-03 - Fold back custom-agent activation load evidence
 
 - Provider: `codex-gpt5-desktop`.
