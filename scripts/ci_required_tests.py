@@ -265,10 +265,11 @@ def main() -> int:
     #
     # What that measurement supports, stated no more strongly than it earns:
     #
-    # No REPEATABLE or MATERIAL speedup. Run A was ~16% slower than serial; run
-    # B was 11 seconds faster, which is noise on a ten-minute job. "No speedup
-    # at all" would be wrong — B did beat serial — and the honest reading is
-    # that the two parallel runs bracket serial rather than beating it.
+    # No REPEATABLE speedup. Run A was ~16% slower than serial; run B was 11
+    # seconds (~1.8%) faster, and that was not repeated. "No speedup at all"
+    # would be wrong — B did beat serial — but one run each cannot establish
+    # timing variance, so 11 seconds is reported as the measured delta and NOT
+    # classified as noise. The two parallel runs bracket serial.
     #
     # The failure SETS differ. Cardinalities alone (214 / 219 / 218) prove that
     # much without any node IDs. What it does NOT prove is that the gate's
