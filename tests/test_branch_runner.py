@@ -19,6 +19,11 @@ from tinyassets.branches import (
     NodeDefinition,
 )
 
+#: The universe every run in this file is attributed to. Runs are owned by a
+#: universe, not by a bare actor, so this is registered + ACL-granted in the
+#: fixture and threaded through every `run_branch` call below.
+RUNNER_UNIVERSE = "runner-universe"
+
 
 @pytest.fixture
 def runner_env(tmp_path, monkeypatch, authenticate_request):
@@ -40,6 +45,58 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
         "tinyassets.extensions.admin",
         "tinyassets.extensions.costly",
     ])
+
+    # Branches are run BY universes now, so a run needs a registered universe
+    # the actor may write. Without a `universe_id` run_branch returns
+    # `branch_run_requires_universe`; with an unregistered one it returns
+    # `universe_access_denied` — the ACL grant is the part that is easy to
+    # miss, since registration alone still fails.
+    from tinyassets.daemon_server import (
+        ensure_universe_registered,
+        grant_universe_access,
+    )
+
+    udir = base / RUNNER_UNIVERSE
+    udir.mkdir(parents=True, exist_ok=True)
+    ensure_universe_registered(
+        base, universe_id=RUNNER_UNIVERSE, universe_path=udir,
+    )
+    grant_universe_access(
+        base,
+        universe_id=RUNNER_UNIVERSE,
+        actor_id="tester",
+        permission="write",
+        granted_by="runner_env",
+    )
+
+    from tinyassets import universe_server as us
+
+    importlib.reload(us)
+    yield us, base
+    importlib.reload(us)
+
+
+@pytest.fixture
+def runner_env_anon(tmp_path, monkeypatch):
+    """`runner_env` without a credential — the pre-auth surface.
+
+    Deliberately does NOT request `authenticate_request`, which would flip
+    the provider to the strict credential provider for the whole test. Under
+    strict auth an UNKNOWN action no longer reaches the discovery catalog:
+    the scope layer cannot classify `extensions.flimflam`, so it fail-closes
+    with "No action-scope metadata for extensions.flimflam; refusing gated
+    dispatch" and `available_actions` comes back empty.
+
+    That difference is why this fixture exists. Whether an authenticated
+    caller *should* lose action discovery is a real product question, not
+    one this quarantine sweep gets to answer by rewriting an assertion — see
+    the PR notes. The discovery test keeps running on the path it was
+    written for, which is also the path it was passing on.
+    """
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -58,6 +115,7 @@ def _run_and_wait(us, *, timeout: float = 30.0, **kwargs):
     populated from the terminal state after the worker completes. Tests
     written against the sync-v1 contract use this as a drop-in.
     """
+    kwargs.setdefault("universe_id", RUNNER_UNIVERSE)
     result = _call(us, "run_branch", **kwargs)
     if "run_id" not in result:
         return result
@@ -710,7 +768,8 @@ def test_run_branch_rejects_invalid_branch(runner_env):
     us, _ = runner_env
     bid = _call(us, "create_branch", name="Empty")["branch_def_id"]
     # No nodes → validate() fails
-    result = _call(us, "run_branch", branch_def_id=bid, inputs_json="{}")
+    result = _call(us, "run_branch", branch_def_id=bid, inputs_json="{}",
+                   universe_id=RUNNER_UNIVERSE)
     assert "error" in result
     assert "validation_errors" in result
 
@@ -721,6 +780,7 @@ def test_run_branch_rejects_malformed_inputs_json(runner_env):
     result = _call(
         us, "run_branch",
         branch_def_id=bid, inputs_json="this is not json",
+        universe_id=RUNNER_UNIVERSE,
     )
     assert "error" in result
 
@@ -881,8 +941,15 @@ def test_no_fantasy_domain_import_required(runner_env, monkeypatch):
     assert "summary" in run["output"]
 
 
-def test_unknown_action_catalog_lists_run_actions(runner_env):
-    us, _ = runner_env
+def test_unknown_action_catalog_lists_run_actions(runner_env_anon):
+    """Runs on the ANONYMOUS fixture, deliberately — see its docstring.
+
+    This test was never quarantined; it passed before this file gained a
+    credential. It is about action discovery, not about authorization, so it
+    keeps running on the path it was written for rather than being rewritten
+    to match a different surface.
+    """
+    us, _ = runner_env_anon
     result = _call(us, "flimflam")
     avail = result.get("available_actions", [])
     for action in ("run_branch", "get_run", "list_runs",
@@ -902,7 +969,8 @@ def test_run_branch_returns_markdown_text_channel(runner_env):
     us, _ = runner_env
     bid = _build_recipe_branch(us)
     result = _call(us, "run_branch", branch_def_id=bid,
-                   inputs_json=json.dumps({"raw_recipe": "a"}))
+                   inputs_json=json.dumps({"raw_recipe": "a"}),
+                   universe_id=RUNNER_UNIVERSE)
     assert "text" in result
     assert "queued" in result["text"].lower()
     # Phone-legibility: raw run_id must live in structuredContent, not
@@ -1008,7 +1076,8 @@ def test_run_branch_returns_quickly_with_queued_status(runner_env):
 
     start = time.monotonic()
     result = _call(us, "run_branch", branch_def_id=bid,
-                   inputs_json=json.dumps({"raw_recipe": "a"}))
+                   inputs_json=json.dumps({"raw_recipe": "a"}),
+                   universe_id=RUNNER_UNIVERSE)
     elapsed = time.monotonic() - start
 
     assert result["status"] == "queued"
