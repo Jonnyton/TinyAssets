@@ -7,6 +7,12 @@ The system SHALL represent a requester-owned repository-to-accepted-spec product
 - **WHEN** an owner inspects their active repository-to-spec automation through the live connector
 - **THEN** the response identifies the private universe, repository, accepted spec, Branch, immutable version, Trigger, Goal, evaluator, effects, provider route, and cloud executor that compose it
 
+#### Scenario: Owner creates an automation from a phone chatbot
+- **WHEN** the authenticated owner supplies a repository, accepted-spec reference and exact content, and published Branch version
+- **THEN** the server derives ownership, content digests, evaluator policy, provider binding, destination grant, budgets, and stable activation identity from current requester-owned state
+- **AND** any caller-supplied derived field is treated only as an equality assertion and cannot mint authority
+- **AND** setup fails closed when exact accepted-spec content is absent, even if the caller supplies a previously valid digest
+
 #### Scenario: Privileged drain substrate is absent
 - **WHEN** the cloud automation is activated
 - **THEN** no drain-specific scheduler, maintainer task loop, or repository-specific GitHub Actions controller is required to continue it
@@ -34,18 +40,26 @@ The cloud executor MUST resolve the requester's bound provider authority and exa
 - **THEN** the slice records an authority blocker and performs no model or GitHub effect through another authority source
 
 ### Requirement: Baseline evaluation is typed and tenant-code-free
-Before provider spend, the automation MUST freeze an existing `AcceptanceScenario` identity and version, evaluator chain, input artifact digests, privacy scope, expected evidence, and budgets. The first slice MUST execute only typed deterministic evaluators that run no tenant repository code; shell, repository commands, CI emulation, and external tools MUST fail closed with `sandbox_unavailable` until the distributed-execution owner supplies production confinement with platform secrets absent, exact source staging, bounded resources, cleanup proof, and signed or fenced terminal evidence. Evaluation success MUST NOT grant provider, GitHub, merge, or foldback authority.
+Before provider spend, the automation MUST freeze an existing `AcceptanceScenario` identity and version, evaluator chain, input artifact digests, privacy scope, expected evidence, and budgets. It MUST resolve and re-hash the accepted specification and immutable Branch version from server-held content, and MUST treat the accepted specification reference only as a repository-relative POSIX path. The first slice MUST execute only typed deterministic evaluators that run no tenant repository code; shell, repository commands, CI emulation, and external tools MUST fail closed with `sandbox_unavailable` until the distributed-execution owner supplies production confinement with platform secrets absent, exact source staging, bounded resources, cleanup proof, and signed or fenced terminal evidence. Evaluation success MUST NOT grant provider, GitHub, merge, or foldback authority.
 
 #### Scenario: Typed deterministic baseline is admitted
 - **WHEN** the frozen acceptance scenario uses only admitted deterministic evaluators and its immutable inputs are available
 - **THEN** the evaluator records an immutable receipt bound to the scenario version and input digests before provider execution is considered
+
+#### Scenario: Frozen input is missing or changed
+- **WHEN** the accepted specification or immutable Branch version cannot be resolved or its server-computed digest differs from the frozen definition
+- **THEN** activation fails closed before a Trigger, provider invocation, or external effect is admitted
 
 #### Scenario: Definition requests repository code execution
 - **WHEN** the baseline or evaluator requests a shell command, repository test command, CI emulation, or external tool without the production confinement backend
 - **THEN** admission records `sandbox_unavailable` and performs no tenant code, provider invocation, or external effect
 
 ### Requirement: Continuation and admission are durable and single-flight
-The owning activation, Trigger, epoch-2 task, background attempt, and provider/effect authorities SHALL persist their respective checkpoint, retry, lease, claim, and reservation state, SHALL read exact current repository head before admission, and SHALL allow at most one active slice and one mechanically claimed STATUS/OpenSpec lane for the activation identity across concurrent triggers and worker restarts. A continuously heartbeating epoch-2 task MUST explicitly renew its exact same-audience background-attempt lease before another provider launch; the inert provider receipt identity and conserved total budgets MAY survive rotating derived leases only while every launch transaction revalidates the current task, worker, activation, binding, attempt, and provider authority and proves the task and attempt lease expiries remain equal. Generic provider claim, reservation, and launch APIs MUST reject cloud background-attempt receipts; only the current-authority cloud service path may claim or launch them. An expired provider execution claim MAY advance only through a one-use service grant whose exact current roots are revalidated inside the same provider-ledger write transaction, MUST retain the same receipt and nonce-bound worker/runtime intent, MUST advance its generation without resetting prior reservations or aggregate budgets, and MUST refuse renewal while any launch remains merely reserved. Public claim replay remains stale after expiry. Before its first claim or reservation only, a legacy short-lived cloud receipt MAY migrate to the exact current provider-binding expiry by atomically advancing its receipt generation; any consumed or authority-different receipt MUST fail closed instead. A task heartbeat after expiry, newer task claim, alternate audience, stopped activation, stale binding, or forged renewal grant MUST NOT renew derived authority.
+The owning activation, Trigger, epoch-2 task, background attempt, and provider/effect authorities SHALL persist their respective checkpoint, retry, lease, claim, and reservation state, SHALL read exact current repository head before admission, and SHALL allow at most one active slice and one mechanically claimed STATUS/OpenSpec lane for the activation identity across concurrent triggers and worker restarts. The server SHALL derive that activation identity from the authenticated principal, universe, repository, accepted-spec reference, and Branch lineage; caller labels and immutable-version changes MUST NOT mint alternate activation rows. Every physical fleet worker SHALL derive a distinct restart-stable logical worker identity and SHALL bind its boot-frozen queue descriptor to that exact logical slot. A runtime whose provider family differs from the requester's current provider binding MUST be rejected in the same write transaction that activates or claims work and MUST be revalidated again before admission, provider claim, reservation, and launch. A continuously heartbeating epoch-2 task MUST explicitly renew its exact same-audience background-attempt lease before another provider launch; the inert provider receipt identity and conserved total budgets MAY survive rotating derived leases only while every launch transaction revalidates the current task, worker, activation, binding, attempt, runtime provider, and provider authority and proves the task and attempt lease expiries remain equal. Generic provider claim, reservation, and launch APIs MUST reject cloud background-attempt receipts; only the current-authority cloud service path may claim or launch them. An expired provider execution claim MAY advance only through a one-use service grant whose exact current roots are revalidated inside the same provider-ledger write transaction, MUST retain the same receipt and nonce-bound worker/runtime intent, MUST advance its generation without resetting prior reservations or aggregate budgets, and MUST refuse renewal while any launch remains merely reserved. Public claim replay remains stale after expiry. Before its first claim or reservation only, a legacy short-lived cloud receipt MAY migrate to the exact current provider-binding expiry by atomically advancing its receipt generation; any consumed or authority-different receipt MUST fail closed instead. A task heartbeat after expiry, newer task claim, alternate audience, stopped activation, stale binding, or forged renewal grant MUST NOT renew derived authority.
+
+#### Scenario: Caller aliases cannot fork authority
+- **WHEN** the owner submits the same repository/spec/Branch lineage under different automation labels
+- **THEN** every request resolves to the same server-derived activation identity and competing tray or cloud executor claims remain mutually exclusive on that one record
 
 #### Scenario: Concurrent triggers race
 - **WHEN** two cloud invocations attempt to start the same automation activation
@@ -54,6 +68,11 @@ The owning activation, Trigger, epoch-2 task, background attempt, and provider/e
 #### Scenario: Cloud worker restarts
 - **WHEN** the worker stops after a claim and later restarts
 - **THEN** it resumes or reconciles the same activation and claim identity before any candidate selection
+
+#### Scenario: Multiple physical workers share one owner and universe
+- **WHEN** two workers from one provider or workers from different providers register for the same owner and universe
+- **THEN** each physical worker receives a distinct logical slot and boot descriptor that remains stable only across replacement of that same physical worker
+- **AND** only a runtime matching the requester's provider binding may claim or launch its automation
 
 #### Scenario: A long provider node crosses the original derived lease
 - **WHEN** the same live worker has continuously renewed the epoch-2 task before expiry and requests another governed provider node after the original background-attempt lease

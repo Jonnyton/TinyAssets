@@ -985,6 +985,46 @@ class ConnectionLedger:
             unprompted_action_cap=cap,
         )
 
+    def list_grants(
+        self,
+        *,
+        owner_user_id: str,
+        universe_id: str,
+        active_only: bool = True,
+        limit: int = 100,
+    ) -> list[ConnectionGrant]:
+        """List grants for one exact owner/universe without connection secrets."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM outbound_connection_grants
+                WHERE owner_user_id = ? AND universe_id = ?
+                  AND (? = 0 OR revoked_at IS NULL)
+                ORDER BY grant_id LIMIT ?
+                """,
+                (owner_user_id, universe_id, int(active_only), limit),
+            ).fetchall()
+        result: list[ConnectionGrant] = []
+        for row in rows:
+            cap_payload = row["unprompted_action_cap_json"]
+            result.append(
+                ConnectionGrant(
+                    grant_id=row["grant_id"],
+                    connection_id=row["connection_id"],
+                    owner_user_id=row["owner_user_id"],
+                    universe_id=row["universe_id"],
+                    granted_at=row["granted_at"],
+                    revoked_at=row["revoked_at"],
+                    unprompted_action_cap=(
+                        ActionCap(**json.loads(cap_payload)) if cap_payload else None
+                    ),
+                )
+            )
+        return result
+
     def revoke_grant(self, grant_id: str, *, revoked_at: float | None = None) -> bool:
         timestamp = time.time() if revoked_at is None else revoked_at
         with self._connect() as connection:
