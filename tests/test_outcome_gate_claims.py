@@ -1,12 +1,13 @@
 """Outcome Gates retract, list_claims, and leaderboard behavior.
 
 Covers docs/specs/outcome_gates_phase6.md rollout details:
-- retract: soft-delete, owner/claimant/host authority, reason required.
+- retract: soft-delete, claimant/goal-owner/`retract_gate_claim`-grant
+  authority, reason required.
 - list_claims: one-filter rule, include_retracted, orphan tagging.
 - leaderboard: highest-rung ordering, earliest-claim tiebreak, ignores
   retracted and orphaned claims.
 - goals leaderboard metric=outcome delegation.
-- define_ladder host override.
+- define_ladder `define_gate_ladder`-grant override.
 """
 
 from __future__ import annotations
@@ -16,17 +17,56 @@ import json
 
 import pytest
 
+from tinyassets.storage import CAP_DEFINE_GATE_LADDER, CAP_RETRACT_GATE_CLAIM
+
+# Every scope this file's actions need. `gates.costly` covers `claim` /
+# `claim_from_branch_run`; `gates.admin` covers `retract` / `define_ladder`
+# (see `_GATES_COSTLY_ACTIONS` / `_GATES_ADMIN_ACTIONS` in auth/provider.py).
+#
+# Granting admin+costly here is NOT the vacuous-pass hazard the shared
+# conftest default guards against: no test in this file asserts a *scope*
+# refusal. The refusals it does assert — non-owner retract, non-author
+# define_ladder — live one layer deeper, in market.py's actor/capability
+# check, and are unreachable until the scope gate is satisfied. Withholding
+# the scope made those tests fail on the wrong error and assert nothing
+# about the authority rule they exist to pin.
+_ALICE_SCOPES = [
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
+    "tinyassets.extensions.admin",
+    "tinyassets.gates.read",
+    "tinyassets.gates.write",
+    "tinyassets.gates.costly",
+    "tinyassets.gates.admin",
+    "tinyassets.goals.read",
+    "tinyassets.goals.write",
+]
+
 
 @pytest.fixture
-def gates_env(tmp_path, monkeypatch):
+def gates_env(tmp_path, monkeypatch, authenticate_request):
+    """Temp data root plus an authenticated subject.
+
+    Branch mutation requires a credential-derived subject; without it every
+    action returns `{"error": "Authenticated branch subject required."}` and
+    each test dies on `KeyError: 'branch_def_id'`. Authenticate BEFORE
+    reloading `universe_server`, which rebinds module state.
+
+    Yields the `authenticate_request` callable as its third element so tests
+    can switch acting user. Setting `UNIVERSE_SERVER_USER` no longer does
+    that: `_current_actor` prefers the request identity and only falls back
+    to the env var when there is none, so once this fixture authenticates
+    alice, a `monkeypatch.setenv` user switch is silently ignored.
+    """
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
+    authenticate_request("alice", capabilities=_ALICE_SCOPES)
     from tinyassets import universe_server as us
     importlib.reload(us)
-    yield us, base, monkeypatch
+    yield us, base, authenticate_request
     importlib.reload(us)
 
 
@@ -98,50 +138,85 @@ def test_retract_soft_deletes_claim(gates_env):
     assert result["claim"]["retracted_reason"] == "evidence 404s"
 
 
-def test_retract_by_non_owner_non_claimant_rejected(gates_env, monkeypatch):
-    us, _, _ = gates_env
+def test_retract_by_non_owner_non_claimant_rejected(gates_env):
+    us, _, authn = gates_env
     gid, bid = _seed(us)  # alice owns goal + claims
     _claim(us, bid, "draft_complete", "https://example.com/a")
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
-    importlib.reload(us)
+    authn("mallory", capabilities=_ALICE_SCOPES)
     result = json.loads(us.gates(
         action="retract", branch_def_id=bid, rung_key="draft_complete",
         reason="spite",
     ))
-    assert result["status"] == "rejected"
-    assert "claim author or Goal owner" in result["error"]
+    assert result["status"] == "rejected", (
+        "mallory is neither the claimant nor the goal owner and holds no "
+        f"{CAP_RETRACT_GATE_CLAIM!r} grant, so retract must be refused"
+    )
+    assert "Only the claim author, Goal owner" in result["error"]
 
 
-def test_retract_by_goal_owner_allowed(gates_env, monkeypatch):
-    us, _, _ = gates_env
+def test_retract_by_goal_owner_allowed(gates_env):
+    us, _, authn = gates_env
     gid, bid = _seed(us)  # alice owns goal
     # Bob claims.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    importlib.reload(us)
-    _claim(us, bid, "draft_complete", "https://example.com/a")
-    # Alice (goal owner) retracts.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    importlib.reload(us)
+    authn("bob", capabilities=_ALICE_SCOPES)
+    claim = _claim(us, bid, "draft_complete", "https://example.com/a")
+    # Pin the claimant. Without this the test still passes when the acting
+    # identity never switches (alice claiming her own goal), which proves
+    # nothing about the OWNER-not-claimant path this test exists for.
+    assert claim["claim"]["claimed_by"] == "bob", claim
+    # Alice (goal owner, not the claimant) retracts.
+    authn("alice", capabilities=_ALICE_SCOPES)
     result = json.loads(us.gates(
         action="retract", branch_def_id=bid, rung_key="draft_complete",
         reason="evidence is misleading",
     ))
-    assert result["status"] == "retracted"
+    assert result["status"] == "retracted", result
 
 
-def test_retract_by_host_allowed(gates_env, monkeypatch):
-    us, _, _ = gates_env
-    gid, bid = _seed(us)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    importlib.reload(us)
-    _claim(us, bid, "draft_complete", "https://example.com/a")
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
-    importlib.reload(us)
+def test_retract_by_capability_grant_allowed(gates_env, monkeypatch):
+    """A third party with the explicit grant may retract.
+
+    Renamed from `test_retract_by_host_allowed`: the override is no longer a
+    magic `host` username. `_current_actor_has_capability` runs the actor id
+    through `resolve_permission`, which decides purely on the presented
+    grants (`UNIVERSE_SERVER_CAPABILITIES`) and ignores who the actor is. The
+    old test set `UNIVERSE_SERVER_USER=host` and passed only because the
+    fixture's own subject was still the owner — it proved nothing about the
+    override. `carol` here is deliberately neither claimant nor goal owner,
+    so the grant is the only thing that can allow this.
+    """
+    us, _, authn = gates_env
+    gid, bid = _seed(us)  # alice owns the goal
+    authn("bob", capabilities=_ALICE_SCOPES)
+    claim = _claim(us, bid, "draft_complete", "https://example.com/a")
+    assert claim["claim"]["claimed_by"] == "bob", claim
+    authn("carol", capabilities=_ALICE_SCOPES)
+    monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", CAP_RETRACT_GATE_CLAIM)
     result = json.loads(us.gates(
         action="retract", branch_def_id=bid, rung_key="draft_complete",
-        reason="host override",
+        reason="moderation override",
     ))
-    assert result["status"] == "retracted"
+    assert result["status"] == "retracted", result
+
+
+def test_retract_by_third_party_without_grant_rejected(gates_env, monkeypatch):
+    """The mirror of the test above: same actor, grant withheld.
+
+    Without this pair, `test_retract_by_capability_grant_allowed` cannot
+    distinguish "the grant worked" from "retract stopped checking authority".
+    """
+    us, _, authn = gates_env
+    gid, bid = _seed(us)
+    authn("bob", capabilities=_ALICE_SCOPES)
+    claim = _claim(us, bid, "draft_complete", "https://example.com/a")
+    assert claim["claim"]["claimed_by"] == "bob", claim
+    authn("carol", capabilities=_ALICE_SCOPES)
+    monkeypatch.delenv("UNIVERSE_SERVER_CAPABILITIES", raising=False)
+    result = json.loads(us.gates(
+        action="retract", branch_def_id=bid, rung_key="draft_complete",
+        reason="no grant",
+    ))
+    assert result["status"] == "rejected", result
 
 
 def test_reclaim_after_retract_reactivates(gates_env):
@@ -342,18 +417,36 @@ def test_goals_leaderboard_unknown_metric_lists_outcome(gates_env):
 # ─── define_ladder host override ───────────────────────────────────────
 
 
-def test_define_ladder_host_override(gates_env, monkeypatch):
-    us, _, _ = gates_env
+def test_define_ladder_capability_override(gates_env, monkeypatch):
+    """Same rename as retract: the override is `define_gate_ladder`, not a
+    `host` username. `dave` is not the goal author, so only the grant can
+    allow this."""
+    us, _, authn = gates_env
     gid, _ = _seed(us)  # alice owns
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
-    importlib.reload(us)
+    authn("dave", capabilities=_ALICE_SCOPES)
+    monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", CAP_DEFINE_GATE_LADDER)
     new_ladder = [{"rung_key": "only", "name": "Only", "description": ""}]
     result = json.loads(us.gates(
         action="define_ladder",
         goal_id=gid, ladder=json.dumps(new_ladder),
     ))
-    assert result["status"] == "defined"
+    assert result["status"] == "defined", result
     assert [r["rung_key"] for r in result["gate_ladder"]] == ["only"]
+
+
+def test_define_ladder_non_author_without_grant_rejected(gates_env, monkeypatch):
+    """Mirror of the override test — without it, the one above cannot tell
+    "the grant worked" from "define_ladder stopped checking authorship"."""
+    us, _, authn = gates_env
+    gid, _ = _seed(us)  # alice owns
+    authn("dave", capabilities=_ALICE_SCOPES)
+    monkeypatch.delenv("UNIVERSE_SERVER_CAPABILITIES", raising=False)
+    new_ladder = [{"rung_key": "only", "name": "Only", "description": ""}]
+    result = json.loads(us.gates(
+        action="define_ladder",
+        goal_id=gid, ladder=json.dumps(new_ladder),
+    ))
+    assert result["status"] == "rejected", result
 
 
 # ─── goals leaderboard outcome gated-off fallback (Phase 6.2.1) ───────
