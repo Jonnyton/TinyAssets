@@ -2450,3 +2450,14 @@ Notes:
 - Purpose: sync/archive the landed mapping capability, retire its active claim, and advance the V1 monitor to custody issuance.
 - Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
 - Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
+
+## 2026-08-04 - Issue founder-mapped app custody grant handoff
+
+- Provider: `codex-gpt5-desktop-custody`.
+- Branch: `feature/custom-agent-custody-issuer-20260804`.
+- Lane state: Active; depends on mapping PR #2256 merge and packaged custody mirror handoff.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-custody-issuer-20260804`.
+- Purpose: resolve one current founder app mapping into a signed, content-free custody grant handoff; no opaque mint, route, reply, runtime, MCP handle, or production side effect.
+- Review gate: strict OpenSpec, focused custody/authority tests, adjacent regression suite, and independent exact-head security review.
+- Publish/cleanup: one dark prerequisite PR; sync/archive only after merge and custody mirror ownership is available.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-custody-issuer-20260804/_PURPOSE.md`.
