@@ -434,6 +434,27 @@ def test_generic_authority_references_require_nominal_domain_prefixes(
         parser(payload)
 
 
+def test_universe_id_accepts_the_serial_prefix_production_actually_mints() -> None:
+    """A real universe id must be admissible, not just the fixture spelling.
+
+    Production mints universe ids as ``u-`` + a lowercase Crockford ULID via
+    ``tinyassets.ids.UNIVERSE_ID_PREFIX``, but every fixture in this module
+    spells them ``universe_main``. The nominal-prefix allowlist carried
+    ``universe_`` and not ``u-``, so it rejected every REAL universe while this
+    suite stayed green — which blocked cloud-automation creation in production
+    with ``universe_id must be a nominal non-bearer reference`` (2026-08-04).
+    """
+    from tinyassets.ids import UNIVERSE_ID_PREFIX
+
+    live_universe_id = f"{UNIVERSE_ID_PREFIX}01kxm1vszd8hwp7em418asq8h9"
+    payload = _binding_payload()
+    payload["universe_id"] = live_universe_id
+
+    binding = BackgroundBranchBinding.from_dict(payload)
+
+    assert binding.universe_id == live_universe_id
+
+
 @pytest.mark.parametrize("revision", ["04", "-1", "latest", "xoxb-123-secret"])
 def test_source_revision_is_a_canonical_decimal_generation(revision: str) -> None:
     payload = _binding_payload()
