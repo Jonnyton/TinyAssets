@@ -85,8 +85,9 @@ class AppConversationAuthority:
         try:
             record = self.mapping.resolve(event)
             registered_path, platform_root = self.storage_resolver(record)
-            issued_at = _timestamp(self.clock())
-            expires_at = _timestamp(self.clock() + ttl_seconds)
+            now = self.clock()
+            issued_at = _timestamp(now)
+            expires_at = _timestamp(now + ttl_seconds)
             evidence = ConversationCustodyGrantEvidence(
                 action=action,
                 authority_key_id=self.authority_key_id,
