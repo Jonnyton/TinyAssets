@@ -2374,3 +2374,14 @@ Notes:
 - Review gate: strict OpenSpec, diff check, exact merge/check receipt.
 - Publish/cleanup: coordination-only PR, then remove both merged activation worktrees when clean.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-foldback-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Prove custom-agent activation cross-process recovery
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/agent-runtime-activation-load-20260803`.
+- Lane state: Active; exact STATUS claim for the next local task 5.1 evidence slice.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-20260803`.
+- Purpose: prove process-level activation convergence, restart replay, and revoked-grant denial without claiming cloud deployment.
+- Review gate: shaped-load tests, authority regressions, strict OpenSpec, independent exact-head review, hosted CI.
+- Publish/cleanup: one evidence PR; no runtime route, deployment, effect, or production mutation.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-20260803/_PURPOSE.md`.
