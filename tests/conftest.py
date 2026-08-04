@@ -58,7 +58,14 @@ class _CredentialSubjectProvider(AuthProvider):
         self._identities_by_token[token] = Identity(
             user_id=subject,
             username=f"{subject}-display",
-            capabilities=list(capabilities or _DEFAULT_TEST_CAPABILITIES),
+            # `is None`, NOT `or`: an explicit empty list is falsy, so `or`
+            # would silently hand a test that asked for NO capabilities the
+            # full default set — turning an authorization-refusal test into a
+            # vacuous pass, which is the exact hazard this parameter exists to
+            # avoid. Pinned by test_credential_capabilities.py.
+            capabilities=list(
+                _DEFAULT_TEST_CAPABILITIES if capabilities is None else capabilities
+            ),
         )
         return token
 
