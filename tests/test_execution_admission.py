@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError, fields
+from pathlib import Path
 
 import pytest
 
@@ -15,8 +17,10 @@ from tinyassets.execution_admission import (
     ExecutionWorkload,
     IsolationGuarantee,
     OpaqueRequirementBinding,
+    SourceWorkspaceProjection,
     derive_inference_requirement,
     derive_source_requirement,
+    derive_source_workspace_projection,
     isolation_guarantees_satisfy,
 )
 
@@ -49,6 +53,21 @@ def _bindings() -> dict[str, OpaqueRequirementBinding]:
         "credential_requirement": _binding("credential", "5"),
         "authority_evidence": _binding("authority", "6"),
     }
+
+
+def _derive_source_projection(
+    *,
+    approved_source: bytes = b"result = inputs['value'] + 1",
+    declared_inputs: object = None,
+    **unexpected: object,
+) -> SourceWorkspaceProjection:
+    if declared_inputs is None:
+        declared_inputs = {"value": 41}
+    return derive_source_workspace_projection(
+        approved_source=approved_source,
+        declared_inputs=declared_inputs,
+        **unexpected,  # type: ignore[arg-type,call-arg]
+    )
 
 
 @pytest.mark.parametrize(
@@ -238,3 +257,104 @@ def test_execution_admission_error_rejects_unknown_reason_mutations() -> None:
     for unknown_reason in ("unknown", "backend_timeout", "BACKEND_UNAVAILABLE", ""):
         with pytest.raises(ValueError, match="unknown execution admission reason"):
             ExecutionAdmissionError(reason=unknown_reason)
+
+
+def test_source_workspace_projection_contains_only_source_and_canonical_json_inputs() -> None:
+    projection = _derive_source_projection(
+        approved_source=b"result = inputs['label']",
+        declared_inputs={
+            "nested": {"enabled": True},
+            "label": "caf\N{LATIN SMALL LETTER E WITH ACUTE}",
+        },
+    )
+
+    assert [field.name for field in fields(projection)] == [
+        "approved_source",
+        "declared_inputs_json",
+    ]
+    assert projection.approved_source == b"result = inputs['label']"
+    assert projection.declared_inputs_json == (
+        b'{"label":"caf\\u00e9","nested":{"enabled":true}}'
+    )
+
+
+def test_source_workspace_projection_defensively_freezes_nested_inputs() -> None:
+    declared_inputs = {"nested": {"items": [1, 2]}}
+    projection = _derive_source_projection(declared_inputs=declared_inputs)
+
+    declared_inputs["nested"]["items"].append(3)  # type: ignore[index,union-attr]
+
+    assert json.loads(projection.declared_inputs_json) == {
+        "nested": {"items": [1, 2]}
+    }
+    with pytest.raises(FrozenInstanceError):
+        projection.approved_source = b"lowered"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("approved_source", (b"", "source", bytearray(b"source")))
+def test_source_workspace_projection_requires_non_empty_approved_source_bytes(
+    approved_source: object,
+) -> None:
+    with pytest.raises(ValueError, match="approved_source"):
+        _derive_source_projection(approved_source=approved_source)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "declared_inputs",
+    (
+        [],
+        {"path": Path("caller-selected")},
+        {"tuple": (1, 2)},
+        {1: "non-string-key"},
+        {"not-finite": float("nan")},
+    ),
+)
+def test_source_workspace_projection_requires_a_closed_json_object(
+    declared_inputs: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="JSON object"):
+        _derive_source_projection(declared_inputs=declared_inputs)
+
+
+@pytest.mark.parametrize(
+    "path_field",
+    (
+        "source_path",
+        "universe_root",
+        "repository_root",
+        "working_directory",
+        "home",
+        "auth_home",
+        "credential_path",
+        "vault_path",
+        "ambient_data_root",
+    ),
+)
+def test_source_workspace_projection_rejects_caller_selected_host_paths(
+    path_field: str,
+) -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        _derive_source_projection(**{path_field: "C:/caller-selected"})
+
+
+def test_source_workspace_projection_does_not_capture_ambient_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ambient_roots = {
+        "TINYASSETS_UNIVERSE": "C:/ambient/universe",
+        "TINYASSETS_DATA_DIR": "C:/ambient/data",
+        "HOME": "C:/ambient/home",
+        "CODEX_HOME": "C:/ambient/codex-auth",
+        "CLAUDE_CONFIG_DIR": "C:/ambient/claude-auth",
+    }
+    for name, value in ambient_roots.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(tmp_path)
+
+    projection = _derive_source_projection(declared_inputs={"value": 41})
+    projected_bytes = projection.approved_source + projection.declared_inputs_json
+
+    repository_root = Path(__file__).resolve().parents[1]
+    for root in (*ambient_roots.values(), str(tmp_path), str(repository_root)):
+        assert root.encode() not in projected_bytes

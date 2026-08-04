@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import re
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -11,6 +13,29 @@ from typing import Any, final
 from tinyassets.exceptions import FantasyAuthorError
 
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _is_closed_json_value(value: object, ancestors: set[int]) -> bool:
+    if value is None or type(value) in {bool, int, str}:
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) not in {dict, list}:
+        return False
+
+    marker = id(value)
+    if marker in ancestors:
+        return False
+    ancestors.add(marker)
+    try:
+        if type(value) is list:
+            return all(_is_closed_json_value(item, ancestors) for item in value)
+        return all(
+            type(key) is str and _is_closed_json_value(item, ancestors)
+            for key, item in value.items()
+        )
+    finally:
+        ancestors.remove(marker)
 
 
 class ExecutionAdmissionReason(StrEnum):
@@ -111,6 +136,52 @@ class OpaqueRequirementBinding:
             raise ValueError("ref must be a non-empty opaque string")
         if type(self.digest) is not str or _SHA256_RE.fullmatch(self.digest) is None:
             raise ValueError("digest must be a canonical sha256 digest")
+
+
+@final
+@dataclass(frozen=True, slots=True, init=False)
+class SourceWorkspaceProjection:
+    """Closed source-execution bytes with no host filesystem projection."""
+
+    approved_source: bytes
+    declared_inputs_json: bytes
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("SourceWorkspaceProjection requires trusted derivation")
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("SourceWorkspaceProjection cannot be subclassed")
+
+
+def derive_source_workspace_projection(
+    *,
+    approved_source: bytes,
+    declared_inputs: object,
+) -> SourceWorkspaceProjection:
+    """Freeze approved source and declared JSON-object inputs without host paths."""
+
+    if type(approved_source) is not bytes or not approved_source:
+        raise ValueError("approved_source must be non-empty bytes")
+    if type(declared_inputs) is not dict or not _is_closed_json_value(
+        declared_inputs,
+        set(),
+    ):
+        raise ValueError("declared_inputs must be a closed JSON object")
+
+    projection = object.__new__(SourceWorkspaceProjection)
+    object.__setattr__(projection, "approved_source", approved_source)
+    object.__setattr__(
+        projection,
+        "declared_inputs_json",
+        json.dumps(
+            declared_inputs,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8"),
+    )
+    return projection
 
 
 @final
@@ -223,8 +294,10 @@ __all__ = [
     "IsolationGuarantee",
     "OS_ISOLATED_GUARANTEES",
     "OpaqueRequirementBinding",
+    "SourceWorkspaceProjection",
     "VM_ISOLATED_GUARANTEES",
     "derive_inference_requirement",
+    "derive_source_workspace_projection",
     "derive_source_requirement",
     "isolation_guarantees_satisfy",
 ]
