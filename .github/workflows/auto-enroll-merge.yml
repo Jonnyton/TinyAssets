@@ -55,7 +55,20 @@ jobs:
 
       - name: Enable auto-merge
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Merge attribution is what gates the whole deploy chain. A merge
+          # attributed to the default GITHUB_TOKEN raises no `push` on main,
+          # so `build-image` never fires and `deploy-prod` never chains from
+          # it — the "merged is not deployed" class (hard rule 14). Measured
+          # 2026-08-04: PR #2259 (app-merged) produced no build and needed a
+          # manual dispatch; PR #2260 (human-merged) built and deployed
+          # unattended, one hour apart, same workflow. See
+          # docs/decisions/ADR-004-merge-attribution-and-the-deploy-gap.md.
+          #
+          # `||` falls back when the secret is absent: an unset secret is the
+          # empty string, which is falsy, so this is a NO-OP until the
+          # credential exists and enrollment keeps behaving exactly as it
+          # does today. Pinned by tests/test_auto_enroll_merge_workflow.py.
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN || github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         shell: bash
