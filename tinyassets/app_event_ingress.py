@@ -10,6 +10,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable
 
 from tinyassets.storage.app_events import (
@@ -19,6 +20,7 @@ from tinyassets.storage.app_events import (
 
 _SLACK_SIGNATURE = re.compile(r"v0=[0-9a-f]{64}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9._-]+\Z")
+_AUTHENTICATION_SEAL = object()
 
 
 class AppEventAuthenticationError(PermissionError):
@@ -29,7 +31,7 @@ class AppEventEnvelopeError(ValueError):
     """An authenticated request did not contain an admissible event."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, init=False)
 class AuthenticatedAppEvent:
     """Transient provider evidence; this is not TinyAssets user authority."""
 
@@ -39,9 +41,46 @@ class AuthenticatedAppEvent:
     event_type: str
     api_app_id: str
     team_id: str
+    external_sender_id: str
     request_timestamp: int
     body_sha256: str
     payload: Mapping[str, Any] = field(repr=False, compare=False)
+    _seal: object = field(repr=False, compare=False)
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        installation_id: str,
+        external_event_id: str,
+        event_type: str,
+        api_app_id: str,
+        team_id: str,
+        external_sender_id: str,
+        request_timestamp: int,
+        body_sha256: str,
+        payload: Mapping[str, Any],
+        _seal: object,
+    ) -> None:
+        if _seal is not _AUTHENTICATION_SEAL:
+            raise TypeError("AuthenticatedAppEvent may only be created by a verifier")
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "installation_id", installation_id)
+        object.__setattr__(self, "external_event_id", external_event_id)
+        object.__setattr__(self, "event_type", event_type)
+        object.__setattr__(self, "api_app_id", api_app_id)
+        object.__setattr__(self, "team_id", team_id)
+        object.__setattr__(self, "external_sender_id", external_sender_id)
+        object.__setattr__(self, "request_timestamp", request_timestamp)
+        object.__setattr__(self, "body_sha256", body_sha256)
+        object.__setattr__(self, "payload", _freeze_json(payload))
+        object.__setattr__(self, "_seal", _seal)
+
+
+def is_authenticated_app_event(value: object) -> bool:
+    """Return whether ``value`` carries this process's verifier seal."""
+
+    return isinstance(value, AuthenticatedAppEvent) and value._seal is _AUTHENTICATION_SEAL
 
 
 @dataclass(frozen=True)
@@ -162,6 +201,11 @@ class SlackRequestVerifier:
         if not isinstance(payload, dict):
             raise AppEventEnvelopeError("Slack event payload must be an object")
         event_type = _envelope_identifier(payload.get("type"), "event.type")
+        sender = payload.get("user", "")
+        if sender == "":
+            external_sender_id = ""
+        else:
+            external_sender_id = _envelope_identifier(sender, "event.user")
 
         return AuthenticatedAppEvent(
             provider="slack",
@@ -170,9 +214,11 @@ class SlackRequestVerifier:
             event_type=event_type,
             api_app_id=api_app_id,
             team_id=team_id,
+            external_sender_id=external_sender_id,
             request_timestamp=request_timestamp,
             body_sha256=f"sha256:{hashlib.sha256(raw_body).hexdigest()}",
             payload=payload,
+            _seal=_AUTHENTICATION_SEAL,
         )
 
 
@@ -234,3 +280,13 @@ def _envelope_identifier(value: object, name: str) -> str:
         return _identifier(value, name)
     except ValueError as exc:
         raise AppEventEnvelopeError(str(exc)) from exc
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_json(nested) for key, nested in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_freeze_json(item) for item in value)
+    return value
