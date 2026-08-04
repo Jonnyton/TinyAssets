@@ -19,6 +19,7 @@ from tinyassets.storage.cloud_automation_continuation import (
     SQLiteCloudAutomationContinuationStore,
 )
 from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
+from tinyassets.storage.cloud_automation_inputs import stage_accepted_spec
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 from tinyassets.user_owned_cloud_automation import (
@@ -312,6 +313,13 @@ def cloud_automations(
                 universe_id=uid,
             )
             definition = RepositorySpecWorkDefinition.from_dict(server_definition)
+            if "accepted_spec_content" in document:
+                stage_accepted_spec(
+                    _base_path(),
+                    accepted_spec_ref=definition.accepted_spec_ref,
+                    content=document["accepted_spec_content"],
+                    expected_digest=definition.accepted_spec_digest,
+                )
             operator = document.get("operator")
             if not isinstance(operator, dict):
                 operator = {}

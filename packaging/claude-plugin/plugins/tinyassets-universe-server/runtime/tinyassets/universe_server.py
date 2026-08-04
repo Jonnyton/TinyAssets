@@ -671,6 +671,7 @@ def write_graph(
         payload_json: Agent definition, portable import, or private binding JSON.
             For target=automation operation=create, pass
             {"definition": {<RepositorySpecWorkDefinition fields>},
+            "accepted_spec_content": "<exact accepted spec text>",
             "cadence_seconds": 300, "operator": {"display_name": "...",
             "soul_text": "user-authored operating principles"}}. The server
             derives principal_id and universe_id from authenticated context;

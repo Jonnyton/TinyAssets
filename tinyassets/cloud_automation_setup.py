@@ -37,6 +37,7 @@ from tinyassets.storage.cloud_automation_continuation import (
     SQLiteCloudAutomationContinuationStore,
 )
 from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
+from tinyassets.storage.cloud_automation_inputs import load_accepted_spec
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 from tinyassets.user_owned_cloud_automation import (
@@ -119,6 +120,11 @@ def prepare_cloud_automation(
         raise ValueError("clock must return a timezone-aware datetime")
     now = now.astimezone(timezone.utc)
 
+    load_accepted_spec(
+        root,
+        accepted_spec_ref=definition.accepted_spec_ref,
+        expected_digest=definition.accepted_spec_digest,
+    )
     admit_work_definition(definition, repository_spec_baseline_scenario())
 
     provider_store = SQLiteProviderWorkAuthorityStore(root, clock=lambda: now)

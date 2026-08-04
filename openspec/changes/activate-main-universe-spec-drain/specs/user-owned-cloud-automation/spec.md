@@ -34,11 +34,15 @@ The cloud executor MUST resolve the requester's bound provider authority and exa
 - **THEN** the slice records an authority blocker and performs no model or GitHub effect through another authority source
 
 ### Requirement: Baseline evaluation is typed and tenant-code-free
-Before provider spend, the automation MUST freeze an existing `AcceptanceScenario` identity and version, evaluator chain, input artifact digests, privacy scope, expected evidence, and budgets. The first slice MUST execute only typed deterministic evaluators that run no tenant repository code; shell, repository commands, CI emulation, and external tools MUST fail closed with `sandbox_unavailable` until the distributed-execution owner supplies production confinement with platform secrets absent, exact source staging, bounded resources, cleanup proof, and signed or fenced terminal evidence. Evaluation success MUST NOT grant provider, GitHub, merge, or foldback authority.
+Before provider spend, the automation MUST freeze an existing `AcceptanceScenario` identity and version, evaluator chain, input artifact digests, privacy scope, expected evidence, and budgets. It MUST resolve and re-hash the accepted specification and immutable Branch version from server-held content, and MUST treat the accepted specification reference only as a repository-relative POSIX path. The first slice MUST execute only typed deterministic evaluators that run no tenant repository code; shell, repository commands, CI emulation, and external tools MUST fail closed with `sandbox_unavailable` until the distributed-execution owner supplies production confinement with platform secrets absent, exact source staging, bounded resources, cleanup proof, and signed or fenced terminal evidence. Evaluation success MUST NOT grant provider, GitHub, merge, or foldback authority.
 
 #### Scenario: Typed deterministic baseline is admitted
 - **WHEN** the frozen acceptance scenario uses only admitted deterministic evaluators and its immutable inputs are available
 - **THEN** the evaluator records an immutable receipt bound to the scenario version and input digests before provider execution is considered
+
+#### Scenario: Frozen input is missing or changed
+- **WHEN** the accepted specification or immutable Branch version cannot be resolved or its server-computed digest differs from the frozen definition
+- **THEN** activation fails closed before a Trigger, provider invocation, or external effect is admitted
 
 #### Scenario: Definition requests repository code execution
 - **WHEN** the baseline or evaluator requests a shell command, repository test command, CI emulation, or external tool without the production confinement backend

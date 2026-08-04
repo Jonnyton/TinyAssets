@@ -2361,7 +2361,10 @@ def _build_branch_text(branch: Any, *, truncated: bool) -> str:
 
 
 def _ext_branch_build(kwargs: dict[str, Any]) -> str:
-    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+    from tinyassets.daemon_server import (
+        create_branch_definition_once,
+        save_branch_definition,
+    )
 
     if _request_branch_actor() is None:
         return json.dumps({"error": "Authenticated branch subject required."})
@@ -2466,13 +2469,12 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     idempotent_replay = False
     existing = None
     if request_id:
-        try:
-            existing = get_branch_definition(
-                _base_path(),
-                branch_def_id=branch.branch_def_id,
-            )
-        except (KeyError, FileNotFoundError):
-            existing = None
+        saved, created = create_branch_definition_once(
+            _base_path(),
+            branch_def=branch.to_dict(),
+        )
+        if not created:
+            existing = saved
     if existing is not None:
         existing = _BD.from_dict(existing).to_dict()
         immutable_fields = (
@@ -2518,7 +2520,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             )
         saved = existing
         idempotent_replay = True
-    else:
+    elif not request_id:
         saved = save_branch_definition(_base_path(), branch_def=branch.to_dict())
     persisted = _BD.from_dict(saved)
     truncated = len(persisted.node_defs) > 12

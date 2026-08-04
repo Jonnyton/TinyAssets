@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -18,6 +20,7 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
 NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
+ACCEPTED_SPEC_CONTENT = "# Accepted repository specification\n"
 
 
 def _baseline_scenario() -> AcceptanceScenario:
@@ -102,7 +105,11 @@ def _seed(tmp_path) -> None:
     )
 
 
-def _seed_setup_authority(tmp_path) -> RepositorySpecWorkDefinition:
+def _seed_setup_authority(
+    tmp_path,
+    *,
+    stage_spec: bool = True,
+) -> RepositorySpecWorkDefinition:
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.branches import (
         BranchDefinition,
@@ -111,6 +118,7 @@ def _seed_setup_authority(tmp_path) -> RepositorySpecWorkDefinition:
         NodeDefinition,
     )
     from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+    from tinyassets.storage.cloud_automation_inputs import stage_accepted_spec
 
     node = NodeDefinition(
         node_id="n1",
@@ -157,6 +165,9 @@ def _seed_setup_authority(tmp_path) -> RepositorySpecWorkDefinition:
     )
     assert installed.record is not None
     raw = _definition().to_dict()
+    raw["accepted_spec_digest"] = (
+        f"sha256:{hashlib.sha256(ACCEPTED_SPEC_CONTENT.encode('utf-8')).hexdigest()}"
+    )
     raw["provider_binding_id"] = installed.record.binding_id
     raw["branch_version_id"] = version.branch_version_id
     raw["branch_content_digest"] = f"sha256:{version.content_hash}"
@@ -165,6 +176,13 @@ def _seed_setup_authority(tmp_path) -> RepositorySpecWorkDefinition:
         raw["branch_content_digest"],
     ]
     definition = RepositorySpecWorkDefinition.from_dict(raw)
+    if stage_spec:
+        stage_accepted_spec(
+            tmp_path,
+            accepted_spec_ref=definition.accepted_spec_ref,
+            content=ACCEPTED_SPEC_CONTENT,
+            expected_digest=definition.accepted_spec_digest,
+        )
     ledger = ConnectionLedger(
         tmp_path / "outbound.db",
         verify_authenticated_principal=lambda: "acct_alice",
@@ -492,6 +510,71 @@ def test_phone_branch_create_replays_one_idempotent_definition(
     assert conflict["error"] == "branch_idempotency_conflict"
 
 
+def test_concurrent_phone_branch_create_has_one_definition_winner(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets import universe_server as server
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import initialize_author_server
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        permissions,
+        "current_request_actor_id",
+        lambda: "acct_alice",
+    )
+    initialize_author_server(tmp_path)
+    base = {
+        "name": "Repository loop",
+        "entry_point": "ready",
+        "node_defs": [
+            {
+                "node_id": "ready",
+                "display_name": "Ready",
+                "prompt_template": "Apply one accepted specification slice.",
+            }
+        ],
+        "edges": [
+            {"from": "START", "to": "ready"},
+            {"from": "ready", "to": "END"},
+        ],
+        "state_schema": [{"name": "result", "type": "str"}],
+    }
+    candidates = [
+        {**base, "description": description}
+        for description in ("definition-a", "definition-b")
+        for _index in range(4)
+    ]
+
+    def create(spec: dict[str, object]) -> dict[str, object]:
+        return json.loads(
+            server.write_graph(
+                target="branch",
+                operation="create",
+                payload_json=json.dumps(spec),
+                idempotency_key="request_phone_branch_concurrent_0001",
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(create, candidates))
+
+    built = [result for result in results if result.get("status") == "built"]
+    conflicts = [
+        result
+        for result in results
+        if result.get("error") == "branch_idempotency_conflict"
+    ]
+    assert len(built) == 4
+    assert len(conflicts) == 4
+    assert sum(
+        not bool(result["batch_receipt"]["idempotent_replay"])
+        for result in built
+    ) == 1
+    assert len({str(result["branch_def_id"]) for result in built}) == 1
+
+
 def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
     tmp_path,
     monkeypatch,
@@ -614,6 +697,78 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
         "universe_alice", "automation_spec_drain"
     )
     assert active is not None and active.state.value == "active"
+
+
+def test_phone_create_rejects_accepted_spec_content_with_wrong_digest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+
+    definition = _seed_setup_authority(tmp_path)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    result = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="automation_bad_spec_digest",
+        payload={
+            "definition": definition.to_dict(),
+            "accepted_spec_content": "content that does not match the frozen digest",
+            "cadence_seconds": 300,
+            "operator": {"soul_text": "Run my user-authored repository workflow."},
+        },
+    )
+
+    assert result["error"] == "automation_setup_invalid"
+    assert "accepted spec digest" in result["detail"]
+
+
+def test_phone_create_stages_and_rehashes_accepted_spec_content(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+
+    definition = _seed_setup_authority(tmp_path, stage_spec=False)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    result = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="automation_staged_spec",
+        payload={
+            "definition": definition.to_dict(),
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {"soul_text": "Run my user-authored repository workflow."},
+        },
+    )
+
+    assert result["status"] == "activation_requested"
+
+
+def test_prepare_rejects_unavailable_accepted_spec_artifact(tmp_path) -> None:
+    from tinyassets.cloud_automation_setup import prepare_cloud_automation
+
+    definition = _seed_setup_authority(tmp_path, stage_spec=False)
+
+    with pytest.raises(ValueError, match="accepted spec artifact is unavailable"):
+        prepare_cloud_automation(
+            tmp_path,
+            definition,
+            automation_id="automation_missing_spec",
+            cadence_seconds=300,
+            operator_display_name="Alice Cloud Builder",
+            operator_soul_text="Run my user-authored repository workflow.",
+            clock=lambda: NOW,
+        )
 
 
 def test_prepare_rejects_fabricated_acceptance_scenario_digest(tmp_path) -> None:
