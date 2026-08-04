@@ -283,6 +283,8 @@ jobs:
       # repo variable WORKOS_REQUIRE_AUTH='0' for anon-read + auth-write instead.
       HAS_WORKOS_CONFIG: ${{ secrets.WORKOS_AUTHKIT_DOMAIN != '' }}
       WORKOS_AUTHKIT_DOMAIN: ${{ secrets.WORKOS_AUTHKIT_DOMAIN }}
+      HAS_WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY != '' }}
+      WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
       WORKOS_MCP_RESOURCE: ${{ vars.WORKOS_MCP_RESOURCE || 'https://tinyassets.io/mcp' }}
       WORKOS_REQUIRE_AUTH: ${{ vars.WORKOS_REQUIRE_AUTH || '1' }}
 
@@ -1098,6 +1100,13 @@ jobs:
             printf '%s' "${WORKOS_REQUIRE_AUTH}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo bash /tmp/install-tinyassets-env.sh set WORKOS_REQUIRE_AUTH"
+            if [ "${HAS_WORKOS_API_KEY}" = "true" ]; then
+              printf '%s' "${WORKOS_API_KEY}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo bash /tmp/install-tinyassets-env.sh set WORKOS_API_KEY"
+            else
+              echo "::warning::WORKOS_API_KEY secret not visible to deploy; Pipes-backed destination setup remains unavailable."
+            fi
             # Fail-closed audience binding in prod: force the dev-only escape
             # hatch off so a same-issuer token can never be reused here.
             printf '%s' '0' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \

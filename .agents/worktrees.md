@@ -2390,12 +2390,23 @@ Notes:
 
 - Provider: `codex-gpt5-desktop-handoff`.
 - Branch: `feature/custom-agent-app-conversation-handoff-20260803`.
-- Lane state: Active; audit-only prerequisite for the separately admitted app-conversation successor.
+- Lane state: Landed in PR #2238 as `6a0e95ad`; retained locally only because harness-state files are dirty.
 - Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-app-conversation-handoff-20260803`.
 - Purpose: identify the exact current boundary, organization, interlocutor, custody, personification, and runtime seams for one authenticated Slack ingress-to-reply path.
 - Review gate: strict OpenSpec, evidence-backed current-main audit, independent architecture/security review.
 - Publish/cleanup: one audit/fold-forward PR; no runtime, deployment, external-app, secret, or production mutation.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-app-conversation-handoff-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Fold back custom-agent app-conversation handoff
+
+- Provider: `codex-gpt5-desktop-handoff`.
+- Branch: `coord/custom-agent-handoff-foldback-20260803`.
+- Lane state: Foldback after PR #2238 merged as `6a0e95ad` with required checks green.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-handoff-foldback-20260803`.
+- Purpose: retire the landed audit claim, remove resolved STATUS debris, and preserve the founder-mapped Slack prerequisites.
+- Review gate: STATUS budget/janitor check, diff check, independent review, hosted policy/tests.
+- Publish/cleanup: coordination-only PR; no product code or production mutation.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-handoff-foldback-20260803/_PURPOSE.md`.
 
 ## 2026-08-03 - Fold back custom-agent activation load evidence
 
