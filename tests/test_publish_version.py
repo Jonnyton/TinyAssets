@@ -175,11 +175,14 @@ class TestPublishBranchVersion:
         assert row_version.snapshot["graph_nodes"] == d["graph_nodes"]
         assert row_version.snapshot["edges"] == d["edges"]
 
-    def test_snapshot_excludes_metadata_fields(self, tmp_path):
+    def test_snapshot_excludes_mutable_metadata_but_freezes_access_authority(
+        self, tmp_path
+    ):
         d = _make_branch_dict()
         v = publish_branch_version(tmp_path, d)
         assert "name" not in v.snapshot
-        assert "author" not in v.snapshot
+        assert v.snapshot["author"] == "anonymous"
+        assert v.snapshot["visibility"] == "public"
         assert "stats" not in v.snapshot
 
 
@@ -274,6 +277,7 @@ class TestPublishVersionMcpActions:
         branch = BranchDefinition(
             branch_def_id=branch_id,
             name="Test Branch",
+            author="test-publisher",
             graph_nodes=[GraphNodeRef(id="n1", node_def_id="n1")],
             edges=[EdgeDefinition(from_node="n1", to_node="END")],
             entry_point="n1",
@@ -282,7 +286,8 @@ class TestPublishVersionMcpActions:
         )
         save_branch_definition(base_path, branch_def=branch.to_dict())
 
-    def test_publish_version_action(self, tmp_path, monkeypatch):
+    def test_publish_version_action(self, tmp_path, monkeypatch, authenticate_request):
+        authenticate_request("test-publisher")
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
         from tinyassets.universe_server import extensions
@@ -299,7 +304,8 @@ class TestPublishVersionMcpActions:
         result = json.loads(extensions(action="publish_version", branch_def_id="nonexistent"))
         assert "error" in result
 
-    def test_get_branch_version_action(self, tmp_path, monkeypatch):
+    def test_get_branch_version_action(self, tmp_path, monkeypatch, authenticate_request):
+        authenticate_request("test-publisher")
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
         from tinyassets.universe_server import extensions
@@ -310,7 +316,8 @@ class TestPublishVersionMcpActions:
         ))
         assert get_result["branch_version_id"] == version_id
 
-    def test_list_branch_versions_action(self, tmp_path, monkeypatch):
+    def test_list_branch_versions_action(self, tmp_path, monkeypatch, authenticate_request):
+        authenticate_request("test-publisher")
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
         from tinyassets.universe_server import extensions
@@ -321,7 +328,10 @@ class TestPublishVersionMcpActions:
         assert list_result["count"] >= 1
         assert list_result["versions"][0]["branch_def_id"] == "b1"
 
-    def test_publish_version_is_idempotent(self, tmp_path, monkeypatch):
+    def test_publish_version_is_idempotent(
+        self, tmp_path, monkeypatch, authenticate_request
+    ):
+        authenticate_request("test-publisher")
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._seed_branch(tmp_path)
         from tinyassets.universe_server import extensions
@@ -336,6 +346,6 @@ class TestPublishVersionMcpActions:
         initialize_author_server(tmp_path)
         result = json.loads(extensions(action="nonexistent_xyz"))
         available = result.get("available_actions", [])
-        assert "publish_version" in available
+        assert "publish_version" in available, result
         assert "get_branch_version" in available
         assert "list_branch_versions" in available

@@ -2366,21 +2366,10 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 
-def save_branch_definition(
-    base_path: str | Path,
-    *,
+def _branch_definition_insert(
     branch_def: dict[str, Any],
-) -> dict[str, Any]:
-    """Insert or replace a branch definition.
-
-    Accepts a dict matching BranchDefinition.to_dict(). Graph topology
-    (graph_nodes + edges + conditional_edges) is stored in graph_json.
-    Node definitions are stored separately in node_defs_json. State
-    schema is an unvalidated JSON blob in state_schema_json.
-
-    Also accepts legacy format with "nodes" key (flat node list stored
-    in graph_json for backward compatibility during migration).
-    """
+) -> tuple[str, tuple[Any, ...]]:
+    """Normalize one Branch definition into its persisted row values."""
     now = _now()
     branch_def_id = branch_def.get("branch_def_id", uuid.uuid4().hex[:12])
 
@@ -2409,41 +2398,81 @@ def save_branch_definition(
     visibility_in = (branch_def.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
 
-    with _connect(base_path) as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO branch_definitions (
+    return branch_def_id, (
+        branch_def_id,
+        branch_def.get("name", ""),
+        branch_def.get("description", ""),
+        branch_def.get("author", "anonymous"),
+        branch_def.get("domain_id", "workflow"),
+        _json_dumps(branch_def.get("tags", [])),
+        branch_def.get("version", 1),
+        _json_dumps(skills),
+        branch_def.get("parent_def_id"),
+        branch_def.get("entry_point", ""),
+        _json_dumps(graph),
+        _json_dumps(node_defs),
+        _json_dumps(branch_def.get("state_schema", [])),
+        1 if branch_def.get("published") else 0,
+        _json_dumps(branch_def.get("stats", {})),
+        branch_def.get("created_at", now),
+        now,
+        branch_def.get("goal_id") or None,
+        visibility,
+        branch_def.get("fork_from") or None,
+    )
+
+
+_BRANCH_DEFINITION_INSERT_SQL = """
+            INSERT INTO branch_definitions (
                 branch_def_id, name, description, author, domain_id,
                 tags_json, version, skills_json, parent_def_id, entry_point,
                 graph_json, node_defs_json, state_schema_json,
                 published, stats_json, created_at, updated_at, goal_id,
                 visibility, fork_from
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                branch_def_id,
-                branch_def.get("name", ""),
-                branch_def.get("description", ""),
-                branch_def.get("author", "anonymous"),
-                branch_def.get("domain_id", "workflow"),
-                _json_dumps(branch_def.get("tags", [])),
-                branch_def.get("version", 1),
-                _json_dumps(skills),
-                branch_def.get("parent_def_id"),
-                branch_def.get("entry_point", ""),
-                _json_dumps(graph),
-                _json_dumps(node_defs),
-                _json_dumps(branch_def.get("state_schema", [])),
-                1 if branch_def.get("published") else 0,
-                _json_dumps(branch_def.get("stats", {})),
-                branch_def.get("created_at", now),
-                now,
-                branch_def.get("goal_id") or None,
-                visibility,
-                branch_def.get("fork_from") or None,
-            ),
+            """
+
+
+def save_branch_definition(
+    base_path: str | Path,
+    *,
+    branch_def: dict[str, Any],
+) -> dict[str, Any]:
+    """Insert or replace a branch definition."""
+    branch_def_id, values = _branch_definition_insert(branch_def)
+    with _connect(base_path) as conn:
+        conn.execute(
+            _BRANCH_DEFINITION_INSERT_SQL.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
+            values,
         )
     return get_branch_definition(base_path, branch_def_id=branch_def_id)
+
+
+def create_branch_definition_once(
+    base_path: str | Path,
+    *,
+    branch_def: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Atomically create an idempotent Branch definition.
+
+    The primary key is the request-derived identity. Concurrent callers race
+    through SQLite's unique constraint; only the first definition is stored.
+    The returned boolean is true only for that winning insert.
+    """
+    branch_def_id, values = _branch_definition_insert(branch_def)
+    with _connect(base_path) as conn:
+        cursor = conn.execute(
+            _BRANCH_DEFINITION_INSERT_SQL
+            + " ON CONFLICT(branch_def_id) DO NOTHING",
+            values,
+        )
+        row = conn.execute(
+            "SELECT * FROM branch_definitions WHERE branch_def_id = ?",
+            (branch_def_id,),
+        ).fetchone()
+    if row is None:  # pragma: no cover - insert/select share one transaction
+        raise RuntimeError("branch definition insert was not observable")
+    return _branch_def_from_row(row), cursor.rowcount == 1
 
 
 def get_branch_definition(

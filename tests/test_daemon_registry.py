@@ -769,3 +769,34 @@ def test_select_project_loop_daemon_ignores_soulless_defaults(tmp_path):
     )
 
     assert daemon_registry.select_project_loop_daemon(tmp_path) is None
+
+
+def test_select_project_loop_daemon_is_scoped_to_universe_and_owner(tmp_path):
+    daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Alice Loop",
+        created_by="acct_alice",
+        soul_text="Run Alice's user-authored workflows.",
+        metadata={"project_loop_default": True, "universe_id": "universe_alice"},
+    )
+    bob = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Bob Loop",
+        created_by="acct_bob",
+        soul_text="Run Bob's user-authored workflows.",
+        metadata={"project_loop_default": True, "universe_id": "universe_bob"},
+    )
+
+    selected = daemon_registry.select_project_loop_daemon(
+        tmp_path,
+        universe_id="universe_bob",
+        owner_user_id="acct_bob",
+    )
+
+    assert selected is not None
+    assert selected["daemon_id"] == bob["daemon_id"]
+    assert daemon_registry.select_project_loop_daemon(
+        tmp_path,
+        universe_id="universe_bob",
+        owner_user_id="acct_alice",
+    ) is None
