@@ -1488,7 +1488,10 @@ class ProviderWorkBindingService:
         ):
             raise PermissionError("server-owned provider assignment is unavailable")
         current = expected.expected_record
-        if current.state is not ProviderWorkBindingState.ACTIVE:
+        if current.state not in {
+            ProviderWorkBindingState.ACTIVE,
+            ProviderWorkBindingState.REVOKED,
+        }:
             return ProviderWorkBindingWriteResult(
                 ProviderWorkAuthorityWriteOutcome.CONFLICT, current
             )
@@ -1501,6 +1504,7 @@ class ProviderWorkBindingService:
             allowed_roles=seed.allowed_roles,
             assignment_generation=seed.assignment_generation,
             assignment_digest=seed.assignment_digest,
+            revocation_generation=0,
             max_invocations=seed.max_invocations,
             max_tokens=seed.max_tokens,
             max_cost_microunits=seed.max_cost_microunits,

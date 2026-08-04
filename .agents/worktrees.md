@@ -1,5 +1,15 @@
 # Worktree Inventory
 
+## 2026-08-04 - Fold back server-owned app outbound adapter
+
+- Provider: `codex-gpt5-desktop-adapter-foldback`.
+- Branch: `foldback/app-outbound-adapter-20260804`.
+- Lane state: Foldback after PR #2274 merged as `c55d5354`.
+- Worktree: `C:/Users/Jonathan/Projects/wf-app-outbound-adapter-foldback-20260804`.
+- Purpose: sync/archive the landed app outbound adapter, retire its active claim, and advance the V1 monitor to live Slack/cloud transport and workflow iteration.
+- Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
+- Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
+
 ## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
 
 - Provider: `codex-gpt5-desktop-installer`
@@ -2470,3 +2480,13 @@ Notes:
 - Purpose: sync/archive the landed signed custody handoff, retire its active claim, and advance the V1 monitor to packaged opaque mint and governed reply.
 - Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
 - Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
+## 2026-08-04 - Build server-owned app outbound adapter
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/app-outbound-adapter-20260804`.
+- Lane state: Active; depends on merged #2268 governed reply authorization and the cloud outbound-boundary owner.
+- Worktree: `C:/Users/Jonathan/Projects/wf-app-outbound-adapter-20260804`.
+- Purpose: consume a content-free founder reply authorization, validate the exact body digest and idempotency key, invoke a server-owned Slack transport callback, and return only a redacted receipt; no MCP handle, cloud mint, workflow mutation, or production effect.
+- Review gate: strict OpenSpec, focused security/concurrency tests, exact-head independent review, and hosted checks.
+- Publish/cleanup: one dark adapter prerequisite PR; live credentials and production Slack transport remain host/cloud-owned.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-app-outbound-adapter-20260804/_PURPOSE.md`.

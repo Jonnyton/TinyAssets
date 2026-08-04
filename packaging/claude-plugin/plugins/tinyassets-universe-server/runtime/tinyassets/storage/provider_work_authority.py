@@ -527,21 +527,32 @@ class _Transaction:
         immutable = all(
             getattr(replacement, field) == getattr(current, field) for field in immutable_fields
         )
-        legal_transition = (
-            immutable,
-            current.state is ProviderWorkBindingState.ACTIVE,
-            replacement.state is ProviderWorkBindingState.REVOKED,
+        identity = replacement.binding_id == provider_work_binding_id(
+            owner_user_id=replacement.owner_user_id,
+            universe_id=replacement.universe_id,
+            provider=replacement.provider,
+        )
+        common = (
             replacement.generation == current.generation + 1,
-            replacement.revocation_generation == current.revocation_generation + 1,
-            replacement.binding_id
-            == provider_work_binding_id(
-                owner_user_id=replacement.owner_user_id,
-                universe_id=replacement.universe_id,
-                provider=replacement.provider,
-            ),
+            identity,
             replacement.binding_digest == replacement.expected_digest(),
             replacement.updated_at >= current.updated_at,
         )
+        revoke_transition = (
+            immutable,
+            current.state is ProviderWorkBindingState.ACTIVE,
+            replacement.state is ProviderWorkBindingState.REVOKED,
+            replacement.revocation_generation == current.revocation_generation + 1,
+        )
+        rebind_transition = (
+            current.state in {
+                ProviderWorkBindingState.ACTIVE,
+                ProviderWorkBindingState.REVOKED,
+            },
+            replacement.state is ProviderWorkBindingState.ACTIVE,
+            replacement.revocation_generation == 0,
+        )
+        legal_transition = (*common, revoke_transition or rebind_transition)
         if not all(legal_transition):
             raise ValueError("provider binding transition must preserve immutable authority")
         self._conn.execute(
