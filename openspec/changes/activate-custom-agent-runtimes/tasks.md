@@ -5,7 +5,7 @@
 
 ## 2. Separately Admitted Delivery Successors
 
-- [ ] 2.1 After exact owner handoffs, admit `activate-custom-agent-runtime-core` with one activation/compiler/delegated-cloud-runtime intent, at most 12 session-sized tasks, an exact file claim, and no app or workflow-authoring implementation.
+- [x] 2.1 After exact owner handoffs, admit `activate-custom-agent-runtime-core` with one activation/compiler/delegated-cloud-runtime intent, at most 12 session-sized tasks, an exact file claim, and no app or workflow-authoring implementation. Admitted as the strict-valid `activate-custom-agent-runtime-core` successor with 12 OpenSpec tasks and separate exact claims; its dark manifest/compiler/principal/provider/recovery slices and activation/load proofs landed through PRs including #2230 and #2234, while its own 5.1/5.2 deployment/foldback gates remain correctly open.
 - [ ] 2.2 After core plus boundary/organization/interlocutor/custody/personification handoffs, admit `connect-custom-agent-app-conversations` with one authenticated ingress-to-reply intent, at most 12 session-sized tasks, and no graph-authoring lifecycle.
 - [ ] 2.3 After core plus `harden-branch-access-authority`, `harden-run-branch-access-authority`, `harden-branch-evaluation-access-authority`, `harden-branch-adjacent-access-authority`, and required Engine OS gates, admit `enable-custom-agent-workflow-iteration` with one workflow-evolution intent and at most 12 session-sized tasks.
 - [ ] 2.4 After the underlying transitions land, admit `expose-custom-agent-runtime-control` with one canonical-handle/packaging intent, an exact-seven proof, and at most 12 session-sized tasks.
