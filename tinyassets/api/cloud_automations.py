@@ -14,11 +14,7 @@ from tinyassets.cloud_automation_control import (
     CloudAutomationTriggerStatus,
     project_cloud_automation_health,
 )
-from tinyassets.cloud_automation_setup import prepare_cloud_automation
 from tinyassets.storage.automation_activations import AutomationActivationStore
-from tinyassets.storage.cloud_automation_continuation import (
-    SQLiteCloudAutomationContinuationStore,
-)
 from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
 from tinyassets.storage.cloud_automation_inputs import stage_accepted_spec
 from tinyassets.storage.outbound_connections import ConnectionLedger
@@ -273,6 +269,10 @@ def _projection(
     *,
     limit: int,
 ) -> dict[str, Any]:
+    from tinyassets.storage.cloud_automation_continuation import (
+        SQLiteCloudAutomationContinuationStore,
+    )
+
     base = _base_path()
     controls = CloudAutomationControlStore(base)
     triggers = controls.list_triggers(
@@ -383,6 +383,8 @@ def cloud_automations(
 
     if normalized == "create":
         try:
+            from tinyassets.cloud_automation_setup import prepare_cloud_automation
+
             document = json.loads(payload) if isinstance(payload, str) else payload
             if not isinstance(document, dict):
                 raise ValueError("payload_json must be a JSON object")
@@ -463,6 +465,8 @@ def cloud_automations(
                 "current_revision": control.revision,
             }
         try:
+            from tinyassets.cloud_automation_setup import prepare_cloud_automation
+
             document = json.loads(payload) if isinstance(payload, str) else payload
             if not isinstance(document, dict):
                 raise ValueError("payload_json must be a JSON object")
