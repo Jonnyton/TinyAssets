@@ -7,14 +7,19 @@ An absent or invalid manifest is deliberately equivalent to no enrollment.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
+import re
 from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Any
 
 from tinyassets.provider_work_authority import ProviderWorkBindingRoot, ProviderWorkBindingSeed
 
 _ENV = "TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON"
 _PROVIDERS = frozenset({"codex", "claude-code"})
+_FINGERPRINT_RE = r"v[0-9]+:[0-9a-f]{64}"
 _FIELDS = frozenset(
     {
         "owner_user_id",
@@ -43,6 +48,22 @@ def _not_expired(value: str, *, now: datetime) -> bool:
     except (TypeError, ValueError):
         return False
     return expiry.tzinfo is not None and expiry > now
+
+
+def _principal_fingerprint(owner_user_id: str) -> str | None:
+    """Derive the same token-free identity fingerprint exposed by status."""
+    key = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_KEY", "")
+    version = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
+    if not isinstance(key, str) or len(key.encode()) < 32:
+        return None
+    if not isinstance(version, str) or not version.strip():
+        return None
+    version = version.strip()
+    if re.fullmatch(r"[A-Za-z0-9._-]+", version) is None:
+        return None
+    message = f"tinyassets:request-identity:{version}\0{owner_user_id}".encode()
+    digest = hmac.new(key.encode(), message, hashlib.sha256).hexdigest()
+    return f"{version}:{digest}"
 
 
 class RequesterProviderEnrollmentResolver:
@@ -107,25 +128,38 @@ class RequesterProviderEnrollmentResolver:
     def resolve(self, root: ProviderWorkBindingRoot) -> ProviderWorkBindingSeed | None:
         if not isinstance(root, ProviderWorkBindingRoot):
             raise ValueError("root must be a ProviderWorkBindingRoot")
+        fingerprint = _principal_fingerprint(root.owner_user_id)
         matches = tuple(
             entry
             for entry in self._entries
             if (
-                entry.owner_user_id == root.owner_user_id
-                and entry.universe_id == root.universe_id
+                entry.universe_id == root.universe_id
                 and entry.provider == root.provider
                 and _not_expired(entry.expires_at, now=self._now)
+                and (
+                    entry.owner_user_id == root.owner_user_id
+                    or (
+                        fingerprint is not None
+                        and entry.owner_user_id == fingerprint
+                    )
+                )
             )
         )
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) != 1:
+            return None
+        matched = matches[0]
+        if matched.owner_user_id == root.owner_user_id:
+            return matched
+        return replace(matched, owner_user_id=root.owner_user_id)
 
     def providers(self, *, owner_user_id: str, universe_id: str) -> tuple[str, ...]:
+        fingerprint = _principal_fingerprint(owner_user_id)
         return tuple(
             sorted(
                 {
                     entry.provider
                     for entry in self._entries
-                    if entry.owner_user_id == owner_user_id
+                    if entry.owner_user_id in {owner_user_id, fingerprint}
                     and entry.universe_id == universe_id
                     and _not_expired(entry.expires_at, now=self._now)
                 }
