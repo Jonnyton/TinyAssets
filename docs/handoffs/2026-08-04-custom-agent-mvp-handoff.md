@@ -21,9 +21,11 @@ The repository now has the immutable definition/interchange substrate, private b
 | Immutable runtime manifest/compiler/principal | `openspec/changes/activate-custom-agent-runtime-core/` | Dark runtime foundations landed; deployment/live proof remains open |
 | Cloud continuation/epoch-2 consumer | `docs/audits/2026-08-03-cloud-drain-epoch2-consumer.md` | Local shaped-load evidence landed; production activation/cutover remains open |
 | App ingress, custody, mapping, reply authority, outbound receipt | PRs #2246, #2260, #2268, #2274 and corresponding OpenSpec changes | Server-owned dark seams landed; real app effect/rendered conversation remains open |
-| Provider enrollment shape hardening | PR #2281, merged commit [`c5358941`](https://github.com/Jonnyton/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40) | Landed on `main`; hosted gates green; exact-head Claude security review **APPROVE** |
+| Provider enrollment shape hardening | PR #2281, merged commit [`c5358941`](https://github.com/Jonnyton/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40) | Landed on `main`; hosted gates green. The exact-head Claude security review recorded as **APPROVE** has **no durable artifact** — see note below |
 
 The #2281 repair specifically rejects malformed enrollment shapes instead of coercing them: strings cannot stand in for lists, `None` cannot stand in for required strings, booleans cannot stand in for integers, wildcard owners remain forbidden, ambiguous entries fail closed, and the packaged mirror is byte-identical.
+
+**The #2281 security review is unwitnessed — do not treat it as a passed gate.** Checked 2026-08-04: PR #2281 has **0 GitHub reviews and 0 comments**, its squashed commit body is the title line alone, and no audit or design artifact in `docs/`, `openspec/`, or `.agents/` mentions it. This handoff is therefore the *only* record of that `APPROVE` anywhere in the repository — it certifies itself. The review may well have happened out of band, as STATUS row L25 documents for #1797 ("merged with 0 GH reviews — out-of-band Opus rounds only"); the problem is that nothing an auditor can reach corroborates it. Before this repair is relied on as a security gate, either land the reviewer's verdict as a durable artifact or re-run an exact-head review against `c5358941` and record it on the PR.
 
 ## What remains open
 
