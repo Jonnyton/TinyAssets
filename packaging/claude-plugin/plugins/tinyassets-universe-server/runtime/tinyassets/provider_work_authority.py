@@ -1504,6 +1504,7 @@ class ProviderWorkBindingService:
             allowed_roles=seed.allowed_roles,
             assignment_generation=seed.assignment_generation,
             assignment_digest=seed.assignment_digest,
+            revocation_generation=0,
             max_invocations=seed.max_invocations,
             max_tokens=seed.max_tokens,
             max_cost_microunits=seed.max_cost_microunits,
