@@ -155,36 +155,55 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
                 )
 
 
-def test_schedule_cannot_start_a_run_before_the_last_one_finishes() -> None:
-    """At most one scheduled start per hour, because `full-tests` takes ~38 min.
+def test_schedule_declares_at_most_one_nominal_start_per_hour() -> None:
+    """Cadence policy: one scheduled start per hour, nominally.
 
-    This is the invariant that bounds how far the cadence can be tightened, and
-    it is easy to get backwards. Scheduled runs do NOT displace each other:
-    `test_non_pr_runs_never_cancel_or_queue_behind_each_other` pins non-PR runs
-    to a unique concurrency group with cancel-in-progress false, deliberately,
-    so that a scheduled run cannot be killed by the next one. The consequence
-    is that a sub-hourly cron does not "run more often" — it stacks overlapping
-    copies of a 38-minute job.
+    `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
+    runs do NOT displace each other — the sibling concurrency test pins non-PR
+    runs to a unique group with cancel-in-progress false, deliberately, so a
+    queued tripwire run cannot be silently dropped. The consequence is that a
+    sub-hourly cron does not "run more often"; it stacks overlapping copies of
+    a 38-minute job.
 
-    Measured on the two scheduled runs that have executed: 36 and 38 minutes
-    (30858019064, 30875123887). Hourly leaves ~20 minutes of margin.
+    **NOMINAL, not a guarantee of non-overlap.** GitHub delays scheduled events
+    as well as dropping them — the two runs cited above were dispatched 59 and
+    17 minutes late — so two nominally-hourly events can still start minutes
+    apart. Overlap is tolerated (free runners, duplicated work, nothing
+    corrupted), not prevented. This test pins the declared policy, which is the
+    only part of it the repo controls.
 
-    Checked on the MINUTE field alone: if the minute is a single fixed value
-    there is at most one start per hour whatever the hour field says, so this
-    stays green for `17 * * * *` and for `17 */3 * * *`, and goes red for
-    `*/20 * * * *` or `17,47 * * * *`. If `full-tests` is ever made materially
-    faster, relax this test in the same commit that proves the new duration —
-    do not delete it, because the pile-up it prevents is silent.
+    Two deliberate conservatisms, both of which would otherwise make this
+    vacuous or wrong:
+
+    * The check is on the WHOLE schedule, not per entry. `17 * * * *` plus
+      `47 * * * *` each satisfy "one fixed minute" while collectively starting
+      twice an hour, so a per-entry check does not enforce its own headline —
+      cross-family review caught exactly that.
+    * A bare fixed minute is required, so legitimate once-per-hour forms like
+      `59/5 * * * *` are rejected too. Evaluating real cron occurrences to
+      admit them would mean re-implementing GitHub's scheduler here, which an
+      earlier version of this file got wrong; a conservative policy that is
+      easy to read beats a clever one that is subtly wrong.
+
+    If `full-tests` is ever made materially faster, relax this in the same
+    commit that proves the new duration — do not delete it, because the
+    behaviour it prevents is silent.
     """
-    for entry in _triggers(_load())["schedule"]:
-        minute = str(entry["cron"]).split()[0]
-        assert re.fullmatch(r"\d{1,2}", minute), (
-            f"cron {entry['cron']!r} starts more than once an hour (minute "
-            f"field {minute!r}). `full-tests` runs 36-38 min and scheduled runs "
-            f"use a unique concurrency group with cancel-in-progress false, so "
-            f"they do not replace each other — they pile up. Use a single fixed "
-            f"minute, or prove a shorter runtime first."
-        )
+    schedule = _triggers(_load())["schedule"]
+    assert len(schedule) == 1, (
+        f"expected exactly one schedule entry, got {len(schedule)}: "
+        f"{[e.get('cron') for e in schedule]}. Multiple entries can each look "
+        f"hourly while collectively starting more often, which is what this "
+        f"test exists to prevent."
+    )
+    minute = str(schedule[0]["cron"]).split()[0]
+    assert re.fullmatch(r"\d{1,2}", minute), (
+        f"cron {schedule[0]['cron']!r} nominally starts more than once an hour "
+        f"(minute field {minute!r}). `full-tests` runs 36-38 min and scheduled "
+        f"runs use a unique concurrency group with cancel-in-progress false, so "
+        f"they do not replace each other — they pile up. Use a single fixed "
+        f"minute, or prove a shorter runtime first."
+    )
 
 
 def test_full_tests_runs_on_every_non_pr_event() -> None:
