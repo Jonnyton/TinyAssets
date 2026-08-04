@@ -93,6 +93,40 @@ def test_create_stopped_is_idempotent_and_server_authoritative(
     )
 
 
+def test_transactional_activation_runs_authority_fence_before_transition(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    stopped = store.create_stopped(
+        universe_id="universe-main",
+        automation_id="automation-spec-drain",
+    )
+    observed: list[sqlite3.Connection] = []
+
+    with store.connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        def deny(connection: sqlite3.Connection) -> bool:
+            observed.append(connection)
+            assert connection is conn
+            assert connection.in_transaction
+            return False
+
+        activated = store.activate_in_transaction(
+            conn,
+            expected=stopped,
+            executor_class=AutomationActivationExecutor.CLOUD,
+            subject=_branch_subject(),
+            lease_id="activation-lease-cloud-1",
+            authority_check=deny,
+        )
+        conn.commit()
+
+    assert activated is None
+    assert observed == [observed[0]]
+    assert store.get(stopped.universe_id, stopped.automation_id) == stopped
+
+
 def test_active_record_requires_exact_executor_version_and_lease(
     tmp_path: Path,
 ) -> None:
