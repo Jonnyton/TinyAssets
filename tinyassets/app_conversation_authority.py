@@ -154,7 +154,7 @@ def _new_grant_id() -> str:
 
 
 def _grant_signing_bytes(evidence: ConversationCustodyGrantEvidence) -> bytes:
-    return b"app-conversation-custody/authority-grant/v1\0" + canonical_json_bytes(
+    return b"conversation-custody/operation-grant/v1\0" + canonical_json_bytes(
         {
             "action": evidence.action,
             "agent_binding_id": evidence.agent_binding_id,

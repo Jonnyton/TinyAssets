@@ -17,6 +17,7 @@ from tinyassets.app_conversation_authority import (
 )
 from tinyassets.app_event_ingress import SlackRequestVerifier
 from tinyassets.app_principal_mapping import AppPrincipalMappingService, AppPrincipalTarget
+from tinyassets.conversation_custody import _operation_grant_signing_bytes
 from tinyassets.custom_agents import create_binding, publish_definition
 from tinyassets.daemon_server import (
     grant_universe_access,
@@ -130,6 +131,12 @@ def test_issue_returns_signed_one_use_grant_without_payload_access(tmp_path: Pat
             grant.signature + "=" * ((4 - len(grant.signature) % 4) % 4)
         ),
         _grant_signing_bytes(grant.evidence),
+    )
+    public.verify(
+        base64.urlsafe_b64decode(
+            grant.signature + "=" * ((4 - len(grant.signature) % 4) % 4)
+        ),
+        _operation_grant_signing_bytes(grant.evidence),
     )
     evidence = grant.evidence
     assert evidence.owner_user_id == SENDER_ID
