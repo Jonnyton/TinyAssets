@@ -1,8 +1,11 @@
 # Independent review — custom-agent app-conversation handoff
 
-**Reviewer:** Claude Sonnet through the read-only peer-agent harness  
-**Date:** 2026-08-03 PDT  
-**Audited main:** `97654c3ebc8d7f866979cb0f9626d031b79c7d25`  
+**Reviewer:** Claude Sonnet through the read-only peer-agent harness
+
+**Date:** 2026-08-03 PDT
+
+**Audited main:** `97654c3ebc8d7f866979cb0f9626d031b79c7d25`
+
 **Initial verdict:** APPROVE, no Critical or Important findings
 
 ## What the reviewer independently checked
