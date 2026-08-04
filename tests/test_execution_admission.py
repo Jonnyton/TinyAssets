@@ -6,14 +6,18 @@ import pytest
 
 from tinyassets.exceptions import ProviderError
 from tinyassets.execution_admission import (
+    OS_ISOLATED_GUARANTEES,
+    VM_ISOLATED_GUARANTEES,
     ExecutionAdmissionError,
     ExecutionAdmissionReason,
     ExecutionProfile,
     ExecutionRequirement,
     ExecutionWorkload,
+    IsolationGuarantee,
     OpaqueRequirementBinding,
     derive_inference_requirement,
     derive_source_requirement,
+    isolation_guarantees_satisfy,
 )
 
 _ADMISSION_REASONS = {
@@ -120,6 +124,85 @@ def test_execution_admission_vocabulary_is_closed() -> None:
         ExecutionWorkload("provider_cli")
     with pytest.raises(ValueError):
         ExecutionProfile("inference_only")
+
+
+def test_isolation_guarantee_vocabulary_and_tier_sets_are_closed() -> None:
+    assert {guarantee.value for guarantee in IsolationGuarantee} == {
+        "kernel_enforced_daemon_separation",
+        "exact_filesystem_projection_default_deny",
+        "exact_network_egress_default_deny",
+        "explicit_resource_limits",
+        "platform_secrets_and_undeclared_devices_absent",
+        "bounded_lifecycle_cleanup",
+        "requirement_and_actual_launch_evidence",
+        "guest_kernel_boundary",
+        "host_device_passthrough_default_deny",
+    }
+    assert OS_ISOLATED_GUARANTEES == frozenset(
+        {
+            IsolationGuarantee.KERNEL_ENFORCED_DAEMON_SEPARATION,
+            IsolationGuarantee.EXACT_FILESYSTEM_PROJECTION_DEFAULT_DENY,
+            IsolationGuarantee.EXACT_NETWORK_EGRESS_DEFAULT_DENY,
+            IsolationGuarantee.EXPLICIT_RESOURCE_LIMITS,
+            IsolationGuarantee.PLATFORM_SECRETS_AND_UNDECLARED_DEVICES_ABSENT,
+            IsolationGuarantee.BOUNDED_LIFECYCLE_CLEANUP,
+            IsolationGuarantee.REQUIREMENT_AND_ACTUAL_LAUNCH_EVIDENCE,
+        }
+    )
+    assert VM_ISOLATED_GUARANTEES == OS_ISOLATED_GUARANTEES | {
+        IsolationGuarantee.GUEST_KERNEL_BOUNDARY,
+        IsolationGuarantee.HOST_DEVICE_PASSTHROUGH_DEFAULT_DENY,
+    }
+    assert type(OS_ISOLATED_GUARANTEES) is frozenset
+    assert type(VM_ISOLATED_GUARANTEES) is frozenset
+
+
+def test_isolation_guarantee_comparison_fails_closed_for_missing_or_unknown_properties() -> None:
+    assert isolation_guarantees_satisfy(
+        OS_ISOLATED_GUARANTEES,
+        OS_ISOLATED_GUARANTEES,
+    )
+
+    for missing in OS_ISOLATED_GUARANTEES:
+        assert not isolation_guarantees_satisfy(
+            OS_ISOLATED_GUARANTEES,
+            OS_ISOLATED_GUARANTEES - {missing},
+        )
+
+    assert not isolation_guarantees_satisfy(
+        OS_ISOLATED_GUARANTEES,
+        OS_ISOLATED_GUARANTEES | {"unknown"},  # type: ignore[arg-type]
+    )
+    assert not isolation_guarantees_satisfy(
+        OS_ISOLATED_GUARANTEES | {"unknown"},  # type: ignore[arg-type]
+        OS_ISOLATED_GUARANTEES,
+    )
+    assert not isolation_guarantees_satisfy(frozenset(), OS_ISOLATED_GUARANTEES)
+    assert not isolation_guarantees_satisfy(  # type: ignore[arg-type]
+        OS_ISOLATED_GUARANTEES,
+        None,
+    )
+
+
+def test_vm_isolation_is_stronger_only_with_every_base_and_vm_property() -> None:
+    assert isolation_guarantees_satisfy(
+        OS_ISOLATED_GUARANTEES,
+        VM_ISOLATED_GUARANTEES,
+    )
+    assert isolation_guarantees_satisfy(
+        VM_ISOLATED_GUARANTEES,
+        VM_ISOLATED_GUARANTEES,
+    )
+    assert not isolation_guarantees_satisfy(
+        VM_ISOLATED_GUARANTEES,
+        OS_ISOLATED_GUARANTEES,
+    )
+
+    for missing in VM_ISOLATED_GUARANTEES:
+        assert not isolation_guarantees_satisfy(
+            VM_ISOLATED_GUARANTEES,
+            VM_ISOLATED_GUARANTEES - {missing},
+        )
 
 
 def test_execution_admission_error_has_exact_terminal_reason_taxonomy() -> None:
