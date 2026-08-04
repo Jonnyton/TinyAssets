@@ -247,27 +247,33 @@ def main() -> int:
     # is what a gate needs.
     #
     # The "~4x" this comment used to promise on the other side of that fix was a
-    # HYPOTHESIS, and it is wrong. Measured 2026-08-03 on a 20-logical-CPU
-    # machine, this exact subset, same tree, `-n auto --dist loadfile`:
+    # HYPOTHESIS. It was never measured, and one measurement does not support it.
+    #
+    # Measured 2026-08-03, Windows, 20 logical CPUs, `-n auto --dist loadfile`,
+    # same tree, on this gate's subset as the exclusion manifest stood that day:
     #
     #     serial        10:04   214 failing
     #     xdist run A   11:40   219 failing
     #     xdist run B    9:53   218 failing
     #
-    # No speedup — run A was SLOWER than serial — and the two parallel runs
-    # disagreed on 7 tests, with 1 failing only under parallelism. Per-worker
-    # interpreter startup and `--dist loadfile` granularity appear to eat the
-    # whole gain on a subset this shape.
+    # Two things that measurement DOES support. Run A was slower than serial, so
+    # no speedup was demonstrated here. And the three runs disagree on which
+    # tests fail — which on its own disqualifies parallelism for a gate, because
+    # a committed baseline needs a deterministic verdict, not merely a fast one.
     #
-    # The 7 disagreements are also NOT the patch-leak class fixed in #2199.
-    # They are resource contention: a 5s `subprocess` timeout expiring under CPU
-    # saturation, process-spawn failures during setup, a shared database sidecar
-    # (`ScopedResetBlocked`), and two order-sensitive assertions.
+    # Deliberately NOT claimed: any causal account of the disagreements. An
+    # earlier version of this comment attributed them to resource contention and
+    # enumerated causes that summed to six while calling them seven, with no
+    # node-ID sets to back it. Absent those sets the honest statement is that the
+    # runs disagree and the cause is undiagnosed. #2199 fixed one specific
+    # threaded `patch()` leak; it does not prove the remainder is not isolation.
     #
-    # So do not reach for xdist here expecting a win. If parallelism is ever
-    # revisited, measure the FULL suite first — the 47 files excluded from this
-    # subset hold ~90% of its wall clock and are the only place file-level
-    # distribution has real headroom. That is unmeasured.
+    # Scope: this is "no win demonstrated for THIS configuration", not "xdist
+    # cannot help". Fewer workers, another `--dist` scheduler, or a later suite
+    # shape are all untested, as is the full suite post-#2199. Whether the files
+    # in .github/heavy-test-files.txt (deliberately not a count here — the last
+    # one drifted from 47 to 50 and made this comment wrong) are the best
+    # remaining target is likewise unmeasured.
     cmd = [
         sys.executable,
         "-m",
