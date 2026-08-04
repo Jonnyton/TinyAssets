@@ -164,11 +164,13 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
 
     `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
     runs do NOT displace each other — the sibling concurrency test pins non-PR
-    runs to a unique group with cancel-in-progress false, deliberately, so a
-    queued tripwire run cannot be silently dropped. So a sub-hourly cron does
-    not straightforwardly "run more often" — it declares more opportunities
-    for a 38-minute job to overlap itself, and any overlap that is delivered
-    runs concurrently rather than being cancelled.
+    runs to a unique group with cancel-in-progress false, deliberately, so
+    this workflow's own concurrency policy will not replace a queued tripwire
+    run. (GitHub may still drop a queued job under load — a separate
+    mechanism no concurrency key can address.) So a sub-hourly cron does not
+    straightforwardly "run more often": it declares more opportunities for a
+    38-minute job to overlap itself, and any overlap that IS delivered runs
+    concurrently rather than being cancelled.
 
     **This pins the DECLARED cadence, and nothing more.** GitHub documents that
     scheduled events may be delayed or dropped; it does not guarantee any
@@ -208,10 +210,11 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
     )
     minute = str(schedule[0]["cron"]).split()[0]
     assert re.fullmatch(r"\d{1,2}", minute), (
-        f"cron {schedule[0]['cron']!r} nominally starts more than once an hour "
+        f"cron {schedule[0]['cron']!r} declares more than one slot per hour "
         f"(minute field {minute!r}). `full-tests` runs 36-38 min and scheduled "
         f"runs use a unique concurrency group with cancel-in-progress false, so "
-        f"they do not replace each other — they pile up. Use a single fixed "
+        f"any runs delivered close together execute concurrently rather than "
+        f"replacing each other. Use a single fixed "
         f"minute, or prove a shorter runtime first."
     )
 

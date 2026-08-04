@@ -74,41 +74,28 @@ on:
   # Wasting a free runner is the cheaper failure than a required check that can
   # quietly pass without running.
   #
-  # WHY HOURLY, and why not tighter. Detection latency for a regression in the
-  # excluded files is NOT bounded by this interval — dropped runs make both the
-  # delivered rate and the latency unbounded. The interval sets the nominal
-  # slot spacing only,
-  # and because delivery is fractional the declared rate has to sit well above
-  # the rate you actually want. `17 */3` (8/day declared) delivered 2 runs in
-  # the first ~11h it was live. Tripling the declared rate triples the nominal
-  # opportunities. The DELIVERED effect is unknown — GitHub documents no
-  # relationship between declared and delivered rate — so it is to be
-  # measured, not assumed: `gh run list --workflow tests.yml --event schedule`
-  # once this has been live a day.
+  # WHY HOURLY. `17 */3` declared 8 slots/day; this declares 24. That is a
+  # change to what the repo DECLARES. GitHub documents that scheduled events
+  # may be delayed or dropped and specifies no relationship between declared
+  # and delivered rate, so the delivered effect is unknown and is to be
+  # measured rather than assumed:
   #
-  # The floor is the job's own runtime: `full-tests` measured 36 and 38 minutes.
-  # Scheduling faster than the job finishes declares more OPPORTUNITIES for
-  # overlap; whether overlap actually occurs is a delivery property GitHub
-  # does not specify. What is certain is the consequence when it does occur:
-  # non-PR runs get
-  # a unique concurrency group (`github.run_id`) with cancel-in-progress false,
-  # so they do NOT displace each other, they pile up.
+  #     gh run list --workflow tests.yml --event schedule
   #
-  # Hourly is therefore a NOMINAL one-start-per-hour policy, not a guarantee of
-  # non-overlap. GitHub delays scheduled events as well as dropping them — the
-  # two runs measured here were dispatched 59 and 17 minutes late — so two
-  # nominally-hourly events can still start minutes apart and overlap. That is
-  # tolerated rather than prevented: runners are free, overlapping tripwire runs
-  # duplicate work but corrupt nothing, and the alternative (a shared
-  # concurrency group) would queue or drop runs, which is the failure this
-  # block's `run_id` keying exists to avoid.
+  # WHY NOT TIGHTER. `full-tests` measured 36 and 38 minutes, and non-PR runs
+  # get a unique concurrency group (`github.run_id`) with cancel-in-progress
+  # false. So if two runs are ever delivered close together, this workflow's
+  # concurrency policy will not replace either — they execute concurrently.
+  # Declaring slots closer together than the job's runtime adds opportunities
+  # for that; how often it happens is a delivery property, and unknown.
   #
-  # Chaining off the merge instead was considered and does not work. The
-  # GITHUB_TOKEN suppression in hard rule 14 is not specific to `push` — events
-  # raised by that token start no workflow run at all, so `pull_request:
-  # [closed]` would miss exactly the app-performed merges that are the normal
-  # path here, in precisely the way `push: main` already does. A PAT-performed
-  # merge would fire, but that is a host credential decision, not a workflow one.
+  # A fixed minute is therefore a policy about the DECLARATION only, pinned by
+  # test_schedule_declares_at_most_one_nominal_slot_per_hour. Nothing here
+  # claims runs cannot overlap: two nominally-hourly slots can be dispatched
+  # minutes apart — the two runs above arrived 59 and 17 minutes after theirs.
+  # Overlap is tolerated, not prevented: runners are free on a public repo, so
+  # duplicated tripwire work costs nothing and corrupts nothing.
+  #
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
@@ -131,13 +118,11 @@ concurrency:
   # `run_id` rather than `sha`, per a second review round: keying by SHA still
   # collides when several scheduled runs land on an UNCHANGED main, and GitHub
   # replaces an existing *pending* run with a newer one — so a queued tripwire
-  # run can be silently dropped. Shortening the interval from 3h to 1h against
-  # a 36-38 min job increases that RISK — the two scheduled runs observed so
-  # far were dispatched 59 and 17 minutes after their slot, so slot spacing is
-  # not delivered spacing. How often it would actually bite is unmeasured;
-  # raising the risk at all is enough to make run_id the main argument here
-  # rather than a defensive one.
-  # run_id makes every non-PR run unique, so there is nothing to drop.
+  # run can be silently dropped. Declaring more slots adds more chances for
+  # that collision; the delivered effect is unknown. run_id makes every
+  # non-PR run unique, so THIS workflow's concurrency policy has nothing to
+  # replace — GitHub may still drop a queued job under load, which is a
+  # separate mechanism this key cannot address.
   # cancel-in-progress stays conditional as defence in depth.
   group: tests-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
