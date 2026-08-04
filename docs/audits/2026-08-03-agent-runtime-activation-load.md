@@ -37,6 +37,21 @@ marker, typed concurrent losers, exact terminal replay, and intact storage.
 The broader agent-runtime and invocation-authority regression family passed
 189 tests in 18.19s. Changed-test Ruff, strict OpenSpec, and diff checks passed.
 
+## Independent review
+
+Independent Claude Sonnet review approved exact evidence head `e0b00149` after
+reproducing the focused test four consecutive times, confirming eight distinct
+PIDs in each of two non-overlapping process pools, rerunning the combined load
+suite, and tracing the real grant and activation transactions. It found no
+correctness, authority, race, or claim-boundary defect.
+
+The review identified two integration findings, both folded before
+publication: this subtask is numbered `5.1c` to avoid collision with the
+existing dark-deploy `5.1b`, and the spawned-process file is listed in
+`.github/heavy-test-files.txt` beside its provider-load sibling. This preserves
+the short required-test gate while retaining the test in scheduled full-suite
+coverage; hosted CI on the publication PR remains required evidence.
+
 ## Remaining gate
 
 Task 5.1 still requires dark deployment health, live substrate/environment
