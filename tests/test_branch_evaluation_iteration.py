@@ -13,9 +13,86 @@ from pathlib import Path
 
 import pytest
 
+# The universe these tests run branches through. Branches are executed BY a
+# universe, so every run in this module routes via this one.
+P4_UNIVERSE = "p4-universe"
+
 
 @pytest.fixture
-def p4_env(tmp_path, monkeypatch):
+def p4_env(tmp_path, monkeypatch, authenticate_request):
+    """Temp data root plus an authenticated request subject.
+
+    `authenticate_request` is not optional decoration: branch mutation now
+    requires a credential-derived subject, so without it every action here
+    returns `{"error": "Authenticated branch subject required."}` and each
+    test dies on the first `_build_trivial_branch` with `KeyError:
+    'branch_def_id'`. Ordering matches `branch_env` in
+    test_branch_authoring_actions.py — authenticate BEFORE reloading
+    `universe_server`, since the reload rebinds module-level state.
+
+    `costly` is requested explicitly because these tests judge and roll back
+    RUNS, and `extensions.run_branch` carries
+    `oauth_scope == "tinyassets.extensions.costly"` (asserted independently by
+    test_action_scopes.py). It is not in the shared default so that suites
+    asserting a costly refusal keep asserting something.
+    """
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    authenticate_request(
+        "tester",
+        capabilities=[
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+            "tinyassets.extensions.admin",
+            "tinyassets.extensions.costly",
+        ],
+    )
+
+    # Branches are run BY universes now, so a run needs a registered universe
+    # the actor may write. Without it `run_branch` returns
+    # `branch_run_requires_universe`, and with an unregistered id it returns
+    # `universe_access_denied` — the ACL grant is the part that is easy to miss.
+    from tinyassets.daemon_server import (
+        ensure_universe_registered,
+        grant_universe_access,
+    )
+
+    udir = base / P4_UNIVERSE
+    udir.mkdir(parents=True, exist_ok=True)
+    ensure_universe_registered(base, universe_id=P4_UNIVERSE, universe_path=udir)
+    grant_universe_access(
+        base,
+        universe_id=P4_UNIVERSE,
+        actor_id="tester",
+        permission="write",
+        granted_by="p4_env",
+    )
+
+    from tinyassets import universe_server as us
+
+    importlib.reload(us)
+    yield us, base
+    importlib.reload(us)
+
+
+@pytest.fixture
+def p4_env_anon(tmp_path, monkeypatch):
+    """`p4_env` WITHOUT an authenticated subject, for the action-catalog tests.
+
+    The unknown-action catalog is an anonymous discovery surface. Under an
+    authenticated identity the dispatcher fail-closes instead — an unknown
+    action returns `"No action-scope metadata for extensions.<action>; refusing
+    gated dispatch."` rather than enumerating what exists, which is the correct
+    posture: an authenticated caller should not be handed a directory of
+    actions by probing.
+
+    This fixture is therefore not a workaround for the auth added to `p4_env`.
+    It reproduces exactly the context these two tests already ran in, since
+    `p4_env` authenticated nobody before that change — the coverage is
+    unchanged, only made explicit.
+    """
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
@@ -64,6 +141,7 @@ def _build_trivial_branch(us) -> str:
 
 def _run(us, bid: str, inputs: dict | None = None) -> str:
     result = _call(us, "run_branch", branch_def_id=bid,
+                   universe_id=P4_UNIVERSE,
                    inputs_json=json.dumps(inputs or {"x": "input"}))
     _wait(result["run_id"])
     return result["run_id"]
@@ -371,6 +449,7 @@ def test_run_branch_resume_from_records_explicit_source_run(p4_env):
         us,
         "run_branch",
         branch_def_id=bid,
+        universe_id=P4_UNIVERSE,
         inputs_json=json.dumps({"x": "override"}),
         resume_from=source_run_id,
     )
@@ -393,6 +472,7 @@ def test_run_branch_resume_from_missing_source_returns_error(p4_env):
         us,
         "run_branch",
         branch_def_id=bid,
+        universe_id=P4_UNIVERSE,
         resume_from="missing-run-id",
     )
 
@@ -410,6 +490,7 @@ def test_run_branch_resume_from_carries_source_inputs_when_absent(p4_env):
         us,
         "run_branch",
         branch_def_id=bid,
+        universe_id=P4_UNIVERSE,
         resume_from=source_run_id,
     )
     _wait(resumed["run_id"])
@@ -479,6 +560,7 @@ def test_run_branch_resume_from_branch_mismatch_returns_error(p4_env):
         us,
         "run_branch",
         branch_def_id=target_bid,
+        universe_id=P4_UNIVERSE,
         resume_from=source_run_id,
     )
 
@@ -543,8 +625,8 @@ def test_run_lineage_surfaces_edits_since_parent(p4_env):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_unknown_action_catalog_lists_phase4(p4_env):
-    us, _ = p4_env
+def test_unknown_action_catalog_lists_phase4(p4_env_anon):
+    us, _ = p4_env_anon
     result = _call(us, "not-a-real-action")
     avail = result.get("available_actions", [])
     for a in ("judge_run", "list_judgments", "compare_runs",
@@ -824,8 +906,8 @@ def test_rollback_text_channel_mentions_version_transition(p4_env):
     assert "v3" in result["text"]
 
 
-def test_unknown_action_catalog_lists_rollback_actions(p4_env):
-    us, _ = p4_env
+def test_unknown_action_catalog_lists_rollback_actions(p4_env_anon):
+    us, _ = p4_env_anon
     result = _call(us, "not-a-real-action")
     avail = result.get("available_actions", [])
     assert "rollback_node" in avail
