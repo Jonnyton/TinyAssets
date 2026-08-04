@@ -22,13 +22,32 @@ import pytest
 # ───────────────────────────────────────────────────────────────────────
 
 
+# Branch mutation requires a credential-derived subject, and the scope check
+# is per-family: this file drives `extensions`, `gates` AND `goals`. Nothing
+# here asserts a *scope* refusal — every assertion is about what the READ
+# surfaces expose — so granting the writes these fixtures perform costs no
+# assertion strength. `extensions.costly` stays withheld.
+_ALICE_SCOPES = [
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
+    "tinyassets.extensions.admin",
+    "tinyassets.gates.read",
+    "tinyassets.gates.write",
+    "tinyassets.gates.costly",
+    "tinyassets.gates.admin",
+    "tinyassets.goals.read",
+    "tinyassets.goals.write",
+]
+
+
 @pytest.fixture
-def gates_on_env(tmp_path, monkeypatch):
+def gates_on_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
+    authenticate_request("alice", capabilities=_ALICE_SCOPES)
     from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
@@ -36,12 +55,13 @@ def gates_on_env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def gates_off_env(tmp_path, monkeypatch):
+def gates_off_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.delenv("GATES_ENABLED", raising=False)
+    authenticate_request("alice", capabilities=_ALICE_SCOPES)
     from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, base
@@ -262,7 +282,7 @@ def test_get_branch_gated_off(gates_off_env):
     assert result["gate_status"] == "gates_disabled"
 
 
-def test_goal_gate_summary_hides_existing_claims(tmp_path, monkeypatch):
+def test_goal_gate_summary_hides_existing_claims(tmp_path, monkeypatch, authenticate_request):
     """Symmetric to the branch-get flip test: seeding claims under
     GATES_ENABLED=1 and then flipping to 0 must make goals-get
     surface the `gates_disabled` placeholder, hiding stored counters.
@@ -272,6 +292,9 @@ def test_goal_gate_summary_hides_existing_claims(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
+    # Built inline rather than via gates_on_env, so the credential has to be
+    # issued here too — seeding the claims is a write.
+    authenticate_request("alice", capabilities=_ALICE_SCOPES)
     from tinyassets import universe_server as us
     importlib.reload(us)
     try:
@@ -297,7 +320,7 @@ def test_goal_gate_summary_hides_existing_claims(tmp_path, monkeypatch):
         importlib.reload(us)
 
 
-def test_get_branch_gates_off_hides_existing_claims(tmp_path, monkeypatch):
+def test_get_branch_gates_off_hides_existing_claims(tmp_path, monkeypatch, authenticate_request):
     """A daemon flipping GATES_ENABLED from 1 to 0 must hide previously
     stored claims — the fallback is not a cache of the last on-state.
     """
@@ -306,6 +329,9 @@ def test_get_branch_gates_off_hides_existing_claims(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
+    # Built inline rather than via gates_on_env, so the credential has to be
+    # issued here too — seeding the claims is a write.
+    authenticate_request("alice", capabilities=_ALICE_SCOPES)
     from tinyassets import universe_server as us
     importlib.reload(us)
     try:

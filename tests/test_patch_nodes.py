@@ -23,11 +23,18 @@ import pytest
 
 
 @pytest.fixture
-def us_env(tmp_path, monkeypatch):
+def us_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin; `extensions.costly` is deliberately NOT
+    # granted, so a costly-refusal test would still assert something.
+    authenticate_request("tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
