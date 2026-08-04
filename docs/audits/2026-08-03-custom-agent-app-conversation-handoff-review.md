@@ -37,4 +37,5 @@ placeholder `<production exclusions>`. It now records the exact copy-pasteable
 `rg` command and glob exclusions used for the claim.
 
 An exact-commit confirmation is required after this finding and review record
-are committed; its immutable SHA and verdict will be appended below.
+are committed. Its immutable SHA and verdict are recorded as a PR review
+receipt so adding the receipt cannot change the reviewed head.
