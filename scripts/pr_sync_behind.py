@@ -75,6 +75,26 @@ import sys
 _SYNCABLE = {"BEHIND"}
 
 
+def _force_utf8_stdio() -> None:
+    """Print UTF-8 regardless of the Windows console codepage.
+
+    Same helper as `session_sync_gate.py`. Without it a PR title containing an
+    em dash renders as mojibake on cp1252 — which this repo's pre-commit
+    explicitly scans files for, so emitting it to the console is the same
+    class of defect. Observed in this script's own first live run.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        enc = (getattr(stream, "encoding", None) or "").lower().replace("_", "-")
+        if enc == "utf-8":
+            continue
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+            except (AttributeError, ValueError, OSError):
+                pass
+
+
 def _gh(*args: str) -> str:
     proc = subprocess.run(
         ["gh", *args],
@@ -120,6 +140,7 @@ def _update(number: int) -> tuple[bool, str]:
 
 
 def main() -> int:
+    _force_utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--update", action="store_true",
                     help="actually update; default is report-only")
