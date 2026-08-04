@@ -91,7 +91,9 @@ def isolation_guarantees_satisfy(
         return False
     if not required or not proved:
         return False
-    if any(type(guarantee) is not IsolationGuarantee for guarantee in required | proved):
+    if any(type(guarantee) is not IsolationGuarantee for guarantee in required):
+        return False
+    if any(type(guarantee) is not IsolationGuarantee for guarantee in proved):
         return False
     return required <= proved
 

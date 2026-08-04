@@ -177,6 +177,17 @@ def test_isolation_guarantee_comparison_fails_closed_for_missing_or_unknown_prop
         OS_ISOLATED_GUARANTEES | {"unknown"},  # type: ignore[arg-type]
         OS_ISOLATED_GUARANTEES,
     )
+    raw_os_guarantees = frozenset(
+        guarantee.value for guarantee in OS_ISOLATED_GUARANTEES
+    )
+    assert not isolation_guarantees_satisfy(  # type: ignore[arg-type]
+        OS_ISOLATED_GUARANTEES,
+        raw_os_guarantees,
+    )
+    assert not isolation_guarantees_satisfy(  # type: ignore[arg-type]
+        raw_os_guarantees,
+        OS_ISOLATED_GUARANTEES,
+    )
     assert not isolation_guarantees_satisfy(frozenset(), OS_ISOLATED_GUARANTEES)
     assert not isolation_guarantees_satisfy(  # type: ignore[arg-type]
         OS_ISOLATED_GUARANTEES,
@@ -203,6 +214,14 @@ def test_vm_isolation_is_stronger_only_with_every_base_and_vm_property() -> None
             VM_ISOLATED_GUARANTEES,
             VM_ISOLATED_GUARANTEES - {missing},
         )
+
+    raw_vm_guarantees = frozenset(
+        guarantee.value for guarantee in VM_ISOLATED_GUARANTEES
+    )
+    assert not isolation_guarantees_satisfy(  # type: ignore[arg-type]
+        VM_ISOLATED_GUARANTEES,
+        raw_vm_guarantees,
+    )
 
 
 def test_execution_admission_error_has_exact_terminal_reason_taxonomy() -> None:
