@@ -9,7 +9,59 @@ Verifies:
 - add_node / connect_nodes / set_entry_point / add_state_field: uniform verbose contract.
 """
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_subject(authenticate_request):
+    """These tests call `_ext_branch_build` / `_ext_branch_patch` directly,
+    below the MCP scope layer, but those still resolve the writer through
+    `_request_branch_actor`. Without a credential they short-circuit to
+    `{"error": "Authenticated branch subject required."}` and every
+    assertion here dies on `KeyError: 'status'` before the response-shape
+    contract under test is reached. Autouse because the helpers are plain
+    module functions, not fixtures.
+    """
+    authenticate_request("tester")
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_base_path_mock():
+    """Fail loudly if a patch here escapes into another test module.
+
+    The first version of this file's fix patched
+    `tinyassets.api.helpers._base_path`. Roughly a dozen modules bind that
+    name at module level (`from tinyassets.api.helpers import _base_path`),
+    so any of them first imported inside the patch window captured the
+    MagicMock PERMANENTLY — `patch` restores only the attribute it replaced,
+    not the copies other modules already took. That is exactly what happened:
+    `tinyassets.api.runs._base_path` stayed a MagicMock for the rest of the
+    session and silently broke 14 tests in test_routing_evidence.py, which
+    read runs from a path that no longer existed and saw `count == 0`.
+
+    The patch target is now `tinyassets.storage.data_dir`, which `_base_path`
+    resolves through on every call, so no module-level binding is replaced
+    and nothing can capture a mock. This fixture pins that: if someone
+    re-points a patch at a module-level name, the leak fails here instead of
+    in an unrelated file where it looks like flakiness.
+    """
+    yield
+    import sys
+
+    leaked = [
+        mod.__name__
+        for mod in list(sys.modules.values())
+        if getattr(mod, "__name__", "").startswith("tinyassets.")
+        and isinstance(getattr(mod, "_base_path", None), MagicMock)
+    ]
+    assert not leaked, (
+        f"a patched `_base_path` MagicMock escaped into {leaked}. Patch "
+        f"`tinyassets.storage.data_dir` instead of a module-level "
+        f"`_base_path` binding — see this fixture's docstring."
+    )
 
 
 def _make_node(node_id="n1", display_name="node_1"):
@@ -79,7 +131,7 @@ def _call_build(spec_dict, verbose=None):
 
     with (
         patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.storage.data_dir", return_value=Path("/fake")),
         patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
     ):
         result = _ext_branch_build(kwargs)
@@ -108,7 +160,7 @@ def _call_patch(branch_before, branch_after, changes_json, verbose=None):
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_before),
         patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+        patch("tinyassets.storage.data_dir", return_value=Path("/fake")),
         patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         patch(
             "tinyassets.api.engine_helpers._current_actor",
@@ -168,7 +220,7 @@ class TestBuildBranchSummaryDefault:
         save_mock = MagicMock(return_value=saved)
         with (
             patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-            patch("tinyassets.api.helpers._base_path", return_value="/fake"),
+            patch("tinyassets.storage.data_dir", return_value=Path("/fake")),
             patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
         ):
             result = json.loads(_ext_branch_build(

@@ -59,7 +59,7 @@ def _init_git_repo(repo: Path) -> None:
 
 
 @pytest.fixture
-def cached_gates_env(tmp_path, monkeypatch):
+def cached_gates_env(tmp_path, monkeypatch, authenticate_request):
     """A temp git repo with GATES_ENABLED + sqlite_cached backend."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -71,6 +71,25 @@ def cached_gates_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
     monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin only, and the scope check is per-family.
+    # This file drives `gates` and `goals`: `claim` is `gates.costly`,
+    # `define_ladder` / `retract` are `gates.admin`. Nothing here asserts a
+    # scope refusal, so granting them costs no assertion strength.
+    authenticate_request("alice", capabilities=[
+        "tinyassets.extensions.read",
+        "tinyassets.extensions.write",
+        "tinyassets.extensions.admin",
+        "tinyassets.gates.read",
+        "tinyassets.gates.write",
+        "tinyassets.gates.costly",
+        "tinyassets.gates.admin",
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+    ])
     from tinyassets.catalog import backend as backend_mod
     backend_mod.invalidate_backend_cache()
     from tinyassets import universe_server as us
