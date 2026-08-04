@@ -4,7 +4,10 @@ from dataclasses import FrozenInstanceError, fields
 
 import pytest
 
+from tinyassets.exceptions import ProviderError
 from tinyassets.execution_admission import (
+    ExecutionAdmissionError,
+    ExecutionAdmissionReason,
     ExecutionProfile,
     ExecutionRequirement,
     ExecutionWorkload,
@@ -12,6 +15,18 @@ from tinyassets.execution_admission import (
     derive_inference_requirement,
     derive_source_requirement,
 )
+
+_ADMISSION_REASONS = {
+    "requirement_missing",
+    "requirement_untrusted",
+    "requirement_malformed",
+    "binding_mismatch",
+    "profile_unsupported",
+    "isolation_unsatisfied",
+    "backend_unavailable",
+    "backend_protocol_mismatch",
+    "backend_evidence_invalid",
+}
 
 
 def _binding(name: str, digit: str) -> OpaqueRequirementBinding:
@@ -105,3 +120,19 @@ def test_execution_admission_vocabulary_is_closed() -> None:
         ExecutionWorkload("provider_cli")
     with pytest.raises(ValueError):
         ExecutionProfile("inference_only")
+
+
+def test_execution_admission_error_has_exact_terminal_reason_taxonomy() -> None:
+    assert {reason.value for reason in ExecutionAdmissionReason} == _ADMISSION_REASONS
+    assert not issubclass(ExecutionAdmissionError, ProviderError)
+
+    for reason in ExecutionAdmissionReason:
+        error = ExecutionAdmissionError(reason=reason)
+        assert error.reason is reason
+        assert str(error) == reason.value
+
+
+def test_execution_admission_error_rejects_unknown_reason_mutations() -> None:
+    for unknown_reason in ("unknown", "backend_timeout", "BACKEND_UNAVAILABLE", ""):
+        with pytest.raises(ValueError, match="unknown execution admission reason"):
+            ExecutionAdmissionError(reason=unknown_reason)
