@@ -342,19 +342,28 @@ def test_source_workspace_projection_does_not_capture_ambient_roots(
     tmp_path: Path,
 ) -> None:
     ambient_roots = {
-        "TINYASSETS_UNIVERSE": "C:/ambient/universe",
-        "TINYASSETS_DATA_DIR": "C:/ambient/data",
-        "HOME": "C:/ambient/home",
-        "CODEX_HOME": "C:/ambient/codex-auth",
-        "CLAUDE_CONFIG_DIR": "C:/ambient/claude-auth",
+        "TINYASSETS_UNIVERSE": "C:/ambient/universe-root-sentinel",
+        "TINYASSETS_DATA_DIR": "C:/ambient/data-root-sentinel",
+        "HOME": "C:/ambient/home-env-sentinel",
+        "USERPROFILE": "C:/ambient/windows-home-sentinel",
+        "CODEX_HOME": "C:/ambient/codex-auth-sentinel",
+        "CLAUDE_CONFIG_DIR": "C:/ambient/claude-auth-sentinel",
     }
     for name, value in ambient_roots.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.chdir(tmp_path)
+    ambient_cwd = tmp_path / "working-directory-sentinel"
+    ambient_cwd.mkdir()
+    monkeypatch.chdir(ambient_cwd)
 
     projection = _derive_source_projection(declared_inputs={"value": 41})
     projected_bytes = projection.approved_source + projection.declared_inputs_json
 
     repository_root = Path(__file__).resolve().parents[1]
-    for root in (*ambient_roots.values(), str(tmp_path), str(repository_root)):
-        assert root.encode() not in projected_bytes
+    roots = (
+        *ambient_roots.values(),
+        str(Path.home()),
+        str(ambient_cwd),
+        str(repository_root),
+    )
+    for sentinel in {Path(root).name for root in roots}:
+        assert sentinel.encode() not in projected_bytes
