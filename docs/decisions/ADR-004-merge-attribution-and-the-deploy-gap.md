@@ -98,8 +98,30 @@ Smallest ask, option 2 (option 1 is the same shape with an App):
 1. Create a fine-grained PAT scoped to `Jonnyton/TinyAssets` with
    **Pull requests: write** and **Contents: write**.
 2. Add it as an Actions secret.
-3. Point `auto-enroll-merge.yml`'s `gh` calls at that secret instead of
-   `${{ github.token }}`.
+3. Point `auto-enroll-merge.yml` at that secret. It is exactly one line —
+   `.github/workflows/auto-enroll-merge.yml:58`:
+
+   ```diff
+   -          GH_TOKEN: ${{ github.token }}
+   +          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN || github.token }}
+   ```
+
+   The `||` fallback means this edit is a **no-op until the secret exists**,
+   so it can land before step 1 without changing behavior. An unset secret is
+   an empty string, which is falsy, so enrollment keeps using the default
+   token exactly as it does today.
+
+### Verifying it worked
+
+Do NOT infer success from the merge. Merge one PR through auto-merge, then:
+
+```bash
+gh pr view <n> --json mergedBy --jq .mergedBy.login     # expect the PAT/App identity, not app/github-actions
+gh run list --workflow build-image.yml --limit 1   --json event,headSha --jq '.[0]'                       # expect event=push on the merge sha
+```
+
+Then confirm production actually moved — `get_status` -> `release_state.git_sha`
+must contain the commit (hard rule 14).
 
 After step 3, auto-merged PRs raise a real `push` on `main`, `build-image`
 fires, and `deploy-prod` chains from it — the whole "merged is not deployed"
