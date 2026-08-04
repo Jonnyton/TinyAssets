@@ -42,6 +42,11 @@ from tinyassets.conversation_custody import (
 )
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversation_custody_database_binding (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    universe_id TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversation_custody_threads (
     conversation_id TEXT PRIMARY KEY,
     schema_name TEXT NOT NULL,
@@ -502,6 +507,49 @@ def _finish_transaction(
     conn.execute("COMMIT")
 
 
+def _require_database_universe_binding(
+    conn: sqlite3.Connection,
+    evidence: ConversationCustodyGrantEvidence,
+) -> None:
+    binding = conn.execute(
+        """
+        SELECT singleton_id, universe_id
+        FROM conversation_custody_database_binding
+        WHERE singleton_id = 1
+        """
+    ).fetchone()
+    if binding is not None:
+        if binding["singleton_id"] != 1 or binding["universe_id"] != evidence.universe_id:
+            raise ConversationCustodyAuthorizationError(
+                "storage_universe_mismatch",
+                "custody database belongs to another universe",
+            )
+        return
+
+    persisted = conn.execute(
+        """
+        SELECT universe_id FROM conversation_custody_threads
+        UNION
+        SELECT universe_id FROM conversation_custody_deletions
+        LIMIT 2
+        """
+    ).fetchall()
+    if len(persisted) > 1:
+        raise ConversationCustodyIntegrityError("custody database contains more than one universe")
+    if persisted and persisted[0]["universe_id"] != evidence.universe_id:
+        raise ConversationCustodyAuthorizationError(
+            "storage_universe_mismatch",
+            "custody database belongs to another universe",
+        )
+    conn.execute(
+        """
+        INSERT INTO conversation_custody_database_binding (singleton_id, universe_id)
+        VALUES (1, ?)
+        """,
+        (evidence.universe_id,),
+    )
+
+
 def _rollback(conn: sqlite3.Connection) -> None:
     if conn.in_transaction:
         conn.execute("ROLLBACK")
@@ -611,6 +659,7 @@ def create_thread(
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _require_database_universe_binding(conn, evidence)
         existing = conn.execute(
             """
             SELECT request_digest, conversation_id, result_ref
@@ -730,6 +779,7 @@ def append_message(
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _require_database_universe_binding(conn, evidence)
         existing = conn.execute(
             """
             SELECT request_digest, conversation_id, result_ref
@@ -874,6 +924,7 @@ def read_thread(
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _require_database_universe_binding(conn, evidence)
         _raise_if_deleted(conn, scope, conversation_id)
         thread = _select_thread(conn, conversation_id)
         _require_thread_scope(thread, scope)
@@ -919,6 +970,7 @@ def export_thread(
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _require_database_universe_binding(conn, evidence)
         _raise_if_deleted(conn, scope, conversation_id)
         thread = _select_thread(conn, conversation_id)
         _require_thread_scope(thread, scope)
@@ -976,6 +1028,7 @@ def _finalize_deletion(
     _checkpoint_truncate(conn, evidence, identity)
     conn.execute("BEGIN IMMEDIATE")
     try:
+        _require_database_universe_binding(conn, evidence)
         row = _select_deletion(conn, target_digest)
         if row is None:
             raise ConversationCustodyIntegrityError("deletion intent is missing")
@@ -1045,6 +1098,7 @@ def delete_thread(
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _require_database_universe_binding(conn, evidence)
         logical_deleted_at = custody_domain._canonical_now()
         observed_at = _parsed_timestamp(logical_deleted_at, "system_now")
         key_row = conn.execute(

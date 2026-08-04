@@ -688,10 +688,16 @@ def validate_private_universe_location(
 
 
 class ConversationCustodyOperationGrant:
-    __slots__ = ("_grant_id", "_seal", "__weakref__")
+    __slots__ = ("_grant_id", "_issuer_pid", "_seal", "__weakref__")
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError("conversation custody grants are authority-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("conversation custody grants are immutable")
+
+    def __reduce__(self):
+        raise TypeError("conversation custody grants are non-serializable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,15 +710,31 @@ _CAPABILITY_KEY = secrets.token_bytes(32)
 _GRANT_LOCK = threading.Lock()
 _GRANTS: dict[
     str,
-    tuple[weakref.ReferenceType[ConversationCustodyOperationGrant], _GrantPayload],
+    tuple[weakref.ReferenceType[ConversationCustodyOperationGrant], _GrantPayload, int],
 ] = {}
 
 
-def _seal(identifier: str) -> bytes:
-    return hmac.digest(_CAPABILITY_KEY, f"conversation-custody\0{identifier}".encode(), "sha256")
+def _reset_grants_after_fork() -> None:
+    global _CAPABILITY_KEY
+    global _GRANT_LOCK
+    global _GRANTS
+    _CAPABILITY_KEY = secrets.token_bytes(32)
+    _GRANT_LOCK = threading.Lock()
+    _GRANTS = {}
 
 
-def _discard_grant(identifier: str) -> None:
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_grants_after_fork)
+
+
+def _seal(identifier: str, issuer_pid: int) -> bytes:
+    message = f"conversation-custody\0{issuer_pid}\0{identifier}".encode()
+    return hmac.digest(_CAPABILITY_KEY, message, "sha256")
+
+
+def _discard_grant(identifier: str, issuer_pid: int) -> None:
+    if issuer_pid != os.getpid():
+        return
     with _GRANT_LOCK:
         _GRANTS.pop(identifier, None)
 
@@ -727,8 +749,11 @@ def consume_operation_grant(
     """Consume one exact grant after request, freshness, live, and path checks."""
 
     try:
-        exact = type(grant) is ConversationCustodyOperationGrant and hmac.compare_digest(
-            grant._seal, _seal(grant._grant_id)
+        current_pid = os.getpid()
+        exact = (
+            type(grant) is ConversationCustodyOperationGrant
+            and grant._issuer_pid == current_pid
+            and hmac.compare_digest(grant._seal, _seal(grant._grant_id, current_pid))
         )
     except (AttributeError, TypeError):
         exact = False
@@ -738,7 +763,7 @@ def consume_operation_grant(
         )
     with _GRANT_LOCK:
         entry = _GRANTS.get(grant._grant_id)
-        if entry is not None and entry[0]() is grant:
+        if entry is not None and entry[0]() is grant and entry[2] == current_pid:
             _GRANTS.pop(grant._grant_id, None)
         else:
             entry = None

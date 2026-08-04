@@ -143,16 +143,22 @@ def _evidence(
 
 def _grant(custody, evidence, *, current: bool = True):
     identifier = secrets.token_hex(32)
+    issuer_pid = os.getpid()
     grant = object.__new__(custody.ConversationCustodyOperationGrant)
     object.__setattr__(grant, "_grant_id", identifier)
-    object.__setattr__(grant, "_seal", custody._seal(identifier))  # noqa: SLF001
+    object.__setattr__(grant, "_issuer_pid", issuer_pid)
+    object.__setattr__(grant, "_seal", custody._seal(identifier, issuer_pid))  # noqa: SLF001
     payload = custody._GrantPayload(  # noqa: SLF001 - explicit test-only registry injection
         evidence,
         lambda observed: current and observed == evidence,
     )
     with custody._GRANT_LOCK:  # noqa: SLF001
-        custody._GRANTS[identifier] = (weakref.ref(grant), payload)  # noqa: SLF001
-    weakref.finalize(grant, custody._discard_grant, identifier)  # noqa: SLF001
+        custody._GRANTS[identifier] = (  # noqa: SLF001
+            weakref.ref(grant),
+            payload,
+            issuer_pid,
+        )
+    weakref.finalize(grant, custody._discard_grant, identifier, issuer_pid)  # noqa: SLF001
     return grant
 
 
@@ -257,6 +263,80 @@ def test_grant_cannot_be_consumed_before_its_issue_time(tmp_path: Path) -> None:
         )
     assert blocked.value.code == "grant_not_yet_valid"
     assert not (universe / ".tinyassets.db").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork is unavailable")
+def test_grant_cannot_be_consumed_in_fork_child_and_parent(tmp_path: Path) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    grant = _grant(custody, evidence)
+    read_fd, write_fd = os.pipe()
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.close(read_fd)
+        try:
+            custody.consume_operation_grant(
+                grant,
+                expected_action=evidence.action,
+                expected_request_digest=evidence.request_digest,
+                expected_idempotency_key_digest=None,
+            )
+            result = b"accepted"
+        except custody.ConversationCustodyAuthorizationError:
+            result = b"rejected"
+        os.write(write_fd, result)
+        os.close(write_fd)
+        os._exit(0)
+
+    os.close(write_fd)
+    child_result = os.read(read_fd, 32)
+    os.close(read_fd)
+    _pid, status = os.waitpid(child_pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    consumed = custody.consume_operation_grant(
+        grant,
+        expected_action=evidence.action,
+        expected_request_digest=evidence.request_digest,
+        expected_idempotency_key_digest=None,
+    )
+    assert child_result == b"rejected"
+    assert consumed == evidence
+
+
+def test_grant_is_bound_to_issuer_process_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    grant = _grant(custody, evidence)
+    issuer_pid = os.getpid()
+    with monkeypatch.context() as process:
+        process.setattr(custody.os, "getpid", lambda: issuer_pid + 1)
+        with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+            custody.consume_operation_grant(
+                grant,
+                expected_action=evidence.action,
+                expected_request_digest=evidence.request_digest,
+                expected_idempotency_key_digest=None,
+            )
+        assert blocked.value.code == "grant_invalid"
+
+    assert (
+        custody.consume_operation_grant(
+            grant,
+            expected_action=evidence.action,
+            expected_request_digest=evidence.request_digest,
+            expected_idempotency_key_digest=None,
+        )
+        == evidence
+    )
 
 
 def test_read_grant_requires_null_key_and_mutation_requires_digest(tmp_path: Path) -> None:
@@ -1221,6 +1301,78 @@ def test_private_store_same_key_is_independent_across_universes(tmp_path: Path) 
     assert created[0].conversation_id != created[1].conversation_id
     assert created[0].universe_id == "universe_1"
     assert created[1].universe_id == "universe_2"
+
+
+def test_private_store_refuses_two_universes_at_one_registered_database(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "shared"
+    universe.mkdir(parents=True)
+    key = _key(65)
+    first_scope = _scope(custody, universe_id="universe_1")
+    second_scope = _scope(custody, universe_id="universe_2")
+    first = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=key,
+            scope=first_scope,
+        ),
+        scope=first_scope,
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+    )
+
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=key,
+                scope=second_scope,
+            ),
+            scope=second_scope,
+            idempotency_key=key,
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+        )
+    assert blocked.value.code == "storage_universe_mismatch"
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT universe_id FROM conversation_custody_threads"
+        ).fetchall()
+        binding = conn.execute(
+            "SELECT singleton_id, universe_id FROM conversation_custody_database_binding"
+        ).fetchall()
+    assert rows == [(first.universe_id,)]
+    assert binding == [(1, first.universe_id)]
+
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute("DELETE FROM conversation_custody_database_binding")
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as migrated:
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=_key(66),
+                scope=second_scope,
+            ),
+            scope=second_scope,
+            idempotency_key=_key(66),
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+        )
+    assert migrated.value.code == "storage_universe_mismatch"
 
 
 def test_private_store_concurrent_identical_create_has_one_result(tmp_path: Path) -> None:
