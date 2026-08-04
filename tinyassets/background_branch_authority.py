@@ -248,7 +248,8 @@ _MAX_JSON_INTEGER = (1 << 53) - 1
 # prefix collision (``tinyassets/branch_versions.py``). The nominal ``branch_``
 # / ``branch:`` prefixes therefore match NO branch production actually mints,
 # so the exact canonical shapes are admitted for the fields that carry them.
-# Both shapes are far too constrained to smuggle a bearer secret.
+# Both shapes are far too constrained to smuggle a bearer secret. Values that
+# already carry a nominal prefix are returned before these are consulted.
 _BRANCH_DEF_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 _BRANCH_VERSION_ID_PATTERN = re.compile(
     r"^[0-9a-f]{12}@(?:[0-9a-f]{8}|[0-9a-f]{16})$"
