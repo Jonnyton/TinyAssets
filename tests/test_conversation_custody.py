@@ -548,7 +548,8 @@ def test_existing_database_identity_is_stable_while_sidecars_may_transition(
         expected_primary_identity=initial.primary_identity,
     )
 
-    database.unlink()
+    original = universe / ".tinyassets.db-original"
+    database.replace(original)
     database.write_bytes(b"replacement")
     with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
         custody.validate_private_universe_location(
