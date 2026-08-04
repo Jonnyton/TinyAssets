@@ -1513,3 +1513,16 @@ fresh-host rollback edges found later.
   supervisor must freeze and explicitly pass the original identity on every
   poll. Provider checks likewise belong inside activation/admission write
   transactions, not only before and after them.
+
+## 2026-08-04 - Server-owned app outbound adapter
+
+- **What surprised me:** a mocked transport boundary can still prove useful if
+  it is strict about the only values crossing it and persists no message body;
+  the idempotency and redaction invariants are independently testable before
+  live Slack credentials exist.
+- **Pattern worth capturing:** make the response digest a shared contract at
+  the authority-to-transport seam, then derive the replay key from the signed
+  authorization rather than from caller text.
+- **What I would do differently:** run the independent reviewer earlier with
+  a smaller exact-head brief; repeated peer CLI timeouts should not be allowed
+  to delay hosted verification or be mistaken for an approval.
