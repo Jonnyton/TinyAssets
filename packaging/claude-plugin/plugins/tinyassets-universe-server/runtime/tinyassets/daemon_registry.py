@@ -238,11 +238,20 @@ def list_daemons(base_path: str | Path) -> list[dict[str, Any]]:
     ]
 
 
-def _is_project_loop_daemon(daemon: dict[str, Any]) -> bool:
+def _is_project_loop_daemon(
+    daemon: dict[str, Any],
+    *,
+    universe_id: str = "",
+    owner_user_id: str = "",
+) -> bool:
     metadata = daemon.get("metadata")
     if not isinstance(metadata, dict):
         return False
     if not daemon.get("has_soul"):
+        return False
+    if universe_id and str(metadata.get("universe_id") or "") != universe_id:
+        return False
+    if owner_user_id and str(daemon.get("owner_user_id") or "") != owner_user_id:
         return False
     return bool(
         metadata.get(PROJECT_LOOP_FLAG)
@@ -257,6 +266,8 @@ def select_project_loop_daemon(
     base_path: str | Path,
     *,
     include_soul: bool = False,
+    universe_id: str = "",
+    owner_user_id: str = "",
 ) -> dict[str, Any] | None:
     """Return the latest soul-bearing daemon marked as the project loop default.
 
@@ -266,7 +277,11 @@ def select_project_loop_daemon(
     """
     daemon_server.initialize_author_server(base_path)
     for daemon in reversed(list_daemons(base_path)):
-        if _is_project_loop_daemon(daemon):
+        if _is_project_loop_daemon(
+            daemon,
+            universe_id=universe_id.strip(),
+            owner_user_id=owner_user_id.strip(),
+        ):
             if include_soul:
                 return get_daemon(
                     base_path,

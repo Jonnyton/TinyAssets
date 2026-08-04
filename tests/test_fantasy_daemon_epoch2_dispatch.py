@@ -50,17 +50,19 @@ def _commit_epoch2(
     activation: AutomationActivation,
 ) -> dict:
     key_hash = "hmac-sha256:" + hashlib.sha256(key.encode()).hexdigest()
-    body = rfc8785.dumps({
-        "branch_id": "",
-        "directed_daemon_id": "",
-        "directed_daemon_instruction": "",
-        "pickup_incentive": "",
-        "priority_weight": 50.0,
-        "request_type": "general",
-        "schema_version": "request-admission-v2",
-        "text": "execute one bounded branch slice",
-        "universe_id": "universe-a",
-    })
+    body = rfc8785.dumps(
+        {
+            "branch_id": "",
+            "directed_daemon_id": "",
+            "directed_daemon_instruction": "",
+            "pickup_incentive": "",
+            "priority_weight": 50.0,
+            "request_type": "general",
+            "schema_version": "request-admission-v2",
+            "text": "execute one bounded branch slice",
+            "universe_id": "universe-a",
+        }
+    )
     return RequestAdmissionStore(base_path).commit_admission(
         tenant_id="tenant-a",
         actor_id="actor-a",
@@ -109,9 +111,7 @@ def _seed_cloud_worker(
         worker_id="worker-a",
         metadata={"automation_executor_class": "cloud"},
     )
-    expires_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=75)
-    ).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=75)).isoformat()
     descriptor = {
         "queue_protocol_version": 2,
         "capabilities": ["operator_request_v1"],
@@ -222,32 +222,29 @@ def test_worker_claim_context_is_read_from_canonical_runtime_transaction(
 
     assert context is not None
     assert context.daemon_id == daemon["daemon_id"]
-    assert context.descriptor.executor_class is (
-        AutomationActivationExecutor.CLOUD
-    )
+    assert context.descriptor.executor_class is (AutomationActivationExecutor.CLOUD)
     assert context.descriptor.runtime_instance_id == runtime["runtime_instance_id"]
 
     with sqlite3.connect(db_path(tmp_path)) as conn:
         row = conn.execute(
-            "SELECT metadata_json FROM author_runtime_instances "
-            "WHERE instance_id = ?",
+            "SELECT metadata_json FROM author_runtime_instances WHERE instance_id = ?",
             (runtime["runtime_instance_id"],),
         ).fetchone()
         metadata = json.loads(row[0])
-        metadata["queue_protocol_descriptor"]["expires_at"] = (
-            "2000-01-01T00:00:00+00:00"
-        )
+        metadata["queue_protocol_descriptor"]["expires_at"] = "2000-01-01T00:00:00+00:00"
         conn.execute(
-            "UPDATE author_runtime_instances SET metadata_json = ? "
-            "WHERE instance_id = ?",
+            "UPDATE author_runtime_instances SET metadata_json = ? WHERE instance_id = ?",
             (json.dumps(metadata), runtime["runtime_instance_id"]),
         )
 
-    assert Epoch2BranchTaskAdapter(tmp_path).worker_claim_context(
-        worker_id="worker-a",
-        runtime_instance_id=runtime["runtime_instance_id"],
-        universe_id="universe-a",
-    ) is None
+    assert (
+        Epoch2BranchTaskAdapter(tmp_path).worker_claim_context(
+            worker_id="worker-a",
+            runtime_instance_id=runtime["runtime_instance_id"],
+            universe_id="universe-a",
+        )
+        is None
+    )
 
 
 def test_dispatch_claims_activation_bound_epoch2_task(
@@ -276,9 +273,7 @@ def test_dispatch_claims_activation_bound_epoch2_task(
     assert claimed.executor_worker_id == "worker-a"
     assert claimed.executor_runtime_id == _runtime["runtime_instance_id"]
     assert inputs["request_id"] == committed["request_id"]
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        committed["branch_task_id"]
-    ).status == "running"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"]).status == "running"
 
 
 def test_dispatch_resumes_live_epoch2_claim_before_selecting_new_work(
@@ -318,9 +313,7 @@ def test_dispatch_resumes_live_epoch2_claim_before_selecting_new_work(
 
     assert resumed is not None
     assert resumed.branch_task_id == claimed.branch_task_id
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        pending_id
-    ).status == "pending"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(pending_id).status == "pending"
 
 
 def test_restart_refuses_live_claim_after_activation_is_stopped(
@@ -352,9 +345,7 @@ def test_restart_refuses_live_claim_after_activation_is_stopped(
 
     assert resumed is None
     assert inputs == {}
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        committed["branch_task_id"]
-    ).status == "failed"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"]).status == "failed"
 
 
 def test_epoch2_observers_heartbeat_and_finalize_transactional_task(
@@ -386,9 +377,7 @@ def test_epoch2_observers_heartbeat_and_finalize_transactional_task(
     node_status("bounded-slice", "completed")
     daemon_main._finalize_claimed_task(universe, claimed, success=True)
 
-    finished = Epoch2BranchTaskAdapter(tmp_path).get(
-        committed["branch_task_id"]
-    )
+    finished = Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"])
     assert finished is not None
     assert finished.heartbeat_at != before
     assert finished.status == "succeeded"
@@ -424,8 +413,7 @@ def test_dispatch_recovers_expired_epoch2_claim_before_new_selection(
     pending_id = (task_ids - {claimed.branch_task_id}).pop()
     with sqlite3.connect(db_path(tmp_path)) as conn:
         conn.execute(
-            "UPDATE branch_tasks_v2 SET lease_expires_at = ? "
-            "WHERE branch_task_id = ?",
+            "UPDATE branch_tasks_v2 SET lease_expires_at = ? WHERE branch_task_id = ?",
             ("2000-01-01T00:00:00+00:00", claimed.branch_task_id),
         )
 
@@ -436,9 +424,7 @@ def test_dispatch_recovers_expired_epoch2_claim_before_new_selection(
 
     assert recovered is not None
     assert recovered.branch_task_id == claimed.branch_task_id
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        pending_id
-    ).status == "pending"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(pending_id).status == "pending"
 
 
 def test_runtime_descriptor_mismatch_fails_closed_without_queue_mutation(
@@ -465,9 +451,7 @@ def test_runtime_descriptor_mismatch_fails_closed_without_queue_mutation(
     assert runtime["runtime_instance_id"] != "runtime::forged"
     assert claimed is None
     assert inputs == {}
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        committed["branch_task_id"]
-    ).status == "pending"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"]).status == "pending"
 
 
 def test_activation_bound_claim_is_single_flight_across_workers(
@@ -487,9 +471,7 @@ def test_activation_bound_claim_is_single_flight_across_workers(
         created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
         activation=active,
     )
-    expires_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=75)
-    ).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=75)).isoformat()
 
     def descriptor(worker_id: str) -> WorkerClaimDescriptor:
         return WorkerClaimDescriptor(
@@ -508,17 +490,23 @@ def test_activation_bound_claim_is_single_flight_across_workers(
     adapter = Epoch2BranchTaskAdapter(tmp_path)
     worker_a = descriptor("worker-a")
     worker_b = descriptor("worker-b")
-    assert adapter.claim(
-        first["branch_task_id"],
-        descriptor=worker_a,
-        descriptor_reader=lambda _conn, _worker: worker_a,
-    ) is not None
+    assert (
+        adapter.claim(
+            first["branch_task_id"],
+            descriptor=worker_a,
+            descriptor_reader=lambda _conn, _worker: worker_a,
+        )
+        is not None
+    )
 
-    assert adapter.claim(
-        second["branch_task_id"],
-        descriptor=worker_b,
-        descriptor_reader=lambda _conn, _worker: worker_b,
-    ) is None
+    assert (
+        adapter.claim(
+            second["branch_task_id"],
+            descriptor=worker_b,
+            descriptor_reader=lambda _conn, _worker: worker_b,
+        )
+        is None
+    )
 
 
 def test_active_automation_does_not_starve_unrelated_pending_work(
@@ -562,11 +550,14 @@ def test_active_automation_does_not_starve_unrelated_pending_work(
         executor_class=AutomationActivationExecutor.CLOUD,
     )
     adapter = Epoch2BranchTaskAdapter(tmp_path)
-    assert adapter.claim(
-        running["branch_task_id"],
-        descriptor=descriptor,
-        descriptor_reader=lambda _conn, _worker: descriptor,
-    ) is not None
+    assert (
+        adapter.claim(
+            running["branch_task_id"],
+            descriptor=descriptor,
+            descriptor_reader=lambda _conn, _worker: descriptor,
+        )
+        is not None
+    )
 
     candidate_ids = {task.branch_task_id for task in adapter.list_candidates()}
 
@@ -946,10 +937,13 @@ def test_queue_branch_task_run_reservation_has_exactly_one_winner(
     assert len(winners) == 1
     assert len(conflicts) == 1
     assert isinstance(conflicts[0], runs.BranchTaskRunReservationConflict)
-    assert runs.get_run_by_branch_task_id(
-        tmp_path,
-        branch_task_id=task_id,
-    )["run_id"] == winners[0]
+    assert (
+        runs.get_run_by_branch_task_id(
+            tmp_path,
+            branch_task_id=task_id,
+        )["run_id"]
+        == winners[0]
+    )
 
 
 def test_epoch2_reservation_race_reconciles_only_exact_completed_run(
@@ -1151,9 +1145,7 @@ def test_epoch2_mid_run_cancel_cannot_finalize_completed_provider_as_success(
             observed_heartbeat,
         )
         assert provider_started.wait(timeout=2.0)
-        Epoch2BranchTaskAdapter(tmp_path).request_cancel(
-            committed["branch_task_id"]
-        )
+        Epoch2BranchTaskAdapter(tmp_path).request_cancel(committed["branch_task_id"])
         success, error, metadata = future.result(timeout=3.0)
 
     assert success is False
@@ -1165,9 +1157,7 @@ def test_epoch2_mid_run_cancel_cannot_finalize_completed_provider_as_success(
         success=success,
         error=error,
     )
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        committed["branch_task_id"]
-    ).status == "cancelled"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"]).status == "cancelled"
 
 
 def test_epoch2_atomic_settlement_makes_last_moment_cancel_win(
@@ -1211,9 +1201,7 @@ def test_epoch2_atomic_settlement_makes_last_moment_cancel_win(
     assert cancellation_injected is True
     assert success is False
     assert error == "branch_task_cancel_requested"
-    assert Epoch2BranchTaskAdapter(tmp_path).get(
-        committed["branch_task_id"]
-    ).status == "cancelled"
+    assert Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"]).status == "cancelled"
 
 
 def test_epoch2_terminalization_failure_propagates(
@@ -1238,9 +1226,7 @@ def test_epoch2_terminalization_failure_propagates(
     monkeypatch.setattr(
         Epoch2BranchTaskAdapter,
         "finish",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            RuntimeError("terminal store unavailable")
-        ),
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("terminal store unavailable")),
     )
 
     with pytest.raises(RuntimeError, match="terminal store unavailable"):
@@ -1250,6 +1236,53 @@ def test_epoch2_terminalization_failure_propagates(
             success=True,
             error="",
         )
+
+
+def test_epoch2_settlement_records_cloud_trigger_terminal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed = {}
+
+    def record(base_path, **kwargs):
+        observed.update(base_path=base_path, **kwargs)
+        return SimpleNamespace(
+            completed_trigger=SimpleNamespace(trigger_id="cloud_trigger_1"),
+            receipt=SimpleNamespace(receipt_id="cloud_terminal_1"),
+            next_trigger=SimpleNamespace(trigger_id="cloud_trigger_2"),
+        )
+
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.record_cloud_automation_terminal",
+        record,
+    )
+    claimed = SimpleNamespace(
+        queue_epoch=2,
+        automation_id="automation_spec_loop",
+        branch_task_id="bt2_cloud_slice_1",
+    )
+
+    assert (
+        daemon_main._record_cloud_automation_terminal_after_settlement(
+            claimed,
+            success=True,
+            error="",
+            metadata={
+                "run_id": "run_cloud_slice_1",
+                "pull_request_url": "https://github.com/example/project/pull/1",
+            },
+        )
+        is True
+    )
+    assert observed == {
+        "base_path": tmp_path,
+        "branch_task_id": "bt2_cloud_slice_1",
+        "success": True,
+        "error": "",
+        "run_id": "run_cloud_slice_1",
+        "evidence_handles": ("https://github.com/example/project/pull/1",),
+    }
 
 
 def test_execute_branch_version_threads_identity_and_queue_lineage(
@@ -1429,16 +1462,12 @@ def test_activation_bound_claim_race_has_exactly_one_winner(
         _commit_epoch2(
             tmp_path,
             key=f"race-{race_index}-{index}",
-            created_at=(
-                datetime.now(timezone.utc) + timedelta(milliseconds=index)
-            ).isoformat(),
+            created_at=(datetime.now(timezone.utc) + timedelta(milliseconds=index)).isoformat(),
             activation=active,
         )
         for index in range(2)
     ]
-    expires_at = (
-        datetime.now(timezone.utc) + timedelta(seconds=75)
-    ).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=75)).isoformat()
     barrier = threading.Barrier(2)
 
     def compete(index: int):

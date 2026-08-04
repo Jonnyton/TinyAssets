@@ -63,6 +63,7 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -81,11 +82,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Defaults tuned for a droplet-scale workload.
-DEFAULT_IDLE_BACKOFF_S = 10.0     # Seconds to sleep after a clean exit.
-DEFAULT_CRASH_BACKOFF_S = 5.0     # Initial backoff on non-zero exit.
-DEFAULT_MAX_BACKOFF_S = 300.0     # 5-min ceiling on exponential backoff.
-DEFAULT_BACKOFF_MULT = 2.0        # Doubling per consecutive crash.
-DEFAULT_POLL_INTERVAL_S = 0.5     # Subprocess monitor poll granularity.
+DEFAULT_IDLE_BACKOFF_S = 10.0  # Seconds to sleep after a clean exit.
+DEFAULT_CRASH_BACKOFF_S = 5.0  # Initial backoff on non-zero exit.
+DEFAULT_MAX_BACKOFF_S = 300.0  # 5-min ceiling on exponential backoff.
+DEFAULT_BACKOFF_MULT = 2.0  # Doubling per consecutive crash.
+DEFAULT_POLL_INTERVAL_S = 0.5  # Subprocess monitor poll granularity.
 DEFAULT_PRODUCER_POLL_INTERVAL_S = 30.0  # Goal-pool pickup latency cap.
 # Re-check cadence while a worker is auth-quarantined. Short enough that a
 # re-seeded credential resumes claiming promptly; long enough that a dead-auth
@@ -134,6 +135,7 @@ def _resolve_universe_path() -> Path:
         return Path(explicit)
 
     from tinyassets.storage import active_universe_id, data_dir
+
     base = data_dir()
 
     active_uid = active_universe_id(base)
@@ -148,10 +150,7 @@ def _resolve_universe_path() -> Path:
 
     if base.is_dir():
         for entry in sorted(base.iterdir()):
-            if (
-                entry.is_dir()
-                and ((entry / "PROGRAM.md").exists() or (entry / "soul.md").exists())
-            ):
+            if entry.is_dir() and ((entry / "PROGRAM.md").exists() or (entry / "soul.md").exists()):
                 return entry
 
     return base / "default-universe"
@@ -171,6 +170,13 @@ def _cloud_host_user() -> str:
 def _worker_id() -> str:
     override = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
     return override or _cloud_host_user()
+
+
+def _automation_worker_slot(universe_id: str, owner_user_id: str) -> str:
+    """Return one durable logical consumer identity across process replacement."""
+
+    seed = f"cloud-automation-worker-v1\0{universe_id}\0{owner_user_id}"
+    return f"worker_cloud_automation_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:24]}"
 
 
 def _utcnow() -> datetime:
@@ -222,12 +228,16 @@ def _load_worker_release_identity() -> dict[str, str] | None:
         "image_digest",
     )
     image_refs = [payload.get(field) for field in image_fields]
-    if not image_refs or re.fullmatch(
-        r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
-        r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
-        r"@sha256:[0-9a-f]{64}",
-        str(image_refs[0] or ""),
-    ) is None:
+    if (
+        not image_refs
+        or re.fullmatch(
+            r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+            r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+            r"@sha256:[0-9a-f]{64}",
+            str(image_refs[0] or ""),
+        )
+        is None
+    ):
         return None
     if any(image_ref != image_refs[0] for image_ref in image_refs[1:]):
         return None
@@ -315,9 +325,7 @@ def _persist_worker_queue_descriptor(
     descriptor: dict[str, Any] | None,
 ) -> bool:
     worker_id = _worker_id()
-    descriptor_runtime_id = str(
-        (descriptor or {}).get("runtime_instance_id") or ""
-    ).strip()
+    descriptor_runtime_id = str((descriptor or {}).get("runtime_instance_id") or "").strip()
     current_runtime_id = os.environ.get(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
         "",
@@ -325,15 +333,11 @@ def _persist_worker_queue_descriptor(
     previous_runtime_id = _WORKER_RUNTIME_INSTANCE_IDS.get(worker_id, "")
     if descriptor is not None:
         runtime_ids = [
-            runtime_id
-            for runtime_id in (previous_runtime_id, descriptor_runtime_id)
-            if runtime_id
+            runtime_id for runtime_id in (previous_runtime_id, descriptor_runtime_id) if runtime_id
         ]
     else:
         runtime_ids = [
-            runtime_id
-            for runtime_id in (previous_runtime_id, current_runtime_id)
-            if runtime_id
+            runtime_id for runtime_id in (previous_runtime_id, current_runtime_id) if runtime_id
         ]
     runtime_ids = list(dict.fromkeys(runtime_ids))
     if not runtime_ids:
@@ -343,11 +347,7 @@ def _persist_worker_queue_descriptor(
         from tinyassets.storage import data_dir
 
         for runtime_instance_id in runtime_ids:
-            value = (
-                descriptor
-                if runtime_instance_id == descriptor_runtime_id
-                else None
-            )
+            value = descriptor if runtime_instance_id == descriptor_runtime_id else None
             try:
                 set_worker_queue_descriptor(
                     data_dir(),
@@ -432,8 +432,7 @@ def _worker_model_for_provider(provider_name: str) -> str:
         return explicit
     if provider_name == "codex":
         return (
-            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
-            or DEFAULT_WORKER_MODELS["codex"]
+            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
         )
     if provider_name == "claude-code":
         return (
@@ -464,9 +463,10 @@ def _worker_auth_health(daemon_args: list[str] | None) -> dict[str, str] | None:
     pinned / ``--provider`` writer so the supervisor can self-quarantine a
     dead-auth worker before it claims and poisons the queue.
     """
-    provider = _provider_from_daemon_args(daemon_args) or os.environ.get(
-        "TINYASSETS_PIN_WRITER", ""
-    ).strip()
+    provider = (
+        _provider_from_daemon_args(daemon_args)
+        or os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
+    )
     if not provider:
         return None
     from tinyassets.providers.base import subscription_auth_health
@@ -474,7 +474,13 @@ def _worker_auth_health(daemon_args: list[str] | None) -> dict[str, str] | None:
     return subscription_auth_health(provider)
 
 
-def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
+def _register_worker_runtime(
+    universe: Path,
+    provider_name: str,
+    *,
+    owner_user_id: str = "",
+    worker_id: str = "",
+) -> str | None:
     """Best-effort runtime registry visibility for a supervised worker."""
     if not provider_name:
         return None
@@ -493,11 +499,13 @@ def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
         from tinyassets.storage import data_dir
 
         base = data_dir()
-        daemon = select_project_loop_daemon(base)
+        selector = {"universe_id": universe.name}
+        if owner_user_id.strip():
+            selector["owner_user_id"] = owner_user_id.strip()
+        daemon = select_project_loop_daemon(base, **selector)
         if daemon is None:
             logger.warning(
-                "cloud_worker: no project loop daemon registered; "
-                "skipping runtime registration",
+                "cloud_worker: no project loop daemon registered; skipping runtime registration",
             )
             return
         runtime = ensure_daemon_runtime(
@@ -507,7 +515,7 @@ def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
             provider_name=provider_name,
             model_name=_worker_model_for_provider(provider_name),
             created_by=_cloud_host_user(),
-            worker_id=_worker_id(),
+            worker_id=worker_id.strip() or _worker_id(),
             metadata={
                 "container_host": socket.gethostname(),
                 "worker_provider": provider_name,
@@ -516,7 +524,9 @@ def _register_worker_runtime(universe: Path, provider_name: str) -> str | None:
         )
         logger.info(
             "cloud_worker: runtime registered worker_id=%s provider=%s runtime=%s",
-            _worker_id(), provider_name, runtime["runtime_instance_id"],
+            worker_id.strip() or _worker_id(),
+            provider_name,
+            runtime["runtime_instance_id"],
         )
         return str(runtime["runtime_instance_id"])
     except Exception:  # noqa: BLE001
@@ -549,10 +559,7 @@ def _soul_loop_declared_for_universe(universe: Path) -> bool:
             universe,
         )
         return False
-    return bool(
-        loop_branch_def_id
-        and loop_branch_def_id != LEGACY_FANTASY_LOOP_BRANCH_DEF_ID
-    )
+    return bool(loop_branch_def_id and loop_branch_def_id != LEGACY_FANTASY_LOOP_BRANCH_DEF_ID)
 
 
 def _daemon_module_for_universe(universe: Path) -> str:
@@ -738,10 +745,13 @@ def _has_pickable_branch_task(universe: Path) -> bool:
         if unified.strip().lower() in {"0", "off", "false", "no"}:
             return False
         config = load_dispatcher_config(universe)
-        if select_next_task(
-            universe,
-            config=config,
-        ) is not None:
+        if (
+            select_next_task(
+                universe,
+                config=config,
+            )
+            is not None
+        ):
             return True
 
         capacity = _current_worker_epoch2_capacity(universe)
@@ -752,12 +762,15 @@ def _has_pickable_branch_task(universe: Path) -> bool:
             config,
             active_daemon_id=worker["daemon_id"],
         )
-        return select_next_task(
-            universe,
-            config=epoch2_config,
-            epoch2_adapter=epoch2_adapter,
-            queue_epochs=frozenset({2}),
-        ) is not None
+        return (
+            select_next_task(
+                universe,
+                config=epoch2_config,
+                epoch2_adapter=epoch2_adapter,
+                queue_epochs=frozenset({2}),
+            )
+            is not None
+        )
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: pending BranchTask check failed")
         return False
@@ -788,6 +801,138 @@ def _pump_branch_task_producers(universe: Path) -> int:
         return 0
 
 
+def _pump_cloud_automation_triggers(
+    universe: Path,
+    *,
+    provider_name: str = "",
+) -> int:
+    """Materialize one due persisted Trigger through this exact worker."""
+
+    if not universe.name.strip():
+        return 0
+    try:
+        from tinyassets.background_branch_authority import (
+            BackgroundBranchExecutorAudience,
+            BackgroundBranchExecutorClass,
+        )
+        from tinyassets.cloud_automation_runtime import (
+            activate_one_requested_cloud_automation,
+            produce_one_due_cloud_automation_slice,
+            reconcile_one_terminal_cloud_automation,
+        )
+        from tinyassets.daemon_registry import select_project_loop_daemon
+        from tinyassets.storage import data_dir
+        from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
+
+        base = data_dir()
+        reconciled = reconcile_one_terminal_cloud_automation(
+            base,
+            universe_id=universe.name,
+        )
+        if reconciled is not None:
+            logger.info(
+                "cloud_worker: reconciled terminal receipt=%s next=%s",
+                reconciled.receipt.receipt_id,
+                (
+                    reconciled.next_trigger.trigger_id
+                    if reconciled.next_trigger is not None
+                    else "none"
+                ),
+            )
+        principals = sorted(
+            {
+                control.principal_id
+                for control in CloudAutomationControlStore(base).list_controls(
+                    universe_id=universe.name,
+                    limit=100,
+                )
+            }
+        )
+        if not principals:
+            principals = [""]
+        for principal_id in principals:
+            logical_worker_id = (
+                _automation_worker_slot(universe.name, principal_id)
+                if principal_id
+                else _worker_id()
+            )
+            selector = {"universe_id": universe.name}
+            if principal_id:
+                selector["owner_user_id"] = principal_id
+            daemon = select_project_loop_daemon(base, **selector)
+            if daemon is None:
+                continue
+            runtime_id = ""
+            if (
+                not principal_id
+                or os.environ.get("TINYASSETS_AUTOMATION_OWNER_USER_ID", "").strip()
+                == principal_id
+            ):
+                runtime_id = os.environ.get(
+                    "TINYASSETS_RUNTIME_INSTANCE_ID",
+                    "",
+                ).strip()
+            if not runtime_id and provider_name.strip():
+                if principal_id:
+                    runtime_id = _register_worker_runtime(
+                        universe,
+                        provider_name.strip(),
+                        owner_user_id=principal_id,
+                        worker_id=logical_worker_id,
+                    ) or ""
+                else:
+                    runtime_id = _register_worker_runtime(
+                        universe,
+                        provider_name.strip(),
+                    ) or ""
+            if not runtime_id:
+                continue
+            if principal_id:
+                os.environ["TINYASSETS_AUTOMATION_OWNER_USER_ID"] = principal_id
+                os.environ["TINYASSETS_WORKER_ID"] = logical_worker_id
+            os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_id
+            audience = BackgroundBranchExecutorAudience(
+                executor_class=BackgroundBranchExecutorClass.CLOUD,
+                daemon_id=str(daemon["daemon_id"]),
+                runtime_id=runtime_id,
+                worker_id=logical_worker_id,
+            )
+            activation_kwargs = {
+                "universe_id": universe.name,
+                "audience": audience,
+            }
+            if principal_id:
+                activation_kwargs["principal_id"] = principal_id
+            activated = activate_one_requested_cloud_automation(
+                base,
+                **activation_kwargs,
+            )
+            if activated is not None:
+                logger.info(
+                    "cloud_worker: activated automation trigger=%s task=%s",
+                    activated.trigger.trigger_id,
+                    activated.branch_task_id,
+                )
+                return 1
+            production_kwargs = dict(activation_kwargs)
+            produced = produce_one_due_cloud_automation_slice(
+                base,
+                **production_kwargs,
+            )
+            if produced is not None:
+                logger.info(
+                    "cloud_worker: produced automation trigger=%s task=%s generation=%d",
+                    produced.trigger.trigger_id,
+                    produced.branch_task_id,
+                    produced.continuation_generation,
+                )
+                return 1
+        return 0
+    except Exception:  # noqa: BLE001
+        logger.exception("cloud_worker: cloud automation Trigger pump failed")
+        return 0
+
+
 def _spawn_fantasy_daemon(
     universe: Path,
     *,
@@ -800,8 +945,11 @@ def _spawn_fantasy_daemon(
     Returns the ``Popen`` handle. Caller owns lifecycle.
     """
     args = [
-        python, "-m", module,
-        "--universe", str(universe),
+        python,
+        "-m",
+        module,
+        "--universe",
+        str(universe),
         "--no-tray",
     ]
     if extra_args:
@@ -809,6 +957,10 @@ def _spawn_fantasy_daemon(
     runtime_instance_id = _register_worker_runtime(
         universe,
         _provider_from_daemon_args(extra_args),
+        owner_user_id=os.environ.get(
+            "TINYASSETS_AUTOMATION_OWNER_USER_ID",
+            "",
+        ).strip(),
     )
     if runtime_instance_id:
         os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
@@ -822,7 +974,8 @@ def _spawn_fantasy_daemon(
         env.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
     logger.info(
         "spawning fantasy_daemon: universe=%s host_user=%s",
-        universe, env.get("UNIVERSE_SERVER_HOST_USER"),
+        universe,
+        env.get("UNIVERSE_SERVER_HOST_USER"),
     )
     return subprocess.Popen(args, env=env)
 
@@ -941,7 +1094,8 @@ def write_supervisor_heartbeat(
         "planned_sleep_s": planned_sleep_s,
         "worker_id": _worker_id(),
         "runtime_instance_id": os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID", "",
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
         ).strip(),
     }
     if descriptor is not None and descriptor_persisted:
@@ -1036,7 +1190,8 @@ def _release_own_orphaned_leases(universe: Path) -> int:
             logger.info(
                 "cloud_worker: released %d orphaned lease(s) for worker_id=%s "
                 "on shutdown (graceful drain)",
-                released, worker_id,
+                released,
+                worker_id,
             )
         return released
     except Exception:  # noqa: BLE001 — shutdown cleanup must not raise
@@ -1079,6 +1234,7 @@ def run_supervisor(
     _snapshot_worker_protocol_identity_at_boot()
     if spawn_fn is None:
         if daemon_args:
+
             def spawn_fn(universe: Path) -> subprocess.Popen:
                 return _spawn_daemon_for_universe(
                     universe,
@@ -1134,10 +1290,14 @@ def run_supervisor(
                 "cloud_worker: writer provider %s is unauthenticated (%s) — "
                 "QUARANTINING worker, not claiming. Re-seed provider auth to "
                 "resume. (2026-06-25 loop-wedge prevention)",
-                auth.get("provider"), auth.get("detail"),
+                auth.get("provider"),
+                auth.get("detail"),
             )
             write_supervisor_heartbeat(
-                universe, state, iteration=iteration, phase="auth_quarantined",
+                universe,
+                state,
+                iteration=iteration,
+                phase="auth_quarantined",
                 planned_sleep_s=auth_quarantine_backoff,
             )
             sleep_fn(auth_quarantine_backoff)
@@ -1152,20 +1312,32 @@ def run_supervisor(
             state.total_crashes += 1
             delay = _compute_backoff(
                 state.crash_count,
-                base=crash_backoff, mult=backoff_mult, ceiling=max_backoff,
+                base=crash_backoff,
+                mult=backoff_mult,
+                ceiling=max_backoff,
             )
-            logger.info("cloud_worker: backoff %.1fs after spawn failure (consec=%d)",
-                        delay, state.crash_count)
+            logger.info(
+                "cloud_worker: backoff %.1fs after spawn failure (consec=%d)",
+                delay,
+                state.crash_count,
+            )
             write_supervisor_heartbeat(
-                universe, state, iteration=iteration, phase="spawn_failed",
+                universe,
+                state,
+                iteration=iteration,
+                phase="spawn_failed",
                 planned_sleep_s=delay,
             )
             sleep_fn(delay)
             continue
         state.last_spawn_at = _utcnow_iso()
         write_supervisor_heartbeat(
-            universe, state, iteration=iteration, phase="spawned",
-            subprocess_pid=getattr(proc, "pid", None), subprocess_alive=True,
+            universe,
+            state,
+            iteration=iteration,
+            phase="spawned",
+            subprocess_pid=getattr(proc, "pid", None),
+            subprocess_alive=True,
         )
 
         # Poll until subprocess exits, while respecting stop signal.
@@ -1182,7 +1354,10 @@ def run_supervisor(
             if time.monotonic() - last_beat >= 15.0:
                 last_beat = time.monotonic()
                 write_supervisor_heartbeat(
-                    universe, state, iteration=iteration, phase="polling",
+                    universe,
+                    state,
+                    iteration=iteration,
+                    phase="polling",
                     subprocess_pid=getattr(proc, "pid", None),
                     subprocess_alive=True,
                 )
@@ -1200,18 +1375,19 @@ def run_supervisor(
                 if now - last_producer_poll >= producer_poll_interval:
                     last_producer_poll = now
                     if not _queue_has_running_branch_task(universe):
-                        appended = _pump_branch_task_producers(universe)
+                        appended = _pump_cloud_automation_triggers(
+                            universe,
+                            provider_name=_provider_from_daemon_args(daemon_args),
+                        )
+                        appended += _pump_branch_task_producers(universe)
                         if appended > 0:
-                            queue_restart_reason = (
-                                f"{appended} producer task(s)"
-                            )
+                            queue_restart_reason = f"{appended} producer task(s)"
                         elif _has_pickable_branch_task(universe):
                             queue_restart_reason = "pending BranchTask"
 
                         if queue_restart_reason:
                             logger.info(
-                                "cloud_worker: queued %s; "
-                                "restarting subprocess to pick them up",
+                                "cloud_worker: queued %s; restarting subprocess to pick them up",
                                 queue_restart_reason,
                             )
                             try:
@@ -1242,7 +1418,9 @@ def run_supervisor(
             (
                 f"queue-restart:{queue_restart_reason}"
                 if queue_restart_reason
-                else "clean" if returncode == 0 else "crash"
+                else "clean"
+                if returncode == 0
+                else "crash"
             ),
             state.summary(),
         )
@@ -1253,16 +1431,23 @@ def run_supervisor(
         if returncode == 0:
             delay = _compute_backoff(
                 state.clean_exit_count,
-                base=idle_backoff, mult=backoff_mult, ceiling=max_backoff,
+                base=idle_backoff,
+                mult=backoff_mult,
+                ceiling=max_backoff,
             )
         else:
             delay = _compute_backoff(
                 state.crash_count,
-                base=crash_backoff, mult=backoff_mult, ceiling=max_backoff,
+                base=crash_backoff,
+                mult=backoff_mult,
+                ceiling=max_backoff,
             )
         logger.info("cloud_worker: sleeping %.1fs before next spawn", delay)
         write_supervisor_heartbeat(
-            universe, state, iteration=iteration, phase="backoff",
+            universe,
+            state,
+            iteration=iteration,
+            phase="backoff",
             planned_sleep_s=delay,
         )
         sleep_fn(delay)
@@ -1276,7 +1461,10 @@ def run_supervisor(
     if stopping["flag"] and child_confirmed_dead:
         _release_own_orphaned_leases(universe)
     write_supervisor_heartbeat(
-        universe, state, iteration=iteration, phase="stopped",
+        universe,
+        state,
+        iteration=iteration,
+        phase="stopped",
     )
     return state
 
@@ -1289,6 +1477,7 @@ def threading_is_main() -> bool:
     thread don't trip.
     """
     import threading
+
     return threading.current_thread() is threading.main_thread()
 
 
@@ -1309,23 +1498,30 @@ def main(argv: list[str] | None = None) -> int:
         "--universe",
         default="",
         help="Explicit universe path. Default: TINYASSETS_UNIVERSE / "
-             "first PROGRAM.md or soul.md / TINYASSETS_DATA_DIR/default-universe.",
+        "first PROGRAM.md or soul.md / TINYASSETS_DATA_DIR/default-universe.",
     )
     parser.add_argument(
-        "--idle-backoff", type=float, default=DEFAULT_IDLE_BACKOFF_S,
-        help=f"Seconds to sleep after a clean daemon exit (default: "
-             f"{DEFAULT_IDLE_BACKOFF_S}).",
+        "--idle-backoff",
+        type=float,
+        default=DEFAULT_IDLE_BACKOFF_S,
+        help=f"Seconds to sleep after a clean daemon exit (default: {DEFAULT_IDLE_BACKOFF_S}).",
     )
     parser.add_argument(
-        "--crash-backoff", type=float, default=DEFAULT_CRASH_BACKOFF_S,
+        "--crash-backoff",
+        type=float,
+        default=DEFAULT_CRASH_BACKOFF_S,
         help=f"Initial backoff on crash (default: {DEFAULT_CRASH_BACKOFF_S}).",
     )
     parser.add_argument(
-        "--max-backoff", type=float, default=DEFAULT_MAX_BACKOFF_S,
+        "--max-backoff",
+        type=float,
+        default=DEFAULT_MAX_BACKOFF_S,
         help=f"Backoff ceiling (default: {DEFAULT_MAX_BACKOFF_S}).",
     )
     parser.add_argument(
-        "--max-iterations", type=int, default=None,
+        "--max-iterations",
+        type=int,
+        default=None,
         help="Stop after this many supervisor iterations (testing only).",
     )
     parser.add_argument(
@@ -1333,7 +1529,7 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_PRODUCER_POLL_INTERVAL_S,
         help="Seconds between cloud-side producer scans while the "
-             f"subprocess is running (default: {DEFAULT_PRODUCER_POLL_INTERVAL_S}).",
+        f"subprocess is running (default: {DEFAULT_PRODUCER_POLL_INTERVAL_S}).",
     )
     parser.add_argument(
         "--provider",
@@ -1341,7 +1537,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Pin the supervised fantasy_daemon writer provider.",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
+        "--verbose",
+        "-v",
+        action="store_true",
         help="DEBUG-level logging.",
     )
     args = parser.parse_args(argv)
@@ -1355,7 +1553,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "cloud_worker: starting supervisor host=%s universe=%s host_user=%s",
-        socket.gethostname(), universe, _cloud_host_user(),
+        socket.gethostname(),
+        universe,
+        _cloud_host_user(),
     )
 
     from tinyassets.scoped_reset import prepare_service_writer_barrier

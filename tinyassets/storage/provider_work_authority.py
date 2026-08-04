@@ -1205,6 +1205,30 @@ class SQLiteProviderWorkAuthorityStore:
             ).fetchone()
         return _record(row) if row is not None else None
 
+    def list_bindings(
+        self,
+        *,
+        owner_user_id: str,
+        universe_id: str,
+        active_only: bool = True,
+        limit: int = 100,
+    ) -> list[ProviderWorkBinding]:
+        """List integrity-checked bindings for one exact owner/universe."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM provider_work_bindings
+                WHERE owner_user_id = ? AND universe_id = ?
+                  AND (? = 0 OR state = 'active')
+                ORDER BY binding_id LIMIT ?
+                """,
+                (owner_user_id, universe_id, int(active_only), limit),
+            ).fetchall()
+        return [_record(row) for row in rows]
+
     def get_receipt(
         self,
         receipt_id: str,

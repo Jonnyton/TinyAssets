@@ -55,8 +55,8 @@ def _definition_payload() -> dict[str, object]:
         "acceptance_scenario_id": "scenario:repo-spec-baseline-v1",
         "acceptance_scenario_digest": f"sha256:{'c' * 64}",
         "input_artifact_digests": [
-            f"sha256:{'d' * 64}",
-            f"sha256:{'e' * 64}",
+            f"sha256:{'a' * 64}",
+            f"sha256:{'b' * 64}",
         ],
         "provider_binding_id": "provider_binding_alice",
         "destination_grant_id": "destination_grant_project",

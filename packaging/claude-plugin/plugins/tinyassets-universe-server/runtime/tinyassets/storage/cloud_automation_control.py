@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from tinyassets.cloud_automation_control import (
+    CloudAutomationControl,
+    CloudAutomationDesiredState,
     CloudAutomationSliceTrigger,
     CloudAutomationTerminalReceipt,
     CloudAutomationTerminalRequest,
@@ -38,9 +40,12 @@ CREATE TABLE IF NOT EXISTS cloud_automation_slice_triggers (
     activation_subject_digest TEXT NOT NULL,
     slice_ordinal INTEGER NOT NULL,
     generation INTEGER NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'emitted')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'admitted', 'emitted')),
     due_at TEXT NOT NULL,
     claim_expires_at TEXT,
+    request_id TEXT,
+    admission_id TEXT,
+    branch_task_id TEXT UNIQUE,
     trigger_digest TEXT NOT NULL,
     previous_terminal_receipt_id TEXT,
     record_json TEXT NOT NULL,
@@ -59,6 +64,22 @@ CREATE TABLE IF NOT EXISTS cloud_automation_terminal_receipts (
     receipt_digest TEXT NOT NULL,
     completed_at TEXT NOT NULL,
     record_json TEXT NOT NULL
+)
+"""
+
+_CREATE_CONTROLS = """
+CREATE TABLE IF NOT EXISTS cloud_automation_controls (
+    universe_id TEXT NOT NULL,
+    automation_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    definition_digest TEXT NOT NULL,
+    cadence_seconds INTEGER NOT NULL CHECK (cadence_seconds >= 1),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    desired_state TEXT NOT NULL CHECK (desired_state IN ('active', 'paused', 'stopped')),
+    updated_at TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (universe_id, automation_id)
 )
 """
 
@@ -90,6 +111,9 @@ def _trigger(row: sqlite3.Row) -> CloudAutomationSliceTrigger:
         row["status"] == record.status.value,
         row["due_at"] == record.due_at,
         row["claim_expires_at"] == record.claim_expires_at,
+        row["request_id"] == record.request_id,
+        row["admission_id"] == record.admission_id,
+        row["branch_task_id"] == record.branch_task_id,
         row["trigger_digest"] == record.trigger_digest,
         row["previous_terminal_receipt_id"] == record.previous_terminal_receipt_id,
         row["record_json"] == _json(record),
@@ -120,6 +144,28 @@ def _receipt(row: sqlite3.Row) -> CloudAutomationTerminalReceipt:
     return record
 
 
+def _control(row: sqlite3.Row) -> CloudAutomationControl:
+    try:
+        record = CloudAutomationControl.from_dict(json.loads(row["record_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("cloud automation control record is corrupt") from exc
+    witnesses = (
+        row["universe_id"] == record.universe_id,
+        row["automation_id"] == record.automation_id,
+        row["principal_id"] == record.principal_id,
+        row["definition_json"] == record.definition_json,
+        row["definition_digest"] == record.definition_digest,
+        row["cadence_seconds"] == record.cadence_seconds,
+        row["revision"] == record.revision,
+        row["desired_state"] == record.desired_state.value,
+        row["updated_at"] == record.updated_at,
+        row["record_json"] == _json(record),
+    )
+    if not all(witnesses):
+        raise RuntimeError("cloud automation control witnesses disagree")
+    return record
+
+
 class CloudAutomationControlStore:
     """Atomic trigger/receipt persistence sharing the activation database."""
 
@@ -141,12 +187,200 @@ class CloudAutomationControlStore:
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         with self._activations.connection() as conn:
+            conn.execute(_CREATE_CONTROLS)
             conn.execute(_CREATE_TRIGGERS)
             conn.execute(_CREATE_RECEIPTS)
             yield conn
 
     def _now(self) -> str:
         return timestamp(self._clock())
+
+    def create_control(
+        self,
+        definition: RepositorySpecWorkDefinition,
+        *,
+        automation_id: str,
+        cadence_seconds: int,
+    ) -> CloudAutomationControl:
+        """Persist owner/definition/cadence before a cloud worker activates it."""
+
+        created = CloudAutomationControl.create(
+            automation_id=automation_id,
+            definition=definition,
+            cadence_seconds=cadence_seconds,
+            updated_at=self._now(),
+        )
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO cloud_automation_controls (
+                        universe_id, automation_id, principal_id,
+                        definition_json, definition_digest, cadence_seconds,
+                        revision, desired_state, updated_at, record_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        created.universe_id,
+                        created.automation_id,
+                        created.principal_id,
+                        created.definition_json,
+                        created.definition_digest,
+                        created.cadence_seconds,
+                        created.revision,
+                        created.desired_state.value,
+                        created.updated_at,
+                        _json(created),
+                    ),
+                )
+                row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (created.universe_id, created.automation_id),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("cloud automation control was not created")
+                current = _control(row)
+                stable = (
+                    current.principal_id == created.principal_id,
+                    current.definition_digest == created.definition_digest,
+                    current.cadence_seconds == created.cadence_seconds,
+                    current.desired_state is not CloudAutomationDesiredState.STOPPED,
+                )
+                if not all(stable):
+                    raise ValueError("cloud automation control conflicts with existing record")
+                conn.commit()
+                return current
+            except Exception:
+                conn.rollback()
+                raise
+
+    def get_control(
+        self,
+        *,
+        universe_id: str,
+        automation_id: str,
+    ) -> CloudAutomationControl | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM cloud_automation_controls
+                WHERE universe_id = ? AND automation_id = ?
+                """,
+                (universe_id, automation_id),
+            ).fetchone()
+        return None if row is None else _control(row)
+
+    def list_controls(
+        self,
+        *,
+        universe_id: str,
+        limit: int = 100,
+    ) -> list[CloudAutomationControl]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM cloud_automation_controls
+                WHERE universe_id = ? ORDER BY automation_id LIMIT ?
+                """,
+                (universe_id, limit),
+            ).fetchall()
+        return [_control(row) for row in rows]
+
+    def set_desired_state(
+        self,
+        *,
+        expected: CloudAutomationControl,
+        desired_state: CloudAutomationDesiredState,
+    ) -> CloudAutomationControl:
+        if not isinstance(expected, CloudAutomationControl):
+            raise ValueError("expected must be a CloudAutomationControl")
+        if not isinstance(desired_state, CloudAutomationDesiredState):
+            raise ValueError("desired_state must be typed")
+        now = self._now()
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (expected.universe_id, expected.automation_id),
+                ).fetchone()
+                if row is None or _control(row) != expected:
+                    raise PermissionError("control_fence_not_current")
+                if desired_state is expected.desired_state:
+                    conn.commit()
+                    return expected
+                if expected.desired_state is CloudAutomationDesiredState.STOPPED:
+                    expected.transition(desired_state, updated_at=now)
+                activation = self._current_activation_row(
+                    conn,
+                    expected.universe_id,
+                    expected.automation_id,
+                )
+                if desired_state is not CloudAutomationDesiredState.STOPPED and (
+                    activation is None
+                    or activation["state"] != AutomationActivationState.ACTIVE.value
+                    or activation["executor_class"]
+                    != AutomationActivationExecutor.CLOUD.value
+                ):
+                    raise PermissionError("activation_not_current")
+                updated = expected.transition(desired_state, updated_at=now)
+                cursor = conn.execute(
+                    """
+                    UPDATE cloud_automation_controls
+                    SET revision = ?, desired_state = ?, updated_at = ?, record_json = ?
+                    WHERE universe_id = ? AND automation_id = ?
+                      AND revision = ? AND desired_state = ? AND record_json = ?
+                    """,
+                    (
+                        updated.revision,
+                        updated.desired_state.value,
+                        updated.updated_at,
+                        _json(updated),
+                        expected.universe_id,
+                        expected.automation_id,
+                        expected.revision,
+                        expected.desired_state.value,
+                        _json(expected),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PermissionError("control_fence_not_current")
+                if (
+                    desired_state is CloudAutomationDesiredState.STOPPED
+                    and activation is not None
+                    and activation["state"] == AutomationActivationState.ACTIVE.value
+                ):
+                    conn.execute(
+                        """
+                        UPDATE automation_activations
+                        SET epoch = epoch + 1, executor_class = NULL,
+                            subject_kind = NULL, subject_ref = NULL,
+                            subject_digest = NULL, immutable_branch_version = NULL,
+                            lease_id = NULL, state = 'stopped', updated_at = ?
+                        WHERE universe_id = ? AND automation_id = ?
+                          AND epoch = ? AND state = 'active'
+                        """,
+                        (
+                            now,
+                            expected.universe_id,
+                            expected.automation_id,
+                            activation["epoch"],
+                        ),
+                    )
+                conn.commit()
+                return updated
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def _insert_trigger(
@@ -159,8 +393,9 @@ class CloudAutomationControlStore:
                 trigger_id, universe_id, automation_id, activation_epoch,
                 activation_subject_ref, activation_subject_digest,
                 slice_ordinal, generation, status, due_at, claim_expires_at,
+                request_id, admission_id, branch_task_id,
                 trigger_digest, previous_terminal_receipt_id, record_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.trigger_id,
@@ -174,6 +409,9 @@ class CloudAutomationControlStore:
                 record.status.value,
                 record.due_at,
                 record.claim_expires_at,
+                record.request_id,
+                record.admission_id,
+                record.branch_task_id,
                 record.trigger_digest,
                 record.previous_terminal_receipt_id,
                 _json(record),
@@ -288,11 +526,57 @@ class CloudAutomationControlStore:
             previous_terminal_receipt_id=None,
             created_at=self._now(),
         )
+        control = CloudAutomationControl.create(
+            automation_id=automation_id,
+            definition=definition,
+            cadence_seconds=cadence_seconds,
+            updated_at=created.created_at,
+        )
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 if not self._activation_matches(conn, created):
                     raise PermissionError("activation_not_current")
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO cloud_automation_controls (
+                        universe_id, automation_id, principal_id,
+                        definition_json, definition_digest, cadence_seconds,
+                        revision, desired_state, updated_at, record_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        control.universe_id,
+                        control.automation_id,
+                        control.principal_id,
+                        control.definition_json,
+                        control.definition_digest,
+                        control.cadence_seconds,
+                        control.revision,
+                        control.desired_state.value,
+                        control.updated_at,
+                        _json(control),
+                    ),
+                )
+                control_row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (definition.universe_id, automation_id),
+                ).fetchone()
+                if control_row is None:
+                    raise RuntimeError("cloud automation control was not created")
+                current_control = _control(control_row)
+                if current_control.principal_id != definition.principal_id:
+                    raise PermissionError("automation_principal_mismatch")
+                if (
+                    current_control.definition_digest != definition.definition_digest
+                    or current_control.cadence_seconds != cadence_seconds
+                ):
+                    raise ValueError("automation definition conflicts with existing control")
+                if current_control.desired_state is CloudAutomationDesiredState.STOPPED:
+                    raise PermissionError("automation_stopped")
                 row = conn.execute(
                     """
                     SELECT * FROM cloud_automation_slice_triggers
@@ -359,6 +643,80 @@ class CloudAutomationControlStore:
             ).fetchall()
         return [_receipt(row) for row in rows]
 
+    def get_receipt_for_trigger(
+        self,
+        trigger_id: str,
+    ) -> CloudAutomationTerminalReceipt | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM cloud_automation_terminal_receipts
+                WHERE trigger_id = ?
+                """,
+                (trigger_id,),
+            ).fetchone()
+        return None if row is None else _receipt(row)
+
+    def list_claimable_automation_ids(
+        self,
+        *,
+        universe_id: str,
+        principal_id: str = "",
+        limit: int = 100,
+    ) -> list[str]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        now = self._now()
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT t.automation_id
+                FROM cloud_automation_slice_triggers AS t
+                JOIN cloud_automation_controls AS c
+                  ON c.universe_id = t.universe_id
+                 AND c.automation_id = t.automation_id
+                JOIN automation_activations AS a
+                  ON a.universe_id = t.universe_id
+                 AND a.automation_id = t.automation_id
+                 AND a.epoch = t.activation_epoch
+                 AND a.subject_ref = t.activation_subject_ref
+                 AND a.subject_digest = t.activation_subject_digest
+                WHERE t.universe_id = ?
+                  AND (? = '' OR c.principal_id = ?)
+                  AND c.desired_state = 'active'
+                  AND a.state = 'active' AND a.executor_class = 'cloud'
+                  AND a.subject_kind = 'branch_version'
+                  AND (
+                    (t.status = 'pending' AND t.due_at <= ?)
+                    OR
+                    (t.status = 'claimed' AND t.claim_expires_at <= ?)
+                  )
+                ORDER BY t.automation_id LIMIT ?
+                """,
+                (universe_id, principal_id, principal_id, now, now, limit),
+            ).fetchall()
+        return [str(row["automation_id"]) for row in rows]
+
+    def list_admitted_triggers(
+        self,
+        *,
+        universe_id: str,
+        limit: int = 100,
+    ) -> list[CloudAutomationSliceTrigger]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM cloud_automation_slice_triggers
+                WHERE universe_id = ? AND status = 'admitted'
+                ORDER BY automation_id, activation_epoch, slice_ordinal
+                LIMIT ?
+                """,
+                (universe_id, limit),
+            ).fetchall()
+        return [_trigger(row) for row in rows]
+
     @staticmethod
     def _write_trigger(
         conn: sqlite3.Connection,
@@ -370,6 +728,7 @@ class CloudAutomationControlStore:
             """
             UPDATE cloud_automation_slice_triggers
             SET generation = ?, status = ?, claim_expires_at = ?,
+                request_id = ?, admission_id = ?, branch_task_id = ?,
                 trigger_digest = ?, record_json = ?
             WHERE trigger_id = ? AND generation = ? AND status = ?
               AND trigger_digest = ? AND record_json = ?
@@ -378,6 +737,9 @@ class CloudAutomationControlStore:
                 updated.generation,
                 updated.status.value,
                 updated.claim_expires_at,
+                updated.request_id,
+                updated.admission_id,
+                updated.branch_task_id,
                 updated.trigger_digest,
                 _json(updated),
                 expected.trigger_id,
@@ -409,8 +771,17 @@ class CloudAutomationControlStore:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 activation = self._current_activation_row(conn, universe_id, automation_id)
-                if activation is None or not all(
+                control_row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (universe_id, automation_id),
+                ).fetchone()
+                if activation is None or control_row is None or not all(
                     (
+                        _control(control_row).desired_state
+                        is CloudAutomationDesiredState.ACTIVE,
                         activation["state"] == AutomationActivationState.ACTIVE.value,
                         activation["executor_class"] == AutomationActivationExecutor.CLOUD.value,
                         activation["subject_kind"] == ExecutionSubjectKind.BRANCH_VERSION.value,
@@ -462,6 +833,67 @@ class CloudAutomationControlStore:
                 conn.rollback()
                 raise
 
+    def bind_admission(
+        self,
+        fence: CloudAutomationTriggerFence,
+        *,
+        request_id: str,
+        admission_id: str,
+        branch_task_id: str,
+    ) -> CloudAutomationSliceTrigger:
+        if not isinstance(fence, CloudAutomationTriggerFence):
+            raise ValueError("fence must be a CloudAutomationTriggerFence")
+        expected = fence.expected
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM cloud_automation_slice_triggers WHERE trigger_id = ?",
+                    (expected.trigger_id,),
+                ).fetchone()
+                if row is None:
+                    raise LookupError("cloud automation trigger does not exist")
+                current = _trigger(row)
+                if current.status is CloudAutomationTriggerStatus.ADMITTED:
+                    exact = (
+                        current.generation == expected.generation,
+                        current.claim_id == expected.claim_id,
+                        current.request_id == request_id,
+                        current.admission_id == admission_id,
+                        current.branch_task_id == branch_task_id,
+                    )
+                    if not all(exact):
+                        raise ValueError("admission replay conflicts with trigger")
+                    conn.commit()
+                    return current
+                if not self._same_claimed_fence(current, expected):
+                    raise PermissionError("trigger_fence_not_current")
+                if not self._activation_matches(conn, current):
+                    raise PermissionError("activation_not_current")
+                admitted = current.admit(
+                    request_id=request_id,
+                    admission_id=admission_id,
+                    branch_task_id=branch_task_id,
+                    updated_at=self._now(),
+                )
+                self._write_trigger(conn, expected=current, updated=admitted)
+                conn.commit()
+                return admitted
+            except Exception:
+                conn.rollback()
+                raise
+
+    def get_trigger_for_task(self, branch_task_id: str) -> CloudAutomationSliceTrigger | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM cloud_automation_slice_triggers
+                WHERE branch_task_id = ?
+                """,
+                (branch_task_id,),
+            ).fetchone()
+        return None if row is None else _trigger(row)
+
     @staticmethod
     def _same_claimed_fence(
         stored: CloudAutomationSliceTrigger,
@@ -473,6 +905,21 @@ class CloudAutomationControlStore:
                 stored.trigger_id == expected.trigger_id,
                 stored.generation == expected.generation,
                 stored.claim_id == expected.claim_id,
+            )
+        )
+
+    @staticmethod
+    def _same_admitted_fence(
+        stored: CloudAutomationSliceTrigger,
+        expected: CloudAutomationSliceTrigger,
+    ) -> bool:
+        return stored == expected and all(
+            (
+                stored.status is CloudAutomationTriggerStatus.ADMITTED,
+                stored.trigger_id == expected.trigger_id,
+                stored.generation == expected.generation,
+                stored.claim_id == expected.claim_id,
+                stored.branch_task_id == expected.branch_task_id,
             )
         )
 
@@ -534,11 +981,37 @@ class CloudAutomationControlStore:
                         receipt=receipt,
                         next_trigger=next_trigger,
                     )
-                if not self._same_claimed_fence(stored, expected):
+                if not self._same_admitted_fence(stored, expected):
                     raise PermissionError("trigger_fence_not_current")
+                if request.branch_task_id != stored.branch_task_id:
+                    raise PermissionError("terminal_task_not_current")
 
-                active = self._activation_matches(conn, stored)
-                next_action = "scheduled" if active else "activation_stopped"
+                activation_active = self._activation_matches(conn, stored)
+                control_row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (stored.universe_id, stored.automation_id),
+                ).fetchone()
+                desired_state = (
+                    _control(control_row).desired_state
+                    if control_row is not None
+                    else CloudAutomationDesiredState.STOPPED
+                )
+                schedulable = activation_active and desired_state in {
+                    CloudAutomationDesiredState.ACTIVE,
+                    CloudAutomationDesiredState.PAUSED,
+                }
+                next_action = (
+                    "scheduled"
+                    if desired_state is CloudAutomationDesiredState.ACTIVE
+                    and activation_active
+                    else "paused"
+                    if desired_state is CloudAutomationDesiredState.PAUSED
+                    and activation_active
+                    else "activation_stopped"
+                )
                 receipt = CloudAutomationTerminalReceipt.create(
                     stored,
                     request,
@@ -546,7 +1019,7 @@ class CloudAutomationControlStore:
                 )
                 completed = stored.emit(updated_at=request.completed_at)
                 next_trigger = None
-                if active:
+                if schedulable:
                     completed_at = parse_timestamp(request.completed_at, "completed_at")
                     next_trigger = CloudAutomationSliceTrigger.pending(
                         stored.definition,

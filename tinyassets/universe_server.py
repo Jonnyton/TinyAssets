@@ -42,6 +42,7 @@ from pydantic import Field
 from starlette.applications import Starlette
 
 from tinyassets.api.branches import _branch_design_guide_prompt
+from tinyassets.api.cloud_automations import cloud_automations as _cloud_automations_impl
 from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
 from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
 from tinyassets.api.extensions import _extensions_impl
@@ -334,13 +335,12 @@ state, evaluation hooks, and iteration loops. The platform supports arbitrary
 domains (research papers, recipe trackers, screenplays, news summarizers,
 standup trackers, etc.).
 
-The advertised handles can inspect an existing workflow with
-`read_graph target="branch" branch_id=...`, patch it transactionally with
-`write_graph target="branch" branch_id=... changes_json=...`, and execute it
-with `run_graph`. They do not
-currently expose new branch or node registration. If the user wants to create
-one from scratch, explain that surface gap plainly; do not call a hidden tool
-or imply the workflow was saved.
+The advertised handles can create or remix a workflow with
+`write_graph target="branch" operation="create" payload_json=...`, inspect it
+with `read_graph target="branch" branch_id=...`, patch it transactionally,
+freeze it with operation `publish`, and execute it with `run_graph`.
+Standalone node registration remains unavailable; nodes belong inside a
+Branch spec or patch.
 
 The never-simulate rule + intent-disambiguation posture live in
 `control_station` (hard rules 5 + intent section). When in doubt on
@@ -368,13 +368,16 @@ Each registered node declares:
 
 ### How It Works
 
-1. For an existing workflow, read its current graph before editing.
-2. Send one ordered changes_json batch through
+1. For a new workflow, send one complete Branch spec through operation
+   `create`; use `fork_from` in that spec to remix a published version.
+2. For an existing workflow, read its current graph before editing, then send
+   one ordered changes_json batch through
    `write_graph target="branch" branch_id=... changes_json=...`; the server
    validates the entire patch and stores it transactionally.
-3. On the next daemon cycle, registered nodes are discovered and
+3. Publish the validated Branch before binding it to cloud execution.
+4. On the next daemon cycle, registered nodes are discovered and
    conditionally wired into the graph at the declared phase.
-4. Nodes run in a sandboxed subprocess — they cannot access the
+5. Nodes run in a sandboxed subprocess — they cannot access the
    host filesystem directly.
 
 ### Safety Model
@@ -444,6 +447,7 @@ def read_graph(
     goal_id: str = "",
     run_id: str = "",
     branch_id: str = "",
+    automation_id: str = "",
     agent_definition_id: str = "",
     agent_binding_id: str = "",
     agent_stage_id: str = "",
@@ -457,13 +461,16 @@ def read_graph(
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            branch, agents, agent, agent_bindings, or agent_binding.
+            branch, automations, automation, agents, agent, agent_bindings, or
+            agent_binding.
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
             branch's full graph + node configs). Falls back to graph_id.
+        automation_id: Private cloud automation identifier for
+            target=automation.
         agent_definition_id: Public agent definition identifier for
             target=agent. Falls back to graph_id.
         agent_binding_id: Private universe binding identifier for
@@ -509,6 +516,15 @@ def read_graph(
         # even confirm existence. get_branch was already callable here via the
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
+    if normalized in {"automations", "automation"}:
+        return json.dumps(
+            _cloud_automations_impl(
+                action=("list" if normalized == "automations" else "get"),
+                universe_id=graph_id,
+                automation_id=automation_id,
+                limit=limit,
+            )
+        )
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -555,6 +571,8 @@ def read_graph(
             "runs",
             "run",
             "branch",
+            "automations",
+            "automation",
             "agents",
             "agent",
             "agent_bindings",
@@ -589,6 +607,7 @@ def write_graph(
     graph_id: str = "",
     request_type: str = "general",
     branch_id: str = "",
+    automation_id: str = "",
     idempotency_key: str = "",
     pickup_incentive: str = "",
     directed_daemon_id: str = "",
@@ -607,8 +626,8 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, universe, agent, or
-            agent_binding. With target=goal, the default operation proposes a
+        target: What to write: goal, request, branch, universe, automation,
+            agent, or agent_binding. With target=goal, the default operation proposes a
             Goal; operation=set_canonical sets or unsets a canonical binding.
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
@@ -616,6 +635,10 @@ def write_graph(
         operation: With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update.
+            With target=automation, create/pause/resume/stop.
+            With target=branch, create/remix/patch/publish. Create and remix
+            consume a complete Branch spec in payload_json; remix uses its
+            fork_from field. Publish freezes the named branch_id.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -631,6 +654,8 @@ def write_graph(
         request_type: TinyAssets request type.
         branch_id: Target branch identifier; with target=branch it is the
             branch_def_id to patch.
+        automation_id: Private cloud automation identifier for
+            target=automation.
         idempotency_key: Required 16-128 character request idempotency key.
         pickup_incentive: Optional requester pickup incentive terms.
         directed_daemon_id: Optional requester-owned daemon target.
@@ -644,6 +669,13 @@ def write_graph(
         agent_binding_id: Existing private binding for operation=update.
         agent_stage_id: Private import stage for operation=publish_stage.
         payload_json: Agent definition, portable import, or private binding JSON.
+            For target=automation operation=create, pass
+            {"definition": {<RepositorySpecWorkDefinition fields>},
+            "cadence_seconds": 300, "operator": {"display_name": "...",
+            "soul_text": "user-authored operating principles"}}. The server
+            derives principal_id and universe_id from authenticated context;
+            caller-supplied owner values grant no authority. Provider and
+            destination references must already be requester-owned and active.
             For target=agent operation=publish or remix, pass schema_version=1,
             a non-empty name, description, tags, and components. For a remix,
             lineage is keyed by each child component key; each value is a
@@ -773,12 +805,51 @@ def write_graph(
             priority_weight=priority_weight,
         )
     if normalized == "branch":
-        # PR-180 EDIT half: a founder patches their own branch graph via the
-        # existing transactional patch_branch handler (author-gated: BUG-081).
-        return _extensions_impl(
-            action="patch_branch",
-            branch_def_id=branch_id,
-            changes_json=changes_json,
+        branch_operation = (operation or "patch").strip().lower()
+        if branch_operation in {"create", "remix"}:
+            try:
+                branch_spec = json.loads(payload_json or "{}")
+            except json.JSONDecodeError:
+                return json.dumps({"error": "branch payload_json must be valid JSON"})
+            if not isinstance(branch_spec, dict):
+                return json.dumps({"error": "branch payload_json must be a JSON object"})
+            branch_spec.setdefault("visibility", "private")
+            return _extensions_impl(
+                action="build_branch",
+                spec_json=json.dumps(branch_spec, separators=(",", ":")),
+                request_id=idempotency_key,
+            )
+        if branch_operation == "publish":
+            return _extensions_impl(
+                action="publish_version",
+                branch_def_id=branch_id,
+                notes=description,
+            )
+        if branch_operation == "patch":
+            # PR-180 EDIT half: a founder patches their own branch graph via the
+            # existing transactional patch_branch handler (author-gated: BUG-081).
+            return _extensions_impl(
+                action="patch_branch",
+                branch_def_id=branch_id,
+                changes_json=changes_json,
+            )
+        return json.dumps(
+            {
+                "error": "unknown_branch_operation",
+                "target": "branch",
+                "operation": operation,
+                "allowed_operations": ["create", "remix", "patch", "publish"],
+            }
+        )
+    if normalized == "automation":
+        return json.dumps(
+            _cloud_automations_impl(
+                action=operation,
+                universe_id=graph_id,
+                automation_id=automation_id,
+                expected_revision=expected_revision,
+                payload=payload_json,
+            )
         )
     if normalized == "agent":
         agent_operation = (operation or "publish").strip().lower()
@@ -844,7 +915,15 @@ def write_graph(
     return _unknown_target(
         "write_graph",
         target,
-        ("goal", "request", "branch", "universe", "agent", "agent_binding"),
+        (
+            "goal",
+            "request",
+            "branch",
+            "universe",
+            "automation",
+            "agent",
+            "agent_binding",
+        ),
     )
 
 

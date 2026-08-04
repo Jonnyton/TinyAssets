@@ -46,6 +46,15 @@ from tinyassets.cloud_automation_continuation import (
     prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
 )
+from tinyassets.cloud_automation_control import (
+    CloudAutomationTriggerFence,
+    CloudAutomationTriggerStatus,
+)
+from tinyassets.cloud_automation_runtime import (
+    produce_one_due_cloud_automation_slice,
+    reconcile_one_terminal_cloud_automation,
+    record_cloud_automation_terminal,
+)
 from tinyassets.daemon_registry import (
     create_daemon,
     ensure_daemon_runtime,
@@ -73,6 +82,7 @@ from tinyassets.storage.background_branch_authority import (
 from tinyassets.storage.cloud_automation_continuation import (
     SQLiteCloudAutomationContinuationStore,
 )
+from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
 from tinyassets.storage.outbound_connections import (
     ActionCap,
     ConnectionLedger,
@@ -83,7 +93,11 @@ from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
 from tinyassets.storage.request_admissions import RequestAdmissionStore
-from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
+from tinyassets.user_owned_cloud_automation import (
+    RepositorySpecWorkDefinition,
+    acceptance_scenario_digest,
+    repository_spec_baseline_scenario,
+)
 
 NOW = datetime(2026, 8, 1, 5, 0, tzinfo=timezone.utc)
 BODY_DIGEST = f"sha256:{'e' * 64}"
@@ -111,8 +125,13 @@ def _definition(
             "branch_version_id": "branch_repo_spec_loop@abc12345",
             "branch_content_digest": f"sha256:{'b' * 64}",
             "acceptance_scenario_id": "scenario:repo-spec-baseline-v1",
-            "acceptance_scenario_digest": f"sha256:{'c' * 64}",
-            "input_artifact_digests": [f"sha256:{'d' * 64}"],
+            "acceptance_scenario_digest": acceptance_scenario_digest(
+                repository_spec_baseline_scenario()
+            ),
+            "input_artifact_digests": [
+                f"sha256:{'a' * 64}",
+                f"sha256:{'b' * 64}",
+            ],
             "provider_binding_id": provider_binding_id,
             "destination_grant_id": "destination_grant_project",
             "destination_purpose": "pull_request",
@@ -792,34 +811,42 @@ def test_runtime_claim_and_provider_receipt_rehydrate_from_prepared_authority(
         clock=lambda: NOW,
     )
 
-    claimed = BackgroundBranchAttemptClaimService(
-        fixture[3],
-        claim_resolver,
-    ).claim(
-        expected=BackgroundBranchAttemptFence(attempt),
-        executor_audience=audience,
-        claimed_at=_background_timestamp(task.claimed_at),
-        lease_expires_at=_background_timestamp(task.lease_expires_at),
-    ).record
+    claimed = (
+        BackgroundBranchAttemptClaimService(
+            fixture[3],
+            claim_resolver,
+        )
+        .claim(
+            expected=BackgroundBranchAttemptFence(attempt),
+            executor_audience=audience,
+            claimed_at=_background_timestamp(task.claimed_at),
+            lease_expires_at=_background_timestamp(task.lease_expires_at),
+        )
+        .record
+    )
 
     assert claimed is not None
-    receipt = ProviderWorkReceiptService(
-        fixture[4],
-        PreparedCloudContinuationProviderResolver(
-            None,
-            continuation=continuation,
-            activation_store=fixture[2],
-            background_store=fixture[3],
-            provider_store=fixture[4],
-            continuation_store=fixture[6],
-            clock=lambda: NOW + timedelta(seconds=1),
-        ),
-    ).issue(
-        ProviderUniverseWorkRoot(
-            work_item_kind="background_attempt",
-            work_item_id=claimed.attempt_id,
+    receipt = (
+        ProviderWorkReceiptService(
+            fixture[4],
+            PreparedCloudContinuationProviderResolver(
+                None,
+                continuation=continuation,
+                activation_store=fixture[2],
+                background_store=fixture[3],
+                provider_store=fixture[4],
+                continuation_store=fixture[6],
+                clock=lambda: NOW + timedelta(seconds=1),
+            ),
         )
-    ).record
+        .issue(
+            ProviderUniverseWorkRoot(
+                work_item_kind="background_attempt",
+                work_item_id=claimed.attempt_id,
+            )
+        )
+        .record
+    )
 
     assert receipt is not None
     assert receipt.principal_id == continuation.principal_id
@@ -833,8 +860,8 @@ def test_runtime_claim_and_provider_receipt_rehydrate_from_prepared_authority(
 def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
     tmp_path: Path,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     renewed = Epoch2BranchTaskAdapter(
         tmp_path,
@@ -899,8 +926,8 @@ def test_claimed_cloud_session_executes_effect_through_exact_destination_grant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -957,11 +984,13 @@ def test_claimed_cloud_session_executes_effect_through_exact_destination_grant(
     )
 
     assert evidence["status"] == "succeeded"
-    assert resolved == [{
-        "universe_id": "universe_alice",
-        "grant_id": fixture[0].destination_grant_id,
-        "connection_id": "conn_tinyassets",
-    }]
+    assert resolved == [
+        {
+            "universe_id": "universe_alice",
+            "grant_id": fixture[0].destination_grant_id,
+            "connection_id": "conn_tinyassets",
+        }
+    ]
 
 
 @pytest.mark.parametrize("fault", ("grant", "connection"))
@@ -969,8 +998,8 @@ def test_claimed_cloud_effect_revalidates_destination_before_credential_access(
     tmp_path: Path,
     fault: str,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1006,8 +1035,8 @@ def test_claimed_cloud_effect_revalidates_destination_before_credential_access(
 def test_claimed_cloud_effect_rejects_removed_unprompted_action_cap(
     tmp_path: Path,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1052,8 +1081,8 @@ def test_external_effect_dispatch_uses_only_claimed_cloud_session(
         _run_external_write_effectors,
     )
 
-    _fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    _fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1142,8 +1171,8 @@ def test_external_effect_dispatch_uses_only_claimed_cloud_session(
 def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
     tmp_path: Path,
 ) -> None:
-    fixture, _continuation, _admission, audience, attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1201,16 +1230,14 @@ def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
     assert renewed_attempt is not None
     assert renewed_task is not None
     assert renewed_attempt.lease_generation == claimed_attempt.lease_generation + 1
-    assert renewed_attempt.lease_expires_at == _background_timestamp(
-        renewed_task.lease_expires_at
-    )
+    assert renewed_attempt.lease_expires_at == _background_timestamp(renewed_task.lease_expires_at)
 
 
 def test_claimed_cloud_task_explicitly_renews_expired_provider_claim(
     tmp_path: Path,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1271,21 +1298,17 @@ def test_claimed_cloud_task_explicitly_renews_expired_provider_claim(
         ).fetchall()
     assert claim is not None
     assert claim["generation"] == 2
-    assert datetime.fromisoformat(
-        claim["lease_expires_at"].replace("Z", "+00:00")
-    ) > current[0]
+    assert datetime.fromisoformat(claim["lease_expires_at"].replace("Z", "+00:00")) > current[0]
     assert [row["state"] for row in reservations] == ["launch_started"] * 3
 
 
 def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
     tmp_path: Path,
 ) -> None:
-    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(
-            tmp_path,
-            max_tokens=5,
-            max_cost_microunits=6,
-        )
+    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path,
+        max_tokens=5,
+        max_cost_microunits=6,
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1319,12 +1342,10 @@ def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
 def test_restarted_cloud_session_preserves_durable_budget_ordinal(
     tmp_path: Path,
 ) -> None:
-    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(
-            tmp_path,
-            max_tokens=5,
-            max_cost_microunits=6,
-        )
+    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path,
+        max_tokens=5,
+        max_cost_microunits=6,
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1365,24 +1386,26 @@ def test_restarted_cloud_session_preserves_durable_budget_ordinal(
 def test_legacy_short_cloud_receipt_migrates_before_first_claim(
     tmp_path: Path,
 ) -> None:
-    fixture, continuation, admission, audience, attempt, task = (
-        _claimable_cloud_path(tmp_path)
+    fixture, continuation, admission, audience, attempt, task = _claimable_cloud_path(tmp_path)
+    claimed_attempt = (
+        BackgroundBranchAttemptClaimService(
+            fixture[3],
+            _cloud_claim_resolver(
+                tmp_path,
+                fixture,
+                continuation,
+                admission,
+                audience_resolver=_AudienceResolver(audience),
+            ),
+        )
+        .claim(
+            expected=BackgroundBranchAttemptFence(attempt),
+            executor_audience=audience,
+            claimed_at=_background_timestamp(task.claimed_at),
+            lease_expires_at=_background_timestamp(task.lease_expires_at),
+        )
+        .record
     )
-    claimed_attempt = BackgroundBranchAttemptClaimService(
-        fixture[3],
-        _cloud_claim_resolver(
-            tmp_path,
-            fixture,
-            continuation,
-            admission,
-            audience_resolver=_AudienceResolver(audience),
-        ),
-    ).claim(
-        expected=BackgroundBranchAttemptFence(attempt),
-        executor_audience=audience,
-        claimed_at=_background_timestamp(task.claimed_at),
-        lease_expires_at=_background_timestamp(task.lease_expires_at),
-    ).record
     assert claimed_attempt is not None
     root = ProviderUniverseWorkRoot(
         work_item_kind="background_attempt",
@@ -1434,8 +1457,8 @@ def test_cloud_claim_revalidates_roots_after_grant_mint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1465,16 +1488,16 @@ def test_cloud_claim_revalidates_roots_after_grant_mint(
         )
 
     with fixture[4].connection() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM provider_work_execution_claims"
-        ).fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM provider_work_execution_claims").fetchone()[0] == 0
+        )
 
 
 def test_cloud_launch_rejects_task_lease_newer_than_attempt_lease(
     tmp_path: Path,
 ) -> None:
-    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1526,8 +1549,8 @@ def test_cloud_launch_rejects_task_lease_newer_than_attempt_lease(
 def test_claimed_cloud_task_governs_policy_provider_call(
     tmp_path: Path,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1588,11 +1611,9 @@ def test_claimed_cloud_task_governs_policy_provider_call(
 def test_claimed_cloud_task_accepts_only_binding_declared_roles(
     tmp_path: Path,
 ) -> None:
-    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(
-            tmp_path,
-            allowed_roles=("writer", "judge", "extract"),
-        )
+    _fixture_data, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path,
+        allowed_roles=("writer", "judge", "extract"),
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1626,8 +1647,8 @@ def test_claimed_cloud_task_accepts_only_binding_declared_roles(
 def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
     tmp_path: Path,
 ) -> None:
-    fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1662,9 +1683,7 @@ def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
 
     assert provider_called is False
     with fixture[4].connection() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM provider_invocation_reservations"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM provider_invocation_reservations").fetchone()[0]
     assert count == 0
 
 
@@ -1682,8 +1701,8 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
     )
     from tinyassets.graph_compiler import compile_branch
 
-    _fixture, _continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path, allowed_roles=("writer", "judge"))
+    _fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path, allowed_roles=("writer", "judge")
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1693,9 +1712,7 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
-        invoked.append(
-            carrier.validate_for_call(role=role, operation=kwargs["operation"])
-        )
+        invoked.append(carrier.validate_for_call(role=role, operation=kwargs["operation"]))
         return f"governed: {prompt}"
 
     session = prepare_claimed_cloud_provider_call(
@@ -1753,8 +1770,8 @@ def test_cloud_provider_session_revalidates_authority_before_each_call(
     tmp_path: Path,
     fault: str,
 ) -> None:
-    fixture, continuation, _admission, audience, _attempt, _claimed = (
-        _claimable_cloud_path(tmp_path)
+    fixture, continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
@@ -1784,17 +1801,16 @@ def test_cloud_provider_session_revalidates_authority_before_each_call(
     else:
         binding = fixture[4].get(continuation.provider_binding_id)
         assert binding is not None
-        assert ProviderWorkBindingService(fixture[4]).revoke(
-            ProviderWorkBindingFence(binding)
-        ).record is not None
+        assert (
+            ProviderWorkBindingService(fixture[4]).revoke(ProviderWorkBindingFence(binding)).record
+            is not None
+        )
 
     with pytest.raises(PermissionError, match="authority"):
         authorized_call("must revalidate", "system")
     assert provider_called is False
     with fixture[4].connection() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM provider_invocation_reservations"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM provider_invocation_reservations").fetchone()[0]
     assert count == 0
 
 
@@ -2005,6 +2021,137 @@ def test_activation_compositor_converges_to_one_epoch2_admission_and_attempt(
     )
 
 
+def test_terminal_trigger_rotates_fresh_authority_and_admits_next_slice(
+    tmp_path: Path,
+) -> None:
+    fixture, continuation, audience, service = _activation_compositor_fixture(tmp_path)
+    first = service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+    controls = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    initial = controls.schedule_initial(
+        fixture[0],
+        automation_id=continuation.automation_id,
+        activation=first.activation,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    claimed = controls.claim_due(
+        universe_id=continuation.universe_id,
+        automation_id=continuation.automation_id,
+        claimed_by="cloud-worker-1",
+        lease_seconds=120,
+    )
+    assert claimed is not None
+    controls.bind_admission(
+        CloudAutomationTriggerFence(claimed),
+        request_id=first.request_id,
+        admission_id=first.admission_id,
+        branch_task_id=first.branch_task_id,
+    )
+    terminal = record_cloud_automation_terminal(
+        tmp_path,
+        branch_task_id=first.branch_task_id,
+        success=True,
+        error="",
+        run_id="run_cloud_slice_1",
+        evidence_handles=("https://github.com/example/project/pull/1",),
+        clock=lambda: NOW + timedelta(minutes=1),
+    )
+    assert terminal is not None
+    assert terminal.next_trigger is not None
+    assert terminal.completed_trigger.trigger_id == initial.trigger_id
+
+    later = NOW + timedelta(minutes=6)
+    produced = produce_one_due_cloud_automation_slice(
+        tmp_path,
+        universe_id=continuation.universe_id,
+        audience=audience,
+        clock=lambda: later,
+    )
+    assert produced is not None
+    advanced = fixture[6].get(
+        universe_id=continuation.universe_id,
+        automation_id=continuation.automation_id,
+    )
+    assert advanced is not None
+    assert advanced.generation == 2
+    assert advanced.background_binding_id != continuation.background_binding_id
+    assert produced.branch_task_id != first.branch_task_id
+    assert produced.continuation_generation == 2
+    assert produced.trigger.status is CloudAutomationTriggerStatus.ADMITTED
+    replayed_terminal = record_cloud_automation_terminal(
+        tmp_path,
+        branch_task_id=first.branch_task_id,
+        success=True,
+        error="",
+        run_id="run_cloud_slice_1",
+        evidence_handles=("https://github.com/example/project/pull/1",),
+        clock=lambda: later,
+    )
+    assert replayed_terminal is not None
+    assert replayed_terminal.receipt == terminal.receipt
+    assert replayed_terminal.next_trigger is not None
+    assert terminal.next_trigger is not None
+    assert replayed_terminal.next_trigger.trigger_id == terminal.next_trigger.trigger_id
+    with RequestAdmissionStore(tmp_path).connection() as conn:
+        task_count = conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2 WHERE universe_id = ?",
+            (continuation.universe_id,),
+        ).fetchone()[0]
+    assert task_count == 2
+
+
+def test_worker_recovers_terminal_task_before_trigger_receipt(
+    tmp_path: Path,
+) -> None:
+    fixture, continuation, _audience, service = _activation_compositor_fixture(tmp_path)
+    first = service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+    controls = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    controls.schedule_initial(
+        fixture[0],
+        automation_id=continuation.automation_id,
+        activation=first.activation,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    claimed = controls.claim_due(
+        universe_id=continuation.universe_id,
+        automation_id=continuation.automation_id,
+        claimed_by="cloud-worker-1",
+        lease_seconds=120,
+    )
+    assert claimed is not None
+    controls.bind_admission(
+        CloudAutomationTriggerFence(claimed),
+        request_id=first.request_id,
+        admission_id=first.admission_id,
+        branch_task_id=first.branch_task_id,
+    )
+    with RequestAdmissionStore(tmp_path).connection() as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET status = 'failed', detail_json = ?, terminal_at = ?
+            WHERE branch_task_id = ?
+            """,
+            (
+                json.dumps({"error": "provider_limit"}),
+                "2026-08-01T05:01:00Z",
+                first.branch_task_id,
+            ),
+        )
+
+    recovered = reconcile_one_terminal_cloud_automation(
+        tmp_path,
+        universe_id=continuation.universe_id,
+        clock=lambda: NOW + timedelta(minutes=1),
+    )
+
+    assert recovered is not None
+    assert recovered.receipt.terminal_kind.value == "failed"
+    assert recovered.next_trigger is not None
+    assert recovered.next_trigger.slice_ordinal == 2
+
+
 def test_concurrent_activation_compositors_have_one_admission_and_attempt_winner(
     tmp_path: Path,
 ) -> None:
@@ -2031,7 +2178,10 @@ def test_concurrent_activation_compositors_have_one_admission_and_attempt_winner
     )
 
 
-@pytest.mark.parametrize("crash_phase", ("activation_committed", "admission_committed"))
+@pytest.mark.parametrize(
+    "crash_phase",
+    ("activation_committed", "admission_committed", "attempt_committed"),
+)
 def test_activation_compositor_restart_converges_after_partial_commit(
     tmp_path: Path,
     crash_phase: str,

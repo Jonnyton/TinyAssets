@@ -273,6 +273,29 @@ def acceptance_scenario_digest(scenario: AcceptanceScenario) -> str:
     return _digest(asdict(scenario))
 
 
+def repository_spec_baseline_scenario() -> AcceptanceScenario:
+    """Return the immutable tenant-code-free baseline admitted by this release."""
+
+    return AcceptanceScenario(
+        scenario_id="scenario:repo-spec-baseline-v1",
+        target_surface="session_trace_summary",
+        user_story=(
+            "A repository owner needs a deterministic preflight that checks "
+            "immutable repository and OpenSpec evidence before any provider "
+            "or GitHub effect is authorized. The preflight must be safe for "
+            "multi-tenant cloud execution and preserve exact evidence."
+        ),
+        allowed_tools=[],
+        evaluator_chain=["evaluator:coding-trajectory-v1"],
+        artifact_requirements=[{"kind": "content_digest", "required": True}],
+        pass_threshold={"min_score": 1.0},
+        cost_budget={"max_tokens": 0, "max_wall_time_seconds": 10},
+        privacy_scope="universe_only",
+        idempotency_key_constructor="scenario+candidate+artifact-digests",
+        setup=[],
+    )
+
+
 def admit_work_definition(
     definition: RepositorySpecWorkDefinition,
     scenario: AcceptanceScenario,
@@ -297,6 +320,15 @@ def admit_work_definition(
         raise AutomationAdmissionError(
             "sandbox_unavailable",
             "tenant-code evaluator requires production confinement",
+        )
+    required_artifacts = {
+        definition.accepted_spec_digest,
+        definition.branch_content_digest,
+    }
+    if not required_artifacts.issubset(definition.input_artifact_digests):
+        raise AutomationAdmissionError(
+            "artifact_mismatch",
+            "baseline inputs must include the accepted spec and Branch version digests",
         )
     if scenario.cost_budget["max_tokens"] > definition.max_tokens:
         raise AutomationAdmissionError(
@@ -530,4 +562,5 @@ __all__ = [
     "acceptance_scenario_digest",
     "admit_work_definition",
     "project_operational_state",
+    "repository_spec_baseline_scenario",
 ]

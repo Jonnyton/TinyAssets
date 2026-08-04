@@ -18,6 +18,10 @@ from tinyassets.cloud_automation_continuation import (
     CloudContinuationWriteResult,
     PreparedCloudContinuation,
 )
+from tinyassets.cloud_automation_control import (
+    CloudAutomationSliceTrigger,
+    CloudAutomationTriggerStatus,
+)
 from tinyassets.provider_work_authority import (
     ProviderInvocationReservation,
     ProviderInvocationReservationState,
@@ -322,6 +326,175 @@ class SQLiteCloudAutomationContinuationStore:
             CloudContinuationWriteOutcome.APPLIED,
             record,
         )
+
+    def advance_for_trigger(
+        self,
+        record: PreparedCloudContinuation,
+        *,
+        expected_current: PreparedCloudContinuation,
+        expected_activation: AutomationActivation,
+        expected_trigger: CloudAutomationSliceTrigger,
+        expected_background: BackgroundBranchBinding,
+        expected_provider: ProviderWorkBinding,
+    ) -> CloudContinuationWriteResult:
+        """Advance one prepared lane to the next admitted-slice generation."""
+
+        if not all(
+            (
+                isinstance(record, PreparedCloudContinuation),
+                isinstance(expected_current, PreparedCloudContinuation),
+                isinstance(expected_activation, AutomationActivation),
+                isinstance(expected_trigger, CloudAutomationSliceTrigger),
+                isinstance(expected_background, BackgroundBranchBinding),
+                isinstance(expected_provider, ProviderWorkBinding),
+            )
+        ):
+            raise ValueError("continuation advance requires canonical records")
+        exact = (
+            record.continuation_id == expected_current.continuation_id,
+            record.generation == expected_current.generation + 1,
+            record.generation == expected_trigger.slice_ordinal,
+            record.activation_epoch == expected_current.activation_epoch,
+            expected_activation.epoch == record.activation_epoch + 1,
+            expected_trigger.activation_epoch == expected_activation.epoch,
+            expected_trigger.status is CloudAutomationTriggerStatus.CLAIMED,
+            expected_trigger.definition_digest == record.definition_digest,
+            expected_background.binding_id == record.background_binding_id,
+            expected_background.generation == record.background_binding_generation,
+            expected_background.binding_digest == record.background_binding_digest,
+            expected_provider.binding_id == record.provider_binding_id,
+            expected_provider.generation == record.provider_binding_generation,
+            expected_provider.binding_digest == record.provider_binding_digest,
+            record.continuation_digest == record.expected_digest(),
+        )
+        if not all(exact):
+            raise ValueError("continuation advance records do not align")
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current_row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_continuations
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (record.universe_id, record.automation_id),
+                ).fetchone()
+                if current_row is None:
+                    raise PermissionError("prepared_continuation_missing")
+                current = _record(current_row)
+                if current == record:
+                    conn.commit()
+                    return CloudContinuationWriteResult(
+                        CloudContinuationWriteOutcome.REPLAYED,
+                        current,
+                    )
+                if current != expected_current:
+                    conn.commit()
+                    return CloudContinuationWriteResult(
+                        CloudContinuationWriteOutcome.CONFLICT,
+                        current,
+                    )
+                activation = conn.execute(
+                    """
+                    SELECT 1 FROM automation_activations
+                    WHERE universe_id = ? AND automation_id = ?
+                      AND epoch = ? AND state = 'active'
+                      AND executor_class = 'cloud'
+                      AND subject_kind = 'branch_version'
+                      AND subject_ref = ? AND subject_digest = ?
+                      AND lease_id = ?
+                    """,
+                    (
+                        expected_activation.universe_id,
+                        expected_activation.automation_id,
+                        expected_activation.epoch,
+                        record.branch_version_id,
+                        record.branch_content_digest,
+                        expected_activation.lease_id,
+                    ),
+                ).fetchone()
+                trigger = conn.execute(
+                    """
+                    SELECT record_json FROM cloud_automation_slice_triggers
+                    WHERE trigger_id = ? AND generation = ? AND status = 'claimed'
+                      AND trigger_digest = ?
+                    """,
+                    (
+                        expected_trigger.trigger_id,
+                        expected_trigger.generation,
+                        expected_trigger.trigger_digest,
+                    ),
+                ).fetchone()
+                background = conn.execute(
+                    """
+                    SELECT record_json FROM background_branch_bindings
+                    WHERE binding_id = ? AND generation = ? AND status = 'active'
+                    """,
+                    (expected_background.binding_id, expected_background.generation),
+                ).fetchone()
+                provider = conn.execute(
+                    """
+                    SELECT record_json FROM provider_work_bindings
+                    WHERE binding_id = ? AND generation = ? AND state = 'active'
+                    """,
+                    (expected_provider.binding_id, expected_provider.generation),
+                ).fetchone()
+                witnesses = (
+                    activation is not None,
+                    trigger is not None
+                    and trigger["record_json"]
+                    == json.dumps(
+                        expected_trigger.to_dict(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    background is not None
+                    and background["record_json"]
+                    == json.dumps(
+                        expected_background.to_dict(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    provider is not None
+                    and provider["record_json"]
+                    == json.dumps(
+                        expected_provider.to_dict(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                )
+                if not all(witnesses):
+                    raise PermissionError("continuation_advance_authority_changed")
+                cursor = conn.execute(
+                    """
+                    UPDATE cloud_automation_continuations
+                    SET generation = ?, continuation_digest = ?, record_json = ?
+                    WHERE continuation_id = ? AND generation = ?
+                      AND continuation_digest = ? AND record_json = ?
+                    """,
+                    (
+                        record.generation,
+                        record.continuation_digest,
+                        _json(record),
+                        expected_current.continuation_id,
+                        expected_current.generation,
+                        expected_current.continuation_digest,
+                        _json(expected_current),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("prepared continuation CAS lost")
+                conn.commit()
+                return CloudContinuationWriteResult(
+                    CloudContinuationWriteOutcome.APPLIED,
+                    record,
+                )
+            except Exception:
+                conn.rollback()
+                raise
 
     def _prepare_agent_in_transaction(
         self,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -69,6 +70,7 @@ def _make_sleep_recorder() -> tuple[list, callable]:
 
     def sleep(delay):
         calls.append(delay)
+
     return calls, sleep
 
 
@@ -224,8 +226,7 @@ def test_supervisor_crash_followed_by_clean_resets_backoff(tmp_path):
     # to 1, so backoff should be base (5.0), NOT 2x base (10.0).
     relevant = [d for d in sleep_calls if d in (2.0, 5.0, 10.0)]
     assert 10.0 not in relevant, (
-        "after a clean exit, crash backoff must reset to base, not "
-        "continue doubling from before"
+        "after a clean exit, crash backoff must reset to base, not continue doubling from before"
     )
 
 
@@ -263,8 +264,10 @@ def test_supervisor_max_iterations_honored(tmp_path):
         return FakeProc(returncode=0, steps_until_exit=0)
 
     state = cw.run_supervisor(
-        tmp_path, max_iterations=5,
-        spawn_fn=spawn, sleep_fn=sleep_fn,
+        tmp_path,
+        max_iterations=5,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
     )
     assert state.total_spawns == 5
 
@@ -390,23 +393,26 @@ def _commit_epoch2_worker_task(
 
     initialize_author_server(base_path)
     created_at = datetime.now(timezone.utc).isoformat()
-    canonical_body = rfc8785.dumps({
-        "branch_id": "",
-        "directed_daemon_id": directed_daemon_id,
-        "directed_daemon_instruction": "",
-        "pickup_incentive": "",
-        "priority_weight": 5,
-        "request_type": "general",
-        "schema_version": "request-admission-v2",
-        "text": "run the eligible worker task",
-        "universe_id": universe_id,
-    })
+    canonical_body = rfc8785.dumps(
+        {
+            "branch_id": "",
+            "directed_daemon_id": directed_daemon_id,
+            "directed_daemon_instruction": "",
+            "pickup_incentive": "",
+            "priority_weight": 5,
+            "request_type": "general",
+            "schema_version": "request-admission-v2",
+            "text": "run the eligible worker task",
+            "universe_id": universe_id,
+        }
+    )
     return RequestAdmissionStore(base_path).commit_admission(
         tenant_id="tenant-a",
         actor_id="actor-a",
         universe_id=universe_id,
         idempotency_key_hash=(
-            "hmac-sha256:" + hashlib.sha256(
+            "hmac-sha256:"
+            + hashlib.sha256(
                 f"{universe_id}:{directed_daemon_id}:{key_suffix}".encode()
             ).hexdigest()
         ),
@@ -416,9 +422,7 @@ def _commit_epoch2_worker_task(
         text="run the eligible worker task",
         branch_id="",
         branch_def_id="loop-branch",
-        trigger_source=(
-            "owner_queued" if directed_daemon_id else "operator_request"
-        ),
+        trigger_source=("owner_queued" if directed_daemon_id else "operator_request"),
         accepted_priority_weight=5,
         policy_version="operator-priority-v1",
         grant_generation=1,
@@ -503,7 +507,7 @@ def test_register_worker_runtime_marks_server_owned_cloud_executor(
         display_name="Cloud Project Loop",
         created_by="owner-a",
         soul_text="Run ordinary user-authored Branch work.",
-        metadata={"project_loop_default": True},
+        metadata={"project_loop_default": True, "universe_id": "universe-a"},
     )
 
     runtime_id = cw._register_worker_runtime(universe, "codex")
@@ -564,9 +568,7 @@ def test_running_guard_fails_closed_for_partial_epoch2_schema(
     universe = tmp_path / "universe-a"
     universe.mkdir()
     with RequestAdmissionStore(tmp_path).connection() as conn:
-        conn.execute(
-            "CREATE TABLE branch_tasks_v2 (branch_task_id TEXT PRIMARY KEY)"
-        )
+        conn.execute("CREATE TABLE branch_tasks_v2 (branch_task_id TEXT PRIMARY KEY)")
         conn.commit()
 
     assert cw._queue_has_running_branch_task(universe) is True
@@ -813,7 +815,8 @@ def test_has_pickable_branch_task_applies_unified_execution_opt_out_to_epoch2(
 
 
 def test_has_pickable_branch_task_respects_unified_execution_opt_out(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     from tinyassets.branch_tasks import BranchTask, append_task
 
@@ -958,9 +961,7 @@ def test_running_guard_protects_active_v2_claim_without_runtime_env(
     )
     running = _commit_epoch2_worker_task(tmp_path)
     beat = json.loads(
-        (
-            universe / cw.supervisor_heartbeat_filename(cw._worker_id())
-        ).read_text(encoding="utf-8")
+        (universe / cw.supervisor_heartbeat_filename(cw._worker_id())).read_text(encoding="utf-8")
     )
     descriptor = WorkerClaimDescriptor(
         queue_protocol_version=beat["queue_protocol_version"],
@@ -1001,9 +1002,7 @@ def test_supervisor_does_not_recover_expired_v2_claim_while_child_is_alive(
     )
     running = _commit_epoch2_worker_task(tmp_path)
     beat = json.loads(
-        (
-            universe / cw.supervisor_heartbeat_filename(cw._worker_id())
-        ).read_text(encoding="utf-8")
+        (universe / cw.supervisor_heartbeat_filename(cw._worker_id())).read_text(encoding="utf-8")
     )
     descriptor = WorkerClaimDescriptor(
         queue_protocol_version=beat["queue_protocol_version"],
@@ -1093,9 +1092,7 @@ def test_supervisor_does_not_restart_while_current_worker_has_active_v2_claim(
         key_suffix="pending",
     )
     beat = json.loads(
-        (
-            universe / cw.supervisor_heartbeat_filename(cw._worker_id())
-        ).read_text(encoding="utf-8")
+        (universe / cw.supervisor_heartbeat_filename(cw._worker_id())).read_text(encoding="utf-8")
     )
     descriptor = WorkerClaimDescriptor(
         queue_protocol_version=beat["queue_protocol_version"],
@@ -1219,6 +1216,181 @@ def test_supervisor_restarts_idle_subprocess_for_still_pending_task_after_grace(
 
     assert state.total_clean_exits == 1
     assert spawned[0].terminate_called is True
+
+
+def test_cloud_automation_trigger_pump_uses_exact_registered_worker(
+    tmp_path,
+    monkeypatch,
+):
+    universe = tmp_path / "universe-alice"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime_cloud_1")
+    monkeypatch.setattr(cw, "_worker_id", lambda: "worker_cloud_1")
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tinyassets.daemon_registry.select_project_loop_daemon",
+        lambda _base, *, universe_id: {"daemon_id": "daemon_cloud_1"},
+    )
+    observed = {}
+
+    class _Produced:
+        branch_task_id = "bt2_cloud_2"
+        continuation_generation = 2
+
+        class trigger:
+            trigger_id = "cloud_trigger_2"
+
+    def produce(base, *, universe_id, audience):
+        observed.update(
+            base=base,
+            universe_id=universe_id,
+            audience=audience,
+        )
+        return _Produced()
+
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.produce_one_due_cloud_automation_slice",
+        produce,
+    )
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.reconcile_one_terminal_cloud_automation",
+        lambda _base, *, universe_id: None,
+    )
+
+    assert cw._pump_cloud_automation_triggers(universe) == 1
+    assert observed["base"] == tmp_path
+    assert observed["universe_id"] == "universe-alice"
+    assert observed["audience"].worker_id == "worker_cloud_1"
+    assert observed["audience"].runtime_id == "runtime_cloud_1"
+    assert observed["audience"].daemon_id == "daemon_cloud_1"
+
+
+def test_cloud_automation_pump_registers_operator_created_after_worker_boot(
+    tmp_path,
+    monkeypatch,
+):
+    universe = tmp_path / "universe-alice"
+    universe.mkdir()
+    monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID", raising=False)
+    monkeypatch.setattr(cw, "_worker_id", lambda: "worker_cloud_1")
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tinyassets.daemon_registry.select_project_loop_daemon",
+        lambda _base, *, universe_id: {"daemon_id": "daemon_cloud_1"},
+    )
+    monkeypatch.setattr(
+        cw,
+        "_register_worker_runtime",
+        lambda _universe, provider: (
+            "runtime_cloud_1" if provider == "codex" else None
+        ),
+    )
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.activate_one_requested_cloud_automation",
+        lambda _base, *, universe_id, audience: None,
+    )
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.reconcile_one_terminal_cloud_automation",
+        lambda _base, *, universe_id: None,
+    )
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.produce_one_due_cloud_automation_slice",
+        lambda _base, *, universe_id, audience: None,
+    )
+
+    assert cw._pump_cloud_automation_triggers(universe, provider_name="codex") == 0
+    assert os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] == "runtime_cloud_1"
+
+
+def test_cloud_automation_trigger_pump_keeps_owner_dimension(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
+
+    universe = tmp_path / "shared-universe"
+    universe.mkdir()
+    monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID", raising=False)
+    monkeypatch.setattr(cw, "_worker_id", lambda: "worker_cloud_1")
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        CloudAutomationControlStore,
+        "list_controls",
+        lambda _self, *, universe_id, limit=100: [
+            SimpleNamespace(principal_id="acct_alice")
+        ],
+    )
+    selected: list[tuple[str, str]] = []
+
+    def select(_base, *, universe_id, owner_user_id):
+        selected.append((universe_id, owner_user_id))
+        return {"daemon_id": "daemon_alice"}
+
+    monkeypatch.setattr(
+        "tinyassets.daemon_registry.select_project_loop_daemon",
+        select,
+    )
+    monkeypatch.setattr(
+        cw,
+        "_register_worker_runtime",
+        lambda _universe, provider, *, owner_user_id="", worker_id="": (
+            "runtime_alice"
+            if (
+                provider == "codex"
+                and owner_user_id == "acct_alice"
+                and worker_id
+                == cw._automation_worker_slot("shared-universe", "acct_alice")
+            )
+            else None
+        ),
+    )
+
+    class _Produced:
+        branch_task_id = "bt2_alice"
+
+        class trigger:
+            trigger_id = "cloud_trigger_alice"
+
+    observed: dict[str, object] = {}
+
+    def activate(_base, *, universe_id, audience, principal_id=""):
+        observed.update(
+            universe_id=universe_id,
+            audience=audience,
+            principal_id=principal_id,
+        )
+        return _Produced()
+
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.activate_one_requested_cloud_automation",
+        activate,
+    )
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_runtime.reconcile_one_terminal_cloud_automation",
+        lambda _base, *, universe_id: None,
+    )
+
+    assert cw._pump_cloud_automation_triggers(universe, provider_name="codex") == 1
+    assert selected == [("shared-universe", "acct_alice")]
+    assert observed["principal_id"] == "acct_alice"
+    assert observed["audience"].daemon_id == "daemon_alice"
+    assert observed["audience"].runtime_id == "runtime_alice"
+    assert observed["audience"].worker_id == cw._automation_worker_slot(
+        "shared-universe",
+        "acct_alice",
+    )
+
+
+def test_cloud_automation_worker_slot_survives_process_replacement() -> None:
+    alice_first = cw._automation_worker_slot("shared-universe", "acct_alice")
+    alice_replacement = cw._automation_worker_slot("shared-universe", "acct_alice")
+    bob = cw._automation_worker_slot("shared-universe", "acct_bob")
+
+    assert alice_first == alice_replacement
+    assert alice_first.startswith("worker_cloud_automation_")
+    assert alice_first != bob
 
 
 def test_supervisor_does_not_restart_when_task_is_already_running(tmp_path):
@@ -1409,12 +1581,18 @@ def test_main_passes_provider_pin_to_supervised_daemon(tmp_path, monkeypatch):
     monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
     monkeypatch.setattr("time.sleep", lambda _: None)
 
-    rc = cw.main([
-        "--universe", str(universe),
-        "--provider", "codex",
-        "--max-iterations", "1",
-        "--idle-backoff", "0",
-    ])
+    rc = cw.main(
+        [
+            "--universe",
+            str(universe),
+            "--provider",
+            "codex",
+            "--max-iterations",
+            "1",
+            "--idle-backoff",
+            "0",
+        ]
+    )
 
     assert rc == 0
     assert captured["universe"] == universe
@@ -1445,12 +1623,18 @@ def test_main_exits_zero_after_max_iterations(tmp_path, monkeypatch):
     # Stub time.sleep so the loop has zero wall-clock cost.
     monkeypatch.setattr("time.sleep", lambda _: None)
 
-    rc = cw.main([
-        "--universe", str(universe),
-        "--max-iterations", "2",
-        "--idle-backoff", "0",
-        "--crash-backoff", "0",
-    ])
+    rc = cw.main(
+        [
+            "--universe",
+            str(universe),
+            "--max-iterations",
+            "2",
+            "--idle-backoff",
+            "0",
+            "--crash-backoff",
+            "0",
+        ]
+    )
     assert rc == 0
 
 
@@ -1461,9 +1645,14 @@ def _running_task(tmp_path, *, worker: str) -> None:
     """Append + claim a 'running' task (fresh lease) under *worker*."""
     from tinyassets.branch_tasks import BranchTask, append_task, claim_task
 
-    append_task(tmp_path, BranchTask(
-        branch_task_id=f"bt-{worker}", branch_def_id="b", universe_id="u",
-    ))
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id=f"bt-{worker}",
+            branch_def_id="b",
+            universe_id="u",
+        ),
+    )
     claim_task(tmp_path, f"bt-{worker}", "daemon-a", executor_worker_id=worker)
 
 
@@ -1559,9 +1748,7 @@ def _write_worker_release_state(
     release_state_version: int = 2,
     canary_bundle_status: str = "passed",
 ) -> None:
-    image_ref = (
-        "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
-    )
+    image_ref = "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
     (base_path / "release-state.json").write_text(
         json.dumps(
             {
@@ -1639,10 +1826,13 @@ def test_worker_queue_descriptor_is_release_derived_and_boot_bound(
 
     boot_identity = cw._snapshot_worker_protocol_identity_at_boot()
     assert boot_identity["build_sha"] == "a" * 40
-    assert cw._worker_queue_descriptor(
-        universe,
-        runtime_instance_id="",
-    ) is None
+    assert (
+        cw._worker_queue_descriptor(
+            universe,
+            runtime_instance_id="",
+        )
+        is None
+    )
 
     # A registration-delayed process must retain the release that was
     # terminal-proof when it booted, even if deploy state changes meanwhile.
@@ -1740,23 +1930,15 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     )
     worker_a_path = universe / ".worker_supervisor.worker-a.json"
     worker_a = json.loads(worker_a_path.read_text(encoding="utf-8"))
-    descriptor_a = {
-        key: worker_a[key]
-        for key in cw.WORKER_QUEUE_DESCRIPTOR_FIELDS
-    }
+    descriptor_a = {key: worker_a[key] for key in cw.WORKER_QUEUE_DESCRIPTOR_FIELDS}
 
     runtime_a_after = daemon_registry.list_runtime_instances(
         tmp_path,
         universe_id="universe-a",
     )[0]
-    assert (
-        runtime_a_after["metadata"]["queue_protocol_descriptor"]
-        == descriptor_a
-    )
+    assert runtime_a_after["metadata"]["queue_protocol_descriptor"] == descriptor_a
     assert descriptor_a["worker_id"] == "worker-a"
-    assert descriptor_a["runtime_instance_id"] == runtime_a[
-        "runtime_instance_id"
-    ]
+    assert descriptor_a["runtime_instance_id"] == runtime_a["runtime_instance_id"]
 
     runtime_b = runtime_for("worker-b")
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
@@ -1772,16 +1954,12 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
         phase="polling",
     )
     worker_b = json.loads(
-        (universe / ".worker_supervisor.worker-b.json").read_text(
-            encoding="utf-8"
-        )
+        (universe / ".worker_supervisor.worker-b.json").read_text(encoding="utf-8")
     )
 
     assert json.loads(worker_a_path.read_text(encoding="utf-8")) == worker_a
     assert worker_b["worker_id"] == "worker-b"
-    assert worker_b["runtime_instance_id"] == runtime_b[
-        "runtime_instance_id"
-    ]
+    assert worker_b["runtime_instance_id"] == runtime_b["runtime_instance_id"]
     assert worker_b["boot_id"] != worker_a["boot_id"]
 
     (tmp_path / "release-state.json").unlink()
@@ -1803,9 +1981,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
             tmp_path,
             universe_id="universe-a",
         )
-        if runtime["runtime_instance_id"] == runtime_a[
-            "runtime_instance_id"
-        ]
+        if runtime["runtime_instance_id"] == runtime_a["runtime_instance_id"]
     )
     assert runtime_a_cleared["metadata"]["queue_protocol_descriptor"] is None
     cleared_beat = json.loads(worker_a_path.read_text(encoding="utf-8"))
@@ -1826,9 +2002,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
         phase="polling",
     )
     mismatched_beat = json.loads(
-        (universe / ".worker_supervisor.worker-b.json").read_text(
-            encoding="utf-8"
-        )
+        (universe / ".worker_supervisor.worker-b.json").read_text(encoding="utf-8")
     )
     assert "queue_protocol_version" not in mismatched_beat
 
@@ -1889,11 +2063,7 @@ def test_supervisor_clears_last_durable_descriptor_when_runtime_id_is_lost(
         universe_id="universe-a",
     )[0]
     assert observed["metadata"]["queue_protocol_descriptor"] is None
-    beat = json.loads(
-        (universe / ".worker_supervisor.worker-a.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    beat = json.loads((universe / ".worker_supervisor.worker-a.json").read_text(encoding="utf-8"))
     assert "queue_protocol_version" not in beat
 
 
@@ -2023,21 +2193,12 @@ def test_runtime_switch_clears_retired_slot_and_publishes_replacement(
     }
     assert runtimes[runtime_a["runtime_instance_id"]]["status"] == "retired"
     assert (
-        runtimes[runtime_a["runtime_instance_id"]]["metadata"][
-            "queue_protocol_descriptor"
-        ]
-        is None
+        runtimes[runtime_a["runtime_instance_id"]]["metadata"]["queue_protocol_descriptor"] is None
     )
     descriptor_b = runtimes[runtime_b["runtime_instance_id"]]["metadata"][
         "queue_protocol_descriptor"
     ]
-    assert descriptor_b["runtime_instance_id"] == runtime_b[
-        "runtime_instance_id"
-    ]
-    beat = json.loads(
-        (universe / ".worker_supervisor.worker-a.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    assert descriptor_b["runtime_instance_id"] == runtime_b["runtime_instance_id"]
+    beat = json.loads((universe / ".worker_supervisor.worker-a.json").read_text(encoding="utf-8"))
     assert beat["runtime_instance_id"] == runtime_b["runtime_instance_id"]
     assert beat["boot_id"] == descriptor_b["boot_id"]

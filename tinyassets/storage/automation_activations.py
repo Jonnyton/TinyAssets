@@ -538,6 +538,25 @@ class AutomationActivationStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if state is AutomationActivationState.ACTIVE:
+                    controls_table = conn.execute(
+                        """
+                        SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'cloud_automation_controls'
+                        """
+                    ).fetchone()
+                    if controls_table is not None:
+                        managed = conn.execute(
+                            """
+                            SELECT desired_state
+                            FROM cloud_automation_controls
+                            WHERE universe_id = ? AND automation_id = ?
+                            """,
+                            (expected.universe_id, expected.automation_id),
+                        ).fetchone()
+                        if managed is not None and managed["desired_state"] != "active":
+                            conn.rollback()
+                            return None
                 cursor = conn.execute(
                     """
                     UPDATE automation_activations
