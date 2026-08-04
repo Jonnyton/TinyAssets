@@ -316,6 +316,15 @@ def test_source_workspace_projection_requires_a_closed_json_object(
         _derive_source_projection(declared_inputs=declared_inputs)
 
 
+def test_source_workspace_projection_rejects_excessive_json_nesting_cleanly() -> None:
+    declared_inputs: dict[str, object] = {}
+    for _ in range(1_500):
+        declared_inputs = {"nested": declared_inputs}
+
+    with pytest.raises(ValueError, match="JSON object"):
+        _derive_source_projection(declared_inputs=declared_inputs)
+
+
 @pytest.mark.parametrize(
     "path_field",
     (

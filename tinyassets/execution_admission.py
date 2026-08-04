@@ -162,25 +162,30 @@ def derive_source_workspace_projection(
 
     if type(approved_source) is not bytes or not approved_source:
         raise ValueError("approved_source must be non-empty bytes")
-    if type(declared_inputs) is not dict or not _is_closed_json_value(
-        declared_inputs,
-        set(),
-    ):
+    try:
+        inputs_are_closed = type(declared_inputs) is dict and _is_closed_json_value(
+            declared_inputs,
+            set(),
+        )
+    except RecursionError:
+        inputs_are_closed = False
+    if not inputs_are_closed:
         raise ValueError("declared_inputs must be a closed JSON object")
 
-    projection = object.__new__(SourceWorkspaceProjection)
-    object.__setattr__(projection, "approved_source", approved_source)
-    object.__setattr__(
-        projection,
-        "declared_inputs_json",
-        json.dumps(
+    try:
+        declared_inputs_json = json.dumps(
             declared_inputs,
             allow_nan=False,
             ensure_ascii=True,
             separators=(",", ":"),
             sort_keys=True,
-        ).encode("utf-8"),
-    )
+        ).encode("utf-8")
+    except RecursionError as exc:
+        raise ValueError("declared_inputs must be a closed JSON object") from exc
+
+    projection = object.__new__(SourceWorkspaceProjection)
+    object.__setattr__(projection, "approved_source", approved_source)
+    object.__setattr__(projection, "declared_inputs_json", declared_inputs_json)
     return projection
 
 
