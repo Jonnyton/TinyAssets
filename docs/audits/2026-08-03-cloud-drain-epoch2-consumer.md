@@ -163,6 +163,46 @@ Its immutable PR comment is the post-commit authority for the exact head and
 verdict, avoiding a documentation-only commit that would invalidate the head
 it reviewed.
 
+### 2026-08-03 exact-head activation review remediation
+
+The later whole-change review of `53bc0357` returned `ADAPT` on three cutover
+blockers. The current candidate repairs all three before a new exact-head
+review:
+
+- physical fleet identity now includes the immutable host worker ID, and each
+  derived logical worker slot receives its own boot-frozen queue descriptor;
+  a four-worker Codex/Claude replacement test proves distinct, restart-stable
+  identities;
+- the requester provider binding must match the exact registered runtime
+  before activation or Trigger claim, again before provider claim, and inside
+  every provider-launch transaction; wrong-family tests prove no Trigger lease
+  and zero provider execution claims;
+- phone creation now accepts repository, accepted-spec ref/content, published
+  Branch version, cadence, and operator intent while the server derives and
+  validates every internal digest, scenario, authority binding, grant, budget,
+  and stable activation identity.
+
+Fresh Windows evidence on 2026-08-03: 448 integrated cloud tests passed, 58
+packaged-runtime tests passed, and the three 64-contender shaped-load scenarios
+passed. Ruff, strict OpenSpec validation, `git diff --check`, and 332-file
+canonical/plugin mirror parity passed. A fresh exact-head review remains the
+next merge gate.
+
+The first whole-change exact review of `017e9565` timed out after 30 minutes
+and supplied no verdict. A new focused exact review completed in 524 seconds
+and returned `ADAPT`: the pump reread its own rewritten logical worker ID on a
+second poll; provider drift after preflight could leave active activation/task
+state before the later check; and legacy phone fields could still select
+provider/destination authority or replace exact spec content with a digest.
+The follow-up freezes physical identity once in the supervisor and passes it
+through every poll, validates requester provider/runtime inside the activation,
+admission, Trigger-claim, and provider-launch transactions, and requires exact
+spec content while deriving provider/destination IDs before comparing any
+legacy assertions. A new exact-head re-review is still required before push.
+Current follow-up evidence: 450 integrated cloud tests, 58 packaged-runtime
+tests, and all three 64-contender shaped-load scenarios pass; Ruff, strict
+OpenSpec, diff checks, and 332-file mirror parity are green.
+
 ## Deployment and acceptance state
 
 - Production dark deployment of this consumer: not yet run.
@@ -180,8 +220,7 @@ cloud automation activation tuple.
 
 ## Temporary drain continuity
 
-At 2026-08-02 20:25 PDT, the local watchdog reported health `running`, the
-controller alive as PID 19300, attempt 20 running, five completed slices, and
-one consecutive failed slice. The supervisor remained live and responsible
-for automatic retry. The local bridge remains active until cloud acceptance is
-proven.
+At 2026-08-03 20:30 PDT, the local watchdog reported health `running`, the
+supervisor alive, attempt 17 active, six completed slices, zero consecutive
+failures, and merged PRs #2211 through #2226. The local bridge
+remains active until cloud acceptance is proven.

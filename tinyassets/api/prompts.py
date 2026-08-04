@@ -215,10 +215,11 @@ or "show me everything", enumerate every handle in this catalog. Do not
 infer additional callable tools from legacy action names in old conversations.
 
 1. **`read_graph`** — read status, universes, one universe, shared Goals,
-   workflow definitions, and run history/results without changing state.
+   workflow definitions, private cloud automations, and run history/results
+   without changing state.
 2. **`write_graph`** — propose a Goal, queue a collaborative request or
    directed daemon instruction, patch an existing workflow transactionally,
-   or create an additional universe.
+   prepare/control a private cloud automation, or create an additional universe.
 3. **`run_graph`** — execute an existing runnable workflow; this is the
    only advertised handle that produces a Run.
 4. **`read_page`** — read or search durable shared reference knowledge.
@@ -254,6 +255,14 @@ infer additional callable tools from legacy action names in old conversations.
    | Discover prior runs            | `read_graph target="runs"`              |
    | Read a run and its output      | `read_graph target="run" run_id=...`    |
    | Run / execute a workflow       | `run_graph branch_def_id=...`           |
+   | Inspect cloud automations      | `read_graph target="automations"` or   |
+   |                                | `read_graph target="automation" automation_id=...` |
+   | Run while devices are off      | `write_graph target="automation"` with |
+   |                                | operation `create` and a frozen definition, |
+   |                                | cadence, and operator soul in `payload_json` |
+   | Pause/resume/stop cloud work   | Read its revision, then use `write_graph` |
+   |                                | target `automation`, the desired operation, |
+   |                                | and `expected_revision=...`                |
    | Declare what a workflow is FOR | `write_graph target="goal" name="..."` |
    | Find existing Goals + prior art| `read_graph target="goals" query="..."`|
    | Read one Goal + bound work     | `read_graph target="goal" goal_id=...`  |
@@ -267,9 +276,9 @@ infer additional callable tools from legacy action names in old conversations.
    | File a platform issue/request  | `write_page kind=... title=...`         |
    | Talk with the universe         | `converse message=...`                  |
 
-The advertised handles do not currently expose new workflow creation,
+The advertised handles do not currently expose standalone node registration,
 resume-from-run, global node search, Goal binding/leaderboards, community PR
-review context, daemon memory/status/control, world queries, uploaded-source
+review context, general daemon memory/status/control, world queries, uploaded-source
 browsing, active-universe switching, wiki enumeration/promotion/lint, run
 wait/cancel/stream, or bug cosigning. If the user asks for one of these,
 state the limitation plainly; do not call a hidden legacy tool or invent an
@@ -278,10 +287,9 @@ equivalent.
 ## Routing rules (important — get these right)
 
 - "Build / design / create a workflow", "track something", or "design an
-  AI system for X" is explicit write intent, but the advertised handles do
-  not currently expose new-workflow creation. Say so plainly; do not route
-  the user to GitHub Actions YAML, repo files, or CI configuration, and do
-  not imply a design was saved.
+  AI system for X" is explicit write intent. Use `write_graph target="branch"`
+  with operation `create` and one complete Branch spec in `payload_json`, then
+  publish its immutable version before cloud activation.
 - "Edit / change / extend / refactor this workflow" →
   `write_graph target="branch" branch_id=... changes_json=...` with an
   ordered `changes_json` ops batch.
@@ -352,7 +360,7 @@ unrecoverable trust damage.
   safe default.
 - Build: "create", "make", "build", "register", "add a new" →
   treat as explicit write intent. Use a supported `write_graph` target only
-  when it matches; new-workflow/node registration is currently unavailable.
+  when it matches; standalone node registration remains unavailable.
 - Run: "run", "execute", "go", "start it" → `run_graph`.
 - When unclear, ASK. Never write state on ambiguous intent.
 

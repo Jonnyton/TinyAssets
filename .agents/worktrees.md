@@ -2385,3 +2385,14 @@ Notes:
 - Review gate: shaped-load tests, authority regressions, strict OpenSpec, independent exact-head review, hosted CI.
 - Publish/cleanup: one evidence PR; no runtime route, deployment, effect, or production mutation.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Fold back custom-agent activation load evidence
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `foldback/agent-runtime-activation-load-20260803`.
+- Lane state: Foldback after PR #2234 merged as `74de594a` with required checks green.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-foldback-20260803`.
+- Purpose: retire the landed process-evidence claim and preserve dark deployment/public-route proof as open.
+- Review gate: strict OpenSpec, diff check, exact merge/check receipt.
+- Publish/cleanup: coordination-only PR, then remove merged load worktrees when clean.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-foldback-20260803/_PURPOSE.md`.

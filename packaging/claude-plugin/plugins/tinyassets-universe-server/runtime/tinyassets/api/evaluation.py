@@ -840,14 +840,13 @@ def _dispatch_judgment_action(
 
 
 def _action_publish_version(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api.branches import _branch_authorized, _request_branch_actor
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.daemon_server import get_branch_definition
 
     bid = (kwargs.get("branch_def_id") or "").strip()
     notes = (kwargs.get("notes") or "").strip()
     parent_version_id = (kwargs.get("parent_version_id") or "").strip() or None
-    publisher = (kwargs.get("publisher") or "anonymous").strip()
-
     if not bid:
         return json.dumps({"error": "branch_def_id is required."})
 
@@ -858,6 +857,11 @@ def _action_publish_version(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": f"Branch '{bid}' not found."})
     except Exception as exc:
         return json.dumps({"error": f"Could not load branch: {exc}"})
+    if not _branch_authorized(raw):
+        return json.dumps({"error": f"Branch '{bid}' not found."})
+    publisher = _request_branch_actor()
+    if publisher is None:
+        return json.dumps({"error": f"Branch '{bid}' not found."})
 
     try:
         version = publish_branch_version(

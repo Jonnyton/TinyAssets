@@ -627,12 +627,14 @@ def _extensions_impl(
     # ── Branch versioning ──────────────────────────────────────────────────
     bv_handler = _BRANCH_VERSION_ACTIONS.get(action)
     if bv_handler is not None:
+        from tinyassets.api.permissions import current_request_actor_id
+
         bv_kwargs: dict[str, Any] = {
             "branch_def_id": branch_def_id,
             "branch_version_id": branch_version_id,
             "parent_version_id": parent_version_id,
             "notes": notes,
-            "publisher": os.environ.get("UNIVERSE_SERVER_USER", "anonymous"),
+            "publisher": current_request_actor_id(),
             "limit": limit,
         }
         return bv_handler(bv_kwargs)
