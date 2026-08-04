@@ -270,14 +270,17 @@ def _receipt_record(receipt: ConversationDeletionReceipt) -> dict[str, object]:
 
 
 def _load_deletion_receipt(row: sqlite3.Row) -> ConversationDeletionReceipt | None:
-    expected_target = deleted_target_digest(
-        ConversationCustodyScope(
-            owner_user_id=row["owner_user_id"],
-            universe_id=row["universe_id"],
-            agent_binding_id=row["agent_binding_id"],
-        ),
-        conversation_id=row["conversation_id"],
-    )
+    try:
+        expected_target = deleted_target_digest(
+            ConversationCustodyScope(
+                owner_user_id=row["owner_user_id"],
+                universe_id=row["universe_id"],
+                agent_binding_id=row["agent_binding_id"],
+            ),
+            conversation_id=row["conversation_id"],
+        )
+    except (custody_domain.ConversationCustodyValidationError, TypeError, ValueError) as exc:
+        raise ConversationCustodyIntegrityError("deletion scope columns are invalid") from exc
     if (
         expected_target != row["deleted_target_digest"]
         or row["deletion_scope"] != ACTIVE_SQLITE_DELETION_SCOPE

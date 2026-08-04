@@ -1776,6 +1776,27 @@ def test_private_store_legacy_deletion_binding_uses_canonical_receipt(
             retention_until=None,
         )
 
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute(
+            "UPDATE conversation_custody_deletions SET universe_id = ?",
+            ("not canonical!",),
+        )
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=_key(72),
+                scope=second_scope,
+            ),
+            scope=second_scope,
+            idempotency_key=_key(72),
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+        )
+
 
 def test_private_store_concurrent_identical_create_has_one_result(tmp_path: Path) -> None:
     custody = _custody()
