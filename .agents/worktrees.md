@@ -2418,3 +2418,14 @@ Notes:
 - Review gate: strict OpenSpec, diff check, exact merge/check receipt.
 - Publish/cleanup: coordination-only PR, then remove merged load worktrees when clean.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-foldback-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Authenticated app-event admission
+
+- Provider: `codex-gpt5-desktop-app-ingress`.
+- Branch: `feature/custom-agent-app-ingress-20260803`.
+- Lane state: Active; Slack-first dark boundary prerequisite for app conversations.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-app-ingress-20260803`.
+- Purpose: verify raw Slack signatures before normalization and journal content-free replay evidence without mapping identity or invoking custody/runtime/effects.
+- Review gate: focused security/concurrency tests, strict OpenSpec, independent opposite-family exact-head review, hosted CI.
+- Publish/cleanup: one prerequisite PR; no public route, deployment, secret, external effect, or production mutation.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-app-ingress-20260803/_PURPOSE.md`.
