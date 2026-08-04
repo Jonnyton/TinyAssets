@@ -211,13 +211,24 @@ def test_patch_nodes_rejects_bad_phase(us_env):
 
 
 def test_patch_nodes_rejects_missing_branch(us_env):
+    """A missing branch returns the BARE `{"error": ...}` — no `status` key.
+
+    This test used to expect `status == "rejected"`, which is a stale
+    expectation, not an API bug. `patch_nodes` delegates to
+    `_branch_not_found` (branches.py:452), shared by 14 call sites, and the
+    bare shape is load-bearing for non-disclosure:
+    `test_branch_mutation_authority.py` asserts
+    `denied == missing == expected` — a mutation the caller is not authorized
+    to make must be byte-identical to a branch that does not exist, so the
+    error cannot be used to probe for private branches. Adding a `status`
+    key here would break that guarantee.
+    """
     us, _ = us_env
     result = json.loads(us.extensions(
         action="patch_nodes", branch_def_id="nonexistent",
         field="timeout_seconds", value="300",
     ))
-    assert result["status"] == "rejected"
-    assert "not found" in result["error"].lower()
+    assert result == {"error": "Branch 'nonexistent' not found."}, result
 
 
 def test_patch_nodes_rejects_missing_value(us_env):
