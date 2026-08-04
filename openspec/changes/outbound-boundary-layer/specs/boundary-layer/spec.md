@@ -33,6 +33,50 @@ Each goal and universe SHALL have an addressable durable webhook URL and email a
 - **WHEN** an approved item reaches a goal inbox before its timezone-aware cutoff
 - **THEN** the next scheduled run receives the item exactly once and records the inbox receipt and cutoff used
 
+### Requirement: External app events authenticate before normalization
+
+The boundary SHALL authenticate an external app callback against the exact
+bounded raw request body before parsing or normalizing it. For Slack Events API
+callbacks, authority SHALL require the current app signing secret, a
+constant-time match for the HMAC-SHA256 `v0` signature over
+`v0:{request_timestamp}:{raw_body}`, and a request timestamp within five
+minutes. A deprecated verification token, payload field, route parameter, or
+caller-supplied tenant identifier SHALL NOT authenticate or redirect a request.
+
+Only after authentication, the boundary SHALL validate a Slack
+`event_callback` envelope and derive installation identity from its exact
+`api_app_id` and `team_id`. It SHALL atomically journal
+`(provider, installation_id, event_id)` with a digest of the authenticated raw
+body and content-free routing evidence. An exact replay SHALL return the first
+admission record without another write; the same identity with a different
+digest SHALL fail closed. Authentication or envelope rejection SHALL write no
+row. The ledger SHALL NOT persist the signing secret, signature, raw body,
+message text, deprecated token, or normalized event payload.
+
+This admission evidence SHALL NOT itself map a TinyAssets user, organization,
+universe, agent binding, conversation, or runtime authority; issue a custody
+grant; invoke a model; perform an effect; expose a public route; or add an MCP
+handle.
+
+#### Scenario: a signed Slack event is admitted once
+
+- **WHEN** Slack delivers a bounded, current, correctly signed
+  `event_callback` envelope for the configured app
+- **THEN** the boundary verifies the raw bytes before parsing and persists one
+  content-free admission record derived from the authenticated app, workspace,
+  and event identity
+- **AND** an exact concurrent or later replay returns that same record without
+  creating a second admission
+
+#### Scenario: forged or conflicting input has no authority
+
+- **WHEN** the signature is absent, malformed, stale, wrong, or covers different
+  bytes; the app identity is wrong; the envelope is malformed or oversized; or
+  an admitted event identity is reused with a different body digest
+- **THEN** admission fails closed before identity mapping, custody, runtime, or
+  effects
+- **AND** authentication or shape rejection writes no admission row
+
 ### Requirement: Adapters are credential-blind daemon-side proxies
 Adapter code SHALL receive only a scoped domain, verb, and redacted request/response contract. Secret lookup, network execution, cap enforcement, and effect receipts SHALL remain inside a trusted daemon-side proxy, and adapter output SHALL be unable to reveal the credential material.
 
