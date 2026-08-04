@@ -13,9 +13,10 @@ the invariants (deny by default, clamp to ceilings, fail closed on the unknown)
 rather than a fixed menu of sandbox "modes".
 
 **Honesty about isolation** (tasks.md 4.2 note; STATUS P1 "No OS engine
-sandbox"): :func:`isolation_report` reports the boundary the host actually has,
-reusing the shipped ``bwrap`` probe. It never claims OS isolation the platform
-does not have, and a draft that *declares* it needs OS isolation is refused
+sandbox"): :func:`isolation_report` reports the boundary authoring can actually
+admit; the shipped ``bwrap`` probe remains diagnostic-only. Until a real
+request-bound distributed backend is admitted, it never claims OS isolation and
+a draft that *declares* it needs OS isolation is refused
 (:func:`require_isolation`) rather than silently run in-process.
 
 **Real effects never bypass the canonical boundary.** This module authorizes a

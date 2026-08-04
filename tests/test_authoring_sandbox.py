@@ -502,6 +502,41 @@ def effectful_session(store):
     return session_id
 
 
+def test_positive_host_probe_denies_os_isolation_before_draft_execution(
+    store, effectful_session, monkeypatch
+):
+    from tinyassets.authoring import sandbox, service
+    from tinyassets.authoring.models import SandboxDenied
+
+    service.apply_edit_batch(
+        actor_id="alice",
+        session_id=effectful_session,
+        store=store,
+        operations=[
+            {
+                "op": "set",
+                "path": "sandbox_policy",
+                "value": {"requires_os_isolation": True},
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        sandbox, "_probe_sandbox", lambda: {"bwrap_available": True, "reason": ""}
+    )
+    draft_executed = False
+
+    def execute_draft(*args, **kwargs):
+        nonlocal draft_executed
+        draft_executed = True
+        return [], None
+
+    monkeypatch.setattr(service, "_execute_draft_nodes", execute_draft)
+
+    with pytest.raises(SandboxDenied, match="os_isolation_unavailable"):
+        service.run_test(actor_id="alice", session_id=effectful_session, store=store)
+    assert draft_executed is False
+
+
 def test_dry_test_reaches_effect_and_mutates_nothing(store, effectful_session):
     from tinyassets.authoring import service
 

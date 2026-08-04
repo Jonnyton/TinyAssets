@@ -229,6 +229,16 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
         [f"{SANDBOX}::test_positive_host_probe_cannot_admit_authoring_os_isolation"],
     ),
     (
+        "service-isolation-gate",
+        "tinyassets/authoring/service.py",
+        "    isolation = authoring_sandbox.require_isolation(policy)",
+        "    isolation = authoring_sandbox.isolation_report()",
+        [
+            f"{SANDBOX}::"
+            "test_positive_host_probe_denies_os_isolation_before_draft_execution"
+        ],
+    ),
+    (
         "evaluator-chain-coverage",
         "tinyassets/authoring/models.py",
         "                issues.append(ValidationIssue(\n"
