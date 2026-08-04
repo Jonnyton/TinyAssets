@@ -2567,7 +2567,7 @@ def _dispatch_goal_action(
     and formats it as the structured ``local_edit_conflict`` payload so
     chat clients render actionable options rather than a raw traceback.
     """
-    from tinyassets.api.branches import _append_global_ledger
+    from tinyassets.api.branches import _append_global_ledger, ledger_actor
     from tinyassets.api.engine_helpers import (
         _format_dirty_file_conflict,
         _truncate,
@@ -2613,6 +2613,12 @@ def _dispatch_goal_action(
             summary_bits.append(f"branch={kwargs['branch_def_id']}")
         _append_global_ledger(
             f"goals.{action}",
+            # `actor` is REQUIRED. Omitting it raised TypeError into the
+            # `except` below, which logged a warning and dropped the row —
+            # silently losing attribution for every goals write. Four call
+            # sites had this defect; see `ledger_actor` for why the fallback
+            # must be a literal rather than "".
+            actor=ledger_actor(),
             target=str(target),
             summary=_truncate(" ".join(summary_bits)),
             payload=None,
