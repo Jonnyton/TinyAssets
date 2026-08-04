@@ -58,7 +58,16 @@ An authored node SHALL be able to declare scalar, structured-object, file, and f
 - **AND** no connector push occurs unless separately declared and authorized
 
 ### Requirement: Test execution is isolated, budgeted, and side-effect-free by default
-Every authoring test run SHALL execute the selected immutable draft version in a fresh isolation boundary with explicit CPU, memory, wall-time, output-size, network, filesystem, model-spend, and external-call budgets. The default mode SHALL replace all declared external effects, connector pushes, host-file writes, subprocesses, and irreversible operations with structured simulated-effect evidence. Network access SHALL be denied except through declared/approved destinations; secrets SHALL be vended only to a declared adapter and SHALL not enter draft-visible output or logs.
+Every authoring test run SHALL execute the selected immutable draft version in a fresh isolation boundary with explicit CPU, memory, wall-time, output-size, network, filesystem, model-spend, and external-call budgets. The default mode SHALL replace all declared external effects, connector pushes, host-file writes, subprocesses, and irreversible operations with structured simulated-effect evidence. Network access SHALL be denied except through declared/approved destinations; secrets SHALL be vended only to a declared adapter and SHALL not enter draft-visible output or logs. When the selected draft declares `requires_os_isolation`, authoring SHALL refuse before executing draft code unless trusted composition has admitted the exact immutable draft/test request against a real active distributed-execution backend binding and sealed that admission outside draft-controlled state. Sandbox-binary availability, a host capability probe or `isolation_report`, a subprocess boundary, and draft/caller claims SHALL remain diagnostic only and SHALL NOT satisfy the declaration. The run SHALL report OS-isolated success only after the binding's reviewed verifier accepts request-bound launch evidence for that exact execution and result.
+
+#### Scenario: Positive host probe cannot attest an unused sandbox
+- **WHEN** a draft declares `requires_os_isolation` and the host reports a sandbox binary or capability but no real backend binding has admitted the exact draft/test request
+- **THEN** authoring refuses before executing draft code and does not report OS-isolated success
+
+#### Scenario: Admitted OS-isolated test requires matching launch evidence
+- **WHEN** trusted composition admits an exact draft/test request through an active OS-isolated backend binding
+- **THEN** the run is successful only when the binding's reviewed verifier accepts launch evidence bound to that request, execution, and result
+- **AND** missing, mismatched, caller-authored, or draft-authored evidence fails closed
 
 #### Scenario: Default test reaches an external effect
 - **WHEN** a default dry test reaches a declared connector push or other effect

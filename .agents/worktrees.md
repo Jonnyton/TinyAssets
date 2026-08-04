@@ -2330,3 +2330,69 @@ Notes:
 - Remaining: deployed first-attempt rendered proof, a public definition from another authenticated creator, and post-fix organic-use evidence.
 - Publish/cleanup: coordination-only PR, then remove the implementation and foldback worktrees after merge.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-cross-user-remix-foldback-20260802/_PURPOSE.md`
+
+## 2026-08-03 - Correct sandbox admission handoff
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `fix/sandbox-admission-contract-20260803`.
+- Lane state: Active; exact STATUS claim for the three blocking post-#2202 contract findings.
+- Worktree: `C:/Users/Jonathan/Projects/wf-correct-sandbox-admission-contract-20260803`.
+- Purpose: bind the full frozen inner request, split fresh preflight from release policy, and make launch evidence implementable and anti-replay.
+- Review gate: all-change strict OpenSpec, semantic presence checks, exact-head security review, required CI.
+- Publish/cleanup: one spec-only corrective PR; no runtime/deploy/authority mutation; remove after verified merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-correct-sandbox-admission-contract-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Establish private conversation custody
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/private-conversation-custody-20260803`.
+- Lane state: Active; exact STATUS claim for the missing app-conversation custody prerequisite.
+- Worktree: `C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803`.
+- Purpose: build one exportable `private_universe` custody mode without settling other user-selectable modes or implementing Slack ingress.
+- Review gate: strict OpenSpec, TDD/mutation evidence, mirror parity, exact-head independent security review, required CI.
+- Publish/cleanup: one prerequisite PR; no deploy, app activation, or production-secret mutation; remove after verified merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Close custom-agent runtime principal activation gate
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/agent-runtime-activation-authority-20260803`.
+- Lane state: Active; exact STATUS claim for `activate-custom-agent-runtime-core` task 3.1 activation authority.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-authority-20260803`.
+- Purpose: authenticate the owner and transactionally revalidate the selected manifest plus every requested grant before the canonical agent activation CAS.
+- Review gate: RED/GREEN authority tests, strict OpenSpec, mirror parity, independent exact-head security review, required CI.
+- Publish/cleanup: one dark-core PR; no public route, app, workflow, effect, deployment, or production activation; remove after verified merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-authority-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Fold back custom-agent runtime activation authority
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `foldback/agent-runtime-activation-20260803`.
+- Lane state: Foldback after PR #2230 merged as `1a799ae8` with hosted checks green.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-foldback-20260803`.
+- Purpose: retire the landed activation claim and preserve whole-core operational evidence as open.
+- Review gate: strict OpenSpec, diff check, exact merge/check receipt.
+- Publish/cleanup: coordination-only PR, then remove both merged activation worktrees when clean.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-foldback-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Prove custom-agent activation cross-process recovery
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/agent-runtime-activation-load-20260803`.
+- Lane state: Active; exact STATUS claim for the next local task 5.1 evidence slice.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-20260803`.
+- Purpose: prove process-level activation convergence, restart replay, and revoked-grant denial without claiming cloud deployment.
+- Review gate: shaped-load tests, authority regressions, strict OpenSpec, independent exact-head review, hosted CI.
+- Publish/cleanup: one evidence PR; no runtime route, deployment, effect, or production mutation.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Fold back custom-agent activation load evidence
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `foldback/agent-runtime-activation-load-20260803`.
+- Lane state: Foldback after PR #2234 merged as `74de594a` with required checks green.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-foldback-20260803`.
+- Purpose: retire the landed process-evidence claim and preserve dark deployment/public-route proof as open.
+- Review gate: strict OpenSpec, diff check, exact merge/check receipt.
+- Publish/cleanup: coordination-only PR, then remove merged load worktrees when clean.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-load-foldback-20260803/_PURPOSE.md`.

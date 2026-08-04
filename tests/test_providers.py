@@ -180,12 +180,14 @@ class TestProviderRouterCall:
     def _carrier(
         *, provider: str = "codex", role: str = "writer",
         operation: str = "repository_spec_delivery", max_tokens: int = 77,
+        max_cost_microunits: int = 1,
     ):
         carrier = MagicMock(spec=ProviderInvocationCarrier)
         carrier.provider = provider
         carrier.role = role
         carrier.operation = operation
         carrier.max_tokens = max_tokens
+        carrier.max_cost_microunits = max_cost_microunits
         carrier.validate_for_call.return_value = provider
         return carrier
 
@@ -222,6 +224,39 @@ class TestProviderRouterCall:
         carrier.validate_for_call.assert_called_once_with(
             role="writer", operation="repository_spec_delivery",
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "message"),
+        (
+            ("max_tokens", "token budget"),
+            ("max_cost_microunits", "cost budget"),
+        ),
+    )
+    async def test_armed_carrier_rejects_zero_budget_authority(
+        self,
+        field,
+        message,
+    ):
+        providers = _make_providers()
+        router = ProviderRouter(providers=providers)
+        carrier = self._carrier(**{field: 0})
+
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._carrier_resolver(carrier),
+        ):
+            with pytest.raises(PermissionError, match=message):
+                await router.call(
+                    "writer",
+                    "prompt",
+                    "system",
+                    ModelConfig(max_tokens=None),
+                    operation="repository_spec_delivery",
+                    universe_context=UniverseContext(provider_invocation=carrier),
+                )
+
+        assert all(provider.call_count == 0 for provider in providers.values())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("max_tokens", [-1, 78])

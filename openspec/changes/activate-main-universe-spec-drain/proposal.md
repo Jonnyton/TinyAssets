@@ -23,6 +23,9 @@ TinyAssets-only scheduler or consuming maintainer compute.
   loop remains operable from a phone while every user device is off.
 - Require a single-active cutover: the local tray drain stops before cloud
   acceptance and cannot drain concurrently with the cloud Branch.
+- Keep that temporary tray drain productive until cutover by suppressing an
+  exact refinery target when an older open pull request already owns it,
+  without counting the refusal as delivery or exhausting the failure budget.
 - Gate final acceptance on cloud-worker restart recovery, at least 24 hours of
   useful PC-off progress, no duplicate claims, and rendered phone-chatbot proof.
 
@@ -36,7 +39,11 @@ TinyAssets-only scheduler or consuming maintainer compute.
 
 ### Modified Capabilities
 
-None. The new capability owns the automation-generic activation epoch and
+- `development-coordination-runtime`: Preserve temporary drain availability
+  when final worker-side freshness detects a pre-existing open-PR owner for an
+  assigned refinery target.
+
+The new capability owns the automation-generic activation epoch and
 single-active executor fence that do not exist in current-main specs. All other
 missing implementation requirements remain owned by their current OpenSpec
 changes.

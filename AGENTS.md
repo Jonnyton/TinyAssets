@@ -180,14 +180,17 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
   before proposing new ones. Legacy oversized changes are grandfathered for
   visibility, not blessed — pick concrete slices, don't fan out child changes.
 
-#### OpenSpec drain [retired pending rollback test]
+#### OpenSpec drain [temporary bridge until cloud cutover]
 
-The local autonomous drain (supervisor / watchdog / tray / refinery) is OFF
-per host de-bloat directive 2026-08-02 — a durable `drain.off` marker plus
-disabled scheduled tasks; do not restart it or create coordination-only
-refinery lanes. Evidence, measurement plan (re-check 2026-08-09), and restore
-steps: `docs/audits/2026-08-02-process-debloat-rollback-test.md`. Operational
-reference if restored: `docs/ops/2026-07-28-openspec-drain-supervisor.md`.
+The host restored the local autonomous drain after the 2026-08-02 de-bloat
+test and directed on 2026-08-03 that it stay green and productive until the
+cloud drain is accepted as running 24/7. Keep exactly the canonical tray and
+guard tasks active; test-created scheduled tasks are leaks and must be removed.
+At single-active cutover, stop and disable the local drain before activating
+the cloud epoch so tray and cloud never claim concurrently. Historical rollback
+evidence remains in `docs/audits/2026-08-02-process-debloat-rollback-test.md`;
+the operational reference is
+`docs/ops/2026-07-28-openspec-drain-supervisor.md`.
 
 ### Multi-Session Steering
 

@@ -132,6 +132,87 @@ def test_failed_event_emitted_on_policy_path_exception(monkeypatch):
     assert failed_events[0]["node_id"] == "step1"
 
 
+def test_policy_node_uses_injected_governed_policy_call(monkeypatch):
+    """An injected authority-bearing caller owns policy dispatch too.
+
+    Reaching for the process-global router would drop the one-use provider
+    carrier attached to the injected caller and escape requester authority.
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    class _GovernedCaller:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def __call__(self, *_args, **_kwargs):
+            raise AssertionError("policy nodes must use the governed policy method")
+
+        def call_with_policy_sync(
+            self, role, prompt, system, policy, config=None,
+        ):
+            self.calls.append(
+                {
+                    "role": role,
+                    "prompt": prompt,
+                    "system": system,
+                    "policy": policy,
+                    "config": config,
+                }
+            )
+            return "governed result", "requester-provider", {"governed": True}
+
+    def _shared_router_escape():
+        raise AssertionError("shared router must not bypass the injected caller")
+
+    monkeypatch.setattr(
+        "tinyassets.graph_compiler._get_shared_router",
+        _shared_router_escape,
+    )
+    branch = _simple_branch()
+    policy = {"preferred": {"provider": "requester-provider"}}
+    branch.node_defs[0].llm_policy = policy
+    caller = _GovernedCaller()
+
+    compiled = compile_branch(branch, provider_call=caller)
+    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
+    result = runnable.invoke(
+        {"x": "test"},
+        config={"configurable": {"thread_id": "t-governed-policy"}},
+    )
+
+    assert result["out"] == "governed result"
+    assert len(caller.calls) == 1
+    assert caller.calls[0]["role"] == "writer"
+    assert caller.calls[0]["policy"] == policy
+    assert caller.calls[0]["config"] is not None
+
+
+def test_plain_node_forwards_config_to_injected_kwargs_caller():
+    """Authority-bearing callable objects accept node config via **kwargs."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    class _GovernedCaller:
+        def __init__(self) -> None:
+            self.config = None
+
+        def __call__(self, _prompt, _system, *, role, **kwargs):
+            assert role == "writer"
+            self.config = kwargs.get("config")
+            return "governed result"
+
+    caller = _GovernedCaller()
+    compiled = compile_branch(_simple_branch(), provider_call=caller)
+    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
+
+    result = runnable.invoke(
+        {"x": "test"},
+        config={"configurable": {"thread_id": "t-governed-kwargs"}},
+    )
+
+    assert result["out"] == "governed result"
+    assert caller.config is not None
+
+
 def test_failed_event_emission_resilient_to_sink_exception():
     """If the event_sink itself raises while emitting phase='failed', the
     CompilerError must still propagate (no double-fault swallow)."""

@@ -4,6 +4,7 @@
 - [x] 0.2 Confirm `paid-market-track-e-wave-2-transport` has landed its single authenticated transaction transport before implementing any value-moving boundary effect; until then, implement only non-value-moving boundary behavior.
 - [x] 0.3 Confirm the umbrella `build-forward-platform-capabilities` decisions D1–D8 still hold for this slice and record any divergence as a design change here, not as silent drift.
 - [x] 0.4 Take no requirement from the host-gated open-production-commons reframe (`.agents/handoffs/2026-07-19-distributed-execution-resume/RESUME-SPEC.md` §9). It is unapproved context, blocked on a host Q6 confirmation and PLAN.md foldback approval, and per umbrella D9 it binds nothing in either direction: "keep the reframe reachable" is not a design constraint on this slice and not a review gate against it. Build to D1–D8 and this change's own requirements. If the reframe is ever approved, it arrives as its own change.
+- [x] 0.5 Accept the `engine-os-sandbox` owner handoff as opaque egress and credential requirement reference/digest pairs: publish fail-closed constraints for `source_exec/runner_source_exec` and `inference_only/provider_cli`, preserve credential blindness and same-host native-custody proxying, and leave the complete taxonomies, compatibility matrix, and provider-call cap/idempotency/receipt composition unresolved.
 
 ## 1. Connection resource ledger and grants
 

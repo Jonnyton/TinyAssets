@@ -214,6 +214,7 @@ def test_worker_prompt_refines_exact_existing_change_before_product_claim() -> N
         "no bounded unchecked-task slice and no autonomous prerequisite-removal"
         in normalized
     )
+    assert "FAILED marker MUST include that exact PR URL" in normalized
     assert prompt.rstrip().endswith(
         "DRAIN_RESULT: <PARTIAL|BLOCKED|FAILED> "
         "refine-openspec-stranded-change <PR-url-or-dash>"
@@ -1988,6 +1989,147 @@ def test_resume_consumes_valid_unrecorded_current_attempt(
     assert state["admission"]["target"] == "assigned-target"
 
 
+def test_resume_suppresses_unconsumed_preexisting_refinery_owner(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    target = "refine-openspec-exact-target"
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: FAILED {target} {pr}\n",
+        encoding="utf-8",
+    )
+    state = _state(
+        attempts=1,
+        last_consumed_attempt=0,
+        refinery_assignment={
+            "classification": "REFINERY",
+            "task_label": "Refine OpenSpec exact-target",
+            "files": ["openspec/changes/exact-target/"],
+            "line_no": 20,
+            "status": "pending",
+        },
+    )
+
+    recovered = drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        preexisting_owner_verifier=lambda *_args, **_kwargs: True,
+    )
+
+    assert recovered is True
+    assert state["consecutive_failures"] == 0
+    assert state["recent_consumed_targets"] == [target]
+    assert state["last_consumed_attempt"] == 1
+    assert state["refinery_assignment"] is None
+    assert state["status"] == "live-owned-refinery-suppressed"
+
+
+def test_resume_refinery_owner_charges_failure_when_pr_is_not_preexisting(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    target = "refine-openspec-exact-target"
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: FAILED {target} {pr}\n",
+        encoding="utf-8",
+    )
+    assignment = {
+        "classification": "REFINERY",
+        "task_label": "Refine OpenSpec exact-target",
+        "files": ["openspec/changes/exact-target/"],
+        "line_no": 20,
+        "status": "pending",
+    }
+    state = _state(
+        attempts=1,
+        last_consumed_attempt=0,
+        refinery_assignment=assignment,
+    )
+
+    recovered = drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        preexisting_owner_verifier=lambda *_args, **_kwargs: False,
+    )
+
+    assert recovered is True
+    assert state["last_consumed_attempt"] == 1
+    assert state["consecutive_failures"] == 1
+    assert state["refinery_assignment"] is None
+    assert state["last_result"] == {
+        "status": "FAILED",
+        "target": target,
+        "pr": pr,
+    }
+    assert state["status"] == "failed"
+
+
+def test_run_charges_recovered_refinery_failure_before_new_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    results_dir = run_dir / "results"
+    results_dir.mkdir(parents=True)
+    target = "refine-openspec-exact-target"
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: FAILED {target} {pr}\n",
+        encoding="utf-8",
+    )
+    state = _state(
+        attempts=1,
+        last_consumed_attempt=0,
+        refinery_assignment={
+            "classification": "REFINERY",
+            "task_label": "Refine OpenSpec exact-target",
+            "files": ["openspec/changes/exact-target/"],
+            "line_no": 20,
+            "status": "pending",
+        },
+    )
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    dispatches: list[object] = []
+    monkeypatch.setattr(
+        drain,
+        "_dispatch",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--resume",
+            "--hours",
+            "1",
+            "--max-failures",
+            "1",
+        ]
+    )
+
+    persisted = json.loads(
+        (run_dir / "state.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 2
+    assert dispatches == []
+    assert persisted["attempts"] == 1
+    assert persisted["last_consumed_attempt"] == 1
+    assert persisted["consecutive_failures"] == 1
+    assert persisted["status"] == "failure-budget"
+
+
 def test_resume_rejects_unconsumed_private_blocker(
     tmp_path: Path,
 ) -> None:
@@ -2759,7 +2901,7 @@ def test_duplicate_merge_suppresses_stale_admission_without_counting_slice(
     assert state["status"] == "duplicate-merge-suppressed"
 
 
-def test_duplicate_merge_suppression_is_bounded_and_deduplicated() -> None:
+def test_duplicate_merge_suppression_preserves_run_receipts_and_deduplicates() -> None:
     targets = [
         f"target-{index}"
         for index in range(drain.MAX_RECENT_BLOCKED + 3)
@@ -2782,13 +2924,71 @@ def test_duplicate_merge_suppression_is_bounded_and_deduplicated() -> None:
         attempt=4,
     )
 
-    assert (
-        len(state["recent_consumed_targets"])
-        == drain.MAX_RECENT_BLOCKED
-    )
+    assert len(state["recent_consumed_targets"]) == len(targets)
+    assert set(state["recent_consumed_targets"]) == set(targets)
     assert state["recent_consumed_targets"].count("target-2") == 1
     assert state["recent_consumed_targets"][-1] == "target-2"
     assert state["consecutive_failures"] == 0
+
+
+def test_preexisting_open_pr_suppression_consumes_target_without_failure() -> None:
+    state = _state(
+        attempts=2,
+        consecutive_failures=1,
+        admission={"target": "refine-openspec-target"},
+        resume_target="refine-openspec-target",
+        recent_consumed_targets=["other-target"],
+    )
+
+    drain.apply_preexisting_open_pr_suppression(
+        state,
+        drain.DrainResult(
+            "FAILED",
+            "refine-openspec-target",
+            "https://github.com/o/r/pull/12",
+        ),
+        attempt=2,
+    )
+
+    assert state["completed_slices"] == 0
+    assert state["merged_prs"] == []
+    assert state["consecutive_failures"] == 0
+    assert state["consecutive_transients"] == 0
+    assert state["admission"] is None
+    assert state["resume_target"] is None
+    assert state["recent_consumed_targets"] == [
+        "other-target",
+        "refine-openspec-target",
+    ]
+    assert state["last_result"] == {
+        "status": "PREEXISTING_OPEN_PR_OWNER",
+        "attempt": 2,
+        "target": "refine-openspec-target",
+        "pr": "https://github.com/o/r/pull/12",
+    }
+    assert state["last_consumed_attempt"] == 2
+    assert state["status"] == "live-owned-refinery-suppressed"
+
+
+def test_preexisting_open_pr_suppression_preserves_every_target_for_run() -> None:
+    state = _state(recent_consumed_targets=[])
+    targets = [
+        f"refine-openspec-target-{index}"
+        for index in range(drain.MAX_RECENT_BLOCKED + 3)
+    ]
+
+    for attempt, target in enumerate(targets, start=1):
+        drain.apply_preexisting_open_pr_suppression(
+            state,
+            drain.DrainResult(
+                "FAILED",
+                target,
+                f"https://github.com/o/r/pull/{attempt}",
+            ),
+            attempt=attempt,
+        )
+
+    assert state["recent_consumed_targets"] == targets
 
 
 def test_legacy_merge_receipts_are_reconstructed_and_deduplicated(
@@ -3169,6 +3369,179 @@ def test_verify_merged_rejects_wrong_repo_or_pre_run_merge(tmp_path: Path) -> No
     )
 
 
+def test_verify_preexisting_open_pr_owner_requires_exact_repo_and_older_pr(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["git", "-C"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="https://github.com/o/r.git\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "state": "OPEN",
+                    "createdAt": "2026-08-03T16:00:00Z",
+                    "headRefName": "drain/run/refine-openspec-target-a023",
+                }
+            ),
+            stderr="",
+        )
+
+    assert drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        repo=repo,
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+    assert not drain.verify_preexisting_open_pr_owner(
+        "https://github.com/other/repo/pull/12",
+        assigned_target="refine-openspec-target",
+        repo=repo,
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+def test_verify_preexisting_open_pr_owner_rejects_unrelated_branch() -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "state": "OPEN",
+                    "createdAt": "2026-08-03T16:00:00Z",
+                    "headRefName": "feature/unrelated-change",
+                }
+            ),
+            stderr="",
+        )
+
+    assert not drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+@pytest.mark.parametrize(
+    "branch_leaf",
+    [
+        "refine-openspec-target-tests",
+        "refine-openspec-target-a12",
+        "refine-openspec-target-a1234",
+        "refine-openspec-target-aXYZ",
+    ],
+)
+def test_verify_preexisting_open_pr_owner_rejects_noncanonical_suffix(
+    branch_leaf: str,
+) -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "state": "OPEN",
+                    "createdAt": "2026-08-03T16:00:00Z",
+                    "headRefName": f"drain/run/{branch_leaf}",
+                }
+            ),
+            stderr="",
+        )
+
+    assert not drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+def test_verify_preexisting_open_pr_owner_accepts_exact_target_branch() -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "state": "OPEN",
+                    "createdAt": "2026-08-03T16:00:00Z",
+                    "headRefName": "refine-openspec-target",
+                }
+            ),
+            stderr="",
+        )
+
+    assert drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "returncode"),
+    [
+        ({"state": "CLOSED", "createdAt": "2026-08-03T16:00:00Z"}, 0),
+        ({"state": "MERGED", "createdAt": "2026-08-03T16:00:00Z"}, 0),
+        ({"state": "OPEN", "createdAt": "2026-08-03T17:00:00Z"}, 0),
+        ({"state": "OPEN", "createdAt": None}, 0),
+        ({}, 0),
+        (None, 0),
+        ([], 0),
+        ({"state": "OPEN", "createdAt": "2026-08-03T16:00:00Z"}, 1),
+    ],
+)
+def test_verify_preexisting_open_pr_owner_fails_closed(
+    payload: object,
+    returncode: int,
+) -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            returncode,
+            stdout=json.dumps(payload),
+            stderr="unavailable" if returncode else "",
+        )
+
+    assert not drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
+def test_verify_preexisting_open_pr_owner_rejects_malformed_json() -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="{",
+            stderr="",
+        )
+
+    assert not drain.verify_preexisting_open_pr_owner(
+        "https://github.com/o/r/pull/12",
+        assigned_target="refine-openspec-target",
+        started_at="2026-08-03T10:00:00-07:00",
+        runner=runner,
+    )
+
+
 def test_lock_rejects_second_controller_and_allows_explicit_recovery(
     tmp_path: Path,
 ) -> None:
@@ -3523,6 +3896,78 @@ def test_run_rejects_result_outside_exact_refinery_assignment(
             "reported=different-target"
         ),
     }
+
+
+def test_run_suppresses_preexisting_open_pr_refinery_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    target = "refine-openspec-exact-target"
+    pr = "https://github.com/o/r/pull/12"
+    hint = drain.CandidateHint(
+        "REFINERY",
+        "Refine OpenSpec exact-target",
+        ("openspec/changes/exact-target/",),
+    )
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        persisted = json.loads(
+            (run_dir / "state.json").read_text(encoding="utf-8")
+        )
+        assert persisted["refinery_assignment"]["task_label"] == (
+            "Refine OpenSpec exact-target"
+        )
+        result_path.write_text(
+            f"DRAIN_RESULT: FAILED {target} {pr}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0, 1),
+            hints=(hint,),
+        ),
+    )
+    monkeypatch.setattr(
+        drain,
+        "verify_preexisting_open_pr_owner",
+        lambda _url, **_kwargs: True,
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--once",
+            "--hours",
+            "1",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["attempt_kind"] == "refinery"
+    assert state["completed_slices"] == 0
+    assert state["consecutive_failures"] == 0
+    assert state["recent_consumed_targets"] == [target]
+    assert state["last_result"]["status"] == "PREEXISTING_OPEN_PR_OWNER"
+    assert state["status"] == "live-owned-refinery-suppressed"
 
 
 def test_run_rejects_already_consumed_merged_pr_without_counting_slice(

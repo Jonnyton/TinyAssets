@@ -69,10 +69,12 @@ from tinyassets.checkpointing import apply_configured_checkpoint_retention  # no
 
 logger = logging.getLogger("fantasy_author")
 
-_UNIVERSE_CYCLE_BRANCH_IDS = frozenset({
-    "fantasy_author/universe-cycle",
-    "fantasy_author:universe_cycle_wrapper",
-})
+_UNIVERSE_CYCLE_BRANCH_IDS = frozenset(
+    {
+        "fantasy_author/universe-cycle",
+        "fantasy_author:universe_cycle_wrapper",
+    }
+)
 
 _DEFAULT_BRANCH_TASK_HEARTBEAT_INTERVAL_S = 30.0
 
@@ -83,6 +85,7 @@ def _first_trace(output: dict[str, Any]) -> dict[str, Any]:
     if traces and isinstance(traces, list) and len(traces) > 0:
         return traces[0]
     return {}
+
 
 # ---------------------------------------------------------------------------
 # Provider bootstrapping
@@ -155,7 +158,8 @@ def _workflow_unified_execution_enabled() -> bool:
     `tinyassets/universe_server.py`.
     """
     return os.environ.get(
-        "TINYASSETS_UNIFIED_EXECUTION", "",
+        "TINYASSETS_UNIFIED_EXECUTION",
+        "",
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -171,7 +175,8 @@ def _soul_loop_dispatch_enabled() -> bool:
     docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
     """
     return os.environ.get(
-        "TINYASSETS_SOUL_LOOP_DISPATCH", "",
+        "TINYASSETS_SOUL_LOOP_DISPATCH",
+        "",
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -225,7 +230,8 @@ def _dispatcher_startup(universe_path: Path) -> None:
         garbage_collect(universe_path)
     except Exception:  # noqa: BLE001
         logger.exception(
-            "Phase E dispatcher_startup failed for %s", universe_path,
+            "Phase E dispatcher_startup failed for %s",
+            universe_path,
         )
 
 
@@ -316,7 +322,8 @@ def _resolve_loop_daemon_context(
             ) from exc
         logger.exception(
             "loop daemon lookup failed for universe %s at %s",
-            universe_id, universe_path,
+            universe_id,
+            universe_path,
         )
         return fallback
     except Exception:
@@ -324,7 +331,8 @@ def _resolve_loop_daemon_context(
             raise
         logger.exception(
             "project loop daemon lookup failed for universe %s at %s",
-            universe_id, universe_path,
+            universe_id,
+            universe_path,
         )
         return fallback
 
@@ -368,7 +376,8 @@ def _record_loop_daemon_signal(
     except Exception:  # noqa: BLE001
         logger.exception(
             "daemon wiki signal write failed for %s source=%s",
-            daemon_id, source_id,
+            daemon_id,
+            source_id,
         )
 
 
@@ -386,7 +395,8 @@ def _run_branch_task_producers_if_enabled(universe_path: Path) -> int:
 
         goals = list_subscriptions(universe_path)
         return run_branch_task_producers_into_queue(
-            universe_path, subscribed_goals=goals,
+            universe_path,
+            subscribed_goals=goals,
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_branch_task_producers failed")
@@ -394,7 +404,8 @@ def _run_branch_task_producers_if_enabled(universe_path: Path) -> int:
 
 
 def _try_dispatcher_pick(
-    universe_path: Path, daemon_id: str,
+    universe_path: Path,
+    daemon_id: str,
 ) -> tuple[Any | None, dict[str, Any]]:
     """Phase F wire-up (preflight §4.10). Call the dispatcher, claim
     the picked task, return ``(claimed_task, inputs_merge)``.
@@ -426,10 +437,7 @@ def _try_dispatcher_pick(
         # Soul-loop dispatch also needs the pick active so a souled universe
         # drains the child BranchTasks its driver enqueues — otherwise the
         # driver re-runs every cycle and the queue starves (Codex review).
-        if not (
-            _workflow_unified_execution_enabled()
-            or _soul_loop_dispatch_enabled()
-        ):
+        if not (_workflow_unified_execution_enabled() or _soul_loop_dispatch_enabled()):
             return None, {}
         # BUG-011 Phase C: sweep expired leases before every pick so a
         # wedged worker's claim is reaped at the next dispatch attempt
@@ -449,11 +457,7 @@ def _try_dispatcher_pick(
             "TINYASSETS_RUNTIME_INSTANCE_ID",
             "",
         ).strip()
-        if (
-            EPOCH2_QUEUE_CONSUMER_READY is True
-            and worker_id
-            and runtime_instance_id
-        ):
+        if EPOCH2_QUEUE_CONSUMER_READY is True and worker_id and runtime_instance_id:
             from tinyassets.storage import data_dir
 
             canonical_root = data_dir().resolve(strict=False)
@@ -465,10 +469,7 @@ def _try_dispatcher_pick(
                     runtime_instance_id=runtime_instance_id,
                     universe_id=resolved_universe.name,
                 )
-                if (
-                    candidate_context is not None
-                    and candidate_context.daemon_id == daemon_id
-                ):
+                if candidate_context is not None and candidate_context.daemon_id == daemon_id:
                     epoch2_adapter = candidate_adapter
                     epoch2_context = candidate_context
                     cfg = replace(
@@ -477,8 +478,7 @@ def _try_dispatcher_pick(
                     )
                 elif candidate_context is not None:
                     logger.error(
-                        "dispatcher_pick: epoch2 daemon mismatch "
-                        "runtime=%s loop=%s",
+                        "dispatcher_pick: epoch2 daemon mismatch runtime=%s loop=%s",
                         candidate_context.daemon_id,
                         daemon_id,
                     )
@@ -585,7 +585,8 @@ def _try_dispatcher_pick(
             return claimed, dict(claimed.inputs or {})
         executor_worker_id = worker_id
         executor_runtime_id = os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID", "",
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
         ).strip()
         claimed = claim_task(
             universe_path,
@@ -602,7 +603,8 @@ def _try_dispatcher_pick(
             return None, {}
         logger.info(
             "dispatcher_pick: claimed %s tier=%s branch=%s",
-            claimed.branch_task_id, claimed.trigger_source,
+            claimed.branch_task_id,
+            claimed.trigger_source,
             claimed.branch_def_id,
         )
         return claimed, dict(claimed.inputs or {})
@@ -727,15 +729,16 @@ def _continuous_branch_task_heartbeat(
         if thread.is_alive():
             with failure_lock:
                 if not failure:
-                    failure.append(RunExecutionAuthorityLost(
-                        "heartbeat renewal did not terminate cleanly"
-                    ))
+                    failure.append(
+                        RunExecutionAuthorityLost("heartbeat renewal did not terminate cleanly")
+                    )
         if sys.exc_info()[0] is None:
             assert_authority()
 
 
 def _build_branch_task_observers(
-    universe_path: Path, claimed_task: Any,
+    universe_path: Path,
+    claimed_task: Any,
 ) -> tuple[Callable[..., None], Callable[[str, str], None]]:
     task_id = str(getattr(claimed_task, "branch_task_id", "") or "")
     owner_id = _branch_task_owner_id(claimed_task)
@@ -764,9 +767,7 @@ def _build_branch_task_observers(
                     raise RuntimeError("lease is no longer owned by this worker")
                 last_heartbeat = now_mono
                 if refreshed.status == "cancel_requested":
-                    raise RunCancelledError(
-                        f"BranchTask {task_id} cancellation requested"
-                    )
+                    raise RunCancelledError(f"BranchTask {task_id} cancellation requested")
                 return
             except RunCancelledError:
                 raise
@@ -946,6 +947,50 @@ def _settle_claimed_direct_branch_task(
     return success, error
 
 
+def _record_cloud_automation_terminal_after_settlement(
+    claimed: Any,
+    *,
+    success: bool,
+    error: str,
+    metadata: dict[str, Any],
+) -> bool:
+    """Bridge a terminal epoch-2 task into its persisted Trigger owner."""
+
+    if not _is_epoch2_branch_task(claimed):
+        return True
+    automation_id = str(getattr(claimed, "automation_id", "") or "").strip()
+    if not automation_id:
+        return True
+    from tinyassets.cloud_automation_runtime import (
+        record_cloud_automation_terminal,
+    )
+    from tinyassets.storage import data_dir
+
+    handles = tuple(
+        value
+        for key, value in metadata.items()
+        if isinstance(value, str)
+        and value.strip()
+        and (key.endswith("_url") or key.endswith("_handle"))
+    )
+    result = record_cloud_automation_terminal(
+        data_dir(),
+        branch_task_id=str(claimed.branch_task_id),
+        success=success,
+        error=error,
+        run_id=str(metadata.get("run_id") or ""),
+        evidence_handles=handles,
+    )
+    if result is not None:
+        logger.info(
+            "dispatcher_pick: cloud terminal trigger=%s receipt=%s next=%s",
+            result.completed_trigger.trigger_id,
+            result.receipt.receipt_id,
+            (result.next_trigger.trigger_id if result.next_trigger is not None else "none"),
+        )
+    return True
+
+
 def _node_bid_lookup_factory(repo_root: Path):
     """Build a ``(node_def_id) -> NodeDefinition | None`` lookup.
 
@@ -992,7 +1037,9 @@ def _node_bid_lookup_factory(repo_root: Path):
 
 
 def _try_execute_claimed_node_bid(
-    universe_path: Path, claimed_task: Any, daemon_id: str,
+    universe_path: Path,
+    claimed_task: Any,
+    daemon_id: str,
 ) -> tuple[bool, str]:
     """Phase G: execute a NodeBid BranchTask (sentinel-prefixed).
 
@@ -1035,7 +1082,8 @@ def _try_execute_claimed_node_bid(
             return False, f"repo_root_not_resolvable: {exc}"
 
         runtime_instance_id = os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID", "",
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
         ).strip()
         worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
         owner_user_id = ""
@@ -1093,6 +1141,7 @@ def _try_execute_claimed_node_bid(
         # refuse overwrites so the audit trail stays byte-stable
         # across token-launch migrations.
         from datetime import datetime, timezone
+
         completed_at = datetime.now(timezone.utc).isoformat()
         try:
             record_settlement_event(
@@ -1109,32 +1158,36 @@ def _try_execute_claimed_node_bid(
             # restart-recovery claiming a running bid). Preserve
             # the original record.
             logger.info(
-                "node_bid: settlement already exists for %s__%s; "
-                "keeping original (immutable v1)",
-                node_bid_id, daemon_id,
+                "node_bid: settlement already exists for %s__%s; keeping original (immutable v1)",
+                node_bid_id,
+                daemon_id,
             )
         except Exception:  # noqa: BLE001
             logger.exception("node_bid: settlement write failed")
 
         # Ledger append (best-effort).
         try:
-            append_execution_log_entry(Path(universe_path), {
-                "bid_id": node_bid_id,
-                "node_def_id": node_def_id,
-                "daemon_id": daemon_id,
-                "success": success,
-                "bid_amount": float(bid.bid or 0.0),
-                "evidence_url": result.evidence_url,
-                "completed_at": completed_at,
-                "error": result.error,
-            })
+            append_execution_log_entry(
+                Path(universe_path),
+                {
+                    "bid_id": node_bid_id,
+                    "node_def_id": node_def_id,
+                    "daemon_id": daemon_id,
+                    "success": success,
+                    "bid_amount": float(bid.bid or 0.0),
+                    "evidence_url": result.evidence_url,
+                    "completed_at": completed_at,
+                    "error": result.error,
+                },
+            )
         except Exception:  # noqa: BLE001
             logger.exception("node_bid: ledger append failed")
 
         # NodeBid YAML status update (best-effort).
         try:
             update_node_bid_status(
-                repo_root, node_bid_id,
+                repo_root,
+                node_bid_id,
                 status="succeeded" if success else "failed",
                 evidence_url=result.evidence_url,
             )
@@ -1143,7 +1196,9 @@ def _try_execute_claimed_node_bid(
 
         logger.info(
             "node_bid: executed %s status=%s evidence=%s",
-            node_bid_id, result.status, result.evidence_url,
+            node_bid_id,
+            result.status,
+            result.evidence_url,
         )
         return success, result.error
     except Exception as exc:  # noqa: BLE001
@@ -1162,9 +1217,7 @@ def _should_execute_claimed_branch_directly(claimed_task: Any) -> bool:
 def _branch_task_inputs_for_execution(claimed_task: Any) -> dict[str, Any]:
     inputs = dict(getattr(claimed_task, "inputs", {}) or {})
     request_type = str(getattr(claimed_task, "request_type", "") or "branch_run")
-    if request_type == "bug_investigation" and not str(
-        inputs.get("request_text") or ""
-    ).strip():
+    if request_type == "bug_investigation" and not str(inputs.get("request_text") or "").strip():
         from tinyassets.bug_investigation import build_run_payload
 
         inputs = build_run_payload(inputs)
@@ -1251,17 +1304,16 @@ def _try_execute_claimed_branch_task(
     queue row is marked terminal.
     """
     physical_universe_id = Path(universe_path).name
-    persisted_universe_id = str(
-        getattr(claimed_task, "universe_id", "") or ""
-    ).strip()
-    if (
-        not physical_universe_id
-        or persisted_universe_id != physical_universe_id
-    ):
-        return False, "branch_task_universe_mismatch", {
-            "physical_universe_id": physical_universe_id,
-            "persisted_universe_id": persisted_universe_id,
-        }
+    persisted_universe_id = str(getattr(claimed_task, "universe_id", "") or "").strip()
+    if not physical_universe_id or persisted_universe_id != physical_universe_id:
+        return (
+            False,
+            "branch_task_universe_mismatch",
+            {
+                "physical_universe_id": physical_universe_id,
+                "persisted_universe_id": persisted_universe_id,
+            },
+        )
     try:
         from tinyassets.api.branches import _resolve_branch_id
         from tinyassets.branches import BranchDefinition
@@ -1287,9 +1339,13 @@ def _try_execute_claimed_branch_task(
         branch = None
         if is_epoch2:
             if not branch_version_id:
-                return False, "missing_immutable_branch_version", {
-                    "requested_branch_def_id": requested,
-                }
+                return (
+                    False,
+                    "missing_immutable_branch_version",
+                    {
+                        "requested_branch_def_id": requested,
+                    },
+                )
             # The transactional admission already bound this task to an exact
             # published snapshot.  Never resolve the mutable branch head for
             # epoch 2 execution.
@@ -1297,38 +1353,51 @@ def _try_execute_claimed_branch_task(
         else:
             branch_def_id = _resolve_branch_id(requested, base_path)
             if not branch_def_id:
-                return False, f"branch_not_found: {requested}", {
-                    "requested_branch_def_id": requested,
-                }
+                return (
+                    False,
+                    f"branch_not_found: {requested}",
+                    {
+                        "requested_branch_def_id": requested,
+                    },
+                )
             try:
                 source_dict = get_branch_definition(
                     base_path,
                     branch_def_id=branch_def_id,
                 )
             except KeyError:
-                return False, f"branch_not_found: {branch_def_id}", {
-                    "branch_def_id": branch_def_id,
-                }
+                return (
+                    False,
+                    f"branch_not_found: {branch_def_id}",
+                    {
+                        "branch_def_id": branch_def_id,
+                    },
+                )
             branch = BranchDefinition.from_dict(source_dict)
             errors = branch.validate()
             if errors:
-                return False, "branch_validation_failed", {
-                    "branch_def_id": branch_def_id,
-                    "validation_errors": errors,
-                }
+                return (
+                    False,
+                    "branch_validation_failed",
+                    {
+                        "branch_def_id": branch_def_id,
+                        "validation_errors": errors,
+                    },
+                )
 
         run_name = f"branch-task-{claimed_task.branch_task_id}"
         if is_epoch2:
             actor = str(getattr(claimed_task, "actor_id", "") or "").strip()
             if not actor:
-                return False, "missing_admission_actor", {
-                    "branch_task_id": str(claimed_task.branch_task_id),
-                }
+                return (
+                    False,
+                    "missing_admission_actor",
+                    {
+                        "branch_task_id": str(claimed_task.branch_task_id),
+                    },
+                )
         else:
-            actor = (
-                os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-                or "anonymous"
-            )
+            actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
         executor_worker_id = str(
             getattr(claimed_task, "executor_worker_id", "") or "",
         )
@@ -1357,14 +1426,18 @@ def _try_execute_claimed_branch_task(
                     if str(existing_run.get(field) or "") != str(expected or "")
                 ]
                 if mismatches:
-                    return False, "existing_run_identity_mismatch", {
-                        "branch_def_id": branch_def_id,
-                        "branch_version_id": branch_version_id,
-                        "run_id": existing_run.get("run_id") or "",
-                        "run_status": existing_run.get("status") or "unknown",
-                        "identity_mismatches": mismatches,
-                        "reused_existing_run": False,
-                    }
+                    return (
+                        False,
+                        "existing_run_identity_mismatch",
+                        {
+                            "branch_def_id": branch_def_id,
+                            "branch_version_id": branch_version_id,
+                            "run_id": existing_run.get("run_id") or "",
+                            "run_status": existing_run.get("status") or "unknown",
+                            "identity_mismatches": mismatches,
+                            "reused_existing_run": False,
+                        },
+                    )
             if existing_run.get("status") != RUN_STATUS_COMPLETED:
                 existing_status = str(existing_run.get("status") or "unknown")
                 return (
@@ -1397,8 +1470,7 @@ def _try_execute_claimed_branch_task(
             if attach_result.get("status") != "skipped":
                 metadata["wiki_patch_packet"] = attach_result
             logger.info(
-                "dispatcher_pick: reused completed branch task run %s "
-                "branch=%s run=%s",
+                "dispatcher_pick: reused completed branch task run %s branch=%s run=%s",
                 claimed_task.branch_task_id,
                 branch_def_id,
                 existing_run["run_id"],
@@ -1426,6 +1498,40 @@ def _try_execute_claimed_branch_task(
             )
         except ImportError:
             provider_call = None
+        automation_id = str(getattr(claimed_task, "automation_id", "") or "").strip()
+        if is_epoch2 and automation_id:
+            if provider_call is None:
+                return (
+                    False,
+                    "cloud_provider_bridge_unavailable",
+                    {
+                        "automation_id": automation_id,
+                        "branch_task_id": str(claimed_task.branch_task_id),
+                    },
+                )
+            try:
+                from tinyassets.cloud_automation_continuation import (
+                    prepare_claimed_cloud_provider_call,
+                )
+
+                governed_provider_call = prepare_claimed_cloud_provider_call(
+                    base_path,
+                    claimed_task=claimed_task,
+                    daemon_id=daemon_id,
+                    provider_call=provider_call,
+                )
+            except (OSError, PermissionError, ValueError) as exc:
+                return (
+                    False,
+                    "cloud_provider_authority_unavailable",
+                    {
+                        "automation_id": automation_id,
+                        "branch_task_id": str(claimed_task.branch_task_id),
+                        "authority_error": str(exc),
+                    },
+                )
+            if governed_provider_call is not None:
+                provider_call = governed_provider_call
 
         execution_kwargs = {
             "inputs": _branch_task_inputs_for_execution(claimed_task),
@@ -1444,22 +1550,17 @@ def _try_execute_claimed_branch_task(
             # lineage comes from the claimed task. A source node cannot
             # redirect descendants by editing task metadata or inputs.
             "_enqueue_universe_id": physical_universe_id,
-            "_parent_branch_task_id": str(
-                getattr(claimed_task, "branch_task_id", "") or ""
-            ),
-            "_origin_branch_task_id": str(
-                getattr(claimed_task, "origin_branch_task_id", "") or ""
-            ),
+            "_parent_branch_task_id": str(getattr(claimed_task, "branch_task_id", "") or ""),
+            "_origin_branch_task_id": str(getattr(claimed_task, "origin_branch_task_id", "") or ""),
         }
         try:
             if is_epoch2:
-                execution_kwargs["_queue_branch_task_id"] = str(
-                    claimed_task.branch_task_id
-                )
+                execution_kwargs["_queue_branch_task_id"] = str(claimed_task.branch_task_id)
                 if branch_task_heartbeat is not None:
                     with _continuous_branch_task_heartbeat(
                         branch_task_heartbeat,
                     ) as assert_authority:
+
                         def authority_checked_node_status(
                             node_id: str,
                             status: str,
@@ -1469,9 +1570,7 @@ def _try_execute_claimed_branch_task(
                                 on_node_status(node_id, status)
                             assert_authority()
 
-                        execution_kwargs["on_node_status"] = (
-                            authority_checked_node_status
-                        )
+                        execution_kwargs["on_node_status"] = authority_checked_node_status
                         outcome = execute_branch_version(
                             base_path,
                             branch_version_id=branch_version_id,
@@ -1497,24 +1596,36 @@ def _try_execute_claimed_branch_task(
                 branch_task_id=str(claimed_task.branch_task_id),
             )
             if reserved_run is None:
-                return False, "run_reservation_conflict_missing", {
-                    "branch_def_id": branch_def_id,
-                    "branch_version_id": branch_version_id,
-                }
+                return (
+                    False,
+                    "run_reservation_conflict_missing",
+                    {
+                        "branch_def_id": branch_def_id,
+                        "branch_version_id": branch_version_id,
+                    },
+                )
             return reconcile_existing_run(reserved_run)
         except RunCancelledError as exc:
-            return False, "branch_task_cancel_requested", {
-                "branch_def_id": branch_def_id,
-                "branch_version_id": branch_version_id,
-                "cancel_requested": True,
-                "cancel_detail": str(exc),
-            }
+            return (
+                False,
+                "branch_task_cancel_requested",
+                {
+                    "branch_def_id": branch_def_id,
+                    "branch_version_id": branch_version_id,
+                    "cancel_requested": True,
+                    "cancel_detail": str(exc),
+                },
+            )
         except RunExecutionAuthorityLost as exc:
-            return False, "branch_task_authority_lost", {
-                "branch_def_id": branch_def_id,
-                "branch_version_id": branch_version_id,
-                "authority_error": str(exc),
-            }
+            return (
+                False,
+                "branch_task_authority_lost",
+                {
+                    "branch_def_id": branch_def_id,
+                    "branch_version_id": branch_version_id,
+                    "authority_error": str(exc),
+                },
+            )
         metadata = {
             "branch_def_id": branch_def_id,
             "run_id": outcome.run_id,
@@ -1531,8 +1642,8 @@ def _try_execute_claimed_branch_task(
         if attach_result.get("status") != "skipped":
             metadata["wiki_patch_packet"] = attach_result
         success = outcome.status == RUN_STATUS_COMPLETED
-        error = outcome.error if outcome.error else (
-            "" if success else f"run_status:{outcome.status}"
+        error = (
+            outcome.error if outcome.error else ("" if success else f"run_status:{outcome.status}")
         )
         logger.info(
             "dispatcher_pick: executed branch task %s branch=%s run=%s status=%s",
@@ -1544,10 +1655,14 @@ def _try_execute_claimed_branch_task(
         return success, error, metadata
     except Exception as exc:  # noqa: BLE001
         logger.exception("_try_execute_claimed_branch_task failed")
-        return False, f"branch_task_execution_exception: {exc}", {
-            "universe_path": str(Path(universe_path)),
-            "daemon_id": daemon_id,
-        }
+        return (
+            False,
+            f"branch_task_execution_exception: {exc}",
+            {
+                "universe_path": str(Path(universe_path)),
+                "daemon_id": daemon_id,
+            },
+        )
 
 
 def _dispatcher_observe(universe_path: Path) -> None:
@@ -1570,9 +1685,7 @@ def _dispatcher_observe(universe_path: Path) -> None:
         cfg = load_dispatcher_config(universe_path)
         picked = select_next_task(universe_path, config=cfg)
         if picked is None:
-            logger.info(
-                "dispatcher_observational: no eligible BranchTask"
-            )
+            logger.info("dispatcher_observational: no eligible BranchTask")
         else:
             logger.info(
                 "dispatcher_observational: would pick %s tier=%s score-tier=%s",
@@ -1604,13 +1717,10 @@ def _build_unified_graph_builder() -> Any:
     from tinyassets.branches import BranchDefinition
     from tinyassets.graph_compiler import compile_branch
 
-    seed_path = (
-        Path(__file__).parent / "branches" / "universe_cycle.yaml"
-    )
+    seed_path = Path(__file__).parent / "branches" / "universe_cycle.yaml"
     if not seed_path.exists():
         raise FileNotFoundError(
-            f"Phase D seed Branch not found at {seed_path}. "
-            "Cannot compile unified graph."
+            f"Phase D seed Branch not found at {seed_path}. Cannot compile unified graph."
         )
     raw = yaml.safe_load(seed_path.read_text(encoding="utf-8"))
     branch = BranchDefinition.from_dict(raw)
@@ -1646,9 +1756,7 @@ class DaemonController:
         self._universe_path = universe_path
         # Default DB paths inside the universe directory (not CWD)
         self._db_path = db_path or str(Path(universe_path) / "story.db")
-        self._checkpoint_path = checkpoint_path or str(
-            Path(universe_path) / "checkpoints.db"
-        )
+        self._checkpoint_path = checkpoint_path or str(Path(universe_path) / "checkpoints.db")
 
         # Guard: DB paths must resolve inside the universe directory.
         # A CWD-relative path like "story.db" would silently load stale
@@ -1660,7 +1768,9 @@ class DaemonController:
                 "DB path %s resolves outside universe %s — "
                 "this will cause cross-universe contamination. "
                 "Falling back to %s/story.db",
-                db_resolved, uni_resolved, uni_resolved,
+                db_resolved,
+                uni_resolved,
+                uni_resolved,
             )
             self._db_path = str(uni_resolved / "story.db")
 
@@ -1669,7 +1779,9 @@ class DaemonController:
             logger.warning(
                 "Checkpoint path %s resolves outside universe %s — "
                 "falling back to %s/checkpoints.db",
-                cp_resolved, uni_resolved, uni_resolved,
+                cp_resolved,
+                uni_resolved,
+                uni_resolved,
             )
             self._checkpoint_path = str(uni_resolved / "checkpoints.db")
 
@@ -1711,8 +1823,7 @@ class DaemonController:
 
         runtime.universe_config = load_universe_config(self._universe_path)
         logger.info(
-            "Universe config: temperature=%.1f, timeout=%ds, "
-            "scenes_target=%d, chapters_target=%d",
+            "Universe config: temperature=%.1f, timeout=%ds, scenes_target=%d, chapters_target=%d",
             runtime.universe_config.temperature,
             runtime.universe_config.timeout,
             runtime.universe_config.scenes_target,
@@ -1774,7 +1885,8 @@ class DaemonController:
             self._tray.start()
 
         self._dashboard = DashboardHandler(
-            tray=self._tray, log_callback=self._combined_log,
+            tray=self._tray,
+            log_callback=self._combined_log,
         )
         self._dashboard.metrics.seed_from_db(self._db_path, self._universe_path)
         self._notifications = NotificationManager(tray=self._tray)
@@ -1795,6 +1907,7 @@ class DaemonController:
             from tinyassets.producers.node_bid import (
                 register_if_enabled as _register_node_bid_producer,
             )
+
             if paid_market_enabled():
                 try:
                     _repo_root = repo_root_path(Path(self._universe_path))
@@ -1868,9 +1981,7 @@ class DaemonController:
                     # Inside an async context (LangGraph node) — run in
                     # a worker thread to avoid nested event-loop errors.
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        return pool.submit(
-                            lambda: asyncio.run(ollama.embed(text))
-                        ).result()
+                        return pool.submit(lambda: asyncio.run(ollama.embed(text))).result()
                 else:
                     new_loop = asyncio.new_event_loop()
                     try:
@@ -1964,10 +2075,7 @@ class DaemonController:
             logger.exception("soul_loop: loop-dispatch resolution failed")
             return False
 
-        if (
-            not loop_branch_def_id
-            or loop_branch_def_id == LEGACY_FANTASY_LOOP_BRANCH_DEF_ID
-        ):
+        if not loop_branch_def_id or loop_branch_def_id == LEGACY_FANTASY_LOOP_BRANCH_DEF_ID:
             # No soul / no declared loop / legacy loop → not our path.
             return False
 
@@ -1980,13 +2088,15 @@ class DaemonController:
             base_path = data_dir()
             try:
                 source_dict = get_branch_definition(
-                    base_path, branch_def_id=loop_branch_def_id,
+                    base_path,
+                    branch_def_id=loop_branch_def_id,
                 )
             except KeyError:
                 logger.error(
                     "soul_loop: declared loop branch %s not found; refusing "
                     "to run the fantasy fallback for souled universe %s",
-                    loop_branch_def_id, universe_id,
+                    loop_branch_def_id,
+                    universe_id,
                 )
                 return True  # handled (refuse) — do NOT run fantasy fallback
 
@@ -1995,7 +2105,8 @@ class DaemonController:
             if errors:
                 logger.error(
                     "soul_loop: declared loop branch %s failed validation: %s",
-                    loop_branch_def_id, errors,
+                    loop_branch_def_id,
+                    errors,
                 )
                 return True
 
@@ -2007,10 +2118,7 @@ class DaemonController:
             except ImportError:
                 provider_call = None
 
-            actor = (
-                os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-                or "anonymous"
-            )
+            actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
             outcome = execute_branch(
                 base_path,
                 branch=branch,
@@ -2026,9 +2134,9 @@ class DaemonController:
                 _origin_branch_task_id="",
             )
             logger.info(
-                "soul_loop: ran declared loop branch=%s universe=%s run=%s "
-                "status=%s",
-                loop_branch_def_id, universe_id,
+                "soul_loop: ran declared loop branch=%s universe=%s run=%s status=%s",
+                loop_branch_def_id,
+                universe_id,
                 getattr(outcome, "run_id", ""),
                 getattr(outcome, "status", ""),
             )
@@ -2095,8 +2203,7 @@ class DaemonController:
             premise = self._premise
             if not premise:
                 premise = (
-                    read_legacy_premise(output_dir).strip()
-                    or premise_from_soul(output_dir).strip()
+                    read_legacy_premise(output_dir).strip() or premise_from_soul(output_dir).strip()
                 )
 
             # TinyAssets configuration
@@ -2141,8 +2248,12 @@ class DaemonController:
                 existing = compiled.get_state(config)
                 if existing and existing.values:
                     ev = existing.values
-                    for key in ("total_words", "total_chapters",
-                                "world_state_version", "canon_facts_count"):
+                    for key in (
+                        "total_words",
+                        "total_chapters",
+                        "world_state_version",
+                        "canon_facts_count",
+                    ):
                         ckpt_val = ev.get(key, 0)
                         cur_val = initial_state.get(key, 0)
                         if isinstance(ckpt_val, int) and ckpt_val > cur_val:
@@ -2161,20 +2272,22 @@ class DaemonController:
                         initial_state["total_chapters"],
                     )
             except Exception:
-                logger.debug("No existing checkpoint to resume from",
-                             exc_info=True)
+                logger.debug("No existing checkpoint to resume from", exc_info=True)
             initial_state = clear_restartable_soft_stop(initial_state)
 
             if self._dashboard:
-                self._dashboard.handle_event({
-                    "type": "phase_start",
-                    "phase": "universe_start",
-                })
+                self._dashboard.handle_event(
+                    {
+                        "type": "phase_start",
+                        "phase": "universe_start",
+                    }
+                )
 
             # Start heartbeat thread so status.json stays fresh during
             # long-running scenes (can be 6+ minutes with Claude).
             self._heartbeat_thread = threading.Thread(
-                target=self._heartbeat_loop, daemon=True,
+                target=self._heartbeat_loop,
+                daemon=True,
             )
             self._heartbeat_thread.start()
 
@@ -2182,7 +2295,8 @@ class DaemonController:
             # bridge (updates ~every 5s independent of node events).
             self._write_runtime_status()
             self._runtime_status_thread = threading.Thread(
-                target=self._runtime_status_loop, daemon=True,
+                target=self._runtime_status_loop,
+                daemon=True,
             )
             self._runtime_status_thread.start()
 
@@ -2191,23 +2305,29 @@ class DaemonController:
             # inputs into initial_state (inputs win on overlap).
             # Unclaimed picks fall through to default graph behavior.
             loop_daemon_context = _resolve_loop_daemon_context(
-                output_dir, universe_id,
+                output_dir,
+                universe_id,
             )
             daemon_id = loop_daemon_context["daemon_id"]
-            initial_state.update({
-                "daemon_id": daemon_id,
-                "daemon_soul_text": loop_daemon_context.get("soul_text", ""),
-                "daemon_soul_hash": loop_daemon_context.get("soul_hash", ""),
-                "daemon_domain_claims": loop_daemon_context.get(
-                    "domain_claims", [],
-                ),
-                "daemon_wiki_context": loop_daemon_context.get(
-                    "daemon_wiki_context", "",
-                ),
-                "daemon_wiki_status": loop_daemon_context.get(
-                    "daemon_wiki_status", {},
-                ),
-            })
+            initial_state.update(
+                {
+                    "daemon_id": daemon_id,
+                    "daemon_soul_text": loop_daemon_context.get("soul_text", ""),
+                    "daemon_soul_hash": loop_daemon_context.get("soul_hash", ""),
+                    "daemon_domain_claims": loop_daemon_context.get(
+                        "domain_claims",
+                        [],
+                    ),
+                    "daemon_wiki_context": loop_daemon_context.get(
+                        "daemon_wiki_context",
+                        "",
+                    ),
+                    "daemon_wiki_status": loop_daemon_context.get(
+                        "daemon_wiki_status",
+                        {},
+                    ),
+                }
+            )
             logger.info(
                 "loop daemon identity: %s source=%s has_soul=%s",
                 daemon_id,
@@ -2215,7 +2335,8 @@ class DaemonController:
                 loop_daemon_context.get("has_soul", False),
             )
             claimed_task, claimed_inputs = _try_dispatcher_pick(
-                output_dir, daemon_id,
+                output_dir,
+                daemon_id,
             )
             claimed_failed_reason = ""
             cancel_requested_during_run = False
@@ -2227,8 +2348,8 @@ class DaemonController:
                 return None
 
             if claimed_task is not None:
-                branch_task_heartbeat, branch_task_node_status = (
-                    _build_branch_task_observers(output_dir, claimed_task)
+                branch_task_heartbeat, branch_task_node_status = _build_branch_task_observers(
+                    output_dir, claimed_task
                 )
                 branch_task_heartbeat(force=True)
             if claimed_task is not None and claimed_inputs:
@@ -2236,22 +2357,24 @@ class DaemonController:
                 # LangGraph initial_state.
                 initial_state.update(claimed_inputs)
                 logger.info(
-                    "dispatcher_pick: seeded initial_state with %d keys "
-                    "from task %s",
-                    len(claimed_inputs), claimed_task.branch_task_id,
+                    "dispatcher_pick: seeded initial_state with %d keys from task %s",
+                    len(claimed_inputs),
+                    claimed_task.branch_task_id,
                 )
 
             # Phase G: NodeBid tasks route to execute_node_bid instead
             # of the Branch wrapper stream. Sentinel prefix on
             # branch_def_id is set by the NodeBidProducer.
             from tinyassets.producers.node_bid import NODE_BID_SENTINEL_PREFIX
-            if (
-                claimed_task is not None
-                and claimed_task.branch_def_id.startswith(NODE_BID_SENTINEL_PREFIX)
+
+            if claimed_task is not None and claimed_task.branch_def_id.startswith(
+                NODE_BID_SENTINEL_PREFIX
             ):
                 branch_task_heartbeat()
                 nb_success, nb_error = _try_execute_claimed_node_bid(
-                    output_dir, claimed_task, daemon_id,
+                    output_dir,
+                    claimed_task,
+                    daemon_id,
                 )
                 branch_task_heartbeat(force=True)
                 _record_loop_daemon_signal(
@@ -2270,36 +2393,45 @@ class DaemonController:
                     },
                 )
                 _finalize_claimed_task(
-                    output_dir, claimed_task,
-                    success=nb_success, error=nb_error,
+                    output_dir,
+                    claimed_task,
+                    success=nb_success,
+                    error=nb_error,
                 )
                 claimed_task = None  # prevent double-finalization
                 self._cleanup()
                 return
 
-            if (
-                claimed_task is not None
-                and _should_execute_claimed_branch_directly(claimed_task)
-            ):
-                branch_success, branch_error, branch_metadata = (
-                    _try_execute_claimed_branch_task(
-                        output_dir,
-                        claimed_task,
-                        daemon_id,
-                        on_node_status=branch_task_node_status,
-                        branch_task_heartbeat=branch_task_heartbeat,
-                    )
+            if claimed_task is not None and _should_execute_claimed_branch_directly(claimed_task):
+                branch_success, branch_error, branch_metadata = _try_execute_claimed_branch_task(
+                    output_dir,
+                    claimed_task,
+                    daemon_id,
+                    on_node_status=branch_task_node_status,
+                    branch_task_heartbeat=branch_task_heartbeat,
                 )
                 if not _is_epoch2_branch_task(claimed_task):
                     branch_task_heartbeat(force=True)
-                branch_success, branch_error = (
-                    _settle_claimed_direct_branch_task(
-                        output_dir,
+                branch_success, branch_error = _settle_claimed_direct_branch_task(
+                    output_dir,
+                    claimed_task,
+                    success=branch_success,
+                    error=branch_error,
+                )
+                try:
+                    _record_cloud_automation_terminal_after_settlement(
                         claimed_task,
                         success=branch_success,
                         error=branch_error,
+                        metadata=branch_metadata,
                     )
-                )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "dispatcher_pick: cloud terminal receipt failed task=%s",
+                        claimed_task.branch_task_id,
+                    )
+                    branch_success = False
+                    branch_error = f"cloud_terminal_receipt_failed:{type(exc).__name__}"
                 _record_loop_daemon_signal(
                     loop_daemon_context,
                     universe_path=output_dir,
@@ -2335,7 +2467,8 @@ class DaemonController:
                 slot = idle_cycle.try_acquire_idle_cycle_slot(output_dir)
                 if not slot.acquired:
                     logger.info(
-                        "idle cycle skipped (single-flight): %s", slot.reason,
+                        "idle cycle skipped (single-flight): %s",
+                        slot.reason,
                     )
                     self._cleanup()
                     return
@@ -2383,9 +2516,8 @@ class DaemonController:
                     # Pause support (thread event or .pause flag file)
                     pause_file = Path(self._universe_path) / ".pause"
                     while (
-                        (self._paused.is_set() or pause_file.exists())
-                        and not self._stop_event.is_set()
-                    ):
+                        self._paused.is_set() or pause_file.exists()
+                    ) and not self._stop_event.is_set():
                         branch_task_heartbeat()
                         self._paused.wait(timeout=1.0)
 
@@ -2404,8 +2536,7 @@ class DaemonController:
                     # path), observe the dispatcher's top pick so
                     # users see the decision in activity.log.
                     if isinstance(event, dict) and (
-                        "universe_cycle" in event
-                        or "universe_cycle_wrapper" in event
+                        "universe_cycle" in event or "universe_cycle_wrapper" in event
                     ):
                         _dispatcher_observe(output_dir)
 
@@ -2444,11 +2575,11 @@ class DaemonController:
                             )
                         except Exception:  # noqa: BLE001
                             logger.exception(
-                                "cooperative-cancel finalize failed; "
-                                "falling back to failed",
+                                "cooperative-cancel finalize failed; falling back to failed",
                             )
                             _finalize_claimed_task(
-                                output_dir, claimed_task,
+                                output_dir,
+                                claimed_task,
                                 success=False,
                                 error="cancel_finalize_failed",
                             )
@@ -2477,9 +2608,7 @@ class DaemonController:
                             loop_daemon_context,
                             universe_path=output_dir,
                             source_id=claimed_task.branch_task_id,
-                            outcome=(
-                                "failed" if claimed_failed_reason else "passed"
-                            ),
+                            outcome=("failed" if claimed_failed_reason else "passed"),
                             summary=(
                                 f"Branch task {claimed_task.branch_task_id} "
                                 f"{'failed' if claimed_failed_reason else 'passed'} "
@@ -2515,13 +2644,9 @@ class DaemonController:
 
                 # Handle cross-universe synthesis switch
                 if self._pending_universe_switch:
-                    self._trigger_universe_switch(
-                        self._pending_universe_switch
-                    )
+                    self._trigger_universe_switch(self._pending_universe_switch)
 
-    def _handle_node_output(
-        self, node_name: str, output: dict[str, Any]
-    ) -> None:
+    def _handle_node_output(self, node_name: str, output: dict[str, Any]) -> None:
         """Translate graph node outputs into dashboard events and log lines."""
         # Track scene ID and verdict (no dashboard dependency)
         if "orient_result" in output:
@@ -2531,13 +2656,12 @@ class DaemonController:
         if "verdict" in output:
             self._last_verdict = output["verdict"]
             commit_result = output.get("commit_result") or {}
-            self._last_eval_score = commit_result.get(
-                "structural_score", self._last_eval_score
-            )
+            self._last_eval_score = commit_result.get("structural_score", self._last_eval_score)
 
         # Track the most recently used LLM provider
         try:
             from tinyassets.providers.call import get_last_provider
+
             last_provider = get_last_provider()
             if last_provider:
                 self._last_provider_used = last_provider
@@ -2549,10 +2673,12 @@ class DaemonController:
 
         # Dashboard events (only when dashboard is available)
         if self._dashboard is not None:
-            self._dashboard.handle_event({
-                "type": "phase_start",
-                "phase": node_name,
-            })
+            self._dashboard.handle_event(
+                {
+                    "type": "phase_start",
+                    "phase": node_name,
+                }
+            )
 
             # run_book returns total_words/total_chapters at the universe
             # level — update dashboard metrics directly since subgraph
@@ -2568,31 +2694,37 @@ class DaemonController:
 
             if "draft_output" in output:
                 draft = output["draft_output"] or {}
-                self._dashboard.handle_event({
-                    "type": "draft_progress",
-                    "word_count": draft.get("word_count", 0),
-                })
+                self._dashboard.handle_event(
+                    {
+                        "type": "draft_progress",
+                        "word_count": draft.get("word_count", 0),
+                    }
+                )
 
             if "verdict" in output and output["verdict"] == "accept":
-                self._dashboard.handle_event({
-                    "type": "scene_complete",
-                    "scene_number": output.get("scene_number", 0),
-                    "word_count": output.get("draft_output", {}).get(
-                        "word_count", 0
-                    ),
-                })
+                self._dashboard.handle_event(
+                    {
+                        "type": "scene_complete",
+                        "scene_number": output.get("scene_number", 0),
+                        "word_count": output.get("draft_output", {}).get("word_count", 0),
+                    }
+                )
 
             if "chapter_summary" in output and output["chapter_summary"]:
-                self._dashboard.handle_event({
-                    "type": "chapter_complete",
-                    "chapter": output.get("chapter_number", 0),
-                })
+                self._dashboard.handle_event(
+                    {
+                        "type": "chapter_complete",
+                        "chapter": output.get("chapter_number", 0),
+                    }
+                )
 
             if "book_summary" in output and output["book_summary"]:
-                self._dashboard.handle_event({
-                    "type": "book_complete",
-                    "title": output.get("book_summary", ""),
-                })
+                self._dashboard.handle_event(
+                    {
+                        "type": "book_complete",
+                        "title": output.get("book_summary", ""),
+                    }
+                )
 
         # Generate creative briefing when a chapter completes
         if "chapter_summary" in output and output["chapter_summary"]:
@@ -2629,9 +2761,7 @@ class DaemonController:
         """Append a line to the activity.log file."""
         try:
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            with open(
-                self._activity_log_path, "a", encoding="utf-8"
-            ) as f:
+            with open(self._activity_log_path, "a", encoding="utf-8") as f:
                 f.write(f"[{ts}] {line}\n")
         except OSError:
             logger.debug("Failed to write activity.log", exc_info=True)
@@ -2656,16 +2786,12 @@ class DaemonController:
         """
         from fantasy_daemon.nodes._activity import _status_lock
 
-        summary = (
-            self._dashboard.summary() if self._dashboard else {}
-        )
+        summary = self._dashboard.summary() if self._dashboard else {}
         # Memory tier counts (lightweight — no LLM calls)
         memory_tiers: dict[str, int] = {}
         if self._memory is not None:
             try:
-                core_count = sum(
-                    len(v) for v in self._memory.core._store.values()
-                )
+                core_count = sum(len(v) for v in self._memory.core._store.values())
                 memory_tiers["core"] = core_count
             except Exception:
                 memory_tiers["core"] = 0
@@ -2719,7 +2845,8 @@ class DaemonController:
         tmp_path = self._runtime_status_path.with_suffix(".json.tmp")
         try:
             tmp_path.write_text(
-                json.dumps(payload, indent=2) + "\n", encoding="utf-8",
+                json.dumps(payload, indent=2) + "\n",
+                encoding="utf-8",
             )
             os.replace(tmp_path, self._runtime_status_path)
         except OSError:
@@ -2752,9 +2879,7 @@ class DaemonController:
         available, a cached creative briefing generated after each
         chapter completes.
         """
-        summary = (
-            self._dashboard.summary() if self._dashboard else {}
-        )
+        summary = self._dashboard.summary() if self._dashboard else {}
         words = summary.get("total_words", 0)
         chapters = summary.get("chapters_complete", 0)
         scenes = summary.get("scenes_complete", 0)
@@ -2788,14 +2913,13 @@ class DaemonController:
         progress_path = Path(self._universe_path) / "progress.md"
         try:
             progress_path.write_text(
-                "\n".join(lines) + "\n", encoding="utf-8",
+                "\n".join(lines) + "\n",
+                encoding="utf-8",
             )
         except OSError:
             logger.debug("Failed to write progress.md", exc_info=True)
 
-    def _generate_creative_briefing(
-        self, output: dict[str, Any]
-    ) -> None:
+    def _generate_creative_briefing(self, output: dict[str, Any]) -> None:
         """Generate and cache a creative briefing after chapter completion.
 
         Reads recent chapter prose and the chapter summary, calls the
@@ -2830,20 +2954,19 @@ class DaemonController:
 
         prompt_parts = [f"## Latest Chapter Summary\n{chapter_summary}"]
         if prose_excerpt:
-            prompt_parts.append(
-                f"## Recent Prose (excerpt)\n{prose_excerpt[:3000]}"
-            )
+            prompt_parts.append(f"## Recent Prose (excerpt)\n{prose_excerpt[:3000]}")
         if recent_activity:
-            prompt_parts.append(
-                f"## Recent Activity Log\n{recent_activity}"
-            )
+            prompt_parts.append(f"## Recent Activity Log\n{recent_activity}")
         prompt = "\n\n".join(prompt_parts)
 
         fallback = f"## Story So Far\n{chapter_summary}"
 
         try:
             briefing = call_provider(
-                prompt, system, role="extract", fallback_response=fallback,
+                prompt,
+                system,
+                role="extract",
+                fallback_response=fallback,
             )
             if briefing and briefing.strip():
                 self._cached_creative_briefing = briefing.strip()
@@ -2904,9 +3027,7 @@ class DaemonController:
         except OSError:
             return ""
 
-    def _emit_node_log(
-        self, node_name: str, output: dict[str, Any]
-    ) -> None:
+    def _emit_node_log(self, node_name: str, output: dict[str, Any]) -> None:
         """Build a human-readable log line for a node output.
 
         Routes through ``_combined_log`` so every node event is written
@@ -2929,8 +3050,7 @@ class DaemonController:
             score = plan.get("best_score", 0.0)
             suffix = "s" if alts != 1 else ""
             self._combined_log(
-                f"Plan: Generated {alts} beat alternative{suffix},"
-                f" best score {score:.2f}"
+                f"Plan: Generated {alts} beat alternative{suffix}, best score {score:.2f}"
             )
 
         elif node_name == "draft":
@@ -2959,13 +3079,9 @@ class DaemonController:
         elif node_name == "select_task":
             trace = _first_trace(output)
             queue = output.get("task_queue", ["?"])
-            selected = trace.get(
-                "selected", queue[0] if queue else "?"
-            )
+            selected = trace.get("selected", queue[0] if queue else "?")
             reason = trace.get("reason", "default")
-            self._combined_log(
-                f"Select task: {selected} (reason={reason})"
-            )
+            self._combined_log(f"Select task: {selected} (reason={reason})")
 
         elif node_name == "worldbuild":
             trace = _first_trace(output)
@@ -2974,18 +3090,14 @@ class DaemonController:
             version = trace.get("world_state_version", "?")
             if signals_acted:
                 self._combined_log(
-                    f"Worldbuild: Acted on {signals_acted}"
-                    f" signal(s), version {version}"
+                    f"Worldbuild: Acted on {signals_acted} signal(s), version {version}"
                 )
             elif generated:
                 self._combined_log(
-                    f"Worldbuild: Generated {len(generated)}"
-                    f" canon file(s), version {version}"
+                    f"Worldbuild: Generated {len(generated)} canon file(s), version {version}"
                 )
             else:
-                self._combined_log(
-                    f"Worldbuild: No changes, version {version}"
-                )
+                self._combined_log(f"Worldbuild: No changes, version {version}")
 
         elif node_name == "universe_cycle_wrapper":
             health = output.get("health", {})
@@ -3079,7 +3191,8 @@ class DaemonController:
         """
         logger.info(
             "Triggering cross-universe switch: %s -> %s",
-            self._universe_id, target_universe,
+            self._universe_id,
+            target_universe,
         )
         try:
             from fantasy_daemon.api import _start_daemon_for
@@ -3090,7 +3203,8 @@ class DaemonController:
             logger.warning(
                 "Cross-universe switch to %s failed: %s. "
                 "Synthesis will be picked up on next manual start.",
-                target_universe, e,
+                target_universe,
+                e,
             )
 
     @property
@@ -3168,7 +3282,10 @@ def _start_tunnel(
         logger.info("Starting named tunnel '%s' -> localhost:%d", tunnel_name, port)
     else:
         cmd = [
-            cloudflared, "tunnel", "--url", f"http://localhost:{port}",
+            cloudflared,
+            "tunnel",
+            "--url",
+            f"http://localhost:{port}",
         ]
         logger.info("Starting quick tunnel -> localhost:%d", port)
 
@@ -3196,7 +3313,9 @@ def _start_tunnel(
         # Drain stderr in a daemon thread — extracts tunnel URL, prevents
         # pipe buffer deadlock from cloudflared's verbose logging.
         drain = threading.Thread(
-            target=_drain_tunnel_stderr, args=(proc,), daemon=True,
+            target=_drain_tunnel_stderr,
+            args=(proc,),
+            daemon=True,
         )
         drain.start()
         return proc
@@ -3301,12 +3420,8 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
     if not universe_path:
         try:
             for entry in sorted(Path(base_path).iterdir()):
-                if (
-                    entry.is_dir()
-                    and (
-                        (entry / "PROGRAM.md").exists()
-                        or (entry / "soul.md").exists()
-                    )
+                if entry.is_dir() and (
+                    (entry / "PROGRAM.md").exists() or (entry / "soul.md").exists()
                 ):
                     universe_path = str(entry)
                     break
@@ -3368,7 +3483,9 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
         # Wire dashboard to update tray status
         controller._tray = tray
         daemon_thread = threading.Thread(
-            target=controller.start, name="daemon", daemon=False,
+            target=controller.start,
+            name="daemon",
+            daemon=False,
         )
         daemon_thread.start()
 
@@ -3416,7 +3533,10 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
 
     # Run uvicorn (blocks until shutdown)
     config = uvicorn.Config(
-        app, host=args.host, port=port, log_level="info",
+        app,
+        host=args.host,
+        port=port,
+        log_level="info",
     )
     uvicorn_server = uvicorn.Server(config)
 
@@ -3474,7 +3594,8 @@ def _main_unfenced() -> None:
         help="Story premise / prompt (overrides PROGRAM.md or soul.md in universe dir)",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose logging",
     )
@@ -3553,8 +3674,7 @@ def _main_unfenced() -> None:
         known = set().union(*_router_mod.FALLBACK_CHAINS.values())
         if args.provider not in known:
             parser.error(
-                f"--provider {args.provider!r} is not a known provider. "
-                f"Known: {sorted(known)}"
+                f"--provider {args.provider!r} is not a known provider. Known: {sorted(known)}"
             )
         os.environ["TINYASSETS_PIN_WRITER"] = args.provider
         logger.info(
@@ -3583,7 +3703,10 @@ def _main_unfenced() -> None:
         os.environ.setdefault("TINYASSETS_DATA_DIR", base)
         logger.info(
             "Starting TinyAssets MCP server on %s:%d (transport=%s, base=%s)",
-            args.host, args.mcp_port, args.mcp_transport, base,
+            args.host,
+            args.mcp_port,
+            args.mcp_transport,
+            base,
         )
 
         # Optionally start a Cloudflare tunnel for the MCP port
@@ -3637,12 +3760,8 @@ def _main_unfenced() -> None:
             # Scan for a universe with a premise
             try:
                 for entry in sorted(Path(base_path).iterdir()):
-                    if (
-                        entry.is_dir()
-                        and (
-                            (entry / "PROGRAM.md").exists()
-                            or (entry / "soul.md").exists()
-                        )
+                    if entry.is_dir() and (
+                        (entry / "PROGRAM.md").exists() or (entry / "soul.md").exists()
                     ):
                         universe_path = str(entry)
                         logger.info("Auto-selected universe with premise: %s", entry.name)
@@ -3660,7 +3779,9 @@ def _main_unfenced() -> None:
                 pinned_provider=args.provider,
             )
             daemon_thread = threading.Thread(
-                target=controller.start, name="daemon", daemon=False,
+                target=controller.start,
+                name="daemon",
+                daemon=False,
             )
             daemon_thread.start()
         else:
@@ -3697,7 +3818,9 @@ def _main_unfenced() -> None:
 
         logger.info(
             "Starting API server on %s:%d serving universes from '%s'",
-            args.host, args.port, base_path,
+            args.host,
+            args.port,
+            base_path,
         )
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
         # After uvicorn exits, ensure daemon cleanup and wait for thread
@@ -3752,9 +3875,7 @@ def main() -> None:
 
     from tinyassets.scoped_reset import prepare_service_writer_barrier
 
-    writer_barrier = prepare_service_writer_barrier(
-        _writer_root_from_argv(sys.argv[1:])
-    )
+    writer_barrier = prepare_service_writer_barrier(_writer_root_from_argv(sys.argv[1:]))
     try:
         _main_unfenced()
     finally:

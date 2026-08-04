@@ -207,12 +207,14 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
 
 
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
-    """Extract fields that define published branch behavior."""
+    """Extract immutable behavior and access-authority fields."""
     from tinyassets.branches import BranchDefinition
 
     normalized = BranchDefinition.from_dict(branch_dict).to_dict()
     return {
         "branch_def_id": normalized.get("branch_def_id", ""),
+        "author": normalized.get("author", "anonymous"),
+        "visibility": normalized.get("visibility", "public"),
         "skills": normalized.get("skills", []),
         "entry_point": normalized.get("entry_point", ""),
         "graph_nodes": normalized.get("graph_nodes", []),

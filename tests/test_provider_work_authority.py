@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import pickle
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import tinyassets.cloud_automation_continuation as cloud_continuation
 import tinyassets.provider_work_authority as provider_authority
 import tinyassets.storage.provider_work_authority as provider_store
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
@@ -455,6 +457,34 @@ def test_universe_receipt_is_dark_bounded_and_restart_safe(tmp_path) -> None:
     assert store.list_reservations(receipt.receipt_id) == ()
 
 
+def test_universe_receipt_preserves_exact_authorized_role_set(tmp_path) -> None:
+    store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
+    with pytest.raises(ValueError, match="allowed_roles"):
+        replace(authority, allowed_roles=())
+
+    multi_role = replace(
+        authority,
+        allowed_roles=("writer", "reviewer"),
+    )
+    receipt = ProviderWorkReceiptService(
+        store,
+        _UniverseWorkResolver(multi_role),
+    ).issue(root).record
+
+    assert receipt is not None
+    assert receipt.allowed_roles == ("writer", "reviewer")
+
+    excessive = replace(
+        authority,
+        allowed_roles=("writer", "admin"),
+    )
+    with pytest.raises(PermissionError, match="exceeds binding"):
+        ProviderWorkReceiptService(
+            store,
+            _UniverseWorkResolver(excessive),
+        ).issue(root)
+
+
 def test_agent_invocation_receipt_has_manifest_subject_without_branch_lineage(
     tmp_path,
 ) -> None:
@@ -577,7 +607,10 @@ def test_universe_receipt_rejects_widened_authority(
     value: object,
 ) -> None:
     store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
-    widened = replace(authority, **{field: value})
+    changes = {field: value}
+    if field == "role":
+        changes["allowed_roles"] = (value,)
+    widened = replace(authority, **changes)
 
     with pytest.raises(PermissionError, match="authority"):
         ProviderWorkReceiptService(
@@ -665,6 +698,7 @@ def test_concurrent_claim_has_one_owner_and_same_request_replays(tmp_path) -> No
         return SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         ).claim(
             ProviderWorkExecutionClaimRequest(
                 receipt_id=receipt.receipt_id,
@@ -721,6 +755,7 @@ def test_reservations_conserve_invocation_token_and_cost_budgets(tmp_path) -> No
         return SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         ).reserve(
             ProviderInvocationReservationRequest(
                 receipt_id=receipt.receipt_id,
@@ -804,6 +839,7 @@ def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
         return SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         ).arm_launch(request)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -827,6 +863,7 @@ def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
         SQLiteProviderWorkAuthorityStore(
             tmp_path,
             clock=lambda: NOW,
+            allow_test_fixtures=True,
         )
         .arm_launch(request)
         .record
@@ -919,6 +956,7 @@ def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> 
     assert carrier.provider == "codex"
     assert carrier.role == "writer"
     assert carrier.max_tokens == 20_000
+    assert carrier.max_cost_microunits == 1_000_000
     assert carrier.assignment_generation == 3
     assert (
         carrier.validate_for_call(
@@ -1251,6 +1289,135 @@ def test_launch_arm_fails_closed_after_binding_revocation(tmp_path) -> None:
     assert persisted.state is ProviderInvocationReservationState.RESERVED
 
 
+def test_cloud_branch_store_rejects_object_new_authority_fence(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_forgery",
+            runtime_id="runtime_cloud_forgery",
+            claim_nonce_digest=f"sha256:{'9' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    request = ProviderInvocationReservationRequest(
+        receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest,
+        claim_id=claim.claim_id,
+        claim_digest=claim.claim_digest,
+        claim_generation=claim.generation,
+        invocation_key="forged-cloud-branch-fence",
+        operation="repository_spec_delivery",
+        role="writer",
+        max_tokens=1,
+        max_cost_microunits=1,
+    )
+    fence_type = cloud_continuation._CloudBranchInvocationAuthorityFence
+    forged = object.__new__(fence_type)
+    forged_values = {
+        "_request": request,
+        "_consumed": False,
+        "_fence_id": "forged-cloud-branch-fence",
+        "_issuer_pid": os.getpid(),
+    }
+    for slot in fence_type.__slots__:
+        if slot != "__weakref__":
+            object.__setattr__(forged, slot, forged_values[slot])
+
+    with store.connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            with pytest.raises(PermissionError, match="revalidated|invalid"):
+                store._reserve_and_arm_cloud_branch_carrier_in_transaction(
+                    conn,
+                    request,
+                    forged,
+                )
+        finally:
+            conn.rollback()
+
+    assert store.list_reservations(receipt.receipt_id) == ()
+
+
+def test_generic_store_api_cannot_launch_cloud_background_receipt(tmp_path) -> None:
+    fixture_store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = fixture_store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_bypass",
+            runtime_id="runtime_cloud_bypass",
+            claim_nonce_digest=f"sha256:{'7' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation_request = ProviderInvocationReservationRequest(
+        receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest,
+        claim_id=claim.claim_id,
+        claim_digest=claim.claim_digest,
+        claim_generation=claim.generation,
+        invocation_key="generic-cloud-bypass",
+        operation="repository_spec_delivery",
+        role="writer",
+        max_tokens=1,
+        max_cost_microunits=1,
+    )
+    production_store = SQLiteProviderWorkAuthorityStore(
+        tmp_path,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(PermissionError, match="cloud Branch"):
+        production_store.reserve(reservation_request)
+
+    reservation = fixture_store.reserve(reservation_request).record
+    assert reservation is not None
+    with pytest.raises(PermissionError, match="cloud Branch"):
+        production_store.arm_launch_carrier(
+            ProviderInvocationLaunchRequest.from_reservation(reservation)
+        )
+
+
+def test_cloud_branch_store_rejects_object_new_claim_grant(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    request = ProviderWorkExecutionClaimRequest(
+        receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest,
+        worker_id="worker_cloud_forgery",
+        runtime_id="runtime_cloud_forgery",
+        claim_nonce_digest=f"sha256:{'9' * 64}",
+        lease_seconds=60,
+    )
+    grant_type = cloud_continuation._CloudProviderClaimAuthorityGrant
+    forged = object.__new__(grant_type)
+    forged_values = {
+        "_grant_id": "forged-cloud-provider-claim-grant",
+        "_issuer_pid": os.getpid(),
+    }
+    for slot in grant_type.__slots__:
+        if slot != "__weakref__":
+            object.__setattr__(forged, slot, forged_values[slot])
+
+    with pytest.raises(PermissionError, match="service-issued|invalid"):
+        store._claim_or_renew_cloud_branch(request, forged)
+
+    with store.connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM provider_work_execution_claims"
+        ).fetchone()[0]
+    assert count == 0
+
+
 def test_expired_claim_cannot_replay_or_reserve(tmp_path) -> None:
     store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
     receipt = service.issue(root).record
@@ -1268,6 +1435,7 @@ def test_expired_claim_cannot_replay_or_reserve(tmp_path) -> None:
     later = SQLiteProviderWorkAuthorityStore(
         tmp_path,
         clock=lambda: NOW + timedelta(minutes=2),
+        allow_test_fixtures=True,
     )
 
     replay = later.claim(request)

@@ -130,6 +130,17 @@ Concurrent or recovered invocations reuse the automation activation and
 logical claim identities; provider invocation authority remains independently
 reserved by its owner and is never inferred from queue possession.
 
+The persisted Trigger is the generic cadence owner, not provider, queue, or
+effect authority. Each bounded slice has an immutable trigger ordinal and
+frozen definition digest. A SQLite compare-and-swap lease admits exactly one
+worker; lease expiry may advance only that trigger's generation. Settlement
+atomically records one immutable typed terminal receipt, marks the claimed
+trigger emitted, and—only while the exact cloud activation remains current—
+creates the next pending trigger. Replaying settlement returns the same
+receipt and successor. Pause or stop still records already-committed evidence
+but creates no successor. This makes crash recovery explicit without turning
+the repository workflow into a privileged scheduler.
+
 The outbound-boundary owner supplies the GitHub effect's system-derived
 idempotency identity tied to the claim, repository destination, intended head,
 and effect kind. The exact tuple is
@@ -195,6 +206,21 @@ Cloud health is derived from typed receipts and checkpoints, not tray color or
 process liveness. It reports last useful progress, current claim, retry time,
 blocker, authority source, budget state, and a no-progress alarm. Repeated
 retries without a useful state transition remain unhealthy.
+
+Until cutover, the temporary tray drain remains the active fallback. If its
+coordination-only refinery worker discovers that an older open pull request
+already owns the exact assigned target, the supervisor suppresses that target
+for the entire bounded run and immediately considers the next candidate.
+Suppression requires the exact terminal-marker PR URL, exact repository, a PR
+head branch equal to the assigned target or its canonical `-aNNN` attempt lane,
+fresh open state, and a creation time before the run start. Prefix-colliding,
+missing, unrelated, closed, merged, malformed, or
+same-run PR evidence remains a real failure. The exact refinery assignment is
+persisted before dispatch, and restart recovery reruns the same verification
+before consuming a result left behind by a crash; failed recovery verification
+consumes the `FAILED` result through ordinary failure accounting before any new
+dispatch. This prevents a correct duplicate-lane refusal from consuming the
+two-strike failure budget while avoiding false progress or broad open-PR trust.
 
 ## Risks / Trade-offs
 

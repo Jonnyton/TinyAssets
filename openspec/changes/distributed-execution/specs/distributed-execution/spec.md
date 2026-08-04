@@ -270,6 +270,199 @@ terminal authority.
 - **AND** it cannot mint a B2 grant, credential, payment right, accepted
   candidate, or terminal fact
 
+### Requirement: Backend bindings and request-bound evidence are sealed outside runner/v1
+
+Distributed execution SHALL own four immutable versioned records outside the
+frozen runner wire:
+
+- M1-signed static `BackendProfileBindingV1`, schema
+  `execution-backend-profile/v1`, SHALL bind the signing key, binding ID,
+  activation generation, backend implementation and release digest, protocol,
+  one execution profile, supported job capabilities and guarantee property
+  IDs, planned-configuration schema, preflight and launch-evidence contract
+  IDs/digests, producer identity, authenticity mechanism, evidence-key custody,
+  reviewed verifiers, trust set, revocation reference/digest, and issue/expiry
+  times. It SHALL NOT contain a current self-test result or a per-request
+  planned configuration.
+- Fresh `BackendPreflightEvidenceV1`, schema
+  `execution-backend-preflight/v1`, SHALL bind one unguessable `admission_id`,
+  `job_id`, full inner-request digest, profile-binding and backend-release
+  digests, capability/self-test and planned-configuration digests, producer,
+  verifier, trust set, revocation generation, observation time, and expiry.
+- Purpose-separated M1-signed `ExecutionAdmissionCapsuleV1`, schema
+  `execution-admission-capsule/v1`, SHALL bind signing key, capsule ID, the
+  shared `admission_id`, `job_id`, inner schema and full request digest,
+  complete trusted execution requirement by value/digest, profile-binding,
+  preflight, and planned-configuration digests, B2/B13 authority reference,
+  digest, and generation, and issue/expiry times.
+- Authenticated `BackendLaunchEvidenceV1`, schema
+  `execution-backend-launch-evidence/v1`, SHALL bind evidence/admission IDs,
+  capsule and full request digests, `job_id`, actual backend execution ID,
+  profile-binding and release digests, planned/actual configuration digests,
+  result schema/digest, producer/authenticity/verifier/trust/revocation data,
+  complete property set and one sorted
+  `(property_id, evidence_kind, ref, digest)` tuple per property, start/finish
+  times, and cleanup subject/reference/digest/observation time.
+
+Trusted code SHALL encode the complete existing `SandboxJobRequest.to_wire()`
+value as RFC 8785/JCS bytes and hash those exact bytes. Before admission it
+SHALL decode those bytes and recursively compare the decoded value with the
+source using JSON-type strictness, safe-integer bounds, and IEEE-754 bit
+identity. A value that does not round-trip losslessly—including integral or
+signed-zero floats such as `1.0`, `0.0`, and `-0.0`, a non-finite number, or an
+unsafe integer—SHALL be rejected rather than aliased. The canonical bytes
+SHALL cover schema, `job_id`, `idempotency_key`, `owner_scope`, `capability`,
+derived `actions`, `payload`, `workspace_ref`, and `credential_grant_ref` and
+SHALL be the only dispatched request representation. The backend SHALL verify
+the digest before decoding and SHALL execute only the value decoded from those
+same bytes, never the original Python object or a separately reserialized
+request. Any mutation of the accepted canonical bytes SHALL invalidate the
+capsule, preflight evidence, and launch evidence even when `job_id` is
+unchanged.
+
+The exact `os_isolated` property identifiers SHALL be
+`kernel_process_boundary`, `filesystem_default_deny`,
+`network_default_deny`, `cpu_limit`, `memory_limit`, `process_limit`,
+`wall_time_limit`, `output_limit`, `platform_secrets_absent`,
+`undeclared_devices_absent`, `bounded_cleanup`, and
+`request_bound_evidence`. `vm_isolated` SHALL additionally require
+`guest_kernel_boundary` and `host_devices_default_deny`. Unknown or missing
+properties, duplicate proof tuples, and contract-disallowed evidence kinds
+SHALL deny admission or output.
+
+The trust-root-built composition SHALL resolve the active profile binding and
+owner-defined requirement facts, derive the planned configuration, create a
+fresh `admission_id`, and obtain authenticated preflight evidence before
+minting the final capsule. Sharing `admission_id` SHALL avoid circular digest
+construction: preflight binds request/configuration facts, while the later
+capsule binds that preflight digest. Preflight SHALL fail after expiry,
+revocation, binding replacement, request mutation, or reuse for another
+admission. Capsule expiry SHALL be no later than binding, preflight, or
+authority expiry.
+
+Dispatch SHALL independently re-verify provider/B2 authority, generation,
+expiry, and revocation at the decision point. A valid capsule SHALL NOT create,
+promote, extend, or replace provider/B2 authority. A caller SHALL NOT provide
+or select a signing key, verifier, binding, preflight result, requirement,
+authority fact, or pre-verified record.
+
+The active profile binding SHALL fix the launch-evidence producer identity,
+authenticity mechanism, key-custody class, canonical contract, verifier, and
+trust set. Model-controlled code, caller data, and result payloads SHALL NOT
+choose them or mark evidence verified. Each required property SHALL have
+exactly one canonical proof tuple. The verifier SHALL check request, capsule,
+admission, execution, configuration, result, property, freshness, replay, and
+cleanup bindings before exposing output. Replay SHALL be accepted only for a
+byte-identical canonical record for the same admission and result; cross-
+admission reuse or changed content under an existing `evidence_id` SHALL fail.
+Cleanup proof SHALL name the actual execution subject and be observed after
+finish.
+
+Preflight SHALL prove only current capability and exact planned configuration.
+`RunnerCapabilities`, `isolation_enforced`, executable probes,
+`EnforcementReceipt`, labels, queue/admission receipts, and the outer capsule
+without valid launch evidence MAY veto or diagnose but SHALL NOT prove actual
+execution. Missing or invalid actual-launch evidence SHALL raise
+`ExecutionAdmissionError(reason=backend_evidence_invalid)` and SHALL NOT
+produce a successful result, accepted candidate, or fallback input.
+
+This outer contract SHALL NOT change `runner/v1`, request schema
+`runner-job/v1`, result schema `runner-result/v1`, `SandboxJobRequest`,
+`SandboxJobResult`, or `EnforcementReceipt`. `JobCapability` SHALL remain
+exactly `source_exec`, `repo_read`, `repo_exec`, and `coding`, with its current
+immutable action mapping. `inference_only` and `provider_cli` SHALL NOT become
+runner capabilities. A backend without a reviewed binding and valid
+request-bound evidence SHALL remain unavailable for execution admission.
+Production constructors SHALL remain absent until task 7.2's external trust
+distribution, purpose-separated custody, rotation/revocation, and persistent
+store boundary are explicitly approved and implemented. Production SHALL NOT
+fall back to test, generated, unsigned, or caller-supplied keys or evidence.
+
+#### Scenario: pre-launch proof cannot attest a future execution
+
+- **WHEN** a static profile binding and fresh request-bound preflight evidence
+  prove every required mechanism and bind the exact planned configuration
+- **THEN** pre-launch admission may establish capability and configuration
+  support for that request
+- **AND** it does not prove the future launch, enforcement, cleanup, or result
+
+#### Scenario: same-job request substitution fails
+
+- **WHEN** an attacker preserves `job_id` but mutates the schema,
+  `idempotency_key`, `owner_scope`, capability/actions, payload,
+  `workspace_ref`, or `credential_grant_ref`
+- **THEN** the recomputed full inner-request digest differs
+- **AND** the preflight record, capsule, and launch evidence all fail closed
+
+#### Scenario: canonical numeric aliases cannot preserve a digest
+
+- **WHEN** a caller uses `1` versus `1.0`, `0` versus `0.0` or `-0.0`, an
+  unsafe integer, or another value that JCS cannot round-trip with identical
+  JSON type and numeric bits
+- **THEN** the non-lossless request is rejected before admission
+- **AND** execution receives only the exact verified canonical bytes decoded
+  after the digest check, never the original or a separately encoded object
+
+#### Scenario: volatile readiness cannot hide in static policy
+
+- **WHEN** a profile binding carries a current self-test result or per-request
+  planned-configuration value
+- **THEN** verification rejects the malformed static artifact
+- **AND** only fresh admission-bound preflight evidence may carry those facts
+
+#### Scenario: preflight replay and revocation fail closed
+
+- **WHEN** preflight evidence is expired, revoked, from a replaced binding,
+  request-mismatched, or reused for another admission
+- **THEN** no execution admission capsule is minted or accepted
+
+#### Scenario: caller cannot mint a self-consistent capsule
+
+- **WHEN** a caller supplies a capsule, requirement, profile binding,
+  preflight evidence, authority reference, signer, key, verifier, or mutually
+  matching replacement digests
+- **THEN** admission refuses because the outer capsule must be M1-minted from
+  independently trusted state and verified against the exact request context
+- **AND** no self-consistent caller substitution creates execution authority
+
+#### Scenario: outer capsule preserves the frozen inner runner wire
+
+- **WHEN** admitted `source_exec` work is dispatched through `SandboxRunner`
+- **THEN** the sidecar records bind the complete inner request, requirement,
+  profile, preflight, configuration, and authority to the unchanged inner wire
+- **AND** the inner schemas remain `runner-job/v1` and `runner-result/v1`
+- **AND** no admission field or new `JobCapability` is added
+
+#### Scenario: returned evidence must prove the actual execution
+
+- **WHEN** a backend returns output without valid launch evidence bound to the
+  admitted capsule, inner `job_id`, planned configuration, actual execution,
+  complete required property set, and result digest
+- **THEN** admission fails with
+  `ExecutionAdmissionError(reason=backend_evidence_invalid)`
+- **AND** the output creates no successful runner result, accepted candidate,
+  or fallback input
+
+#### Scenario: copied or invented launch evidence fails
+
+- **WHEN** launch evidence is copied across admissions, replayed with changed
+  content, names an unbound producer or verifier, omits or duplicates a
+  property proof, mismatches the result, or lacks post-finish cleanup proof
+- **THEN** the reviewed verifier rejects it as `backend_evidence_invalid`
+
+#### Scenario: admission never promotes invocation authority
+
+- **WHEN** a capsule is valid but independent provider/B2 authority is
+  missing, expired, revoked, or generation-stale at dispatch
+- **THEN** execution is denied despite the valid capsule
+
+#### Scenario: production cannot use a test evidence root
+
+- **WHEN** approved production custody, trust distribution, or revocation state
+  is unavailable
+- **THEN** no profile binding, preflight evidence, capsule, or launch evidence
+  is constructed through a test, generated, unsigned, or caller fallback
+
 ### Requirement: Stale PRs are extracted onto current main, not integrated wholesale
 
 Implementation SHALL port only reviewed behavior and non-vacuous mutation tests
