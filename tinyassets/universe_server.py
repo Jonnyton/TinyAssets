@@ -43,6 +43,7 @@ from starlette.applications import Starlette
 
 from tinyassets.api.branches import _branch_design_guide_prompt
 from tinyassets.api.cloud_automations import cloud_automations as _cloud_automations_impl
+from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
 from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
 from tinyassets.api.extensions import _extensions_impl
@@ -461,7 +462,7 @@ def read_graph(
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            branch, automations, automation, agents, agent, agent_bindings, or
+            branch, automations, automation, connections, agents, agent, agent_bindings, or
             agent_binding.
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
@@ -528,6 +529,13 @@ def read_graph(
                 limit=limit,
             )
         )
+    if normalized == "connections":
+        return json.dumps(
+            _cloud_connections_impl(
+                action="list",
+                universe_id=graph_id,
+            )
+        )
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -576,6 +584,7 @@ def read_graph(
             "branch",
             "automations",
             "automation",
+            "connections",
             "agents",
             "agent",
             "agent_bindings",
@@ -861,6 +870,14 @@ def write_graph(
                 payload=payload_json,
             )
         )
+    if normalized == "connection":
+        return json.dumps(
+            _cloud_connections_impl(
+                action=operation,
+                universe_id=graph_id,
+                payload=payload_json,
+            )
+        )
     if normalized == "agent":
         agent_operation = (operation or "publish").strip().lower()
         action = {
@@ -931,6 +948,7 @@ def write_graph(
             "branch",
             "universe",
             "automation",
+            "connection",
             "agent",
             "agent_binding",
         ),

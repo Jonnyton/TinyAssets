@@ -257,6 +257,9 @@ infer additional callable tools from legacy action names in old conversations.
    | Run / execute a workflow       | `run_graph branch_def_id=...`           |
    | Inspect cloud automations      | `read_graph target="automations"` or   |
    |                                | `read_graph target="automation" automation_id=...` |
+   | Connect a GitHub destination    | `write_graph target="connection" operation="connect"` then |
+   |                                | `operation="reconcile"` after OAuth consent |
+   | Inspect connections             | `read_graph target="connections"` |
    | Run while devices are off      | `write_graph target="automation"` with |
    |                                | operation `create` and a frozen definition, |
    |                                | cadence, and operator soul in `payload_json` |

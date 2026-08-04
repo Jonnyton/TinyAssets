@@ -141,6 +141,16 @@ def _prerequisite_projection(*, actor: str, universe_id: str) -> dict[str, Any]:
         "provider_bindings": provider_bindings,
         "destination_grants": destination_grants,
         "ready": bool(provider_bindings and destination_grants),
+        "connection_action": (
+            None
+            if destination_grants
+            else {
+                "target": "connection",
+                "operation": "connect",
+                "required_fields": ["destination"],
+                "next": "authorize GitHub, then reconcile the same destination",
+            }
+        ),
     }
 
 

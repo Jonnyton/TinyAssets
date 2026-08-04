@@ -461,10 +461,28 @@ class _ProductionVaultCredentialResolver:
         return credential
 
 
+class _WorkOSPipesCredentialResolver:
+    """Resolve an owner-bound Pipes reference only inside the broker child."""
+
+    __slots__ = ("_owner_user_id", "_provider")
+
+    def __init__(self, *, owner_user_id: str, provider: str) -> None:
+        self._owner_user_id = owner_user_id.strip()
+        self._provider = provider.strip().lower()
+
+    def __call__(self, credential_ref: str) -> str:
+        expected = f"workos-pipes://github/{self._owner_user_id}"
+        if self._provider != "github" or credential_ref != expected:
+            raise RuntimeError("credential reference does not match the connection")
+        from tinyassets.workos_pipes import WorkOSPipesClient
+
+        return WorkOSPipesClient().vend_credential(user_id=self._owner_user_id)
+
+
 class _TrustedCredentialResolver:
     """Select fixture or production resolution without an adapter callback."""
 
-    __slots__ = ("_fixture", "_production", "_provider")
+    __slots__ = ("_fixture", "_production", "_pipes", "_provider")
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._provider = str(config["provider"])
@@ -476,10 +494,16 @@ class _TrustedCredentialResolver:
             provider=self._provider,
             destination=str(config["destination"]),
         )
+        self._pipes = _WorkOSPipesCredentialResolver(
+            owner_user_id=str(config["owner_user_id"]),
+            provider=self._provider,
+        )
 
     def __call__(self, credential_ref: str) -> str:
         if self._provider.startswith("test-fixture."):
             return self._fixture(credential_ref)
+        if credential_ref.startswith("workos-pipes://"):
+            return self._pipes(credential_ref)
         return self._production(credential_ref)
 
 
@@ -1069,6 +1093,7 @@ class ConnectionLedger:
             rows = connection.execute(
                 """
                 SELECT g.grant_id, g.revoked_at AS grant_revoked_at,
+                       c.owner_user_id,
                        c.provider, c.destination, c.scopes_json,
                        c.revoked_at AS connection_revoked_at
                   FROM outbound_connection_grants AS g
@@ -1105,6 +1130,7 @@ class ConnectionLedger:
             provider=row["provider"],
             destination=row["destination"],
             scopes=tuple(json.loads(row["scopes_json"])),
+            owner_user_id=row["owner_user_id"],
         )
 
     def resolve_exact_scoped_proxy(
@@ -1135,6 +1161,7 @@ class ConnectionLedger:
             provider=resource.provider,
             destination=resource.destination,
             scopes=resource.scopes,
+            owner_user_id=resource.owner_user_id,
         )
 
     def _start_scoped_proxy(
@@ -1145,6 +1172,7 @@ class ConnectionLedger:
         provider: str,
         destination: str,
         scopes: tuple[str, ...],
+        owner_user_id: str,
     ) -> ScopedConnectionProxy:
         factory_reference = "credential_broker_v1"
         grant_runtime_id = hashlib.sha256(
@@ -1156,6 +1184,7 @@ class ConnectionLedger:
             "universe_dir": str((self._db_path.parent / universe_id).resolve()),
             "provider": provider,
             "destination": destination,
+            "owner_user_id": owner_user_id,
             "runtime_root": str(
                 (
                     self._db_path.parent
