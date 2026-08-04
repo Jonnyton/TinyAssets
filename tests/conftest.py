@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Sequence
 from typing import Any, Callable
 
 import pytest
@@ -32,22 +33,32 @@ def _request_admission_hmac_key(monkeypatch):
     )
 
 
+# The capability set an issued test credential carries unless a test asks for
+# something else. Deliberately EXCLUDES `tinyassets.extensions.costly`, which
+# gates run_branch and friends: several suites authenticate a subject and then
+# assert a costly action is refused, so granting it by default would silently
+# convert those into vacuous passes.
+_DEFAULT_TEST_CAPABILITIES = (
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
+    "tinyassets.extensions.admin",
+)
+
+
 class _CredentialSubjectProvider(AuthProvider):
     """Resolve only issued test credentials to persisted subjects."""
 
     def __init__(self) -> None:
         self._identities_by_token: dict[str, Identity] = {}
 
-    def issue_credential(self, subject: str) -> str:
+    def issue_credential(
+        self, subject: str, capabilities: Sequence[str] | None = None
+    ) -> str:
         token = f"pytest-credential::{subject}"
         self._identities_by_token[token] = Identity(
             user_id=subject,
             username=f"{subject}-display",
-            capabilities=[
-                "tinyassets.extensions.read",
-                "tinyassets.extensions.write",
-                "tinyassets.extensions.admin",
-            ],
+            capabilities=list(capabilities or _DEFAULT_TEST_CAPABILITIES),
         )
         return token
 
@@ -88,8 +99,16 @@ def authenticate_request() -> Callable[[str | None], None]:
     set_provider(provider)
     auth_middleware(None)
 
-    def authenticate(subject: str | None) -> None:
-        token = provider.issue_credential(subject) if subject else None
+    def authenticate(
+        subject: str | None, capabilities: Sequence[str] | None = None
+    ) -> None:
+        """Bind the request subject. `capabilities` defaults to read/write/admin.
+
+        Pass an explicit list to grant `tinyassets.extensions.costly`, which
+        `run_branch` requires. It is opt-in rather than default so that suites
+        asserting a costly action is refused keep asserting something.
+        """
+        token = provider.issue_credential(subject, capabilities) if subject else None
         auth_middleware(token)
 
     yield authenticate
