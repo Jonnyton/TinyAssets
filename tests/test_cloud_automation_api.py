@@ -1163,8 +1163,15 @@ def test_phone_create_returns_actionable_setup_when_connections_are_missing(
         "prerequisites": {
                 "provider_bindings": [],
                 "destination_grants": [],
-                "ready": False,
-                "connection_action": {
+                    "ready": False,
+                    "provider_action": {
+                        "target": "automation",
+                        "operation": "bind_provider",
+                        "required_fields": ["provider"],
+                        "providers": [],
+                        "next": "enroll requester-owned compute before retrying automation create",
+                    },
+                    "connection_action": {
                     "target": "connection",
                     "operation": "connect",
                     "required_fields": ["destination"],
