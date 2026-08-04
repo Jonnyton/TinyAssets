@@ -452,6 +452,7 @@ def cloud_automations(
                     for item in provider_store.list_bindings(
                         owner_user_id=actor,
                         universe_id=uid,
+                        active_only=False,
                     )
                     if item.provider == provider
                 ]
