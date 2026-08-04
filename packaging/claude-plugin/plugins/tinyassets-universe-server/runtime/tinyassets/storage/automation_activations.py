@@ -61,6 +61,11 @@ def _is_agent_automation_id(automation_id: str) -> bool:
     return automation_id.startswith(_AGENT_AUTOMATION_PREFIX)
 
 
+def _require_active_transaction(conn: sqlite3.Connection) -> None:
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("connection must hold an active transaction")
+
+
 def _require_subject_namespace(
     automation_id: str,
     subject: ExecutionSubject,
@@ -296,27 +301,17 @@ class AutomationActivationStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO automation_activations (
-                        universe_id, automation_id, epoch, executor_class,
-                        subject_kind, subject_ref, subject_digest,
-                        immutable_branch_version, lease_id, state, updated_at
-                    ) VALUES (?, ?, 0, NULL, NULL, NULL, NULL, NULL, NULL, 'stopped', ?)
-                    """,
-                    (universe_id, automation_id, at),
-                )
-                row = self._select(
+                row = self._create_stopped_in_transaction(
                     conn,
-                    universe_id,
-                    automation_id,
+                    universe_id=universe_id,
+                    automation_id=automation_id,
+                    updated_at=at,
                 )
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-        assert row is not None
-        return _record(row)
+        return row
 
     def create_stopped_for_agent_binding(
         self,
@@ -331,6 +326,46 @@ class AutomationActivationStore:
             automation_id=agent_binding_automation_id(agent_binding_id),
         )
 
+    def create_stopped_for_agent_binding_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        universe_id: str,
+        agent_binding_id: str,
+    ) -> AutomationActivation:
+        """Create the reserved row inside the caller's write transaction."""
+
+        return self._create_stopped_in_transaction(
+            conn,
+            universe_id=_required(universe_id, "universe_id"),
+            automation_id=agent_binding_automation_id(agent_binding_id),
+            updated_at=_timestamp(self._clock()),
+        )
+
+    def _create_stopped_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        universe_id: str,
+        automation_id: str,
+        updated_at: str,
+    ) -> AutomationActivation:
+        _require_active_transaction(conn)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO automation_activations (
+                universe_id, automation_id, epoch, executor_class,
+                subject_kind, subject_ref, subject_digest,
+                immutable_branch_version, lease_id, state, updated_at
+            ) VALUES (?, ?, 0, NULL, NULL, NULL, NULL, NULL, NULL, 'stopped', ?)
+            """,
+            (universe_id, automation_id, updated_at),
+        )
+        row = self._select(conn, universe_id, automation_id)
+        if row is None:
+            raise RuntimeError("automation activation insert disappeared")
+        return _record(row)
+
     def get(
         self,
         universe_id: str,
@@ -344,6 +379,23 @@ class AutomationActivationStore:
                 clean_universe_id,
                 clean_automation_id,
             )
+        return _record(row) if row is not None else None
+
+    def get_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        universe_id: str,
+        automation_id: str,
+    ) -> AutomationActivation | None:
+        """Read one activation while the caller retains the authority fence."""
+
+        _require_active_transaction(conn)
+        row = self._select(
+            conn,
+            _required(universe_id, "universe_id"),
+            _required(automation_id, "automation_id"),
+        )
         return _record(row) if row is not None else None
 
     def activate(
@@ -366,6 +418,36 @@ class AutomationActivationStore:
             raise ValueError("subject must be typed")
         _require_subject_namespace(expected.automation_id, subject)
         return self._transition(
+            expected=expected,
+            executor_class=executor_class,
+            subject=subject,
+            lease_id=_required(lease_id, "lease_id"),
+            state=AutomationActivationState.ACTIVE,
+        )
+
+    def activate_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        expected: AutomationActivation,
+        executor_class: AutomationActivationExecutor,
+        subject: ExecutionSubject,
+        lease_id: str,
+    ) -> AutomationActivation | None:
+        """Activate an exact stopped row inside the caller's transaction."""
+
+        _require_active_transaction(conn)
+        if not isinstance(expected, AutomationActivation):
+            raise ValueError("expected must be an AutomationActivation")
+        if expected.state is not AutomationActivationState.STOPPED:
+            return None
+        if not isinstance(executor_class, AutomationActivationExecutor):
+            raise ValueError("executor_class must be typed")
+        if not isinstance(subject, ExecutionSubject):
+            raise ValueError("subject must be typed")
+        _require_subject_namespace(expected.automation_id, subject)
+        return self._transition_in_transaction(
+            conn,
             expected=expected,
             executor_class=executor_class,
             subject=subject,
@@ -528,6 +610,34 @@ class AutomationActivationStore:
         lease_id: str | None,
         state: AutomationActivationState,
     ) -> AutomationActivation | None:
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._transition_in_transaction(
+                    conn,
+                    expected=expected,
+                    executor_class=executor_class,
+                    subject=subject,
+                    lease_id=lease_id,
+                    state=state,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return result
+
+    def _transition_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        expected: AutomationActivation,
+        executor_class: AutomationActivationExecutor | None,
+        subject: ExecutionSubject | None,
+        lease_id: str | None,
+        state: AutomationActivationState,
+    ) -> AutomationActivation | None:
+        _require_active_transaction(conn)
         at = _timestamp(self._clock())
         compatibility_branch_version = (
             subject.ref
@@ -535,76 +645,61 @@ class AutomationActivationStore:
             and subject.kind is ExecutionSubjectKind.BRANCH_VERSION
             else None
         )
-        with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                cursor = conn.execute(
-                    """
-                    UPDATE automation_activations
-                    SET epoch = epoch + 1,
-                        executor_class = ?,
-                        subject_kind = ?,
-                        subject_ref = ?,
-                        subject_digest = ?,
-                        immutable_branch_version = ?,
-                        lease_id = ?,
-                        state = ?,
-                        updated_at = ?
-                    WHERE universe_id = ?
-                      AND automation_id = ?
-                      AND epoch = ?
-                      AND executor_class IS ?
-                      AND subject_kind IS ?
-                      AND subject_ref IS ?
-                      AND subject_digest IS ?
-                      AND immutable_branch_version IS ?
-                      AND lease_id IS ?
-                      AND state = ?
-                      AND updated_at = ?
-                    """,
-                    (
-                        (
-                            executor_class.value
-                            if executor_class is not None
-                            else None
-                        ),
-                        subject.kind.value if subject is not None else None,
-                        subject.ref if subject is not None else None,
-                        subject.digest if subject is not None else None,
-                        compatibility_branch_version,
-                        lease_id,
-                        state.value,
-                        at,
-                        expected.universe_id,
-                        expected.automation_id,
-                        expected.epoch,
-                        (
-                            expected.executor_class.value
-                            if expected.executor_class is not None
-                            else None
-                        ),
-                        expected.subject.kind.value if expected.subject is not None else None,
-                        expected.subject.ref if expected.subject is not None else None,
-                        expected.subject.digest if expected.subject is not None else None,
-                        expected.immutable_branch_version,
-                        expected.lease_id,
-                        expected.state.value,
-                        expected.updated_at,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    conn.commit()
-                    return None
-                row = self._select(
-                    conn,
-                    expected.universe_id,
-                    expected.automation_id,
-                )
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-        assert row is not None
+        cursor = conn.execute(
+            """
+            UPDATE automation_activations
+            SET epoch = epoch + 1,
+                executor_class = ?,
+                subject_kind = ?,
+                subject_ref = ?,
+                subject_digest = ?,
+                immutable_branch_version = ?,
+                lease_id = ?,
+                state = ?,
+                updated_at = ?
+            WHERE universe_id = ?
+              AND automation_id = ?
+              AND epoch = ?
+              AND executor_class IS ?
+              AND subject_kind IS ?
+              AND subject_ref IS ?
+              AND subject_digest IS ?
+              AND immutable_branch_version IS ?
+              AND lease_id IS ?
+              AND state = ?
+              AND updated_at = ?
+            """,
+            (
+                executor_class.value if executor_class is not None else None,
+                subject.kind.value if subject is not None else None,
+                subject.ref if subject is not None else None,
+                subject.digest if subject is not None else None,
+                compatibility_branch_version,
+                lease_id,
+                state.value,
+                at,
+                expected.universe_id,
+                expected.automation_id,
+                expected.epoch,
+                (
+                    expected.executor_class.value
+                    if expected.executor_class is not None
+                    else None
+                ),
+                expected.subject.kind.value if expected.subject is not None else None,
+                expected.subject.ref if expected.subject is not None else None,
+                expected.subject.digest if expected.subject is not None else None,
+                expected.immutable_branch_version,
+                expected.lease_id,
+                expected.state.value,
+                expected.updated_at,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        row = self._select(conn, expected.universe_id, expected.automation_id)
+        if row is None:
+            raise RuntimeError("automation activation transition disappeared")
         return _record(row)
 
     @staticmethod
