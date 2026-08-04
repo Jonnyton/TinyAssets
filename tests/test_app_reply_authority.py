@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -146,7 +147,16 @@ def test_authorize_rejects_tampered_signature_and_stale_mapping(tmp_path: Path):
         destination_resolver=lambda _record: ReplyDestination("slack", "conn-1", "C0123456789"),
         clock=time.time,
     )
-    tampered = type(handoff)(handoff.evidence, handoff.signature[:-1] + "A")
+    signature = bytearray(
+        base64.urlsafe_b64decode(
+            handoff.signature + "=" * ((4 - len(handoff.signature) % 4) % 4)
+        )
+    )
+    signature[0] ^= 1
+    tampered = type(handoff)(
+        handoff.evidence,
+        base64.urlsafe_b64encode(bytes(signature)).decode().rstrip("="),
+    )
     with pytest.raises(AppReplyAuthorityError):
         authority.authorize(_event(), tampered, response_digest="sha256:" + "c" * 64)
     service.revoke(_event(), expected_generation=1)
@@ -176,3 +186,13 @@ def test_authorize_rejects_invalid_destination_and_digest(tmp_path: Path):
     )
     with pytest.raises(AppReplyAuthorityError):
         bad_destination.authorize(_event(), handoff, response_digest="sha256:" + "c" * 64)
+    failing = AppReplyAuthority(
+        tmp_path,
+        mapping=service,
+        public_key=custody.signing_key.public_key(),
+        authority_key_id="custody-authority-test",
+        destination_resolver=lambda _record: (_ for _ in ()).throw(KeyError("missing destination")),
+        clock=time.time,
+    )
+    with pytest.raises(AppReplyAuthorityError):
+        failing.authorize(_event(), handoff, response_digest="sha256:" + "c" * 64)

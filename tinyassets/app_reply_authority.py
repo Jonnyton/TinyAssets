@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from tinyassets.app_conversation_authority import (
@@ -21,14 +20,13 @@ from tinyassets.app_conversation_authority import (
     _grant_signing_bytes,
 )
 from tinyassets.app_event_ingress import AuthenticatedAppEvent
-from tinyassets.app_principal_mapping import AppPrincipalMappingService, AppPrincipalStaleError
+from tinyassets.app_principal_mapping import AppPrincipalMappingService
 from tinyassets.conversation_custody import canonical_json_bytes
 from tinyassets.storage.app_principal_mappings import AppPrincipalMappingRecord
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _SUPPORTED_PROVIDERS = frozenset({"slack"})
-_MAX_GRANT_AGE_SECONDS = 300
 
 
 class AppReplyAuthorityError(PermissionError):
@@ -152,7 +150,7 @@ class AppReplyAuthority:
             )
         except AppReplyAuthorityError:
             raise
-        except (InvalidSignature, AppPrincipalStaleError, OSError, TypeError, ValueError) as exc:
+        except Exception as exc:
             raise AppReplyAuthorityError("reply authority failed closed") from exc
 
 
