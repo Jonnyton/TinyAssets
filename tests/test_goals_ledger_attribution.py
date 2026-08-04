@@ -90,3 +90,42 @@ def test_ledger_actor_is_the_credential_subject_not_the_env_user(
         f"'alice' and the env var was changed to 'mallory' to prove the env "
         f"cannot forge attribution"
     )
+
+
+def test_unauthenticated_write_is_anonymous_not_the_env_user(
+    tmp_path, monkeypatch
+) -> None:
+    """With NO credential, attribution must be `anonymous`, never the env user.
+
+    This is the gap the first version of this fix left open, found in review.
+    Passing `actor=""` looked harmless, but `_append_ledger` resolves a falsy
+    actor via `actor or _current_actor()`, and `_current_actor()` reads
+    `UNIVERSE_SERVER_USER`. So an unauthenticated write was attributed to
+    whoever the environment happened to name — the ambient env forging an
+    identity, which is precisely what `_request_branch_actor` exists to stop.
+
+    Deliberately NOT asserting that the write is refused: production OAuth
+    blocks anonymous writes at a different layer, and this test is about
+    attribution honesty, not about relocating that gate.
+    """
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
+    from tinyassets import universe_server as us
+
+    importlib.reload(us)
+    try:
+        json.loads(us.goals(action="propose", name="G3", description="x"))
+        rows = [
+            r for r in _ledger_rows(base) if r.get("action") == "goals.propose"
+        ]
+        assert rows, "no ledger row written for an unauthenticated propose"
+        assert rows[0].get("actor") == "anonymous", (
+            f"unauthenticated write recorded actor "
+            f"{rows[0].get('actor')!r}; the ambient UNIVERSE_SERVER_USER was "
+            f"'mallory', so anything but 'anonymous' means the env forged an "
+            f"identity into the audit trail"
+        )
+    finally:
+        importlib.reload(us)

@@ -797,7 +797,7 @@ def _dispatch_judgment_action(
 ) -> str:
     """Dispatch a Phase 4 action. ``judge_run`` is the only write; the
     rest are read-only and bypass the ledger."""
-    from tinyassets.api.branches import _append_global_ledger
+    from tinyassets.api.branches import _append_global_ledger, ledger_actor
     from tinyassets.api.engine_helpers import _truncate
 
     result_str = handler(kwargs)
@@ -824,6 +824,7 @@ def _dispatch_judgment_action(
             summary_bits.append(f"node={kwargs['node_id']}")
         _append_global_ledger(
             action,
+            actor=ledger_actor(),
             target=str(target),
             summary=_truncate(" ".join(summary_bits)),
             payload=None,

@@ -425,6 +425,26 @@ def _request_branch_actor() -> str | None:
     return actor
 
 
+#: Recorded when a ledgered action ran without a credential-validated subject.
+#: A literal, NOT the empty string: `_append_ledger` resolves a falsy actor via
+#: `actor or _current_actor()`, and `_current_actor()` reads the ambient
+#: `UNIVERSE_SERVER_USER`. So passing "" would attribute an unauthenticated
+#: write to whoever the environment happens to name — the env forging identity,
+#: which is the thing `_request_branch_actor` exists to prevent.
+LEDGER_ACTOR_ANONYMOUS = "anonymous"
+
+
+def ledger_actor() -> str:
+    """The actor to record in the global ledger for this request.
+
+    Always truthy, so it can never fall through to the ambient env actor.
+    Callers that must REFUSE an unauthenticated write should check
+    :func:`_request_branch_actor` themselves and reject before mutating; this
+    helper is only about attributing a write that is already permitted.
+    """
+    return _request_branch_actor() or LEDGER_ACTOR_ANONYMOUS
+
+
 def _branch_not_found_message(selector: str) -> str:
     return f"Branch '{selector}' not found."
 
