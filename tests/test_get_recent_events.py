@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.api import helpers
 from tinyassets.api.universe import (
     _action_get_recent_events,
     _parse_activity_line,
@@ -71,7 +72,6 @@ def universe_with_log(tmp_path, monkeypatch):
     Patches `_universe_dir` so the action finds our synthetic universe
     rather than the host's real output directory.
     """
-    from tinyassets import universe_server as us
     from tinyassets.api import universe as uni
 
     udir = tmp_path / "test-universe"
@@ -85,10 +85,23 @@ def universe_with_log(tmp_path, monkeypatch):
         "[2026-04-19 10:04:00] Worldbuild: 3 canon docs generated\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "test-universe")
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "test-universe")
+    def _fake_universe_dir(uid, _expected="test-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
+    # `_default_universe` MOVED to tinyassets.api.helpers and is now
+    # reached through `_request_universe`, so patching it on `uni`
+    # raised AttributeError and errored these tests at SETUP. Patch it
+    # where it now lives: `_request_universe` is defined in helpers and
+    # resolves the name as a module global there, so this still covers
+    # the default-resolution path these tests exist to exercise (the
+    # anonymous branch, which is what an uncredentialed test hits).
+    monkeypatch.setattr(helpers, "_default_universe", lambda: "test-universe")
     return udir
 
 
@@ -141,7 +154,6 @@ def test_tag_filter_no_match_returns_caveat(universe_with_log):
 
 def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
     """tag='dispatch_guard' with zero matches must warn empty != no-overshoots."""
-    from tinyassets import universe_server as us
     from tinyassets.api import universe as uni
 
     udir = tmp_path / "no-dispatch-universe"
@@ -151,10 +163,23 @@ def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
         "[2026-04-19 10:01:00] Commit: evaluating scene-1\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "no-dispatch-universe")
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "no-dispatch-universe")
+    def _fake_universe_dir(uid, _expected="no-dispatch-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
+    # `_default_universe` MOVED to tinyassets.api.helpers and is now
+    # reached through `_request_universe`, so patching it on `uni`
+    # raised AttributeError and errored these tests at SETUP. Patch it
+    # where it now lives: `_request_universe` is defined in helpers and
+    # resolves the name as a module global there, so this still covers
+    # the default-resolution path these tests exist to exercise (the
+    # anonymous branch, which is what an uncredentialed test hits).
+    monkeypatch.setattr(helpers, "_default_universe", lambda: "no-dispatch-universe")
 
     response = _parse_response(_action_get_recent_events(tag="dispatch_guard"))
 
@@ -168,15 +193,27 @@ def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
 
 def test_dispatch_guard_missing_log_adds_absence_caveat(tmp_path, monkeypatch):
     """tag='dispatch_guard' on a universe with no activity.log still warns."""
-    from tinyassets import universe_server as us
     from tinyassets.api import universe as uni
 
     udir = tmp_path / "fresh-dispatch-universe"
     udir.mkdir()
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "fresh-dispatch-universe")
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "fresh-dispatch-universe")
+    def _fake_universe_dir(uid, _expected="fresh-dispatch-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
+    # `_default_universe` MOVED to tinyassets.api.helpers and is now
+    # reached through `_request_universe`, so patching it on `uni`
+    # raised AttributeError and errored these tests at SETUP. Patch it
+    # where it now lives: `_request_universe` is defined in helpers and
+    # resolves the name as a module global there, so this still covers
+    # the default-resolution path these tests exist to exercise (the
+    # anonymous branch, which is what an uncredentialed test hits).
+    monkeypatch.setattr(helpers, "_default_universe", lambda: "fresh-dispatch-universe")
 
     response = _parse_response(_action_get_recent_events(tag="dispatch_guard"))
 
@@ -222,15 +259,27 @@ def test_untagged_caveat_when_no_filter(universe_with_log):
 
 
 def test_missing_log_returns_empty_with_caveat(tmp_path, monkeypatch):
-    from tinyassets import universe_server as us
     from tinyassets.api import universe as uni
 
     udir = tmp_path / "fresh-universe"
     udir.mkdir()  # no activity.log inside
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "fresh-universe")
-    monkeypatch.setattr(uni, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(uni, "_default_universe", lambda: "fresh-universe")
+    def _fake_universe_dir(uid, _expected="fresh-universe"):
+        # Assert the RESOLVED uid rather than ignoring it. Without this the
+        # `_default_universe` patch below is not load-bearing: the resolver
+        # could return anything and these tests would still pass, because
+        # nothing else reads the universe id.
+        assert uid == _expected, f"resolved universe {uid!r}, expected {_expected!r}"
+        return udir
+
+    monkeypatch.setattr(uni, "_universe_dir", _fake_universe_dir)
+    # `_default_universe` MOVED to tinyassets.api.helpers and is now
+    # reached through `_request_universe`, so patching it on `uni`
+    # raised AttributeError and errored these tests at SETUP. Patch it
+    # where it now lives: `_request_universe` is defined in helpers and
+    # resolves the name as a module global there, so this still covers
+    # the default-resolution path these tests exist to exercise (the
+    # anonymous branch, which is what an uncredentialed test hits).
+    monkeypatch.setattr(helpers, "_default_universe", lambda: "fresh-universe")
 
     response = _parse_response(_action_get_recent_events())
 

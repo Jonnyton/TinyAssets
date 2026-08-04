@@ -179,6 +179,24 @@ class TrayApp:
             logger.debug("Tray already running, skipping start()")
             return
 
+        if Icon is None:
+            # The import guard above binds Icon/Menu/MenuItem to None so that
+            # merely IMPORTING this module stays safe in a headless container.
+            # Actually starting a tray there cannot work, and without this
+            # guard the failure was `TypeError: 'NoneType' object is not
+            # callable` raised from `MenuItem(...)` inside `_build_menu` on
+            # the next line — not from `Icon(...)`, which is never reached.
+            # Either way the message named neither pystray nor the cause.
+            # Fail loudly and legibly instead. Guarding on `Icon` rather than
+            # `MenuItem` is deliberate: the import binds all three together,
+            # and Icon is the capability actually being requested.
+            raise RuntimeError(
+                "Cannot start the system tray: pystray is not available. "
+                "This process is headless or pystray is not installed. "
+                "Importing tinyassets.desktop is supported without it; "
+                "starting a tray is not."
+            )
+
         menu = self._build_menu()
         self._icon = Icon(
             "TinyAssets",

@@ -3,6 +3,16 @@
 The tray tests mock pystray since the actual system tray requires a
 display server.  Dashboard and notification tests run fully in-process.
 Launcher tests mock tk.Tk to avoid needing a display.
+
+pystray is an OPTIONAL dependency. `tinyassets/desktop/tray.py` tolerates its
+absence by binding `Icon`/`Menu`/`MenuItem` to None, so on a headless runner
+`_build_menu` died at `MenuItem(...)` with `TypeError: 'NoneType' object is
+not callable`
+and 13 tests here failed on Linux CI while passing on any dev box with pystray
+installed — which is why they sat quarantined. `_pystray_stubs` below supplies
+faithful stand-ins ONLY when the real package is missing, so CI exercises the
+same TrayApp logic a dev box does. Reproduce the CI condition locally by making
+the import fail (`sys.modules["pystray"] = None`) before importing the module.
 """
 
 from __future__ import annotations
@@ -11,6 +21,8 @@ import py_compile
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tinyassets.desktop.dashboard import DashboardHandler, DashboardMetrics
 from tinyassets.desktop.host_tray import HostTrayService
@@ -40,6 +52,80 @@ class TestIconImage:
 # =====================================================================
 
 
+class _StubMenuItem:
+    """Stand-in for `pystray.MenuItem`, modelled on the real 0.19.5 class.
+
+    Every deviation from the real API here has already produced a false
+    green once, so each choice is deliberate:
+
+    * **Strict signature.** The real `__init__` is
+      `(text, action, checked=None, radio=False, default=False,
+      visible=True, enabled=True)` and rejects anything else — a typo like
+      `enable=False` raises TypeError. An earlier version of this stub took
+      `**kwargs`, which would have let that typo pass CI and fail on a real
+      tray.
+    * **`text` resolves callables.** Real `MenuItem.text` is a property that
+      calls `self._text()` when it is callable. An earlier version stored it
+      verbatim, so `isinstance(item.text, str)` was False for callable text
+      where real pystray returns a str — inverting the label comprehensions
+      below.
+    """
+
+    def __init__(self, text, action, checked=None, radio=False,
+                 default=False, visible=True, enabled=True):
+        self._text = text
+        self.action = action
+        self.checked = checked
+        self.radio = radio
+        self.default = default
+        self.visible = visible
+        self.enabled = enabled
+
+    @property
+    def text(self):
+        return self._text() if callable(self._text) else self._text
+
+
+class _StubMenu:
+    """Stand-in for `pystray.Menu`.
+
+    `SEPARATOR` is a real `MenuItem("- - - -", None)`, matching pystray
+    (`pystray/_base.py`), NOT a bare sentinel. That distinction is
+    load-bearing: the separator therefore HAS `.text`, so the label
+    comprehensions below include it exactly as they do under real pystray.
+    A sentinel without `.text` was silently skipped, so the stub and the
+    real package disagreed about the menu's contents.
+
+    `_items` is a tuple, matching the real attribute these tests introspect.
+    """
+
+    def __init__(self, *items):
+        self._items = tuple(items)
+
+
+_StubMenu.SEPARATOR = _StubMenuItem("- - - -", None)
+
+
+@pytest.fixture(autouse=True)
+def _pystray_stubs(monkeypatch):
+    """Install stand-ins ONLY when pystray is genuinely unavailable.
+
+    Installing them unconditionally would mean nothing ever exercised the
+    real pystray API, and a stub that quietly drifted from it would keep
+    these tests green while the tray broke. This way a machine WITH pystray
+    keeps testing against the real classes, and the stubs cover only the
+    environment that would otherwise fail outright.
+    """
+    from tinyassets.desktop import tray as _tray
+
+    if _tray.MenuItem is None:
+        monkeypatch.setattr(_tray, "MenuItem", _StubMenuItem)
+    if _tray.Menu is None:
+        monkeypatch.setattr(_tray, "Menu", _StubMenu)
+
+
+
+
 class TestTrayApp:
     def test_init_defaults(self):
         app = TrayApp()
@@ -62,6 +148,26 @@ class TestTrayApp:
 
             MockIcon.assert_called_once()
             mock_icon.run_detached.assert_called_once()
+
+    def test_start_without_pystray_says_why(self, monkeypatch):
+        """Headless `start()` must name the real cause.
+
+        The import guard in tray.py binds Icon/Menu/MenuItem to None so that
+        importing the module stays safe in a headless container. Starting a
+        tray there cannot work, and before this guard the failure was
+        `TypeError: 'NoneType' object is not callable` raised from
+        `MenuItem(...)` inside `_build_menu` — which says nothing about
+        pystray. Forced here rather than skipped, so the check runs on every
+        platform including the dev boxes that DO have pystray.
+        """
+        from tinyassets.desktop import tray as _tray
+
+        monkeypatch.setattr(_tray, "Icon", None)
+        app = TrayApp()
+        with pytest.raises(RuntimeError) as excinfo:
+            app.start()
+        assert "pystray" in str(excinfo.value)
+        assert app._icon is None, "a failed start must not leave a half-built icon"
 
     def test_start_is_idempotent(self):
         with patch("tinyassets.desktop.tray.Icon") as MockIcon:
@@ -1168,10 +1274,22 @@ class TestTrayThrottling:
         app.update_status("Phase 1")
         assert app._status == "Phase 1"
 
-        # Rapid second update should be deferred, not immediate
+        assert app._icon.update_menu.call_count == 1, (
+            "the first update_status should rebuild the menu immediately"
+        )
+
+        # Rapid second update should be deferred, not immediate.
         app.update_status("Phase 2")
         assert app._status == "Phase 2"
-        # Menu was rebuilt at most once immediately (may have a pending timer)
+        # The point of the test. Without this the test asserted only that two
+        # assignments took effect and would have passed with the throttle
+        # removed entirely; the original even said "rebuilt at most once" in
+        # a comment instead of an assertion.
+        assert app._icon.update_menu.call_count == 1, (
+            f"second update within the cooldown rebuilt the menu again "
+            f"({app._icon.update_menu.call_count} rebuilds); it should be "
+            f"deferred to the pending timer"
+        )
 
 
 class TestTrayShowWindow:
