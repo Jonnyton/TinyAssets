@@ -5,7 +5,7 @@
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
 - [filed:2026-04-17 verified:2026-07-25] Privacy Q6.3: legacy set_engine writes no ceiling; gemini/groq/grok remain fallbacks (router.py:89-92), and ambient no-universe env can reach maintainer auth until V2.
-- **[P1 filed:2026-08-03 verified:2026-08-03]** #2182 set `EPOCH2_QUEUE_CONSUMER_READY=True` (branch_tasks_v2.py:94); 4 tests still assert the closed gate. NOT quarantined — see PR #2182 comment.
+- **[P1 filed:2026-08-03 verified:2026-08-04]** #2182's `EPOCH2_QUEUE_CONSUMER_READY=True`: 3 tests still assert the closed gate — now the ONLY blockers of main's `full-tests` tripwire (run 30875123887 names them). NOT quarantined.
 ## Work
 **Queue lives in OpenSpec, not here (2026-08-02):** 40 active changes are the backlog. `python scripts/openspec_flow.py audit` lists them; docs/audits/2026-08-02-openspec-backlog-triage.md has per-change class + next action + sync-safety. Claiming one = add a Work row here.
 | Task | Files | Depends | Status |
