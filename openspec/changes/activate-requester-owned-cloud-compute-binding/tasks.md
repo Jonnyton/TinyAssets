@@ -1,7 +1,7 @@
 ## 1. Enrollment resolver
 
 - [x] 1.1 Implement strict server-only enrollment parsing and owner/universe/provider resolution with no wildcard, raw secret, test fixture, or market fallback.
-- [x] 1.2 Add focused resolver tests for malformed, duplicate, expired, ambiguous, and exact valid entries, including secret-free/redacted projections.
+- [x] 1.2 Add focused resolver tests for malformed, duplicate, expired, ambiguous, exact valid, and non-coercible manifest-shape entries, including secret-free/redacted projections.
 
 ## 2. Phone bind surface
 
