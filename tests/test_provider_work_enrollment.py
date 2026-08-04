@@ -61,6 +61,26 @@ def test_invalid_or_duplicate_manifest_fails_closed(monkeypatch) -> None:
     ) is None
 
 
+def test_manifest_shape_does_not_coerce_strings_or_nulls(monkeypatch) -> None:
+    for field, value in (
+        ("allowed_operations", "repository_spec_delivery"),
+        ("allowed_roles", "writer"),
+        ("owner_user_id", None),
+        ("assignment_generation", "1"),
+        ("max_tokens", True),
+    ):
+        malformed = _entry()
+        malformed[field] = value
+        monkeypatch.setenv(
+            "TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON",
+            json.dumps([malformed]),
+        )
+        resolver = RequesterProviderEnrollmentResolver.from_environment(now=NOW)
+        assert resolver.providers(
+            owner_user_id="user_alice", universe_id="universe_alice"
+        ) == ()
+
+
 def test_phone_bind_uses_authenticated_actor_and_redacts_manifest(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON", json.dumps([_entry()]))
     monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)

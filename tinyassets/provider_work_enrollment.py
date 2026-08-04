@@ -75,24 +75,64 @@ class RequesterProviderEnrollmentResolver:
             if not isinstance(item, dict) or set(item) != _FIELDS:
                 continue
             try:
-                owner = str(item["owner_user_id"]).strip()
-                universe = str(item["universe_id"]).strip()
-                provider = str(item["provider"]).strip()
+                owner = item["owner_user_id"]
+                universe = item["universe_id"]
+                provider = item["provider"]
+                credential_digest = item["credential_reference_digest"]
+                operations = item["allowed_operations"]
+                roles = item["allowed_roles"]
+                assignment_generation = item["assignment_generation"]
+                assignment_digest = item["assignment_digest"]
+                max_invocations = item["max_invocations"]
+                max_tokens = item["max_tokens"]
+                max_cost = item["max_cost_microunits"]
+                expires_at = item["expires_at"]
+                if not all(
+                    isinstance(value, str)
+                    for value in (
+                        owner,
+                        universe,
+                        provider,
+                        credential_digest,
+                        assignment_digest,
+                        expires_at,
+                    )
+                ):
+                    continue
+                if not all(
+                    isinstance(value, list)
+                    and all(isinstance(item_value, str) for item_value in value)
+                    for value in (operations, roles)
+                ):
+                    continue
+                if any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    for value in (
+                        assignment_generation,
+                        max_invocations,
+                        max_tokens,
+                        max_cost,
+                    )
+                ):
+                    continue
+                owner = owner.strip()
+                universe = universe.strip()
+                provider = provider.strip()
                 if not owner or owner == "*" or not universe or provider not in _PROVIDERS:
                     continue
                 seed = ProviderWorkBindingSeed(
                     owner_user_id=owner,
                     universe_id=universe,
                     provider=provider,
-                    credential_reference_digest=str(item["credential_reference_digest"]),
-                    allowed_operations=tuple(item["allowed_operations"]),
-                    allowed_roles=tuple(item["allowed_roles"]),
-                    assignment_generation=int(item["assignment_generation"]),
-                    assignment_digest=str(item["assignment_digest"]),
-                    max_invocations=int(item["max_invocations"]),
-                    max_tokens=int(item["max_tokens"]),
-                    max_cost_microunits=int(item["max_cost_microunits"]),
-                    expires_at=str(item["expires_at"]),
+                    credential_reference_digest=credential_digest,
+                    allowed_operations=tuple(operations),
+                    allowed_roles=tuple(roles),
+                    assignment_generation=assignment_generation,
+                    assignment_digest=assignment_digest,
+                    max_invocations=max_invocations,
+                    max_tokens=max_tokens,
+                    max_cost_microunits=max_cost,
+                    expires_at=expires_at,
                 )
             except (TypeError, ValueError, KeyError):
                 continue
