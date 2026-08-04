@@ -2352,3 +2352,14 @@ Notes:
 - Review gate: strict OpenSpec, TDD/mutation evidence, mirror parity, exact-head independent security review, required CI.
 - Publish/cleanup: one prerequisite PR; no deploy, app activation, or production-secret mutation; remove after verified merge.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Close custom-agent runtime principal activation gate
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `feature/agent-runtime-activation-authority-20260803`.
+- Lane state: Active; exact STATUS claim for `activate-custom-agent-runtime-core` task 3.1 activation authority.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-authority-20260803`.
+- Purpose: authenticate the owner and transactionally revalidate the selected manifest plus every requested grant before the canonical agent activation CAS.
+- Review gate: RED/GREEN authority tests, strict OpenSpec, mirror parity, independent exact-head security review, required CI.
+- Publish/cleanup: one dark-core PR; no public route, app, workflow, effect, deployment, or production activation; remove after verified merge.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-authority-20260803/_PURPOSE.md`.
