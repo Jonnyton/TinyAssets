@@ -2440,3 +2440,14 @@ Notes:
 - Review gate: STATUS budget/janitor check, diff check, merge/check receipt.
 - Publish/cleanup: coordination-only PR; no product code, route, deployment, secret, or production mutation.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-app-ingress-foldback-20260803/_PURPOSE.md`.
+
+## 2026-08-04 - Map external app principals to founder agent bindings
+
+- Provider: `codex-gpt5-desktop-app-map`.
+- Branch: `feature/custom-agent-app-principal-map-20260804`.
+- Lane state: Active; exact STATUS claim on current `origin/main`.
+- Worktree: `C:/Users/Jonathan/Projects/wf-custom-agent-app-principal-map-20260804`.
+- Purpose: consume fresh authenticated Slack evidence and map one exact installation/workspace/sender tuple to the current founder account, private universe, agent binding, revision, and membership generation; no message-selected authority, custody, runtime, reply, route, or new MCP handle.
+- Review gate: strict OpenSpec, TDD security/concurrency tests, diff check, mirror boundary review, and independent exact-head approval.
+- Publish/cleanup: one dark prerequisite PR; no external app activation, secret mutation, deployment, or production side effect; retire after verified foldback.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-custom-agent-app-principal-map-20260804/_PURPOSE.md`.
