@@ -48,6 +48,12 @@ Usage::
     python scripts/pr_sync_behind.py --update        # actually update them
     python scripts/pr_sync_behind.py --update --mine # only PRs you authored
 
+After ``--update`` touches a PR you have checked out locally, your local
+branch is **behind its own remote** — the update-branch merge lands on the
+remote only. Your next ``git push`` will be rejected until you
+``git fetch && git merge origin/<branch>``. Hit on the first real use of this
+script, on its own PR.
+
 ``--mine`` filters by ``--author @me``, which does NOT isolate your lane in
 this repo: every provider session authenticates as the same GitHub account,
 so ``@me`` matches the whole fleet's PRs. Read the report before running
