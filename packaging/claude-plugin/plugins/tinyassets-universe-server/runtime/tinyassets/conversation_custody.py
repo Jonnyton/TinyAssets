@@ -88,6 +88,19 @@ def _parsed_timestamp(value: object, name: str) -> datetime:
     return parsed
 
 
+def _utc_now() -> datetime:
+    """Return the trusted process clock; tests replace this internal source."""
+
+    return datetime.now(timezone.utc)
+
+
+def _canonical_now() -> str:
+    observed = _utc_now()
+    if observed.tzinfo is None or observed.utcoffset() != timezone.utc.utcoffset(observed):
+        raise RuntimeError("conversation custody clock must be UTC-aware")
+    return observed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def _normalized_scalar(value: str, name: str, *, maximum_bytes: int) -> str:
     if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
         raise ConversationCustodyValidationError(f"{name} contains a surrogate code point")
@@ -704,32 +717,12 @@ def _discard_grant(identifier: str) -> None:
         _GRANTS.pop(identifier, None)
 
 
-def _issue_operation_grant(
-    evidence: ConversationCustodyGrantEvidence,
-    *,
-    live_check: Callable[[ConversationCustodyGrantEvidence], bool],
-) -> ConversationCustodyOperationGrant:
-    """Test/integration seam; no production caller is wired by this change."""
-
-    if type(evidence) is not ConversationCustodyGrantEvidence or not callable(live_check):
-        raise ConversationCustodyValidationError("grant evidence and live_check are required")
-    identifier = secrets.token_hex(32)
-    grant = object.__new__(ConversationCustodyOperationGrant)
-    object.__setattr__(grant, "_grant_id", identifier)
-    object.__setattr__(grant, "_seal", _seal(identifier))
-    with _GRANT_LOCK:
-        _GRANTS[identifier] = (weakref.ref(grant), _GrantPayload(evidence, live_check))
-    weakref.finalize(grant, _discard_grant, identifier)
-    return grant
-
-
 def consume_operation_grant(
     grant: ConversationCustodyOperationGrant,
     *,
     expected_action: str,
     expected_request_digest: str,
     expected_idempotency_key_digest: str | None,
-    now: str,
 ) -> ConversationCustodyGrantEvidence:
     """Consume one exact grant after request, freshness, live, and path checks."""
 
@@ -761,7 +754,7 @@ def consume_operation_grant(
         raise ConversationCustodyAuthorizationError(
             "grant_mismatch", "conversation custody grant does not match the request"
         )
-    observed_at = _parsed_timestamp(now, "now")
+    observed_at = _parsed_timestamp(_canonical_now(), "system_now")
     if observed_at < _parsed_timestamp(evidence.issued_at, "issued_at"):
         raise ConversationCustodyAuthorizationError(
             "grant_not_yet_valid", "custody grant is not valid before its issue time"

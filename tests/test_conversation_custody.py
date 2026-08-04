@@ -4,14 +4,41 @@ import ast
 import asyncio
 import base64
 import importlib
+import inspect
 import multiprocessing
 import os
+import secrets
 import sqlite3
 import threading
+import weakref
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+_TEST_NOW = "2026-08-03T12:01:00.000000Z"
+
+
+def _test_clock() -> datetime:
+    return datetime.strptime(_TEST_NOW, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+
+
+def _set_test_now(value: str) -> None:
+    global _TEST_NOW
+    _TEST_NOW = value
+
+
+def _install_test_clock(custody, value: str = "2026-08-03T12:01:00.000000Z") -> None:
+    _set_test_now(value)
+    custody._utc_now = _test_clock  # noqa: SLF001 - test-only trusted clock seam
+
+
+@pytest.fixture(autouse=True)
+def _fixed_custody_clock(monkeypatch: pytest.MonkeyPatch):
+    custody = _custody()
+    _set_test_now("2026-08-03T12:01:00.000000Z")
+    monkeypatch.setattr(custody, "_utc_now", _test_clock)
 
 
 def _custody():
@@ -38,6 +65,7 @@ def _key(value: int) -> str:
 def _process_create_thread(args: tuple[str, str, str]) -> str:
     root_raw, universe_raw, key = args
     custody = _custody()
+    _install_test_clock(custody)
     storage = _storage()
     root = Path(root_raw)
     universe = Path(universe_raw)
@@ -53,13 +81,13 @@ def _process_create_thread(args: tuple[str, str, str]) -> str:
         idempotency_key=key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     ).conversation_id
 
 
 def _process_append_reply(args: tuple[str, str, str, str, str, int]) -> tuple[int, str]:
     root_raw, universe_raw, conversation_id, reply_to_message_id, key, index = args
     custody = _custody()
+    _install_test_clock(custody)
     storage = _storage()
     root = Path(root_raw)
     universe = Path(universe_raw)
@@ -82,7 +110,6 @@ def _process_append_reply(args: tuple[str, str, str, str, str, int]) -> tuple[in
         source_event_ref="slack:event_1",
         payload=payload,
         reply_to_message_id=reply_to_message_id,
-        now="2026-08-03T12:01:02.000000Z",
     )
     return message.ordinal, message.reply_to_message_id
 
@@ -115,10 +142,18 @@ def _evidence(
 
 
 def _grant(custody, evidence, *, current: bool = True):
-    return custody._issue_operation_grant(  # noqa: SLF001 - explicit dark test issuer
+    identifier = secrets.token_hex(32)
+    grant = object.__new__(custody.ConversationCustodyOperationGrant)
+    object.__setattr__(grant, "_grant_id", identifier)
+    object.__setattr__(grant, "_seal", custody._seal(identifier))  # noqa: SLF001
+    payload = custody._GrantPayload(  # noqa: SLF001 - explicit test-only registry injection
         evidence,
-        live_check=lambda observed: current and observed == evidence,
+        lambda observed: current and observed == evidence,
     )
+    with custody._GRANT_LOCK:  # noqa: SLF001
+        custody._GRANTS[identifier] = (weakref.ref(grant), payload)  # noqa: SLF001
+    weakref.finalize(grant, custody._discard_grant, identifier)  # noqa: SLF001
+    return grant
 
 
 def test_operation_grant_is_exact_and_single_use(tmp_path: Path) -> None:
@@ -134,7 +169,6 @@ def test_operation_grant_is_exact_and_single_use(tmp_path: Path) -> None:
         expected_action="read_thread",
         expected_request_digest="sha256:" + "a" * 64,
         expected_idempotency_key_digest=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
 
     assert consumed == evidence
@@ -144,7 +178,6 @@ def test_operation_grant_is_exact_and_single_use(tmp_path: Path) -> None:
             expected_action="read_thread",
             expected_request_digest="sha256:" + "a" * 64,
             expected_idempotency_key_digest=None,
-            now="2026-08-03T12:01:01.000000Z",
         )
     assert replay.value.code == "grant_consumed"
 
@@ -163,7 +196,6 @@ def test_mismatched_grant_is_consumed_without_opening_storage(tmp_path: Path) ->
             expected_action="export_thread",
             expected_request_digest=evidence.request_digest,
             expected_idempotency_key_digest=None,
-            now="2026-08-03T12:01:00.000000Z",
         )
     assert mismatch.value.code == "grant_mismatch"
     assert not (universe / ".tinyassets.db").exists()
@@ -174,7 +206,6 @@ def test_mismatched_grant_is_consumed_without_opening_storage(tmp_path: Path) ->
             expected_action="read_thread",
             expected_request_digest=evidence.request_digest,
             expected_idempotency_key_digest=None,
-            now="2026-08-03T12:01:01.000000Z",
         )
     assert replay.value.code == "grant_consumed"
 
@@ -197,6 +228,7 @@ def test_expired_or_revoked_grant_fails_closed(
     universe = root / "universe_1"
     universe.mkdir(parents=True)
     evidence = _evidence(custody, root, universe)
+    _set_test_now(now)
 
     with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
         custody.consume_operation_grant(
@@ -204,7 +236,6 @@ def test_expired_or_revoked_grant_fails_closed(
             expected_action=evidence.action,
             expected_request_digest=evidence.request_digest,
             expected_idempotency_key_digest=None,
-            now=now,
         )
     assert blocked.value.code == expected_code
 
@@ -215,6 +246,7 @@ def test_grant_cannot_be_consumed_before_its_issue_time(tmp_path: Path) -> None:
     universe = root / "universes" / "u1"
     universe.mkdir(parents=True)
     evidence = _evidence(custody, root, universe)
+    _set_test_now("2026-08-03T11:59:59.999999Z")
 
     with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
         custody.consume_operation_grant(
@@ -222,7 +254,6 @@ def test_grant_cannot_be_consumed_before_its_issue_time(tmp_path: Path) -> None:
             expected_action=evidence.action,
             expected_request_digest=evidence.request_digest,
             expected_idempotency_key_digest=None,
-            now="2026-08-03T11:59:59.999999Z",
         )
     assert blocked.value.code == "grant_not_yet_valid"
     assert not (universe / ".tinyassets.db").exists()
@@ -258,7 +289,6 @@ def test_registered_universe_allows_missing_sqlite_files(tmp_path: Path) -> None
         expected_action=evidence.action,
         expected_request_digest=evidence.request_digest,
         expected_idempotency_key_digest=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
 
     assert consumed.registered_universe_path == str(universe.resolve())
@@ -278,7 +308,6 @@ def test_platform_root_or_missing_universe_is_refused(tmp_path: Path) -> None:
                 expected_action=evidence.action,
                 expected_request_digest=evidence.request_digest,
                 expected_idempotency_key_digest=None,
-                now="2026-08-03T12:01:00.000000Z",
             )
         assert blocked.value.code == "storage_location_invalid"
 
@@ -302,7 +331,6 @@ def test_hard_linked_database_is_refused(tmp_path: Path) -> None:
             expected_action=evidence.action,
             expected_request_digest=evidence.request_digest,
             expected_idempotency_key_digest=None,
-            now="2026-08-03T12:01:00.000000Z",
         )
     assert blocked.value.code == "storage_location_invalid"
 
@@ -898,7 +926,6 @@ def test_private_store_creates_replays_and_reads_exact_thread(tmp_path: Path) ->
         idempotency_key=key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     replayed = storage.create_thread(
         _create_grant(custody, root, universe, interlocutor_ref="slack:user_1", key=key),
@@ -906,13 +933,11 @@ def test_private_store_creates_replays_and_reads_exact_thread(tmp_path: Path) ->
         idempotency_key=key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     snapshot = storage.read_thread(
         _read_grant(custody, root, universe, conversation_id=created.conversation_id),
         scope=_scope(custody),
         conversation_id=created.conversation_id,
-        now="2026-08-03T12:01:01.000000Z",
     )
 
     assert created == replayed == snapshot.thread
@@ -936,7 +961,6 @@ def test_private_store_create_idempotency_conflict_preserves_original(tmp_path: 
         idempotency_key=key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
 
     with pytest.raises(storage.ConversationCustodyConflict):
@@ -952,13 +976,11 @@ def test_private_store_create_idempotency_conflict_preserves_original(tmp_path: 
             idempotency_key=key,
             interlocutor_ref="slack:user_2",
             retention_until=None,
-            now="2026-08-03T12:01:01.000000Z",
         )
     snapshot = storage.read_thread(
         _read_grant(custody, root, universe, conversation_id=original.conversation_id),
         scope=_scope(custody),
         conversation_id=original.conversation_id,
-        now="2026-08-03T12:01:02.000000Z",
     )
     assert snapshot.thread == original
 
@@ -984,7 +1006,6 @@ def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Pat
         idempotency_key=create_key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     payload = {"text": "hello"}
     first = storage.append_message(
@@ -1004,7 +1025,6 @@ def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Pat
         source_event_ref="slack:event_1",
         payload=payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:01.000000Z",
     )
     replay = storage.append_message(
         _append_grant(
@@ -1023,7 +1043,6 @@ def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Pat
         source_event_ref="slack:event_1",
         payload=payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:02.000000Z",
     )
     assert replay == first
 
@@ -1046,7 +1065,6 @@ def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Pat
             source_event_ref="slack:event_1",
             payload=changed,
             reply_to_message_id=None,
-            now="2026-08-03T12:01:03.000000Z",
         )
 
     second_payload = {"text": "reply"}
@@ -1068,7 +1086,6 @@ def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Pat
         source_event_ref="slack:event_1",
         payload=second_payload,
         reply_to_message_id=first.message_id,
-        now="2026-08-03T12:01:04.000000Z",
     )
     assert second.ordinal == 2
     assert second.reply_to_message_id == first.message_id
@@ -1095,7 +1112,6 @@ def test_private_store_missing_reply_fails_without_consuming_ordinal(tmp_path: P
         idempotency_key=create_key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     payload = {"text": "hello"}
     with pytest.raises(storage.ConversationCustodyReplyError):
@@ -1117,7 +1133,6 @@ def test_private_store_missing_reply_fails_without_consuming_ordinal(tmp_path: P
             source_event_ref="slack:event_1",
             payload=payload,
             reply_to_message_id="message_missing",
-            now="2026-08-03T12:01:01.000000Z",
         )
     appended = storage.append_message(
         _append_grant(
@@ -1136,7 +1151,6 @@ def test_private_store_missing_reply_fails_without_consuming_ordinal(tmp_path: P
         source_event_ref="slack:event_1",
         payload=payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:02.000000Z",
     )
     assert appended.ordinal == 1
 
@@ -1160,10 +1174,9 @@ def test_private_store_rejects_malformed_input_before_grant_consumption(tmp_path
         storage.create_thread(
             grant,
             scope=_scope(custody),
-            idempotency_key=key,
+            idempotency_key="invalid",
             interlocutor_ref="slack:user_1",
             retention_until=None,
-            now="not-a-time",
         )
     created = storage.create_thread(
         grant,
@@ -1171,7 +1184,6 @@ def test_private_store_rejects_malformed_input_before_grant_consumption(tmp_path
         idempotency_key=key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     assert created.conversation_id.startswith("conversation_")
 
@@ -1203,7 +1215,6 @@ def test_private_store_same_key_is_independent_across_universes(tmp_path: Path) 
                 idempotency_key=key,
                 interlocutor_ref="slack:user_1",
                 retention_until=None,
-                now="2026-08-03T12:01:00.000000Z",
             )
         )
 
@@ -1237,7 +1248,6 @@ def test_private_store_concurrent_identical_create_has_one_result(tmp_path: Path
             idempotency_key=key,
             interlocutor_ref="slack:user_1",
             retention_until=None,
-            now="2026-08-03T12:01:00.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -1270,7 +1280,6 @@ def test_private_store_concurrent_distinct_appends_are_contiguous(tmp_path: Path
         idempotency_key=create_key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     calls = []
     for index in range(9, 17):
@@ -1303,7 +1312,6 @@ def test_private_store_concurrent_distinct_appends_are_contiguous(tmp_path: Path
             source_event_ref="slack:event_1",
             payload=payload,
             reply_to_message_id=None,
-            now="2026-08-03T12:01:01.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -1314,7 +1322,6 @@ def test_private_store_concurrent_distinct_appends_are_contiguous(tmp_path: Path
         _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
         scope=_scope(custody),
         conversation_id=thread.conversation_id,
-        now="2026-08-03T12:01:02.000000Z",
     )
     assert tuple(message.ordinal for message in snapshot.messages) == tuple(range(1, 9))
 
@@ -1339,7 +1346,6 @@ def test_private_store_concurrent_identical_append_has_one_result(tmp_path: Path
         idempotency_key=create_key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     payload = {"same": True}
     grants = [
@@ -1365,7 +1371,6 @@ def test_private_store_concurrent_identical_append_has_one_result(tmp_path: Path
             source_event_ref="slack:event_1",
             payload=payload,
             reply_to_message_id=None,
-            now="2026-08-03T12:01:01.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -1396,7 +1401,6 @@ def test_private_store_cross_thread_reply_fails_without_ordinal(tmp_path: Path) 
                 idempotency_key=key,
                 interlocutor_ref=f"slack:user_{index}",
                 retention_until=None,
-                now="2026-08-03T12:01:00.000000Z",
             )
         )
     first_payload = {"thread": 1}
@@ -1417,7 +1421,6 @@ def test_private_store_cross_thread_reply_fails_without_ordinal(tmp_path: Path) 
         source_event_ref="slack:event_1",
         payload=first_payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:01.000000Z",
     )
     reply_payload = {"thread": 2}
     with pytest.raises(storage.ConversationCustodyReplyError):
@@ -1439,7 +1442,6 @@ def test_private_store_cross_thread_reply_fails_without_ordinal(tmp_path: Path) 
             source_event_ref="slack:event_1",
             payload=reply_payload,
             reply_to_message_id=first.message_id,
-            now="2026-08-03T12:01:02.000000Z",
         )
     appended = storage.append_message(
         _append_grant(
@@ -1458,7 +1460,6 @@ def test_private_store_cross_thread_reply_fails_without_ordinal(tmp_path: Path) 
         source_event_ref="slack:event_1",
         payload=reply_payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:03.000000Z",
     )
     assert appended.ordinal == 1
 
@@ -1496,7 +1497,6 @@ def test_private_store_cross_process_create_append_and_reply_races(tmp_path: Pat
         source_event_ref="slack:event_1",
         payload=first_payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:01.000000Z",
     )
     append_args = tuple(
         (
@@ -1536,7 +1536,6 @@ def test_private_store_detects_indexed_and_payload_tampering(tmp_path: Path) -> 
         idempotency_key=create_key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     payload = {"private_sentinel": "do-not-leak"}
     storage.append_message(
@@ -1556,7 +1555,6 @@ def test_private_store_detects_indexed_and_payload_tampering(tmp_path: Path) -> 
         source_event_ref="slack:event_1",
         payload=payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:01.000000Z",
     )
     with sqlite3.connect(universe / ".tinyassets.db") as conn:
         conn.execute(
@@ -1569,7 +1567,6 @@ def test_private_store_detects_indexed_and_payload_tampering(tmp_path: Path) -> 
             _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
             scope=_scope(custody),
             conversation_id=thread.conversation_id,
-            now="2026-08-03T12:01:02.000000Z",
         )
 
 
@@ -1592,7 +1589,6 @@ def test_private_store_is_not_exported_and_uses_required_sqlite_mode(tmp_path: P
         idempotency_key=key,
         interlocutor_ref="slack:user_1",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
 
     assert not hasattr(storage_package, "create_thread")
@@ -1630,7 +1626,6 @@ def _stored_conversation(
         idempotency_key=create_key,
         interlocutor_ref="slack:user_private_sentinel",
         retention_until=retention_until,
-        now="2026-08-03T12:01:00.000000Z",
     )
     selected_payload = payload or {"private_sentinel": "custody-secret-9f4c1a"}
     message = storage.append_message(
@@ -1650,7 +1645,6 @@ def _stored_conversation(
         source_event_ref="slack:event_1",
         payload=selected_payload,
         reply_to_message_id=None,
-        now="2026-08-03T12:01:01.000000Z",
     )
     return custody, storage, root, universe, create_key, append_key, thread, message
 
@@ -1662,13 +1656,11 @@ def test_private_store_export_is_authorized_and_byte_stable(tmp_path: Path) -> N
         _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
         scope=_scope(custody),
         conversation_id=thread.conversation_id,
-        now="2026-08-03T12:01:02.000000Z",
     )
     second = storage.export_thread(
         _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
         scope=_scope(custody),
         conversation_id=thread.conversation_id,
-        now="2026-08-03T12:01:03.000000Z",
     )
 
     assert first == second
@@ -1701,7 +1693,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
         idempotency_key=delete_key,
         conversation_id=thread.conversation_id,
         reason="owner_request",
-        now="2026-08-03T12:02:00.000000Z",
     )
 
     assert receipt.conversation_id == thread.conversation_id
@@ -1714,15 +1705,16 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
         assert conn.execute("SELECT COUNT(*) FROM conversation_custody_messages").fetchone()[0] == 0
         tombstones = conn.execute(
             """
-            SELECT operation_kind, request_digest, conversation_id, result_ref
+            SELECT operation_kind, request_digest, conversation_id, result_ref,
+                   deleted_target_digest
             FROM conversation_custody_idempotency
             WHERE operation_kind IN ('create_thread', 'append_message')
             ORDER BY operation_kind
             """
         ).fetchall()
         assert tombstones == [
-            ("append_message", None, None, None),
-            ("create_thread", None, None, None),
+            ("append_message", None, None, None, None),
+            ("create_thread", None, None, None, None),
         ]
 
     for path in (
@@ -1747,7 +1739,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
             idempotency_key=create_key,
             interlocutor_ref="slack:user_private_sentinel",
             retention_until=None,
-            now="2026-08-03T12:03:00.000000Z",
         )
     with pytest.raises(storage.ConversationCustodyDeleted):
         storage.create_thread(
@@ -1762,7 +1753,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
             idempotency_key=create_key,
             interlocutor_ref="slack:changed",
             retention_until=None,
-            now="2026-08-03T12:03:00.000001Z",
         )
     with pytest.raises(storage.ConversationCustodyDeleted):
         storage.append_message(
@@ -1782,7 +1772,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
             source_event_ref="slack:event_1",
             payload={"private_sentinel": "custody-secret-9f4c1a"},
             reply_to_message_id=None,
-            now="2026-08-03T12:03:01.000000Z",
         )
     with pytest.raises(storage.ConversationCustodyDeleted):
         storage.append_message(
@@ -1802,7 +1791,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
             source_event_ref="slack:event_1",
             payload={"fresh": True},
             reply_to_message_id=None,
-            now="2026-08-03T12:03:02.000000Z",
         )
     for operation, grant in (
         (
@@ -1819,7 +1807,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
                 grant,
                 scope=_scope(custody),
                 conversation_id=thread.conversation_id,
-                now="2026-08-03T12:03:03.000000Z",
             )
     fresh_key = _key(63)
     fresh = storage.create_thread(
@@ -1834,7 +1821,6 @@ def test_private_store_owner_deletion_tombstones_content_and_keys(tmp_path: Path
         idempotency_key=fresh_key,
         interlocutor_ref="slack:fresh",
         retention_until=None,
-        now="2026-08-03T12:03:04.000000Z",
     )
     assert fresh.conversation_id != thread.conversation_id
 
@@ -1845,6 +1831,7 @@ def test_private_store_retention_deletion_refuses_early_then_succeeds(tmp_path: 
         retention_until="2026-08-03T12:04:00.000000Z",
     )
     early_key = _key(43)
+    _set_test_now("2026-08-03T12:03:59.999999Z")
     with pytest.raises(storage.ConversationCustodyRetentionError):
         storage.delete_thread(
             _delete_grant(
@@ -1859,17 +1846,16 @@ def test_private_store_retention_deletion_refuses_early_then_succeeds(tmp_path: 
             idempotency_key=early_key,
             conversation_id=thread.conversation_id,
             reason="retention_expired",
-            now="2026-08-03T12:03:59.999999Z",
         )
     snapshot = storage.read_thread(
         _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
         scope=_scope(custody),
         conversation_id=thread.conversation_id,
-        now="2026-08-03T12:03:59.999999Z",
     )
     assert len(snapshot.messages) == 1
 
     delete_key = _key(44)
+    _set_test_now("2026-08-03T12:04:00.000000Z")
     receipt = storage.delete_thread(
         _delete_grant(
             custody,
@@ -1883,7 +1869,6 @@ def test_private_store_retention_deletion_refuses_early_then_succeeds(tmp_path: 
         idempotency_key=delete_key,
         conversation_id=thread.conversation_id,
         reason="retention_expired",
-        now="2026-08-03T12:04:00.000000Z",
     )
     assert receipt.reason == "retention_expired"
 
@@ -1895,6 +1880,7 @@ def test_private_store_delete_retries_and_competing_keys_are_deterministic(
     first_key = _key(46)
 
     def delete(key: str, reason: str, now: str):
+        _set_test_now(now)
         return storage.delete_thread(
             _delete_grant(
                 custody,
@@ -1908,7 +1894,6 @@ def test_private_store_delete_retries_and_competing_keys_are_deterministic(
             idempotency_key=key,
             conversation_id=thread.conversation_id,
             reason=reason,
-            now=now,
         )
 
     first = delete(first_key, "owner_request", "2026-08-03T12:02:00.000000Z")
@@ -1932,6 +1917,7 @@ def test_private_store_cleanup_interruption_resumes_without_content(
         raise storage.ConversationCustodyCleanupPending("injected busy checkpoint")
 
     monkeypatch.setattr(storage, "_checkpoint_truncate", interrupted)
+    _set_test_now("2026-08-03T12:02:00.000000Z")
     with pytest.raises(storage.ConversationCustodyCleanupPending):
         storage.delete_thread(
             _delete_grant(
@@ -1946,7 +1932,6 @@ def test_private_store_cleanup_interruption_resumes_without_content(
             idempotency_key=delete_key,
             conversation_id=thread.conversation_id,
             reason="owner_request",
-            now="2026-08-03T12:02:00.000000Z",
         )
     with sqlite3.connect(universe / ".tinyassets.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 0
@@ -1962,10 +1947,10 @@ def test_private_store_cleanup_interruption_resumes_without_content(
             _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
             scope=_scope(custody),
             conversation_id=thread.conversation_id,
-            now="2026-08-03T12:02:01.000000Z",
         )
 
     monkeypatch.setattr(storage, "_checkpoint_truncate", original_checkpoint)
+    _set_test_now("2026-08-03T12:02:02.000000Z")
     receipt = storage.delete_thread(
         _delete_grant(
             custody,
@@ -1979,7 +1964,6 @@ def test_private_store_cleanup_interruption_resumes_without_content(
         idempotency_key=delete_key,
         conversation_id=thread.conversation_id,
         reason="owner_request",
-        now="2026-08-03T12:02:02.000000Z",
     )
     assert receipt.logical_deleted_at == "2026-08-03T12:02:00.000000Z"
     assert receipt.cleanup_completed_at == "2026-08-03T12:02:02.000000Z"
@@ -2007,7 +1991,6 @@ def test_private_store_deletes_corrupt_content_but_refuses_corrupt_scope(
         idempotency_key=_key(50),
         conversation_id=thread.conversation_id,
         reason="owner_request",
-        now="2026-08-03T12:02:00.000000Z",
     )
     assert receipt.deleted_message_count == 1
 
@@ -2029,7 +2012,40 @@ def test_private_store_deletes_corrupt_content_but_refuses_corrupt_scope(
             idempotency_key=_key(51),
             conversation_id=thread.conversation_id,
             reason="owner_request",
-            now="2026-08-03T12:02:00.000000Z",
+        )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 1
+
+
+def test_retention_deletion_rejects_corrupted_duplicate_boundary(tmp_path: Path) -> None:
+    custody, storage, root, universe, *_rest, thread, _message = _stored_conversation(
+        tmp_path,
+        retention_until="2030-01-01T00:00:00.000000Z",
+    )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute(
+            """
+            UPDATE conversation_custody_threads
+            SET retention_until = '2020-01-01T00:00:00.000000Z'
+            WHERE conversation_id = ?
+            """,
+            (thread.conversation_id,),
+        )
+
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.delete_thread(
+            _delete_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                reason="retention_expired",
+                key=_key(64),
+            ),
+            scope=_scope(custody),
+            idempotency_key=_key(64),
+            conversation_id=thread.conversation_id,
+            reason="retention_expired",
         )
     with sqlite3.connect(universe / ".tinyassets.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM conversation_custody_threads").fetchone()[0] == 1
@@ -2071,7 +2087,6 @@ def test_private_store_append_and_delete_follow_transaction_order(tmp_path: Path
                 source_event_ref="slack:event_1",
                 payload=payload,
                 reply_to_message_id=None,
-                now="2026-08-03T12:02:00.000000Z",
             )
         except storage.ConversationCustodyDeleted as exc:
             return exc
@@ -2084,7 +2099,6 @@ def test_private_store_append_and_delete_follow_transaction_order(tmp_path: Path
             idempotency_key=delete_key,
             conversation_id=thread.conversation_id,
             reason="owner_request",
-            now="2026-08-03T12:02:00.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -2130,7 +2144,6 @@ def test_private_store_read_or_export_and_delete_follow_transaction_order(
                 operation_grant,
                 scope=_scope(custody),
                 conversation_id=thread.conversation_id,
-                now="2026-08-03T12:02:00.000000Z",
             )
         except storage.ConversationCustodyDeleted as exc:
             return exc
@@ -2143,7 +2156,6 @@ def test_private_store_read_or_export_and_delete_follow_transaction_order(
             idempotency_key=delete_key,
             conversation_id=thread.conversation_id,
             reason="owner_request",
-            now="2026-08-03T12:02:00.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -2183,7 +2195,6 @@ def test_private_store_concurrent_delete_keys_return_one_receipt(tmp_path: Path)
             idempotency_key=key,
             conversation_id=thread.conversation_id,
             reason="owner_request",
-            now="2026-08-03T12:02:00.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -2210,7 +2221,6 @@ def test_private_store_production_shaped_concurrent_load(tmp_path: Path) -> None
         idempotency_key=create_key,
         interlocutor_ref="slack:load_user",
         retention_until=None,
-        now="2026-08-03T12:01:00.000000Z",
     )
     inputs = tuple((_key(index), {"load_index": index}) for index in range(100, 164))
 
@@ -2235,7 +2245,6 @@ def test_private_store_production_shaped_concurrent_load(tmp_path: Path) -> None
             source_event_ref="slack:load_event",
             payload=payload,
             reply_to_message_id=None,
-            now="2026-08-03T12:01:01.000000Z",
         )
 
     with ThreadPoolExecutor(max_workers=16) as executor:
@@ -2251,13 +2260,11 @@ def test_private_store_production_shaped_concurrent_load(tmp_path: Path) -> None
         _read_grant(custody, root, universe, conversation_id=thread.conversation_id),
         scope=_scope(custody),
         conversation_id=thread.conversation_id,
-        now="2026-08-03T12:01:02.000000Z",
     )
     exported = storage.export_thread(
         _export_grant(custody, root, universe, conversation_id=thread.conversation_id),
         scope=_scope(custody),
         conversation_id=thread.conversation_id,
-        now="2026-08-03T12:01:03.000000Z",
     )
     assert tuple(message.ordinal for message in snapshot.messages) == tuple(range(1, 65))
     assert exported == custody.export_conversation(snapshot.thread, snapshot.messages)
@@ -2313,6 +2320,18 @@ def test_custody_adds_no_public_handle_or_production_consumer() -> None:
         if path not in owners and "conversation_custody" in path.read_text(encoding="utf-8"):
             consumers.append(path.relative_to(root).as_posix())
     assert consumers == []
+    custody = _custody()
+    assert not hasattr(custody, "_issue_operation_grant")
+    assert "now" not in inspect.signature(custody.consume_operation_grant).parameters
+    storage = _storage()
+    for operation in (
+        storage.create_thread,
+        storage.append_message,
+        storage.read_thread,
+        storage.export_thread,
+        storage.delete_thread,
+    ):
+        assert "now" not in inspect.signature(operation).parameters
 
 
 def test_custody_owners_have_no_network_app_provider_or_public_server_imports() -> None:

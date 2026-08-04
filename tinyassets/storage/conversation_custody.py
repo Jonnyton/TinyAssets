@@ -12,6 +12,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+import tinyassets.conversation_custody as custody_domain
 from tinyassets.conversation_custody import (
     ACTIVE_SQLITE_DELETION_SCOPE,
     CONVERSATION_CUSTODY_SCHEMA,
@@ -426,14 +427,12 @@ def _consume_for_scope(
     request_digest: str,
     key_digest: str | None,
     scope: ConversationCustodyScope,
-    now: str,
 ) -> ConversationCustodyGrantEvidence:
     evidence = consume_operation_grant(
         grant,
         expected_action=action,
         expected_request_digest=request_digest,
         expected_idempotency_key_digest=key_digest,
-        now=now,
     )
     if _scope_tuple(scope) != (
         evidence.owner_user_id,
@@ -593,7 +592,6 @@ def create_thread(
     idempotency_key: str,
     interlocutor_ref: str,
     retention_until: str | None,
-    now: str,
 ) -> ConversationThread:
     """Create or replay one immutable thread under exact one-use authority."""
 
@@ -603,14 +601,12 @@ def create_thread(
         retention_until=retention_until,
     )
     key_digest = idempotency_key_digest(idempotency_key)
-    _parsed_timestamp(now, "now")
     evidence = _consume_for_scope(
         grant,
         action="create_thread",
         request_digest=request_digest,
         key_digest=key_digest,
         scope=scope,
-        now=now,
     )
     conn, _path, identity = _open_database(evidence)
     try:
@@ -645,6 +641,7 @@ def create_thread(
             _finish_transaction(conn, evidence, identity)
             return thread
 
+        created_at = custody_domain._canonical_now()
         thread = ConversationThread(
             conversation_id=_new_ref("conversation"),
             owner_user_id=scope.owner_user_id,
@@ -652,7 +649,7 @@ def create_thread(
             agent_binding_id=scope.agent_binding_id,
             interlocutor_ref=interlocutor_ref,
             retention_until=retention_until,
-            created_at=now,
+            created_at=created_at,
         )
         conn.execute(
             """
@@ -710,7 +707,6 @@ def append_message(
     source_event_ref: str,
     payload: dict[str, object],
     reply_to_message_id: str | None,
-    now: str,
 ) -> ConversationMessage:
     """Append or replay one identified message with a contiguous ordinal."""
 
@@ -724,14 +720,12 @@ def append_message(
         reply_to_message_id=reply_to_message_id,
     )
     key_digest = idempotency_key_digest(idempotency_key)
-    _parsed_timestamp(now, "now")
     evidence = _consume_for_scope(
         grant,
         action="append_message",
         request_digest=request_digest,
         key_digest=key_digest,
         scope=scope,
-        now=now,
     )
     conn, _path, identity = _open_database(evidence)
     try:
@@ -798,6 +792,7 @@ def append_message(
                 )
             _load_message_row(target_row)
 
+        created_at = custody_domain._canonical_now()
         message = ConversationMessage(
             conversation_id=conversation_id,
             message_id=_new_ref("message"),
@@ -807,7 +802,7 @@ def append_message(
             source_event_ref=source_event_ref,
             payload=payload,
             reply_to_message_id=reply_to_message_id,
-            created_at=now,
+            created_at=created_at,
         )
         payload_json = canonical_json_bytes(payload)
         conn.execute(
@@ -861,7 +856,6 @@ def read_thread(
     *,
     scope: ConversationCustodyScope,
     conversation_id: str,
-    now: str,
 ) -> ConversationSnapshot:
     """Read one complete integrity-checked thread under exact authority."""
 
@@ -870,14 +864,12 @@ def read_thread(
         scope,
         conversation_id=conversation_id,
     )
-    _parsed_timestamp(now, "now")
     evidence = _consume_for_scope(
         grant,
         action="read_thread",
         request_digest=request_digest,
         key_digest=None,
         scope=scope,
-        now=now,
     )
     conn, _path, identity = _open_database(evidence)
     try:
@@ -909,7 +901,6 @@ def export_thread(
     *,
     scope: ConversationCustodyScope,
     conversation_id: str,
-    now: str,
 ) -> ConversationExport:
     """Export one complete thread as deterministic private canonical bytes."""
 
@@ -918,14 +909,12 @@ def export_thread(
         scope,
         conversation_id=conversation_id,
     )
-    _parsed_timestamp(now, "now")
     evidence = _consume_for_scope(
         grant,
         action="export_thread",
         request_digest=request_digest,
         key_digest=None,
         scope=scope,
-        now=now,
     )
     conn, _path, identity = _open_database(evidence)
     try:
@@ -983,7 +972,6 @@ def _finalize_deletion(
     identity: StorageFileIdentity,
     *,
     target_digest: str,
-    now: str,
 ) -> ConversationDeletionReceipt:
     _checkpoint_truncate(conn, evidence, identity)
     conn.execute("BEGIN IMMEDIATE")
@@ -993,6 +981,7 @@ def _finalize_deletion(
             raise ConversationCustodyIntegrityError("deletion intent is missing")
         receipt = _load_deletion_receipt(row)
         if receipt is None:
+            cleanup_completed_at = custody_domain._canonical_now()
             receipt = ConversationDeletionReceipt(
                 owner_user_id=row["owner_user_id"],
                 universe_id=row["universe_id"],
@@ -1000,7 +989,7 @@ def _finalize_deletion(
                 conversation_id=row["conversation_id"],
                 reason=row["reason"],
                 logical_deleted_at=row["logical_deleted_at"],
-                cleanup_completed_at=now,
+                cleanup_completed_at=cleanup_completed_at,
                 deleted_message_count=row["deleted_message_count"],
             )
             conn.execute(
@@ -1009,7 +998,11 @@ def _finalize_deletion(
                 SET cleanup_completed_at = ?, receipt_json = ?
                 WHERE deleted_target_digest = ? AND cleanup_completed_at IS NULL
                 """,
-                (now, _canonical_record(_receipt_record(receipt)), target_digest),
+                (
+                    cleanup_completed_at,
+                    _canonical_record(_receipt_record(receipt)),
+                    target_digest,
+                ),
             )
         _finish_transaction(conn, evidence, identity)
     except BaseException:
@@ -1032,7 +1025,6 @@ def delete_thread(
     idempotency_key: str,
     conversation_id: str,
     reason: str,
-    now: str,
 ) -> ConversationDeletionReceipt:
     """Logically delete, clean, and return one content-free immutable receipt."""
 
@@ -1042,7 +1034,6 @@ def delete_thread(
         reason=reason,
     )
     key_digest = idempotency_key_digest(idempotency_key)
-    observed_at = _parsed_timestamp(now, "now")
     target_digest = deleted_target_digest(scope, conversation_id=conversation_id)
     evidence = _consume_for_scope(
         grant,
@@ -1050,11 +1041,12 @@ def delete_thread(
         request_digest=request_digest,
         key_digest=key_digest,
         scope=scope,
-        now=now,
     )
     conn, _path, identity = _open_database(evidence)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        logical_deleted_at = custody_domain._canonical_now()
+        observed_at = _parsed_timestamp(logical_deleted_at, "system_now")
         key_row = conn.execute(
             """
             SELECT request_digest, deleted_target_digest
@@ -1103,7 +1095,9 @@ def delete_thread(
                 raise ConversationCustodyNotFound("conversation is unavailable")
             _validate_deletion_scope_row(thread_row, scope, conversation_id)
             if reason == "retention_expired":
-                retention_until = thread_row["retention_until"]
+                canonical_thread = _load_thread_row(thread_row)
+                _require_thread_scope(canonical_thread, scope)
+                retention_until = canonical_thread.retention_until
                 if retention_until is None:
                     raise ConversationCustodyRetentionError(
                         "conversation has no retention-expiry boundary"
@@ -1142,7 +1136,7 @@ def delete_thread(
                     scope.agent_binding_id,
                     conversation_id,
                     reason,
-                    now,
+                    logical_deleted_at,
                     deleted_message_count,
                     ACTIVE_SQLITE_DELETION_SCOPE,
                     HISTORICAL_BACKUP_CAVEAT,
@@ -1152,11 +1146,11 @@ def delete_thread(
                 """
                 UPDATE conversation_custody_idempotency
                 SET request_digest = NULL, conversation_id = NULL,
-                    result_ref = NULL, deleted_target_digest = ?
+                    result_ref = NULL, deleted_target_digest = NULL
                 WHERE operation_kind IN ('create_thread', 'append_message')
                   AND conversation_id = ?
                 """,
-                (target_digest, conversation_id),
+                (conversation_id,),
             )
             conn.execute(
                 "DELETE FROM conversation_custody_messages WHERE conversation_id = ?",
@@ -1181,7 +1175,6 @@ def delete_thread(
             evidence,
             identity,
             target_digest=target_digest,
-            now=now,
         )
     except BaseException:
         _rollback(conn)
