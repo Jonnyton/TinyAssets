@@ -56,23 +56,45 @@ remain separate future user-selectable modes.
 
 ### 1. A consumed authority grant, not matching IDs, admits each operation
 
-The internal facade accepts a one-use opaque grant minted by the future
-app-conversation authority owner. Consuming the grant returns detached trusted
-evidence binding:
+The internal facade accepts a one-use grant signed by the future
+app-conversation authority owner. The custody runtime is configured with only
+that owner's Ed25519 public verification key and key ID; no private key,
+signing helper, self-issuer, or caller-selected verifier ships in this change.
+The signature covers the exact domain-separated canonical grant record and
+binds:
 
 - operation kind and normalized request digest;
 - owner, universe, agent binding, and selected custody mode;
 - custody-selection generation, authority-registered absolute universe path,
   and trusted platform data-root identity;
 - a digest of a server-issued high-entropy idempotency key for mutations;
-- grant nonce, issue time, and expiry.
+- canonical random grant ID, authority key ID, issue time, and expiry.
 
-The consumer must live-check the selection, binding, and registered path when it
-consumes the grant. The facade compares every normalized request field and
-digest with that evidence before opening storage. A grant is single-use and
-cannot be serialized as a bearer token. Raw storage methods remain private and
-the change ships with no production issuer or construction path; tests use an
-explicit test-only issuer.
+The issuer must resolve the current selection, binding, generation, registered
+path, and data root immediately before signing and must stop issuing when any of
+them is revoked. The consumer verifies the trusted key ID/signature and bounded
+issue/expiry interval, then compares every normalized request field and digest
+with the evidence. A caller may transport the signed envelope, but cannot
+author new evidence from the public verification material. Successful database
+admission records the signed grant ID exactly once in the selected database, so
+copies, processes, and fork children cannot admit it twice. Raw storage methods
+remain private; tests own their signing key outside production modules.
+Expired consumption rows may be removed using the trusted clock because their
+signatures can no longer pass admission; this bounds the content-free ledger
+without reopening a live grant ID.
+
+The exact signing input is the ASCII domain
+`conversation-custody/operation-grant/v1`, one NUL byte, then
+`tinyassets-canonical-json/v1` bytes for a mapping whose exact members are
+`action`, `agent_binding_id`, `authority_key_id`, `custody_mode`, `expires_at`,
+`grant_id`, `idempotency_key_digest`, `issued_at`, `owner_user_id`,
+`platform_data_root`, `registered_universe_path`, `request_digest`,
+`selection_generation`, and `universe_id`. `grant_id` uses the same canonical
+32-random-byte base64url form as mutation keys but prefix `cg_`; the detached
+Ed25519 signature is 64 bytes encoded as exactly 86 canonical unpadded base64url
+characters. The configured public key is exactly 32 bytes encoded as 43
+canonical unpadded base64url characters. Issue-to-expiry duration may not exceed
+five minutes, and consumption uses the trusted internal UTC clock.
 
 This keeps persistence scoped without pretending that caller-authored IDs are
 authentication. A context with matching strings but no valid grant is refused.
@@ -233,6 +255,17 @@ independent operation. The authority/action domain additionally contains
 `read_thread` and `export_thread`, which have request digests but no key or
 ledger row.
 
+Database ownership is a separate singleton row. On every first open, schema
+creation is followed by one `BEGIN IMMEDIATE` admission transaction that either
+verifies the existing universe binding or reconstructs every legacy canonical
+thread and completed deletion receipt before inserting it. A pending legacy
+deletion without a canonical receipt cannot establish ownership and fails
+closed for repair. Duplicate indexed universe columns are never migration
+authority. The binding and consumed-grant row commit before the requested
+operation transaction, so not-found, conflict, integrity, and other operation
+rollbacks cannot make the database or grant claimable by another universe or
+process. Empty first access therefore still permanently binds the database.
+
 Every operation request digest is lowercase `sha256:<64 hex>` over the exact
 `tinyassets-canonical-json/v1` bytes of one domain-separated mapping:
 
@@ -338,6 +371,12 @@ raises an integrity error without partial output. Deletion intentionally does
 not reconstruct payloads, so corrupt message content can still be deleted when
 the authoritative scope columns remain intact; corrupt scope columns fail
 closed for repair rather than risking cross-tenant deletion.
+
+Idempotent append replay reconstructs the persisted result and its reply target
+before returning it. A missing, cross-thread, same/future, or otherwise corrupt
+persisted reply edge raises storage integrity failure. Aggregate snapshot/export
+validation errors caused by persisted rows are translated to storage integrity
+errors rather than escaping as request-validation failures.
 
 ### 7. Deletion guarantees active-store removal, not universal forensic erasure
 

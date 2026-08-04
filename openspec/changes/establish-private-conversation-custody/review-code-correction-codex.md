@@ -1,6 +1,6 @@
 ### Findings
 
-1. **Important — one-use grants replay after `fork`.**  
+1. **Important — one-use grants replay after `fork`.**
    The process-global key/registry at [tinyassets/conversation_custody.py:703](C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/tinyassets/conversation_custody.py:703) and consumption check at [tinyassets/conversation_custody.py:739](C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/tinyassets/conversation_custody.py:739) have no issuer-PID binding or post-fork reset. On Ubuntu/WSL, both parent and forked child successfully consumed the same grant:
 
    ```text
@@ -12,7 +12,7 @@
 
    This violates the one-use requirement and permits duplicate read/export or use of inherited live-check state. The packaged mirror has the identical defect. Existing hardened precedent resets capability registries after fork and validates issuer PID; the custody tests instead force `spawn` at [tests/test_conversation_custody.py:1474](C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/tests/test_conversation_custody.py:1474).
 
-2. **Important — a custody database is not bound to exactly one universe.**  
+2. **Important — a custody database is not bound to exactly one universe.**
    The schema’s idempotency key omits `universe_id` at [tinyassets/storage/conversation_custody.py:79](C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/tinyassets/storage/conversation_custody.py:79), relying on each database being universe-exclusive, but [tinyassets/storage/conversation_custody.py:476](C:/Users/Jonathan/Projects/wf-v1-app-conversations-20260803/tinyassets/storage/conversation_custody.py:476) persists or verifies no database-to-universe binding. Two valid grants naming different universes but the same registered directory produced:
 
    ```text

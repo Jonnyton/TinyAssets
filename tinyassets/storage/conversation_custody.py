@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS conversation_custody_database_binding (
     universe_id TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS conversation_custody_consumed_grants (
+    grant_id TEXT PRIMARY KEY,
+    authority_key_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversation_custody_threads (
     conversation_id TEXT PRIMARY KEY,
     schema_name TEXT NOT NULL,
@@ -492,8 +498,18 @@ def _open_database(
         )
         if after.primary_identity is None:
             raise ConversationCustodyStoreError("SQLite did not create the custody database")
+        conn.execute("BEGIN IMMEDIATE")
+        _require_database_universe_binding(conn, evidence)
+        _consume_database_grant(conn, evidence)
+        validate_private_universe_location(
+            evidence,
+            expected_primary_identity=after.primary_identity,
+        )
+        conn.execute("COMMIT")
         return conn, after.database_path, after.primary_identity
     except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         conn.close()
         raise
 
@@ -526,17 +542,21 @@ def _require_database_universe_binding(
             )
         return
 
-    persisted = conn.execute(
-        """
-        SELECT universe_id FROM conversation_custody_threads
-        UNION
-        SELECT universe_id FROM conversation_custody_deletions
-        LIMIT 2
-        """
-    ).fetchall()
-    if len(persisted) > 1:
+    persisted_universes: set[str] = set()
+    thread_rows = conn.execute("SELECT * FROM conversation_custody_threads").fetchall()
+    for row in thread_rows:
+        persisted_universes.add(_load_thread_row(row).universe_id)
+    deletion_rows = conn.execute("SELECT * FROM conversation_custody_deletions").fetchall()
+    for row in deletion_rows:
+        receipt = _load_deletion_receipt(row)
+        if receipt is None:
+            raise ConversationCustodyIntegrityError(
+                "pending legacy deletion cannot establish database ownership"
+            )
+        persisted_universes.add(receipt.universe_id)
+    if len(persisted_universes) > 1:
         raise ConversationCustodyIntegrityError("custody database contains more than one universe")
-    if persisted and persisted[0]["universe_id"] != evidence.universe_id:
+    if persisted_universes and next(iter(persisted_universes)) != evidence.universe_id:
         raise ConversationCustodyAuthorizationError(
             "storage_universe_mismatch",
             "custody database belongs to another universe",
@@ -548,6 +568,47 @@ def _require_database_universe_binding(
         """,
         (evidence.universe_id,),
     )
+
+
+def _consume_database_grant(
+    conn: sqlite3.Connection,
+    evidence: ConversationCustodyGrantEvidence,
+) -> None:
+    conn.execute(
+        "DELETE FROM conversation_custody_consumed_grants WHERE expires_at <= ?",
+        (custody_domain._canonical_now(),),
+    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO conversation_custody_consumed_grants (
+                grant_id, authority_key_id, expires_at
+            ) VALUES (?, ?, ?)
+            """,
+            (evidence.grant_id, evidence.authority_key_id, evidence.expires_at),
+        )
+    except sqlite3.IntegrityError as exc:
+        existing = conn.execute(
+            "SELECT 1 FROM conversation_custody_consumed_grants WHERE grant_id = ?",
+            (evidence.grant_id,),
+        ).fetchone()
+        if existing is not None:
+            raise ConversationCustodyAuthorizationError(
+                "grant_consumed", "conversation custody grant was already consumed"
+            ) from exc
+        raise ConversationCustodyIntegrityError("custody grant ledger rejected admission") from exc
+
+
+def _validated_snapshot(
+    thread: ConversationThread,
+    messages: tuple[ConversationMessage, ...],
+) -> ConversationSnapshot:
+    try:
+        return ConversationSnapshot(thread=thread, messages=messages)
+    except custody_domain.ConversationCustodyValidationError as exc:
+        raise ConversationCustodyIntegrityError(
+            "persisted conversation sequence is invalid"
+        ) from exc
 
 
 def _rollback(conn: sqlite3.Connection) -> None:
@@ -814,6 +875,23 @@ def append_message(
             )
             if bound_digest != request_digest:
                 raise ConversationCustodyIntegrityError("append request ledger disagrees")
+            if message.reply_to_message_id is not None:
+                target_row = conn.execute(
+                    """
+                    SELECT * FROM conversation_custody_messages
+                    WHERE message_id = ? AND conversation_id = ? AND ordinal < ?
+                    """,
+                    (
+                        message.reply_to_message_id,
+                        message.conversation_id,
+                        message.ordinal,
+                    ),
+                ).fetchone()
+                if target_row is None:
+                    raise ConversationCustodyIntegrityError(
+                        "persisted append reply target is missing or not earlier"
+                    )
+                _load_message_row(target_row)
             _finish_transaction(conn, evidence, identity)
             return message
 
@@ -937,7 +1015,7 @@ def read_thread(
             (conversation_id,),
         ).fetchall()
         messages = tuple(_load_message_row(row) for row in rows)
-        snapshot = ConversationSnapshot(thread=thread, messages=messages)
+        snapshot = _validated_snapshot(thread, messages)
         _finish_transaction(conn, evidence, identity)
         return snapshot
     except BaseException:
@@ -983,7 +1061,8 @@ def export_thread(
             (conversation_id,),
         ).fetchall()
         messages = tuple(_load_message_row(row) for row in rows)
-        exported = export_conversation(thread, messages)
+        snapshot = _validated_snapshot(thread, messages)
+        exported = export_conversation(snapshot.thread, snapshot.messages)
         _finish_transaction(conn, evidence, identity)
         return exported
     except BaseException:

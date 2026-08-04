@@ -12,12 +12,24 @@ import sqlite3
 import threading
 import weakref
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 _TEST_NOW = "2026-08-03T12:01:00.000000Z"
+_TEST_AUTHORITY_KEY_ID = "custody-test-key-1"
+_TEST_AUTHORITY_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes([71]) * 32)
+_TEST_AUTHORITY_PUBLIC_KEY = (
+    base64.urlsafe_b64encode(
+        _TEST_AUTHORITY_PRIVATE_KEY.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    )
+    .decode("ascii")
+    .rstrip("=")
+)
 
 
 def _test_clock() -> datetime:
@@ -36,6 +48,11 @@ def _install_test_clock(custody, value: str = "2026-08-03T12:01:00.000000Z") -> 
 
 @pytest.fixture(autouse=True)
 def _fixed_custody_clock(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TINYASSETS_CUSTODY_AUTHORITY_KEY_ID", _TEST_AUTHORITY_KEY_ID)
+    monkeypatch.setenv(
+        "TINYASSETS_CUSTODY_AUTHORITY_PUBLIC_KEY_B64U",
+        _TEST_AUTHORITY_PUBLIC_KEY,
+    )
     custody = _custody()
     _set_test_now("2026-08-03T12:01:00.000000Z")
     monkeypatch.setattr(custody, "_utc_now", _test_clock)
@@ -127,6 +144,8 @@ def _evidence(
     selected_scope = scope or _scope(custody)
     return custody.ConversationCustodyGrantEvidence(
         action=action,
+        authority_key_id=_TEST_AUTHORITY_KEY_ID,
+        grant_id=f"cg_{base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('ascii').rstrip('=')}",
         request_digest=request_digest,
         idempotency_key_digest=key_digest,
         owner_user_id=selected_scope.owner_user_id,
@@ -142,15 +161,25 @@ def _evidence(
 
 
 def _grant(custody, evidence, *, current: bool = True):
+    if not current:
+        signing_key = Ed25519PrivateKey.from_private_bytes(bytes([72]) * 32)
+    else:
+        signing_key = _TEST_AUTHORITY_PRIVATE_KEY
     identifier = secrets.token_hex(32)
     issuer_pid = os.getpid()
     grant = object.__new__(custody.ConversationCustodyOperationGrant)
     object.__setattr__(grant, "_grant_id", identifier)
     object.__setattr__(grant, "_issuer_pid", issuer_pid)
-    object.__setattr__(grant, "_seal", custody._seal(identifier, issuer_pid))  # noqa: SLF001
+    signature = (
+        base64.urlsafe_b64encode(
+            signing_key.sign(custody._operation_grant_signing_bytes(evidence))  # noqa: SLF001
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
     payload = custody._GrantPayload(  # noqa: SLF001 - explicit test-only registry injection
         evidence,
-        lambda observed: current and observed == evidence,
+        signature,
     )
     with custody._GRANT_LOCK:  # noqa: SLF001
         custody._GRANTS[identifier] = (  # noqa: SLF001
@@ -220,10 +249,10 @@ def test_mismatched_grant_is_consumed_without_opening_storage(tmp_path: Path) ->
     ("now", "current", "expected_code"),
     [
         ("2026-08-03T12:05:00.000001Z", True, "grant_expired"),
-        ("2026-08-03T12:01:00.000000Z", False, "grant_revoked"),
+        ("2026-08-03T12:01:00.000000Z", False, "grant_signature_invalid"),
     ],
 )
-def test_expired_or_revoked_grant_fails_closed(
+def test_expired_or_untrusted_grant_fails_closed(
     tmp_path: Path,
     now: str,
     current: bool,
@@ -244,6 +273,85 @@ def test_expired_or_revoked_grant_fails_closed(
             expected_idempotency_key_digest=None,
         )
     assert blocked.value.code == expected_code
+
+
+def test_private_registry_injection_cannot_authorize_an_untrusted_signature(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.consume_operation_grant(
+            _grant(custody, evidence, current=False),
+            expected_action=evidence.action,
+            expected_request_digest=evidence.request_digest,
+            expected_idempotency_key_digest=None,
+        )
+    assert blocked.value.code == "grant_signature_invalid"
+
+
+def test_operation_grant_refuses_more_than_five_minutes_of_authority(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = replace(
+        _evidence(custody, root, universe),
+        expires_at="2026-08-03T12:05:00.000001Z",
+    )
+
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.consume_operation_grant(
+            _grant(custody, evidence),
+            expected_action=evidence.action,
+            expected_request_digest=evidence.request_digest,
+            expected_idempotency_key_digest=None,
+        )
+    assert blocked.value.code == "grant_lifetime_invalid"
+
+
+def test_operation_grant_wire_rejects_noncanonical_grant_id_and_signature(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    with pytest.raises(custody.ConversationCustodyValidationError):
+        replace(evidence, grant_id=f"cg_{'A' * 42}B")
+
+    valid_grant = _grant(custody, evidence)
+    with custody._GRANT_LOCK:  # noqa: SLF001 - inspect signed test envelope
+        valid_payload = custody._GRANTS.pop(valid_grant._grant_id)[1]  # noqa: SLF001
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last_index = alphabet.index(valid_payload.signature[-1])
+    noncanonical_signature = valid_payload.signature[:-1] + alphabet[last_index + 1]
+    wrapper_id = secrets.token_hex(32)
+    issuer_pid = os.getpid()
+    invalid_grant = object.__new__(custody.ConversationCustodyOperationGrant)
+    object.__setattr__(invalid_grant, "_grant_id", wrapper_id)
+    object.__setattr__(invalid_grant, "_issuer_pid", issuer_pid)
+    with custody._GRANT_LOCK:  # noqa: SLF001 - malformed signed-envelope probe
+        custody._GRANTS[wrapper_id] = (  # noqa: SLF001
+            weakref.ref(invalid_grant),
+            custody._GrantPayload(evidence, noncanonical_signature),  # noqa: SLF001
+            issuer_pid,
+        )
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.consume_operation_grant(
+            invalid_grant,
+            expected_action=evidence.action,
+            expected_request_digest=evidence.request_digest,
+            expected_idempotency_key_digest=None,
+        )
+    assert blocked.value.code == "grant_signature_invalid"
 
 
 def test_grant_cannot_be_consumed_before_its_issue_time(tmp_path: Path) -> None:
@@ -1028,6 +1136,58 @@ def test_private_store_creates_replays_and_reads_exact_thread(tmp_path: Path) ->
     assert not (root / ".tinyassets.db").exists()
 
 
+def test_private_store_durably_refuses_a_copied_signed_grant(tmp_path: Path) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    key = _key(79)
+    original_grant = _create_grant(
+        custody,
+        root,
+        universe,
+        interlocutor_ref="slack:user_1",
+        key=key,
+    )
+    with custody._GRANT_LOCK:  # noqa: SLF001 - adversarial copy of a real envelope
+        copied_payload = custody._GRANTS[original_grant._grant_id][1]  # noqa: SLF001
+    storage.create_thread(
+        original_grant,
+        scope=_scope(custody),
+        idempotency_key=key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+    )
+
+    wrapper_id = secrets.token_hex(32)
+    issuer_pid = os.getpid()
+    copied_grant = object.__new__(custody.ConversationCustodyOperationGrant)
+    object.__setattr__(copied_grant, "_grant_id", wrapper_id)
+    object.__setattr__(copied_grant, "_issuer_pid", issuer_pid)
+    with custody._GRANT_LOCK:  # noqa: SLF001 - adversarial private-registry replay
+        custody._GRANTS[wrapper_id] = (  # noqa: SLF001
+            weakref.ref(copied_grant),
+            copied_payload,
+            issuer_pid,
+        )
+    weakref.finalize(copied_grant, custody._discard_grant, wrapper_id, issuer_pid)  # noqa: SLF001
+
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as replay:
+        storage.create_thread(
+            copied_grant,
+            scope=_scope(custody),
+            idempotency_key=key,
+            interlocutor_ref="slack:user_1",
+            retention_until=None,
+        )
+    assert replay.value.code == "grant_consumed"
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute(
+            "SELECT grant_id FROM conversation_custody_consumed_grants"
+        ).fetchall() == [(copied_payload.evidence.grant_id,)]
+
+
 def test_private_store_create_idempotency_conflict_preserves_original(tmp_path: Path) -> None:
     custody = _custody()
     storage = _storage()
@@ -1169,6 +1329,109 @@ def test_private_store_append_replay_conflict_and_contiguous_reply(tmp_path: Pat
     )
     assert second.ordinal == 2
     assert second.reply_to_message_id == first.message_id
+
+
+def test_private_store_append_replay_refuses_a_dangling_persisted_reply(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    scope = _scope(custody)
+    create_key = _key(80)
+    first_key = _key(81)
+    reply_key = _key(82)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+        ),
+        scope=scope,
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+    )
+    first_payload = {"text": "first"}
+    first = storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=first_key,
+            payload=first_payload,
+        ),
+        scope=scope,
+        idempotency_key=first_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=first_payload,
+        reply_to_message_id=None,
+    )
+    reply_payload = {"text": "reply"}
+    storage.append_message(
+        _append_grant(
+            custody,
+            root,
+            universe,
+            conversation_id=thread.conversation_id,
+            key=reply_key,
+            payload=reply_payload,
+            reply_to_message_id=first.message_id,
+        ),
+        scope=scope,
+        idempotency_key=reply_key,
+        conversation_id=thread.conversation_id,
+        kind="text",
+        participant_ref="slack:user_1",
+        source_event_ref="slack:event_1",
+        payload=reply_payload,
+        reply_to_message_id=first.message_id,
+    )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute(
+            "DELETE FROM conversation_custody_messages WHERE message_id = ?",
+            (first.message_id,),
+        )
+
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.append_message(
+            _append_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+                key=reply_key,
+                payload=reply_payload,
+                reply_to_message_id=first.message_id,
+            ),
+            scope=scope,
+            idempotency_key=reply_key,
+            conversation_id=thread.conversation_id,
+            kind="text",
+            participant_ref="slack:user_1",
+            source_event_ref="slack:event_1",
+            payload=reply_payload,
+            reply_to_message_id=first.message_id,
+        )
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.read_thread(
+            _read_grant(
+                custody,
+                root,
+                universe,
+                conversation_id=thread.conversation_id,
+            ),
+            scope=scope,
+            conversation_id=thread.conversation_id,
+        )
 
 
 def test_private_store_missing_reply_fails_without_consuming_ordinal(tmp_path: Path) -> None:
@@ -1373,6 +1636,145 @@ def test_private_store_refuses_two_universes_at_one_registered_database(
             retention_until=None,
         )
     assert migrated.value.code == "storage_universe_mismatch"
+
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute(
+            "UPDATE conversation_custody_threads SET universe_id = ?",
+            (second_scope.universe_id,),
+        )
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=_key(67),
+                scope=second_scope,
+            ),
+            scope=second_scope,
+            idempotency_key=_key(67),
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+        )
+
+
+def test_private_store_first_failed_read_permanently_binds_empty_database(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "shared"
+    universe.mkdir(parents=True)
+    first_scope = _scope(custody, universe_id="universe_1")
+    second_scope = _scope(custody, universe_id="universe_2")
+
+    with pytest.raises(storage.ConversationCustodyNotFound):
+        storage.read_thread(
+            _read_grant(
+                custody,
+                root,
+                universe,
+                conversation_id="conversation_missing",
+                scope=first_scope,
+            ),
+            scope=first_scope,
+            conversation_id="conversation_missing",
+        )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        assert conn.execute(
+            "SELECT universe_id FROM conversation_custody_database_binding"
+        ).fetchall() == [(first_scope.universe_id,)]
+
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=_key(68),
+                scope=second_scope,
+            ),
+            scope=second_scope,
+            idempotency_key=_key(68),
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+        )
+    assert blocked.value.code == "storage_universe_mismatch"
+
+
+def test_private_store_legacy_deletion_binding_uses_canonical_receipt(
+    tmp_path: Path,
+) -> None:
+    custody = _custody()
+    storage = _storage()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "shared"
+    universe.mkdir(parents=True)
+    first_scope = _scope(custody, universe_id="universe_1")
+    second_scope = _scope(custody, universe_id="universe_2")
+    create_key = _key(69)
+    delete_key = _key(70)
+    thread = storage.create_thread(
+        _create_grant(
+            custody,
+            root,
+            universe,
+            interlocutor_ref="slack:user_1",
+            key=create_key,
+            scope=first_scope,
+        ),
+        scope=first_scope,
+        idempotency_key=create_key,
+        interlocutor_ref="slack:user_1",
+        retention_until=None,
+    )
+    storage.delete_thread(
+        _grant(
+            custody,
+            _evidence(
+                custody,
+                root,
+                universe,
+                action="delete_thread",
+                request_digest=custody.delete_thread_request_digest(
+                    first_scope,
+                    conversation_id=thread.conversation_id,
+                    reason="owner_request",
+                ),
+                key_digest=custody.idempotency_key_digest(delete_key),
+                scope=first_scope,
+            ),
+        ),
+        scope=first_scope,
+        idempotency_key=delete_key,
+        conversation_id=thread.conversation_id,
+        reason="owner_request",
+    )
+    with sqlite3.connect(universe / ".tinyassets.db") as conn:
+        conn.execute("DELETE FROM conversation_custody_database_binding")
+        conn.execute(
+            "UPDATE conversation_custody_deletions SET universe_id = ?",
+            (second_scope.universe_id,),
+        )
+
+    with pytest.raises(storage.ConversationCustodyIntegrityError):
+        storage.create_thread(
+            _create_grant(
+                custody,
+                root,
+                universe,
+                interlocutor_ref="slack:user_2",
+                key=_key(71),
+                scope=second_scope,
+            ),
+            scope=second_scope,
+            idempotency_key=_key(71),
+            interlocutor_ref="slack:user_2",
+            retention_until=None,
+        )
 
 
 def test_private_store_concurrent_identical_create_has_one_result(tmp_path: Path) -> None:
@@ -2474,6 +2876,10 @@ def test_custody_adds_no_public_handle_or_production_consumer() -> None:
     assert consumers == []
     custody = _custody()
     assert not hasattr(custody, "_issue_operation_grant")
+    source = (root / "tinyassets" / "conversation_custody.py").read_text(encoding="utf-8")
+    assert "Ed25519PrivateKey" not in source
+    assert ".sign(" not in source
+    assert "CUSTODY_AUTHORITY_PRIVATE" not in source
     assert "now" not in inspect.signature(custody.consume_operation_grant).parameters
     storage = _storage()
     for operation in (

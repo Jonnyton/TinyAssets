@@ -27,20 +27,28 @@ The system SHALL represent private conversation custody with a versioned open pr
 - **WHEN** a grant names a mode for which no provider is installed
 - **THEN** the system fails explicitly without writing data or falling back to `private_universe`
 
-### Requirement: Opaque authority is necessary for every operation
-The system SHALL require and consume a one-use, unforgeable, action-bound grant from the future authenticated app-conversation authority owner for every create, append, read, export, and delete, and matching identifiers alone SHALL NOT authorize access.
+### Requirement: Signed authority is necessary for every operation
+The system SHALL require and consume a one-use, action-bound Ed25519-signed grant from the future authenticated app-conversation authority owner for every create, append, read, export, and delete; the custody runtime SHALL contain only the trusted public verification key/key ID and SHALL ship no private key, signing helper, self-issuer, or caller-selected verifier; matching identifiers or mutation of module-private Python state alone SHALL NOT authorize access.
 
 #### Scenario: Valid grant and exact request succeed
-- **WHEN** a current grant binds the normalized action digest, owner, universe, agent binding, selected mode/generation, registered path, trusted platform data root, and a server-issued idempotency-key digest for mutations or explicit null for read/export
-- **THEN** the internal facade may perform that one exact operation
+- **WHEN** a trusted-key signature covers the exact domain-separated canonical grant record binding the normalized action digest, owner, universe, agent binding, selected mode/generation, registered path, trusted platform data root, canonical random grant ID, authority key ID, issue/expiry, and a server-issued idempotency-key digest for mutations or explicit null for read/export
+- **THEN** the internal facade may admit that one exact operation and transactionally records the grant ID once in the selected database
 
 #### Scenario: Matching strings without authority fail
-- **WHEN** a caller supplies matching owner, universe, binding, interlocutor, participant, or source-event strings without a valid grant
+- **WHEN** a caller supplies matching strings, constructs an exact grant object through Python introspection, writes the module's private registry, or signs with an untrusted key
 - **THEN** the system returns no private record and writes nothing
 
 #### Scenario: Replayed, expired, revoked, or mismatched grant fails
-- **WHEN** a grant has been consumed, expired, its selection or binding is no longer current, or any normalized request field/digest differs
-- **THEN** the system fails closed before opening storage and reveals no private state
+- **WHEN** a grant ID already has a durable consumption row, the trusted authority key has changed, the grant is not yet valid, has expired, spans more than five minutes, or any signed normalized request field/digest differs
+- **THEN** the system fails closed and reveals no private state; an operation rollback does not erase the binding or consumption row
+
+#### Scenario: Expired consumption rows are bounded
+- **WHEN** a durable consumed-grant row has expired under the trusted clock
+- **THEN** admission may remove that content-free row because the expired signature is independently inadmissible, without making an unexpired grant replayable
+
+#### Scenario: Signing wire is exact
+- **WHEN** grant authenticity is verified
+- **THEN** the input is ASCII `conversation-custody/operation-grant/v1`, one NUL byte, then `tinyassets-canonical-json/v1` bytes for exactly `action,agent_binding_id,authority_key_id,custody_mode,expires_at,grant_id,idempotency_key_digest,issued_at,owner_user_id,platform_data_root,registered_universe_path,request_digest,selection_generation,universe_id`; `grant_id` is `cg_` plus 43 canonical unpadded base64url characters decoding to 32 bytes, the signature is exactly 86 canonical unpadded base64url characters decoding to 64 bytes, and the configured public key is exactly 43 canonical unpadded base64url characters decoding to 32 bytes
 
 #### Scenario: Raw transport identity is not authority
 - **WHEN** a future app adapter authenticates a provider event
@@ -79,6 +87,14 @@ The system SHALL accept mutation keys only as `ik_` plus exactly 43 canonical un
 #### Scenario: Same key in another universe is independent
 - **WHEN** an owner deliberately reuses a valid key in another selected universe
 - **THEN** each universe-local database treats it as an independent operation and no global uniqueness claim is made
+
+#### Scenario: Database binding survives failed first operation
+- **WHEN** the first authorized access creates an empty database but the requested thread is absent or the requested operation later rolls back
+- **THEN** the separately committed singleton universe binding and consumed-grant row remain, and another universe cannot claim that database
+
+#### Scenario: Legacy binding inference is canonical
+- **WHEN** an existing custody database has no binding row
+- **THEN** the system validates every canonical thread envelope and every completed canonical deletion receipt against duplicate columns before inferring one universe; multiple universes, corruption, or a pending deletion-only database without a canonical receipt fails closed rather than binding from duplicate columns
 
 ### Requirement: Threads are immutable and request-bound
 The system SHALL create an immutable thread with a server-generated identifier, exact contract/mode, owner, universe, agent binding, normalized interlocutor reference, explicit retention boundary, and canonical UTC creation time under universe-owner-operation-scoped idempotency.
@@ -136,6 +152,10 @@ The system SHALL append messages with a globally unique server-generated message
 - **WHEN** identical appends with one server-issued key race or retry before deletion
 - **THEN** exactly one message and ordinal are created and every request returns that exact message
 
+#### Scenario: Append replay reconstructs reply integrity
+- **WHEN** an idempotent append replay addresses a persisted reply whose target is missing, cross-thread, same/future ordinal, or corrupt
+- **THEN** the replay raises a storage integrity failure and returns no message
+
 #### Scenario: Changed append replay conflicts
 - **WHEN** the same owner reuses an active `append_message` key for different input
 - **THEN** the append fails with a conflict and consumes no ordinal
@@ -157,7 +177,7 @@ The system SHALL serialize exact read/export with writes, require fresh action a
 
 #### Scenario: Persisted record disagrees
 - **WHEN** an indexed column, canonical envelope, digest, message ID, ordinal, or reply edge has been tampered with
-- **THEN** the system raises an integrity failure and returns no partial conversation
+- **THEN** the system raises a storage integrity failure, including when aggregate snapshot/export reconstruction detects the disagreement, and returns no partial conversation
 
 ### Requirement: Private export is deterministic and isolated from the commons
 The system SHALL export an exact intact thread as deterministic canonical `conversation-custody/v1` content whose only top-level members are `canonical_json`, `custody_mode`, `messages`, `schema`, and `thread`; the exact thread/message members, canonical six-fraction UTC timestamps, and separate lowercase `sha256:<64 hex>` digest over all and only the export bytes SHALL match the design schema, and the system SHALL NOT publish it, add it to agent definitions/lineage/bindings, or include credentials, app authority, provider responses, runtime/workflow state, or effects.

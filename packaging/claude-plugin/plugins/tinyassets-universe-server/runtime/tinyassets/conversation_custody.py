@@ -1,8 +1,8 @@
 """Dark private-conversation custody contracts.
 
-This module has no production constructor, app ingress, provider call, effect,
-or MCP surface.  A future authenticated app owner must mint the opaque grants
-consumed here.
+This module has no signing key, issuer, app ingress, provider call, effect, or
+MCP surface. A future authenticated app owner must sign the grants consumed
+here; this runtime holds public verification material only.
 """
 
 from __future__ import annotations
@@ -13,16 +13,19 @@ import hmac
 import json
 import os
 import re
-import secrets
 import stat
 import threading
 import unicodedata
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 from types import MappingProxyType
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 PRIVATE_UNIVERSE_MODE = "private_universe"
 CONVERSATION_CUSTODY_SCHEMA = "conversation-custody/v1"
@@ -41,7 +44,10 @@ _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _KIND = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY = re.compile(r"^ik_[A-Za-z0-9_-]{43}$")
+_GRANT_ID = re.compile(r"^cg_[A-Za-z0-9_-]{43}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+_GRANT_SIGNING_DOMAIN = b"conversation-custody/operation-grant/v1\0"
+_MAX_GRANT_LIFETIME_SECONDS = 5 * 60
 
 MAX_CANONICAL_DEPTH = 16
 MAX_CANONICAL_MAPPING_MEMBERS = 128
@@ -555,6 +561,8 @@ class ConversationCustodyGrantEvidence:
     """Detached evidence returned by a future authority's live grant check."""
 
     action: str
+    authority_key_id: str
+    grant_id: str
     request_digest: str
     idempotency_key_digest: str | None
     owner_user_id: str
@@ -570,6 +578,8 @@ class ConversationCustodyGrantEvidence:
     def __post_init__(self) -> None:
         if self.action not in _ACTIONS:
             raise ConversationCustodyValidationError("action is unsupported")
+        _required_ref(self.authority_key_id, "authority_key_id")
+        _required_grant_id(self.grant_id)
         _required_digest(self.request_digest, "request_digest")
         if self.action in _MUTATIONS:
             _required_digest(self.idempotency_key_digest, "idempotency_key_digest")
@@ -688,7 +698,7 @@ def validate_private_universe_location(
 
 
 class ConversationCustodyOperationGrant:
-    __slots__ = ("_grant_id", "_issuer_pid", "_seal", "__weakref__")
+    __slots__ = ("_grant_id", "_issuer_pid", "__weakref__")
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError("conversation custody grants are authority-issued")
@@ -703,10 +713,9 @@ class ConversationCustodyOperationGrant:
 @dataclass(frozen=True, slots=True)
 class _GrantPayload:
     evidence: ConversationCustodyGrantEvidence
-    live_check: Callable[[ConversationCustodyGrantEvidence], bool]
+    signature: str
 
 
-_CAPABILITY_KEY = secrets.token_bytes(32)
 _GRANT_LOCK = threading.Lock()
 _GRANTS: dict[
     str,
@@ -715,10 +724,8 @@ _GRANTS: dict[
 
 
 def _reset_grants_after_fork() -> None:
-    global _CAPABILITY_KEY
     global _GRANT_LOCK
     global _GRANTS
-    _CAPABILITY_KEY = secrets.token_bytes(32)
     _GRANT_LOCK = threading.Lock()
     _GRANTS = {}
 
@@ -727,16 +734,114 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_grants_after_fork)
 
 
-def _seal(identifier: str, issuer_pid: int) -> bytes:
-    message = f"conversation-custody\0{issuer_pid}\0{identifier}".encode()
-    return hmac.digest(_CAPABILITY_KEY, message, "sha256")
-
-
 def _discard_grant(identifier: str, issuer_pid: int) -> None:
     if issuer_pid != os.getpid():
         return
     with _GRANT_LOCK:
         _GRANTS.pop(identifier, None)
+
+
+def _decode_canonical_base64url(
+    value: object,
+    *,
+    encoded_length: int,
+    decoded_length: int,
+    name: str,
+) -> bytes:
+    if (
+        not isinstance(value, str)
+        or len(value) != encoded_length
+        or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None
+    ):
+        raise ConversationCustodyValidationError(f"{name} wire form is invalid")
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(value + padding)
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise ConversationCustodyValidationError(f"{name} is invalid base64url") from exc
+    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+    if len(decoded) != decoded_length or not hmac.compare_digest(canonical, value):
+        raise ConversationCustodyValidationError(f"{name} is not canonical base64url")
+    return decoded
+
+
+def _required_grant_id(value: object) -> str:
+    if not isinstance(value, str) or _GRANT_ID.fullmatch(value) is None:
+        raise ConversationCustodyValidationError("grant_id wire form is invalid")
+    _decode_canonical_base64url(
+        value[3:],
+        encoded_length=43,
+        decoded_length=32,
+        name="grant_id",
+    )
+    return value
+
+
+def _operation_grant_record(evidence: ConversationCustodyGrantEvidence) -> dict[str, object]:
+    return {
+        "action": evidence.action,
+        "agent_binding_id": evidence.agent_binding_id,
+        "authority_key_id": evidence.authority_key_id,
+        "custody_mode": evidence.custody_mode,
+        "expires_at": evidence.expires_at,
+        "grant_id": evidence.grant_id,
+        "idempotency_key_digest": evidence.idempotency_key_digest,
+        "issued_at": evidence.issued_at,
+        "owner_user_id": evidence.owner_user_id,
+        "platform_data_root": evidence.platform_data_root,
+        "registered_universe_path": evidence.registered_universe_path,
+        "request_digest": evidence.request_digest,
+        "selection_generation": evidence.selection_generation,
+        "universe_id": evidence.universe_id,
+    }
+
+
+def _operation_grant_signing_bytes(evidence: ConversationCustodyGrantEvidence) -> bytes:
+    if type(evidence) is not ConversationCustodyGrantEvidence:
+        raise ConversationCustodyValidationError("grant evidence type is invalid")
+    return _GRANT_SIGNING_DOMAIN + canonical_json_bytes(_operation_grant_record(evidence))
+
+
+@cache
+def _trusted_authority_public_key() -> tuple[str, Ed25519PublicKey]:
+    key_id = os.environ.get("TINYASSETS_CUSTODY_AUTHORITY_KEY_ID")
+    public_key_wire = os.environ.get("TINYASSETS_CUSTODY_AUTHORITY_PUBLIC_KEY_B64U")
+    try:
+        _required_ref(key_id, "configured authority key id")
+        raw = _decode_canonical_base64url(
+            public_key_wire,
+            encoded_length=43,
+            decoded_length=32,
+            name="configured authority public key",
+        )
+        public_key = Ed25519PublicKey.from_public_bytes(raw)
+    except (ConversationCustodyValidationError, ValueError) as exc:
+        raise ConversationCustodyAuthorizationError(
+            "grant_verifier_unconfigured",
+            "conversation custody authority verifier is unavailable",
+        ) from exc
+    return key_id, public_key
+
+
+def _verify_grant_signature(payload: _GrantPayload) -> None:
+    evidence = payload.evidence
+    trusted_key_id, public_key = _trusted_authority_public_key()
+    if evidence.authority_key_id != trusted_key_id:
+        raise ConversationCustodyAuthorizationError(
+            "grant_signature_invalid", "conversation custody grant key is not trusted"
+        )
+    try:
+        signature = _decode_canonical_base64url(
+            payload.signature,
+            encoded_length=86,
+            decoded_length=64,
+            name="grant signature",
+        )
+        public_key.verify(signature, _operation_grant_signing_bytes(evidence))
+    except (ConversationCustodyValidationError, InvalidSignature, ValueError) as exc:
+        raise ConversationCustodyAuthorizationError(
+            "grant_signature_invalid", "conversation custody grant signature is invalid"
+        ) from exc
 
 
 def consume_operation_grant(
@@ -751,9 +856,7 @@ def consume_operation_grant(
     try:
         current_pid = os.getpid()
         exact = (
-            type(grant) is ConversationCustodyOperationGrant
-            and grant._issuer_pid == current_pid
-            and hmac.compare_digest(grant._seal, _seal(grant._grant_id, current_pid))
+            type(grant) is ConversationCustodyOperationGrant and grant._issuer_pid == current_pid
         )
     except (AttributeError, TypeError):
         exact = False
@@ -772,7 +875,9 @@ def consume_operation_grant(
             "grant_consumed", "conversation custody grant was already consumed"
         )
 
-    evidence = entry[1].evidence
+    payload = entry[1]
+    _verify_grant_signature(payload)
+    evidence = payload.evidence
     expected = (expected_action, expected_request_digest, expected_idempotency_key_digest)
     actual = (evidence.action, evidence.request_digest, evidence.idempotency_key_digest)
     if actual != expected:
@@ -780,20 +885,18 @@ def consume_operation_grant(
             "grant_mismatch", "conversation custody grant does not match the request"
         )
     observed_at = _parsed_timestamp(_canonical_now(), "system_now")
-    if observed_at < _parsed_timestamp(evidence.issued_at, "issued_at"):
+    issued_at = _parsed_timestamp(evidence.issued_at, "issued_at")
+    expires_at = _parsed_timestamp(evidence.expires_at, "expires_at")
+    if (expires_at - issued_at).total_seconds() > _MAX_GRANT_LIFETIME_SECONDS:
+        raise ConversationCustodyAuthorizationError(
+            "grant_lifetime_invalid", "custody grant lifetime exceeds five minutes"
+        )
+    if observed_at < issued_at:
         raise ConversationCustodyAuthorizationError(
             "grant_not_yet_valid", "custody grant is not valid before its issue time"
         )
-    if observed_at >= _parsed_timestamp(evidence.expires_at, "expires_at"):
+    if observed_at >= expires_at:
         raise ConversationCustodyAuthorizationError("grant_expired", "custody grant expired")
-    try:
-        current = entry[1].live_check(evidence)
-    except Exception:
-        current = False
-    if current is not True:
-        raise ConversationCustodyAuthorizationError(
-            "grant_revoked", "custody selection or binding is not current"
-        )
     validate_private_universe_location(evidence)
     return evidence
 
