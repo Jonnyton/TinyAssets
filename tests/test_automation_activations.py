@@ -123,7 +123,7 @@ def test_transactional_activation_runs_authority_fence_before_transition(
         conn.commit()
 
     assert activated is None
-    assert observed == [observed[0]]
+    assert len(observed) == 1
     assert store.get(stopped.universe_id, stopped.automation_id) == stopped
 
 
