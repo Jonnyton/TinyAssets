@@ -114,6 +114,37 @@ provider-call questions remain open under the credential-custody handoff; an
 absent answer cannot be replaced by the goal/schedule/item identity used for
 ordinary effects or by a second outbound authority system.
 
+### B10 — External app events authenticate before normalization
+
+An external app callback is untrusted bytes until the boundary has verified
+the provider's signature over the exact raw body. Parsing, tenant selection,
+event identity, sender extraction, user mapping, custody, runtime dispatch,
+and effects cannot occur before that verification. The first adapter is Slack
+Events API request signing: HMAC-SHA256 over
+`v0:{request_timestamp}:{raw_body}`, constant-time comparison, and a maximum
+five-minute clock skew, following Slack's request-signing contract
+(`https://api.slack.com/docs/verifying-requests-from-slack`). Deprecated
+verification-token fields provide no authority.
+
+After authentication, the dark boundary accepts only a bounded JSON
+`event_callback` envelope whose app, workspace, event ID, and event type have
+the exact expected shape. It derives installation identity from the verified
+`api_app_id` and `team_id`; neither a route parameter nor a caller-supplied
+mapping may replace them. A durable ledger claims
+`(provider, installation_id, event_id)` atomically and stores only the raw-body
+digest plus content-free routing evidence. An exact replay returns the first
+record; reuse of that identity with another digest fails closed. Rejected or
+malformed requests write nothing. The signing secret, signature, raw body,
+message text, deprecated token, and normalized event payload are never
+persisted by this ledger.
+
+This slice produces authenticated provider evidence only. It deliberately
+does not decide which TinyAssets user, organization, universe, agent binding,
+conversation, or runtime may act; issue a custody grant; invoke a model; send
+a reply; expose a public route; or add an MCP handle. Those are separately
+reviewed successors. The packaged-runtime mirror also waits for the active
+cloud lane to release its broad runtime write claim.
+
 ## Risks / Trade-offs
 
 - [Risk] System-derived idempotency identity breaks existing callers that rely on hint-based dedup. → The implementation lane must migrate existing effectors and keep the caller-hint path working until every effector is converted, then modify the canonical requirement in one lane.
@@ -121,6 +152,8 @@ ordinary effects or by a second outbound authority system.
 - [Risk] Generated OpenAPI adapters expand the attack surface faster than review can cover. → Generated surfaces are inert until scoped, typed, cap-aware, credential-blind, and reviewed; grant binding is a separate user action.
 - [Risk] Compile-time artifact typing rejects graphs that used to run. → The rejection is the point, but the rollout needs a reporting mode that names producer, consumer, and incompatible types before enforcement flips on.
 - [Risk] Inbox addresses are unauthenticated ingress. → Ingress authority, source approval, and eligibility cutoffs are boundary-owned requirements; an unapproved source produces a receipt and no scheduled work.
+
+- [Risk] A valid provider signature could be mistaken for TinyAssets user authority. The boundary emits provider-authenticated evidence only; identity mapping and custody remain separate fail-closed gates.
 
 ## Migration Plan
 
