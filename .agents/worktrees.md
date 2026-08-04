@@ -1,5 +1,15 @@
 # Worktree Inventory
 
+## 2026-08-04 - Fold back server-owned app outbound adapter
+
+- Provider: `codex-gpt5-desktop-adapter-foldback`.
+- Branch: `foldback/app-outbound-adapter-20260804`.
+- Lane state: Foldback after PR #2274 merged as `c55d5354`.
+- Worktree: `C:/Users/Jonathan/Projects/wf-app-outbound-adapter-foldback-20260804`.
+- Purpose: sync/archive the landed app outbound adapter, retire its active claim, and advance the V1 monitor to live Slack/cloud transport and workflow iteration.
+- Review gate: strict OpenSpec, diff/janitor check, and merge receipt.
+- Publish/cleanup: coordination-only foldback PR; no route, deployment, secret, or production side effect.
+
 ## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
 
 - Provider: `codex-gpt5-desktop-installer`
