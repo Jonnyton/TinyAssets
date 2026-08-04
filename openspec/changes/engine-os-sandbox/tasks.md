@@ -15,5 +15,6 @@
 
 - [x] 3.1 Before any runtime work, create separately claimed implementation rows with exact file boundaries and refresh provider-context at build phase.
 - [ ] 3.2 Require tests that mutation-prove diagnostic-only status, no Codex dangerous bypass, immutable trusted-callsite derivation, shared terminal admission errors across provider/runner/B2 paths, tool-denied inference, closed projections, sealed capsule binding, pre-launch capability/configuration proof without future-launch attestation, post-launch complete-guarantee evidence rejection, and runner-backed graph/NodeBid `source_exec`.
+  - A1 contract slice: `ExecutionRequirement` now has closed trusted derivation, immutable fields, and complete opaque owner reference/digest bindings; the remaining cross-owner/runtime clauses keep 3.2 open.
 - [ ] 3.3 Require distributed-execution tests that prove capability and exact planned configuration before launch, then prove the complete request-bound property set for the actual execution before accepting output for every backend/profile binding.
 - [ ] 3.4 Keep implementation, build, canonical spec sync, archive, deployment, live acceptance, and post-fix monitoring outside this spec-only rewrite.
