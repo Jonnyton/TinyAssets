@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -19,6 +20,7 @@ from tinyassets.app_reply_authority import AppReplyAuthorization, ReplyDestinati
 
 _BODY_DOMAIN = b"app-reply/body/v1\0"
 _RECEIPT_DOMAIN = b"app-reply/transport-receipt/v1\0"
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_BODY_BYTES = 64 * 1024
 _MAX_RECEIPT_REF_BYTES = 512
 
@@ -86,6 +88,8 @@ class AppOutboundAdapter:
         with self._delivery_lock:
             if type(authorization) is not AppReplyAuthorization:
                 raise AppOutboundDeliveryError("reply authorization is invalid")
+            if not _DIGEST.fullmatch(authorization.authorization_digest):
+                raise AppOutboundDeliveryError("authorization digest is invalid")
             response_digest = body_digest(response)
             if response_digest != authorization.response_digest:
                 raise AppOutboundDeliveryError("response digest does not match authorization")

@@ -67,6 +67,28 @@ def test_body_substitution_is_rejected_before_transport(tmp_path):
         assert db.execute("SELECT COUNT(*) FROM app_outbound_receipts").fetchone()[0] == 0
 
 
+def test_malformed_authorization_digest_is_rejected_before_transport(tmp_path):
+    calls = []
+    adapter = AppOutboundAdapter(
+        tmp_path,
+        lambda destination, body: calls.append((destination, body))
+        or AppTransportReceipt("receipt:1"),
+    )
+    authorization = AppReplyAuthorization(
+        owner_user_id="user:founder",
+        universe_id="universe:demo",
+        agent_binding_id="binding:demo",
+        binding_revision=3,
+        mapping_generation=4,
+        destination=ReplyDestination("slack", "connection:slack", "C123456"),
+        response_digest=body_digest("Hello from the universe"),
+        authorization_digest="forged",
+    )
+    with pytest.raises(AppOutboundDeliveryError, match="authorization digest"):
+        adapter.deliver(authorization, "Hello from the universe")
+    assert calls == []
+
+
 def test_transport_failure_is_redacted_and_persisted(tmp_path):
     def transport(destination, body):
         raise RuntimeError("token=super-secret response=" + body)
