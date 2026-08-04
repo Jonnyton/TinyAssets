@@ -12,6 +12,7 @@ from typing import Callable, Iterator
 from tinyassets.cloud_automation_control import (
     CloudAutomationControl,
     CloudAutomationDesiredState,
+    CloudAutomationProviderClaimFence,
     CloudAutomationSliceTrigger,
     CloudAutomationTerminalReceipt,
     CloudAutomationTerminalRequest,
@@ -819,6 +820,46 @@ class CloudAutomationControlStore:
         claimed_by: str,
         lease_seconds: int,
     ) -> CloudAutomationSliceTrigger | None:
+        """Low-level Trigger CAS used by isolated storage tests and reconciliation."""
+        return self._claim_due(
+            universe_id=universe_id,
+            automation_id=automation_id,
+            claimed_by=claimed_by,
+            lease_seconds=lease_seconds,
+            provider_fence=None,
+        )
+
+    def claim_due_for_worker(
+        self,
+        *,
+        universe_id: str,
+        automation_id: str,
+        claimed_by: str,
+        lease_seconds: int,
+        provider_fence: CloudAutomationProviderClaimFence,
+    ) -> CloudAutomationSliceTrigger | None:
+        """Claim while requester provider and exact runtime match atomically."""
+        if not isinstance(provider_fence, CloudAutomationProviderClaimFence):
+            raise ValueError("provider_fence must be a CloudAutomationProviderClaimFence")
+        if provider_fence.worker_id != claimed_by:
+            raise ValueError("claimed_by must match provider_fence.worker_id")
+        return self._claim_due(
+            universe_id=universe_id,
+            automation_id=automation_id,
+            claimed_by=claimed_by,
+            lease_seconds=lease_seconds,
+            provider_fence=provider_fence,
+        )
+
+    def _claim_due(
+        self,
+        *,
+        universe_id: str,
+        automation_id: str,
+        claimed_by: str,
+        lease_seconds: int,
+        provider_fence: CloudAutomationProviderClaimFence | None,
+    ) -> CloudAutomationSliceTrigger | None:
         if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool):
             raise ValueError("lease_seconds must be an integer")
         if lease_seconds < 1:
@@ -831,19 +872,57 @@ class CloudAutomationControlStore:
             try:
                 activation = self._current_activation_row(conn, universe_id, automation_id)
                 control_row = conn.execute(
-                    """
-                    SELECT * FROM cloud_automation_controls
-                    WHERE universe_id = ? AND automation_id = ?
-                    """,
+                    "SELECT * FROM cloud_automation_controls "
+                    "WHERE universe_id = ? AND automation_id = ?",
                     (universe_id, automation_id),
                 ).fetchone()
-                if activation is None or control_row is None or not all(
+                control = _control(control_row) if control_row is not None else None
+                provider_current = provider_fence is None
+                if provider_fence is not None:
+                    provider_row = conn.execute(
+                        "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                        (provider_fence.provider_binding_id,),
+                    ).fetchone()
+                    runtime_row = conn.execute(
+                        "SELECT * FROM author_runtime_instances WHERE instance_id = ?",
+                        (provider_fence.runtime_id,),
+                    ).fetchone()
+                    runtime_metadata: object = None
+                    if runtime_row is not None:
+                        try:
+                            runtime_metadata = json.loads(str(runtime_row["metadata_json"]))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            pass
+                    provider_current = bool(
+                        control is not None
+                        and provider_row is not None
+                        and runtime_row is not None
+                        and isinstance(runtime_metadata, dict)
+                        and control.definition.provider_binding_id
+                        == provider_fence.provider_binding_id
+                        and provider_row["generation"]
+                        == provider_fence.provider_binding_generation
+                        and provider_row["binding_digest"]
+                        == provider_fence.provider_binding_digest
+                        and provider_row["state"] == "active"
+                        and provider_row["owner_user_id"] == control.principal_id
+                        and provider_row["universe_id"] == universe_id
+                        and runtime_row["universe_id"] == universe_id
+                        and runtime_row["provider_name"] == provider_row["provider"]
+                        and runtime_row["status"] == "provisioned"
+                        and str(runtime_metadata.get("daemon_id") or "")
+                        == provider_fence.daemon_id
+                        and str(runtime_metadata.get("worker_id") or "")
+                        == provider_fence.worker_id
+                    )
+                if activation is None or control is None or not provider_current or not all(
                     (
-                        _control(control_row).desired_state
-                        is CloudAutomationDesiredState.ACTIVE,
+                        control.desired_state is CloudAutomationDesiredState.ACTIVE,
                         activation["state"] == AutomationActivationState.ACTIVE.value,
-                        activation["executor_class"] == AutomationActivationExecutor.CLOUD.value,
-                        activation["subject_kind"] == ExecutionSubjectKind.BRANCH_VERSION.value,
+                        activation["executor_class"]
+                        == AutomationActivationExecutor.CLOUD.value,
+                        activation["subject_kind"]
+                        == ExecutionSubjectKind.BRANCH_VERSION.value,
                     )
                 ):
                     conn.commit()

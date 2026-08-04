@@ -1322,3 +1322,114 @@ def test_phone_cloud_create_fails_while_canonical_tray_lease_is_active(
     assert result["error"] == "automation_setup_invalid"
     assert result["detail"] == "automation is already active"
     assert activations.get(definition.universe_id, automation_id) == tray
+
+
+def test_wrong_provider_worker_cannot_activate_requester_bound_automation(
+    tmp_path,
+) -> None:
+    from tinyassets.background_branch_authority import (
+        BackgroundBranchExecutorAudience,
+        BackgroundBranchExecutorClass,
+    )
+    from tinyassets.cloud_automation_continuation import CloudContinuationActivationError
+    from tinyassets.cloud_automation_runtime import (
+        activate_one_requested_cloud_automation,
+    )
+    from tinyassets.cloud_automation_setup import prepare_cloud_automation
+    from tinyassets.daemon_registry import (
+        ensure_daemon_runtime,
+        select_project_loop_daemon,
+    )
+    from tinyassets.storage.automation_activations import AutomationActivationStore
+
+    definition = _seed_setup_authority(tmp_path)
+    prepare_cloud_automation(
+        tmp_path,
+        definition,
+        automation_id="automation_spec_drain",
+        cadence_seconds=300,
+        operator_display_name="Alice Cloud Builder",
+        operator_soul_text="Run Alice's accepted repository workflow.",
+        clock=lambda: NOW,
+    )
+    daemon = select_project_loop_daemon(
+        tmp_path,
+        universe_id=definition.universe_id,
+        owner_user_id=definition.principal_id,
+    )
+    assert daemon is not None
+    runtime = ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id=definition.universe_id,
+        provider_name="claude",
+        model_name="claude-fable-5",
+        created_by="cloud-worker",
+        worker_id="worker_claude_1",
+    )
+
+    with pytest.raises(
+        CloudContinuationActivationError,
+        match="executor_audience_unavailable",
+    ):
+        activate_one_requested_cloud_automation(
+            tmp_path,
+            universe_id=definition.universe_id,
+            principal_id=definition.principal_id,
+            audience=BackgroundBranchExecutorAudience(
+                executor_class=BackgroundBranchExecutorClass.CLOUD,
+                daemon_id=daemon["daemon_id"],
+                runtime_id=runtime["runtime_instance_id"],
+                worker_id="worker_claude_1",
+            ),
+            clock=lambda: NOW,
+        )
+    activation = AutomationActivationStore(tmp_path).get(
+        definition.universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None and activation.state.value == "stopped"
+
+
+def test_phone_create_derives_internal_definition_from_human_inputs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+
+    seeded = _seed_setup_authority(tmp_path)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    result = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="my-repository-loop",
+        payload={
+            "definition": {
+                "repository": seeded.repository,
+                "accepted_spec_ref": seeded.accepted_spec_ref,
+                "branch_version_id": seeded.branch_version_id,
+            },
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {"soul_text": "Run my accepted repository workflow."},
+        },
+    )
+
+    assert result["status"] == "activation_requested"
+    assert result["definition"]["branch_def_id"] == seeded.branch_def_id
+    assert result["definition"]["branch_content_digest"] == (
+        seeded.branch_content_digest
+    )
+    assert result["definition"]["accepted_spec_digest"] == (
+        seeded.accepted_spec_digest
+    )
+    assert result["definition"]["input_artifact_digests"] == list(
+        seeded.input_artifact_digests
+    )
+    assert result["definition"]["acceptance_scenario_id"] == (
+        "scenario:repo-spec-baseline-v1"
+    )

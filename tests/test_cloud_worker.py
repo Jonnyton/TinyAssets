@@ -1341,7 +1341,11 @@ def test_cloud_automation_trigger_pump_keeps_owner_dimension(
                 provider == "codex"
                 and owner_user_id == "acct_alice"
                 and worker_id
-                == cw._automation_worker_slot("shared-universe", "acct_alice")
+                == cw._automation_worker_slot(
+                    "worker_cloud_1",
+                    "shared-universe",
+                    "acct_alice",
+                )
             )
             else None
         ),
@@ -1378,19 +1382,73 @@ def test_cloud_automation_trigger_pump_keeps_owner_dimension(
     assert observed["audience"].daemon_id == "daemon_alice"
     assert observed["audience"].runtime_id == "runtime_alice"
     assert observed["audience"].worker_id == cw._automation_worker_slot(
+        "worker_cloud_1",
         "shared-universe",
         "acct_alice",
     )
 
 
 def test_cloud_automation_worker_slot_survives_process_replacement() -> None:
-    alice_first = cw._automation_worker_slot("shared-universe", "acct_alice")
-    alice_replacement = cw._automation_worker_slot("shared-universe", "acct_alice")
-    bob = cw._automation_worker_slot("shared-universe", "acct_bob")
+    alice_first = cw._automation_worker_slot(
+        "codex-1", "shared-universe", "acct_alice"
+    )
+    alice_replacement = cw._automation_worker_slot(
+        "codex-1", "shared-universe", "acct_alice"
+    )
+    alice_second_container = cw._automation_worker_slot(
+        "codex-2", "shared-universe", "acct_alice"
+    )
+    bob = cw._automation_worker_slot("codex-1", "shared-universe", "acct_bob")
 
     assert alice_first == alice_replacement
     assert alice_first.startswith("worker_cloud_automation_")
+    assert alice_first != alice_second_container
     assert alice_first != bob
+
+
+def test_four_cloud_workers_bind_distinct_restart_stable_boot_descriptors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    universe = tmp_path / "shared-universe"
+    universe.mkdir()
+    _write_worker_release_state(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(cw, "_epoch2_claim_consumer_ready", lambda: True)
+    descriptors: dict[str, dict[str, object]] = {}
+
+    for physical_worker_id in ("codex-1", "codex-2", "claude-1", "claude-2"):
+        monkeypatch.setenv("TINYASSETS_WORKER_ID", physical_worker_id)
+        physical_identity = cw._snapshot_worker_protocol_identity_at_boot()
+        assert physical_identity is not None
+        logical_worker_id = cw._automation_worker_slot(
+            physical_worker_id,
+            universe.name,
+            "acct_alice",
+        )
+        assert cw._bind_automation_worker_protocol_identity(
+            physical_worker_id,
+            logical_worker_id,
+        )
+        monkeypatch.setenv("TINYASSETS_WORKER_ID", logical_worker_id)
+        descriptor = cw._worker_queue_descriptor(
+            universe,
+            runtime_instance_id=f"runtime_{physical_worker_id.replace('-', '_')}",
+            _now=datetime(2026, 8, 3, tzinfo=timezone.utc),
+        )
+        assert descriptor is not None
+        descriptors[physical_worker_id] = descriptor
+
+        monkeypatch.setenv("TINYASSETS_WORKER_ID", physical_worker_id)
+        assert cw._snapshot_worker_protocol_identity_at_boot() == physical_identity
+        assert cw._bind_automation_worker_protocol_identity(
+            physical_worker_id,
+            logical_worker_id,
+        )
+
+    assert len({value["worker_id"] for value in descriptors.values()}) == 4
+    assert len({value["boot_id"] for value in descriptors.values()}) == 4
 
 
 def test_supervisor_does_not_restart_when_task_is_already_running(tmp_path):

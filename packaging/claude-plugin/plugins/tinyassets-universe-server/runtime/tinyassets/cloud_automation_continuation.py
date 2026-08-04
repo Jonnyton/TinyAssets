@@ -1481,6 +1481,21 @@ class PreparedCloudContinuationActivationService:
                 "background binding does not authorize the canonical admission body",
             )
 
+        preflight_audience = self._audience_resolver.resolve(
+            continuation=continuation,
+            branch_task_id="pre_activation_provider_fence",
+        )
+        if not (
+            isinstance(preflight_audience, BackgroundBranchExecutorAudience)
+            and preflight_audience.executor_class
+            is BackgroundBranchExecutorClass.CLOUD
+            and preflight_audience.daemon_id == binding.daemon_id
+        ):
+            self._fail(
+                "executor_audience_unavailable",
+                "trusted cloud worker assignment is absent or mismatched",
+            )
+
         activation = self._converge_activation(request)
         self._inject("activation_committed")
         identifier_seed = {
@@ -2508,6 +2523,21 @@ def prepare_claimed_cloud_provider_call(
     )
     if continuation is None or continuation.continuation_id != continuation_id:
         raise PermissionError("prepared cloud continuation is unavailable")
+    provider_store = SQLiteProviderWorkAuthorityStore(root_path, clock=now_clock)
+    provider_binding = provider_store.get(continuation.provider_binding_id)
+    if provider_binding is None:
+        raise PermissionError("cloud provider binding is unavailable")
+    from tinyassets.daemon_registry import runtime_matches_worker_provider
+
+    if not runtime_matches_worker_provider(
+        root_path,
+        universe_id=universe_id,
+        runtime_instance_id=runtime_id,
+        daemon_id=daemon_id,
+        worker_id=worker_id,
+        provider_name=provider_binding.provider,
+    ):
+        raise PermissionError("cloud worker provider does not match requester binding")
     audience = BackgroundBranchExecutorAudience(
         executor_class=BackgroundBranchExecutorClass.CLOUD,
         daemon_id=daemon_id,
@@ -2667,7 +2697,6 @@ def prepare_claimed_cloud_provider_call(
             ):
                 raise PermissionError("cloud background attempt renewal failed")
 
-    provider_store = SQLiteProviderWorkAuthorityStore(root_path, clock=now_clock)
     provider_root = ProviderUniverseWorkRoot(
         work_item_kind="background_attempt",
         work_item_id=attempt.attempt_id,
@@ -2725,6 +2754,11 @@ def prepare_claimed_cloud_provider_call(
             "SELECT record_json FROM background_branch_attempts WHERE attempt_id = ?",
             (attempt.attempt_id,),
         ).fetchone()
+        runtime_row = conn.execute(
+            "SELECT provider_name, status, metadata_json "
+            "FROM author_runtime_instances WHERE instance_id = ?",
+            (runtime_id,),
+        ).fetchone()
         worker_context = read_worker_claim_context(conn, worker_id)
         if any(
             row is None
@@ -2734,6 +2768,7 @@ def prepare_claimed_cloud_provider_call(
                 task_row,
                 binding_row,
                 attempt_row,
+                runtime_row,
                 worker_context,
             )
         ):
@@ -2755,9 +2790,12 @@ def prepare_claimed_cloud_provider_call(
             current_attempt = BackgroundBranchAttempt.from_dict(
                 json.loads(str(attempt_row["record_json"]))
             )
+            runtime_metadata = json.loads(str(runtime_row["metadata_json"]))
             task_lease = parse_timestamp(task_row["lease_expires_at"])
             attempt_lease = parse_timestamp(current_attempt.lease_expires_at)
             worker_expiry = parse_timestamp(worker_context.descriptor.expires_at)
+            if not isinstance(runtime_metadata, dict):
+                raise ValueError("runtime metadata must be an object")
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise PermissionError("cloud provider claim roots are invalid") from exc
         actor_id = audience.daemon_id or audience.worker_id
@@ -2789,6 +2827,9 @@ def prepare_claimed_cloud_provider_call(
             worker_context.descriptor.universe_id == continuation.universe_id,
             worker_context.descriptor.executor_class is AutomationActivationExecutor.CLOUD,
             worker_expiry > current_now,
+            runtime_row["provider_name"] == authority.binding.provider,
+            runtime_row["status"] == "provisioned",
+            str(runtime_metadata.get("worker_id") or "") == worker_id,
             current_binding.status is BackgroundBranchBindingStatus.ACTIVE,
             current_binding.binding_id == continuation.background_binding_id,
             current_binding.generation == continuation.background_binding_generation,

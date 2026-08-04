@@ -1762,6 +1762,50 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
     assert invoked == ["codex"]
 
 
+def test_provider_family_drift_blocks_claim_and_launch(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    assert task is not None
+    task.executor_worker_id = audience.worker_id
+    task.executor_runtime_id = audience.runtime_id
+    with RequestAdmissionStore(tmp_path).connection() as conn:
+        conn.execute(
+            """
+            UPDATE author_runtime_instances
+            SET provider_name = 'claude', model_name = 'claude-fable-5'
+            WHERE instance_id = ?
+            """,
+            (audience.runtime_id,),
+        )
+        conn.commit()
+
+    with pytest.raises(
+        PermissionError,
+        match="cloud worker provider does not match requester binding",
+    ):
+        prepare_claimed_cloud_provider_call(
+            tmp_path,
+            claimed_task=task,
+            daemon_id=audience.daemon_id,
+            provider_call=lambda *_args, **_kwargs: pytest.fail(
+                "wrong provider reached provider launch"
+            ),
+            clock=lambda: NOW + timedelta(seconds=1),
+        )
+
+    with fixture[4].connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM provider_work_execution_claims"
+            ).fetchone()[0]
+            == 0
+        )
+
+
 @pytest.mark.parametrize(
     "fault",
     ("activation_stopped", "task_cancelled", "provider_revoked"),
@@ -1926,7 +1970,24 @@ def _activation_compositor_fixture(
             soul_text="Converge one prepared cloud continuation.",
         )
         daemon_id = str(daemon["daemon_id"])
-    audience = _audience(daemon_id)
+        runtime = ensure_daemon_runtime(
+            tmp_path,
+            daemon_id=daemon_id,
+            universe_id="universe_alice",
+            provider_name="codex",
+            model_name="gpt-5",
+            created_by="cloud-worker",
+            worker_id="worker_codex_1",
+            metadata={"automation_executor_class": "cloud"},
+        )
+        audience = BackgroundBranchExecutorAudience(
+            executor_class=BackgroundBranchExecutorClass.CLOUD,
+            daemon_id=daemon_id,
+            runtime_id=str(runtime["runtime_instance_id"]),
+            worker_id="worker_codex_1",
+        )
+    else:
+        audience = _audience(daemon_id)
     body_digest = (
         "sha256:"
         + hashlib.sha256(
@@ -2098,6 +2159,133 @@ def test_terminal_trigger_rotates_fresh_authority_and_admits_next_slice(
             (continuation.universe_id,),
         ).fetchone()[0]
     assert task_count == 2
+
+
+def test_wrong_provider_worker_cannot_claim_active_successor_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, continuation, audience, service = _activation_compositor_fixture(tmp_path)
+    first = service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+    controls = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    initial = controls.schedule_initial(
+        fixture[0],
+        automation_id=continuation.automation_id,
+        activation=first.activation,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    claimed = controls.claim_due(
+        universe_id=continuation.universe_id,
+        automation_id=continuation.automation_id,
+        claimed_by=audience.worker_id,
+        lease_seconds=120,
+    )
+    assert claimed is not None
+    controls.bind_admission(
+        CloudAutomationTriggerFence(claimed),
+        request_id=first.request_id,
+        admission_id=first.admission_id,
+        branch_task_id=first.branch_task_id,
+    )
+    terminal = record_cloud_automation_terminal(
+        tmp_path,
+        branch_task_id=first.branch_task_id,
+        success=True,
+        error="",
+        run_id="run_cloud_slice_1",
+        evidence_handles=("https://github.com/example/project/pull/1",),
+        clock=lambda: NOW + timedelta(minutes=1),
+    )
+    assert terminal is not None and terminal.next_trigger is not None
+
+    wrong_runtime = ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=audience.daemon_id,
+        universe_id=continuation.universe_id,
+        provider_name="claude",
+        model_name="claude-fable-5",
+        created_by="cloud-worker",
+        worker_id="worker_claude_1",
+        metadata={"automation_executor_class": "cloud"},
+    )
+    wrong_audience = BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id=audience.daemon_id,
+        runtime_id=str(wrong_runtime["runtime_instance_id"]),
+        worker_id="worker_claude_1",
+    )
+
+    assert (
+        produce_one_due_cloud_automation_slice(
+            tmp_path,
+            universe_id=continuation.universe_id,
+            audience=wrong_audience,
+            clock=lambda: NOW + timedelta(minutes=6),
+        )
+        is None
+    )
+    successor = next(
+        trigger
+        for trigger in controls.list_triggers(
+            automation_id=continuation.automation_id,
+            limit=10,
+        )
+        if trigger.trigger_id == terminal.next_trigger.trigger_id
+    )
+    assert successor.status is CloudAutomationTriggerStatus.PENDING
+    assert successor.claimed_by is None
+    assert successor.claim_id is None
+    assert initial.trigger_id != successor.trigger_id
+
+    from tinyassets import cloud_automation_runtime
+
+    original_resolve = cloud_automation_runtime._ExactAudienceResolver.resolve
+    drifted = False
+
+    def drift_provider_after_precheck(resolver, *, continuation, branch_task_id):
+        nonlocal drifted
+        resolved = original_resolve(
+            resolver,
+            continuation=continuation,
+            branch_task_id=branch_task_id,
+        )
+        if resolved is not None and branch_task_id == "pre_claim_provider_fence":
+            with RequestAdmissionStore(tmp_path).connection() as conn:
+                conn.execute(
+                    "UPDATE author_runtime_instances SET provider_name = 'claude' "
+                    "WHERE instance_id = ?",
+                    (audience.runtime_id,),
+                )
+                conn.commit()
+            drifted = True
+        return resolved
+
+    monkeypatch.setattr(
+        cloud_automation_runtime._ExactAudienceResolver,
+        "resolve",
+        drift_provider_after_precheck,
+    )
+    assert (
+        produce_one_due_cloud_automation_slice(
+            tmp_path,
+            universe_id=continuation.universe_id,
+            audience=audience,
+            clock=lambda: NOW + timedelta(minutes=6),
+        )
+        is None
+    )
+    assert drifted is True
+    successor = next(
+        trigger
+        for trigger in controls.list_triggers(
+            automation_id=continuation.automation_id,
+            limit=10,
+        )
+        if trigger.trigger_id == terminal.next_trigger.trigger_id
+    )
+    assert successor.status is CloudAutomationTriggerStatus.PENDING
+    assert successor.claimed_by is None
 
 
 def test_worker_recovers_terminal_task_before_trigger_receipt(

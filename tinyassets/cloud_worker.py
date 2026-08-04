@@ -172,11 +172,33 @@ def _worker_id() -> str:
     return override or _cloud_host_user()
 
 
-def _automation_worker_slot(universe_id: str, owner_user_id: str) -> str:
-    """Return one durable logical consumer identity across process replacement."""
+def _automation_worker_slot(
+    physical_worker_id: str,
+    universe_id: str,
+    owner_user_id: str,
+) -> str:
+    """Return one owner slot without collapsing distinct worker containers."""
 
-    seed = f"cloud-automation-worker-v1\0{universe_id}\0{owner_user_id}"
+    seed = (
+        f"cloud-automation-worker-v2\0{physical_worker_id}\0"
+        f"{universe_id}\0{owner_user_id}"
+    )
     return f"worker_cloud_automation_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _bind_automation_worker_protocol_identity(
+    physical_worker_id: str,
+    logical_worker_id: str,
+) -> bool:
+    """Bind the boot-frozen physical release proof to one derived owner slot."""
+    identity = _worker_protocol_identity(physical_worker_id)
+    if identity is None:
+        return False
+    current = _WORKER_PROTOCOL_IDENTITIES.get(logical_worker_id)
+    if current is not None and current != identity:
+        return False
+    _WORKER_PROTOCOL_IDENTITIES[logical_worker_id] = dict(identity)
+    return True
 
 
 def _utcnow() -> datetime:
@@ -811,6 +833,7 @@ def _pump_cloud_automation_triggers(
     if not universe.name.strip():
         return 0
     try:
+        physical_worker_id = _worker_id()
         from tinyassets.background_branch_authority import (
             BackgroundBranchExecutorAudience,
             BackgroundBranchExecutorClass,
@@ -852,10 +875,19 @@ def _pump_cloud_automation_triggers(
             principals = [""]
         for principal_id in principals:
             logical_worker_id = (
-                _automation_worker_slot(universe.name, principal_id)
+                _automation_worker_slot(
+                    physical_worker_id,
+                    universe.name,
+                    principal_id,
+                )
                 if principal_id
-                else _worker_id()
+                else physical_worker_id
             )
+            if principal_id:
+                _bind_automation_worker_protocol_identity(
+                    physical_worker_id,
+                    logical_worker_id,
+                )
             selector = {"universe_id": universe.name}
             if principal_id:
                 selector["owner_user_id"] = principal_id

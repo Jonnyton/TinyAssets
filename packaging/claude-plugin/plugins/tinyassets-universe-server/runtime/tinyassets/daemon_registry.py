@@ -790,6 +790,36 @@ def list_runtime_instances(
     ]
 
 
+def runtime_matches_worker_provider(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    runtime_instance_id: str,
+    daemon_id: str,
+    worker_id: str,
+    provider_name: str,
+) -> bool:
+    """Return whether one live runtime is the exact provider-bound worker."""
+    runtime = next(
+        (
+            value
+            for value in list_runtime_instances(base_path, universe_id=universe_id)
+            if value["runtime_instance_id"] == runtime_instance_id
+        ),
+        None,
+    )
+    if runtime is None:
+        return False
+    return all(
+        (
+            runtime["daemon_id"] == daemon_id,
+            runtime["provider_name"] == provider_name,
+            runtime["status"] == "provisioned",
+            str(runtime.get("metadata", {}).get("worker_id") or "") == worker_id,
+        )
+    )
+
+
 def provider_capacity_warning(
     provider_name: str,
     *,

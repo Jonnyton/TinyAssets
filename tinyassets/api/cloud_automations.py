@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -187,6 +188,76 @@ def _hydrate_server_owned_prerequisites(
     return definition
 
 
+def _derive_phone_work_definition(
+    raw_definition: dict[str, Any],
+    *,
+    accepted_spec_content: Any,
+    actor: str,
+    universe_id: str,
+) -> dict[str, Any]:
+    """Freeze internal authority and digest fields from human phone inputs."""
+    definition = _hydrate_server_owned_prerequisites(
+        raw_definition,
+        actor=actor,
+        universe_id=universe_id,
+    )
+    repository = str(definition.get("repository") or "").strip()
+    accepted_spec_ref = str(definition.get("accepted_spec_ref") or "").strip()
+    branch_version_id = str(definition.get("branch_version_id") or "").strip()
+    if not repository or not accepted_spec_ref or not branch_version_id:
+        raise ValueError(
+            "repository, accepted_spec_ref, and branch_version_id are required"
+        )
+    from tinyassets.branch_versions import get_branch_version
+
+    version = get_branch_version(_base_path(), branch_version_id)
+    if version is None:
+        raise ValueError("immutable Branch version does not exist")
+    if accepted_spec_content is not None:
+        if not isinstance(accepted_spec_content, str):
+            raise ValueError("accepted_spec_content must be text")
+        accepted_spec_digest = (
+            "sha256:"
+            + hashlib.sha256(accepted_spec_content.encode("utf-8")).hexdigest()
+        )
+    else:
+        accepted_spec_digest = str(
+            definition.get("accepted_spec_digest") or ""
+        ).strip()
+        if not accepted_spec_digest:
+            raise ValueError("accepted_spec_content is required for first setup")
+    provider = SQLiteProviderWorkAuthorityStore(_base_path()).get(
+        str(definition["provider_binding_id"])
+    )
+    if provider is None:
+        raise ValueError("requester-owned provider binding is unavailable")
+    scenario = repository_spec_baseline_scenario()
+    derived = {
+        "schema_version": 1,
+        "accepted_spec_digest": accepted_spec_digest,
+        "branch_def_id": version.branch_def_id,
+        "branch_content_digest": f"sha256:{version.content_hash}",
+        "acceptance_scenario_id": scenario.scenario_id,
+        "acceptance_scenario_digest": acceptance_scenario_digest(scenario),
+        "input_artifact_digests": [
+            accepted_spec_digest,
+            f"sha256:{version.content_hash}",
+        ],
+        "destination_purpose": "pull_request",
+        "max_attempts": 2,
+        "max_provider_invocations": min(provider.max_invocations, 64),
+        "max_wall_time_seconds": 3600,
+        "max_tokens": provider.max_tokens,
+        "max_cost_microunits": provider.max_cost_microunits,
+    }
+    for field, value in derived.items():
+        if field in raw_definition and raw_definition[field] != value:
+            label = field.replace("_", " ")
+            raise ValueError(f"{label} assertion does not match server-derived value")
+        definition[field] = value
+    return definition
+
+
 def _projection(
     control: CloudAutomationControl,
     *,
@@ -308,8 +379,9 @@ def cloud_automations(
             raw_definition = document.get("definition")
             if not isinstance(raw_definition, dict):
                 raise ValueError("payload_json.definition must be an object")
-            server_definition = _hydrate_server_owned_prerequisites(
+            server_definition = _derive_phone_work_definition(
                 raw_definition,
+                accepted_spec_content=document.get("accepted_spec_content"),
                 actor=actor,
                 universe_id=uid,
             )

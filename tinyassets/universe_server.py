@@ -675,13 +675,17 @@ def write_graph(
         agent_stage_id: Private import stage for operation=publish_stage.
         payload_json: Agent definition, portable import, or private binding JSON.
             For target=automation operation=create, pass
-            {"definition": {<RepositorySpecWorkDefinition fields>},
+            {"definition": {"repository": "owner/repository",
+            "accepted_spec_ref": "openspec/specs/capability/spec.md",
+            "branch_version_id": "branch_id@version"},
             "accepted_spec_content": "<exact accepted spec text>",
             "cadence_seconds": 300, "operator": {"display_name": "...",
             "soul_text": "user-authored operating principles"}}. The server
-            derives principal_id and universe_id from authenticated context;
-            caller-supplied owner values grant no authority. Provider and
-            destination references must already be requester-owned and active.
+            derives ownership, immutable digests, policy, provider binding,
+            and destination grant from authenticated server-held state;
+            caller-supplied derived values are assertions and grant no
+            authority. Provider and destination references must already be
+            requester-owned and active.
             For target=agent operation=publish or remix, pass schema_version=1,
             a non-empty name, description, tags, and components. For a remix,
             lineage is keyed by each child component key; each value is a

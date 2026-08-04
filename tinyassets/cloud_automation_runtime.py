@@ -20,6 +20,7 @@ from tinyassets.cloud_automation_continuation import (
 )
 from tinyassets.cloud_automation_control import (
     CloudAutomationDesiredState,
+    CloudAutomationProviderClaimFence,
     CloudAutomationSliceTrigger,
     CloudAutomationTerminalKind,
     CloudAutomationTerminalRequest,
@@ -203,15 +204,33 @@ class _ExactAudienceResolver:
         self,
         audience: BackgroundBranchExecutorAudience,
         *,
+        base_path: Path,
+        provider_store: SQLiteProviderWorkAuthorityStore,
         universe_id: str,
     ) -> None:
         self._audience = audience
+        self._base_path = base_path
+        self._provider_store = provider_store
         self._universe_id = universe_id
 
     def resolve(self, *, continuation, branch_task_id: str):
         if continuation.universe_id != self._universe_id:
             return None
         if not branch_task_id:
+            return None
+        binding = self._provider_store.get(continuation.provider_binding_id)
+        if binding is None:
+            return None
+        from tinyassets.daemon_registry import runtime_matches_worker_provider
+
+        if not runtime_matches_worker_provider(
+            self._base_path,
+            universe_id=self._universe_id,
+            runtime_instance_id=self._audience.runtime_id,
+            daemon_id=self._audience.daemon_id,
+            worker_id=self._audience.worker_id,
+            provider_name=binding.provider,
+        ):
             return None
         return self._audience
 
@@ -233,6 +252,11 @@ def produce_one_due_cloud_automation_slice(
     now_clock = clock or (lambda: datetime.now(timezone.utc))
     root = Path(base_path)
     controls = CloudAutomationControlStore(root, clock=now_clock)
+    provider_store = SQLiteProviderWorkAuthorityStore(root, clock=now_clock)
+    continuation_store = SQLiteCloudAutomationContinuationStore(
+        root,
+        clock=now_clock,
+    )
     automation_ids = controls.list_claimable_automation_ids(
         universe_id=universe_id,
         principal_id=principal_id,
@@ -241,14 +265,43 @@ def produce_one_due_cloud_automation_slice(
     if not automation_ids:
         return None
     trigger = None
+    continuation = None
     for automation_id in automation_ids:
-        trigger = controls.claim_due(
+        candidate = continuation_store.get(
+            universe_id=universe_id,
+            automation_id=automation_id,
+        )
+        if candidate is None:
+            continue
+        if (
+            _ExactAudienceResolver(
+                audience,
+                base_path=root,
+                provider_store=provider_store,
+                universe_id=universe_id,
+            ).resolve(
+                continuation=candidate,
+                branch_task_id="pre_claim_provider_fence",
+            )
+            is None
+        ):
+            continue
+        trigger = controls.claim_due_for_worker(
             universe_id=universe_id,
             automation_id=automation_id,
             claimed_by=audience.worker_id,
             lease_seconds=claim_lease_seconds,
+            provider_fence=CloudAutomationProviderClaimFence(
+                provider_binding_id=candidate.provider_binding_id,
+                provider_binding_generation=candidate.provider_binding_generation,
+                provider_binding_digest=candidate.provider_binding_digest,
+                daemon_id=audience.daemon_id,
+                runtime_id=audience.runtime_id,
+                worker_id=audience.worker_id,
+            ),
         )
         if trigger is not None:
+            continuation = candidate
             break
     if trigger is None:
         return None
@@ -256,15 +309,6 @@ def produce_one_due_cloud_automation_slice(
     definition = trigger.definition
     activation_store = AutomationActivationStore(root, clock=now_clock)
     background_store = SQLiteBackgroundBranchAuthorityStore(root)
-    provider_store = SQLiteProviderWorkAuthorityStore(root, clock=now_clock)
-    continuation_store = SQLiteCloudAutomationContinuationStore(
-        root,
-        clock=now_clock,
-    )
-    continuation = continuation_store.get(
-        universe_id=trigger.universe_id,
-        automation_id=trigger.automation_id,
-    )
     if continuation is None:
         raise PermissionError("prepared cloud continuation is unavailable")
     binding = background_store.get_binding(continuation.background_binding_id)
@@ -312,6 +356,8 @@ def produce_one_due_cloud_automation_slice(
         request_admission_store=RequestAdmissionStore(root, clock=now_clock),
         audience_resolver=_ExactAudienceResolver(
             audience,
+            base_path=root,
+            provider_store=provider_store,
             universe_id=trigger.universe_id,
         ),
         clock=now_clock,
@@ -422,6 +468,8 @@ def activate_one_requested_cloud_automation(
             request_admission_store=admission_store,
             audience_resolver=_ExactAudienceResolver(
                 audience,
+                base_path=root,
+                provider_store=provider_store,
                 universe_id=universe_id,
             ),
             clock=now_clock,
@@ -435,11 +483,19 @@ def activate_one_requested_cloud_automation(
                 due_at=now_clock(),
             )
         if initial.status is CloudAutomationTriggerStatus.PENDING:
-            initial = controls.claim_due(
+            initial = controls.claim_due_for_worker(
                 universe_id=universe_id,
                 automation_id=control.automation_id,
                 claimed_by=audience.worker_id,
                 lease_seconds=claim_lease_seconds,
+                provider_fence=CloudAutomationProviderClaimFence(
+                    provider_binding_id=continuation.provider_binding_id,
+                    provider_binding_generation=continuation.provider_binding_generation,
+                    provider_binding_digest=continuation.provider_binding_digest,
+                    daemon_id=audience.daemon_id,
+                    runtime_id=audience.runtime_id,
+                    worker_id=audience.worker_id,
+                ),
             )
         if initial is None:
             continue

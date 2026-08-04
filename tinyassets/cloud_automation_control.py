@@ -116,6 +116,33 @@ class CloudAutomationTriggerStatus(str, Enum):
     EMITTED = "emitted"
 
 
+@dataclass(frozen=True, slots=True)
+class CloudAutomationProviderClaimFence:
+    """Exact requester-provider and physical-worker identity for Trigger claim."""
+
+    provider_binding_id: str
+    provider_binding_generation: int
+    provider_binding_digest: str
+    daemon_id: str
+    runtime_id: str
+    worker_id: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "provider_binding_id",
+            "daemon_id",
+            "runtime_id",
+            "worker_id",
+        ):
+            _text(getattr(self, name), name)
+        _integer(
+            self.provider_binding_generation,
+            "provider_binding_generation",
+            minimum=1,
+        )
+        _digest(self.provider_binding_digest, "provider_binding_digest")
+
+
 class CloudAutomationTerminalKind(str, Enum):
     MERGED = "merged"
     PARTIAL = "partial"
@@ -977,6 +1004,7 @@ __all__ = [
     "CloudAutomationControl",
     "CloudAutomationDesiredState",
     "CloudAutomationHealth",
+    "CloudAutomationProviderClaimFence",
     "CloudAutomationSliceTrigger",
     "CloudAutomationTerminalKind",
     "CloudAutomationTerminalReceipt",
