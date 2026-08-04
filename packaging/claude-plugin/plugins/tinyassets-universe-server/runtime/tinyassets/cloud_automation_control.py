@@ -269,6 +269,39 @@ class CloudAutomationControl:
             updated_at=timestamp(parse_timestamp(updated_at, "updated_at")),
         )
 
+    def rebind(
+        self,
+        definition: RepositorySpecWorkDefinition,
+        *,
+        updated_at: str,
+    ) -> CloudAutomationControl:
+        """Bind a stopped control to another immutable version."""
+        if self.desired_state is not CloudAutomationDesiredState.STOPPED:
+            raise ValueError("automation must be stopped before rebind")
+        if not isinstance(definition, RepositorySpecWorkDefinition):
+            raise ValueError("definition must be a RepositorySpecWorkDefinition")
+        if (
+            definition.principal_id != self.principal_id
+            or definition.universe_id != self.universe_id
+            or definition.branch_def_id != self.definition.branch_def_id
+        ):
+            raise ValueError("rebind definition changes automation ownership or lineage")
+        return CloudAutomationControl(
+            schema_version=self.schema_version,
+            universe_id=self.universe_id,
+            automation_id=self.automation_id,
+            principal_id=self.principal_id,
+            definition_json=_canonical_json(definition.to_dict()),
+            definition_digest=definition.definition_digest,
+            baseline_evaluation_json=_canonical_json(
+                _baseline_evaluation_receipt(definition)
+            ),
+            cadence_seconds=self.cadence_seconds,
+            revision=self.revision + 1,
+            desired_state=CloudAutomationDesiredState.ACTIVE,
+            updated_at=timestamp(parse_timestamp(updated_at, "updated_at")),
+        )
+
     @property
     def definition(self) -> RepositorySpecWorkDefinition:
         return RepositorySpecWorkDefinition.from_dict(json.loads(self.definition_json))

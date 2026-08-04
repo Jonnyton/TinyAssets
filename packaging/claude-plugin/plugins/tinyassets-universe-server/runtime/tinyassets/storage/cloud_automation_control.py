@@ -382,6 +382,65 @@ class CloudAutomationControlStore:
                 conn.rollback()
                 raise
 
+    def rebind_control(
+        self,
+        *,
+        expected: CloudAutomationControl,
+        definition: RepositorySpecWorkDefinition,
+    ) -> CloudAutomationControl:
+        """CAS a stopped control onto a newly prepared immutable version."""
+        updated = expected.rebind(definition, updated_at=self._now())
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_controls
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (expected.universe_id, expected.automation_id),
+                ).fetchone()
+                activation = self._current_activation_row(
+                    conn,
+                    expected.universe_id,
+                    expected.automation_id,
+                )
+                if (
+                    row is None
+                    or _control(row) != expected
+                    or activation is None
+                    or activation["state"] != AutomationActivationState.STOPPED.value
+                ):
+                    raise PermissionError("control_fence_not_current")
+                cursor = conn.execute(
+                    """
+                    UPDATE cloud_automation_controls
+                    SET definition_json = ?, definition_digest = ?,
+                        revision = ?, desired_state = ?, updated_at = ?, record_json = ?
+                    WHERE universe_id = ? AND automation_id = ?
+                      AND revision = ? AND record_json = ?
+                    """,
+                    (
+                        updated.definition_json,
+                        updated.definition_digest,
+                        updated.revision,
+                        updated.desired_state.value,
+                        updated.updated_at,
+                        _json(updated),
+                        expected.universe_id,
+                        expected.automation_id,
+                        expected.revision,
+                        _json(expected),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PermissionError("control_fence_not_current")
+                conn.commit()
+                return updated
+            except Exception:
+                conn.rollback()
+                raise
+
     @staticmethod
     def _insert_trigger(
         conn: sqlite3.Connection,

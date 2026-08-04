@@ -24,6 +24,7 @@ from tinyassets.background_branch_authority_service import (
 )
 from tinyassets.cloud_automation_continuation import (
     CloudContinuationWriteOutcome,
+    CloudContinuationWriteResult,
     PreparedCloudContinuationRequest,
     prepare_inactive_cloud_continuation,
 )
@@ -101,6 +102,7 @@ def prepare_cloud_automation(
     cadence_seconds: int,
     operator_display_name: str,
     operator_soul_text: str,
+    expected_control: CloudAutomationControl | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> CloudAutomationSetupResult:
     """Prepare a stopped activation that a matching cloud worker can start."""
@@ -114,6 +116,17 @@ def prepare_cloud_automation(
         raise ValueError("cadence_seconds must be an integer")
     if cadence_seconds < 60:
         raise ValueError("cadence_seconds must be at least 60")
+    if expected_control is not None:
+        if not isinstance(expected_control, CloudAutomationControl):
+            raise ValueError("expected_control must be a CloudAutomationControl")
+        if (
+            expected_control.automation_id != clean_automation_id
+            or expected_control.universe_id != definition.universe_id
+            or expected_control.principal_id != definition.principal_id
+            or expected_control.desired_state.value != "stopped"
+        ):
+            raise ValueError("automation must be stopped by its owner before rebind")
+        cadence_seconds = expected_control.cadence_seconds
     root = Path(base_path)
     now = (clock or (lambda: datetime.now(timezone.utc)))()
     if now.tzinfo is None or now.utcoffset() is None:
@@ -252,28 +265,65 @@ def prepare_cloud_automation(
     if binding is None:
         raise RuntimeError("cloud automation background binding was not created")
     continuation_store = SQLiteCloudAutomationContinuationStore(root, clock=lambda: now)
-    prepared = prepare_inactive_cloud_continuation(
-        definition,
-        request=PreparedCloudContinuationRequest(
-            automation_id=clean_automation_id,
-            background_binding_id=binding.binding_id,
-        ),
-        activation_store=activation_store,
-        background_store=background_store,
-        provider_store=provider_store,
-        connection_ledger=ledger,
-        continuation_store=continuation_store,
-        clock=lambda: now,
+    current_continuation = continuation_store.get(
+        universe_id=definition.universe_id,
+        automation_id=clean_automation_id,
     )
+    if (
+        expected_control is not None
+        and current_continuation is not None
+        and current_continuation.definition_digest
+        != expected_control.definition_digest
+        and (
+            current_continuation.definition_digest != definition.definition_digest
+            or current_continuation.branch_version_id != definition.branch_version_id
+        )
+    ):
+        raise PermissionError("a different immutable rebind is already prepared")
+    if (
+        expected_control is not None
+        and current_continuation is not None
+        and current_continuation.definition_digest == definition.definition_digest
+        and current_continuation.branch_version_id == definition.branch_version_id
+    ):
+        prepared = CloudContinuationWriteResult(
+            CloudContinuationWriteOutcome.REPLAYED,
+            current_continuation,
+        )
+    else:
+        prepared = prepare_inactive_cloud_continuation(
+            definition,
+            request=PreparedCloudContinuationRequest(
+                automation_id=clean_automation_id,
+                background_binding_id=binding.binding_id,
+            ),
+            activation_store=activation_store,
+            background_store=background_store,
+            provider_store=provider_store,
+            connection_ledger=ledger,
+            continuation_store=continuation_store,
+            expected_current=(
+                current_continuation if expected_control is not None else None
+            ),
+            clock=lambda: now,
+        )
     if prepared.outcome not in {
         CloudContinuationWriteOutcome.APPLIED,
         CloudContinuationWriteOutcome.REPLAYED,
     } or prepared.record is None:
         raise ValueError("cloud automation continuation conflicts with existing setup")
-    control = CloudAutomationControlStore(root, clock=lambda: now).create_control(
-        definition,
-        automation_id=clean_automation_id,
-        cadence_seconds=cadence_seconds,
+    control_store = CloudAutomationControlStore(root, clock=lambda: now)
+    control = (
+        control_store.create_control(
+            definition,
+            automation_id=clean_automation_id,
+            cadence_seconds=cadence_seconds,
+        )
+        if expected_control is None
+        else control_store.rebind_control(
+            expected=expected_control,
+            definition=definition,
+        )
     )
     return CloudAutomationSetupResult(
         control=control,

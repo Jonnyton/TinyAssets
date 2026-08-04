@@ -371,6 +371,61 @@ def cloud_automations(
     if normalized == "get":
         return _projection(control, limit=limit)
 
+    if normalized == "rebind":
+        if expected_revision != control.revision:
+            return {
+                "error": "automation_revision_conflict",
+                "expected_revision": expected_revision,
+                "current_revision": control.revision,
+            }
+        try:
+            document = json.loads(payload) if isinstance(payload, str) else payload
+            if not isinstance(document, dict):
+                raise ValueError("payload_json must be a JSON object")
+            raw_definition = document.get("definition")
+            if not isinstance(raw_definition, dict):
+                raise ValueError("payload_json.definition must be an object")
+            definition = RepositorySpecWorkDefinition.from_dict(
+                _hydrate_server_owned_prerequisites(
+                    raw_definition,
+                    actor=actor,
+                    universe_id=uid,
+                )
+            )
+            if "accepted_spec_content" in document:
+                stage_accepted_spec(
+                    _base_path(),
+                    accepted_spec_ref=definition.accepted_spec_ref,
+                    content=document["accepted_spec_content"],
+                    expected_digest=definition.accepted_spec_digest,
+                )
+            setup = prepare_cloud_automation(
+                _base_path(),
+                definition,
+                automation_id=automation_id,
+                cadence_seconds=control.cadence_seconds,
+                operator_display_name="",
+                operator_soul_text="",
+                expected_control=control,
+            )
+        except _AutomationPrerequisiteError as exc:
+            return {
+                "error": "automation_setup_required",
+                "detail": str(exc),
+                "prerequisites": exc.prerequisites,
+            }
+        except (TypeError, ValueError, PermissionError) as exc:
+            return {"error": "automation_rebind_invalid", "detail": str(exc)}
+        result = _projection(setup.control, limit=limit)
+        result.update(
+            {
+                "status": "activation_requested",
+                "daemon_id": setup.daemon_id,
+                "continuation_id": setup.continuation_id,
+            }
+        )
+        return result
+
     desired = {
         "pause": CloudAutomationDesiredState.PAUSED,
         "resume": CloudAutomationDesiredState.ACTIVE,
@@ -380,7 +435,15 @@ def cloud_automations(
         return {
             "error": "unknown_automation_action",
             "action": action,
-            "allowed_actions": ["create", "get", "list", "pause", "resume", "stop"],
+            "allowed_actions": [
+                "create",
+                "get",
+                "list",
+                "pause",
+                "rebind",
+                "resume",
+                "stop",
+            ],
         }
     if expected_revision != control.revision:
         return {

@@ -632,6 +632,7 @@ def _prepared_record(
     provider: Any,
     destination: Any,
     created_at: str,
+    generation: int = 1,
 ) -> PreparedCloudContinuation:
     identity = {
         "automation_id": request.automation_id,
@@ -642,7 +643,7 @@ def _prepared_record(
     provisional = PreparedCloudContinuation(
         schema_version=1,
         continuation_id=("cloud_cont_" + _content_digest(identity).removeprefix("sha256:")[:32]),
-        generation=1,
+        generation=generation,
         continuation_digest=_PLACEHOLDER_DIGEST,
         state=CloudContinuationState.PREPARED,
         principal_id=definition.principal_id,
@@ -681,6 +682,7 @@ def prepare_inactive_cloud_continuation(
     provider_store: Any,
     connection_ledger: Any,
     continuation_store: Any,
+    expected_current: PreparedCloudContinuation | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> CloudContinuationWriteResult:
     """Persist one exact prepared continuation without granting execution."""
@@ -790,8 +792,17 @@ def prepare_inactive_cloud_continuation(
         provider=authority,
         destination=authority,
         created_at=created_at,
+        generation=(1 if expected_current is None else expected_current.generation + 1),
     )
     try:
+        if expected_current is not None:
+            return continuation_store.replace_prepared(
+                record,
+                expected_current=expected_current,
+                expected_activation=activation,
+                expected_background=background,
+                expected_provider=provider_binding,
+            )
         return continuation_store.prepare(
             record,
             expected_activation=activation,

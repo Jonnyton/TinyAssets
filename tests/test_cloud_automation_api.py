@@ -589,9 +589,6 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
     )
     from tinyassets.daemon_registry import ensure_daemon_runtime, select_project_loop_daemon
     from tinyassets.storage.automation_activations import AutomationActivationStore
-    from tinyassets.storage.cloud_automation_continuation import (
-        SQLiteCloudAutomationContinuationStore,
-    )
 
     definition = _seed_setup_authority(tmp_path)
     monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
@@ -645,11 +642,6 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
         "universe_alice", "automation_spec_drain"
     )
     assert activation is not None and activation.state.value == "stopped"
-    continuation = SQLiteCloudAutomationContinuationStore(tmp_path).get(
-        universe_id="universe_alice",
-        automation_id="automation_spec_drain",
-    )
-    assert continuation is not None
     daemon = select_project_loop_daemon(
         tmp_path,
         universe_id="universe_alice",
@@ -697,6 +689,151 @@ def test_owner_can_prepare_cloud_activation_from_chatbot_payload(
         "universe_alice", "automation_spec_drain"
     )
     assert active is not None and active.state.value == "active"
+
+
+def test_phone_rebinds_and_rolls_back_to_published_branch_versions(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+    from tinyassets.branch_versions import get_branch_version, publish_branch_version
+    from tinyassets.cloud_automation_control import CloudAutomationDesiredState
+    from tinyassets.cloud_automation_setup import prepare_cloud_automation
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.storage.cloud_automation_continuation import (
+        SQLiteCloudAutomationContinuationStore,
+    )
+    from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
+
+    original = _seed_setup_authority(tmp_path)
+    setup = prepare_cloud_automation(
+        tmp_path,
+        original,
+        automation_id="automation_spec_drain",
+        cadence_seconds=300,
+        operator_display_name="Alice Cloud Builder",
+        operator_soul_text="Run Alice's published repository workflow.",
+        clock=lambda: NOW,
+    )
+    controls = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    stopped = controls.set_desired_state(
+        expected=setup.control,
+        desired_state=CloudAutomationDesiredState.STOPPED,
+    )
+    original_version = get_branch_version(tmp_path, original.branch_version_id)
+    assert original_version is not None
+    edited_snapshot = json.loads(json.dumps(original_version.snapshot))
+    edited_snapshot["node_defs"][0]["prompt_template"] = (
+        "Apply the evolved accepted specification safely."
+    )
+    save_branch_definition(tmp_path, branch_def=edited_snapshot)
+    evolved_version = publish_branch_version(
+        tmp_path,
+        edited_snapshot,
+        publisher="acct_alice",
+    )
+    evolved_raw = original.to_dict()
+    evolved_raw["branch_version_id"] = evolved_version.branch_version_id
+    evolved_raw["branch_content_digest"] = f"sha256:{evolved_version.content_hash}"
+    evolved_raw["input_artifact_digests"] = [
+        evolved_raw["accepted_spec_digest"],
+        evolved_raw["branch_content_digest"],
+    ]
+    evolved = RepositorySpecWorkDefinition.from_dict(evolved_raw)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    rebound = cloud_automations.cloud_automations(
+        action="rebind",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        expected_revision=stopped.revision,
+        payload={"definition": evolved.to_dict()},
+    )
+
+    assert rebound["status"] == "activation_requested"
+    assert rebound["automation"]["revision"] == stopped.revision + 1
+    assert rebound["definition"]["branch_version_id"] == evolved.branch_version_id
+    continuation = SQLiteCloudAutomationContinuationStore(tmp_path).get(
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+    )
+    assert continuation is not None
+    assert continuation.generation == 2
+    assert continuation.branch_version_id == evolved.branch_version_id
+
+    rebound_control = controls.get_control(
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+    )
+    assert rebound_control is not None
+    restopped = controls.set_desired_state(
+        expected=rebound_control,
+        desired_state=CloudAutomationDesiredState.STOPPED,
+    )
+    rolled_back = cloud_automations.cloud_automations(
+        action="rebind",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        expected_revision=restopped.revision,
+        payload={"definition": original.to_dict()},
+    )
+    assert rolled_back["status"] == "activation_requested"
+    assert rolled_back["definition"]["branch_version_id"] == original.branch_version_id
+    rolled_back_continuation = SQLiteCloudAutomationContinuationStore(tmp_path).get(
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+    )
+    assert rolled_back_continuation is not None
+    assert rolled_back_continuation.generation == 3
+
+
+def test_phone_rebind_requires_current_stopped_owner_control(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import cloud_automations, permissions
+    from tinyassets.cloud_automation_setup import prepare_cloud_automation
+
+    definition = _seed_setup_authority(tmp_path)
+    setup = prepare_cloud_automation(
+        tmp_path,
+        definition,
+        automation_id="automation_spec_drain",
+        cadence_seconds=300,
+        operator_display_name="Alice Cloud Builder",
+        operator_soul_text="Run Alice's published repository workflow.",
+        clock=lambda: NOW,
+    )
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    active = cloud_automations.cloud_automations(
+        action="rebind",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        expected_revision=setup.control.revision,
+        payload={"definition": definition.to_dict()},
+    )
+    stale = cloud_automations.cloud_automations(
+        action="rebind",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        expected_revision=setup.control.revision + 1,
+        payload={"definition": definition.to_dict()},
+    )
+
+    assert active["error"] == "automation_rebind_invalid"
+    assert "must be stopped" in active["detail"]
+    assert stale == {
+        "error": "automation_revision_conflict",
+        "expected_revision": setup.control.revision + 1,
+        "current_revision": setup.control.revision,
+    }
 
 
 def test_phone_create_rejects_accepted_spec_content_with_wrong_digest(

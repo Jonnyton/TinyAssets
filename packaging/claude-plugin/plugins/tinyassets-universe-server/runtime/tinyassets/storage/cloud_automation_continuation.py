@@ -327,6 +327,135 @@ class SQLiteCloudAutomationContinuationStore:
             record,
         )
 
+    def replace_prepared(
+        self,
+        record: PreparedCloudContinuation,
+        *,
+        expected_current: PreparedCloudContinuation,
+        expected_activation: AutomationActivation,
+        expected_background: BackgroundBranchBinding,
+        expected_provider: ProviderWorkBinding,
+    ) -> CloudContinuationWriteResult:
+        """CAS a stopped lane onto another immutable Branch version."""
+        if not all(
+            (
+                isinstance(record, PreparedCloudContinuation),
+                isinstance(expected_current, PreparedCloudContinuation),
+                isinstance(expected_activation, AutomationActivation),
+                isinstance(expected_background, BackgroundBranchBinding),
+                isinstance(expected_provider, ProviderWorkBinding),
+            )
+        ):
+            raise ValueError("continuation rebind requires canonical records")
+        exact = (
+            record.universe_id == expected_current.universe_id,
+            record.automation_id == expected_current.automation_id,
+            record.principal_id == expected_current.principal_id,
+            record.branch_def_id == expected_current.branch_def_id,
+            record.provider_binding_id == expected_current.provider_binding_id,
+            record.destination_grant_id == expected_current.destination_grant_id,
+            record.generation == expected_current.generation + 1,
+            record.activation_epoch == expected_activation.epoch,
+            record.continuation_digest == record.expected_digest(),
+        )
+        if not all(exact):
+            raise ValueError("continuation rebind changes immutable lane identity")
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current_row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_continuations
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (record.universe_id, record.automation_id),
+                ).fetchone()
+                if current_row is None or _record(current_row) != expected_current:
+                    raise PermissionError("prepared_continuation_not_current")
+                activation = conn.execute(
+                    """
+                    SELECT 1 FROM automation_activations
+                    WHERE universe_id = ? AND automation_id = ? AND epoch = ?
+                      AND state = 'stopped' AND executor_class IS NULL
+                      AND subject_ref IS NULL AND subject_digest IS NULL
+                      AND lease_id IS NULL AND updated_at = ?
+                    """,
+                    (
+                        expected_activation.universe_id,
+                        expected_activation.automation_id,
+                        expected_activation.epoch,
+                        expected_activation.updated_at,
+                    ),
+                ).fetchone()
+                background = conn.execute(
+                    """
+                    SELECT record_json FROM background_branch_bindings
+                    WHERE binding_id = ? AND generation = ? AND status = 'active'
+                    """,
+                    (expected_background.binding_id, expected_background.generation),
+                ).fetchone()
+                provider = conn.execute(
+                    """
+                    SELECT record_json FROM provider_work_bindings
+                    WHERE binding_id = ? AND generation = ? AND state = 'active'
+                    """,
+                    (expected_provider.binding_id, expected_provider.generation),
+                ).fetchone()
+                if not all(
+                    (
+                        activation is not None,
+                        background is not None
+                        and background["record_json"]
+                        == json.dumps(
+                            expected_background.to_dict(),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        provider is not None
+                        and provider["record_json"]
+                        == json.dumps(
+                            expected_provider.to_dict(),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    )
+                ):
+                    raise PermissionError("continuation_rebind_authority_changed")
+                cursor = conn.execute(
+                    """
+                    UPDATE cloud_automation_continuations
+                    SET continuation_id = ?, generation = ?,
+                        continuation_digest = ?, record_json = ?
+                    WHERE universe_id = ? AND automation_id = ?
+                      AND continuation_id = ? AND generation = ?
+                      AND continuation_digest = ? AND record_json = ?
+                    """,
+                    (
+                        record.continuation_id,
+                        record.generation,
+                        record.continuation_digest,
+                        _json(record),
+                        record.universe_id,
+                        record.automation_id,
+                        expected_current.continuation_id,
+                        expected_current.generation,
+                        expected_current.continuation_digest,
+                        _json(expected_current),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PermissionError("prepared_continuation_not_current")
+                conn.commit()
+                return CloudContinuationWriteResult(
+                    CloudContinuationWriteOutcome.APPLIED,
+                    record,
+                )
+            except Exception:
+                conn.rollback()
+                raise
+
     def advance_for_trigger(
         self,
         record: PreparedCloudContinuation,
