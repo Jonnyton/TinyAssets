@@ -283,6 +283,8 @@ jobs:
       # repo variable WORKOS_REQUIRE_AUTH='0' for anon-read + auth-write instead.
       HAS_WORKOS_CONFIG: ${{ secrets.WORKOS_AUTHKIT_DOMAIN != '' }}
       WORKOS_AUTHKIT_DOMAIN: ${{ secrets.WORKOS_AUTHKIT_DOMAIN }}
+      # Pipes server calls (connected-account authorization and token vending)
+      # use the same WorkOS environment as AuthKit; keep this secret server-only.
       HAS_WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY != '' }}
       WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
       WORKOS_MCP_RESOURCE: ${{ vars.WORKOS_MCP_RESOURCE || 'https://tinyassets.io/mcp' }}
