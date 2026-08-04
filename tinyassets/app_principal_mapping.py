@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,8 @@ from tinyassets.storage.app_principal_mappings import (
     AppPrincipalMappingStore,
     StoredAppPrincipalMapping,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AppPrincipalMappingError(PermissionError):
@@ -181,7 +184,11 @@ class AppPrincipalMappingService:
                 binding_revision=target.binding_revision,
                 membership_generation=_membership_generation(acl_rows[0]),
             )
-        except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
+        except (KeyError, TypeError, ValueError, OSError, sqlite3.Error) as exc:
+            logger.debug(
+                "founder-binding authority revalidation failed closed (%s)",
+                type(exc).__name__,
+            )
             return None
 
 

@@ -192,6 +192,23 @@ def test_acl_regrant_fences_old_mapping_and_new_generation(tmp_path: Path) -> No
     assert replacement.mapping.mapping_generation == created.mapping.mapping_generation + 1
 
 
+def test_revoke_is_idempotent_for_same_generation(tmp_path: Path) -> None:
+    target = _target_fixture(tmp_path)
+    service = AppPrincipalMappingService(tmp_path)
+    event = _event()
+    created = service.provision(event, resolve_target=lambda _: target)
+
+    first = service.revoke(
+        event,
+        expected_generation=created.mapping.mapping_generation,
+    )
+    second = service.revoke(
+        event,
+        expected_generation=created.mapping.mapping_generation,
+    )
+    assert first == second
+
+
 def test_binding_revision_change_fences_mapping(tmp_path: Path) -> None:
     target = _target_fixture(tmp_path)
     service = AppPrincipalMappingService(tmp_path)

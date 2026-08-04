@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from tinyassets.storage import db_path
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9._:-]+\Z")
 _GENERATION = re.compile(r"[a-z0-9:_-]+\Z")
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_principal_mappings (
@@ -262,8 +264,30 @@ class AppPrincipalMappingStore:
                     keys,
                 ).fetchone()
                 if row is None:
-                    raise AppPrincipalMappingNotFound(
-                        "no active external principal mapping exists"
+                    latest = conn.execute(
+                        """
+                        SELECT * FROM app_principal_mappings
+                        WHERE provider = ? AND installation_id = ?
+                          AND workspace_id = ? AND external_sender_id = ?
+                        ORDER BY mapping_generation DESC
+                        LIMIT 1
+                        """,
+                        keys,
+                    ).fetchone()
+                    if latest is None:
+                        raise AppPrincipalMappingNotFound(
+                            "no external principal mapping exists"
+                        )
+                    current = _record_from_row(latest)
+                    if current.mapping_generation != expected_generation:
+                        raise AppPrincipalMappingGenerationConflict(
+                            "mapping generation is stale"
+                        )
+                    if current.status == "revoked":
+                        conn.commit()
+                        return current
+                    raise AppPrincipalMappingIntegrityError(
+                        "mapping status is neither active nor revoked"
                     )
                 current = _record_from_row(row)
                 if current.mapping_generation != expected_generation:
