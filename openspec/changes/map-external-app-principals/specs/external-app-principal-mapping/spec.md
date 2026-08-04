@@ -16,7 +16,7 @@ The system SHALL construct mapping evidence only from a verifier-produced, proce
 
 ### Requirement: Provisioning resolves one founder-owned target without caller-selected authority
 
-The system SHALL provision a mapping only from a sealed authenticated event and a trusted server-owned setup resolver. The resolver SHALL select the TinyAssets subject, founder-home universe, agent binding, and expected binding revision; no caller-provided external IDs, subject IDs, universe IDs, binding IDs, roles, generations, message text, mentions, channels, or display names SHALL select authority.
+The system SHALL provision a mapping only from a sealed authenticated event and a trusted server-owned setup resolver that receives an external-principal key containing provider, installation, workspace, and sender IDs but no payload or request metadata. The resolver SHALL select the TinyAssets subject, founder-home universe, agent binding, and expected binding revision; no caller-provided external IDs, subject IDs, universe IDs, binding IDs, roles, generations, message text, mentions, channels, or display names SHALL select authority.
 
 #### Scenario: Current founder target is provisioned
 
@@ -69,4 +69,3 @@ The mapping capability SHALL NOT issue custody, runtime, workflow, outbound, Sla
 
 - **WHEN** a mapping is provisioned or resolved
 - **THEN** the result contains only typed identity/binding references and generations, with no invocation grant, custody token, route, or external effect
-

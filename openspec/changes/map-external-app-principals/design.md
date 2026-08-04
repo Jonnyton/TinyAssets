@@ -30,7 +30,7 @@ Alternative rejected: accepting a receipt or caller-supplied `(installation, wor
 
 ### 2. Use a trusted setup resolver, not client-selected target fields
 
-`AppPrincipalMappingService.provision(event, resolve_target=...)` receives only the sealed event and a server-owned resolver callback. The callback returns the candidate TinyAssets subject/universe/binding tuple; it is not an HTTP/MCP input seam. The service validates the returned target shape and then re-reads current stores before persisting it.
+`AppPrincipalMappingService.provision(event, resolve_target=...)` converts the sealed event into an `ExternalAppPrincipalKey` containing only provider, installation, workspace, and sender IDs, then passes that key to a server-owned resolver callback. The callback never receives message payload, raw body, headers, or a public request object; it returns the candidate TinyAssets subject/universe/binding tuple. The service validates the returned target shape and then re-reads current stores before persisting it.
 
 Alternative rejected: adding `subject_id`, `universe_id`, `binding_id`, role, or generation parameters to a public operation. Those fields would let a caller mint a self-consistent but unauthorized mapping.
 
