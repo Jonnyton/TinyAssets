@@ -7,7 +7,32 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, final
 
+from tinyassets.exceptions import FantasyAuthorError
+
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class ExecutionAdmissionReason(StrEnum):
+    REQUIREMENT_MISSING = "requirement_missing"
+    REQUIREMENT_UNTRUSTED = "requirement_untrusted"
+    REQUIREMENT_MALFORMED = "requirement_malformed"
+    BINDING_MISMATCH = "binding_mismatch"
+    PROFILE_UNSUPPORTED = "profile_unsupported"
+    ISOLATION_UNSATISFIED = "isolation_unsatisfied"
+    BACKEND_UNAVAILABLE = "backend_unavailable"
+    BACKEND_PROTOCOL_MISMATCH = "backend_protocol_mismatch"
+    BACKEND_EVIDENCE_INVALID = "backend_evidence_invalid"
+
+
+class ExecutionAdmissionError(FantasyAuthorError):
+    """Terminal refusal shared by every execution-admission owner."""
+
+    def __init__(self, reason: ExecutionAdmissionReason | str) -> None:
+        try:
+            self.reason = ExecutionAdmissionReason(reason)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"unknown execution admission reason: {reason!r}") from exc
+        super().__init__(self.reason.value)
 
 
 class ExecutionWorkload(StrEnum):
@@ -137,6 +162,8 @@ def derive_source_requirement(
 
 
 __all__ = [
+    "ExecutionAdmissionError",
+    "ExecutionAdmissionReason",
     "ExecutionProfile",
     "ExecutionRequirement",
     "ExecutionWorkload",
