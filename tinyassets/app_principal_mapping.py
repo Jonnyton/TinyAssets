@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -180,7 +181,7 @@ class AppPrincipalMappingService:
                 binding_revision=target.binding_revision,
                 membership_generation=_membership_generation(acl_rows[0]),
             )
-        except (KeyError, TypeError, ValueError, OSError):
+        except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
             return None
 
 

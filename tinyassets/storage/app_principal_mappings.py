@@ -243,8 +243,12 @@ class AppPrincipalMappingStore:
         keys = _validated_external(
             provider, installation_id, workspace_id, external_sender_id
         )
-        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool):
-            raise ValueError("expected_generation must be an integer")
+        if (
+            not isinstance(expected_generation, int)
+            or isinstance(expected_generation, bool)
+            or expected_generation < 1
+        ):
+            raise ValueError("expected_generation must be a positive integer")
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
