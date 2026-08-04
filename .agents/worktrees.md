@@ -2363,3 +2363,14 @@ Notes:
 - Review gate: RED/GREEN authority tests, strict OpenSpec, mirror parity, independent exact-head security review, required CI.
 - Publish/cleanup: one dark-core PR; no public route, app, workflow, effect, deployment, or production activation; remove after verified merge.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-authority-20260803/_PURPOSE.md`.
+
+## 2026-08-03 - Fold back custom-agent runtime activation authority
+
+- Provider: `codex-gpt5-desktop`.
+- Branch: `foldback/agent-runtime-activation-20260803`.
+- Lane state: Foldback after PR #2230 merged as `1a799ae8` with hosted checks green.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-foldback-20260803`.
+- Purpose: retire the landed activation claim and preserve whole-core operational evidence as open.
+- Review gate: strict OpenSpec, diff check, exact merge/check receipt.
+- Publish/cleanup: coordination-only PR, then remove both merged activation worktrees when clean.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-activation-foldback-20260803/_PURPOSE.md`.
