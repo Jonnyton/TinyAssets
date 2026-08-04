@@ -71,8 +71,27 @@ on:
   #
   # Wasting a free runner is the cheaper failure than a required check that can
   # quietly pass without running.
+  #
+  # WHY HOURLY, and why not tighter. Detection latency for a regression in the
+  # excluded files is bounded by this interval, and delivery is fractional, so
+  # the declared rate has to be well above the rate you actually want. `17 */3`
+  # (8/day declared) delivered 2 runs in the first ~11h it was live.
+  #
+  # The floor is the job's own runtime: `full-tests` measured 36 and 38 minutes
+  # on the two scheduled runs. Scheduling faster than it finishes just stacks
+  # overlapping runs — non-PR runs get a unique concurrency group
+  # (`github.run_id`) with cancel-in-progress false, so they do NOT displace
+  # each other, they pile up. Hourly is the tightest cron that cannot overlap
+  # itself, with ~20 min of margin.
+  #
+  # Chaining off the merge instead was considered and does not work. The
+  # GITHUB_TOKEN suppression in hard rule 14 is not specific to `push` — events
+  # raised by that token start no workflow run at all, so `pull_request:
+  # [closed]` would miss exactly the app-performed merges that are the normal
+  # path here, in precisely the way `push: main` already does. A PAT-performed
+  # merge would fire, but that is a host credential decision, not a workflow one.
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 # `pull_request`, deliberately NOT `pull_request_target`: testing a PR means

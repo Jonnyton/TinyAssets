@@ -155,6 +155,38 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
                 )
 
 
+def test_schedule_cannot_start_a_run_before_the_last_one_finishes() -> None:
+    """At most one scheduled start per hour, because `full-tests` takes ~38 min.
+
+    This is the invariant that bounds how far the cadence can be tightened, and
+    it is easy to get backwards. Scheduled runs do NOT displace each other:
+    `test_non_pr_runs_never_cancel_or_queue_behind_each_other` pins non-PR runs
+    to a unique concurrency group with cancel-in-progress false, deliberately,
+    so that a scheduled run cannot be killed by the next one. The consequence
+    is that a sub-hourly cron does not "run more often" — it stacks overlapping
+    copies of a 38-minute job.
+
+    Measured on the two scheduled runs that have executed: 36 and 38 minutes
+    (30858019064, 30875123887). Hourly leaves ~20 minutes of margin.
+
+    Checked on the MINUTE field alone: if the minute is a single fixed value
+    there is at most one start per hour whatever the hour field says, so this
+    stays green for `17 * * * *` and for `17 */3 * * *`, and goes red for
+    `*/20 * * * *` or `17,47 * * * *`. If `full-tests` is ever made materially
+    faster, relax this test in the same commit that proves the new duration —
+    do not delete it, because the pile-up it prevents is silent.
+    """
+    for entry in _triggers(_load())["schedule"]:
+        minute = str(entry["cron"]).split()[0]
+        assert re.fullmatch(r"\d{1,2}", minute), (
+            f"cron {entry['cron']!r} starts more than once an hour (minute "
+            f"field {minute!r}). `full-tests` runs 36-38 min and scheduled runs "
+            f"use a unique concurrency group with cancel-in-progress false, so "
+            f"they do not replace each other — they pile up. Use a single fixed "
+            f"minute, or prove a shorter runtime first."
+        )
+
+
 def test_full_tests_runs_on_every_non_pr_event() -> None:
     """Pinned exactly — a narrower condition would re-strand the tripwire."""
     condition = _expr(_load()["jobs"]["full-tests"].get("if", ""))
