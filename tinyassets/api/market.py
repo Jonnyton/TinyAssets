@@ -2567,7 +2567,10 @@ def _dispatch_goal_action(
     and formats it as the structured ``local_edit_conflict`` payload so
     chat clients render actionable options rather than a raw traceback.
     """
-    from tinyassets.api.branches import _append_global_ledger
+    from tinyassets.api.branches import (
+        _append_global_ledger,
+        _request_branch_actor,
+    )
     from tinyassets.api.engine_helpers import (
         _format_dirty_file_conflict,
         _truncate,
@@ -2613,6 +2616,13 @@ def _dispatch_goal_action(
             summary_bits.append(f"branch={kwargs['branch_def_id']}")
         _append_global_ledger(
             f"goals.{action}",
+            # `actor` is REQUIRED and was omitted here, so every goals ledger
+            # write raised TypeError, was swallowed by the except below, and
+            # logged as a warning — silently losing the attribution row for
+            # every goals write action. Resolved the same way branch actions
+            # resolve it: the credential-validated request subject, never an
+            # env actor.
+            actor=_request_branch_actor() or "",
             target=str(target),
             summary=_truncate(" ".join(summary_bits)),
             payload=None,
