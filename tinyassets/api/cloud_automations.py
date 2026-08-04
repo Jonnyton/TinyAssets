@@ -405,7 +405,7 @@ def cloud_automations(
         return _not_found()
     store = CloudAutomationControlStore(_base_path())
 
-    if normalized in {"bind_provider", "reconcile_provider", "rebind_provider"}:
+    if normalized in {"bind_provider", "reconcile_provider", "rebind", "rebind_provider"}:
         try:
             document = json.loads(payload) if isinstance(payload, str) else payload
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -435,7 +435,7 @@ def cloud_automations(
                 universe_id=uid,
                 provider=provider,
             )
-            if normalized == "rebind_provider":
+            if normalized in {"rebind", "rebind_provider"}:
                 matching = [
                     item
                     for item in provider_store.list_bindings(
