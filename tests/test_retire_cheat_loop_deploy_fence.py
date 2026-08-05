@@ -6354,14 +6354,41 @@ def test_an_exactly_named_stopped_extra_consumer_clears_that_gate(tmp_path):
         assert "extra production-volume consumers" not in str(exc)
 
 
-def test_retirement_refuses_a_running_extra_consumer(tmp_path):
+def test_retirement_refuses_a_container_that_is_running_right_now(tmp_path):
+    """The gate is the LIVE container, not the recorded flag."""
     host = LifecycleHost(tmp_path)
     state_path = tmp_path / "state.json"
     _unsafe_recovery_state(host, state_path)
-    _record_extra_consumer(state_path, "tinyassets-worker-founder", running=True)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+    host.containers["tinyassets-worker-founder"] = {
+        "Id": "c" * 64,
+        "State": {"Running": True, "Pid": 42},
+        "HostConfig": {"RestartPolicy": {"Name": "always"}},
+    }
 
     with pytest.raises(FenceError, match="RUNNING extra volume consumer"):
         _validate(host, state_path, retire=("tinyassets-worker-founder",))
+
+
+def test_retirement_refuses_when_it_cannot_prove_the_container_is_stopped(
+    tmp_path,
+):
+    """Fail closed: an inspection error is not proof of absence.
+
+    Otherwise a transient docker failure would retire the record for a
+    container that is actually still writing to the production volume.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-ghost-uninspectable")
+
+    with pytest.raises(FenceError, match="cannot prove"):
+        _validate(
+            host,
+            state_path,
+            retire=("tinyassets-worker-ghost-uninspectable",),
+        )
 
 
 def test_retirement_can_never_target_an_expected_fleet_container(tmp_path):
@@ -6384,19 +6411,3 @@ def test_retirement_refuses_a_name_that_was_never_recorded(tmp_path):
 
     with pytest.raises(FenceError, match="unrecorded extra volume consumer"):
         _validate(host, state_path, retire=("tinyassets-worker-ghost",))
-
-
-def test_retirement_rechecks_the_live_container_not_just_the_record(tmp_path):
-    """A record saying 'stopped' is not proof it is stopped NOW."""
-    host = LifecycleHost(tmp_path)
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    _record_extra_consumer(state_path, "tinyassets-worker-founder")
-    host.containers["tinyassets-worker-founder"] = {
-        "Id": "c" * 64,
-        "State": {"Running": True, "Pid": 42},
-        "HostConfig": {"RestartPolicy": {"Name": "always"}},
-    }
-
-    with pytest.raises(FenceError, match="running again on the host"):
-        _validate(host, state_path, retire=("tinyassets-worker-founder",))
