@@ -90,14 +90,58 @@ This is also what the platform model requires — a universe is a user's account
 and many users each run their own. A single host-global marker choosing which
 universe the whole fleet serves cannot survive a second user.
 
-## Smallest unblock (host decision)
+## Do NOT "fix" this by repointing the marker
 
-Repoint `/data/.active_universe` at `u-01kxm1vszd8hwp7em418asq8h9`. Spawn
-registration, child universe, descriptor, and beat directory then align, and
-the four pending slices become claimable.
+`superseded: 2026-08-05` — an earlier revision of this audit proposed
+repointing `/data/.active_universe` at the founder home as the smallest
+unblock. Host reframe, same day: **the provider-shaped platform worker fleet
+is the relic being phased out.** Users bring their own LLM; the only LLMs on
+the platform should be ones users host to their universes or rent onto the
+market. Repointing the marker would make four slices run tonight by deepening
+the dependency on platform-owned workers — the wrong direction.
 
-Tradeoff: the marker is fleet-global, so this moves **every** worker off
-`concordance`. Note `concordance` is currently being worked by the
-`fantasy_daemon` route and has been producing 0 words across 98 chapters, so
-the practical cost looks low — but that is an observation, not a verified
-finding, and the call is the host's.
+The stall is a *symptom* of the relic, not an ops incident. Recorded here so
+the next session does not re-derive the marker fix and ship it.
+
+## What the relic actually is
+
+Three couplings make the current path platform-owned rather than user-owned:
+
+1. **Workers are provider-shaped containers.** `claude-1`, `claude-2`,
+   `codex-1`, `codex-2` exist so that a user binding naming provider `X` can
+   find a live runtime stamped with provider `X`:
+   `cloud_automation_runtime.resolve` refuses the audience unless
+   `runtime_matches_worker_provider(..., provider_name=binding.provider)`
+   (`daemon_registry.py:810-835`), and a runtime's `provider_name` comes from
+   the *container's* `--provider` flag (`cloud_worker.py:987-999`). N providers
+   x M users cannot be pre-provisioned as containers.
+2. **Credential resolution fails open.**
+   `credential_vault.py:596-628` returns env overrides only when a
+   per-universe credential exists; otherwise the slice inherits whatever
+   ambient `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_HOME` the container carries —
+   the maintainer's. Invisible with one user (the founder *is* the host);
+   a cross-tenant identity leak at scale. This is STATUS concern R2-1 and is
+   still live in code.
+3. **The scheduler is a platform container** whose served universe comes from
+   the fleet-global marker described above.
+
+## Where the correct design already exists
+
+- `openspec/changes/activate-requester-owned-cloud-compute-binding` — owner
+  -scoped enrollment + `bind_provider`, budgets, credential-reference digests,
+  explicitly no maintainer/market fallback. Built through task 3.1; **3.2
+  (focused tests + independent security review) and 3.3 (deploy the dark bind
+  path and reconcile one enrollment through the rendered phone connector)
+  remain open.**
+- `openspec/changes/distributed-execution` — the signed job/lease/result
+  protocol, real sandbox backend, and authenticated execution route that
+  replace provider-shaped containers. **25 tasks done, 83 open.**
+- `openspec/changes/activate-custom-agent-runtime-core` (10 done / 2 open) and
+  `activate-custom-agent-runtimes` (3 / 5) — the custom cloud agent lane
+  another session is driving.
+- `openspec/changes/owner-operable-automation` — 0 done / 9 open.
+
+The architecture is specced and largely correct. What is missing is the part
+that makes it *user-owned in fact*: closing the credential fail-open, and
+replacing provider-shaped platform containers with an execution route that
+runs a slice on the requester's own compute.
