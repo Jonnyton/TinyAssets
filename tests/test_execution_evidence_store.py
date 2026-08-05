@@ -950,9 +950,16 @@ def test_invalid_parent_path_is_not_created(
 ) -> None:
     database = tmp_path / "missing" / "authority.sqlite"
 
-    with pytest.raises(evidence_api.EvidenceSchemaError, match="parent"):
+    # Match the stable prefix, not the platform-specific tail. The guard has
+    # ~10 distinct messages and which one fires for a missing parent depends on
+    # the OS's directory-open path (Linux picked an "ancestor" wording, so
+    # match="parent" failed there). "evidence database" still pins that this is
+    # the evidence-store guard rather than some unrelated error.
+    with pytest.raises(evidence_api.EvidenceSchemaError, match="evidence database"):
         evidence_api.ExecutionEvidenceStore(database, initialize=True)
 
+    # These two are the invariant the test is NAMED for, and they are exact:
+    # a rejected open must not have created anything on the way to failing.
     assert not database.parent.exists()
     assert not database.exists()
 
