@@ -240,7 +240,13 @@ def test_scoped_canary_token_uses_constant_time_compare(monkeypatch):
     [
         (None, _CANARY_TOKEN),
         ("short", "short"),
-        ("\ud800" * 32, _CANARY_TOKEN),
+        # A 32-char configured value that is NOT the presented token. It used
+        # to be a lone surrogate repeated 32x, which cannot exist here: a lone
+        # surrogate is not encodable as UTF-8, so `setenv` raises on POSIX.
+        # Windows env is UTF-16, which is why this only ever failed on Linux.
+        # Non-ASCII is kept — exercising a non-ASCII configured token is the
+        # point; being unrepresentable is not.
+        (chr(0x00FF) * 32, _CANARY_TOKEN),
         (_CANARY_TOKEN, "x" * 32),
     ],
 )
