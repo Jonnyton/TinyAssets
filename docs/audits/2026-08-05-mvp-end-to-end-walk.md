@@ -76,6 +76,32 @@ same fixture-versus-production spelling gap.
 actually mints") fixes it — open, **draft**, unreviewed, `required-tests` red.
 Live production repro attached there as a comment. Not fixed here.
 
+### #2292 verified sufficient for automation creation
+
+Applied PR #2292's head (`098ee63a`) in a throwaway detached worktree and drove
+its validator with the exact shapes production mints:
+
+| value | field | result |
+|---|---|---|
+| `36370cd19f90` | `branch_def_id` | **accept** |
+| `36370cd19f90@6373b09b` | `branch_version_id` | **accept** |
+| `36370cd19f90@6373b09b` | `pinned_branch_version_id` | **accept** |
+| `36370cd19f90@6373b09b` | `branch_def_id` | reject (cross-shape confusion) |
+| `36370cd19f90` | `branch_version_id` | reject (cross-shape confusion) |
+| `sk-secretbearertoken123` | `branch_def_id` | reject (bearer) |
+
+The fix is **field-aware**: a nominal prefix short-circuits, otherwise a
+*per-field* canonical pattern applies (`_CANONICAL_REFERENCE_PATTERNS`). So it
+admits the real shapes, still refuses bearer-shaped values, and additionally
+refuses def-id/version-id confusion. `tests/test_cloud_automation_api.py` +
+`tests/test_background_branch_authority.py` under that head: **152 passed, 1
+failed** — the single failure being the rollback defect below, which also fails
+on plain `origin/main` and is therefore **independent of #2292**.
+
+**Conclusion: #2292 is necessary and sufficient to unblock automation
+creation.** Nothing else stands between a published Branch version and a bound
+cloud automation.
+
 ### Related: automation rollback violates its documented contract
 
 `tests/test_cloud_automation_api.py::test_phone_rebinds_and_rolls_back_to_published_branch_versions`
