@@ -450,3 +450,136 @@ def test_a_user_token_stored_as_the_bot_token_is_refused(universe):
 
     assert "xoxb-" in str(exc.value)
     assert "under a person's name" in str(exc.value)
+
+
+# --- Round 4 -----------------------------------------------------------------
+
+
+def test_a_malformed_vault_never_exposes_its_contents(universe):
+    """CRITICAL: `JSONDecodeError.doc` holds the ENTIRE vault file.
+
+    Chaining it handed every credential for every service — GitHub tokens, LLM
+    keys, Slack tokens — to any traceback or error collector. This is not a
+    Slack-specific leak; it was in the shared vault loader.
+    """
+    import traceback as _tb
+
+    from tinyassets.credential_vault import credential_vault_path
+
+    secret = "xoxb-EVERY-SECRET-IN-THE-VAULT"
+    credential_vault_path(universe).write_text(
+        '{"credentials":[{"credential_type":"social","service":"slack",'
+        f'"bot_token":"{secret}"}}] BROKEN',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        resolve_credentials(_config())
+
+    rendered = "".join(
+        _tb.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert secret not in rendered
+    assert secret not in repr(exc.value.__context__)
+    assert exc.value.__context__ is None, "no JSONDecodeError may survive"
+    assert "line" in str(exc.value), "the position is still reported"
+
+
+def test_a_rotated_user_token_is_refused_at_post_time(universe):
+    """CRITICAL/TOCTOU: the bot token is re-read on every post.
+
+    Validating only at startup meant a vault rotated to an `xoxp-` user token
+    afterwards was used anyway — and a user token posts under a HUMAN's name,
+    so the agent silently impersonates whoever installed the app.
+    """
+    from tinyassets.app_reply_authority import ReplyDestination
+    from tinyassets.effectors.slack_transport import (
+        SlackTransportError,
+        build_slack_transport,
+    )
+
+    _deposit(universe)
+    post = build_slack_transport(universe)  # built while the token was valid
+    _deposit(universe, bot_token="xoxp-EXAMPLE-NOT-A-REAL-TOKEN")  # rotated after
+
+    with pytest.raises(SlackTransportError) as exc:
+        post(
+            ReplyDestination(
+                provider="slack", connection_id=CONNECTION, address="C0123"
+            ),
+            "hello",
+        )
+
+    assert "not a bot token" in str(exc.value)
+
+
+def test_the_universe_directory_cannot_move_under_a_running_agent(
+    universe, monkeypatch, tmp_path
+):
+    """The data root is resolved once and cached.
+
+    A review moved TINYASSETS_DATA_DIR mid-flight so credential resolution and
+    conversation disagreed about which universe they were serving.
+    """
+    config = _config()
+    first = config.universe_dir
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "somewhere-else"))
+
+    assert config.universe_dir == first, "the answer must not change mid-run"
+
+
+def test_an_event_for_a_different_slack_app_is_refused(universe):
+    """CRITICAL: two apps can share a workspace.
+
+    `team_id` alone matched, so App B's mention was answered by App A's agent —
+    wrong bot, wrong credentials. Defence in depth (a socket only carries one
+    app's events), but the code should not need that to be safe.
+    """
+    config = SlackAgentConfig(
+        universe_id=UNIVERSE_ID,
+        connection_id=CONNECTION,
+        team_id=TEAM,
+        bot_user_id=BOT_USER,
+        api_app_id="A111",
+    )
+    resolve = build_resolver(config)
+
+    assert resolve({"team_id": TEAM, "api_app_id": "A111", "user": HUMAN}) is not None
+    assert resolve({"team_id": TEAM, "api_app_id": "A222", "user": HUMAN}) is None
+    assert resolve({"team_id": TEAM, "user": HUMAN}) is None, "absent is refused"
+
+
+def test_an_unconfigured_app_id_does_not_break_the_bound_workspace(universe):
+    """Empty means 'do not check' — a hard requirement would break setup."""
+    resolve = build_resolver(_config())
+
+    assert resolve({"team_id": TEAM, "api_app_id": "A222", "user": HUMAN}) is not None
+
+
+def test_an_inner_api_app_id_cannot_stand_in_for_the_authenticated_one(universe):
+    """Same stripping rule as team_id, for the same reason."""
+    from tinyassets.effectors.slack_socket_mode import event_of, parse_envelope
+
+    frame = json.dumps(
+        {
+            "type": "events_api",
+            "envelope_id": "E-app",
+            "payload": {
+                "type": "event_callback",
+                "team_id": TEAM,
+                "event_id": "Ev-app",
+                "event": {
+                    "type": "app_mention",
+                    "user": HUMAN,
+                    "api_app_id": "A111",
+                    "text": "hi",
+                    "channel": "C1",
+                    "ts": "1.0",
+                },
+            },
+        }
+    )
+    event = event_of(parse_envelope(frame))
+
+    assert "api_app_id" not in event

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -47,7 +48,7 @@ class SlackAgentConfigError(RuntimeError):
     """The service cannot start. Carries no credential material."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)  # not slots=True: cached_property needs a __dict__
 class SlackAgentConfig:
     """What one running Slack agent needs to know.
 
@@ -67,6 +68,12 @@ class SlackAgentConfig:
     connection_id: str
     team_id: str
     bot_user_id: str
+    #: Optional. When set, events for any other Slack app are refused. Two apps
+    #: can share a workspace, and a review answered App B's mention through App
+    #: A's agent — wrong bot, wrong credentials. Empty means "do not check",
+    #: because the app id is not always knowable at startup and a hard
+    #: requirement would break setup rather than secure it.
+    api_app_id: str = ""
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -78,9 +85,15 @@ class SlackAgentConfig:
             if not isinstance(value, str) or not value.strip():
                 raise SlackAgentConfigError(f"slack agent needs a {name}")
 
-    @property
+    @cached_property
     def universe_dir(self) -> Path:
-        """The one directory this universe id resolves to. Never a second input."""
+        """The one directory this universe id resolves to. Never a second input.
+
+        Cached, so the answer cannot change under a running agent. It resolves
+        against `TINYASSETS_DATA_DIR`, and a review moved that env var
+        mid-flight to make credential resolution and conversation disagree
+        about which universe they were serving.
+        """
         from tinyassets.api.helpers import _universe_dir
 
         try:
@@ -107,6 +120,11 @@ def build_resolver(config: SlackAgentConfig):
         if not isinstance(team, str) or team.strip() != config.team_id:
             logger.info("slack agent: event from an unbound workspace, ignoring")
             return None
+        if config.api_app_id:
+            app_id = event.get("api_app_id")
+            if not isinstance(app_id, str) or app_id.strip() != config.api_app_id:
+                logger.info("slack agent: event for a different app, ignoring")
+                return None
         user = event.get("user")
         if not isinstance(user, str) or not user.strip():
             return None

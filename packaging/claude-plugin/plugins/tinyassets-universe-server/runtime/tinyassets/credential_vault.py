@@ -265,10 +265,19 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     path = credential_vault_path(universe_dir)
     if not path.is_file():
         return []
+    payload = None
+    malformed = ""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise ValueError(f"credential vault is not valid JSON: {exc}") from exc
+        # `exc.doc` is the ENTIRE vault file — every token for every service.
+        # Chaining it, or interpolating `exc`, hands the whole thing to any
+        # traceback, log, or error collector. Keep only the position, and raise
+        # after this handler exits so no chain survives (`from None` clears
+        # __cause__ but leaves __context__).
+        malformed = f"line {exc.lineno} column {exc.colno}"
+    if malformed:
+        raise ValueError(f"credential vault is not valid JSON at {malformed}")
     return _records_from_payload(payload)
 
 

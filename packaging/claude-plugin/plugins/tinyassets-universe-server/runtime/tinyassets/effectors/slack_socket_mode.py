@@ -20,6 +20,24 @@ than defending against it:
 
 The remaining risks are the ones inherent to answering messages at all, and each
 guard below names the one it exists for.
+
+Two findings from review are accepted rather than fixed, and stated here so
+nobody has to rediscover that the decision was deliberate:
+
+* **A credential is reachable via `exc.__traceback__.tb_frame.f_locals`.** True,
+  and true of every Python function that holds a secret in a local or a
+  parameter. The exception chain is scrubbed (see `open_socket_url`), but frame
+  locals are a property of the language, not of this module; removing the
+  exposure would mean never binding a token to a name. Anything walking frame
+  locals already has in-process execution, at which point the vault is readable
+  directly.
+* **Acknowledgement is head-of-line blocked behind each turn.** The pump awaits
+  the handler before reading the next frame, so a slow turn delays the ack of
+  the frames behind it and can provoke redelivery. `asyncio.to_thread` keeps the
+  event loop free but does not make the pump concurrent. The fix is to dispatch
+  turns as tasks with a bounded pool, which is a real design change — it needs
+  per-conversation ordering guarantees so two messages in one thread cannot be
+  answered out of order. Deferred, not overlooked.
 """
 
 from __future__ import annotations
@@ -152,6 +170,15 @@ def event_of(envelope: SocketEnvelope) -> Mapping[str, Any] | None:
     if not isinstance(event, Mapping):
         return None
     normalised = dict(event)
+    # Same treatment as team_id: the authenticated value is on the payload, and
+    # an absent one must not leave an inner value standing in for it. A socket
+    # only carries one app's events, so this is defence in depth rather than the
+    # primary control — but the code should not have to rely on that to be safe.
+    api_app_id = payload.get("api_app_id")
+    if isinstance(api_app_id, str) and api_app_id.strip():
+        normalised["api_app_id"] = api_app_id.strip()
+    else:
+        normalised.pop("api_app_id", None)
     team_id = payload.get("team_id")
     if isinstance(team_id, str) and team_id.strip():
         normalised["team_id"] = team_id.strip()

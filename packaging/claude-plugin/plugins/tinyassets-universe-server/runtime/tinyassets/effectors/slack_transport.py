@@ -40,6 +40,9 @@ SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 #: Slack rejects oversized posts; bound the body before we spend a round trip.
 _MAX_BODY_BYTES = 40_000
 
+#: Bot tokens only. An `xoxp-` user token posts under a person's name.
+BOT_TOKEN_PREFIX = "xoxb-"
+
 _DEFAULT_TIMEOUT_SECONDS = 15.0
 
 
@@ -146,6 +149,16 @@ def build_slack_transport(
             # "deliver with whatever token happens to be around".
             raise SlackTransportError(
                 "no requester-owned slack credential for this connection"
+            )
+        if not token.startswith(BOT_TOKEN_PREFIX):
+            # Checked HERE, not only at startup. The token is re-read from the
+            # vault on every post (so rotation is picked up), which makes a
+            # startup-only check time-of-check/time-of-use: a review swapped in
+            # an `xoxp-` user token after validation and the already-built
+            # transport used it. A user token posts under a HUMAN's name, so
+            # the agent would silently impersonate whoever installed the app.
+            raise SlackTransportError(
+                "the stored slack credential is not a bot token"
             )
 
         payload: dict[str, Any] = {"channel": destination.address, "text": text}

@@ -35,6 +35,7 @@ from tinyassets.effectors.slack_agent_service import (  # noqa: E402
     SlackAgentConfigError,
     run_slack_agent,
 )
+from tinyassets.effectors.slack_errors import safe_error_code  # noqa: E402
 
 AUTH_TEST_URL = "https://slack.com/api/auth.test"
 
@@ -52,17 +53,23 @@ def identify(bot_token: str) -> tuple[str, str, str]:
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
+    # Raised after the handler exits: `from None` leaves the token-bearing
+    # URLError on __context__. And Slack's in-band `error` is upstream text
+    # that has been seen quoting the credential, so it is allow-listed.
+    result = None
+    failure = ""
     try:
         with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"Slack returned HTTP {exc.code} for auth.test") from None
-    except Exception:  # noqa: BLE001 - the cause may quote the Authorization header
-        raise SystemExit("Could not reach Slack to identify this app") from None
+        failure = f"Slack returned HTTP {exc.code} for auth.test"
+    except Exception:  # noqa: BLE001
+        failure = "Could not reach Slack to identify this app"
+    if failure:
+        raise SystemExit(failure)
     if not result.get("ok"):
-        raise SystemExit(
-            f"Slack rejected the bot token: {result.get('error') or 'unknown_error'}"
-        )
+        code = safe_error_code(result.get("error"), default="unknown_error")
+        raise SystemExit(f"Slack rejected the bot token: {code}")
     return (
         str(result.get("team_id") or ""),
         str(result.get("user_id") or ""),

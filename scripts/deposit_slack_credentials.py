@@ -40,11 +40,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tinyassets.credential_vault import write_credential_vault  # noqa: E402
+from tinyassets.credential_vault import (  # noqa: E402
+    load_credential_vault,
+    write_credential_vault,
+)
+from tinyassets.effectors.slack_errors import safe_error_code  # noqa: E402
 from tinyassets.effectors.slack_socket_mode import is_app_token  # noqa: E402
 
 AUTH_TEST_URL = "https://slack.com/api/auth.test"
 CONNECTIONS_OPEN_URL = "https://slack.com/api/apps.connections.open"
+BOT_TOKEN_PREFIX = "xoxb-"
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
 
@@ -60,22 +65,39 @@ def _call(url: str, token: str) -> dict:
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
+    # Every failure is raised AFTER the handler exits. `from None` clears
+    # __cause__ but leaves __context__ holding the URLError, whose message
+    # quotes the Authorization header — a review read the token out of it.
+    result = None
+    failure = ""
     try:
         with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
-            return json.loads(response.read().decode("utf-8"))
+            result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"Slack returned HTTP {exc.code} for {url}") from None
-    except Exception:  # noqa: BLE001 - the cause may quote the Authorization header
-        raise SystemExit(f"Could not reach Slack at {url}") from None
+        failure = f"Slack returned HTTP {exc.code} for {url}"
+    except Exception:  # noqa: BLE001
+        failure = f"Could not reach Slack at {url}"
+    if failure:
+        raise SystemExit(failure)
+    return result
 
 
 def verify_bot_token(token: str) -> tuple[str, str, str]:
     """Return (team_id, bot_user_id, team_name), or exit with the reason."""
+    if not token.startswith(BOT_TOKEN_PREFIX):
+        # `auth.test` succeeds for a USER token too, so a green setup could
+        # deposit a credential that posts under a person's name. The service
+        # refuses it later; refusing it here is where someone is watching.
+        raise SystemExit(
+            "That is not a bot token. A user (xoxp-) token would post replies "
+            "under your own name, not the app's."
+        )
     result = _call(AUTH_TEST_URL, token)
     if not result.get("ok"):
-        raise SystemExit(
-            f"Bot token rejected by Slack: {result.get('error') or 'unknown_error'}"
-        )
+        # Slack's `error` is upstream text and has been seen echoing the
+        # credential back; allow-list it to a real code.
+        code = safe_error_code(result.get("error"), default="unknown_error")
+        raise SystemExit(f"Bot token rejected by Slack: {code}")
     return (
         str(result.get("team_id") or ""),
         str(result.get("user_id") or ""),
@@ -93,7 +115,7 @@ def verify_app_token(token: str) -> None:
         )
     result = _call(CONNECTIONS_OPEN_URL, token)
     if not result.get("ok"):
-        error = str(result.get("error") or "unknown_error")
+        error = safe_error_code(result.get("error"), default="unknown_error")
         hint = ""
         if error == "not_allowed_token_type":
             hint = " (this looks like a bot or user token, not an app-level one)"
@@ -139,6 +161,22 @@ def main() -> int:
     if not universe_dir.is_dir():
         raise SystemExit(f"No such universe directory: {universe_dir}")
 
+    # Token TYPE is checked unconditionally. `--skip-verify` skips the network
+    # round trip, not the local sanity checks — a review pointed out it was
+    # skipping both, so a deposit could "succeed" with a credential the service
+    # refuses at startup, or worse, one that posts under a person's name.
+    if not bot_token.startswith(BOT_TOKEN_PREFIX):
+        raise SystemExit(
+            "That is not a bot token. A user (xoxp-) token would post replies "
+            "under your own name, not the app's."
+        )
+    if not is_app_token(app_token):
+        raise SystemExit(
+            "That is not an app-level token. Socket Mode needs the xapp- token "
+            "from 'Basic Information -> App-Level Tokens', with the "
+            "connections:write scope — not the xoxb- bot token."
+        )
+
     team_id = bot_user_id = team_name = ""
     if not args.skip_verify:
         print("Verifying the bot token with Slack...")
@@ -155,7 +193,20 @@ def main() -> int:
         "bot_token": bot_token,
         "app_token": app_token,
     }
-    summary = write_credential_vault(universe_dir, [record])
+    # UPSERT, not replace. write_credential_vault treats a single record as an
+    # upsert keyed on (credential_type, service) — which for Slack ignores the
+    # connection, so depositing a second workspace silently deleted the first.
+    # A review reproduced that data loss. Merge by destination ourselves.
+    existing = [
+        r
+        for r in load_credential_vault(universe_dir)
+        if not (
+            r.get("credential_type") == "social"
+            and str(r.get("service") or "").lower() == "slack"
+            and str(r.get("destination") or "") == args.connection
+        )
+    ]
+    summary = write_credential_vault(universe_dir, [*existing, record])
 
     print()
     print(f"Deposited into {universe_dir}")
