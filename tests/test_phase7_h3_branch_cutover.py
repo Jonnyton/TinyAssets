@@ -57,7 +57,7 @@ def _init_repo(path: Path) -> None:
 
 
 @pytest.fixture
-def repo_env(tmp_path, monkeypatch):
+def repo_env(tmp_path, monkeypatch, authenticate_request):
     """Real git repo with output/ inside; backend auto-probes to Cached."""
     _init_repo(tmp_path)
     base = tmp_path / "output"
@@ -66,6 +66,13 @@ def repo_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
     monkeypatch.delenv("TINYASSETS_GIT_AUTHOR", raising=False)
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin; `extensions.costly` stays withheld so a
+    # costly-refusal test would still assert something.
+    authenticate_request("alice")
     # Re-anchor the cached backend at the tmp repo by changing cwd.
     monkeypatch.chdir(tmp_path)
 
@@ -81,7 +88,7 @@ def repo_env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def no_git_env(tmp_path, monkeypatch):
+def no_git_env(tmp_path, monkeypatch, authenticate_request):
     """No git repo at parent — backend auto-probes to SqliteOnly."""
     base = tmp_path / "output"
     base.mkdir()
@@ -89,6 +96,7 @@ def no_git_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.delenv("TINYASSETS_STORAGE_BACKEND", raising=False)
     monkeypatch.chdir(tmp_path)
+    authenticate_request("tester")
 
     from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
@@ -102,7 +110,7 @@ def no_git_env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def sqlite_only_env(tmp_path, monkeypatch):
+def sqlite_only_env(tmp_path, monkeypatch, authenticate_request):
     """Explicit sqlite_only — YAML/git pathway disabled regardless of repo."""
     _init_repo(tmp_path)
     base = tmp_path / "output"
@@ -111,6 +119,7 @@ def sqlite_only_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_only")
     monkeypatch.chdir(tmp_path)
+    authenticate_request("tester")
 
     from tinyassets.catalog import invalidate_backend_cache
     invalidate_backend_cache()
