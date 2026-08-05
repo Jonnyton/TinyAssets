@@ -232,6 +232,12 @@ jobs:
           attempt=0
           until python scripts/mcp_public_canary.py               --url "${CANARY_URL}" --assert-name TinyAssets --verbose; do
             if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::group::daemon diagnostics"
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  'sudo docker ps -a --format "{{.Names}} {{.Status}}"; echo ---DAEMON-LOGS---; sudo docker logs tinyassets-daemon --tail 120 2>&1; echo ---TUNNEL-LOGS---; sudo docker logs tinyassets-tunnel --tail 40 2>&1' \
+                  || true
+              echo "::endgroup::"
               echo "::error::recovery canary never went green within 240s"
               exit 1
             fi
