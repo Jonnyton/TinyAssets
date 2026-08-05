@@ -16,11 +16,16 @@ import time
 import pytest
 from starlette.testclient import TestClient
 
-from tinyassets.app_slack_ingress import API_APP_ID_ENV, SIGNING_SECRET_ENV
+from tinyassets.app_slack_ingress import (
+    API_APP_ID_ENV,
+    MAX_UNAUTHENTICATED_BODY_BYTES,
+    SIGNING_SECRET_ENV,
+    TEAM_IDS_ENV,
+)
 from tinyassets.universe_server import create_streamable_http_app
 
 INGRESS_PATH = "/mcp/app/slack/events"
-SECRET = "route-signing-key"
+SECRET = "route-signing-key-long-enough"
 APP_ID = "A0BN1Q98MTQ"
 
 
@@ -111,5 +116,71 @@ def test_forged_signature_is_refused_at_the_route(
     body = _handshake()
     headers = _signed(body, secret="attacker-key")
     response = client.post(INGRESS_PATH, content=body, headers=headers)
+
+    assert response.status_code == 401
+
+
+def test_oversize_body_is_rejected_at_the_route(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """Proves the limit at the INGRESS, not just inside the verifier.
+
+    The pre-existing size test handed already-allocated bytes straight to the
+    verifier, so it could never show that the HTTP layer refuses to buffer an
+    oversized body — a reviewer's counterexample. This one goes through the
+    actual route.
+    """
+    monkeypatch.setenv(SIGNING_SECRET_ENV, SECRET)
+    monkeypatch.setenv(API_APP_ID_ENV, APP_ID)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    oversized = b"x" * (MAX_UNAUTHENTICATED_BODY_BYTES + 1024)
+    response = client.post(
+        INGRESS_PATH,
+        content=oversized,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    # A pre-auth reject must disclose no more than a post-auth one.
+    assert response.text == "unauthorized"
+
+
+def test_signed_event_from_an_unlisted_workspace_is_refused_at_the_route(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """End-to-end form of the reviewer's demonstrated exploit."""
+    import hashlib as _h
+    import hmac as _hm
+    import json as _j
+
+    monkeypatch.setenv(SIGNING_SECRET_ENV, SECRET)
+    monkeypatch.setenv(API_APP_ID_ENV, APP_ID)
+    monkeypatch.setenv(TEAM_IDS_ENV, "T0BN5LK57FT")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    body = _j.dumps(
+        {
+            "type": "event_callback",
+            "api_app_id": APP_ID,
+            "team_id": "T_ATTACKER",
+            "event_id": "Ev_ATTACKER",
+            "event": {"type": "app_mention", "user": "U_ATTACKER", "text": "x"},
+        }
+    ).encode()
+    ts = str(int(time.time()))
+    sig = _hm.new(
+        SECRET.encode(), b"v0:" + ts.encode() + b":" + body, _h.sha256
+    ).hexdigest()
+
+    response = client.post(
+        INGRESS_PATH,
+        content=body,
+        headers={
+            "x-slack-request-timestamp": ts,
+            "x-slack-signature": f"v0={sig}",
+            "content-type": "application/json",
+        },
+    )
 
     assert response.status_code == 401

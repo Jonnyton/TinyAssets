@@ -90,6 +90,11 @@ services:
       # (or the vault), never inline in this file.
       TINYASSETS_SLACK_SIGNING_SECRET: ${TINYASSETS_SLACK_SIGNING_SECRET:-}
       TINYASSETS_SLACK_API_APP_ID: ${TINYASSETS_SLACK_API_APP_ID:-}
+      # Comma-separated Slack workspace (team) IDs allowed to deliver. The
+      # signing secret is per-APP, not per-workspace — every install signs
+      # with the same key — so without this any workspace where the app is
+      # installed can deliver validly-signed events. Empty admits nobody.
+      TINYASSETS_SLACK_TEAM_IDS: ${TINYASSETS_SLACK_TEAM_IDS:-}
     env_file:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env

@@ -102,3 +102,38 @@ that Slack can verify the Request URL and events stop being dropped on the floor
 | Secret absent in production ⇒ silently accepts | Fail-closed construction; a test that mutates the secret to empty must go red |
 | A green test suite that cannot detect the above | Mutation-probe the fail-closed paths before claiming coverage |
 | Publicly reachable attack surface | Cross-family security review **before** deploy, not after |
+
+## Security-review findings and their resolution
+
+An opposite-family (Codex) review of `4ee22abf`, framed as "refute that this is
+safe to expose publicly", returned **REJECT** with 9 findings. It demonstrated
+two live exploits rather than describing them. Resolution:
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | HIGH | Only `api_app_id` checked — any `team_id` admitted. Demonstrated: `{'unlisted_team_status': 200, 'admitted': True}` | `TINYASSETS_SLACK_TEAM_IDS` allow-list, enforced after authentication. Empty/absent admits nobody |
+| 2 | HIGH | A 1-character signing secret (`'0'`) constructed a verifier and admitted an event | `MIN_SIGNING_SECRET_LENGTH = 16`; Slack issues 32 hex chars |
+| 3 | HIGH | `request.body()` buffers before the 1 MiB check | Already fixed in `6b56d292`, which the review predates — `read_bounded_body` appears 0 times in its output |
+| 4 | HIGH | Sync SQLite admission inside the async route can block the event loop for the store's 30s busy timeout | Offloaded via `run_in_threadpool` |
+| 5 | MED | Unbounded ledger growth per accepted workspace | **Residual, mitigated not closed** — see below |
+| 6 | MED | `AppEventReplayConflict` escaping as a distinct status is a ledger-membership oracle | Caught and normalised to the fixed refusal |
+| 7 | LOW | Unconfigured requests skip HMAC work, so timing distinguishes configuration state | `_burn_equivalent_work` hashes and discards on the unconfigured path |
+| 8 | MED | The "indistinguishable" test compared only bodies, so a status-code oracle stayed green | Compares `(status, body)`; now also covers the unlisted-workspace refusal |
+| 9 | MED | The size test fed bytes straight to the verifier, so it could not prove an *ingress* limit | Added a route-level oversize test that goes through the real HTTP path |
+
+Every fix is mutation-verified: removing the allow-list, defaulting it to
+allow-all, removing the secret-length floor, or letting the replay conflict
+escape each turns a specific test red.
+
+### Residual risk accepted here, deliberately
+
+**#5, ledger growth.** Retention/quota belongs to the admission store, which
+this change does not own. The allow-list narrows the exposure from "anyone who
+installs the app" to "an allow-listed workspace", so the remaining actor is one
+the operator explicitly trusted. That is a materially different threat model,
+but it is not zero — a compromised or malicious allow-listed workspace can still
+grow the ledger without bound. It needs a retention policy in the store's own
+lane before this endpoint carries untrusted multi-tenant traffic.
+
+Stating it rather than silently closing it: a MEDIUM finding downgraded by a
+mitigation is still open.

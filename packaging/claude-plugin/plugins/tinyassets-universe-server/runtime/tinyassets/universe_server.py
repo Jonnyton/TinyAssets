@@ -305,6 +305,7 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
     the exact bytes, so any re-encoding on this path would invalidate every
     signature.
     """
+    from starlette.concurrency import run_in_threadpool
     from starlette.responses import PlainTextResponse
 
     from tinyassets.app_slack_ingress import (
@@ -312,6 +313,7 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
         BodyTooLarge,
         handle_slack_request,
         read_bounded_body,
+        resolve_allowed_team_ids,
         resolve_boundary,
     )
     from tinyassets.storage import data_dir
@@ -323,10 +325,15 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
         # refusal wouldn't — same body as every other rejection.
         return PlainTextResponse(REFUSAL_BODY, status_code=413)
 
-    outcome = handle_slack_request(
+    # Admission does synchronous SQLite work whose busy timeout is 30s. Running
+    # that inline would let a burst of valid events block the event loop and
+    # stall every other request on the server, including /mcp. Offload it.
+    outcome = await run_in_threadpool(
+        handle_slack_request,
         raw_body=raw_body,
         headers=request.headers,
         boundary=resolve_boundary(data_dir()),
+        allowed_team_ids=resolve_allowed_team_ids(),
     )
     return PlainTextResponse(outcome.body, status_code=outcome.status)
 

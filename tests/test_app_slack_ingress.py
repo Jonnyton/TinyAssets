@@ -17,13 +17,18 @@ import pytest
 
 from tinyassets.app_slack_ingress import (
     API_APP_ID_ENV,
+    MIN_SIGNING_SECRET_LENGTH,
     REFUSAL_BODY,
     SIGNING_SECRET_ENV,
+    TEAM_IDS_ENV,
     handle_slack_request,
+    resolve_allowed_team_ids,
     resolve_boundary,
 )
 
-SECRET = "s3cr3t-signing-key"
+ALLOWED = frozenset({"T0BN5LK57FT"})
+
+SECRET = "s3cr3t-signing-key-long-enough"
 APP_ID = "A0BN1Q98MTQ"
 TEAM_ID = "T0BN5LK57FT"
 
@@ -105,7 +110,7 @@ def test_unconfigured_server_refuses_a_correctly_signed_event(tmp_path: Path):
     """
     body = _event_body()
     outcome = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=None
+        raw_body=body, headers=_signed(body), boundary=None, allowed_team_ids=ALLOWED
     )
 
     assert outcome.status == 401
@@ -113,28 +118,43 @@ def test_unconfigured_server_refuses_a_correctly_signed_event(tmp_path: Path):
 
 
 def test_refusals_are_indistinguishable(configured):
-    """No oracle: every rejection reason returns the same bytes."""
+    """No oracle: every rejection reason looks identical from outside.
+
+    Compares (status, body) rather than body alone. The body-only version of
+    this test stayed green while a status-code oracle would have been wide
+    open — a reviewer's counterexample, not a hypothetical.
+    """
     good = _event_body()
     forged = dict(_signed(good))
     forged["x-slack-signature"] = "v0=" + "0" * 64
+    other_app = _event_body_for_other_app()
+    unlisted = _event_body_for_team("T_ATTACKER")
 
-    bodies = {
-        handle_slack_request(
-            raw_body=good, headers=_signed(good), boundary=None
-        ).body,
-        handle_slack_request(raw_body=good, headers=forged, boundary=configured).body,
-        handle_slack_request(
-            raw_body=good,
-            headers=_signed(good, secret="a-different-key"),
-            boundary=configured,
-        ).body,
-        handle_slack_request(
-            raw_body=_event_body_for_other_app(),
-            headers=_signed(_event_body_for_other_app()),
-            boundary=configured,
-        ).body,
+    def refusal(**kwargs):
+        outcome = handle_slack_request(**kwargs)
+        return (outcome.status, outcome.body)
+
+    observed = {
+        # not configured
+        refusal(raw_body=good, headers=_signed(good), boundary=None,
+                allowed_team_ids=ALLOWED),
+        # forged signature
+        refusal(raw_body=good, headers=forged, boundary=configured,
+                allowed_team_ids=ALLOWED),
+        # signed with the wrong key
+        refusal(raw_body=good, headers=_signed(good, secret="a-different-key"),
+                boundary=configured, allowed_team_ids=ALLOWED),
+        # correct key, wrong app
+        refusal(raw_body=other_app, headers=_signed(other_app),
+                boundary=configured, allowed_team_ids=ALLOWED),
+        # correct key and app, workspace not on the allow-list
+        refusal(raw_body=unlisted, headers=_signed(unlisted),
+                boundary=configured, allowed_team_ids=ALLOWED),
     }
-    assert bodies == {REFUSAL_BODY}
+    assert observed == {(401, REFUSAL_BODY)}, (
+        "every refusal must agree on status AND body; "
+        f"observed variants: {sorted(observed)}"
+    )
 
 
 def _event_body_for_other_app() -> bytes:
@@ -155,7 +175,7 @@ def _event_body_for_other_app() -> bytes:
 def test_signed_event_is_admitted_once(configured):
     body = _event_body()
     outcome = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=configured
+        raw_body=body, headers=_signed(body), boundary=configured, allowed_team_ids=ALLOWED
     )
 
     assert outcome.status == 200
@@ -166,9 +186,14 @@ def test_signed_event_is_admitted_once(configured):
 
 def test_redelivery_is_acknowledged_as_replay(configured):
     body = _event_body()
-    handle_slack_request(raw_body=body, headers=_signed(body), boundary=configured)
+    handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
     again = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=configured
+        raw_body=body, headers=_signed(body), boundary=configured, allowed_team_ids=ALLOWED
     )
 
     assert again.status == 200
@@ -193,7 +218,7 @@ def test_untrusted_requests_admit_nothing(configured, mutation):
         headers = dict(_signed(body))
 
     outcome = handle_slack_request(
-        raw_body=body, headers=headers, boundary=configured
+        raw_body=body, headers=headers, boundary=configured, allowed_team_ids=ALLOWED
     )
 
     assert outcome.status == 401
@@ -207,7 +232,7 @@ def test_untrusted_requests_admit_nothing(configured, mutation):
 def test_signed_handshake_echoes_only_the_challenge(configured):
     body = _handshake_body("abc123XYZ")
     outcome = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=configured
+        raw_body=body, headers=_signed(body), boundary=configured, allowed_team_ids=ALLOWED
     )
 
     assert outcome.status == 200
@@ -222,7 +247,7 @@ def test_unsigned_handshake_echoes_nothing(configured):
     outcome = handle_slack_request(
         raw_body=body,
         headers=_signed(body, secret="not-the-server-key"),
-        boundary=configured,
+        boundary=configured, allowed_team_ids=ALLOWED,
     )
 
     assert outcome.status == 401
@@ -243,7 +268,7 @@ def test_handshake_shape_cannot_smuggle_an_event(configured):
     ).encode("utf-8")
 
     outcome = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=configured
+        raw_body=body, headers=_signed(body), boundary=configured, allowed_team_ids=ALLOWED
     )
 
     assert outcome.body == "chal"
@@ -270,7 +295,7 @@ def test_non_ascii_and_odd_whitespace_still_verify(configured):
     ).encode("utf-8")
 
     outcome = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=configured
+        raw_body=body, headers=_signed(body), boundary=configured, allowed_team_ids=ALLOWED
     )
 
     assert outcome.status == 200
@@ -350,8 +375,148 @@ def test_unconfigured_boundary_is_never_invoked():
     recorder = _Recorder()
     body = _event_body()
     outcome = handle_slack_request(
-        raw_body=body, headers=_signed(body), boundary=None
+        raw_body=body, headers=_signed(body), boundary=None, allowed_team_ids=ALLOWED
     )
 
     assert outcome.status == 401
     assert recorder.calls == 0
+
+
+def _event_body_for_team(team_id: str, event_id: str = "Ev0000TEAM") -> bytes:
+    return json.dumps(
+        {
+            "type": "event_callback",
+            "api_app_id": APP_ID,
+            "team_id": team_id,
+            "event_id": event_id,
+            "event": {"type": "app_mention", "user": "U_ATTACKER", "text": "x"},
+        }
+    ).encode("utf-8")
+
+
+# --- the workspace allow-list ------------------------------------------------
+#
+# The signing secret is per-APP, not per-workspace: every install signs with the
+# same key. A valid signature therefore proves which app is talking, never which
+# workspace. Reviewer-demonstrated exploit before this gate existed:
+#   {'unlisted_team_status': 200, 'admitted': True}
+
+
+def test_unlisted_workspace_is_refused_despite_a_valid_signature(configured):
+    body = _event_body_for_team("T_ATTACKER")
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401
+    assert outcome.admitted is False
+    assert _receipt_count(configured) == 0, "an unlisted workspace must not write a ledger row"
+
+
+def test_listed_workspace_is_admitted(configured):
+    """The accept direction — an allow-list that rejects everything is not a gate."""
+    body = _event_body_for_team("T0BN5LK57FT", event_id="Ev0000OK")
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 200
+    assert outcome.admitted is True
+
+
+def test_empty_allow_list_admits_nobody(configured):
+    """Unconfigured allow-list is fail-closed, not fail-open."""
+    body = _event_body()
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=frozenset(),
+    )
+    assert outcome.status == 401
+
+    # and omitting the argument entirely must not mean "allow all"
+    omitted = handle_slack_request(
+        raw_body=body, headers=_signed(body), boundary=configured
+    )
+    assert omitted.status == 401
+
+
+def test_allow_list_parsing(monkeypatch):
+    monkeypatch.setenv(TEAM_IDS_ENV, " T111 , T222 ,, ")
+    assert resolve_allowed_team_ids() == frozenset({"T111", "T222"})
+
+    monkeypatch.delenv(TEAM_IDS_ENV, raising=False)
+    assert resolve_allowed_team_ids() == frozenset()
+
+
+# --- signing-secret strength -------------------------------------------------
+
+
+@pytest.mark.parametrize("weak", ["0", "changeme", "x" * (MIN_SIGNING_SECRET_LENGTH - 1)])
+def test_weak_signing_secret_is_refused(tmp_path: Path, weak: str):
+    """A 1-char secret still produces a verifying HMAC — reviewer-demonstrated.
+
+    Slack issues 32 hex chars; anything materially shorter is a truncated paste
+    or a placeholder, and it is brute-forceable.
+    """
+    assert (
+        resolve_boundary(
+            tmp_path, env={SIGNING_SECRET_ENV: weak, API_APP_ID_ENV: APP_ID}
+        )
+        is None
+    )
+
+
+def test_slack_length_secret_is_accepted(tmp_path: Path):
+    """The accept direction, using a real-shaped Slack secret (32 hex chars)."""
+    real_shape = "0123456789abcdef0123456789abcdef"
+    assert (
+        resolve_boundary(
+            tmp_path, env={SIGNING_SECRET_ENV: real_shape, API_APP_ID_ENV: APP_ID}
+        )
+        is not None
+    )
+
+
+# --- replay-conflict is not an oracle ----------------------------------------
+
+
+def test_event_id_reuse_with_different_content_is_refused_like_anything_else(configured):
+    """Same event_id, different body: must not surface as a distinct status.
+
+    A 502-vs-200 split would let a valid signer probe which event_ids the
+    ledger holds and turn a collision into an error oracle.
+    """
+    first = _event_body_for_team("T0BN5LK57FT", event_id="Ev0000DUP")
+    handle_slack_request(
+        raw_body=first,
+        headers=_signed(first),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    colliding = json.dumps(
+        {
+            "type": "event_callback",
+            "api_app_id": APP_ID,
+            "team_id": "T0BN5LK57FT",
+            "event_id": "Ev0000DUP",
+            "event": {"type": "app_mention", "user": "U_ATTACKER", "text": "different"},
+        }
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=colliding,
+        headers=_signed(colliding),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert (outcome.status, outcome.body) == (401, REFUSAL_BODY)
