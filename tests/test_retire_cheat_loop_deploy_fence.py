@@ -6455,3 +6455,32 @@ def test_retirement_purges_every_fleet_enumeration_not_just_the_extras(
         _validate(host, state_path, retire=("tinyassets-worker-founder",))
     except FenceError as exc:
         assert "stopped fleet removal intent is invalid" not in str(exc)
+
+
+def test_purge_runs_even_when_a_prior_attempt_cleared_the_extras(tmp_path):
+    """The second recovery attempt must still purge the enumerations.
+
+    Live 2026-08-05: recovery 31048315265 cleared `extra_volume_consumers`,
+    so recoveries 31049384995 and 31049698106 found it empty, skipped the
+    retirement block entirely, and refused with "stopped fleet removal intent
+    is invalid" because the stale removal plan still named the container.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["extra_volume_consumers"] = {}          # a prior attempt cleared it
+    state["old_container_ids"]["tinyassets-worker-founder"] = "c" * 64
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "planned",
+        "recorded_source": "old_container_ids",
+        "container_ids": dict(state["old_container_ids"]),
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    try:
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+    except FenceError as exc:
+        assert "stopped fleet removal intent is invalid" not in str(exc)
+        assert "unrecorded extra volume consumer" not in str(exc)
