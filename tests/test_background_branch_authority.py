@@ -455,6 +455,60 @@ def test_universe_id_accepts_the_serial_prefix_production_actually_mints() -> No
     assert binding.universe_id == live_universe_id
 
 
+def test_branch_references_accept_the_shapes_production_actually_mints() -> None:
+    """Real branch identities carry no domain prefix and must still be admissible.
+
+    `tinyassets/branches.py` mints a branch def id as `uuid4().hex[:12]` and
+    `tinyassets/branch_versions.py` mints a version id as
+    `<branch_def_id>@<content_hash[:8]>`. The nominal allowlist carried
+    `branch_` / `branch:`, which matches NO branch production mints, so cloud
+    automation creation failed with `branch_def_id must be a nominal non-bearer
+    reference` for the live branch `745e637dd8fb@99cb5a8f` (2026-08-04).
+    Fixtures spell these `branch_spec_drain`, so the suite stayed green.
+    """
+    payload = _binding_payload()
+    payload["branch_def_id"] = "745e637dd8fb"
+    payload["pinned_branch_version_id"] = "745e637dd8fb@99cb5a8f"
+
+    binding = BackgroundBranchBinding.from_dict(payload)
+
+    assert binding.branch_def_id == "745e637dd8fb"
+    assert binding.pinned_branch_version_id == "745e637dd8fb@99cb5a8f"
+
+
+def test_branch_version_reference_accepts_the_collision_widened_hash() -> None:
+    """A hash-prefix collision widens the version suffix from 8 to 16 hex."""
+    payload = _binding_payload()
+    payload["branch_def_id"] = "745e637dd8fb"
+    payload["pinned_branch_version_id"] = f"745e637dd8fb@{'9' * 16}"
+
+    binding = BackgroundBranchBinding.from_dict(payload)
+
+    assert binding.pinned_branch_version_id == f"745e637dd8fb@{'9' * 16}"
+
+
+@pytest.mark.parametrize(
+    "bearer",
+    [
+        "xoxb-123456789-secret",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+        "745e637dd8fbXX",
+        "745e637dd8f",
+        "745e637dd8fb@99cb5a8",
+        "745e637dd8fb@notahash",
+    ],
+)
+def test_branch_reference_shapes_still_reject_non_canonical_values(
+    bearer: str,
+) -> None:
+    """Admitting the canonical branch shapes must not open the field generally."""
+    payload = _binding_payload()
+    payload["branch_def_id"] = bearer
+
+    with pytest.raises(ValueError, match="reference"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
 @pytest.mark.parametrize("revision", ["04", "-1", "latest", "xoxb-123-secret"])
 def test_source_revision_is_a_canonical_decimal_generation(revision: str) -> None:
     payload = _binding_payload()
