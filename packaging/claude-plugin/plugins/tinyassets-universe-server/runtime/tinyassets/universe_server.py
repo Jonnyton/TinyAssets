@@ -307,10 +307,22 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
     """
     from starlette.responses import PlainTextResponse
 
-    from tinyassets.app_slack_ingress import handle_slack_request, resolve_boundary
+    from tinyassets.app_slack_ingress import (
+        REFUSAL_BODY,
+        BodyTooLarge,
+        handle_slack_request,
+        read_bounded_body,
+        resolve_boundary,
+    )
     from tinyassets.storage import data_dir
 
-    raw_body = await request.body()
+    try:
+        raw_body = await read_bounded_body(request)
+    except BodyTooLarge:
+        # Refused before authentication, so it must not disclose anything a
+        # refusal wouldn't — same body as every other rejection.
+        return PlainTextResponse(REFUSAL_BODY, status_code=413)
+
     outcome = handle_slack_request(
         raw_body=raw_body,
         headers=request.headers,

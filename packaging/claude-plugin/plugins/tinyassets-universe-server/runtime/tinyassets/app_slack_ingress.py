@@ -32,6 +32,13 @@ from tinyassets.storage.app_events import AppEventAdmissionStore
 SIGNING_SECRET_ENV = "TINYASSETS_SLACK_SIGNING_SECRET"
 API_APP_ID_ENV = "TINYASSETS_SLACK_API_APP_ID"
 
+#: Hard ceiling on bytes buffered from an *unauthenticated* request.
+#: `SlackRequestVerifier` enforces its own 1 MiB limit, but only after it has
+#: been handed a complete body — so an unbounded read would let anyone POST an
+#: arbitrarily large payload and exhaust memory before a single byte is
+#: authenticated. Slack's own event payloads are far below this.
+MAX_UNAUTHENTICATED_BODY_BYTES = 1_048_576
+
 #: Every refusal returns this exact text. "Not configured", "bad signature", and
 #: "unknown app id" must be indistinguishable from outside, so the endpoint can
 #: never be used to probe which apps are installed.
@@ -96,6 +103,35 @@ def _challenge_response(raw_body: bytes) -> str | None:
     if not isinstance(challenge, str) or not challenge:
         return None
     return challenge
+
+
+class BodyTooLarge(Exception):
+    """The peer sent more bytes than we will buffer before authenticating."""
+
+
+async def read_bounded_body(request: Any, *, limit: int = MAX_UNAUTHENTICATED_BODY_BYTES) -> bytes:
+    """Buffer at most ``limit`` bytes from an unauthenticated request.
+
+    Two gates, because either alone is bypassable: a declared ``Content-Length``
+    is refused up front, and the stream itself is counted as it arrives so a
+    chunked body (which declares no length) cannot slip past.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                raise BodyTooLarge
+        except ValueError:
+            raise BodyTooLarge from None
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise BodyTooLarge
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 class IngressOutcome:

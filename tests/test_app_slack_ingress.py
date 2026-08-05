@@ -275,3 +275,62 @@ def test_non_ascii_and_odd_whitespace_still_verify(configured):
 
     assert outcome.status == 200
     assert outcome.admitted is True
+
+
+# --- unauthenticated resource bounds -----------------------------------------
+
+
+class _FakeRequest:
+    """Minimal stand-in for a Starlette request body stream."""
+
+    def __init__(self, chunks: list[bytes], headers: dict[str, str] | None = None):
+        self._chunks = chunks
+        self.headers = headers or {}
+
+    async def stream(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+@pytest.mark.asyncio
+async def test_declared_oversize_body_is_refused_without_reading():
+    """A huge Content-Length is refused before a single chunk is buffered."""
+    from tinyassets.app_slack_ingress import (
+        MAX_UNAUTHENTICATED_BODY_BYTES,
+        BodyTooLarge,
+        read_bounded_body,
+    )
+
+    request = _FakeRequest(
+        [b"x"], {"content-length": str(MAX_UNAUTHENTICATED_BODY_BYTES + 1)}
+    )
+    with pytest.raises(BodyTooLarge):
+        await read_bounded_body(request)
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_without_content_length_is_still_capped():
+    """The declared-length gate alone is bypassable — chunked declares nothing."""
+    from tinyassets.app_slack_ingress import BodyTooLarge, read_bounded_body
+
+    # No content-length header at all, streamed past the limit.
+    request = _FakeRequest([b"x" * 40, b"y" * 40], {})
+    with pytest.raises(BodyTooLarge):
+        await read_bounded_body(request, limit=50)
+
+
+@pytest.mark.asyncio
+async def test_body_within_the_limit_is_returned_byte_exact():
+    from tinyassets.app_slack_ingress import read_bounded_body
+
+    request = _FakeRequest([b'{"a":', b' 1}'], {"content-length": "8"})
+    assert await read_bounded_body(request, limit=50) == b'{"a": 1}'
+
+
+@pytest.mark.asyncio
+async def test_malformed_content_length_is_refused():
+    from tinyassets.app_slack_ingress import BodyTooLarge, read_bounded_body
+
+    request = _FakeRequest([b"{}"], {"content-length": "not-a-number"})
+    with pytest.raises(BodyTooLarge):
+        await read_bounded_body(request)
