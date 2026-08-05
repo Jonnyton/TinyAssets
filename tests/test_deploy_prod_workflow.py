@@ -2595,3 +2595,40 @@ def test_the_isolated_executor_does_not_receive_the_admission_minting_key():
         "/etc/tinyassets/request-idempotency.env"
         in compose["services"]["daemon"]["env_file"]
     )
+
+
+def test_every_fleet_arity_assumption_agrees_with_the_compose_worker_count():
+    """A container added to compose but not to each fleet list breaks deploys.
+
+    Cross-family review found this the hard way: #2326 added a fifth worker
+    and left three fixed-arity checks at four --
+    `retire_cheat_loop_deploy_fence.EXPECTED_CONTAINERS` compares with EXACT
+    SET EQUALITY, and both rotation phases require an exact identity count.
+    Each would have failed production deploys, not merely skipped the new
+    container.
+    """
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    worker_containers = {
+        svc["container_name"]
+        for name, svc in compose["services"].items()
+        if name.startswith("worker")
+    }
+
+    fence = Path("scripts/retire_cheat_loop_deploy_fence.py").read_text(
+        encoding="utf-8",
+    )
+    for container in worker_containers:
+        assert container in fence, f"{container} missing from the exact-fleet fence"
+
+    verifier = Path("deploy/verify-request-hmac-rotation-fleet.sh").read_text(
+        encoding="utf-8",
+    )
+    for container in worker_containers:
+        assert container in verifier, f"{container} missing from the HMAC fence"
+
+    # Both rotation phases must expect exactly the compose worker count.
+    workflow = _WORKFLOW.read_text(encoding="utf-8")
+    expected = f"-ne {len(worker_containers)} ]"
+    assert workflow.count(expected) == 2, (
+        f"rotation phases must both expect {len(worker_containers)} workers"
+    )

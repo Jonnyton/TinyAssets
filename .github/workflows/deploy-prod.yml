@@ -563,7 +563,8 @@ jobs:
             exit 1
           }
           mapfile -t expected_ids <<< "${fleet_ids}"
-          if [ "${#expected_ids[@]}" -ne 4 ]; then
+          # Must match verify-request-hmac-rotation-fleet.sh WORKERS exactly.
+          if [ "${#expected_ids[@]}" -ne 5 ]; then
             echo "::error::rotation prerequisite returned an incomplete worker identity set"
             exit 1
           fi
@@ -717,7 +718,7 @@ jobs:
               exit 1
             fi
             mapfile -t expected_ids <<< "${ROTATION_FLEET_IDS}"
-            if [ "${#expected_ids[@]}" -ne 4 ]; then
+            if [ "${#expected_ids[@]}" -ne 5 ]; then
               echo "::error::rotation prerequisite is missing the pre-quiescence worker identity set"
               exit 1
             fi
