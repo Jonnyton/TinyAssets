@@ -75,11 +75,18 @@ def test_node_definition_effects_must_be_list_of_strings():
 
 
 @pytest.fixture
-def comp_env(tmp_path, monkeypatch):
+def comp_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # `UNIVERSE_SERVER_USER` alone does not reach branch WRITE actions:
+    # they resolve the caller via `_request_branch_actor()`, which is
+    # credential-derived and documented "never an env actor". Without a
+    # bound request subject they return "Authenticated branch subject
+    # required." before parsing anything, and every later assertion dies on
+    # a KeyError that hides the real cause.
+    authenticate_request("tester")
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_ENABLED", raising=False)
     from tinyassets import universe_server as us
