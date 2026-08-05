@@ -213,8 +213,32 @@ jobs:
             > "$evidence_dir/recovery.json"
       - name: Recovery canonical MCP canary
         run: |
-          python scripts/mcp_public_canary.py \
-            --url "${CANARY_URL}" --assert-name TinyAssets --verbose
+          # Bounded wait, then probe. The ordinary deploy path has a
+          # "Wait for daemon health" step before its canary; recovery had
+          # none and probed the PUBLIC url immediately after starting the
+          # fleet. The daemon's healthcheck allows a 60s start_period, so
+          # the canary ran ~0.7s after container start, failed on a daemon
+          # that had not finished booting, and that failure re-fenced the
+          # fleet -- recovery could never satisfy its own success check.
+          #
+          # Live 2026-08-05: recovery 31048315265 brought tinyassets-daemon
+          # up healthy (image ea7eddc14ff8, revision 454baf7511de) and then
+          # re-fenced it on that immediate 502, leaving /mcp down.
+          #
+          # This waits for a green probe instead of demanding one instantly.
+          # It does NOT weaken the gate: the same canary must still pass,
+          # and a daemon that never serves still fails and still re-fences.
+          deadline=$(( SECONDS + 240 ))
+          attempt=0
+          until python scripts/mcp_public_canary.py               --url "${CANARY_URL}" --assert-name TinyAssets --verbose; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::recovery canary never went green within 240s"
+              exit 1
+            fi
+            attempt=$(( attempt + 1 ))
+            echo "recovery canary not green (attempt ${attempt}); retry in 15s"
+            sleep 15
+          done
       - name: Recovery exact-seven surface assertion
         run: |
           python scripts/mcp_public_canary.py \

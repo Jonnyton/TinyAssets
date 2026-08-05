@@ -2460,3 +2460,28 @@ def test_shared_fleet_workers_still_share_their_credential_roots():
         assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
         assert "TINYASSETS_UNIVERSE" not in env, name
 
+
+
+def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
+    """Recovery must not fail its own success check on a booting daemon.
+
+    The ordinary deploy path has a "Wait for daemon health" step before its
+    canary; the recovery path had none and probed the PUBLIC url immediately
+    after starting the fleet. The daemon's healthcheck allows a 60s
+    start_period, so live recovery 31048315265 probed ~0.7s after container
+    start, got 502 from a daemon that had not finished booting, and that
+    failure re-fenced the fleet — leaving /mcp down while the daemon itself
+    was healthy.
+    """
+    wf = _load()
+    step = next(
+        s for s in wf["jobs"]["recover-unsafe"]["steps"]
+        if s.get("name") == "Recovery canonical MCP canary"
+    )
+    run = step.get("run", "") or ""
+    assert "until python scripts/mcp_public_canary.py" in run
+    assert "deadline=" in run and "SECONDS" in run
+    # The gate must still be the same canary, and it must still be able to fail.
+    assert "--assert-name TinyAssets" in run
+    assert "never went green" in run
+    assert "exit 1" in run
