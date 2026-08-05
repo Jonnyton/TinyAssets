@@ -2487,3 +2487,31 @@ def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
     # The public assertion must still exist elsewhere in the recovery job.
     wf_all = _WORKFLOW.read_text(encoding="utf-8")
     assert 'python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles' in wf_all
+
+
+def test_active_universe_repoint_is_explicit_input_only_and_validated():
+    """The marker that decides which universe the fleet serves.
+
+    `cloud_worker._resolve_universe` reads /data/.active_universe before any
+    other default, and an AUTHENTICATED `switch_universe` is request-scoped by
+    design and never writes it — so there is no in-band way for a user to
+    repoint the fleet at their own universe. Four admissible slices sat
+    unclaimed for >18h because of exactly this.
+
+    It must never move by default, and never to an unvalidated value.
+    """
+    wf = _load()
+    inputs = wf[True]["workflow_dispatch"]["inputs"] if True in wf else wf["on"]["workflow_dispatch"]["inputs"]
+    assert "set_active_universe" in inputs
+    assert not inputs["set_active_universe"].get("required", False)
+    assert "default" not in inputs["set_active_universe"]
+
+    step = next(
+        s for s in wf["jobs"]["deploy"]["steps"]
+        if s.get("name", "").startswith("Repoint the active-universe marker")
+    )
+    # Only ever on an explicit non-empty input.
+    assert "inputs.set_active_universe != ''" in str(step.get("if", ""))
+    run = step.get("run", "") or ""
+    assert "invalid universe id" in run
+    assert "^[A-Za-z0-9._-]{1,128}$" in run
