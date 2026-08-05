@@ -792,6 +792,119 @@ def _current_worker_epoch2_capacity(
     }
 
 
+def _valid_pending_epoch2_work(universe: Path) -> tuple[int, int]:
+    """Return (valid pending count, oldest pending age) for one universe.
+
+    Deliberately capacity-BLIND. `_has_pickable_branch_task` asks whether this
+    worker may pick a row up, which needs trusted live protocol evidence and is
+    therefore circular here: a worker that is not yet advertising into a
+    universe would read zero and never learn the universe has starving work.
+    This asks the prior question -- is there admissible work at all.
+    """
+    try:
+        from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+        from tinyassets.storage import data_dir
+
+        summary = Epoch2BranchTaskAdapter(data_dir()).operational_read(
+            universe_id=universe.name,
+            capacity_matcher=lambda _task: True,
+            policy_matcher=None,
+        ).summary
+    except Exception:  # noqa: BLE001 — a bad universe must not stop the loop
+        return (0, 0)
+    pending = int(summary.get("valid_pending_count") or 0)
+    ages = summary.get("lifecycle_oldest_age_s")
+    oldest = int((ages or {}).get("pending") or 0) if isinstance(ages, dict) else 0
+    return (pending, oldest)
+
+
+def _worker_runtime_already_bound(universe: Path) -> bool:
+    """Return whether worker execution is ALREADY bound to this universe.
+
+    The authority gate on moving a worker. `_pump_cloud_automation_triggers`
+    registers a runtime instance for a universe only after resolving that
+    universe's owner, project-loop daemon, and provider -- so a provisioned
+    runtime is the platform's own record that this universe's work is meant to
+    run on a worker. Requiring one grants no new authority; it only lets the
+    spawn/beat follow a binding that already exists.
+
+    Without this gate a maintainer-credentialled worker would wander into ANY
+    universe with pending rows, which at more than one user is the ambient
+    -credential identity leak rather than a scheduling improvement. There is no
+    universe-owner resolver to gate on directly (checked 2026-08-05), so this
+    is the narrowest available proxy -- not a substitute for deriving execution
+    authority from the requester's own provider binding.
+    """
+    try:
+        from tinyassets.daemon_registry import list_runtime_instances
+        from tinyassets.storage import data_dir
+
+        return any(
+            runtime.get("status") == "provisioned"
+            for runtime in list_runtime_instances(
+                data_dir(),
+                universe_id=universe.name,
+            )
+        )
+    except Exception:  # noqa: BLE001 — fail closed: do not move the worker
+        return False
+
+
+def _universe_to_serve(configured: Path) -> Path:
+    """Return the universe this iteration should actually serve.
+
+    The configured universe comes from a host-global marker
+    (`storage.active_universe_id`) that no authenticated user can repoint --
+    an authenticated `switch_universe` is request-scoped by design. So a
+    worker could sit on an idle universe while another one starves, which is
+    exactly what happened live: four admissible rows waited >15h in the
+    founder home while the fleet served `concordance`.
+
+    The configured universe still WINS whenever it has work, so a busy
+    deployment behaves exactly as before. Only an idle configured universe
+    yields, and only to a universe that actually has admissible work.
+
+    This keeps one coherent execution context per iteration: the caller uses
+    the returned universe for the spawn, the beat, and the pump together.
+    Advertising capacity for a universe while a child drains a different one
+    is what makes a stalled row look claimable to a worker that will never
+    work it.
+    """
+    try:
+        from tinyassets.storage import data_dir
+
+        if _valid_pending_epoch2_work(configured)[0] > 0:
+            return configured
+        base = data_dir()
+        if not base.is_dir():
+            return configured
+        best: tuple[int, str] | None = None
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            if entry == configured:
+                continue
+            pending, oldest = _valid_pending_epoch2_work(entry)
+            if pending <= 0:
+                continue
+            if not _worker_runtime_already_bound(entry):
+                continue
+            if best is None or oldest > best[0]:
+                best = (oldest, entry.name)
+        if best is None:
+            return configured
+        logger.info(
+            "cloud_worker: %s is idle; serving %s (oldest pending %ss)",
+            configured.name,
+            best[1],
+            best[0],
+        )
+        return base / best[1]
+    except Exception:  # noqa: BLE001 — never let selection wedge the loop
+        logger.exception("cloud_worker: serve-universe selection failed")
+        return configured
+
+
 def _has_pickable_branch_task(universe: Path) -> bool:
     """Return True when this worker has an eligible pending task.
 
@@ -1407,6 +1520,8 @@ def run_supervisor(
             # Signals unavailable in certain embed contexts.
             pass
 
+    configured_universe = universe
+
     while True:
         if stopping["flag"]:
             logger.info("cloud_worker: stop requested; exiting supervisor loop")
@@ -1414,6 +1529,11 @@ def run_supervisor(
         if max_iterations is not None and iteration >= max_iterations:
             break
         iteration += 1
+        # Re-selected per iteration so an idle configured universe cannot hold
+        # the worker while another one starves. Everything below -- spawn,
+        # beat, pump -- uses this one universe, so the execution context stays
+        # coherent for the whole iteration.
+        universe = _universe_to_serve(configured_universe)
 
         # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
         # whose writer provider is unauthenticated must NOT spawn the claim

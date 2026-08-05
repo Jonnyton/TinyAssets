@@ -2404,3 +2404,130 @@ def test_one_supervisors_frozen_id_cannot_leak_into_another(
 
     assert (universe / ".worker_supervisor.codex-1.json").exists()
     assert not (universe / ".worker_supervisor.claude-1.json").exists()
+
+
+# ---- serve the universe that actually has work -------------------------
+
+
+def test_configured_universe_keeps_the_worker_while_it_has_work(
+    tmp_path,
+    monkeypatch,
+):
+    """A busy configured universe must behave exactly as before.
+
+    This is the accept-direction control: the selection may only move a
+    worker OFF an idle universe, never off a working one.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    configured = tmp_path / "universe-a"
+    configured.mkdir(parents=True, exist_ok=True)
+    starving = tmp_path / "universe-b"
+    starving.mkdir(parents=True, exist_ok=True)
+
+    _commit_epoch2_worker_task(tmp_path, universe_id="universe-a")
+    _commit_epoch2_worker_task(tmp_path, universe_id="universe-b")
+
+    assert cw._universe_to_serve(configured) == configured
+
+
+def test_an_idle_worker_serves_the_universe_that_is_starving(
+    tmp_path,
+    monkeypatch,
+):
+    """Live 2026-08-05: four admissible rows waited >15h in the founder home
+    while the fleet served `concordance`, because the served universe comes
+    from a host-global marker no authenticated user can repoint."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    configured = tmp_path / "universe-a"
+    configured.mkdir(parents=True, exist_ok=True)
+    starving = tmp_path / "universe-b"
+    starving.mkdir(parents=True, exist_ok=True)
+
+    # Only universe-b has admissible work.
+    _commit_epoch2_worker_task(tmp_path, universe_id="universe-b")
+    monkeypatch.setattr(cw, "_worker_runtime_already_bound", lambda _u: True)
+
+    assert cw._universe_to_serve(configured) == starving
+
+
+def test_no_work_anywhere_stays_on_the_configured_universe(
+    tmp_path,
+    monkeypatch,
+):
+    """Idle everywhere must not make the worker wander."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    configured = tmp_path / "universe-a"
+    configured.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "universe-b").mkdir(parents=True, exist_ok=True)
+
+    assert cw._universe_to_serve(configured) == configured
+
+
+def test_the_supervisor_spawns_against_the_universe_it_selected(
+    tmp_path,
+    monkeypatch,
+):
+    """Spawn, beat, and pump must share ONE universe per iteration.
+
+    Advertising capacity for a universe while the child drains a different
+    one makes a stalled row look claimable to a worker that will never work
+    it -- a visible stall traded for an invisible one.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    configured = tmp_path / "universe-a"
+    configured.mkdir(parents=True, exist_ok=True)
+    starving = tmp_path / "universe-b"
+    starving.mkdir(parents=True, exist_ok=True)
+    _commit_epoch2_worker_task(tmp_path, universe_id="universe-b")
+    monkeypatch.setattr(cw, "_worker_runtime_already_bound", lambda _u: True)
+
+    spawned: list[Path] = []
+
+    class _Proc:
+        pid = 4321
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    def _spawn(universe: Path):
+        spawned.append(universe)
+        return _Proc()
+
+    monkeypatch.setattr(cw, "threading_is_main", lambda: False)
+    cw.run_supervisor(
+        configured,
+        max_iterations=1,
+        idle_backoff=0,
+        spawn_fn=_spawn,
+        sleep_fn=lambda _s: None,
+    )
+
+    assert spawned == [starving]
+    # The beat that advertises this iteration's capacity lands in the SAME
+    # universe the child was spawned against.
+    assert list(starving.glob(".worker_supervisor*.json"))
+    assert not list(configured.glob(".worker_supervisor*.json"))
+
+
+def test_a_universe_with_no_bound_worker_runtime_is_never_served(
+    tmp_path,
+    monkeypatch,
+):
+    """The authority gate: pending rows alone must not move a worker.
+
+    A maintainer-credentialled worker that wandered into any universe with
+    pending rows would be the ambient-credential identity leak, not a
+    scheduling improvement. Only a universe the platform ALREADY registered a
+    worker runtime for may take the worker.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    configured = tmp_path / "universe-a"
+    configured.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "universe-b").mkdir(parents=True, exist_ok=True)
+
+    # universe-b has admissible work but no bound worker runtime.
+    _commit_epoch2_worker_task(tmp_path, universe_id="universe-b")
+
+    assert cw._worker_runtime_already_bound(tmp_path / "universe-b") is False
+    assert cw._universe_to_serve(configured) == configured
