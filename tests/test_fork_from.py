@@ -16,6 +16,27 @@ from tinyassets.daemon_server import (
     update_branch_definition,
 )
 
+#: The subject `_branch_subject` authenticates as. Seeded branches are authored
+#: by it because `patch_branch` author-gates: it needs the request subject to BE
+#: the branch author, not merely authenticated. Left at the storage default the
+#: author is "anonymous", which `_request_branch_actor` maps to "no subject" —
+#: so no caller could ever match it and every patch here would be refused.
+_SUBJECT = "tester"
+
+
+@pytest.fixture(autouse=True)
+def _branch_subject(authenticate_request):
+    """Bind a request subject for the branch WRITE actions in this module.
+
+    `build_branch` and `patch_branch` resolve the caller through
+    `_request_branch_actor()`, which is credential-derived and ignores
+    `UNIVERSE_SERVER_USER` by design. Without a subject they short-circuit to
+    `Authenticated branch subject required.` before parsing the spec, so the
+    fork_from validation these tests exercise never runs. The storage-level
+    tests in this module are unaffected by having a subject bound.
+    """
+    authenticate_request(_SUBJECT)
+
 
 def _seed_branch(base_path, branch_id: str = "b1", name: str = "Branch") -> dict:
     from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
@@ -25,6 +46,7 @@ def _seed_branch(base_path, branch_id: str = "b1", name: str = "Branch") -> dict
     branch = BranchDefinition(
         branch_def_id=branch_id,
         name=name,
+        author=_SUBJECT,
         graph_nodes=[GraphNodeRef(id="n1", node_def_id="n1")],
         edges=[EdgeDefinition(from_node="n1", to_node="END")],
         entry_point="n1",
@@ -105,8 +127,15 @@ class TestForkFromField:
             "entry_point": "n1",
         })
         result = json.loads(_ext_branch_build({"spec_json": spec}))
-        assert result["status"] == "rejected"
-        assert any("fork_from" in e for e in result["errors"])
+        # An unresolvable `fork_from` is refused by the readability check in
+        # `_ext_branch_build` (branches.py: `_resolve_readable_version` ->
+        # `_branch_version_not_found`), which fires before spec validation. The
+        # message is deliberately bare: a version that EXISTS but is not
+        # readable by this caller must be indistinguishable from one that does
+        # not exist. Do not restore the older, chattier "not a known
+        # branch_version_id / pass a published id" wording here — it is more
+        # helpful and it leaks existence.
+        assert result["error"] == "Branch version 'not-a-real-version-id' not found."
 
 
 class TestSetForkFromPatchOp:
@@ -140,8 +169,9 @@ class TestSetForkFromPatchOp:
                 {"op": "set_fork_from", "branch_version_id": "nonexistent-bvid"}
             ]),
         }))
-        assert result["status"] in ("partial", "rejected")
-        assert result.get("errors") or result.get("error")
+        # Same non-disclosure contract as the build path: an unresolvable
+        # version is a bare error, not a `status: rejected` envelope.
+        assert result["error"] == "Branch version 'nonexistent-bvid' not found."
 
     def test_set_fork_from_immutable_after_set(self, tmp_path, monkeypatch):
         from tinyassets.api.branches import _ext_branch_patch
@@ -238,7 +268,13 @@ class TestDescribeBranchLineageEnrichment:
         _seed_branch(tmp_path)
 
         result = json.loads(_ext_branch_describe({"branch_def_id": "b1"}))
-        assert result["fork_from"] is None
+        # `describe_branch` OMITS the key rather than emitting an explicit null
+        # (branches.py: `if fork_from is not None`). Read it with `.get` — do
+        # not "fix" the response to always carry the key. The same branch also
+        # flattens an ancestor the viewer cannot read down to absent, so
+        # "no lineage" and "lineage you may not see" are deliberately
+        # indistinguishable here.
+        assert result.get("fork_from") is None
 
     def test_describe_branch_includes_fork_descendants(self, tmp_path, monkeypatch):
         from tinyassets.api.branches import _ext_branch_describe
