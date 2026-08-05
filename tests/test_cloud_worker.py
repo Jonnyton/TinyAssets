@@ -2153,7 +2153,7 @@ def test_run_supervisor_snapshots_protocol_identity_before_polling(
     monkeypatch.setattr(
         cw,
         "_snapshot_worker_protocol_identity_at_boot",
-        lambda _physical_worker_id="": snapshots.append("boot"),
+        lambda _physical_worker_id="", state=None: snapshots.append("boot"),
     )
     monkeypatch.setattr(cw, "threading_is_main", lambda: False)
 
@@ -2344,7 +2344,8 @@ def test_beat_stays_findable_after_the_pump_rebinds_worker_identity(
 
     # Boot as the container does, then let the pump rebind identity.
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
-    cw._snapshot_worker_protocol_identity_at_boot()
+    state = cw.SupervisorState()
+    cw._snapshot_worker_protocol_identity_at_boot(state=state)
     monkeypatch.setenv(
         "TINYASSETS_WORKER_ID",
         cw._automation_worker_slot("claude-1", "universe-a", "user-a"),
@@ -2353,7 +2354,7 @@ def test_beat_stays_findable_after_the_pump_rebinds_worker_identity(
 
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        state,
         iteration=1,
         phase="polling",
     )
@@ -2366,5 +2367,40 @@ def test_beat_stays_findable_after_the_pump_rebinds_worker_identity(
 def test_supervisor_worker_id_falls_back_before_boot(monkeypatch):
     """Not yet booted (tests, direct calls) must still resolve an id."""
 
-    monkeypatch.setattr(cw, "_SUPERVISOR_WORKER_ID", "")
-    assert cw._supervisor_worker_id() == cw._worker_id()
+    assert cw._supervisor_worker_id(None) == cw._worker_id()
+    assert cw._supervisor_worker_id(cw.SupervisorState()) == cw._worker_id()
+
+
+def test_one_supervisors_frozen_id_cannot_leak_into_another(
+    tmp_path,
+    monkeypatch,
+):
+    """A second supervisor must beat under ITS configured id, not the first's.
+
+    The frozen identity lives on `SupervisorState` rather than a module
+    global precisely so it cannot survive between supervisors that share an
+    interpreter. A leaked global made a worker write its beat under a peer's
+    name -- the same false-dead failure this freeze exists to prevent.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
+    booted = cw.SupervisorState()
+    cw._snapshot_worker_protocol_identity_at_boot(state=booted)
+
+    # A LATER beat that never booted (a direct caller, or another
+    # supervisor in the same interpreter) must resolve its own configured
+    # id -- not inherit `claude-1` from the supervisor that booted first.
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "codex-1")
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    assert (universe / ".worker_supervisor.codex-1.json").exists()
+    assert not (universe / ".worker_supervisor.claude-1.json").exists()
