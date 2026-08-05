@@ -355,17 +355,10 @@ def test_boundary_reaches_production_only_through_the_ingress_module() -> None:
     # ingress module is the only thing that drives the boundary from a
     # request. Anything else appearing here is a new, unreviewed door.
     expected = {
-        # Drives the boundary from an HTTP request — the one admitting door.
         "app_slack_ingress.py",
-        # Consume the authenticated-event *type* only; they never admit.
         "app_conversation_authority.py",
         "app_principal_mapping.py",
         "app_reply_authority.py",
-        # Answers an already-admitted event. It re-authenticates rather than
-        # accepting an event object across a boundary, because the sealed
-        # AuthenticatedAppEvent may only be minted by a verifier — so it
-        # imports the type and the verifier, and admits nothing itself.
-        "app_slack_dispatch.py",
     }
     assert importers == expected, (
         "unexpected consumer of the app-event boundary: "
