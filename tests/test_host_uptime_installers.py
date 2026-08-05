@@ -64,12 +64,27 @@ def _is_wsl_bash() -> bool:
 
 
 def _bash_path(path: Path) -> str:
-    resolved = path.resolve()
+    """Absolute path for bash — WITHOUT following symlinks.
+
+    `Path.resolve()` looks like the obvious way to get an absolute path, but it
+    also canonicalises symlinks away, and this suite's whole subject is the
+    installer's `runtime/current` symlink. Resolving it meant
+    `test -L .../runtime/current` actually ran against
+    `.../runtime/releases/<id>` — a real directory — so the assertion could
+    never pass once the link was created CORRECTLY, and `readlink` on the same
+    resolved path returned nothing. That single line accounted for most of this
+    file's quarantined entries.
+
+    `os.path.abspath` gives the same absolute, `..`-normalised string while
+    leaving the final component's link intact. For every non-symlink caller the
+    two are equivalent.
+    """
+    absolute = Path(os.path.abspath(path))
     if _is_wsl_bash():
-        drive = resolved.drive.rstrip(":").lower()
-        suffix = resolved.as_posix().split(":", 1)[1]
+        drive = absolute.drive.rstrip(":").lower()
+        suffix = absolute.as_posix().split(":", 1)[1]
         return f"/mnt/{drive}{suffix}"
-    return str(resolved)
+    return str(absolute)
 
 
 def _bash_path_env(fake_bin: Path) -> str:
@@ -1691,3 +1706,42 @@ def test_backup_exercise_rejects_invocation_warning(tmp_path):
     result = _run_backup_exercise(tmp_path, emit_warning=True)
     assert result.returncode != 0
     assert "Verified fresh backup:" not in result.stdout
+
+def test_bash_path_is_absolute_and_normalised_without_resolving(tmp_path):
+    """The half of the contract that can be checked on every platform.
+
+    Kept SEPARATE from the symlink case on purpose: when both lived in one
+    test, the symlink skip swallowed this assertion too and the whole thing
+    reported `s`, teaching a reader nothing about whether the contract holds.
+    """
+    target = tmp_path / "releases" / "r1"
+    target.mkdir(parents=True)
+    messy = tmp_path / "releases" / ".." / "releases" / "r1"
+    assert _bash_path(messy) == os.path.abspath(messy)
+
+
+def test_bash_path_does_not_follow_symlinks(tmp_path):
+    """`_bash_path` must not canonicalise the final component's symlink.
+
+    This is the defect that quarantined most of this file: `_bash_path` used
+    `Path.resolve()`, so `test -L .../runtime/current` was really asking
+    `test -L .../runtime/releases/<id>` — a directory — and `readlink` on the
+    same path returned nothing. Both became impossible to satisfy precisely
+    WHEN the installer was behaving correctly.
+
+    Skips where symlink creation needs a privilege the platform withholds. A
+    skip here is not evidence the contract holds; the sibling test above
+    carries the part that always runs.
+    """
+    target = tmp_path / "releases" / "r1"
+    target.mkdir(parents=True)
+    link = tmp_path / "current"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform
+        pytest.skip(f"symlink creation not permitted here: {exc}")
+
+    # resolve() would have returned `target` here — that is the whole bug.
+    assert _bash_path(link) == os.path.abspath(link)
+    assert _bash_path(link) != os.path.abspath(target)
+    assert Path(_bash_path(link)).is_symlink()
