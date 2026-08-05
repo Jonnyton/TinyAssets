@@ -184,7 +184,7 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
         "Finalize canonical unsafe-fence recovery"
     )
-    assert step_names.index("Recovery exact-seven surface assertion (loopback)") < step_names.index(
+    assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
         "Finalize canonical unsafe-fence recovery"
     )
     assert "inputs.unsafe_fence_source_run_id == ''" in str(
@@ -2486,4 +2486,4 @@ def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
     assert "exit 1" in run
     # The public assertion must still exist elsewhere in the recovery job.
     wf_all = _WORKFLOW.read_text(encoding="utf-8")
-    assert "Recovery exact-seven surface assertion (loopback)" in wf_all
+    assert 'python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles' in wf_all
