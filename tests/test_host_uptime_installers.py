@@ -67,13 +67,26 @@ def _bash_path(path: Path) -> str:
     """Absolute path for bash — WITHOUT following symlinks.
 
     `Path.resolve()` looks like the obvious way to get an absolute path, but it
-    also canonicalises symlinks away, and this suite's whole subject is the
-    installer's `runtime/current` symlink. Resolving it meant
-    `test -L .../runtime/current` actually ran against
-    `.../runtime/releases/<id>` — a real directory — so the assertion could
-    never pass once the link was created CORRECTLY, and `readlink` on the same
-    resolved path returned nothing. That single line accounted for most of this
-    file's quarantined entries.
+    also canonicalises symlinks away, and symlinks are what this suite is FOR.
+
+    It broke three separate things, which together account for ALL TEN of this
+    file's quarantined entries:
+
+    - `_assert_current_release` — `test -L .../runtime/current` actually ran
+      against `.../runtime/releases/<id>`, a real directory, so it could never
+      pass once the installer created the link CORRECTLY.
+    - `_bash_readlink` — `readlink` on an already-resolved path prints nothing
+      and exits non-zero.
+    - the backup-state classifier — the `-symlink-` parametrisation passes a
+      symlinked `rclone.conf` through `_bash_path`, and resolving it made a
+      deliberately-symlinked config look like a regular file, so the classifier
+      returned `configured_ready` instead of `partial_or_invalid`. This is the
+      one that does NOT go through the two `runtime/current` call sites, and
+      the one I first mis-attributed to a separate cause.
+
+    `os.path.abspath` gives the same absolute, `..`-normalised string while
+    leaving the final component's link intact. For every non-symlink caller the
+    two are equivalent.
 
     `os.path.abspath` gives the same absolute, `..`-normalised string while
     leaving the final component's link intact. For every non-symlink caller the
