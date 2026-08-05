@@ -111,7 +111,16 @@ def build_slack_transport(
     identifier — never the message text.
     """
 
-    def _transport(destination: ReplyDestination, body: str) -> AppTransportReceipt:
+    def _transport(
+        destination: ReplyDestination,
+        body: str,
+        *,
+        thread_ts: str = "",
+    ) -> AppTransportReceipt:
+        # `thread_ts` is keyword-only with a default so the two-positional-arg
+        # `Transport` contract `app_outbound_adapter` calls remains exactly as
+        # it was. Answering in the thread the question was asked in is the
+        # difference between a conversation and a channel full of loose replies.
         if destination.provider != "slack":
             raise SlackTransportError("slack transport received a non-slack destination")
         text = body if isinstance(body, str) else ""
@@ -128,12 +137,10 @@ def build_slack_transport(
                 "no requester-owned slack credential for this connection"
             )
 
-        decoded = _post(
-            url,
-            {"channel": destination.address, "text": text},
-            token,
-            timeout,
-        )
+        payload: dict[str, Any] = {"channel": destination.address, "text": text}
+        if isinstance(thread_ts, str) and thread_ts.strip():
+            payload["thread_ts"] = thread_ts.strip()
+        decoded = _post(url, payload, token, timeout)
         if not decoded.get("ok"):
             # Slack reports failure in-band with HTTP 200. Surface the error
             # CODE only — never the echoed message payload Slack returns.
