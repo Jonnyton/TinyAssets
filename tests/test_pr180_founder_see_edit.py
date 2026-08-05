@@ -46,10 +46,17 @@ _BASIC_SPEC = {
 
 
 @pytest.fixture
-def server_env(tmp_path, monkeypatch):
+def server_env(tmp_path, monkeypatch, authenticate_request):
     """Live /mcp surface (tinyassets.universe_server) on an isolated data dir."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "founder")
+    # `UNIVERSE_SERVER_USER` alone does not reach branch WRITE actions:
+    # they resolve the caller via `_request_branch_actor()`, which is
+    # credential-derived and documented "never an env actor". Without a
+    # bound request subject they return "Authenticated branch subject
+    # required." before parsing anything, and every later assertion dies on
+    # a KeyError that hides the real cause.
+    authenticate_request("founder")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -126,7 +133,7 @@ def test_founder_edits_own_branch_round_trip(server_env):
     assert summary["published"] is True
 
 
-def test_patch_branch_is_author_gated_via_connector(server_env, monkeypatch):
+def test_patch_branch_is_author_gated_via_connector(server_env, monkeypatch, authenticate_request):
     """A non-author cannot edit someone else's branch through the handle
     (inherits patch_branch's BUG-081 author gate). force=true is required to
     bypass, so the default connector path stays safe."""
@@ -134,9 +141,13 @@ def test_patch_branch_is_author_gated_via_connector(server_env, monkeypatch):
     built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
     bid = built["branch_def_id"]
 
-    # Switch identity to a different user, reload so the actor changes.
+    # Switch identity to a different user. The env var does NOT do this:
+    # the author gate reads `_request_branch_actor()`, which is
+    # credential-derived, so setting it alone left the caller as the
+    # author and this gate assertion was never exercised.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "intruder")
     importlib.reload(us)
+    authenticate_request("intruder")
 
     blocked = json.loads(us.write_graph(
         target="branch",

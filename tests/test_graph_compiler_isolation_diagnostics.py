@@ -450,7 +450,7 @@ def test_apply_state_field_spec_field_default_legacy_spec_still_works():
 
 
 def test_build_branch_default_value_preserved_through_get_branch(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, authenticate_request,
 ):
     """Round-trip: build_branch with state_schema ``default_value`` →
     get_branch returns the value preserved. This is the canonical
@@ -462,6 +462,9 @@ def test_build_branch_default_value_preserved_through_get_branch(
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # Branch WRITE actions resolve the caller via `_request_branch_actor()`,
+    # which is credential-derived and ignores `UNIVERSE_SERVER_USER`.
+    authenticate_request("tester")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     from tinyassets import universe_server as us
 
@@ -505,7 +508,7 @@ def test_build_branch_default_value_preserved_through_get_branch(
 
 
 def test_build_branch_state_schema_default_seeded_to_strict_prompt(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, authenticate_request,
 ):
     """End-to-end M3 proof: build_branch with state_schema default →
     run_branch with only ``topic`` in inputs → strict-isolation prompt
@@ -522,6 +525,9 @@ def test_build_branch_state_schema_default_seeded_to_strict_prompt(
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # Branch WRITE actions resolve the caller via `_request_branch_actor()`,
+    # which is credential-derived and ignores `UNIVERSE_SERVER_USER`.
+    authenticate_request("tester")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     from tinyassets import universe_server as us
 
