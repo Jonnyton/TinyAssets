@@ -2,7 +2,7 @@
 
 Covers the 10 ship-list actions, the ledger-wrapper guarantee, the
 recipe-tracker end-to-end vignette, and the hard-rule UX flag that
-`describe_branch` now points users at `run_branch`.
+`describe_branch` now points users at `run_graph` (the canonical handle).
 """
 
 from __future__ import annotations
@@ -308,11 +308,17 @@ def test_validate_reports_errors_on_empty_branch(branch_env):
 
 
 def test_describe_branch_points_at_runner(branch_env):
-    """Phase 3 shipped — describe_branch should direct users to run_branch."""
+    """Phase 3 shipped — describe_branch should direct users to the runner.
+
+    PR-178 collapsed the surface to the canonical handles, so the guidance
+    names `run_graph`; `run_branch` is the retired spelling. Asserting the
+    retired name is absent keeps it from creeping back into user-facing text.
+    """
     us, _ = branch_env
     bid = _call(us, "create_branch", name="Empty")["branch_def_id"]
     result = _call(us, "describe_branch", branch_def_id=bid)
-    assert "run_branch" in result["summary"]
+    assert "run_branch" not in result["summary"], result["summary"]
+    assert "run_graph" in result["summary"]
     assert "inputs_json" in result["summary"]
 
 
@@ -372,7 +378,8 @@ def test_recipe_tracker_end_to_end(branch_env):
     assert described["valid"] is True
     assert "recipe tracker" in described["summary"].lower()
     assert "capture" in described["summary"]
-    assert "run_branch" in described["summary"]
+    assert "run_branch" not in described["summary"], described["summary"]
+    assert "run_graph" in described["summary"]
 
     # Ledger was appended — we made 1 create + 3 add_node + 4 connect_nodes
     # + 1 set_entry_point + 3 add_state_field = 12 write ops
