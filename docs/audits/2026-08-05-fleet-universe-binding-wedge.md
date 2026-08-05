@@ -155,3 +155,52 @@ The architecture is specced and largely correct. What is missing is the part
 that makes it *user-owned in fact*: closing the credential fail-open, and
 replacing provider-shaped platform containers with an execution route that
 runs a slice on the requester's own compute.
+
+## Rejected fix #2, recorded so it is not re-attempted
+
+`current: 2026-08-05`. A second attempt made the supervisor re-select its
+served universe each iteration (`_universe_to_serve`): keep the configured
+universe when it has admissible epoch-2 work, otherwise move to the universe
+with the oldest pending row, gated on an existing `provisioned` runtime and an
+explicit `TINYASSETS_SINGLE_TENANT_SERVE_ANY_UNIVERSE` opt-in.
+
+Cross-family review: **reject**, with a reproduction. Do not revive it without
+answering all of these:
+
+1. **The runtime gate is not an authority gate.** A non-maintainer holding
+   `universe:costly` can call public `daemon_create` / `daemon_summon`; summon
+   inserts a `provisioned` row. Codex reproduced `created_by="attacker"`
+   satisfying the gate. `auth/provider.py:376`, `api/universe.py:2619,2644`,
+   `daemon_server.py:1194`.
+2. `provisioned` encodes no worker id, provider, owner, executor class, live
+   descriptor, or freshness, and the listing returns every historical row.
+3. The producer path already minted cross-universe runtimes but never routed
+   the child there. This change would have converted those ambient registry
+   records into authority to move and spawn the physical worker.
+4. Real exposure is **fleet-resource hijacking / DoS**, not subscription theft
+   — see the retraction above.
+5. The pre-spawn auth gate checks host-global subscription health, not the
+   selected universe's credential, so a host-authenticated worker would
+   repeatedly enter an uncredentialed universe and fail.
+6. **Fairness is broken by construction:** selection counts capacity-blind
+   pending work and picks oldest without checking this worker can execute it.
+   One permanently incompatible row pins the worker and starves every
+   executable universe — and such a row in the *configured* universe prevents
+   selection entirely.
+7. Exception handling did not consistently fail toward "do not move": an
+   unreadable configured universe reads as `(0, 0)`, moving the worker off a
+   universe whose workload is merely unreadable.
+8. **Cost:** this installation has **259 non-hidden directories** under the
+   data root. One operational read each, ≥3 SQLite statements per read, is
+   ~777 statements per idle turn against a 10s backoff.
+
+## Independent findings worth keeping (not about the rejected patch)
+
+- **`TINYASSETS_AUTOMATION_OWNER_USER_ID` leaks like the worker id did.** The
+  pump sets it and never restores it; a later spawn filters runtime
+  registration by that stale owner. Same env-smuggled-identity class as the
+  beat-filename drift fixed in #2323, and live today independent of any
+  selection change. `cloud_worker.py:1121,1190,1195`.
+- **259 directories under the data root.** Any per-universe sweep is an
+  O(dirs) cost, and `read_graph target=graphs` already surfaces storage dirs
+  (`cloud-automation-inputs`, `daemon_wikis`) as universes.
