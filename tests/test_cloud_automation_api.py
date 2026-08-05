@@ -1801,6 +1801,15 @@ def test_worker_pump_converges_a_requested_activation_end_to_end(
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
     monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    # `_pump_cloud_automation_triggers` WRITES these into os.environ, so any
+    # sibling test that pumped earlier leaks a stale worker/runtime identity in
+    # and the activation is refused with executor_audience_unavailable.
+    for leaked in (
+        "TINYASSETS_AUTOMATION_OWNER_USER_ID",
+        "TINYASSETS_WORKER_ID",
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+    ):
+        monkeypatch.delenv(leaked, raising=False)
 
     created = cloud_automations.cloud_automations(
         action="create",
