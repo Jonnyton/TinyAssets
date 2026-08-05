@@ -196,3 +196,35 @@ def test_another_authors_private_branch_cannot_become_my_loop(env, monkeypatch):
 
     from tinyassets.universe_soul import read_universe_soul
     assert not read_universe_soul(base / uid).loop_branch_def_id
+
+
+def test_declared_loop_reports_whether_it_is_servable(env):
+    """Declaring reports the servability gap; it must NOT provision a daemon.
+
+    Three consecutive cross-family reviews rejected provisioning here. The last
+    showed the shape is wrong, not the implementation: `daemon_create` takes
+    caller-supplied metadata and `create_daemon` uses setdefault, so
+    `owner_user_id` is CALLER-SPOOFABLE — any ownership check built on it can be
+    satisfied by an attacker who planted a daemon claiming the victim as owner.
+    So this route reports the gap and provisioning stays with the separately
+    gated daemon lifecycle.
+    """
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+    from tinyassets.daemon_registry import list_daemons
+
+    before = len(list_daemons(str(base)))
+    out = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert not out.get("error"), out
+    assert out["loop_dispatch"]["declared"] is True
+
+    # The gap is REPORTED...
+    assert out["loop_daemon"]["registered"] is False
+    assert out["loop_daemon"]["blocker"] == "no_project_loop_daemon"
+    # ...and nothing was provisioned.
+    assert len(list_daemons(str(base))) == before, (
+        "declare_loop must not create a daemon"
+    )
