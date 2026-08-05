@@ -1,0 +1,102 @@
+name: Quarantine oracle
+
+# Why this exists
+# ---------------
+# `.github/known-failing-tests.txt` is written from Linux CI but drained from
+# developer machines, and on Windows the local result is not evidence in EITHER
+# direction:
+#
+#   - A test can SKIP locally (symlink creation needs a privilege Windows does
+#     not grant) and FAIL on Linux. Reading the skip as "fine" put two real
+#     bugs into an earlier wave of this drain.
+#   - A test can PASS locally and still be a genuine Linux failure, because the
+#     ledger is a Linux artifact. Unquarantining on a local green hands `main`
+#     a red required gate — which blocks every open PR, not just yours.
+#
+# Both failure modes are silent. This job gives the drain a Linux oracle it can
+# ask directly, instead of guessing and finding out at merge time.
+#
+# It is REPORT-ONLY and deliberately not required. It answers "what does this
+# entry do on Linux?", which is a question, not a gate. `required-tests` remains
+# the gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Only entries whose node id contains this (blank = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quarantine-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oracle:
+    name: Quarantine oracle
+    runs-on: ubuntu-latest
+    # Runs only the files holding ledger entries — a small fraction of the
+    # ~12.8k-test surface — so this is minutes, not the 50 that `required-tests`
+    # budgets. That speed is the point: it makes fix -> verify a loop the drain
+    # can actually run, rather than one full-suite round trip per attempt.
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Ask the oracle
+        env:
+          # Same isolation as the other test jobs: keep the suite off the real
+          # repo tree and off any host state.
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-oracle
+          FILTER: ${{ inputs.filter }}
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          # --run executes the quarantined files HERE rather than reading a CI
+          # artifact, so this reports on the CURRENT branch. The script owns the
+          # pytest invocation and the report.
+          #
+          # No `|| true` needed: the script exits 0 by design. A still-failing
+          # quarantined test is the expected state, not an error — the report is
+          # the deliverable, and making it fail the job would train people to
+          # ignore it.
+          python scripts/quarantine_oracle.py \
+            --run \
+            --filter "$FILTER" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-quarantine-oracle
+          path: junit-quarantine.xml
+          if-no-files-found: ignore
+
+# Reading the result
+# ------------------
+#   FAILED   still failing on Linux — the entry is earning its place, and the
+#            message is the one to fix against.
+#   PASSED   STALE. `required-tests` fails the gate on a quarantined test that
+#            passes, so these must come out of the ledger.
+#   SKIPPED  skipped on Linux too — this oracle cannot decide it either.
+#   NOT RUN  the node id no longer resolves (renamed or deleted test).
+#
+# For entries `required-tests` never runs at all, read the `junit-full-tests`
+# artifact instead:
+#     python scripts/quarantine_oracle.py --artifact junit-full-tests
