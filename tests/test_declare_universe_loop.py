@@ -316,3 +316,45 @@ def test_loop_daemon_dedupe_is_owner_scoped(env):
     assert out["loop_daemon"]["daemon_id"] != planted["daemon_id"], (
         "adopted a project-loop daemon owned by a different principal"
     )
+
+
+def test_declare_loop_is_refused_without_costly_scope(
+    tmp_path, monkeypatch, authenticate_request
+):
+    """ENFORCEMENT, not membership.
+
+    The membership assertion above proves the table entry exists; it does not
+    prove the gate fires on this route. This grants every universe scope EXCEPT
+    costly and asserts the call is actually refused — the difference between
+    "configured" and "enforced" is where a privilege escalation hides.
+    """
+    import importlib
+
+    base = tmp_path / "output"
+    base.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    authenticate_request("tester", capabilities=[
+        "tinyassets.extensions.read", "tinyassets.extensions.write",
+        "tinyassets.extensions.admin",
+        "tinyassets.universe.read", "tinyassets.universe.write",
+        "tinyassets.universe.admin",
+        # NOTE: tinyassets.universe.costly deliberately withheld.
+    ])
+    from tinyassets import universe_server as us
+
+    importlib.reload(us)
+    try:
+        out = json.loads(us.write_graph(
+            target="universe",
+            operation="declare_loop",
+            graph_id="u-somewhere",
+            branch_id="deadbeefcafe",
+        ))
+        assert out.get("error"), f"expected a scope refusal, got {out}"
+        blob = json.dumps(out).lower()
+        assert "costly" in blob or "scope" in blob, (
+            f"refused, but not for the costly-scope reason: {out}"
+        )
+    finally:
+        importlib.reload(us)
