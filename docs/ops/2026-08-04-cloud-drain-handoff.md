@@ -36,27 +36,37 @@ Two are fixed and deployed; the fifth is fixed-but-blocked.
 ## Blocked
 
 - **PR #2292** — admit the branch identity shapes production actually mints.
-  The diagnosis is right; the **fix as written is not safe to land**. Left as a
-  draft with auto-merge disabled; see the blocker comments on the PR.
+  Diagnosis and fix both look correct. It is **not blocked by its own content**;
+  it is blocked by a repo-wide flaky gate (below).
 
-  The required gate reports exactly one new failure,
-  `test_cloud_automation_api.py::test_phone_rebinds_and_rolls_back_to_published_branch_versions`,
-  deterministically across four runs. A bisect (#2295, closed) carrying the
-  source change **without** the added tests still fails it, which attributes the
-  regression to the `_reference` change itself and rules out suite
-  ordering/state perturbation from the new test functions.
+**`required-tests` is flaky and currently blocks every merge, including
+`main`'s own gate.** The offending test is
+`test_cloud_automation_api.py::test_phone_rebinds_and_rolls_back_to_published_branch_versions`.
 
-  This contradicts the natural prediction — the change is strictly more
-  permissive, and that test's fixture ids are `branch_`-prefixed so they
-  short-circuit before the new patterns ever run. Mechanism therefore unknown.
-  Leading hypothesis: more-permissive deserialization lets a record that
-  previously failed to load now load, sending rollback down a "reuse existing
-  binding" path that then fails a CAS/generation check and returns an error
-  dict — consistent with the observed `KeyError: 'status'`.
+Proof, on `main` itself, unchanged code, same sha `868153bd`:
 
-  The test cannot be attributed locally on Windows: it fails there with **and**
-  without the change for an unrelated reason, masking the signal. A Linux repro
-  is required.
+| run | time | `required-tests` |
+|---|---|---|
+| `30958096597` | 22:53 | **success** |
+| `30959581020` | 23:19 | **failure** — same single test |
+
+The 22:53 pass and 23:19 failure on identical code make the trigger
+environmental, not content. Most likely candidate: the unpinned
+`pip install -e '.[dev]'` resolving a newly released dependency, or a runner
+image rollout around 23:00 UTC.
+
+**Attribution warning — this cost real time.** The gate prints *"this PR
+introduces test failures that `main` does not have"*, but it compares against
+the static `.github/known-failing-tests.txt`, **not** a live `main` run. When
+that file is stale, the message is simply false. It briefly implicated #2292's
+source change; a bisect (#2295, closed) appeared to confirm that, but the bisect
+lacked a no-code control and was itself reading the flake. The control that
+settled it was PR #2294 — **one markdown file**, which reproduced the identical
+"new" failure. A doc cannot break a test, so the source change is exonerated.
+
+Lesson for the next session: when this gate names a single new failure, **first
+run a no-code-change control** (or check `main`'s own recent `required-tests`
+results for the same test) before attributing it to your diff.
 
 ## The two new issues
 
@@ -110,12 +120,10 @@ pins the closed direction and lets the open direction drift to zero.
 
 ## Resume procedure
 
-1. **First, fix #5 without regressing rollback.** #2292's diagnosis is correct
-   but its fix regresses
-   `test_phone_rebinds_and_rolls_back_to_published_branch_versions`; see the
-   blocker comments on #2292. Reproduce on Linux, find the mechanism, then land
-   and deploy. Confirm with `get_status` that `release_state.git_sha` contains
-   it — merged is not deployed.
+1. **Land #2292 and deploy.** It is exonerated (see above) and only needs the
+   flaky gate to go green — retry until it does, or fix the flake first. Confirm
+   with `get_status` that `release_state.git_sha` contains it — merged is not
+   deployed.
 2. Create exactly one **stopped** automation via
    `write_graph target=automation operation=create`:
    - `definition.repository` = `jonnyton/tinyassets`
