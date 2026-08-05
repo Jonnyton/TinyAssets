@@ -30,8 +30,10 @@ belonging to the same or a different owner.
 ### Requirement: Blocked activation reports a blocker and a next action
 
 The health record SHALL carry a non-null blocker describing the cause and a
-non-null next action describing what would resolve it, whenever an automation's
-health state is not a running state.
+non-null next action describing what would resolve it, whenever an automation is
+in a blocked state — stopped, paused, activation-stopped, or alarming on no
+progress. A normally scheduled waiting state SHALL NOT report a blocker, because
+healthy idling is not an alarm and the retry time already describes it.
 
 #### Scenario: activation is stopped
 - **WHEN** an automation is desired-active but its activation state is stopped
@@ -40,6 +42,10 @@ health state is not a running state.
 #### Scenario: awaiting capacity
 - **WHEN** an automation cannot be claimed because no compatible executor is live
 - **THEN** the blocker names the missing capacity and the next action names what must become available
+
+#### Scenario: normally scheduled waiting is not an alarm
+- **WHEN** an automation is active and simply waiting for its next scheduled run
+- **THEN** no blocker is reported and the retry time describes when it resumes
 
 ### Requirement: Provider policy is recorded as nominal identifiers only
 

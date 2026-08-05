@@ -18,7 +18,7 @@ rejected in favour of one unified authority-derivation model.
 - [ ] 2.1 On selection, set the routable set to exactly `{preferred} ∪ accepted_fallbacks` intersected with the enrolled set. Assert the persisted set is a *constraint*, not an ordering over a wider set.
 - [ ] 2.2 Refuse routing to any provider outside the effective set even when every member fails. Mutation-probe this: force all members to fail with an unselected enrolled provider available, and assert it is never invoked.
 - [ ] 2.3 Implement empty `accepted_fallbacks` as fail-closed with a named error; never widen to any available provider.
-- [ ] 2.4 Implement intersection semantics across workflow policy, universe selection, and enrolled set; an empty intersection fails closed naming which of the three produced it.
+- [ ] 2.4 Implement resolution with the ENROLLED set as the only boundary: workflow policy resolves against it directly, and the universe selection applies only as the default when a workflow declares none. A workflow may name any enrolled requester-owned provider outside the universe default. An empty effective set fails closed naming which input produced it. Assert a workflow CAN use an enrolled provider the universe default omits — that case must stay green.
 - [ ] 2.5 Verify the `converse` path consumes the same resolution, so a selected universe stops returning `missing: ["compute", "model_access"]` and begins answering.
 
 ## 3. Per-workflow policy
@@ -37,8 +37,8 @@ rejected in favour of one unified authority-derivation model.
 
 ## 5. Actionable health
 
-- [ ] 5.1 Populate `health.blocker` and `health.next_action` for every non-running state. Assert non-null for `activation_stopped` and for awaiting-capacity, which today return null for both.
-- [ ] 5.2 Assert the blocker names the missing thing and the next action names what would resolve it, rather than restating the state.
+- [x] 5.1 Populate `health.blocker` and `health.next_action` for every BLOCKED state (stopped, paused, activation_stopped, no_progress). Assert non-null for `activation_stopped`, which today returns null for both, and assert a normally scheduled `waiting` automation stays unblocked — healthy idling must not become a false alarm.
+- [x] 5.2 Assert the blocker names the missing thing and the next action names what would resolve it, rather than restating the state.
 
 ## 6. Evidence and rollout
 

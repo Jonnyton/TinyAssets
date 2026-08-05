@@ -51,17 +51,26 @@ other provider.
 - **WHEN** a policy declares a preferred provider with no accepted fallbacks and that provider is unavailable
 - **THEN** resolution fails naming the unavailable provider and no other provider is invoked
 
-### Requirement: Workflow policy narrows the universe selection and never widens it
+### Requirement: The enrolled set is the boundary and the universe selection is a default
 
-Branch- and automation-level policy SHALL be resolved as the intersection of the
-workflow policy, the universe selection, and the enrolled set. A workflow SHALL
-NOT reach a provider excluded by the universe selection. An empty intersection
-SHALL fail closed with an error naming which input produced the empty set.
+Resolution SHALL treat the enrolled, requester-owned provider set as the only
+boundary. The universe selection SHALL apply as the default when a workflow
+declares no policy of its own, and SHALL NOT prevent a workflow from naming any
+other enrolled, requester-owned provider. An empty effective set SHALL fail
+closed with an error naming which input produced it.
 
-#### Scenario: workflow requests a provider the universe excluded
-- **WHEN** a branch declares a preferred provider that the universe selection excludes
-- **THEN** resolution fails closed and the excluded provider is not invoked
+#### Scenario: workflow names an enrolled provider outside the universe default
+- **WHEN** a branch declares a preferred provider that is enrolled and requester-owned but is not in the universe selection
+- **THEN** that provider is used, because the universe selection is a default rather than a ceiling
 
-#### Scenario: empty intersection names its cause
+#### Scenario: workflow declares no policy
+- **WHEN** a branch declares no provider policy
+- **THEN** the universe selection applies as the default, intersected with the enrolled set
+
+#### Scenario: unenrolled provider is still refused
+- **WHEN** a workflow names a provider that is not enrolled and requester-owned
+- **THEN** resolution fails closed, because enrollment is the boundary the universe selection is not
+
+#### Scenario: empty effective set names its cause
 - **WHEN** the effective set resolves empty
 - **THEN** the error names whether the workflow policy, the universe selection, or the enrolled set produced the empty result

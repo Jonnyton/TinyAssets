@@ -82,17 +82,30 @@ to "whatever is available".
 that cannot reach its one chosen provider must stop, exactly as
 `ambient-credential-fallback-is-an-identity-leak` requires.
 
-### D4 — Two-level policy, intersection semantics
+### D4 — The enrolled set is the boundary; the universe selection is a default
 
-Universe-level selection is the outer bound. Branch- and automation-level policy
-may narrow it, never widen it. Effective set =
-`workflow_policy ∩ universe_selection ∩ enrolled_set`. An empty intersection is a
-fail-closed error naming which of the three produced the empty set.
+The security boundary is **enrolled and requester-owned**, and nothing else.
+Universe-level selection is the *default* applied when a workflow declares no
+policy of its own — not a ceiling a workflow must stay under. A branch or
+automation MAY name any enrolled, requester-owned provider, including one
+outside the universe default. Effective set = `workflow_policy ∩ enrolled_set`
+when a workflow declares policy, otherwise `universe_selection ∩ enrolled_set`.
+An empty result is a fail-closed error naming which input produced it.
 
-*Why:* the owner's universe-level choice is a ceiling they set once; a workflow
-must not be able to escape it by declaring a different preference. Naming *which*
-input emptied the set is what makes the error actionable rather than another
-dead end (see D6).
+*Why:* host principle, 2026-08-05 — *"when in doubt the user should be able to
+custom do whatever they want."* An earlier draft of this decision made the
+universe selection an outer bound that workflows could only narrow. That
+confused a **convenience default** with a **security boundary**. Requiring a
+provider to be enrolled and requester-owned is a real constraint — it is what
+keeps work off someone else's credentials. Requiring a workflow to stay inside a
+universe-wide preference is not; it just stops an owner pinning one automation
+to a model they did not make their global default, which is an ordinary thing to
+want and a hard thing to work around.
+
+Fail-closed remains where a real constraint lives (unenrolled provider, empty
+accepted set) and is removed where only a default lived. Naming *which* input
+emptied the set is what keeps the error actionable rather than another dead end
+(see D7).
 
 ### D5 — Automation policy lives inside the immutable definition digest
 
