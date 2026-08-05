@@ -37,8 +37,6 @@
 tests/desktop_install/test_packaged_runtime.py::tests.desktop_install.test_packaged_runtime
 tests/load/test_agent_runtime_cloud_load.py::test_cross_process_launch_has_one_provider_call_and_typed_losers
 tests/test_anonymous_write_challenge.py::test_scoped_canary_token_is_off_when_absent_short_or_mismatched[\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800-cccccccccccccccccccccccccccccccc]
-tests/test_attribution_calc.py::TestComputePayoutShares::test_distributable_remainder_after_fee
-tests/test_attribution_calc.py::TestComputePayoutShares::test_no_credits_only_treasury
 tests/test_backup_script.py::test_backup_sh_shellcheck
 tests/test_backup_script.py::test_local_backup_file_rejects_symlink_source
 tests/test_backup_script.py::test_restore_sh_shellcheck
