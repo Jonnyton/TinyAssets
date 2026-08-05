@@ -142,3 +142,31 @@ def test_a_permanently_failed_universe_does_not_kill_the_process(universe, monke
 
 def test_serve_all_with_nothing_to_serve_reports_failure():
     assert asyncio.run(worker.serve_all([], "slack-main")) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_universe_finishing_does_not_cancel_the_others(monkeypatch):
+    """Cross-family review, HIGH: `wait(FIRST_COMPLETED)` over the individual
+    tasks meant the first universe to finish — a missing deposit returns
+    immediately — cancelled every other universe. One tenant could drop all of
+    them, which is the opposite of what this module promises."""
+    started: list[str] = []
+    finished: list[str] = []
+
+    async def _fake_serve(universe_id: str, _connection: str) -> None:
+        started.append(universe_id)
+        if universe_id == "u-fails-fast":
+            return                      # e.g. no credentials deposited
+        await asyncio.sleep(0.25)       # a healthy long-lived socket
+        finished.append(universe_id)
+
+    monkeypatch.setattr(worker, "serve_universe", _fake_serve)
+
+    rc = await worker.serve_all(["u-fails-fast", "u-healthy-a", "u-healthy-b"], "c")
+
+    assert rc == 0
+    assert set(started) == {"u-fails-fast", "u-healthy-a", "u-healthy-b"}
+    assert set(finished) == {"u-healthy-a", "u-healthy-b"}, (
+        "the healthy universes must run to completion, not be cancelled by the "
+        "one that returned first"
+    )

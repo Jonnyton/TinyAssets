@@ -167,12 +167,21 @@ async def serve_all(universe_ids: list[str], connection: str) -> int:
             # Windows proactor loops do not support add_signal_handler.
             signal.signal(sig, _stop)
 
+    # Gather the universe tasks into ONE awaitable and race that against the
+    # stop signal. Racing the individual tasks with FIRST_COMPLETED — which is
+    # what this did — meant the FIRST universe to finish for any reason (a
+    # missing deposit returns immediately) cancelled every other universe. That
+    # is the exact opposite of the isolation this module's docstring promises,
+    # and a cross-family review caught it before it shipped: one tenant with a
+    # revoked token could drop every other tenant's agent.
+    running = asyncio.gather(*tasks, return_exceptions=True)
     waiter = asyncio.create_task(stopping.wait(), name="slack:stop")
-    await asyncio.wait([*tasks, waiter], return_when=asyncio.FIRST_COMPLETED)
-    for task in [*tasks, waiter]:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(*tasks, waiter, return_exceptions=True)
+    await asyncio.wait([running, waiter], return_when=asyncio.FIRST_COMPLETED)
+    if not waiter.done():
+        waiter.cancel()
+    if not running.done():
+        running.cancel()
+    await asyncio.gather(running, waiter, return_exceptions=True)
     return 0
 
 
