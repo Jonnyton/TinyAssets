@@ -145,8 +145,6 @@ class TestOrientRetrievalIntegration:
         """RetrievalRouter wiring should match the current search policy."""
         from unittest.mock import MagicMock, patch
 
-        import domains.fantasy_daemon.phases._provider_stub as provider_stub
-
         # Patch the router class at its import source
         mock_router_cls = MagicMock()
         mock_instance = mock_router_cls.return_value
@@ -170,11 +168,20 @@ class TestOrientRetrievalIntegration:
         if mock_router_cls.called:
             kwargs = mock_router_cls.call_args[1]
             provider_call = kwargs.get("provider_call")
-            if provider_stub.is_force_mock():
-                assert provider_call is None
+            # Consult the SAME flag production branches on. `_build_provider_call`
+            # (retrieval/agentic_search.py:383) returns None iff
+            # `tinyassets.providers.call.is_force_mock()`. This test used to read
+            # `domains.fantasy_daemon.phases._provider_stub.is_force_mock()` — a
+            # DIFFERENT module's flag. The two happen to agree on Windows and
+            # diverged on Linux, where production handed over a real
+            # `_async_provider_call` while the stub's flag still said force-mock.
+            from tinyassets.providers import call as provider_call_module
+
+            if provider_call_module.is_force_mock():
+                assert provider_call is None, provider_call
             else:
-                assert provider_call is not None
-                assert callable(provider_call)
+                assert provider_call is not None, kwargs
+                assert callable(provider_call), provider_call
 
     def test_orient_passes_enriched_state_to_memory_manager(self, base_state):
         """MemoryManager should see the freshly assembled orient_result contract."""
@@ -2293,6 +2300,17 @@ class TestTunnelManagement:
 
         mock_atexit.assert_called_once_with(_stop_tunnel, mock_proc)
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason=(
+            "needs the real Windows subprocess constants: the test drives "
+            "production into its win32 branch, which dereferences "
+            "subprocess.CREATE_NO_WINDOW — an attribute that does not exist "
+            "off Windows (AttributeError at __main__.py:3307). Faking those "
+            "constants would assert against a fake, not the flags actually "
+            "passed."
+        ),
+    )
     def test_start_tunnel_windows_creationflags(self):
         """On Windows, _start_tunnel sets CREATE_NO_WINDOW | DETACHED_PROCESS."""
         from unittest.mock import patch
