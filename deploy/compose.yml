@@ -250,6 +250,40 @@ services:
       TINYASSETS_WORKER_MODEL: claude
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-2
 
+  # Slack agents for users who have connected a workspace. Holds one outbound
+  # Socket Mode connection per universe, so a user can talk to their agent in
+  # Slack with no host machine online — the Forever Rule applied to this
+  # surface. There is no inbound port and no public endpoint: the container
+  # dials out to Slack.
+  #
+  # Behind a profile deliberately. The worker exits non-zero when no universes
+  # are configured, and with `restart: unless-stopped` that would crash-loop an
+  # otherwise healthy deployment. Start it explicitly once a universe has Slack
+  # credentials deposited:
+  #
+  #     docker compose --profile slack up -d slack-agent
+  slack-agent:
+    <<: *cloud_worker_base
+    container_name: tinyassets-slack-agent
+    profiles: ["slack"]
+    command: ["python", "-m", "tinyassets.slack_agent_worker"]
+    environment:
+      <<: *cloud_worker_env
+      TINYASSETS_WORKER_ID: slack-agent-1
+      UNIVERSE_SERVER_HOST_USER: cloud-droplet-slack-agent-1
+      # Comma-separated universe ids to serve. Slack CREDENTIALS are not set
+      # here — each universe's tokens come from its own vault, so one container
+      # serves several users without any of them borrowing another's identity.
+      TINYASSETS_SLACK_UNIVERSES: ${TINYASSETS_SLACK_UNIVERSES:-}
+      TINYASSETS_SLACK_CONNECTION: ${TINYASSETS_SLACK_CONNECTION:-slack-main}
+    # The cloud_worker healthcheck probes the node-claim queue, which this
+    # service does not use; inheriting it would report permanently unhealthy.
+    healthcheck:
+      disable: true
+    labels:
+      org.tinyassets.component: slack-agent
+      org.tinyassets.role: chat-transport
+
 volumes:
   tinyassets-data:
     name: tinyassets-data

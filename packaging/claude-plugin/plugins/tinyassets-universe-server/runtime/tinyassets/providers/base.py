@@ -7,6 +7,7 @@ consumers work with :class:`ProviderResponse` and :class:`ModelConfig`.
 from __future__ import annotations
 
 import abc
+import logging
 import os
 import stat
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +348,26 @@ def _valid_provider_auth_overlay(
     return True
 
 
+#: Reasons safe to log verbatim: fixed sentinels raised by THIS module's own
+#: containment checks. An allow-list, not a scrub — an arbitrary exception's
+#: message is upstream text that can carry a credential (a review demonstrated
+#: exactly that with `secret=do-not-leak`), so anything unrecognised is reduced
+#: to its type name.
+_SAFE_RESOLUTION_REASONS: frozenset[str] = frozenset({
+    "provider path escapes universe",
+    "unsupported universe provider",
+    "auth overlay is not universe-contained",
+})
+
+
+def _safe_resolution_reason(exc: BaseException) -> str:
+    """A loggable reason for a credential-resolution failure."""
+    message = str(exc)
+    if message in _SAFE_RESOLUTION_REASONS:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
 def subprocess_env_for_provider(
     provider_name: str, *, universe_dir: Path | None = None,
 ) -> dict[str, str]:
@@ -364,6 +387,7 @@ def subprocess_env_for_provider(
         return subprocess_env_without_api_keys() or os.environ.copy()
 
     credential_resolution_failed = False
+    reason = ""
     env: dict[str, str] = {}
     try:
         if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
@@ -395,12 +419,29 @@ def subprocess_env_for_provider(
             overlay, provider_name, universe_root,
         ):
             credential_resolution_failed = True
+            reason = "auth overlay is not universe-contained"
         else:
             env.update(overlay)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - see _safe_resolution_reason
         credential_resolution_failed = True
+        reason = _safe_resolution_reason(exc)
     if credential_resolution_failed:
         from tinyassets.exceptions import ProviderUnavailableError
+        # The reason goes to the DAEMON LOG only. The raised error stays
+        # generic on purpose: it crosses into caller-visible surfaces, and
+        # `test_universe_credential_resolution_failure_is_explicit` and
+        # `test_malformed_real_vault_failure_is_sanitized_without_artifact_creation`
+        # both exist because a message here previously disclosed vault
+        # internals. Logging the cause fixes diagnosability without reopening
+        # that; a bare `except Exception: failed = True` had made every
+        # containment refusal indistinguishable, which cost a live debugging
+        # session to unpick.
+        logger.warning(
+            "%s credential resolution failed for universe %s: %s",
+            provider_name,
+            resolved_universe.name,
+            reason,
+        )
         raise ProviderUnavailableError(
             f"{provider_name} credential resolution failed for "
             "universe-scoped provider"
