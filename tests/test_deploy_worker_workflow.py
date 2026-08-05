@@ -147,12 +147,33 @@ def test_wrangler_toml_no_stale_name():
         f"Stale Worker name {STALE_WORKER_NAME!r} still in wrangler.toml"
 
 
+#: The route bindings this Worker is allowed to hold, as a CLOSED set.
+#:
+#: `tinyassets.io/mcp*` must stay BROAD — narrowing it would leak retired
+#: /mcp-directory* calls to the website origin and make rejection
+#: method-dependent, which is the original reason this guard exists.
+#:
+#: `tinyassets.io/.well-known/*` was added for RFC 9728 OAuth discovery: the
+#: metadata for resource `https://tinyassets.io/mcp` lives at an APEX path, so
+#: the /mcp* binding alone made it unreachable and every RFC-following MCP
+#: client failed discovery. worker.js still proxies only the two OAuth metadata
+#: families under it — see the shouldProxy tests — so this is not a general
+#: apex proxy.
+EXPECTED_WORKER_ROUTES = [
+    {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"},
+    {"pattern": "tinyassets.io/.well-known/*", "zone_name": "tinyassets.io"},
+]
+
+
 def test_wrangler_toml_keeps_load_bearing_broad_route_and_runtime_settings():
     config = tomllib.loads(_load_wrangler_text())
     assert config["main"] == "worker.js"
-    assert config["routes"] == [
-        {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"}
-    ]
+    # Still a CLOSED set — an unreviewed third binding fails here, and
+    # narrowing /mcp* (the original point of this guard) fails here too.
+    assert config["routes"] == EXPECTED_WORKER_ROUTES
+    assert {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"} in (
+        config["routes"]
+    ), "the broad /mcp* binding is load-bearing and must not be narrowed"
     assert config["compatibility_date"] == "2025-10-01"
     assert config["compatibility_flags"] == []
     assert config["observability"] == {
