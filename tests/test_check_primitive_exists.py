@@ -55,7 +55,12 @@ def fake_repo(tmp_path: Path) -> Path:
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
 
-    api_dir = repo / "workflow" / "api"
+    # MUST be `tinyassets/api`: check_primitive_exists scans a hardcoded
+    # list of `tinyassets/api/*.py` paths (check_primitive_exists.py:80).
+    # The rename reached this fixture's docstring but not the path literal,
+    # so the checker looked somewhere the fixture never wrote and reported
+    # CLEAN — a collision test that could never see a collision.
+    api_dir = repo / "tinyassets" / "api"
     api_dir.mkdir(parents=True)
     (api_dir / "branches.py").write_text(
         '"""fake api file."""\n'
@@ -76,7 +81,7 @@ def fake_repo(tmp_path: Path) -> Path:
     _git(repo, "commit", "-q", "-m", "initial layout")
 
     # Add a commit referencing BUG-038 in subject (direct-id hit case).
-    (repo / "workflow" / "api" / "branches.py").write_text(
+    (repo / "tinyassets" / "api" / "branches.py").write_text(
         '"""fake api file v2."""\n'
         "_ACTIONS = {\n"
         '    "validate_branch": _ext_branch_validate,\n'
@@ -90,7 +95,7 @@ def fake_repo(tmp_path: Path) -> Path:
 
     # Add a commit that fixes a bug WITHOUT naming the id in subject —
     # simulates the BUG-037 case (a288444 didn't say "BUG-037" in subject).
-    (repo / "workflow" / "api" / "branches.py").write_text(
+    (repo / "tinyassets" / "api" / "branches.py").write_text(
         '"""fake api file v3."""\n'
         "_ACTIONS = {\n"
         '    "validate_branch": _ext_branch_validate,\n'

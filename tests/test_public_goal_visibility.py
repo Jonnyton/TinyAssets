@@ -854,7 +854,16 @@ def test_universe_ledger_rejects_global_ledger_alias(
     )
     serialized = json.dumps(result)
 
-    assert "error" in result
+    # `.\` aliases the base directory only where backslash is a path
+    # separator. On POSIX it is a legal directory NAME, so it resolves to a
+    # universe that does not exist: no error, and no entries. The guard
+    # (`udir == _base_path().resolve()`) is right to stay quiet there.
+    #
+    # The invariant under test is not "an error is returned" — it is that the
+    # BASE ledger is never served through a universe alias. Both outcomes
+    # satisfy that, so assert it directly and keep the leak checks
+    # unconditional; those are the security property.
+    assert "error" in result or result.get("entries") == [], result
     assert private_goal["goal_id"] not in serialized
     assert private_goal["name"] not in serialized
 

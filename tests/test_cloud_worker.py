@@ -1646,12 +1646,33 @@ def test_main_passes_provider_pin_to_supervised_daemon(tmp_path, monkeypatch):
     (universe / "PROGRAM.md").write_text("x", encoding="utf-8")
     captured = {}
 
-    def fake_spawn(u, *, extra_args=None):
+    # Patch the seam `main()` actually resolves. cloud_worker.py:1265 documents
+    # "None defaults resolve to the module-level `_spawn_daemon_for_universe`";
+    # `_spawn_fantasy_daemon` is an inner helper that wrapper may or may not
+    # reach, depending on `_daemon_module_for_universe`. Patching the inner one
+    # left `captured` empty on Linux, so the assertions died on KeyError
+    # instead of reporting what was actually spawned.
+    #
+    # `**kwargs` because the wrapper passes `module=` on the non-legacy branch;
+    # a narrower signature would TypeError instead of recording the call.
+    def fake_spawn(u, *, extra_args=None, **kwargs):
         captured["universe"] = u
         captured["extra_args"] = list(extra_args or [])
         return FakeProc(returncode=0, steps_until_exit=0)
 
-    monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
+    monkeypatch.setattr(cw, "_spawn_daemon_for_universe", fake_spawn)
+    # The pre-claim auth gate (cloud_worker.py:1322) self-quarantines a worker
+    # whose writer provider is unauthenticated and SKIPS the spawn entirely.
+    # CI has no ~/.codex/auth.json, so on Linux the supervisor logged
+    # "QUARANTINING worker, not claiming", never called the spawn, and `main`
+    # still returned 0 — leaving `captured` empty and the assertions dying on
+    # KeyError. This host happens to have codex auth, which is the only reason
+    # it passed here.
+    #
+    # Stub the health probe, not the gate: the gate's behaviour is correct and
+    # is covered by its own tests. This test is about provider-pin threading,
+    # so it should not depend on the host's credential state.
+    monkeypatch.setattr(cw, "_worker_auth_health", lambda _args: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
 
     rc = cw.main(

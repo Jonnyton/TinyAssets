@@ -434,8 +434,12 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         lambda _base_path, _branch_version_id: selector_version,
     )
 
+    # `_resolve_page` requires the `.md` suffix once the name contains a slash
+    # (wiki.py:224) and resolves it under `pages/` or `drafts/`. Without the
+    # suffix it returns None before any lookup, so this probed a page that
+    # could never resolve and the truncation assertion never ran.
     truncated_page_response = universe_server.read_page(
-        page="notes/long-response-probe",
+        page="pages/notes/long-response-probe.md",
     )
     assert json.loads(truncated_page_response)["truncated"] is True
 

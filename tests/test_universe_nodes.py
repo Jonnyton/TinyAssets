@@ -662,7 +662,15 @@ class TestWorldbuildCanonGeneration:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation not permitted on this platform: {exc}")
 
-        with pytest.raises(ValueError, match="canon existing file escapes"):
+        # The guard DOES raise; only its message moved. It now comes from
+        # `canon_names.py:28` as "canon filename escapes canon directory",
+        # where the test expected the older "canon existing file escapes".
+        #
+        # I first rewrote this as skip-not-raise, reading a canon_io log line
+        # about skipping entries as the whole mechanism. The oracle's Linux run
+        # showed the ValueError still propagating, which is how the real cause
+        # surfaced — the match pattern was stale, not the mechanism.
+        with pytest.raises(ValueError, match="escapes canon directory"):
             _handle_contradiction(
                 canon_dir, "magic_system", "detail", "premise", {}
             )
@@ -680,7 +688,15 @@ class TestWorldbuildCanonGeneration:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation not permitted on this platform: {exc}")
 
-        with pytest.raises(ValueError, match="canon existing file escapes"):
+        # The guard DOES raise; only its message moved. It now comes from
+        # `canon_names.py:28` as "canon filename escapes canon directory",
+        # where the test expected the older "canon existing file escapes".
+        #
+        # I first rewrote this as skip-not-raise, reading a canon_io log line
+        # about skipping entries as the whole mechanism. The oracle's Linux run
+        # showed the ValueError still propagating, which is how the real cause
+        # surfaced — the match pattern was stale, not the mechanism.
+        with pytest.raises(ValueError, match="escapes canon directory"):
             _handle_expansion(
                 canon_dir, "magic_system", "detail", "premise", {}
             )

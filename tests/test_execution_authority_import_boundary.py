@@ -266,7 +266,28 @@ def test_database_check_use_swap_fails_before_authority_initialization(
         return original_connect(database_path, *args, **kwargs)
 
     monkeypatch.setattr(fake_module.sqlite3, "connect", swapping_connect)
-    with pytest.raises(error, match="changed during use|held against"):
+    # One invariant, detected at DIFFERENT LAYERS per platform — so both the
+    # exception type and the message differ, and the old assertion pinned only
+    # the Windows shape.
+    #
+    #   Windows: the rename itself raises PermissionError while the file is
+    #            held, so the FAKE root reports D0ConfigurationError
+    #            ("...held against a check/use swap").
+    #   POSIX:   the rename succeeds, so detection falls through to the REAL
+    #            evidence store, which compares the database identity across
+    #            the open and raises EvidenceSchemaError
+    #            ("evidence database path changed while opening",
+    #            evidence_store.py:507).
+    #
+    # What the test is named for is that the swap is caught and initialization
+    # does NOT proceed. Both layers deliver exactly that, so accept either —
+    # pinning one layer made a correct detection on the other read as a bug.
+    from tinyassets.execution_authority.evidence_store import EvidenceSchemaError
+
+    with pytest.raises(
+        (error, EvidenceSchemaError),
+        match="changed during use|held against|changed while opening",
+    ):
         root_type.create(
             sentinel=sentinel(),
             mode="test",

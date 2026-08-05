@@ -141,7 +141,7 @@ def test_build_branch_text_hides_branch_def_id(env):
     assert "phone-friendly" in result["text"]
 
 
-def test_patch_branch_text_hides_branch_def_id(env):
+def test_patch_branch_text_carries_the_complete_branch_def_id(env):
     us, _ = env
     bid = _build_min_branch(us, name="patch fixture")
     # Update fields go FLAT on the op, not nested under "updates" — the
@@ -157,7 +157,19 @@ def test_patch_branch_text_hides_branch_def_id(env):
                    branch_def_id=bid,
                    changes_json=json.dumps(ops))
     assert result["status"] == "patched"
-    assert bid not in result["text"]
+    # REVERSED from #58 for the composite actions. `tool_return_shapes.md:43`
+    # says "Always include the new ID" and `composite_branch_actions.md:42`
+    # illustrates one in text; the live envelope
+    # (openspec/specs/live-mcp-connector-surface/spec.md:121) requires the text
+    # block to carry the full payload as JSON anyway, so asserting absence here
+    # asserted against the shipped contract.
+    #
+    # The invariant that still MATTERS is that the id shown is the COMPLETE,
+    # usable one. A truncated form (say the 8-char hash suffix) would look
+    # copyable in a phone client and then fail on paste, because lookup needs
+    # the whole id. #58's concern is preserved for the read-only surfaces,
+    # which the other tests in this file still cover.
+    assert bid in result["text"], result["text"]
     assert "patch fixture" in result["text"]
 
 
@@ -245,7 +257,7 @@ def test_goal_propose_text_hides_goal_id(env):
     assert "Paper: long-horizon eval" in result["text"]
 
 
-def test_goal_bind_text_hides_goal_id_and_branch_def_id(env):
+def test_goal_bind_text_carries_complete_goal_and_branch_ids(env):
     us, _ = env
     goal = _call(us, "goals", "propose", name="Binding Goal")
     gid = goal["goal"]["goal_id"]
@@ -253,7 +265,18 @@ def test_goal_bind_text_hides_goal_id_and_branch_def_id(env):
     result = _call(us, "goals", "bind",
                    branch_def_id=bid, goal_id=gid)
     assert result["status"] == "bound"
-    assert gid not in result["text"]
-    assert bid not in result["text"]
+    # bind surfaces exactly ONE id: the goal_id, because the documented
+    # follow-up is `read_graph target="goal" goal_id="..."`. The branch is
+    # named, not id'd, since no suggested next call needs its id.
+    #
+    # So the rule shipped here is narrower than either "#58: never show ids" or
+    # "always show every id": show the id the NEXT CALL needs, and names for
+    # everything else. Assert that precisely, in both directions.
+    assert gid in result["text"], result["text"]
+    assert bid not in result["text"], result["text"]
+    # And the id that IS shown must be complete — a truncated form would look
+    # copyable in a phone client and fail on paste.
+    assert f'goal_id="{gid}"' in result["text"], result["text"]
+    # Human-readable names carry the rest; ids alone are not legible.
     assert "Binding Goal" in result["text"]
     assert "bind me" in result["text"]

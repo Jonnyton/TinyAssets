@@ -835,6 +835,12 @@ def test_operator_cli_loads_private_roster_and_emits_redacted_plan(
         }),
         encoding="utf-8",
     )
+    # 0600 is REQUIRED on POSIX: scoped_reset refuses a roster with any
+    # group/world bit (scoped_reset.py:1709). `write_text` honours the
+    # umask, which is 022 on CI, so the file lands 0644 and the check
+    # fires. Windows takes the ACL branch stubbed below instead, which is
+    # why this passed locally and failed only on Linux.
+    roster_path.chmod(0o600)
     if sys.platform == "win32":
         monkeypatch.setattr(
             scoped_reset,
@@ -874,6 +880,12 @@ def test_roster_rejects_credentials_and_unexpected_fields(
         }),
         encoding="utf-8",
     )
+    # 0600 is REQUIRED on POSIX: scoped_reset refuses a roster with any
+    # group/world bit (scoped_reset.py:1709). `write_text` honours the
+    # umask, which is 022 on CI, so the file lands 0644 and the check
+    # fires. Windows takes the ACL branch stubbed below instead, which is
+    # why this passed locally and failed only on Linux.
+    roster_path.chmod(0o600)
     if sys.platform == "win32":
         monkeypatch.setattr(
             scoped_reset,

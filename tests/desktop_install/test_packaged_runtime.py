@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+# pystray resolves its backend at import and, with no X display, raises
+# Xlib.error.DisplayNameError — NOT ImportError, so `importorskip` does not
+# catch it and the whole module fails collection on CI. pystray ships a
+# `_dummy` backend for exactly this; selecting it lets these tests actually
+# RUN headless instead of being skipped or quarantined.
+#
+# Scoped deliberately: Windows and any X-enabled Linux keep their real
+# backend, so this cannot mask a genuine backend regression there.
+if os.name != "nt" and not os.environ.get("DISPLAY"):
+    os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
+
 
 import tinyassets_tray
 

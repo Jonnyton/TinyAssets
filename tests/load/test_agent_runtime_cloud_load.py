@@ -11,6 +11,7 @@ Run directly with:
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import sqlite3
 import threading
@@ -346,7 +347,19 @@ def test_cross_process_launch_has_one_provider_call_and_typed_losers(
     release_path = tmp_path / "provider-call-release"
 
     started = time.perf_counter()
-    with ProcessPoolExecutor(max_workers=PROCESS_WORKERS) as pool:
+    # "spawn", not the platform default. On Linux the default is FORK, and a
+    # forked child inherits the parent's locks — under pytest that can leave
+    # the child wedged before it ever reaches its provider call, which is
+    # exactly what CI showed: no `.call` marker within the deadline, i.e. the
+    # launch never happened rather than the race resolving wrongly.
+    #
+    # This test is NAMED for launching in a fresh process, and spawn is what
+    # actually delivers one. It is also what Windows already does by default,
+    # which is why the test passes there and only ever failed on Linux.
+    with ProcessPoolExecutor(
+        max_workers=PROCESS_WORKERS,
+        mp_context=multiprocessing.get_context("spawn"),
+    ) as pool:
         futures = [
             pool.submit(
                 _launch_in_fresh_process,
@@ -357,9 +370,19 @@ def test_cross_process_launch_has_one_provider_call_and_typed_losers(
             )
             for _index in range(PROCESS_REQUESTS)
         ]
-        deadline = time.monotonic() + 20
+        # This deadline is a HANG GUARD, not the invariant under test — that is
+        # the `== 1` assertion below, which is untouched. It waits on a freshly
+        # spawned Python process to import and reach its first provider call,
+        # and 20s was tight enough that a loaded CI runner blew it
+        # (observed: 149.047 vs a 149.042 deadline, a 5ms miss). Widening the
+        # patience cannot make a losing race pass; it only stops a slow runner
+        # from reading as a concurrency failure.
+        deadline = time.monotonic() + 120
         while not list(marker_dir.glob("*.call")):
-            assert time.monotonic() < deadline
+            assert time.monotonic() < deadline, (
+                "no subprocess reached its provider call within 120s — the "
+                "launch never happened, rather than the race resolving wrongly"
+            )
             time.sleep(0.01)
         time.sleep(0.25)
         assert len(list(marker_dir.glob("*.call"))) == 1

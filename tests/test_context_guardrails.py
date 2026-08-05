@@ -1,5 +1,6 @@
 """Tests for tinyassets.context.guardrails module."""
 
+import pytest
 
 from tinyassets.context.guardrails import (
     FilterGuardrail,
@@ -376,23 +377,43 @@ class TestGuardrailPipeline:
 
         assert result == [2, 4, 6]
 
-    def test_pipeline_handles_error(self):
-        """Test that pipeline continues after error."""
+    def test_pipeline_aborts_on_step_error(self):
+        """A failing step ABORTS the pipeline; it does not carry on.
+
+        This assertion is reversed from what it used to say. The pipeline was
+        changed to raise `GuardrailPipelineError` and stop
+        (guardrails.py:431, logging "aborting guardrail pipeline") rather than
+        swallow the exception and continue with the previous value.
+
+        The new behaviour is the correct one: a guardrail that silently skips a
+        failed step returns data it never actually guarded, which is precisely
+        the "mock fallbacks that look like real output" failure hard rule 8
+        exists to prevent. So the test is rewritten to the current contract
+        rather than the code being reverted to the old one.
+        """
+        from tinyassets.context.guardrails import GuardrailPipelineError
+
+        ran: list[str] = []
+
         def failing_step(x):
+            ran.append("failing")
             raise ValueError("Test error")
 
         def identity_step(x):
+            ran.append("identity")
             return x
 
         pipeline = GuardrailPipeline()
         pipeline.add_step(failing_step)
         pipeline.add_step(identity_step)
 
-        data = [1, 2, 3]
-        result = pipeline.apply(data)
+        with pytest.raises(GuardrailPipelineError) as excinfo:
+            pipeline.apply([1, 2, 3])
 
-        # Should return input from identity step after failing step
-        assert result == data
+        # The original cause must survive, or debugging loses the real error.
+        assert isinstance(excinfo.value.__cause__, ValueError)
+        # "Aborts" means the LATER step never ran — the substantive claim.
+        assert ran == ["failing"], ran
 
 
 class TestBuildRetrievalPipeline:
