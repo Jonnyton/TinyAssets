@@ -11,12 +11,14 @@ guards are exercised against it.
 from __future__ import annotations
 
 import json
+import traceback
 
 import pytest
 
 from tinyassets.effectors.slack_socket_mode import (
     ENVELOPE_DISCONNECT,
     ENVELOPE_HELLO,
+    SeenDeliveries,
     SocketModeError,
     ack_frame,
     event_of,
@@ -32,20 +34,34 @@ from tinyassets.effectors.slack_socket_mode import (
 OUR_BOT = "U_OURBOT"
 
 
-def envelope(event: dict | None = None, *, envelope_id="Ev-env-1", etype="events_api"):
-    """Slack's documented Socket Mode envelope for an Events API delivery."""
+def envelope(
+    event: dict | None = None,
+    *,
+    envelope_id="Ev-env-1",
+    etype="events_api",
+    event_id=None,
+    retry_attempt=0,
+):
+    """Slack's documented Socket Mode envelope for an Events API delivery.
+
+    ``event_id`` defaults to one derived from ``envelope_id`` rather than a
+    fixed constant. The constant was a fixture bug: a test that varied only
+    ``envelope_id`` believed it had built two different messages while Slack
+    would call them the same event. Pass ``event_id`` explicitly to construct a
+    genuine redelivery.
+    """
     frame: dict = {"type": etype, "accepts_response_payload": False}
     if envelope_id:
         frame["envelope_id"] = envelope_id
     if etype == "events_api":
-        frame["retry_attempt"] = 0
+        frame["retry_attempt"] = retry_attempt
         frame["retry_reason"] = ""
         frame["payload"] = {
             "token": "deprecated-verification-token",
             "team_id": "T0BN5LK57FT",
             "api_app_id": "A0BN1Q98MTQ",
             "type": "event_callback",
-            "event_id": "Ev0123456789",
+            "event_id": event_id or f"Ev-{envelope_id}",
             "event_time": 1700000000,
             "event": event
             or {
@@ -160,12 +176,43 @@ def test_parses_the_documented_events_api_envelope():
     assert event_of(parsed)["type"] == "app_mention"
 
 
-@pytest.mark.parametrize(
-    "raw", ["not json", "[]", '"a string"', "{}", '{"type": ""}', b"\xff\xfe"]
-)
-def test_malformed_frames_are_skipped_not_fatal(raw):
+@pytest.mark.parametrize("raw", ["not json", "[]", '"a string"', b"\xff\xfe"])
+def test_unusable_frames_are_skipped_not_fatal(raw):
     """A bad frame must not take down a healthy long-lived connection."""
     assert parse_envelope(raw) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"envelope_id": "E-weird"}',
+        '{"type": "", "envelope_id": "E-weird"}',
+        '{"type": 42, "envelope_id": "E-weird"}',
+    ],
+)
+def test_an_uninterpretable_frame_still_keeps_its_ack_id(raw):
+    """We cannot act on it, but we can still say we got it.
+
+    Returning `None` here — which this did originally — threw away a usable
+    `envelope_id`, so Slack never learned the frame arrived and kept resending
+    something we were never going to understand.
+    """
+    parsed = parse_envelope(raw)
+
+    assert parsed is not None
+    assert parsed.type == "", "an unrecognised type is normalised, not guessed"
+    assert parsed.needs_ack is True
+    assert event_of(parsed) is None, "and it is still never treated as an event"
+
+
+@pytest.mark.asyncio
+async def test_an_uninterpretable_frame_is_acknowledged_by_the_pump():
+    socket = _FakeSocket(['{"type": 42, "envelope_id": "E-weird"}'])
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 0
+    assert [json.loads(s)["envelope_id"] for s in socket.sent] == ["E-weird"]
 
 
 def test_lifecycle_frames_carry_no_event_and_need_no_ack():
@@ -423,3 +470,236 @@ async def test_a_hostile_frame_is_acknowledged_before_it_is_dropped():
 
     assert handled == 0
     assert [json.loads(s)["envelope_id"] for s in socket.sent] == ["Ev-env-1"]
+
+
+# --- Cross-family review findings, each with its counterexample ------------
+# A Codex review framed as "refute that this is safe" returned REJECT with 11
+# findings and reproduced them. The payloads below are its counterexamples.
+
+
+@pytest.mark.asyncio
+async def test_an_app_authored_message_without_bot_id_is_not_answered():
+    """CRITICAL, finding 1: the loop guard's original three markers all miss this.
+
+    No `bot_id`, no `subtype`, no `user` — just `app_id` and `bot_profile`.
+    It reached the handler, which is an unbounded provider-spend loop when the
+    message is our own reply coming back.
+    """
+    self_reply = {
+        "type": "message",
+        "app_id": "A_SELF",
+        "bot_profile": {"id": "B_SELF", "app_id": "A_SELF"},
+        "text": "self reply",
+        "channel": "C1",
+        "ts": "1.0",
+    }
+    socket = _FakeSocket([envelope(self_reply, envelope_id="E-loop")])
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 0, "an app-authored message must never reach the handler"
+    assert len(socket.sent) == 1, "but it is still acknowledged"
+
+
+def test_app_authored_markers_are_each_sufficient():
+    assert is_self_authored({"app_id": "A_SELF"}, OUR_BOT) is True
+    assert is_self_authored({"bot_profile": {"id": "B1"}}, OUR_BOT) is True
+    assert is_self_authored({"bot_id": "B1"}, OUR_BOT) is True
+    assert is_self_authored({"subtype": "bot_message"}, OUR_BOT) is True
+    assert is_self_authored({"user": OUR_BOT}, OUR_BOT) is True
+    # ...and a human still gets through
+    assert is_self_authored({"user": "U_HUMAN"}, OUR_BOT) is False
+
+
+@pytest.mark.asyncio
+async def test_a_redelivery_after_a_failed_ack_is_handled_only_once():
+    """HIGH, finding 3: the ack is allowed to fail, so Slack resends.
+
+    Without deduplication the agent answers the same question twice and the
+    user is billed twice for it. Reproduced by the reviewer.
+    """
+    first = envelope(envelope_id="E-dup", event_id="Ev-same", retry_attempt=0)
+    retry = envelope(envelope_id="E-dup2", event_id="Ev-same", retry_attempt=1)
+    socket = _FakeSocket([first, retry])
+    socket.send_fails = True  # the ack never reaches Slack, hence the retry
+
+    calls = []
+
+    async def _handle(event):
+        calls.append(event)
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=_handle)
+
+    assert handled == 1, "a redelivered event is handled exactly once"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_genuinely_different_messages_are_both_handled():
+    """The dedupe must not swallow real traffic — the obvious way to get this wrong."""
+    socket = _FakeSocket([envelope(envelope_id="E-one"), envelope(envelope_id="E-two")])
+    calls = []
+
+    async def _handle(event):
+        calls.append(event)
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=_handle)
+
+    assert handled == 2
+    assert len(calls) == 2
+
+
+def test_seen_deliveries_is_bounded():
+    """An unbounded set on a daemon that runs for months is a slow leak."""
+    seen = SeenDeliveries(capacity=3)
+
+    assert all(seen.add_if_new(f"event:{i}") for i in range(5))
+    assert len(seen) == 3
+    assert seen.add_if_new("event:0") is True, "the oldest was evicted, so it looks new"
+    assert seen.add_if_new("event:4") is False, "the newest is still remembered"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_notifies_rather_than_vanishing():
+    """HIGH, finding 4: we ack before handling, so Slack will never retry.
+
+    That is the right call — an agent turn is far slower than the ack window —
+    but it means a failed turn is a permanently lost user message unless
+    something says so out loud.
+    """
+    socket = _FakeSocket([envelope()])
+    reported = []
+
+    async def _explode(_event):
+        raise RuntimeError("turn exploded")
+
+    async def _on_failure(event, exc):
+        reported.append((event["text"], str(exc)))
+
+    handled = await pump(
+        socket,
+        bot_user_id=OUR_BOT,
+        handle=_explode,
+        on_failure=_on_failure,
+    )
+
+    assert handled == 0
+    assert reported == [("<@U_OURBOT> hello", "turn exploded")]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_failure_notice_still_does_not_drop_the_socket():
+    socket = _FakeSocket([envelope(envelope_id="E-1"), envelope(envelope_id="E-2")])
+
+    async def _explode(_event):
+        raise RuntimeError("turn exploded")
+
+    async def _also_explode(_event, _exc):
+        raise RuntimeError("notice exploded")
+
+    handled = await pump(
+        socket, bot_user_id=OUR_BOT, handle=_explode, on_failure=_also_explode
+    )
+
+    assert handled == 0
+    assert len(socket.sent) == 2, "the socket kept reading and acknowledging"
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_warning_keeps_draining_the_socket():
+    """MED, finding 9: Slack warns ~10s before closing.
+
+    Breaking on the warning abandoned frames still in flight — unacked and
+    unanswered. Only a non-warning disconnect ends the loop.
+    """
+    warning = json.dumps({"type": ENVELOPE_DISCONNECT, "reason": "warning"})
+    socket = _FakeSocket(
+        [envelope(envelope_id="E-1"), warning, envelope(envelope_id="E-2")]
+    )
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 2, "the frame after a disconnect WARNING is still handled"
+
+
+@pytest.mark.asyncio
+async def test_a_real_disconnect_still_stops_the_loop():
+    hard = json.dumps({"type": ENVELOPE_DISCONNECT, "reason": "refresh_requested"})
+    socket = _FakeSocket(
+        [envelope(envelope_id="E-1"), hard, envelope(envelope_id="E-2")]
+    )
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 1, "a real disconnect ends the loop so the runner reconnects"
+
+
+def test_the_token_never_appears_in_a_chained_cause():
+    """MED, finding 8: the original test checked only the outer exception.
+
+    `raise ... from exc` keeps the cause, and an HTTP library routinely puts the
+    Authorization header in its message — so `exc_info=True` logged the token.
+    """
+    secret = "xapp-1-VERY-SECRET-VALUE"
+
+    def opener(token):
+        raise RuntimeError(f"failed POST with Authorization: Bearer {token}")
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url(secret, opener=opener)
+
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert secret not in rendered, "the token must not survive into a traceback"
+    assert "VERY-SECRET-VALUE" not in rendered
+
+
+def test_an_upstream_error_string_cannot_smuggle_the_token_back():
+    """Finding 6, second half: Slack's `error` field is upstream text."""
+    secret = "xapp-1-VERY-SECRET-VALUE"
+
+    def opener(_token):
+        return {"ok": False, "error": f"invalid {secret}"}
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url(secret, opener=opener)
+
+    assert secret not in str(exc.value)
+    assert "unknown_error" in str(exc.value), "an unrecognised code is replaced"
+
+
+def test_a_real_slack_error_code_is_still_reported():
+    """The allow-list must not blind us to the diagnostic we actually need."""
+
+    def opener(_token):
+        return {"ok": False, "error": "invalid_auth"}
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url("xapp-1-token", opener=opener)
+
+    assert "invalid_auth" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_the_pump_enforces_the_conversational_filter():
+    """HIGH, finding 7: the helper was tested, the ENFORCEMENT was not.
+
+    Deleting the `is_conversational` check from `pump` left all 52 tests green,
+    so subtyped occurrences could have been routed to the billed handler with
+    the suite still passing.
+    """
+    occurrence = {
+        "type": "message",
+        "subtype": "channel_join",
+        "user": "U_HUMAN",
+        "text": "has joined",
+        "channel": "C1",
+        "ts": "1.0",
+    }
+    socket = _FakeSocket([envelope(occurrence, envelope_id="E-join")])
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 0, "a subtyped occurrence must not reach the billed handler"
+    assert len(socket.sent) == 1, "but it is still acknowledged"

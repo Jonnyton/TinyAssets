@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
@@ -76,6 +78,10 @@ class SocketEnvelope:
     envelope_id: str
     payload: Mapping[str, Any]
     retry_attempt: int = 0
+    #: Top-level on the frame, NOT inside `payload` — a `disconnect` frame has
+    #: no payload at all. Reading it from the wrong place made every disconnect
+    #: look like a hard close.
+    reason: str = ""
 
     @property
     def needs_ack(self) -> bool:
@@ -87,6 +93,12 @@ def parse_envelope(raw: str | bytes) -> SocketEnvelope | None:
 
     Returns ``None`` rather than raising: a malformed frame from Slack must not
     take down a long-lived connection that is otherwise healthy.
+
+    A frame we cannot *interpret* still yields an envelope, with ``type`` set to
+    the empty string, as long as it is a JSON object. That is deliberate: the
+    ``envelope_id`` is what lets us acknowledge, and discarding the whole frame
+    because its ``type`` was unrecognised threw away a usable acknowledgement id
+    and left Slack redelivering a frame we were never going to understand.
     """
     try:
         decoded = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
@@ -95,16 +107,18 @@ def parse_envelope(raw: str | bytes) -> SocketEnvelope | None:
     if not isinstance(decoded, dict):
         return None
     envelope_type = decoded.get("type")
-    if not isinstance(envelope_type, str) or not envelope_type:
-        return None
+    if not isinstance(envelope_type, str):
+        envelope_type = ""
     envelope_id = decoded.get("envelope_id")
     payload = decoded.get("payload")
     attempt = decoded.get("retry_attempt")
+    reason = decoded.get("reason")
     return SocketEnvelope(
         type=envelope_type,
         envelope_id=envelope_id if isinstance(envelope_id, str) else "",
         payload=payload if isinstance(payload, Mapping) else {},
         retry_attempt=attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 0,
+        reason=reason if isinstance(reason, str) else "",
     )
 
 
@@ -134,6 +148,16 @@ def is_self_authored(event: Mapping[str, Any], bot_user_id: str) -> bool:
     if event.get("bot_id"):
         return True
     if event.get("subtype") == "bot_message":
+        return True
+    # `app_id` and `bot_profile` are the markers a cross-family review used to
+    # break the original three checks: it built a message carrying neither
+    # `bot_id` nor `user` — just `app_id` + `bot_profile` — and reached the
+    # handler. Any app-authored message is a loop risk, not only our own: two
+    # agents in one channel answering each other spend both users' budgets
+    # until someone notices the bill.
+    if event.get("app_id"):
+        return True
+    if isinstance(event.get("bot_profile"), Mapping):
         return True
     author = event.get("user")
     return (
@@ -175,6 +199,24 @@ def reply_thread_ts(event: Mapping[str, Any]) -> str:
     return ""
 
 
+#: Slack error codes are lowercase snake_case identifiers. Anything else in that
+#: field is not a code we recognise, and echoing it verbatim is how upstream
+#: text — including a token an error message quoted back — reaches our logs.
+_ERROR_CODE_PATTERN = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
+
+
+def _safe_error_code(value: object) -> str:
+    """Pass through a real Slack error code; refuse anything else.
+
+    An allow-list, not a scrub. A denylist here would have to anticipate every
+    shape a secret can take, and the set of valid Slack codes is small and
+    well-shaped, so matching what we accept is both simpler and tighter.
+    """
+    if isinstance(value, str) and _ERROR_CODE_PATTERN.match(value):
+        return value
+    return ""
+
+
 class Opener(Protocol):
     """Performs the `apps.connections.open` call. Injected so tests need no network."""
 
@@ -187,22 +229,48 @@ def open_socket_url(app_token: str, *, opener: Opener) -> str:
     The token is sent in the Authorization header and never returned, logged, or
     placed in an exception — this function's output is a URL the caller will
     dial, and nothing else.
+
+    Holding that guarantee takes two things that are easy to miss, and this
+    function previously did neither:
+
+    * ``from None``, not ``from exc``. An HTTP library routinely puts the
+      request headers in its exception message, and ``raise ... from exc`` keeps
+      that cause attached — so ``exc_info=True`` writes the whole ``Bearer
+      xapp-…`` line into the log. Chaining is a leak here, not a courtesy.
+    * A **sanitised** error code. Slack's ``error`` field is upstream text; a
+      response of ``{"ok": false, "error": "invalid xapp-…"}`` interpolated
+      straight into the message re-introduces the leak from the other side.
     """
     if not is_app_token(app_token):
         raise SocketModeError("slack app-level token is missing or not an xapp- token")
     try:
         response = opener(app_token)
-    except Exception as exc:  # noqa: BLE001 - normalise, never leak the token
-        raise SocketModeError("could not reach slack to open a socket") from exc
+    except SocketModeError:
+        # Already sanitised by the opener; re-raising keeps its detail without
+        # attaching a cause we have not inspected.
+        raise
+    except Exception:  # noqa: BLE001 - drop the cause: it may carry the token
+        raise SocketModeError("could not reach slack to open a socket") from None
     if not isinstance(response, Mapping) or not response.get("ok"):
         code = ""
         if isinstance(response, Mapping):
-            code = str(response.get("error") or "")
+            code = _safe_error_code(response.get("error"))
         raise SocketModeError(f"slack refused the socket: {code or 'unknown_error'}")
     url = response.get("url")
     if not isinstance(url, str) or not url.startswith("wss://"):
         raise SocketModeError("slack returned no socket url")
     return url
+
+
+def _is_disconnect_warning(envelope: SocketEnvelope) -> bool:
+    """True for Slack's advance notice, false for "closing now".
+
+    Slack sends ``reason: "warning"`` about ten seconds ahead of the actual
+    close. Treating that as "stop reading" discards whatever is still in
+    flight; treating a real disconnect as a warning would spin on a dead
+    socket, so the two must stay distinguishable.
+    """
+    return envelope.reason == "warning"
 
 
 def ack_frame(envelope: SocketEnvelope) -> str:
@@ -218,12 +286,72 @@ def ack_frame(envelope: SocketEnvelope) -> str:
 #: Called with the inner Slack event once it has passed every guard.
 Handler = Callable[[Mapping[str, Any]], Awaitable[None]]
 
+#: Called when a handler raised. The event is delivered but unanswered, so this
+#: is the hook that tells the *user* rather than only the log.
+FailureHandler = Callable[[Mapping[str, Any], BaseException], Awaitable[None]]
+
+
+def delivery_key(envelope: SocketEnvelope) -> str:
+    """A stable identity for one delivery, for deduplication.
+
+    Slack's ``event_id`` is stable across redeliveries of the same event, which
+    is exactly what is needed: ``envelope_id`` alone is not enough, because a
+    retry can arrive under a fresh envelope. Falls back to the envelope id when
+    the payload carries no event id.
+    """
+    event_id = envelope.payload.get("event_id")
+    if isinstance(event_id, str) and event_id.strip():
+        return f"event:{event_id.strip()}"
+    return f"envelope:{envelope.envelope_id}" if envelope.envelope_id else ""
+
+
+class SeenDeliveries:
+    """A bounded set of recently-handled delivery keys.
+
+    Exists because acknowledging is not guaranteed to reach Slack. If the ack
+    send fails — which the pump tolerates so a blip cannot kill the socket —
+    Slack redelivers, and without this the agent answers the same question
+    twice and bills the user twice for it. A review reproduced exactly that.
+
+    Bounded, and evicting oldest-first, because an unbounded set on a
+    long-running daemon is a slow memory leak.
+    """
+
+    __slots__ = ("_capacity", "_seen")
+
+    def __init__(self, capacity: int = 2048) -> None:
+        if capacity < 1:
+            raise ValueError("capacity must be positive")
+        self._capacity = capacity
+        self._seen: OrderedDict[str, None] = OrderedDict()
+
+    def add_if_new(self, key: str) -> bool:
+        """Record ``key``; return whether this is the first time we saw it.
+
+        An empty key is always "new" — we cannot identify the delivery, and
+        refusing to handle unidentifiable events would drop real messages.
+        """
+        if not key:
+            return True
+        if key in self._seen:
+            self._seen.move_to_end(key)
+            return False
+        self._seen[key] = None
+        if len(self._seen) > self._capacity:
+            self._seen.popitem(last=False)
+        return True
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
 
 async def pump(
     connection: Any,
     *,
     bot_user_id: str,
     handle: Handler,
+    seen: SeenDeliveries | None = None,
+    on_failure: FailureHandler | None = None,
 ) -> int:
     """Read frames until the socket closes. Returns how many events were handled.
 
@@ -238,6 +366,7 @@ async def pump(
     work, instead of a test passing on a socket that yielded nothing.
     """
     handled = 0
+    deliveries = seen if seen is not None else SeenDeliveries()
     async for raw in connection:
         envelope = parse_envelope(raw)
         if envelope is None:
@@ -250,7 +379,12 @@ async def pump(
                 logger.warning("slack socket: ack failed for one envelope")
 
         if envelope.type == ENVELOPE_DISCONNECT:
-            # Slack asks us to reconnect (refresh, or it is cycling the socket).
+            if _is_disconnect_warning(envelope):
+                # Slack warns roughly ten seconds before it actually closes.
+                # Breaking here abandoned frames still in flight, unacked and
+                # unanswered. Keep draining; the socket closing ends the loop.
+                logger.info("slack socket: disconnect warning, draining")
+                continue
             logger.info("slack socket: disconnect requested")
             break
         if envelope.type != ENVELOPE_EVENTS_API:
@@ -265,7 +399,23 @@ async def pump(
                 continue
             if not is_conversational(event):
                 continue
-            await handle(event)
+            if not deliveries.add_if_new(delivery_key(envelope)):
+                # A redelivery. Slack resends whenever it did not see our ack,
+                # including when the ack send itself failed above.
+                logger.info("slack socket: skipping a redelivered event")
+                continue
+            try:
+                await handle(event)
+            except Exception as exc:  # noqa: BLE001 - report, do not drop silently
+                # The ack already went out, so Slack will not retry: without
+                # this branch the user's message is simply lost, and the only
+                # trace is a log line nobody is reading.
+                if on_failure is not None:
+                    try:
+                        await on_failure(event, exc)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("slack socket: failure notice also failed")
+                raise
             handled += 1
         except Exception:  # noqa: BLE001 - one bad frame must not drop the socket
             # The filters are inside this block deliberately. They read
