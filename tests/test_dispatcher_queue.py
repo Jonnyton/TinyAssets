@@ -1346,7 +1346,19 @@ def test_queue_list_merges_epoch2_without_exposing_request_text(
     ] == 1
 
 
-def test_queue_list_discloses_staged_epoch2_consumer_not_ready(server_base):
+def test_queue_list_discloses_staged_epoch2_work_awaiting_capacity(server_base):
+    """With the epoch-2 consumer live, staged work is counted but not eligible.
+
+    This asserted the inverse until `64f27fe7` ("Wire cloud drain epoch-2
+    Branch consumer", #2182) activated the consumer: `consumer_ready` was
+    False, capacity evidence was unavailable, and the response carried an
+    `epoch2_consumer_not_ready` error. Live production now reports
+    `consumer_ready: true`, so that contract is gone.
+
+    The distinction still worth pinning is the one that replaced it: an
+    activated consumer with **no live worker** must count the staged row as
+    valid, refuse to call it eligible, and say exactly why.
+    """
     from tinyassets.api.universe import _action_queue_list
 
     base, uid = server_base
@@ -1361,14 +1373,23 @@ def test_queue_list_discloses_staged_epoch2_consumer_not_ready(server_base):
 
     response = json.loads(_action_queue_list(universe_id=uid))
 
-    assert response["consumer_ready"] is False
-    assert response["capacity_evidence_available"] is False
-    assert (
-        response["capacity_evidence_error"]
-        == "epoch2_consumer_not_ready"
-    )
-    assert response["counts_complete"] is False
+    # The consumer is live, so evidence is available and complete.
+    assert response["consumer_ready"] is True
+    assert response["capacity_evidence_available"] is True
+    assert response["capacity_evidence_error"] is None
+    assert response["counts_complete"] is True
+
+    # The staged row is valid, but with no compatible worker it is not
+    # eligible — validity and eligibility must not collapse into one another.
+    assert response["valid_epoch2_pending_count"] == 1
+    assert response["compatible_worker_count"] == 0
     assert response["eligible_epoch2_pending_count"] == 0
+
+    # And the reason is disclosed rather than left implicit.
+    assert response["operational_state_counts"]["awaiting_compatible_capacity"] == 1
+    assert response["operational_reason_counts"]["awaiting_compatible_capacity"] == {
+        "no_live_compatible_worker": 1
+    }
 
 
 def test_queue_list_preserves_v1_when_epoch2_read_fails(
