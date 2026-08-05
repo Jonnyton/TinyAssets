@@ -251,10 +251,25 @@ jobs:
             echo "::error::recovered daemon never served /mcp on loopback"
             exit 1
           fi
-      - name: Recovery exact-seven surface assertion
+      - name: Recovery exact-seven surface assertion (loopback)
         run: |
+          # Same structural reason as the recovery daemon canary above: the
+          # PUBLIC url only resolves through the tinyassets-tunnel sidecar,
+          # which recovery does not restore (fence state carries
+          # sidecar_restart_policies == {} and no sidecar_handoff). Asserting
+          # the public handle set here fails on a condition recovery cannot
+          # produce, and the failure re-fences a healthy fleet.
+          #
+          # The handle set is a property of the DAEMON, so assert it against
+          # the daemon. The public form of this assertion is unchanged and
+          # still runs in the ordinary deploy path once the tunnel is back --
+          # it is AGENTS.md Hard Rule 11's PR-178 drift guard and is not
+          # weakened here.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ExitOnForwardFailure=yes \
+              -L 18001:127.0.0.1:8001 -N -f \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}"
           python scripts/mcp_public_canary.py \
-            --url "${CANARY_URL}" --assert-handles --verbose
+            --url "http://127.0.0.1:18001/mcp" --assert-handles --verbose
       - name: Finalize canonical unsafe-fence recovery
         env:
           SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
