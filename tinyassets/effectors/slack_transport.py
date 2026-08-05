@@ -31,6 +31,7 @@ from typing import Any
 
 from tinyassets.app_outbound_adapter import AppTransportReceipt
 from tinyassets.app_reply_authority import ReplyDestination
+from tinyassets.effectors.slack_errors import safe_error_code
 
 #: Slack Web API endpoint for posting a message. Kept a module constant so
 #: tests can point it at a local stub without monkeypatching urllib globally.
@@ -87,12 +88,15 @@ def _post(url: str, payload: dict[str, Any], token: str, timeout: float) -> dict
             raw = response.read()
     except urllib.error.HTTPError as exc:  # pragma: no cover - network shape
         raise SlackTransportError(f"slack transport http {exc.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise SlackTransportError("slack transport unreachable") from exc
+    except (urllib.error.URLError, TimeoutError, OSError):
+        # `from None`, not `from exc`: a URLError's message routinely quotes
+        # the Authorization header, and chaining wrote the bot token into any
+        # traceback. A cross-family review reproduced exactly that here.
+        raise SlackTransportError("slack transport unreachable") from None
     try:
         decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SlackTransportError("slack transport returned malformed JSON") from exc
+    except Exception:  # noqa: BLE001 - decode errors and hostile nesting alike
+        raise SlackTransportError("slack transport returned malformed JSON") from None
     if not isinstance(decoded, dict):
         raise SlackTransportError("slack transport returned a non-object response")
     return decoded
@@ -144,7 +148,7 @@ def build_slack_transport(
         if not decoded.get("ok"):
             # Slack reports failure in-band with HTTP 200. Surface the error
             # CODE only — never the echoed message payload Slack returns.
-            code = str(decoded.get("error") or "unknown_error")
+            code = safe_error_code(decoded.get("error"), default="unknown_error")
             raise SlackTransportError(f"slack rejected the reply: {code}")
 
         receipt_ref = str(decoded.get("ts") or "").strip()

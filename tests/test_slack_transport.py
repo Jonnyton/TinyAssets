@@ -205,3 +205,96 @@ def test_delivers_to_the_authorized_channel(tmp_path: Path, monkeypatch):
 
     assert receipt.provider_receipt_ref.startswith("slack:")
     assert stub.calls[0]["payload"] == {"channel": "C0123ABC", "text": "hello there"}
+
+# --- Cross-family review: the bot token leaked here too ---------------------
+# Codex reproduced both of these against this module, after the identical two
+# bugs had already been fixed in slack_socket_mode and slack_socket_runner.
+# Third occurrence of one class -> shared helpers in effectors/slack_errors.
+
+
+def test_the_bot_token_never_reaches_a_traceback(monkeypatch, tmp_path):
+    """`raise ... from exc` kept a URLError whose message quoted the header."""
+    import traceback as _tb
+    import urllib.error
+
+    from tinyassets.effectors import slack_transport as mod
+
+    secret = "xoxb-VERY-SECRET-BOT"
+
+    def _boom(*_a, **_kw):
+        raise urllib.error.URLError(f"Authorization: Bearer {secret}")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _boom)
+
+    with pytest.raises(mod.SlackTransportError) as exc:
+        mod._post("https://slack.invalid/x", {"channel": "C1"}, secret, 1.0)
+
+    rendered = "".join(
+        _tb.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert secret not in rendered
+    assert "xoxb-" not in rendered
+
+
+def test_an_inband_slack_error_cannot_echo_the_token_back(monkeypatch, tmp_path):
+    """Slack reports failure in-band with HTTP 200, and `error` is upstream text."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.effectors import slack_transport as mod
+
+    secret = "xoxb-VERY-SECRET-BOT"
+    write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "social",
+                "service": "slack",
+                "destination": "conn-1",
+                "bot_token": secret,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        mod, "_post", lambda *_a, **_kw: {"ok": False, "error": f"invalid {secret}"}
+    )
+
+    post = mod.build_slack_transport(tmp_path)
+    destination = ReplyDestination(
+        provider="slack", connection_id="conn-1", address="C0123"
+    )
+
+    with pytest.raises(mod.SlackTransportError) as exc:
+        post(destination, "hello")
+
+    assert secret not in str(exc.value)
+    assert "unknown_error" in str(exc.value)
+
+
+def test_a_real_slack_error_code_is_still_reported(monkeypatch, tmp_path):
+    """The allow-list must not blind us to the diagnostic we need."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.effectors import slack_transport as mod
+
+    write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "social",
+                "service": "slack",
+                "destination": "conn-1",
+                "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        mod, "_post", lambda *_a, **_kw: {"ok": False, "error": "channel_not_found"}
+    )
+
+    post = mod.build_slack_transport(tmp_path)
+    destination = ReplyDestination(
+        provider="slack", connection_id="conn-1", address="C0123"
+    )
+
+    with pytest.raises(mod.SlackTransportError) as exc:
+        post(destination, "hello")
+
+    assert "channel_not_found" in str(exc.value)

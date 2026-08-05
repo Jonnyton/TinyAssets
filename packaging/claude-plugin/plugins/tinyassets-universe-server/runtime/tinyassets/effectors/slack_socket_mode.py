@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
+
+from tinyassets.effectors.slack_errors import safe_error_code, scrubbed
 
 logger = logging.getLogger(__name__)
 
@@ -225,43 +225,6 @@ def reply_thread_ts(event: Mapping[str, Any]) -> str:
     return ""
 
 
-#: Slack error codes are lowercase snake_case identifiers. Anything else in that
-#: field is not a code we recognise, and echoing it verbatim is how upstream
-#: text — including a token an error message quoted back — reaches our logs.
-_ERROR_CODE_PATTERN = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
-
-
-def _scrubbed(exc: BaseException, token: str) -> SocketModeError:
-    """The same error, minus its diagnostic if the token is anywhere in it.
-
-    This is not a general secret scrubber, which would be a denylist and would
-    not work. It checks for one specific string we are holding, across the whole
-    rendered chain — so it either preserves a diagnostic we have *verified* is
-    clean, or drops it. There is no third outcome where a token slips through
-    because the pattern did not match.
-    """
-    if not token:
-        return SocketModeError(str(exc))
-    rendered = "".join(
-        traceback.format_exception(type(exc), exc, exc.__traceback__)
-    )
-    if token in rendered:
-        return SocketModeError("could not reach slack to open a socket")
-    return SocketModeError(str(exc))
-
-
-def _safe_error_code(value: object) -> str:
-    """Pass through a real Slack error code; refuse anything else.
-
-    An allow-list, not a scrub. A denylist here would have to anticipate every
-    shape a secret can take, and the set of valid Slack codes is small and
-    well-shaped, so matching what we accept is both simpler and tighter.
-    """
-    if isinstance(value, str) and _ERROR_CODE_PATTERN.match(value):
-        return value
-    return ""
-
-
 class Opener(Protocol):
     """Performs the `apps.connections.open` call. Injected so tests need no network."""
 
@@ -295,13 +258,18 @@ def open_socket_url(app_token: str, *, opener: Opener) -> str:
         # and already sanitised — but "probably ours" is not a security
         # property, and a review reproduced a token surviving this passthrough.
         # Keep the diagnostic only when we can see the token is not in it.
-        raise _scrubbed(exc, app_token) from None
+        raise scrubbed(
+            exc,
+            app_token,
+            fallback="could not reach slack to open a socket",
+            error_type=SocketModeError,
+        ) from None
     except Exception:  # noqa: BLE001 - drop the cause: it may carry the token
         raise SocketModeError("could not reach slack to open a socket") from None
     if not isinstance(response, Mapping) or not response.get("ok"):
         code = ""
         if isinstance(response, Mapping):
-            code = _safe_error_code(response.get("error"))
+            code = safe_error_code(response.get("error"))
         raise SocketModeError(f"slack refused the socket: {code or 'unknown_error'}")
     url = response.get("url")
     if not isinstance(url, str) or not url.startswith("wss://"):
