@@ -129,6 +129,42 @@ def node_id(case: ET.Element) -> str | None:
     return None
 
 
+def failure_reason(message: str, body: str) -> str:
+    """Pull the one line a human would actually act on out of a junit failure.
+
+    The obvious choice — the first line of ``message`` — is frequently useless:
+    pytest writes a bare ``AssertionError:`` header there and puts the actual
+    comparison in the body behind ``E`` markers. Reporting the header made ten
+    different host-installer failures render as ten identical
+    ``AssertionError:`` lines, which is indistinguishable from having no
+    detail at all.
+    """
+    def _useful(lines: list[str]) -> str | None:
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.endswith(":"):  # bare exception header
+                continue
+            return line
+        return None
+
+    msg_lines = (message or "").splitlines()
+    body_lines = [
+        ln.strip()[1:].strip()
+        for ln in (body or "").splitlines()
+        if ln.strip().startswith("E ")
+    ]
+    return _useful(msg_lines) or _useful(body_lines) or "(no detail in junit)"
+
+
+def failure_location(body: str) -> str:
+    """The `file:line: Error` pytest prints last — where to start reading."""
+    for line in reversed((body or "").splitlines()):
+        stripped = line.strip()
+        if ".py:" in stripped and not stripped.startswith("E"):
+            return stripped
+    return ""
+
+
 def parse_junit(path: Path) -> dict[str, tuple[str, str]]:
     """Map node id -> (status, message). Status: failed | passed | skipped."""
     root = ET.parse(path).getroot()
@@ -142,7 +178,9 @@ def parse_junit(path: Path) -> dict[str, tuple[str, str]]:
             bad = case.find("error")
         skip = case.find("skipped")
         if bad is not None:
-            out[nid] = ("failed", (bad.get("message") or "").strip())
+            reason = failure_reason(bad.get("message") or "", bad.text or "")
+            where = failure_location(bad.text or "")
+            out[nid] = ("failed", f"{reason}   [{where}]" if where else reason)
         elif skip is not None:
             out[nid] = ("skipped", (skip.get("message") or "").strip())
         else:

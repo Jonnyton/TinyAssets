@@ -148,3 +148,44 @@ def test_a_passing_quarantined_test_is_reported_as_stale(oracle, tmp_path):
     )
     got = oracle.parse_junit(xml)
     assert got["tests/test_wait_for_run.py::t_now_passes"] == ("passed", "")
+
+
+# --- failure reason extraction ----------------------------------------------
+
+
+def test_reason_prefers_detail_over_a_bare_exception_header(oracle):
+    """pytest writes `AssertionError:` alone in `message` and the real
+    comparison in the body. Reporting the header made ten different
+    host-installer failures render as ten identical `AssertionError:` lines —
+    indistinguishable from having no detail at all."""
+    reason = oracle.failure_reason(
+        "AssertionError: \n  \nassert 1 == 0",
+        "E       AssertionError: \nE         \nE       assert 1 == 0\n"
+        "tests/test_host_uptime_installers.py:516: AssertionError\n",
+    )
+    assert reason == "assert 1 == 0"
+
+
+def test_reason_falls_back_to_the_body_when_message_is_only_a_header(oracle):
+    reason = oracle.failure_reason(
+        "AssertionError:",
+        "E       assert 'configured_ready' == 'partial_or_invalid'\n",
+    )
+    assert reason == "assert 'configured_ready' == 'partial_or_invalid'"
+
+
+def test_reason_keeps_an_already_informative_message(oracle):
+    reason = oracle.failure_reason("KeyError: 'branch_def_id'", "")
+    assert reason == "KeyError: 'branch_def_id'"
+
+
+def test_reason_never_returns_empty(oracle):
+    assert oracle.failure_reason("", "") == "(no detail in junit)"
+
+
+def test_location_points_at_the_failing_line(oracle):
+    body = ("E       assert 1 == 0\n"
+            "tests/test_host_uptime_installers.py:516: AssertionError\n")
+    assert oracle.failure_location(body) == (
+        "tests/test_host_uptime_installers.py:516: AssertionError"
+    )
