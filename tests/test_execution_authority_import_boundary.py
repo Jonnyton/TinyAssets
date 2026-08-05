@@ -266,7 +266,17 @@ def test_database_check_use_swap_fails_before_authority_initialization(
         return original_connect(database_path, *args, **kwargs)
 
     monkeypatch.setattr(fake_module.sqlite3, "connect", swapping_connect)
-    with pytest.raises(error, match="changed during use|held against"):
+    # Three wordings, one invariant: the swap is DETECTED and rejected.
+    # Which message appears depends on where detection lands, and that is
+    # platform-shaped — on Windows the rename itself raises PermissionError
+    # ("held against"), while on POSIX the rename succeeds and the guard
+    # catches the substitution on open ("path changed while opening").
+    # The old alternation covered only the Windows paths, so a CORRECT
+    # Linux detection read as a failure.
+    with pytest.raises(
+        error,
+        match="changed during use|held against|changed while opening",
+    ):
         root_type.create(
             sentinel=sentinel(),
             mode="test",
