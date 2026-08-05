@@ -3797,7 +3797,27 @@ def recover_unsafe(
             removed_recovery_sidecars
         )
         _atomic_json(state_path, state)
-    recover_sidecars = "sidecar_handoff" in state
+    # Restore the sidecars whenever cleanup fenced them, not only when it
+    # recorded an explicit handoff.
+    #
+    # The recovery canary probes the PUBLIC url, which only resolves through
+    # the `tinyassets-tunnel` sidecar. Gating restoration on `sidecar_handoff`
+    # alone means a cleanup that fenced the sidecars WITHOUT writing that key
+    # leaves recovery unable to satisfy its own success check: the fleet comes
+    # up healthy, the daemon serves `POST /mcp -> 200` on loopback, the public
+    # probe 502s because nothing is fronting it, and the failing probe
+    # re-fences the fleet. Forever.
+    #
+    # Observed live 2026-08-05 (recovery 31050887125): all five containers
+    # `Up (healthy)`, daemon logging 200s, NO tinyassets-tunnel in `docker ps
+    # -a`, and state carrying `sidecar_restart_policies` but no
+    # `sidecar_handoff`.
+    #
+    # `sidecar_restart_policies` is the record that cleanup fenced them, and
+    # it is exactly what the restore path below consumes.
+    recover_sidecars = "sidecar_handoff" in state or bool(
+        state.get("sidecar_restart_policies")
+    )
     if recover_sidecars:
         sidecar_policies = {
             str(name): str(policy)
