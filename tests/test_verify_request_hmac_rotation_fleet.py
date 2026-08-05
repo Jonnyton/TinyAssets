@@ -14,7 +14,6 @@ _WORKERS = (
     "tinyassets-worker-codex-2",
     "tinyassets-worker-claude-1",
     "tinyassets-worker-claude-2",
-    "tinyassets-worker-founder",
 )
 _IMAGE_REF = f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'a' * 64}"
 

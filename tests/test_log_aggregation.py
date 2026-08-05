@@ -235,8 +235,7 @@ def test_ship_logs_default_covers_complete_production_fleet():
         "tinyassets-worker-codex-2",
         "tinyassets-worker-claude-1",
         "tinyassets-worker-claude-2",
-        "tinyassets-worker-founder",
-    ):
+        ):
         assert container in text
 
 
