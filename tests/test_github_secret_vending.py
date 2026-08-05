@@ -220,3 +220,48 @@ def test_read_capability_empty_vault_blocks_env(universe_dir, monkeypatch):
 
 def test_read_capability_empty_destination_returns_empty():
     assert _read_capability("") == ""
+
+
+def test_capability_lookup_is_case_insensitive_like_github_itself(monkeypatch):
+    """The two sides of this lookup disagree on case by construction.
+
+    `deploy-prod.yml` installs the capability map keyed "Jonnyton/TinyAssets",
+    but an automation's destination is lowercased — `repository_spec_automation_id`
+    lowercases `repository`, and PR #2286 normalised destination-grant comparison
+    to lowercase. An exact match therefore missed, and the GitHub PR effector
+    reported `missing_capability` for a destination whose token was configured
+    the whole time. Observed live 2026-08-05.
+
+    GitHub owner/repo is case-insensitive, so the lookup must be too.
+    """
+    from tinyassets.auth.provider import vend_github_destination_secret
+
+    monkeypatch.setenv(
+        "TINYASSETS_GITHUB_PUSH_CAPABILITIES",
+        '{"Jonnyton/TinyAssets": "ghp_configured_all_along"}',
+    )
+
+    vended = vend_github_destination_secret(
+        destination="jonnyton/tinyassets",
+        capability="push",
+    )
+
+    assert vended["token"] == "ghp_configured_all_along"
+    assert vended["source_env_var"] == "TINYASSETS_GITHUB_PUSH_CAPABILITIES"
+
+
+def test_capability_lookup_still_refuses_an_unconfigured_destination(monkeypatch):
+    """Case-insensitivity must not become match-anything."""
+    from tinyassets.auth.provider import vend_github_destination_secret
+
+    monkeypatch.setenv(
+        "TINYASSETS_GITHUB_PUSH_CAPABILITIES",
+        '{"Jonnyton/TinyAssets": "ghp_configured_all_along"}',
+    )
+
+    vended = vend_github_destination_secret(
+        destination="someone-else/other-repo",
+        capability="push",
+    )
+
+    assert vended["token"] == ""

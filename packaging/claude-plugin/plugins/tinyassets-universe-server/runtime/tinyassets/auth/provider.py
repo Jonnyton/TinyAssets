@@ -103,8 +103,9 @@ def vend_github_destination_secret(
 ) -> dict[str, Any]:
     """Return a destination-scoped GitHub credential payload.
 
-    Looks up ``destination`` (exact, whitespace-stripped match) in the
-    capability map(s) for ``capability`` ("read" or "push"). The returned
+    Looks up ``destination`` (whitespace-stripped, case-insensitive — GitHub
+    owner/repo is itself case-insensitive) in the capability map(s) for
+    ``capability`` ("read" or "push"). The returned
     dict carries routing metadata plus the resolved token (empty string
     when none is configured). It is safe to pass within the daemon, but
     callers MUST NOT echo the ``token`` field into run state or external
@@ -122,7 +123,24 @@ def vend_github_destination_secret(
     if not destination_key or not env_vars:
         return vendored
     for env_var in env_vars:
-        token = _load_destination_secret_map(env_var).get(destination_key, "")
+        # Case-insensitive on purpose. GitHub owner/repo is itself
+        # case-insensitive, and the two sides of this lookup disagree by
+        # construction: deploy-prod.yml installs the map keyed
+        # "Jonnyton/TinyAssets", while an automation's destination is lowercased
+        # (`repository_spec_automation_id` lowercases `repository`, and PR #2286
+        # normalised destination-grant comparison to lowercase). An exact match
+        # MISSED, so the GitHub PR effector reported `missing_capability` for a
+        # destination whose token had been configured all along — observed live
+        # 2026-08-05. The parser above stays faithful; only the match relaxes.
+        wanted = destination_key.lower()
+        token = next(
+            (
+                value
+                for key, value in _load_destination_secret_map(env_var).items()
+                if key.lower() == wanted
+            ),
+            "",
+        )
         if token:
             vendored["token"] = token
             vendored["source_env_var"] = env_var
