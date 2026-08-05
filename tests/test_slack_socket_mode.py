@@ -703,3 +703,64 @@ async def test_the_pump_enforces_the_conversational_filter():
 
     assert handled == 0, "a subtyped occurrence must not reach the billed handler"
     assert len(socket.sent) == 1, "but it is still acknowledged"
+
+
+# --- Second cross-family round: three live findings -------------------------
+# Codex re-reviewed the fixes and returned REJECT again. Six findings verified
+# RESOLVED, one deferred; these are the ones that were genuinely still open.
+
+
+def test_deeply_nested_json_does_not_raise_out_of_parsing():
+    """Round 2, finding 2: syntactically VALID json, nested 20k deep.
+
+    `json.loads` raises RecursionError, which is not a decode error, so the
+    original `except (UnicodeDecodeError, JSONDecodeError)` missed it — and
+    parsing runs before the pump's guarded block, so it ended the connection.
+    """
+    hostile = "[" * 20_000 + "]" * 20_000
+
+    assert parse_envelope(hostile) is None
+
+
+@pytest.mark.asyncio
+async def test_a_deeply_nested_frame_does_not_kill_the_connection():
+    """The same counterexample, end to end."""
+    hostile = "[" * 20_000 + "]" * 20_000
+    socket = _FakeSocket([hostile, envelope()])
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 1, "the good frame after a hostile one is still handled"
+
+
+def test_an_opener_raising_our_own_error_type_cannot_smuggle_the_token():
+    """Round 2, finding 6a: `except SocketModeError: raise` was a passthrough.
+
+    An opener raising OUR error type was assumed sanitised. "Probably ours" is
+    not a security property — an injected opener is arbitrary code.
+    """
+    secret = "xapp-1-VERY-SECRET-VALUE"
+
+    def opener(token):
+        raise SocketModeError(f"upstream said: Bearer {token}")
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url(secret, opener=opener)
+
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert secret not in rendered
+    assert "VERY-SECRET-VALUE" not in rendered
+
+
+def test_a_clean_diagnostic_from_our_own_error_type_is_preserved():
+    """The scrub must not blind us to the error we actually need to read."""
+
+    def opener(_token):
+        raise SocketModeError("slack connections.open http 503")
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url("xapp-1-token", opener=opener)
+
+    assert "503" in str(exc.value)

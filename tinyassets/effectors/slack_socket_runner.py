@@ -98,12 +98,19 @@ def http_opener(
             raw = response.read()
     except urllib.error.HTTPError as exc:
         raise SocketModeError(f"slack connections.open http {exc.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise SocketModeError("slack unreachable opening a socket") from exc
+    except (urllib.error.URLError, TimeoutError, OSError):
+        # `from None`, like every other raise in this function. A URLError's
+        # message routinely quotes the request — including the Authorization
+        # header — so chaining it wrote the app token into any traceback. The
+        # sibling module was fixed for exactly this and this one was missed;
+        # a review reproduced the token here.
+        raise SocketModeError("slack unreachable opening a socket") from None
     try:
         decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SocketModeError("slack returned malformed JSON opening a socket") from exc
+    except Exception:  # noqa: BLE001 - decode errors and hostile nesting alike
+        raise SocketModeError(
+            "slack returned malformed JSON opening a socket"
+        ) from None
     if not isinstance(decoded, dict):
         raise SocketModeError("slack returned a non-object opening a socket")
     return decoded

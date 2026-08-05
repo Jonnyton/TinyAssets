@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
@@ -102,7 +103,14 @@ def parse_envelope(raw: str | bytes) -> SocketEnvelope | None:
     """
     try:
         decoded = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except Exception:  # noqa: BLE001 - see below; the contract is "never raise"
+        # Broad on purpose. The obvious catch is (UnicodeDecodeError,
+        # JSONDecodeError), and it was — until a review fed in syntactically
+        # VALID json nested 20,000 levels deep, which raises RecursionError
+        # from the parser. That is not a decode error, so it escaped, and
+        # because parsing happens before the pump's guarded block it ended the
+        # connection. Enumerating what a parser can raise on hostile input is a
+        # losing game; this function's contract is that it returns None.
         return None
     if not isinstance(decoded, dict):
         return None
@@ -223,6 +231,25 @@ def reply_thread_ts(event: Mapping[str, Any]) -> str:
 _ERROR_CODE_PATTERN = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 
 
+def _scrubbed(exc: BaseException, token: str) -> SocketModeError:
+    """The same error, minus its diagnostic if the token is anywhere in it.
+
+    This is not a general secret scrubber, which would be a denylist and would
+    not work. It checks for one specific string we are holding, across the whole
+    rendered chain — so it either preserves a diagnostic we have *verified* is
+    clean, or drops it. There is no third outcome where a token slips through
+    because the pattern did not match.
+    """
+    if not token:
+        return SocketModeError(str(exc))
+    rendered = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    )
+    if token in rendered:
+        return SocketModeError("could not reach slack to open a socket")
+    return SocketModeError(str(exc))
+
+
 def _safe_error_code(value: object) -> str:
     """Pass through a real Slack error code; refuse anything else.
 
@@ -263,10 +290,12 @@ def open_socket_url(app_token: str, *, opener: Opener) -> str:
         raise SocketModeError("slack app-level token is missing or not an xapp- token")
     try:
         response = opener(app_token)
-    except SocketModeError:
-        # Already sanitised by the opener; re-raising keeps its detail without
-        # attaching a cause we have not inspected.
-        raise
+    except SocketModeError as exc:
+        # An opener that raises our own error type is *probably* one of ours
+        # and already sanitised — but "probably ours" is not a security
+        # property, and a review reproduced a token surviving this passthrough.
+        # Keep the diagnostic only when we can see the token is not in it.
+        raise _scrubbed(exc, app_token) from None
     except Exception:  # noqa: BLE001 - drop the cause: it may carry the token
         raise SocketModeError("could not reach slack to open a socket") from None
     if not isinstance(response, Mapping) or not response.get("ok"):

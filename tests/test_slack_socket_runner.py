@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import traceback
 
 import pytest
 
@@ -384,3 +385,29 @@ async def test_the_network_seams_are_actually_substitutable(monkeypatch) -> None
     )
 
     assert opened == ["opener", "connector"], "neither real seam may be reached"
+
+
+def test_the_real_http_opener_never_chains_the_token_into_a_traceback(monkeypatch) -> None:
+    """Round 2, finding 6b: this module still used `from exc`.
+
+    A URLError's message routinely quotes the request, including the
+    Authorization header. The sibling module was fixed for exactly this and
+    this one was missed — the same bug, twice, one file apart.
+    """
+    import urllib.error
+
+    from tinyassets.effectors import slack_socket_runner as mod
+
+    def _boom(*_args, **_kwargs):
+        raise urllib.error.URLError(f"failed: Authorization: Bearer {APP_TOKEN}")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _boom)
+
+    with pytest.raises(SocketModeError) as exc:
+        mod.http_opener(APP_TOKEN)
+
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert APP_TOKEN not in rendered
+    assert "xapp-" not in rendered
