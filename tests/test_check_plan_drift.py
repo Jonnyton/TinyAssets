@@ -33,9 +33,13 @@ sibling's responsibility, it gets a subpackage.
 
 def write_repo(root: Path, plan: str = PLAN) -> None:
     (root / "PLAN.md").write_text(plan, encoding="utf-8")
-    workflow = root / "workflow"
-    tinyassets.mkdir()
-    (workflow / "__init__.py").write_text("", encoding="utf-8")
+    # The package dir MUST be named `tinyassets`: check_plan_drift scans
+    # `root / "tinyassets"` and gates discovery on that directory existing,
+    # so a fixture building `workflow/` would assert against a tree the
+    # checker never reads.
+    package = root / "tinyassets"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
 
 
 def test_parse_plan_commitments_extracts_mechanical_targets():
@@ -57,26 +61,26 @@ def test_parse_plan_commitments_extracts_mechanical_targets():
 def test_detect_plan_drift_clean_when_targets_exist(tmp_path: Path):
     write_repo(tmp_path)
     for directory in ("api", "runtime", "storage"):
-        (tmp_path / "workflow" / directory).mkdir()
-        (tmp_path / "workflow" / directory / "__init__.py").write_text(
+        (tmp_path / "tinyassets" / directory).mkdir()
+        (tmp_path / "tinyassets" / directory / "__init__.py").write_text(
             "",
             encoding="utf-8",
         )
-    (tmp_path / "workflow" / "api" / "wiki.py").write_text("", encoding="utf-8")
-    (tmp_path / "workflow" / "storage" / "accounts.py").write_text(
+    (tmp_path / "tinyassets" / "api" / "wiki.py").write_text("", encoding="utf-8")
+    (tmp_path / "tinyassets" / "storage" / "accounts.py").write_text(
         "",
         encoding="utf-8",
     )
-    (tmp_path / "workflow" / "config.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "tinyassets" / "config.py").write_text("VALUE = 1\n", encoding="utf-8")
 
     assert cpd.detect_plan_drift(tmp_path) == []
 
 
 def test_detect_plan_drift_reports_missing_and_oversized_root_modules(tmp_path: Path):
     write_repo(tmp_path)
-    (tmp_path / "workflow" / "api").mkdir()
-    (tmp_path / "workflow" / "api" / "wiki.py").write_text("", encoding="utf-8")
-    (tmp_path / "workflow" / "runs.py").write_text(
+    (tmp_path / "tinyassets" / "api").mkdir()
+    (tmp_path / "tinyassets" / "api" / "wiki.py").write_text("", encoding="utf-8")
+    (tmp_path / "tinyassets" / "runs.py").write_text(
         "\n".join("pass" for _ in range(4)),
         encoding="utf-8",
     )
