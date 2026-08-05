@@ -736,6 +736,18 @@ def write_graph(
         return rejection
     normalized = target.strip().lower()
     if normalized == "universe":
+        # A universe is the owner's ACCOUNT, not a workflow: it hosts many
+        # automations, so an owner must be able to declare a Loop branch AFTER
+        # birth. `loop_branch_def_id` was previously settable only by
+        # create_universe, and this handle never forwarded it, so no publicly
+        # created universe could declare a loop at all — which is why scheduled
+        # automations never activated. Adds no advertised handle.
+        if (operation or "").strip() == "declare_loop":
+            return _universe_impl(
+                action="declare_universe_loop",
+                universe_id=graph_id,
+                branch_def_id=branch_id,
+            )
         # Opt-in birth on the canonical surface (2026-07-02): the founder's
         # explicit ask creates their universe. Routes through the ledgered
         # create (scope-gated costly; binds founder_home; seeds OKF bundle).

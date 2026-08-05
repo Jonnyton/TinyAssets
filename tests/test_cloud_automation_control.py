@@ -355,7 +355,9 @@ def test_health_names_the_blocker_and_owner_action_before_any_receipt(
 
     assert health.state == "activation_stopped"
     assert health.blocker == "awaiting_cloud_worker"
-    assert health.next_action == "run_once"
+    # Must name an action that actually exists on this surface: `resume` is a
+    # no-op when desired_state is already active, and there is no run-once verb.
+    assert health.next_action == "run_branch_version"
 
 
 def test_health_keeps_reporting_the_receipt_next_action_when_one_exists(
