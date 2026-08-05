@@ -291,6 +291,34 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
     return HTMLResponse(_LANDING_HTML)
 
 
+@mcp.custom_route("/mcp/app/slack/events", methods=["POST"])
+async def _slack_app_events(request):  # type: ignore[no-untyped-def]
+    """Admit Slack Events API deliveries.
+
+    Lives under ``/mcp/`` because that is the only prefix the public edge
+    forwards: the Cloudflare route binding is ``tinyassets.io/mcp*`` and the
+    Worker's ``shouldProxy`` re-checks it. A top-level path would be
+    unreachable without a dashboard change. ``/mcp/.well-known/...`` already
+    proves a non-MCP route coexists with the MCP mount here.
+
+    The body is read once and passed through untouched — Slack's HMAC covers
+    the exact bytes, so any re-encoding on this path would invalidate every
+    signature.
+    """
+    from starlette.responses import PlainTextResponse
+
+    from tinyassets.app_slack_ingress import handle_slack_request, resolve_boundary
+    from tinyassets.storage import data_dir
+
+    raw_body = await request.body()
+    outcome = handle_slack_request(
+        raw_body=raw_body,
+        headers=request.headers,
+        boundary=resolve_boundary(data_dir()),
+    )
+    return PlainTextResponse(outcome.body, status_code=outcome.status)
+
+
 # Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
 _warn_if_no_upload_whitelist()
 

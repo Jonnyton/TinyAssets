@@ -65,6 +65,14 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/mcp/foo'), true);
     });
 
+    // The Slack Events API endpoint lives under this prefix precisely because
+    // it is the only one the edge forwards (route binding `tinyassets.io/mcp*`).
+    // Narrowing the prefix would silently make Slack deliveries unreachable
+    // while every Python test stayed green — so pin it here.
+    it('accepts the Slack app-event ingress path', () => {
+        assert.equal(shouldProxy('/mcp/app/slack/events'), true);
+    });
+
     it('rejects retired /mcp-directory', () => {
         assert.equal(shouldProxy('/mcp-directory'), false);
     });
