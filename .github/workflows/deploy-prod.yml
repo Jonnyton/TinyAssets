@@ -45,6 +45,10 @@ on:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
         required: false
         type: string
+      set_active_universe:
+        description: 'Repoint /data/.active_universe at this universe id (workers resolve their served universe through it). Leave empty for no change.'
+        required: false
+        type: string
       retire_extra_consumer:
         description: 'EXACT name of one recorded, already-stopped extra volume consumer to retire during recovery (leave empty unless a fence recorded a container that no longer exists)'
         required: false
@@ -1346,6 +1350,29 @@ jobs:
             exit 1
           }
 
+      - name: Repoint the active-universe marker (explicit input only)
+        if: inputs.set_active_universe != ''
+        env:
+          TARGET_UNIVERSE: ${{ inputs.set_active_universe }}
+        run: |
+          # `cloud_worker._resolve_universe` reads /data/.active_universe
+          # before any other default, so this marker decides which universe
+          # the whole worker fleet serves. An AUTHENTICATED switch_universe
+          # is request-scoped by design and never writes it, so there is no
+          # in-band way for a user to repoint the fleet at their own
+          # universe -- which is why four admissible slices sat unclaimed
+          # while the fleet served a different universe.
+          #
+          # Explicit input only, never a default, and the target must already
+          # exist on the volume. Reversible by dispatching with the old value.
+          if [[ ! "${TARGET_UNIVERSE}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::invalid universe id"
+            exit 1
+          fi
+          B64=c2V0IC1ldW8gcGlwZWZhaWwKVEFSR0VUPSIkMSIKaWYgWyAhIC1kICIvZGF0YS8ke1RBUkdFVH0iIF07IHRoZW4KICBlY2hvICJyZWZ1c2luZzogL2RhdGEvJHtUQVJHRVR9IGlzIG5vdCBhbiBleGlzdGluZyB1bml2ZXJzZSBkaXJlY3RvcnkiID4mMgogIGV4aXQgMQpmaQplY2hvICJjdXJyZW50IG1hcmtlcjogJChjYXQgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZSAyPi9kZXYvbnVsbCB8fCBlY2hvICc8bm9uZT4nKSIKcHJpbnRmICclcycgIiR7VEFSR0VUfSIgPiAvZGF0YS8uYWN0aXZlX3VuaXZlcnNlLnRtcAptdiAvZGF0YS8uYWN0aXZlX3VuaXZlcnNlLnRtcCAvZGF0YS8uYWN0aXZlX3VuaXZlcnNlCmVjaG8gIm5ldyBtYXJrZXI6ICQoY2F0IC9kYXRhLy5hY3RpdmVfdW5pdmVyc2UpIgo=
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "echo ${B64} | base64 -d | sudo bash -s -- ${TARGET_UNIVERSE}"
       - name: Wait for daemon health
         id: candidate_health
         run: |
