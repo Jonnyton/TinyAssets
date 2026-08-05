@@ -33,13 +33,49 @@ from tinyassets.runs import (
     update_run_status,
 )
 
+#: Runs are universe-owned: without one `run_branch` returns
+#: `branch_run_requires_universe`; registered-but-ungranted returns
+#: `universe_access_denied`. The ACL grant is the easy half to miss.
+_UNIVERSE = "universe_wait_for_run"
+
 
 @pytest.fixture
-def us_env(tmp_path, monkeypatch):
+def us_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Branch WRITE actions resolve the caller via `_request_branch_actor()`,
+    # which is credential-derived and ignores `UNIVERSE_SERVER_USER`.
+    # `run_branch` is gated on `tinyassets.extensions.costly`, which the
+    # default test credential deliberately EXCLUDES so refusal suites keep
+    # asserting something. This file asserts run completion, never a
+    # refusal, so it opts in.
+    authenticate_request(
+        "tester",
+        capabilities=[
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+            "tinyassets.extensions.admin",
+            "tinyassets.extensions.costly",
+        ],
+    )
+    from tinyassets.daemon_server import (
+        ensure_universe_registered,
+        grant_universe_access,
+    )
+
+    udir = base / _UNIVERSE
+    udir.mkdir(parents=True, exist_ok=True)
+    ensure_universe_registered(base, universe_id=_UNIVERSE, universe_path=udir)
+    grant_universe_access(
+        base,
+        universe_id=_UNIVERSE,
+        actor_id="tester",
+        permission="write",
+        granted_by="us_env",
+    )
+
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -185,7 +221,7 @@ def test_wait_for_run_returns_terminal_quickly(us_env):
     us, _ = us_env
     bid = _build_min_branch(us)
     queued = json.loads(us.extensions(
-        action="run_branch", branch_def_id=bid,
+        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
         inputs_json=json.dumps({"raw": "x"}),
     ))
     rid = queued["run_id"]
@@ -208,7 +244,7 @@ def test_wait_for_run_phone_legible_text_channel(us_env):
     us, _ = us_env
     bid = _build_min_branch(us)
     queued = json.loads(us.extensions(
-        action="run_branch", branch_def_id=bid,
+        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
         inputs_json=json.dumps({"raw": "x"}),
     ))
     rid = queued["run_id"]
@@ -250,7 +286,7 @@ def test_wait_for_run_caps_max_wait_at_120s(us_env):
     us, _ = us_env
     bid = _build_min_branch(us)
     queued = json.loads(us.extensions(
-        action="run_branch", branch_def_id=bid,
+        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
         inputs_json=json.dumps({"raw": "x"}),
     ))
     rid = queued["run_id"]
