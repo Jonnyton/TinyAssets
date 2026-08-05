@@ -260,7 +260,11 @@ def handle_slack_request(
     Kept transport-free so the ordering that matters — verify *before* branching
     — can be tested without a server.
     """
-    if boundary is None:
+    allowed = frozenset() if allowed_team_ids is None else allowed_team_ids
+
+    if boundary is None or not allowed:
+        # No key, or no workspace authorised to talk to us: nothing can be
+        # admitted and nothing — not even a handshake — should be answered.
         _burn_equivalent_work(raw_body, headers)
         return IngressOutcome(401, REFUSAL_BODY)
 
@@ -272,6 +276,13 @@ def handle_slack_request(
         # The signature held but the envelope is not an ``event_callback``.
         # The handshake lives here, and it is reachable only because the HMAC
         # already passed — an unsigned request never gets this far.
+        #
+        # It cannot be team-gated: Slack's handshake body carries no team_id at
+        # all. What it CAN be gated on is that the deployment has authorised at
+        # least one workspace (checked above), so a server that is configured
+        # but not yet authorised to serve anybody answers nothing. Beyond that,
+        # the echo returns only the caller's own challenge value, so a
+        # secret-holder learns nothing they did not already send.
         challenge = _challenge_response(
             raw_body, expected_api_app_id=boundary.verifier.expected_api_app_id
         )
@@ -284,7 +295,6 @@ def handle_slack_request(
     # installs the app in a workspace they control delivers perfectly signed
     # events under a team_id of their choosing — and each one writes a
     # permanent ledger row.
-    allowed = frozenset() if allowed_team_ids is None else allowed_team_ids
     if event.team_id not in allowed:
         return IngressOutcome(401, REFUSAL_BODY)
 
@@ -293,10 +303,13 @@ def handle_slack_request(
     except (AppEventAuthenticationError, AppEventEnvelopeError):
         return IngressOutcome(401, REFUSAL_BODY)
     except AppEventReplayConflict:
-        # Same event_id, different body. Surfacing this as a distinct status
-        # would let a valid signer probe which event_ids the ledger holds, and
-        # turn a collision into an error oracle. It is refused like anything
-        # else untrusted.
-        return IngressOutcome(401, REFUSAL_BODY)
+        # Same event_id, different body: acknowledged, never admitted.
+        #
+        # A previous version returned 401 here. That still leaked the ledger:
+        # a known event_id answered 401 while an unused one answered 200, so a
+        # valid signer could enumerate membership by watching the status. Both
+        # now answer 200 with an identical empty body, which is also what Slack
+        # wants — the delivery is terminal either way and must not be retried.
+        return IngressOutcome(200, "")
 
     return IngressOutcome(200, "", admitted=True, replay=result.replay)

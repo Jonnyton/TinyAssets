@@ -489,11 +489,15 @@ def test_slack_length_secret_is_accepted(tmp_path: Path):
 # --- replay-conflict is not an oracle ----------------------------------------
 
 
-def test_event_id_reuse_with_different_content_is_refused_like_anything_else(configured):
-    """Same event_id, different body: must not surface as a distinct status.
+def test_event_id_reuse_with_different_content_is_acknowledged_not_admitted(configured):
+    """Same event_id, different body: acknowledged, and never admitted.
 
-    A 502-vs-200 split would let a valid signer probe which event_ids the
-    ledger holds and turn a collision into an error oracle.
+    Two rounds of review shaped this. An unhandled conflict surfaced as 502 —
+    an obvious oracle. Refusing it with 401 was still an oracle, just a subtler
+    one: a known event_id answered 401 while an unused one answered 200, so
+    membership was readable from the status alone. It now answers exactly like
+    a fresh delivery, which is also what Slack needs — the delivery is terminal
+    either way and must not be retried.
     """
     first = _event_body_for_team("T0BN5LK57FT", event_id="Ev0000DUP")
     handle_slack_request(
@@ -520,7 +524,9 @@ def test_event_id_reuse_with_different_content_is_refused_like_anything_else(con
         allowed_team_ids=ALLOWED,
     )
 
-    assert (outcome.status, outcome.body) == (401, REFUSAL_BODY)
+    assert (outcome.status, outcome.body) == (200, "")
+    assert outcome.admitted is False, "a conflicting body must never be admitted"
+    assert _receipt_count(configured) == 1, "the colliding event must not add a row"
 
 
 def test_real_slack_handshake_shape_still_works(configured):
@@ -655,4 +661,46 @@ def test_configuration_state_is_not_timeable(configured):
     assert ratio < 25, (
         f"configured={armed:.2f}us dark={dark:.2f}us ratio={ratio:.1f} — "
         "configuration state is distinguishable by timing"
+    )
+
+
+def test_event_id_membership_is_not_observable(configured):
+    """The control the previous collision test omitted.
+
+    A known event_id must not answer differently from an unused one. The
+    earlier version compared only "conflict vs refusal" and so missed that
+    known IDs returned 401 while unused IDs returned 200 — a valid signer could
+    enumerate the ledger by watching the status code.
+    """
+    seeded = _event_body_for_team("T0BN5LK57FT", event_id="EvKNOWN")
+    handle_slack_request(
+        raw_body=seeded,
+        headers=_signed(seeded),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    def probe(event_id: str, text: str):
+        body = json.dumps(
+            {
+                "type": "event_callback",
+                "api_app_id": APP_ID,
+                "team_id": "T0BN5LK57FT",
+                "event_id": event_id,
+                "event": {"type": "app_mention", "user": "U1", "text": text},
+            }
+        ).encode("utf-8")
+        outcome = handle_slack_request(
+            raw_body=body,
+            headers=_signed(body),
+            boundary=configured,
+            allowed_team_ids=ALLOWED,
+        )
+        return (outcome.status, outcome.body)
+
+    known = probe("EvKNOWN", "different content")   # collides with the seed
+    unused = probe("EvUNUSED", "different content")  # fresh id
+
+    assert known == unused, (
+        f"ledger membership is observable: known={known} unused={unused}"
     )

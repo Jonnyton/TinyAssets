@@ -327,14 +327,24 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
 
     # Admission does synchronous SQLite work whose busy timeout is 30s. Running
     # that inline would let a burst of valid events block the event loop and
-    # stall every other request on the server, including /mcp. Offload it.
-    outcome = await run_in_threadpool(
-        handle_slack_request,
-        raw_body=raw_body,
-        headers=request.headers,
-        boundary=resolve_boundary(data_dir()),
-        allowed_team_ids=resolve_allowed_team_ids(),
-    )
+    # stall every other request on the server, including /mcp.
+    #
+    # `resolve_boundary` has to be offloaded *too*, not just the admission. It
+    # opens the admission store, which touches storage — passing it as an
+    # argument evaluates it on the event loop before the offload ever happens,
+    # which a reviewer measured as a 255ms stall from 250ms of I/O. Everything
+    # blocking therefore lives inside this one sync closure.
+    headers = dict(request.headers)
+
+    def _admit():
+        return handle_slack_request(
+            raw_body=raw_body,
+            headers=headers,
+            boundary=resolve_boundary(data_dir()),
+            allowed_team_ids=resolve_allowed_team_ids(),
+        )
+
+    outcome = await run_in_threadpool(_admit)
     return PlainTextResponse(outcome.body, status_code=outcome.status)
 
 

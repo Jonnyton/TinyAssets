@@ -94,9 +94,15 @@ def test_unconfigured_server_refuses_a_correctly_signed_handshake(
 def test_configured_server_answers_the_handshake(
     client: TestClient, monkeypatch, tmp_path
 ) -> None:
-    """Without this, the Request URL can never be saved in Slack at all."""
+    """Without this, the Request URL can never be saved in Slack at all.
+
+    Now requires an allow-list too: a reviewer noted the original version of
+    this test expected 200 with NO allow-list configured, which codified a
+    handshake path that bypassed workspace authorisation entirely.
+    """
     monkeypatch.setenv(SIGNING_SECRET_ENV, SECRET)
     monkeypatch.setenv(API_APP_ID_ENV, APP_ID)
+    monkeypatch.setenv(TEAM_IDS_ENV, "T0BN5LK57FT")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     body = _handshake("echo-me-exactly")
@@ -184,3 +190,25 @@ def test_signed_event_from_an_unlisted_workspace_is_refused_at_the_route(
     )
 
     assert response.status_code == 401
+
+
+def test_handshake_is_refused_when_no_workspace_is_authorised(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    """A server with a key but no authorised workspace answers nothing.
+
+    The handshake cannot be team-gated directly (Slack's handshake body has no
+    team_id), so it is gated on the deployment having authorised at least one
+    workspace. Otherwise every path below authorisation is reachable by any
+    secret-holder.
+    """
+    monkeypatch.setenv(SIGNING_SECRET_ENV, SECRET)
+    monkeypatch.setenv(API_APP_ID_ENV, APP_ID)
+    monkeypatch.delenv(TEAM_IDS_ENV, raising=False)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    body = _handshake("no-allowlist-no-answer")
+    response = client.post(INGRESS_PATH, content=body, headers=_signed(body))
+
+    assert response.status_code == 401
+    assert "no-allowlist-no-answer" not in response.text
