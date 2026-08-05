@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -687,9 +688,71 @@ def _soul_loop_declared_for_universe(universe: Path) -> bool:
     return bool(loop_branch_def_id and loop_branch_def_id != LEGACY_FANTASY_LOOP_BRANCH_DEF_ID)
 
 
+def _declared_daemon_module_missing(universe: Path) -> str:
+    """Return a reason when this universe's declared child module is absent.
+
+    A universe that declares a non-legacy loop needs the `workflow` module.
+    When it is not installed there are only bad options, and the LEAST bad is
+    to claim nothing:
+
+      * spawning it crash-loops (`No module named workflow`, rc=1) -- no work,
+        no capacity, but every row stays PENDING and recoverable;
+      * falling back to `fantasy_daemon` produces capacity and then FAILS the
+        slices, and `failed` is terminal (`_TERMINAL_STATUSES`,
+        branch_tasks_v2.py:105) -- the work is destroyed permanently.
+
+    Live 2026-08-05: the fallback claimed and terminalized 3 of 4 admissible
+    rows that had waited 18h. So the worker self-quarantines instead, exactly
+    like the dead-auth gate: no claim, loud reason, resumes the moment the
+    module ships.
+    """
+    if not _soul_loop_declared_for_universe(universe):
+        return ""
+    if importlib.util.find_spec("workflow") is not None:
+        return ""
+    return (
+        f"{universe.name} declares a non-legacy loop but the `workflow` "
+        "module is NOT INSTALLED; refusing to claim, because executing its "
+        "slices on the legacy daemon fails them permanently"
+    )
+
+
 def _daemon_module_for_universe(universe: Path) -> str:
+    """Pick the child module, never one that cannot be imported.
+
+    `TINYASSETS_SOUL_LOOP_DISPATCH` is set to `on` unconditionally by
+    deploy-prod, so any universe declaring a non-legacy loop routes here to
+    `python -m workflow`. That module does not exist -- not in the image, not
+    in the repo -- so every spawn died instantly with
+    `No module named workflow`, `rc=1`, forever.
+
+    Live 2026-08-05: after the worker fleet was pointed at the founder
+    universe, all four workers registered runtimes and then crash-looped on
+    this, so `subprocess_alive` was never true, `compatible_worker_count`
+    stayed 0, and four admissible slices sat unclaimed for >18h.
+
+    A crash-loop is strictly worse than the legacy route: it produces no work
+    AND no capacity. So the router falls back, and says loudly why -- the
+    missing implementation is surfaced, not silently tolerated.
+    """
     if _soul_loop_declared_for_universe(universe):
-        return "workflow"
+        if importlib.util.find_spec("workflow") is not None:
+            return "workflow"
+        # NOTE: callers must gate on `_declared_daemon_module_missing` BEFORE
+        # spawning. Falling back here executes soul-loop work on the legacy
+        # daemon, which terminalizes it: `failed` is in _TERMINAL_STATUSES
+        # (branch_tasks_v2.py:105), so a row lost this way can NEVER be
+        # re-claimed once the real module ships. Three admissible rows were
+        # destroyed exactly this way on 2026-08-05 before the gate existed.
+        logger.error(
+            "cloud_worker: soul-loop dispatch is enabled and %s declares a "
+            "non-legacy loop, but the `workflow` module is NOT INSTALLED. "
+            "Falling back to fantasy_daemon so this worker can serve at all. "
+            "Ship the workflow module or unset TINYASSETS_SOUL_LOOP_DISPATCH; "
+            "without this fallback every spawn dies with "
+            "'No module named workflow' and the universe gets zero capacity.",
+            universe.name,
+        )
     return "fantasy_daemon"
 
 
@@ -1512,6 +1575,24 @@ def run_supervisor(
         # credential. A healthy container proves nothing here: the child
         # resolves per-universe and gets an empty auth root otherwise, so
         # claiming would terminalize admissible rows instead of running them.
+        module_gap = _declared_daemon_module_missing(universe)
+        if module_gap:
+            state.auth_quarantine_count += 1
+            logger.error(
+                "cloud_worker: %s — QUARANTINING, not claiming. Ship the "
+                "module or unset TINYASSETS_SOUL_LOOP_DISPATCH.",
+                module_gap,
+            )
+            write_supervisor_heartbeat(
+                universe,
+                state,
+                iteration=iteration,
+                phase="auth_quarantined",
+                planned_sleep_s=auth_quarantine_backoff,
+            )
+            sleep_fn(auth_quarantine_backoff)
+            continue
+
         pinned_gap = _pinned_universe_credential_missing(universe, daemon_args)
         if pinned_gap:
             state.auth_quarantine_count += 1

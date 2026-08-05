@@ -2540,3 +2540,95 @@ def test_a_pinned_worker_with_a_resolvable_universe_credential_proceeds(
         universe,
         ["--provider", "claude-code"],
     ) == ""
+
+
+def test_router_never_dispatches_to_an_uninstallable_module(tmp_path, monkeypatch):
+    """A crash-loop is worse than the legacy route: no work AND no capacity.
+
+    deploy-prod sets TINYASSETS_SOUL_LOOP_DISPATCH=on unconditionally, so any
+    universe declaring a non-legacy loop routed to `python -m workflow` -- a
+    module that exists neither in the image nor the repo. Live 2026-08-05: all
+    four workers registered runtimes against the founder universe and then
+    crash-looped with `No module named workflow` (rc=1), so subprocess_alive
+    was never true and compatible_worker_count stayed 0.
+    """
+    universe = tmp_path / "u-declared"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: True)
+    monkeypatch.setattr(
+        cw.importlib.util, "find_spec", lambda _name: None
+    )
+
+    assert cw._daemon_module_for_universe(universe) == "fantasy_daemon"
+
+
+def test_router_still_uses_the_soul_loop_module_once_it_exists(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: the fallback must not become permanent."""
+    universe = tmp_path / "u-declared"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: True)
+    monkeypatch.setattr(
+        cw.importlib.util, "find_spec", lambda _name: object()
+    )
+
+    assert cw._daemon_module_for_universe(universe) == "workflow"
+
+
+def test_router_leaves_undeclared_universes_on_the_legacy_daemon(
+    tmp_path,
+    monkeypatch,
+):
+    universe = tmp_path / "u-plain"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: False)
+
+    assert cw._daemon_module_for_universe(universe) == "fantasy_daemon"
+
+
+def test_worker_refuses_to_claim_when_the_declared_module_is_missing(
+    tmp_path,
+    monkeypatch,
+):
+    """Claiming work the worker cannot execute DESTROYS it.
+
+    `failed` is in _TERMINAL_STATUSES (branch_tasks_v2.py:105), so a slice
+    failed by the wrong daemon can never be re-claimed. On 2026-08-05 a
+    fallback to the legacy daemon terminalized 3 of 4 admissible rows that had
+    waited 18h. Refusing to claim keeps them PENDING and recoverable.
+    """
+    universe = tmp_path / "u-declared"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: True)
+    monkeypatch.setattr(cw.importlib.util, "find_spec", lambda _n: None)
+
+    reason = cw._declared_daemon_module_missing(universe)
+    assert "NOT INSTALLED" in reason
+    assert "refusing to claim" in reason
+
+
+def test_worker_claims_normally_once_the_declared_module_exists(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: the quarantine must lift on its own."""
+    universe = tmp_path / "u-declared"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: True)
+    monkeypatch.setattr(cw.importlib.util, "find_spec", lambda _n: object())
+
+    assert cw._declared_daemon_module_missing(universe) == ""
+
+
+def test_undeclared_universes_are_never_quarantined_by_the_module_gate(
+    tmp_path,
+    monkeypatch,
+):
+    """Legacy universes must keep working exactly as before."""
+    universe = tmp_path / "u-plain"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: False)
+
+    assert cw._declared_daemon_module_missing(universe) == ""
