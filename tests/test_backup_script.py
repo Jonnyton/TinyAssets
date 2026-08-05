@@ -57,7 +57,19 @@ def _is_wsl_bash() -> bool:
 
 
 def _bash_path(path: Path) -> str:
-    resolved = path.resolve()
+    """Absolute path for bash — WITHOUT resolving the final component's link.
+
+    `Path.resolve()` canonicalises symlinks away. This suite hands paths to
+    backup/restore shell scripts whose job includes REFUSING a symlinked
+    archive, so resolving first meant the script received the real file and
+    could not reject it as a symlink — `test_local_backup_file_rejects_symlink_source`
+    got exit 1 instead of the expected 2.
+
+    Identical defect to the one in test_host_uptime_installers._bash_path;
+    `os.path.abspath` gives the same absolute, `..`-normalised string while
+    leaving the link intact.
+    """
+    resolved = Path(os.path.abspath(path))
     if os.name != "nt":
         return str(resolved)
     if _is_wsl_bash():
