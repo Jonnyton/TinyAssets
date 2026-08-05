@@ -196,3 +196,64 @@ def test_another_authors_private_branch_cannot_become_my_loop(env, monkeypatch):
 
     from tinyassets.universe_soul import read_universe_soul
     assert not read_universe_soul(base / uid).loop_branch_def_id
+
+
+def test_declaring_a_loop_makes_the_universe_servable(env):
+    """A declared loop must also register a project-loop daemon.
+
+    soul.md says WHICH branch the loop runs. It does not make the universe
+    servable: `cloud_worker._register_worker_runtime` calls
+    `select_project_loop_daemon(base, universe_id=...)`, and a None result makes
+    the worker skip runtime registration and return — silently, because
+    registration is best-effort. Observed live on 2026-08-05: the universe held
+    valid queued work with `runtime_instance_count: 0` and nothing claiming it.
+    """
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+    from tinyassets.daemon_registry import select_project_loop_daemon
+
+    assert select_project_loop_daemon(str(base), universe_id=uid) is None
+
+    out = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert not out.get("error"), out
+    assert out["loop_daemon"]["serving"] is True, out
+
+    daemon = select_project_loop_daemon(str(base), universe_id=uid)
+    assert daemon is not None, "declared loop left the universe unservable"
+    assert daemon["metadata"]["universe_id"] == uid
+    assert daemon["has_soul"]
+
+
+def test_declaring_twice_reuses_the_same_loop_daemon(env):
+    """Re-declaring must not accumulate duplicate loop daemons."""
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+    from tinyassets.daemon_registry import select_project_loop_daemon
+
+    first = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    second = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert first["loop_daemon"]["daemon_id"] == second["loop_daemon"]["daemon_id"]
+    assert select_project_loop_daemon(str(base), universe_id=uid) is not None
+
+
+def test_a_loop_daemon_is_scoped_to_its_own_universe(env):
+    """Universe A's loop daemon must not serve universe B."""
+    us, base = env
+    uid_a = _birth(us)
+    bid = _build_branch(us)
+    json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid_a, branch_id=bid,
+    ))
+    uid_b = _birth(us)
+
+    from tinyassets.daemon_registry import select_project_loop_daemon
+    assert select_project_loop_daemon(str(base), universe_id=uid_a) is not None
+    assert select_project_loop_daemon(str(base), universe_id=uid_b) is None

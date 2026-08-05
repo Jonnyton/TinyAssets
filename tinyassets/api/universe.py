@@ -6242,6 +6242,58 @@ def _action_offer_engine(
     })
 
 
+def _ensure_project_loop_daemon(uid: str, branch_def_id: str) -> dict[str, Any] | None:
+    """Ensure this universe has a project-loop daemon, or return None.
+
+    Declaring a loop in soul.md says WHICH branch the loop runs. It does not by
+    itself make the universe servable: `cloud_worker._register_worker_runtime`
+    calls `select_project_loop_daemon(base, universe_id=...)`, and when that
+    returns None the worker skips runtime registration for the universe and
+    returns — silently, because registration is best-effort. The result is a
+    universe holding valid queued work with `runtime_instance_count: 0` and
+    nothing able to claim it.
+
+    So a declared loop that no worker will serve is cosmetic. This closes the
+    second half: the universe gets a soul-bearing daemon flagged as its project
+    loop default, scoped to this universe and owned by the declaring actor.
+
+    Best-effort by design — a registry failure must not lose the declaration
+    that already persisted to soul.md.
+    """
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.daemon_registry import (
+        PROJECT_LOOP_FLAG,
+        create_daemon,
+        select_project_loop_daemon,
+    )
+
+    base = _base_path()
+    actor = _current_actor()
+    existing = select_project_loop_daemon(base, universe_id=uid)
+    if existing is not None:
+        return existing
+    try:
+        return create_daemon(
+            base,
+            display_name=f"Universe loop ({uid})",
+            created_by=actor,
+            soul_mode="soul",
+            # `_is_project_loop_daemon` requires has_soul; the text is the
+            # universe's own operating statement, not a persona we invent.
+            soul_text=(
+                f"Project loop for universe {uid}. Runs the loop branch this "
+                f"universe declared ({branch_def_id}) on behalf of its owner."
+            ),
+            metadata={
+                "universe_id": uid,
+                PROJECT_LOOP_FLAG: True,
+                "loop_branch_def_id": branch_def_id,
+            },
+        )
+    except (ValueError, KeyError, OSError):
+        return None
+
+
 def _action_declare_universe_loop(
     universe_id: str = "",
     branch_def_id: str = "",
@@ -6307,6 +6359,11 @@ def _action_declare_universe_loop(
             "current": soul.loop_branch_def_id,
         })
 
+    # A declared loop must also be SERVABLE: without a project-loop daemon for
+    # this universe the cloud worker silently skips runtime registration and
+    # nothing ever claims the universe's work.
+    loop_daemon = _ensure_project_loop_daemon(uid, declared) if declared else None
+
     return json.dumps({
         "universe_id": uid,
         "status": "declared" if declared else "cleared",
@@ -6315,7 +6372,24 @@ def _action_declare_universe_loop(
             "branch_def_id": soul.loop_branch_def_id,
             "declared": bool(soul.loop_branch_def_id),
         },
-    })
+        "loop_daemon": (
+            {
+                "daemon_id": loop_daemon.get("daemon_id"),
+                "serving": True,
+            }
+            if loop_daemon
+            else {
+                "daemon_id": None,
+                "serving": False,
+                "note": (
+                    "loop declared, but no project-loop daemon is registered for "
+                    "this universe; workers will not register a runtime for it"
+                ),
+            }
+            if declared
+            else None
+        ),
+    }, default=str)
 
 
 def _action_soul_edit(
