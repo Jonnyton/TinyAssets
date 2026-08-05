@@ -6416,3 +6416,42 @@ def test_retirement_refuses_a_name_that_was_never_recorded(tmp_path):
 
     with pytest.raises(FenceError, match="unrecorded extra volume consumer"):
         _validate(host, state_path, retire=("tinyassets-worker-ghost",))
+
+
+def test_retirement_purges_every_fleet_enumeration_not_just_the_extras(
+    tmp_path,
+    monkeypatch,
+):
+    """A retired container must vanish from every recorded fleet list.
+
+    `_validate_stopped_fleet` requires the removal plan's container_ids to
+    equal EXPECTED_CONTAINERS and to match its recorded_source map. Those were
+    captured while the retired container existed, so clearing only
+    `extra_volume_consumers` leaves the enumerations one name too long and the
+    NEXT recovery fails with "stopped fleet removal intent is invalid" --
+    observed live on recovery 31049384995.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["old_container_ids"]["tinyassets-worker-founder"] = "c" * 64
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "planned",
+        "recorded_source": "old_container_ids",
+        "container_ids": dict(state["old_container_ids"]),
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(
+        "scripts.retire_cheat_loop_deploy_fence._configured_image",
+        lambda: host.target_image_ref,
+    )
+
+    # Later, unrelated validation may still refuse in this fixture; what must
+    # NOT survive the purge is the removal-intent refusal it exists for.
+    try:
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+    except FenceError as exc:
+        assert "stopped fleet removal intent is invalid" not in str(exc)
