@@ -417,6 +417,39 @@ def resolve_slack_token(
     return ""
 
 
+def resolve_slack_app_token(
+    universe_dir: str | Path | None,
+    connection_id: str,
+) -> str:
+    """Return a Slack **app-level** token for one connection, or an empty string.
+
+    A Slack connection needs two different credentials, and they are not
+    interchangeable: the bot token (``xoxb-``) posts messages, while the
+    app-level token (``xapp-``, scope ``connections:write``) is the only one
+    that can open a Socket Mode connection. Both live on the same vault record
+    because they come from the same app install.
+
+    Deliberately does NOT fall back to ``bot_token``/``token``. Handing a bot
+    token to `apps.connections.open` fails with an opaque Slack error, and a
+    silent fallback would turn "the app token was never deposited" into a
+    mystery instead of the plain answer it is.
+    """
+    if universe_dir is None:
+        return ""
+    wanted = connection_id.strip()
+    if not wanted:
+        return ""
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "social":
+            continue
+        if _service(record) != "slack":
+            continue
+        if str(record.get("destination") or "").strip() != wanted:
+            continue
+        return _secret_value(record, "app_token", "app_level_token")
+    return ""
+
+
 def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
     if universe_dir is None:
         return []

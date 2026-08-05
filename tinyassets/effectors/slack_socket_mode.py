@@ -123,14 +123,32 @@ def parse_envelope(raw: str | bytes) -> SocketEnvelope | None:
 
 
 def event_of(envelope: SocketEnvelope) -> Mapping[str, Any] | None:
-    """The inner Slack event, or ``None`` when this frame carries no event."""
+    """The inner Slack event, or ``None`` when this frame carries no event.
+
+    The returned mapping carries a normalised ``team_id`` copied from the
+    envelope payload. That field is load-bearing and it is *only* on the
+    payload: Slack puts the authenticated workspace on the outer envelope,
+    while the inner event carries `team` inconsistently and not at all for some
+    types. A consumer that has to answer "which workspace is this?" would
+    otherwise have to choose between an absent field and a fail-open default.
+
+    The payload's value always wins over any `team_id` on the event, because
+    the payload is the part Slack authenticated.
+    """
     if envelope.type != ENVELOPE_EVENTS_API:
         return None
     payload = envelope.payload
     if payload.get("type") != "event_callback":
         return None
     event = payload.get("event")
-    return event if isinstance(event, Mapping) else None
+    if not isinstance(event, Mapping):
+        return None
+    team_id = payload.get("team_id")
+    if not isinstance(team_id, str) or not team_id.strip():
+        return event
+    normalised = dict(event)
+    normalised["team_id"] = team_id.strip()
+    return normalised
 
 
 def is_self_authored(event: Mapping[str, Any], bot_user_id: str) -> bool:

@@ -30,7 +30,9 @@ from typing import Any, AsyncContextManager, Callable, Mapping
 
 from tinyassets.effectors.slack_socket_mode import (
     CONNECTIONS_OPEN_URL,
+    FailureHandler,
     Handler,
+    SeenDeliveries,
     SocketModeError,
     is_app_token,
     open_socket_url,
@@ -141,8 +143,9 @@ async def run_socket_forever(
     *,
     bot_user_id: str,
     handle: Handler,
-    opener: Callable[[str], Mapping[str, Any]] = http_opener,
-    connector: Connector = websockets_connector,
+    on_failure: FailureHandler | None = None,
+    opener: Callable[[str], Mapping[str, Any]] | None = None,
+    connector: Connector | None = None,
     max_cycles: int | None = None,
     sleep: Callable[[float], Any] = asyncio.sleep,
 ) -> int:
@@ -163,9 +166,21 @@ async def run_socket_forever(
     if not is_app_token(app_token):
         raise SocketModeError("slack app-level token is missing or not an xapp- token")
 
+    # Resolved here, not as default arguments. A default binds the function
+    # object at def time, so substituting the module attribute has no effect —
+    # which is not merely awkward to test: a test that believed it had replaced
+    # the opener made a real network call to Slack instead.
+    opener = opener if opener is not None else http_opener
+    connector = connector if connector is not None else websockets_connector
+
     handled = 0
     backoff = INITIAL_BACKOFF_SECONDS
     cycles = 0
+    # One dedupe window across ALL reconnects, not per connection. Slack
+    # redelivers precisely when it did not see our ack — which is most likely
+    # exactly when the socket dropped. A per-connection window would forget the
+    # event in the reconnect and answer it twice.
+    seen = SeenDeliveries()
 
     while max_cycles is None or cycles < max_cycles:
         cycles += 1
@@ -194,6 +209,8 @@ async def run_socket_forever(
                     connection,
                     bot_user_id=bot_user_id,
                     handle=handle,
+                    seen=seen,
+                    on_failure=on_failure,
                 )
         except asyncio.CancelledError:
             raise

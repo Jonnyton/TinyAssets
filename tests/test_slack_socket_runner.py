@@ -344,3 +344,43 @@ def test_classify_open_failure_raises_only_for_known_permanent_codes() -> None:
     # transient / unknown must NOT raise here — the runner retries those
     classify_open_failure({"ok": False, "error": "ratelimited"})
     classify_open_failure({"ok": False, "error": ""})
+
+
+@pytest.mark.asyncio
+async def test_the_network_seams_are_actually_substitutable(monkeypatch) -> None:
+    """Both seams must resolve at CALL time, not bind at def time.
+
+    They were default arguments, which bind the function object when the module
+    is imported — so a test that monkeypatched the module attribute silently
+    kept the real one and made a live call to Slack with a fake token. A seam
+    that cannot be substituted is not a seam, and here it was a test suite
+    quietly depending on the network.
+    """
+    opened = []
+
+    def _fake_opener(_token, **_kw):
+        opened.append("opener")
+        return {"ok": True, "url": "wss://example.invalid/link"}
+
+    @contextlib.asynccontextmanager
+    async def _fake_connector(_url):
+        opened.append("connector")
+        yield _FakeSocket([])
+
+    monkeypatch.setattr(
+        "tinyassets.effectors.slack_socket_runner.http_opener", _fake_opener
+    )
+    monkeypatch.setattr(
+        "tinyassets.effectors.slack_socket_runner.websockets_connector",
+        _fake_connector,
+    )
+
+    await run_socket_forever(
+        APP_TOKEN,
+        bot_user_id=BOT_USER_ID,
+        handle=_handle_nothing,
+        max_cycles=1,
+        sleep=_no_sleep,
+    )
+
+    assert opened == ["opener", "connector"], "neither real seam may be reached"
