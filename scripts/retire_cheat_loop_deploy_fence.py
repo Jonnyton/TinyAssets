@@ -36,11 +36,6 @@ EXPECTED_CONTAINERS = (
     "tinyassets-worker-codex-2",
     "tinyassets-worker-claude-1",
     "tinyassets-worker-claude-2",
-    # Declared credential-isolated executor (#2326). This tuple is compared
-    # with EXACT SET EQUALITY, so a fleet member missing here fails the
-    # post-deploy prove step outright -- adding a container without adding it
-    # to this tuple breaks every deploy.
-    "tinyassets-worker-founder",
 )
 CANONICAL_SIDECARS = (
     ("tinyassets-tunnel", "cloudflared"),
