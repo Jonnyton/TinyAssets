@@ -2549,3 +2549,49 @@ def test_the_isolated_executor_seeds_its_own_credential_roots():
     # First-boot-only, so an in-place rotated token is never clobbered.
     assert '&& ! -f "${CODEX_AUTH_FILE}"' in entrypoint
     assert '&& ! -f "${CLAUDE_CREDENTIALS_FILE}"' in entrypoint
+
+
+def test_the_isolated_executor_is_covered_by_every_fleet_boundary_check():
+    """A fleet member no boundary check enumerates reads as verified.
+
+    The executor inherits the worker env_file (no request-idempotency.env), so
+    it is keyless by construction -- but "by construction" is not evidence.
+    Both the HMAC boundary proof and the offsite log archive enumerate workers
+    by an explicit list, and an omission there is silent.
+    """
+    verifier = Path("deploy/verify-request-hmac-rotation-fleet.sh").read_text(
+        encoding="utf-8",
+    )
+    assert "tinyassets-worker-founder" in verifier
+
+    shipper = Path("deploy/ship-logs.sh").read_text(encoding="utf-8")
+    assert "tinyassets-worker-founder" in shipper
+
+    # And it must NOT be smuggled into the shared-fleet list, which is what
+    # forbids the universe pin the executor exists to carry.
+    wf = _load()
+    worker_step = next(
+        s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"
+    )
+    shared_list = next(
+        line for line in (worker_step.get("run", "") or "").splitlines()
+        if line.strip().startswith("worker_containers=")
+    )
+    assert "tinyassets-worker-founder" not in shared_list
+
+
+def test_the_isolated_executor_does_not_receive_the_admission_minting_key():
+    """The worker env_file must never gain the request-idempotency secret.
+
+    `openspec/changes/correct-cloud-admission-worker-secret-boundary` exists
+    because that key once crossed into the worker fleet, where approved source
+    nodes execute Python in-process with full builtins.
+    """
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    founder_env_files = compose["services"]["worker-founder"].get("env_file", [])
+    assert "/etc/tinyassets/request-idempotency.env" not in founder_env_files
+    # The daemon is the only service that may carry it.
+    assert (
+        "/etc/tinyassets/request-idempotency.env"
+        in compose["services"]["daemon"]["env_file"]
+    )

@@ -31,7 +31,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 LOG_DEST="${LOG_DEST:-}"
-LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2}"
+LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2 tinyassets-worker-founder}"
 LOG_SINCE="${LOG_SINCE:-24h}"
 LOG_RETAIN_DAYS="${LOG_RETAIN_DAYS:-30}"
 DRY_RUN="${DRY_RUN:-0}"
