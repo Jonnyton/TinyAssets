@@ -1416,9 +1416,67 @@ jobs:
               echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
               exit 1
             fi
+            # Shared-fleet workers share /data/.codex + /data/.claude, so they
+            # must also never be credential-isolated by half-measure: an
+            # isolated credential root on a shared worker means its provider
+            # auth silently stopped being the fleet's.
+            shared_creds=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo docker exec ${container} env | grep -E '^(CODEX_HOME|CLAUDE_CONFIG_DIR)=' | sort | tr '\n' ' '")
+            case "${shared_creds}" in
+              *"CLAUDE_CONFIG_DIR=/data/.claude "*"CODEX_HOME=/data/.codex "*) : ;;
+              *)
+                echo "::error::${container} is a shared-fleet worker but its credential roots are not the shared /data/.codex + /data/.claude (got: ${shared_creds}). Either restore them or declare it as an isolated executor."
+                exit 1
+                ;;
+            esac
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
+          done
+          # Declared credential-isolated executors. These are the ONLY
+          # containers permitted to carry TINYASSETS_UNIVERSE, and the
+          # permission is conditional on proving the isolation: a pinned
+          # worker that still reads the shared credential roots would execute
+          # one universe's rows on the maintainer's subscription, which is
+          # exactly what the shared-fleet check above forbids.
+          isolated_executors="tinyassets-worker-founder"
+          for container in ${isolated_executors}; do
+            running=""
+            for i in $(seq 1 30); do
+              running=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null || true")
+              if [ "${running}" = "true" ]; then
+                echo "${container} running after ${i} poll(s)"
+                break
+              fi
+              sleep 2
+            done
+            if [ "${running}" != "true" ]; then
+              echo "::error::${container} is not running after deploy; the pinned universe has no executor and its queue cannot advertise capacity."
+              exit 1
+            fi
+            isolated_env=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo docker exec ${container} env | grep -E '^(TINYASSETS_UNIVERSE|CODEX_HOME|CLAUDE_CONFIG_DIR)=' | sort | tr '\n' ' '")
+            case "${isolated_env}" in
+              *"TINYASSETS_UNIVERSE="*) : ;;
+              *)
+                echo "::error::${container} is declared a credential-isolated executor but carries no TINYASSETS_UNIVERSE pin, so it resolves the host-global marker like a shared worker (got: ${isolated_env})."
+                exit 1
+                ;;
+            esac
+            case "${isolated_env}" in
+              *"CODEX_HOME=/data/.codex "*|*"CLAUDE_CONFIG_DIR=/data/.claude "*)
+                echo "::error::${container} is pinned to one universe but still reads a SHARED credential root (got: ${isolated_env}). That would execute that universe's rows on the maintainer's subscription."
+                exit 1
+                ;;
+              *) : ;;
+            esac
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|ProviderUnavailableError|Registered|subprocess exited|spawn failed|Traceback' || true"
           done
           if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \

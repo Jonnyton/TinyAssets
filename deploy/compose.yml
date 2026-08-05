@@ -250,6 +250,46 @@ services:
       TINYASSETS_WORKER_MODEL: claude
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-2
 
+  # ---------------------------------------------------------------------
+  # Declared credential-isolated executor.
+  #
+  # The four workers above are a SHARED fleet: they resolve their universe
+  # from the host-global `/data/.active_universe` marker and they share
+  # `/data/.codex` + `/data/.claude`. That combination is why a shared worker
+  # must never be pinned to one user's universe -- it would execute that
+  # user's rows on the maintainer's credentials.
+  #
+  # This service is the opposite by construction:
+  #   * pinned to exactly ONE universe (`TINYASSETS_UNIVERSE`), so its spawn,
+  #     its registered runtime, its queue descriptor, and its liveness beat
+  #     all land in that universe -- which is what `_worker_liveness` globs
+  #     and therefore what makes `compatible_worker_count > 0` possible
+  #     (`tinyassets/api/universe.py:1204-1214`).
+  #   * given its OWN credential roots under `/data/.executors/<id>/`, never
+  #     the shared `/data/.codex` / `/data/.claude`.
+  #
+  # The deploy verifies BOTH properties before accepting the fleet; see
+  # "Verify cloud worker is running" in .github/workflows/deploy-prod.yml.
+  #
+  # HOST ACTION REQUIRED before this can execute anything: seed
+  # `/data/.executors/founder/.codex` and `/data/.executors/founder/.claude`
+  # with the owner's own subscription auth. Until then the service runs and
+  # fails closed with `ProviderUnavailableError` from
+  # `providers/base.py:385-408` -- it will NOT silently fall back to the
+  # maintainer's credentials, which is the entire point of the isolation.
+  worker-founder:
+    <<: *cloud_worker_base
+    container_name: tinyassets-worker-founder
+    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
+    environment:
+      <<: *cloud_worker_env
+      TINYASSETS_UNIVERSE: /data/u-01kxm1vszd8hwp7em418asq8h9
+      CODEX_HOME: /data/.executors/founder/.codex
+      CLAUDE_CONFIG_DIR: /data/.executors/founder/.claude
+      TINYASSETS_WORKER_ID: founder-1
+      TINYASSETS_WORKER_MODEL: claude
+      UNIVERSE_SERVER_HOST_USER: cloud-executor-founder
+
 volumes:
   tinyassets-data:
     name: tinyassets-data

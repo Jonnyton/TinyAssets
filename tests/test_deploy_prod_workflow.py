@@ -2449,3 +2449,81 @@ def test_cleanup_derives_cutover_only_from_current_run_generation():
     assert "current_run_cutover_started" in script
     assert "str(bool(status.get(\"state_exists\")))" not in script
     assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
+
+
+def test_only_declared_isolated_executors_may_pin_a_universe():
+    """The pin is permitted for ONE declared service, and only conditionally.
+
+    Shared-fleet workers resolve the host-global `.active_universe` marker and
+    share /data/.codex + /data/.claude. Pinning one to a user's universe would
+    execute that user's rows on the maintainer's subscription, so the original
+    blanket refusal stays for them.
+    """
+    wf = _load()
+    worker_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
+        None,
+    )
+    assert worker_step is not None
+    run_script = worker_step.get("run", "") or ""
+
+    # The shared fleet is still refused a pin, unchanged.
+    assert "grep -q '^TINYASSETS_UNIVERSE='" in run_script
+    assert "stdio-only override" in run_script
+
+    # Exactly one declared isolated executor, and it is NOT in the shared list.
+    assert 'isolated_executors="tinyassets-worker-founder"' in run_script
+    shared_list = next(
+        line for line in run_script.splitlines()
+        if line.strip().startswith("worker_containers=")
+    )
+    assert "tinyassets-worker-founder" not in shared_list
+
+
+def test_a_pinned_executor_must_prove_its_credential_isolation():
+    """Permission to pin is conditional on not reading the shared roots.
+
+    A pinned worker still reading /data/.codex or /data/.claude is the exact
+    failure the shared-fleet refusal exists to prevent, just relocated.
+    """
+    wf = _load()
+    worker_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
+        None,
+    )
+    run_script = worker_step.get("run", "") or ""
+
+    # Must fail when the pin is missing...
+    assert "carries no TINYASSETS_UNIVERSE pin" in run_script
+    # ...and when the credential root is still shared.
+    assert "still reads a SHARED credential root" in run_script
+    assert '*"CODEX_HOME=/data/.codex "*|*"CLAUDE_CONFIG_DIR=/data/.claude "*)' in run_script
+    # ...and the shared fleet must fail if ITS roots stop being shared.
+    assert "is a shared-fleet worker but its credential roots are not" in run_script
+
+
+def test_the_isolated_executor_service_is_pinned_and_credential_isolated():
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    founder = compose["services"]["worker-founder"]
+    env = founder["environment"]
+    shared = compose["services"]["worker"]["environment"]
+
+    assert env["TINYASSETS_UNIVERSE"] == "/data/u-01kxm1vszd8hwp7em418asq8h9"
+    # The whole point: its credential roots are its own.
+    assert env["CODEX_HOME"] != shared["CODEX_HOME"]
+    assert env["CLAUDE_CONFIG_DIR"] != shared["CLAUDE_CONFIG_DIR"]
+    assert env["CODEX_HOME"].startswith("/data/.executors/")
+    assert env["CLAUDE_CONFIG_DIR"].startswith("/data/.executors/")
+    # And it is distinguishable in logs and in the worker registry.
+    assert env["TINYASSETS_WORKER_ID"] == "founder-1"
+    assert founder["container_name"] == "tinyassets-worker-founder"
+
+
+def test_shared_fleet_workers_still_share_their_credential_roots():
+    """Accept-direction control: the shared fleet must stay shared."""
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    for name in ("worker", "worker-codex-2", "worker-claude-1", "worker-claude-2"):
+        env = compose["services"][name]["environment"]
+        assert env["CODEX_HOME"] == "/data/.codex", name
+        assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
+        assert "TINYASSETS_UNIVERSE" not in env, name
