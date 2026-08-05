@@ -338,6 +338,21 @@ Handler = Callable[[Mapping[str, Any]], Awaitable[None]]
 FailureHandler = Callable[[Mapping[str, Any], BaseException], Awaitable[None]]
 
 
+@dataclass(slots=True)
+class PumpStats:
+    """A running count that survives the connection dying.
+
+    `pump` also returns its count, which is enough for a direct caller. It is
+    not enough for the runner: a dropped socket raises out of the async
+    iteration, so the return value — and every event that connection had
+    already handled — is lost with it. Since dropping is the *normal* path
+    (Slack cycles sockets routinely), the total silently under-reported by
+    roughly one connection's traffic every time.
+    """
+
+    handled: int = 0
+
+
 def delivery_key(envelope: SocketEnvelope) -> str:
     """A stable identity for one delivery, for deduplication.
 
@@ -399,6 +414,7 @@ async def pump(
     handle: Handler,
     seen: SeenDeliveries | None = None,
     on_failure: FailureHandler | None = None,
+    stats: PumpStats | None = None,
 ) -> int:
     """Read frames until the socket closes. Returns how many events were handled.
 
@@ -464,6 +480,8 @@ async def pump(
                         logger.warning("slack socket: failure notice also failed")
                 raise
             handled += 1
+            if stats is not None:
+                stats.handled += 1
         except Exception:  # noqa: BLE001 - one bad frame must not drop the socket
             # The filters are inside this block deliberately. They read
             # attacker-shaped JSON, and an exception from *any* of them used to

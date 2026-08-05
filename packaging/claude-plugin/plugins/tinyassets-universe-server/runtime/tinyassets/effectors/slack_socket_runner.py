@@ -32,6 +32,7 @@ from tinyassets.effectors.slack_socket_mode import (
     CONNECTIONS_OPEN_URL,
     FailureHandler,
     Handler,
+    PumpStats,
     SeenDeliveries,
     SocketModeError,
     is_app_token,
@@ -180,7 +181,6 @@ async def run_socket_forever(
     opener = opener if opener is not None else http_opener
     connector = connector if connector is not None else websockets_connector
 
-    handled = 0
     backoff = INITIAL_BACKOFF_SECONDS
     cycles = 0
     # One dedupe window across ALL reconnects, not per connection. Slack
@@ -188,6 +188,11 @@ async def run_socket_forever(
     # exactly when the socket dropped. A per-connection window would forget the
     # event in the reconnect and answer it twice.
     seen = SeenDeliveries()
+    # Counted here rather than from pump's return value: a dropped socket
+    # raises out of the async iteration, taking that connection's count with
+    # it. Dropping is the normal path, so the total silently under-reported by
+    # about one connection's traffic every reconnect.
+    stats = PumpStats()
 
     while max_cycles is None or cycles < max_cycles:
         cycles += 1
@@ -212,12 +217,13 @@ async def run_socket_forever(
                 # a long-lived socket that drops once inherits an hour-old
                 # penalty from a failure that has since resolved.
                 backoff = INITIAL_BACKOFF_SECONDS
-                handled += await pump(
+                await pump(
                     connection,
                     bot_user_id=bot_user_id,
                     handle=handle,
                     seen=seen,
                     on_failure=on_failure,
+                    stats=stats,
                 )
         except asyncio.CancelledError:
             raise
@@ -232,7 +238,7 @@ async def run_socket_forever(
         # long enough to avoid hammering if it repeats immediately.
         await sleep(0)
 
-    return handled
+    return stats.handled
 
 
 def _replay(response: Mapping[str, Any]) -> Callable[[str], Mapping[str, Any]]:
