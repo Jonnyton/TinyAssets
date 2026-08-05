@@ -950,6 +950,18 @@ def project_cloud_automation_health(
             CloudAutomationTerminalKind.IDLE,
         }:
             blocker = latest_receipt.terminal_kind.value
+    # An owner-visible blocker for the states that precede any receipt. Both
+    # fields used to derive ONLY from the latest terminal receipt, so an
+    # automation that never reached its first slice reported
+    # `blocker: null, next_action: null` no matter how stuck it was — the owner
+    # could see that nothing was happening but never why.
+    if blocker is None and control.desired_state is CloudAutomationDesiredState.ACTIVE:
+        if not activation_active:
+            blocker = (
+                "awaiting_cloud_worker"
+                if not ordered_triggers
+                else "activation_stopped"
+            )
     if control.desired_state is CloudAutomationDesiredState.STOPPED:
         state = "stopped"
     elif control.desired_state is CloudAutomationDesiredState.PAUSED:
@@ -996,8 +1008,33 @@ def project_cloud_automation_health(
             else None
         ),
         blocker=blocker,
-        next_action=(latest_receipt.next_action if latest_receipt is not None else None),
+        next_action=_next_action(
+            control,
+            latest_receipt=latest_receipt,
+            activation_active=activation_active,
+        ),
     )
+
+
+def _next_action(
+    control: CloudAutomationControl,
+    *,
+    latest_receipt: CloudAutomationTerminalReceipt | None,
+    activation_active: bool,
+) -> str | None:
+    """The one step the OWNER can take, when a receipt does not supply one."""
+    if latest_receipt is not None and latest_receipt.next_action:
+        return latest_receipt.next_action
+    if control.desired_state is CloudAutomationDesiredState.STOPPED:
+        return "resume"
+    if control.desired_state is CloudAutomationDesiredState.PAUSED:
+        return "resume"
+    if not activation_active:
+        # Desired-active but no cloud worker has converged the activation.
+        # `run_once` is the owner's escape hatch; without naming it here the
+        # only honest answer available to the owner is "wait indefinitely".
+        return "run_once"
+    return None
 
 
 __all__ = [

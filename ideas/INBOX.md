@@ -206,3 +206,27 @@ half-formed experiments.
 - [2026-08-04] (source: claude-code session 2026-08-04 worktree teardown, owner: unclaimed, status: captured) wt.py done still refuses squash-merged lanes when the branch has merged main into itself — git_squash_merge.is_merged_into exists to fix exactly this pile-up, but claude/quarantine-wave2 (PR #2257 MERGED, 0 commits unpublished, rev-list main..branch = 10) was still refused, and only --force cleared it. Habituating to --force on a script that deletes work is the risk. UNVERIFIED hypothesis: the cherry-based detection compares the branch's cumulative tree, which for a branch that merged main several times also carries main's own changes, so the synthesized patch matches nothing. Re-test on a fresh branch that merges main twice before proving it.
   Next: reproduce on a throwaway branch that merges main twice, then fix git_squash_merge.is_merged_into or fall back to gh pr state==MERGED plus a zero-unpublished-commits check
   Links: scripts/git_squash_merge.py; scripts/wt.py:170; docs/design-notes/2026-06-24-branch-lifecycle-automation.md
+
+## Expose Trigger as a user primitive (2026-08-04)
+
+Found while activating the cloud drain. `write_graph` targets are `goal, request,
+branch, universe, automation, agent, agent_binding`; `read_graph` adds
+`runs/run/automations/connections/agents/...`. **Neither exposes `trigger`.**
+`CloudAutomationSliceTrigger` exists only inside the cloud-automation lane.
+
+So `target=automation` is the pre-built complex thing, and the primitive
+underneath it is not available. A user who wants a scheduled workflow must take
+our opinionated automation lane whole, and when its scheduler wedges they have no
+composable way out — they can run a branch on command (`run_graph`, verified
+live) but cannot express "run this branch version on this cadence" themselves.
+
+Proposal: expose Trigger as a first-class primitive (bind to a branch version,
+schedule/fire/cancel, list). Then a scheduled automation is *composed* from
+Branch + Trigger by the user, our automation lane becomes one shareable design
+rather than the only road, and unwedging is something the owner can do.
+
+Do NOT add a `run_once` verb to `target=automation` — that was drafted and
+rejected 2026-08-04 as redundant with `run_graph` and as more pre-built
+complexity. The gap is the missing primitive, not a missing convenience.
+
+Needs promotion to an OpenSpec change before any build.
