@@ -50,7 +50,15 @@ env:
 
 jobs:
   probe:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Deliberately NOT gated on the deploy's conclusion. This used to read
+    # `github.event.workflow_run.conclusion == 'success'`, which skipped the
+    # probe exactly when a deploy FAILED -- the moment production is most
+    # likely broken. Live 2026-08-05: deploy 31043701408 failed and fenced the
+    # fleet, /mcp returned 502, and the two canary runs that followed
+    # (20:26, 20:42) both skipped this job and filed no outage alarm. The
+    # schedule did not cover the gap: GitHub throttles the `*/5` cron to
+    # roughly 1.5-2h in practice, so `workflow_run` is the canary's real
+    # cadence. A failed deploy is the HIGHEST-signal moment to probe.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
