@@ -277,12 +277,21 @@ services:
   # (entrypoint lines 105-170). No host hands, and seeding is first-boot-only
   # so an in-place rotated token is never clobbered.
   #
-  # Honest scope: the seeded credential is currently the SAME founder
-  # subscription the shared fleet uses, because it comes from the same secret.
-  # What is isolated today is the ROOT -- this executor reads its own path, so
-  # depositing a different credential for this universe changes only this
-  # service. That is the structural precondition for per-user compute; it is
-  # not itself per-user compute.
+  # Honest scope -- what these roots do and do NOT do:
+  #   * They ARE this container's own provider auth, so the pre-spawn
+  #     `subscription_auth_health` check and any non-universe-scoped call use
+  #     this service's credential rather than the shared fleet's.
+  #   * They are NOT what authenticates the supervised child. A
+  #     universe-scoped call resolves through
+  #     `credential_vault.resolve_claude_config_dir(universe_dir)`, which reads
+  #     the UNIVERSE's vault (`<universe>/.credential-vault.json`) or a
+  #     materialized `<universe>/.credentials/<provider>` -- never this
+  #     container's CLAUDE_CONFIG_DIR. Verified 2026-08-05.
+  #
+  # So this service executes work only once a credential is deposited IN the
+  # universe. Until then `_pinned_universe_credential_missing` self-quarantines
+  # it, naming the exact artifact, instead of claiming rows it cannot run and
+  # terminalizing them.
   worker-founder:
     <<: *cloud_worker_base
     container_name: tinyassets-worker-founder

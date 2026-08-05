@@ -582,10 +582,19 @@ def _pinned_universe_credential_missing(
     except Exception:  # noqa: BLE001 — unresolvable is exactly the bad case
         return f"{provider} credential resolution failed for {universe.name}"
     if not overlay:
+        from tinyassets.credential_vault import (
+            CREDENTIAL_ARTIFACT_DIR,
+            VAULT_FILENAME,
+        )
+
         return (
-            f"{provider} has no credential deposited for universe "
-            f"{universe.name}; the container's own auth is NOT used for a "
-            "universe-scoped child"
+            f"{provider} has no credential deposited IN universe "
+            f"{universe.name}. The container's own CODEX_HOME / "
+            "CLAUDE_CONFIG_DIR is NOT consulted for a universe-scoped child: "
+            "`credential_vault.resolve_claude_config_dir` reads this "
+            f"universe's vault records ({universe / VAULT_FILENAME}) or a "
+            f"materialized {universe / CREDENTIAL_ARTIFACT_DIR / provider}. "
+            "Deposit one of those to resume."
         )
     return ""
 

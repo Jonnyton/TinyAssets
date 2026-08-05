@@ -2491,6 +2491,13 @@ def test_a_pinned_worker_quarantines_when_its_universe_has_no_credential(
     )
     assert "no credential deposited" in reason
     assert "u-pinned" in reason
+    # The message must name the artifact to deposit AND say plainly that the
+    # container's own credential root is not consulted -- otherwise the
+    # operator seeds CODEX_HOME/CLAUDE_CONFIG_DIR (the obvious guess) and the
+    # worker keeps quarantining with no explanation.
+    assert ".credential-vault.json" in reason
+    assert ".credentials" in reason
+    assert "NOT consulted" in reason
 
 
 def test_the_shared_fleet_is_not_gated_by_the_pinned_credential_check(
