@@ -47,9 +47,11 @@ logger = logging.getLogger(__name__)
 #: docstring. Raising this is a disclosure bug, not a configuration choice.
 SLACK_SENDER_TIER = interlocutor.T1
 
-#: `<@U123>` / `<@U123|display>` — Slack's mention markup. The agent should read
-#: the question, not the wire format.
-_MENTION = re.compile(r"<@[UWB][A-Z0-9]+(?:\|[^>]*)?>")
+#: `<@U123>` / `<@U123|display>`. The display segment excludes `<` and is
+#: length-bounded: with an open `[^>]*` a string of `"<@U1|" * n` made the
+#: engine rescan the tail from every failed start, which a review clocked at
+#: roughly quadratic (20k chars -> 0.27s) BEFORE the length cap could apply.
+_MENTION = re.compile(r"<@[UWB][A-Z0-9]{1,20}(?:\|[^<>]{0,80})?>")
 
 #: What the user sees when their turn failed. Deliberately says nothing about
 #: why: the reason belongs in the log, not in a channel that may be shared.

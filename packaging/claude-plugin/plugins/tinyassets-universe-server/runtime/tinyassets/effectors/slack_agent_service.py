@@ -33,8 +33,12 @@ from tinyassets.effectors.slack_agent_turn import (
     actor_id_for,
     build_handlers,
 )
+from tinyassets.effectors.slack_socket_mode import is_app_token
 from tinyassets.effectors.slack_socket_runner import run_socket_forever
 from tinyassets.effectors.slack_transport import build_slack_transport
+
+#: Slack bot tokens. A user token (``xoxp-``) posts under a human name.
+BOT_TOKEN_PREFIX = "xoxb-"
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +54,16 @@ class SlackAgentConfig:
     ``team_id`` is the workspace this universe is bound to. It is required, not
     inferred from the first event that arrives: inferring it would mean the
     first workspace to send us anything becomes the bound one.
+
+    ``universe_dir`` is **derived** from ``universe_id``, not accepted
+    alongside it. When both were caller-supplied a review built a config naming
+    universe A with universe B's directory: the turn spoke as A while the reply
+    was posted with B's credentials, which is precisely the voice/credential
+    binding this module claims to hold. Deriving makes that inexpressible, and
+    routes through the resolver that carries the path-traversal guard.
     """
 
     universe_id: str
-    universe_dir: Path
     connection_id: str
     team_id: str
     bot_user_id: str
@@ -67,6 +77,16 @@ class SlackAgentConfig:
         ):
             if not isinstance(value, str) or not value.strip():
                 raise SlackAgentConfigError(f"slack agent needs a {name}")
+
+    @property
+    def universe_dir(self) -> Path:
+        """The one directory this universe id resolves to. Never a second input."""
+        from tinyassets.api.helpers import _universe_dir
+
+        try:
+            return _universe_dir(self.universe_id)
+        except ValueError as exc:
+            raise SlackAgentConfigError(str(exc)) from None
 
 
 def build_resolver(config: SlackAgentConfig):
@@ -120,10 +140,24 @@ def resolve_credentials(config: SlackAgentConfig) -> str:
             f"no Slack app-level token for connection {config.connection_id!r}. "
             "Socket Mode needs an xapp- token with the connections:write scope"
         )
-    if not resolve_slack_token(udir, config.connection_id):
+    if not is_app_token(app_token):
+        raise SlackAgentConfigError(
+            f"the app_token for connection {config.connection_id!r} is not an "
+            "xapp- token. Only an app-level token can open a socket"
+        )
+    bot_token = resolve_slack_token(udir, config.connection_id)
+    if not bot_token:
         raise SlackAgentConfigError(
             f"no Slack bot token for connection {config.connection_id!r}. "
             "The socket would open and every reply would then fail"
+        )
+    if not bot_token.startswith(BOT_TOKEN_PREFIX):
+        # Not pedantry about prefixes. An `xoxp-` user token posts AS THE USER:
+        # Slack shows a human name against every reply, so the agent silently
+        # impersonates whoever authorised the app. Truthiness alone accepted it.
+        raise SlackAgentConfigError(
+            f"the bot_token for connection {config.connection_id!r} is not an "
+            "xoxb- token. A user token would post replies under a person's name"
         )
     return app_token
 

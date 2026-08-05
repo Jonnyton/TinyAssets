@@ -411,3 +411,27 @@ def test_the_real_http_opener_never_chains_the_token_into_a_traceback(monkeypatc
     )
     assert APP_TOKEN not in rendered
     assert "xapp-" not in rendered
+
+
+def test_http_opener_leaves_no_chain_holding_the_token(monkeypatch) -> None:
+    """Round 3: `from None` clears __cause__ but NOT __context__.
+
+    The caught URLError — whose message quotes the Authorization header — stayed
+    reachable via `exc.__context__`. Hidden from a printed traceback is not the
+    same as gone.
+    """
+    import urllib.error
+
+    from tinyassets.effectors import slack_socket_runner as mod
+
+    def _boom(*_args, **_kwargs):
+        raise urllib.error.URLError(f"failed: Authorization: Bearer {APP_TOKEN}")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _boom)
+
+    with pytest.raises(SocketModeError) as exc:
+        mod.http_opener(APP_TOKEN)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert APP_TOKEN not in repr(exc.value.__context__)

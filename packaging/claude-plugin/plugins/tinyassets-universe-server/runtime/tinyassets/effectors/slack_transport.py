@@ -83,20 +83,27 @@ def _post(url: str, payload: dict[str, Any], token: str, timeout: float) -> dict
             "Content-Type": "application/json; charset=utf-8",
         },
     )
+    # Raised AFTER the handler exits, not with `from None` inside it. `from
+    # None` clears __cause__ but leaves __context__ holding the URLError whose
+    # message quotes the Authorization header — hidden from a normal traceback,
+    # readable via `exc.__context__`. A review read the bot token out of it.
+    raw = b""
+    failure = ""
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             raw = response.read()
     except urllib.error.HTTPError as exc:  # pragma: no cover - network shape
-        raise SlackTransportError(f"slack transport http {exc.code}") from None
+        failure = f"slack transport http {exc.code}"
     except (urllib.error.URLError, TimeoutError, OSError):
-        # `from None`, not `from exc`: a URLError's message routinely quotes
-        # the Authorization header, and chaining wrote the bot token into any
-        # traceback. A cross-family review reproduced exactly that here.
-        raise SlackTransportError("slack transport unreachable") from None
+        failure = "slack transport unreachable"
+    if failure:
+        raise SlackTransportError(failure)
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except Exception:  # noqa: BLE001 - decode errors and hostile nesting alike
-        raise SlackTransportError("slack transport returned malformed JSON") from None
+        failure = "slack transport returned malformed JSON"
+    if failure:
+        raise SlackTransportError(failure)
     if not isinstance(decoded, dict):
         raise SlackTransportError("slack transport returned a non-object response")
     return decoded

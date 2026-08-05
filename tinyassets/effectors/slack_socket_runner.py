@@ -94,24 +94,28 @@ def http_opener(
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
+    # Every failure below records a message and raises AFTER the handler has
+    # exited. `raise ... from None` was not enough: it clears __cause__ but
+    # leaves __context__ holding the original URLError, whose message quotes
+    # the Authorization header. That is hidden from the default traceback and
+    # fully readable via `exc.__context__` — which a review did.
+    raw = b""
+    failure = ""
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        raise SocketModeError(f"slack connections.open http {exc.code}") from None
+        failure = f"slack connections.open http {exc.code}"
     except (urllib.error.URLError, TimeoutError, OSError):
-        # `from None`, like every other raise in this function. A URLError's
-        # message routinely quotes the request — including the Authorization
-        # header — so chaining it wrote the app token into any traceback. The
-        # sibling module was fixed for exactly this and this one was missed;
-        # a review reproduced the token here.
-        raise SocketModeError("slack unreachable opening a socket") from None
+        failure = "slack unreachable opening a socket"
+    if failure:
+        raise SocketModeError(failure)
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except Exception:  # noqa: BLE001 - decode errors and hostile nesting alike
-        raise SocketModeError(
-            "slack returned malformed JSON opening a socket"
-        ) from None
+        failure = "slack returned malformed JSON opening a socket"
+    if failure:
+        raise SocketModeError(failure)
     if not isinstance(decoded, dict):
         raise SocketModeError("slack returned a non-object opening a socket")
     return decoded

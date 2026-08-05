@@ -30,7 +30,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
-from tinyassets.effectors.slack_errors import safe_error_code, scrubbed
+from tinyassets.effectors.slack_errors import safe_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -151,11 +151,18 @@ def event_of(envelope: SocketEnvelope) -> Mapping[str, Any] | None:
     event = payload.get("event")
     if not isinstance(event, Mapping):
         return None
-    team_id = payload.get("team_id")
-    if not isinstance(team_id, str) or not team_id.strip():
-        return event
     normalised = dict(event)
-    normalised["team_id"] = team_id.strip()
+    team_id = payload.get("team_id")
+    if isinstance(team_id, str) and team_id.strip():
+        normalised["team_id"] = team_id.strip()
+    else:
+        # STRIP it, do not leave the inner value in place. Returning the event
+        # unchanged here was a fail-open: an attacker-authored inner
+        # `"team_id"` survived and every downstream consumer read it as the
+        # authenticated workspace. A review used exactly that to route an
+        # unattributable envelope into another universe. Absent must mean
+        # absent, so the field is either the payload's or it is not there.
+        normalised.pop("team_id", None)
     return normalised
 
 
@@ -251,21 +258,27 @@ def open_socket_url(app_token: str, *, opener: Opener) -> str:
     """
     if not is_app_token(app_token):
         raise SocketModeError("slack app-level token is missing or not an xapp- token")
+    response = None
+    failed = False
     try:
         response = opener(app_token)
-    except SocketModeError as exc:
-        # An opener that raises our own error type is *probably* one of ours
-        # and already sanitised — but "probably ours" is not a security
-        # property, and a review reproduced a token surviving this passthrough.
-        # Keep the diagnostic only when we can see the token is not in it.
-        raise scrubbed(
-            exc,
-            app_token,
-            fallback="could not reach slack to open a socket",
-            error_type=SocketModeError,
-        ) from None
-    except Exception:  # noqa: BLE001 - drop the cause: it may carry the token
-        raise SocketModeError("could not reach slack to open a socket") from None
+    except Exception:  # noqa: BLE001 - see below
+        # The opener's message is discarded entirely, not scrubbed. Scrubbing
+        # meant substring-matching the token, and a review walked it straight
+        # past: a percent-encoded or line-split token does not match, and a
+        # truncated one still identifies. An allow-list on free-form upstream
+        # text is not achievable, so no upstream text survives.
+        #
+        # The `raise` is OUTSIDE this handler deliberately, and that is the
+        # whole point. `raise ... from None` clears __cause__ but leaves
+        # __context__ pointing at the original token-bearing exception —
+        # invisible to the default traceback, fully readable via
+        # `exc.__context__`. Only raising once the handler has exited leaves no
+        # chain at all. Verified: from-None-inside leaks, clearing the
+        # attribute then raising leaks, raising outside does not.
+        failed = True
+    if failed:
+        raise SocketModeError("could not reach slack to open a socket")
     if not isinstance(response, Mapping) or not response.get("ok"):
         code = ""
         if isinstance(response, Mapping):

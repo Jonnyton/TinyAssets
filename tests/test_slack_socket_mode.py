@@ -754,8 +754,16 @@ def test_an_opener_raising_our_own_error_type_cannot_smuggle_the_token():
     assert "VERY-SECRET-VALUE" not in rendered
 
 
-def test_a_clean_diagnostic_from_our_own_error_type_is_preserved():
-    """The scrub must not blind us to the error we actually need to read."""
+def test_no_opener_diagnostic_survives_at_all():
+    """Round 3 changed this deliberately: the message is DISCARDED, not scrubbed.
+
+    Scrubbing meant substring-matching the token, and a reviewer walked it past
+    three ways — percent-encoded, split across lines, and truncated but still
+    identifying. An allow-list over free-form upstream text is not achievable,
+    so none of it survives. `http_opener` logs its own detail before raising;
+    what it loses here is a status code, and what it gains is that no upstream
+    string can reach a caller.
+    """
 
     def opener(_token):
         raise SocketModeError("slack connections.open http 503")
@@ -763,4 +771,51 @@ def test_a_clean_diagnostic_from_our_own_error_type_is_preserved():
     with pytest.raises(SocketModeError) as exc:
         open_socket_url("xapp-1-token", opener=opener)
 
-    assert "503" in str(exc.value)
+    assert "503" not in str(exc.value)
+    assert str(exc.value) == "could not reach slack to open a socket"
+
+
+@pytest.mark.parametrize(
+    "leak",
+    [
+        "Bearer xapp-1-VERY-SECRET-VALUE",
+        "Bearer xapp-1-VERY-SECRET-VALUE".replace("-", "%2D"),  # encoded
+        "Bearer xapp-1-VERY\n-SECRET-VALUE",  # split across lines
+        "Bearer xapp-1-VERY-SECRET",  # truncated but still identifying
+    ],
+)
+def test_no_encoding_of_the_token_can_ride_out_on_a_diagnostic(leak):
+    """The three bypasses a reviewer used against the substring check."""
+    secret = "xapp-1-VERY-SECRET-VALUE"
+
+    def opener(_token):
+        raise SocketModeError(leak)
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url(secret, opener=opener)
+
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert "VERY" not in rendered, "no upstream text survives, in any encoding"
+
+
+def test_the_raised_error_has_no_chain_at_all():
+    """`raise ... from None` was not enough.
+
+    It clears __cause__ but leaves __context__ pointing at the original
+    token-bearing exception — invisible to the default traceback, fully
+    readable via `exc.__context__`, which is how a reviewer got the token back.
+    Only raising once the handler has exited leaves no chain.
+    """
+    secret = "xapp-1-VERY-SECRET-VALUE"
+
+    def opener(token):
+        raise RuntimeError(f"Authorization: Bearer {token}")
+
+    with pytest.raises(SocketModeError) as exc:
+        open_socket_url(secret, opener=opener)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None, "the token-bearing context must be gone"
+    assert secret not in repr(exc.value.__context__)

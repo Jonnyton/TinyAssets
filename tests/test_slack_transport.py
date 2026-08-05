@@ -298,3 +298,24 @@ def test_a_real_slack_error_code_is_still_reported(monkeypatch, tmp_path):
         post(destination, "hello")
 
     assert "channel_not_found" in str(exc.value)
+
+
+def test_the_transport_error_holds_no_token_bearing_context(monkeypatch):
+    """Same round-3 finding, third file: __context__ outlived `from None`."""
+    import urllib.error
+
+    from tinyassets.effectors import slack_transport as mod
+
+    secret = "xoxb-VERY-SECRET-BOT"
+
+    def _boom(*_a, **_kw):
+        raise urllib.error.URLError(f"Authorization: Bearer {secret}")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _boom)
+
+    with pytest.raises(mod.SlackTransportError) as exc:
+        mod._post("https://slack.invalid/x", {"channel": "C1"}, secret, 1.0)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert secret not in repr(exc.value.__context__)
