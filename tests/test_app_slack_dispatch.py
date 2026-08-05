@@ -20,11 +20,11 @@ from tinyassets.app_event_ingress import SlackRequestVerifier
 from tinyassets.app_principal_mapping import AppPrincipalMappingError
 from tinyassets.app_slack_dispatch import (
     BOT_USER_ID_ENV,
-    reading_tier,
     MAX_CONCURRENT_TURNS,
     DispatchOutcome,
     dispatch_admitted_event,
     is_bot_token,
+    reading_tier,
     reply_thread_ts,
     resolve_bot_user_id,
 )
