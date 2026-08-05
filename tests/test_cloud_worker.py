@@ -2588,25 +2588,33 @@ def test_router_leaves_undeclared_universes_on_the_legacy_daemon(
     assert cw._daemon_module_for_universe(universe) == "fantasy_daemon"
 
 
-def test_worker_refuses_to_claim_when_the_declared_module_is_missing(
+def test_missing_declared_module_is_reported_but_does_not_block_claiming(
     tmp_path,
     monkeypatch,
 ):
-    """Claiming work the worker cannot execute DESTROYS it.
+    """Diagnostic, not a claim gate.
 
-    `failed` is in _TERMINAL_STATUSES (branch_tasks_v2.py:105), so a slice
-    failed by the wrong daemon can never be re-claimed. On 2026-08-05 a
-    fallback to the legacy daemon terminalized 3 of 4 admissible rows that had
-    waited 18h. Refusing to claim keeps them PENDING and recoverable.
+    This WAS a claim gate, added after 3 rows went terminal under the legacy
+    fallback. Reading the runs disproved the premise: all three failed in
+    77-828ms with `CompilerError: ... input_keys ['topic'] not present` on the
+    "E2E Walk Test Branch v2" -- the universe's loop pointed at a TEST branch
+    with a broken input contract, and those runs would have failed on ANY
+    executor. With the loop repointed to the real drain branch, that branch
+    executes for minutes of real work. Gating claims on the absent `workflow`
+    module only starved the queue.
     """
     universe = tmp_path / "u-declared"
     universe.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cw, "_soul_loop_declared_for_universe", lambda _u: True)
     monkeypatch.setattr(cw.importlib.util, "find_spec", lambda _n: None)
 
+    # Still reports the unshipped route...
     reason = cw._declared_daemon_module_missing(universe)
     assert "NOT INSTALLED" in reason
-    assert "refusing to claim" in reason
+    # ...but the supervisor loop no longer consults it before claiming.
+    import inspect
+    loop_src = inspect.getsource(cw.run_supervisor)
+    assert "_declared_daemon_module_missing" not in loop_src
 
 
 def test_worker_claims_normally_once_the_declared_module_exists(

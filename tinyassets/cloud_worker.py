@@ -701,10 +701,26 @@ def _declared_daemon_module_missing(universe: Path) -> str:
         slices, and `failed` is terminal (`_TERMINAL_STATUSES`,
         branch_tasks_v2.py:105) -- the work is destroyed permanently.
 
-    Live 2026-08-05: the fallback claimed and terminalized 3 of 4 admissible
-    rows that had waited 18h. So the worker self-quarantines instead, exactly
-    like the dead-auth gate: no claim, loud reason, resumes the moment the
-    module ships.
+    RETIRED as a claim gate, 2026-08-05, on evidence rather than inference.
+
+    I added it after 3 rows went terminal under the fallback, assuming the
+    legacy daemon could not execute soul-loop work. Reading the runs disproved
+    that: all three failed in 77-828ms with
+    `CompilerError: Node 'summarize' ... input_keys ['topic'] not present`,
+    on branch 36370cd19f90 -- the "E2E Walk Test Branch v2". The universe's
+    loop was pointing at a TEST branch with a broken input contract; those runs
+    would have failed identically on any executor, including the `workflow`
+    module I thought was required.
+
+    With the loop repointed to the real drain branch (745e637dd8fb), that
+    branch executes: run 74b70ea41cfe4026 ran `accept_spec` for minutes of real
+    work instead of failing instantly. The legacy daemon serving a soul-loop
+    universe is therefore a working substitute, so gating claims on the absent
+    `workflow` module only starves the queue.
+
+    Kept as a diagnostic helper -- the loud ERROR in
+    `_daemon_module_for_universe` still names the unshipped route -- but it no
+    longer blocks claiming.
     """
     if not _soul_loop_declared_for_universe(universe):
         return ""
@@ -1575,24 +1591,6 @@ def run_supervisor(
         # credential. A healthy container proves nothing here: the child
         # resolves per-universe and gets an empty auth root otherwise, so
         # claiming would terminalize admissible rows instead of running them.
-        module_gap = _declared_daemon_module_missing(universe)
-        if module_gap:
-            state.auth_quarantine_count += 1
-            logger.error(
-                "cloud_worker: %s — QUARANTINING, not claiming. Ship the "
-                "module or unset TINYASSETS_SOUL_LOOP_DISPATCH.",
-                module_gap,
-            )
-            write_supervisor_heartbeat(
-                universe,
-                state,
-                iteration=iteration,
-                phase="auth_quarantined",
-                planned_sleep_s=auth_quarantine_backoff,
-            )
-            sleep_fn(auth_quarantine_backoff)
-            continue
-
         pinned_gap = _pinned_universe_credential_missing(universe, daemon_args)
         if pinned_gap:
             state.auth_quarantine_count += 1
