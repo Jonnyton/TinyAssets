@@ -825,6 +825,42 @@ def _pump_branch_task_producers(universe: Path) -> int:
         return 0
 
 
+def _automation_universes(universe: Path) -> list[Path]:
+    """The resolved universe, plus any universe holding desired-active work.
+
+    A worker resolves ONE universe path at startup (`_resolve_universe_path`),
+    so an owner's automation is serviced only if it happens to live in that
+    universe. Production proved this is not a hypothetical: the deploy
+    diagnostic reported `active_marker=<unset>` and
+    `resolved_universe=/data/concordance` while the owner's automations sat in
+    `/data/u-01kxm1vszd8hwp7em418asq8h9`, never converged, zero receipts.
+
+    The resolved universe stays first so existing behaviour is unchanged when
+    there is no cross-universe work. Authority is unaffected: every automation
+    still carries its own principal, provider binding, and destination grant,
+    all revalidated downstream.
+    """
+    targets = [universe]
+    try:
+        from tinyassets.storage import data_dir
+        from tinyassets.storage.cloud_automation_control import (
+            CloudAutomationControlStore,
+        )
+
+        base = data_dir()
+        for uid in CloudAutomationControlStore(base).list_universe_ids_with_desired_active():
+            candidate = base / uid
+            # Deliberately NOT gated on `candidate.is_dir()`: the pump uses only
+            # `universe.name` as the universe id and reads every record through
+            # `data_dir()`, so requiring an on-disk directory would silently skip
+            # automations whose universe has no materialised folder.
+            if candidate != universe:
+                targets.append(candidate)
+    except Exception:  # noqa: BLE001
+        logger.exception("cloud_worker: cross-universe automation scan failed")
+    return targets
+
+
 def _pump_cloud_automation_triggers(
     universe: Path,
     *,
@@ -1477,11 +1513,12 @@ def run_supervisor(
         # against (terminating a child before it can claim pending BranchTasks)
         # cannot apply. Anything queued is picked up by the next spawn.
         if producer_poll_interval > 0:
-            _pump_cloud_automation_triggers(
-                universe,
-                provider_name=_provider_from_daemon_args(daemon_args),
-                physical_worker_id=physical_worker_id,
-            )
+            for target in _automation_universes(universe):
+                _pump_cloud_automation_triggers(
+                    target,
+                    provider_name=_provider_from_daemon_args(daemon_args),
+                    physical_worker_id=physical_worker_id,
+                )
 
         if returncode == 0:
             delay = _compute_backoff(

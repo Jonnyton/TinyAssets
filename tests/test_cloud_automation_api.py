@@ -1776,3 +1776,142 @@ def test_no_hardcoded_date_literals_in_this_module() -> None:
         "hardcoded timestamp literal(s) found — express them relative to NOW "
         "instead, or this module goes red on a date:\n" + "\n".join(offenders)
     )
+
+
+def test_worker_pump_converges_a_requested_activation_end_to_end(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The production entry point must activate a prepared automation.
+
+    `test_owner_can_prepare_cloud_activation_from_chatbot_payload` proves the
+    chain works when each step is driven by hand. The cloud worker does not call
+    those steps by hand — it calls `_pump_cloud_automation_triggers`, which does
+    its own daemon selection and runtime registration first. Live 2026-08-05
+    every automation stayed at `activation.state=stopped`, epoch 0, with
+    `runtime_instance_count: 0`, so something in that prelude never completed.
+    """
+    from tinyassets import cloud_worker as cw
+    from tinyassets.api import cloud_automations, permissions
+    from tinyassets.storage.automation_activations import AutomationActivationStore
+
+    definition = _seed_setup_authority(tmp_path)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+
+    created = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        payload={
+            "definition": definition.to_dict(),
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {
+                "display_name": "Alice Cloud Builder",
+                "soul_text": "Execute Alice's versioned user-authored Branches.",
+            },
+        },
+    )
+    assert created["status"] == "activation_requested"
+    automation_id = created["automation"]["automation_id"]
+    before = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
+    assert before is not None and before.state.value == "stopped"
+
+    appended = cw._pump_cloud_automation_triggers(
+        tmp_path / "universe_alice",
+        provider_name="codex",
+        physical_worker_id="worker_cloud_1",
+    )
+
+    after = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
+    assert appended == 1, (
+        "the worker's own pump did not converge a desired-active automation; "
+        f"activation stayed {after.state.value if after else 'missing'}"
+    )
+
+
+def test_worker_services_an_automation_outside_its_resolved_universe(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """An owner's automation must not depend on which universe the worker picked.
+
+    `_resolve_universe_path` returns ONE universe per worker process. Production
+    proved the consequence on 2026-08-05: its own deploy diagnostic reported
+    `active_marker=<unset>` and `resolved_universe=/data/concordance`, while the
+    owner's automations sat in `/data/u-01kxm1vszd8hwp7em418asq8h9` — never
+    pumped, never activated, zero terminal receipts, for five hours.
+
+    Here the worker resolves a DIFFERENT universe than the one holding the work.
+    """
+    from tinyassets import cloud_worker as cw
+    from tinyassets.api import cloud_automations, permissions
+    from tinyassets.storage.automation_activations import AutomationActivationStore
+
+    definition = _seed_setup_authority(tmp_path)
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
+    # `_pump_cloud_automation_triggers` WRITES these into os.environ, so a
+    # sibling test that pumped earlier leaks a stale worker/runtime identity in
+    # and the activation is refused with executor_audience_unavailable. Pin them
+    # so this test is hermetic regardless of order.
+    for leaked in (
+        "TINYASSETS_AUTOMATION_OWNER_USER_ID",
+        "TINYASSETS_WORKER_ID",
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+    ):
+        monkeypatch.delenv(leaked, raising=False)
+
+    created = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        payload={
+            "definition": definition.to_dict(),
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {
+                "display_name": "Alice Cloud Builder",
+                "soul_text": "Execute Alice's versioned user-authored Branches.",
+            },
+        },
+    )
+    assert created["status"] == "activation_requested"
+    automation_id = created["automation"]["automation_id"]
+
+    # The worker resolved some OTHER universe, exactly as production did, and
+    # its child exits immediately (idle queue) — the real shape.
+    resolved_elsewhere = tmp_path / "concordance"
+    resolved_elsewhere.mkdir(parents=True, exist_ok=True)
+
+    class _ImmediateExitProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    cw.run_supervisor(
+        resolved_elsewhere,
+        idle_backoff=0.0,
+        max_iterations=1,
+        producer_poll_interval=30.0,
+        daemon_args=["--provider", "codex"],
+        spawn_fn=lambda _universe: _ImmediateExitProc(),
+        sleep_fn=lambda _seconds: None,
+    )
+
+    after = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
+    assert after is not None and after.state.value == "active", (
+        "an automation in a universe the worker did not resolve was never "
+        f"serviced; activation is {after.state.value if after else 'missing'}"
+    )
