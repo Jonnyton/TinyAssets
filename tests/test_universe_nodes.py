@@ -662,17 +662,18 @@ class TestWorldbuildCanonGeneration:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation not permitted on this platform: {exc}")
 
-        # Containment is enforced by SKIPPING the escaping entry, not by
-        # raising: `iter_canon_files` resolves + contains each candidate and
-        # drops any that lands outside canon_dir (canon_io logs "Skipping canon
-        # entry escaping canon dir"). This test asserted a ValueError that the
-        # code stopped raising when the mechanism changed.
+        # The guard DOES raise; only its message moved. It now comes from
+        # `canon_names.py:28` as "canon filename escapes canon directory",
+        # where the test expected the older "canon existing file escapes".
         #
-        # The SECURITY property is unchanged and is what is asserted below: the
-        # outside target is neither read into the prompt nor clobbered. That is
-        # the whole point of the guard — the exception was only ever how it
-        # happened to be reported.
-        _handle_contradiction(canon_dir, "magic_system", "detail", "premise", {})
+        # I first rewrote this as skip-not-raise, reading a canon_io log line
+        # about skipping entries as the whole mechanism. The oracle's Linux run
+        # showed the ValueError still propagating, which is how the real cause
+        # surfaced — the match pattern was stale, not the mechanism.
+        with pytest.raises(ValueError, match="escapes canon directory"):
+            _handle_contradiction(
+                canon_dir, "magic_system", "detail", "premise", {}
+            )
         # The outside target must be untouched.
         assert outside.read_text(encoding="utf-8") == "# Outside secret"
 
@@ -687,17 +688,18 @@ class TestWorldbuildCanonGeneration:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation not permitted on this platform: {exc}")
 
-        # Containment is enforced by SKIPPING the escaping entry, not by
-        # raising: `iter_canon_files` resolves + contains each candidate and
-        # drops any that lands outside canon_dir (canon_io logs "Skipping canon
-        # entry escaping canon dir"). This test asserted a ValueError that the
-        # code stopped raising when the mechanism changed.
+        # The guard DOES raise; only its message moved. It now comes from
+        # `canon_names.py:28` as "canon filename escapes canon directory",
+        # where the test expected the older "canon existing file escapes".
         #
-        # The SECURITY property is unchanged and is what is asserted below: the
-        # outside target is neither read into the prompt nor clobbered. That is
-        # the whole point of the guard — the exception was only ever how it
-        # happened to be reported.
-        _handle_expansion(canon_dir, "magic_system", "detail", "premise", {})
+        # I first rewrote this as skip-not-raise, reading a canon_io log line
+        # about skipping entries as the whole mechanism. The oracle's Linux run
+        # showed the ValueError still propagating, which is how the real cause
+        # surfaced — the match pattern was stale, not the mechanism.
+        with pytest.raises(ValueError, match="escapes canon directory"):
+            _handle_expansion(
+                canon_dir, "magic_system", "detail", "premise", {}
+            )
         assert outside.read_text(encoding="utf-8") == "# Outside secret"
 
     # ------------------------------------------------------------------
