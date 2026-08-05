@@ -24,6 +24,29 @@ def copy_skill_tree(tmp_path: Path) -> Path:
     return dst
 
 
+def a_mirrored_skill(root: Path) -> str:
+    """Name a skill that ACTUALLY exists in both trees and in the router.
+
+    These tests used to hardcode `zoom-out`, which was later deleted — after
+    which the mirror-drift test died on FileNotFoundError and the router test
+    asserted a message about a skill that no longer existed. Picking the name
+    from the tree means a future skill rename cannot rot them the same way.
+    """
+    router_text = (root / ".agents" / "skills" / "using-agent-skills" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    for path in sorted((root / ".agents" / "skills").iterdir()):
+        name = path.name
+        if not (path / "SKILL.md").is_file():
+            continue
+        if not (root / ".claude" / "skills" / name / "SKILL.md").is_file():
+            continue
+        if name == "using-agent-skills" or name not in router_text:
+            continue
+        return name
+    raise AssertionError("no mirrored skill is referenced by the router")
+
+
 def test_current_skill_tree_is_valid() -> None:
     module = load_module()
     root = Path(__file__).resolve().parents[1]
@@ -50,7 +73,8 @@ def test_validator_catches_stale_imported_skill_text(tmp_path) -> None:
 def test_validator_catches_mirror_drift(tmp_path) -> None:
     module = load_module()
     root = copy_skill_tree(tmp_path)
-    mirror = root / ".claude" / "skills" / "zoom-out" / "SKILL.md"
+    skill_name = a_mirrored_skill(root)
+    mirror = root / ".claude" / "skills" / skill_name / "SKILL.md"
     mirror.write_text(mirror.read_text(encoding="utf-8") + "\nMirror drift.\n", encoding="utf-8")
 
     issues = module.validate_all(root)
@@ -61,12 +85,15 @@ def test_validator_catches_mirror_drift(tmp_path) -> None:
 def test_validator_catches_router_omission(tmp_path) -> None:
     module = load_module()
     root = copy_skill_tree(tmp_path)
+    skill_name = a_mirrored_skill(root)
     router = root / ".agents" / "skills" / "using-agent-skills" / "SKILL.md"
     router.write_text(
-        router.read_text(encoding="utf-8").replace("zoom-out", "zoom_removed"),
+        router.read_text(encoding="utf-8").replace(skill_name, "skill_removed_from_router"),
         encoding="utf-8",
     )
 
     issues = module.validate_all(root)
 
-    assert any("router does not mention skill 'zoom-out'" in issue.message for issue in issues)
+    assert any(
+        f"router does not mention skill '{skill_name}'" in issue.message for issue in issues
+    )

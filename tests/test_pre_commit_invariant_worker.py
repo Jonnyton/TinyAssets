@@ -162,13 +162,27 @@ def test_main_no_args_staged_passes():
         assert inv.main([]) == 0
 
 
-def test_main_no_args_staged_but_get_returns_none():
-    """Staged but content unreadable (e.g. deletion) → skip."""
+def test_main_no_args_staged_but_get_returns_none(capsys):
+    """Staged with unreadable content is a VIOLATION, not a skip.
+
+    Reversed from what this test used to assert. Staged-but-unreadable is what
+    a deletion or rename of the Worker looks like, and the Worker owns the
+    tinyassets.io/mcp route — letting that through silently is exactly the
+    change nobody would notice until the public endpoint was gone. The hook now
+    exits 2 and says so (pre_commit_invariant_worker.py:98).
+
+    The old expectation of 0 treated the most dangerous case as the benign one,
+    so the test is rewritten to the current contract rather than the guard being
+    softened back.
+    """
     with (
         patch.object(inv, "_is_worker_staged", return_value=True),
         patch.object(inv, "_get_staged_content", return_value=None),
     ):
-        assert inv.main([]) == 0
+        assert inv.main([]) == 2
+    # The exit code alone is not actionable — the operator has to be told why.
+    err = capsys.readouterr().err
+    assert "INVARIANT VIOLATED" in err, err
 
 
 # ---------------------------------------------------------------------------
