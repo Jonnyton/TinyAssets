@@ -349,7 +349,60 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
         )
 
     outcome = await run_in_threadpool(_admit)
-    return PlainTextResponse(outcome.body, status_code=outcome.status)
+
+    response = PlainTextResponse(outcome.body, status_code=outcome.status)
+
+    # Answering happens AFTER the acknowledgement, never inside it. Slack
+    # retries anything it does not hear back from within 3 seconds, and an
+    # agent turn is far slower than that — coupling the two would turn every
+    # conversation into a retry storm, each retry costing another HMAC.
+    #
+    # Only a freshly admitted event dispatches. A replay must not answer twice,
+    # which is the entire point of having a dedup ledger in front of this.
+    if outcome.admitted and not outcome.replay:
+        from starlette.background import BackgroundTask
+
+        response.background = BackgroundTask(
+            run_in_threadpool, _dispatch_slack_reply, raw_body, headers
+        )
+
+    return response
+
+
+def _dispatch_slack_reply(raw_body: bytes, headers) -> None:
+    """Answer one admitted Slack event. Runs after the response is sent.
+
+    Re-authenticates rather than passing the event object across the boundary:
+    the sealed `AuthenticatedAppEvent` may only be minted by a verifier, and
+    re-deriving it here keeps that true instead of introducing a second way to
+    obtain one. The HMAC is cheap next to the provider call it precedes.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.app_slack_dispatch import dispatch_admitted_event
+    from tinyassets.app_slack_ingress import resolve_boundary
+    from tinyassets.effectors.slack_transport import build_slack_transport
+    from tinyassets.storage import data_dir
+
+    base = data_dir()
+    boundary = resolve_boundary(base)
+    if boundary is None:  # pragma: no cover - admission already proved it exists
+        return
+    try:
+        event = boundary.verifier.authenticate(raw_body=raw_body, headers=headers)
+        dispatch_admitted_event(
+            event,
+            base_path=base,
+            # Per-universe: the Slack credential lives in the mapped universe's
+            # own vault, so the directory cannot be chosen before the mapping
+            # resolves.
+            transport_factory=lambda universe_id: build_slack_transport(
+                _universe_dir(universe_id)
+            ),
+        )
+    except Exception:  # noqa: BLE001 - a background failure must not crash serving
+        logging.getLogger(__name__).warning(
+            "slack reply dispatch failed", exc_info=True
+        )
 
 
 # Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
