@@ -33,6 +33,18 @@ from tinyassets.app_principal_mapping import (
 )
 from tinyassets.app_reply_authority import ReplyDestination
 
+# The bot-token rule lives in the transport, beside the credential it guards;
+# re-exported here because this is where the loop it prevents is documented.
+from tinyassets.effectors.slack_transport import is_bot_token
+
+__all__ = [
+    "DispatchOutcome",
+    "dispatch_admitted_event",
+    "is_bot_token",
+    "reply_thread_ts",
+    "resolve_bot_user_id",
+]
+
 logger = logging.getLogger(__name__)
 
 BOT_USER_ID_ENV = "TINYASSETS_SLACK_BOT_USER_ID"
@@ -58,15 +70,15 @@ MAX_CONCURRENT_TURNS = 4
 
 _turn_capacity = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
 
-#: Slack bot tokens start with `xoxb-`. A *user* token (`xoxp-`) posts as the
-#: human, which is the infinite loop below.
-BOT_TOKEN_PREFIX = "xoxb-"
+
 
 
 class Transport(Protocol):
     """Delivers one reply. Matches `effectors.slack_transport`'s callable."""
 
-    def __call__(self, destination: ReplyDestination, body: str): ...
+    def __call__(
+        self, destination: ReplyDestination, body: str, thread_ts: str = ""
+    ): ...
 
 
 class TransportFactory(Protocol):
@@ -104,17 +116,6 @@ def resolve_bot_user_id(env: Mapping[str, str] | None = None) -> str:
     source = os.environ if env is None else env
     value = source.get(BOT_USER_ID_ENV)
     return value.strip() if isinstance(value, str) else ""
-
-
-def is_bot_token(token: str) -> bool:
-    """True for a Slack *bot* token.
-
-    `resolve_slack_token` accepts `bot_token`, `token`, or `access_token`
-    without checking which kind it got. A user token posts as the human and
-    re-enters as their own message — the loop above. Refuse rather than deliver
-    with one.
-    """
-    return isinstance(token, str) and token.startswith(BOT_TOKEN_PREFIX)
 
 
 def _message_text(event: AuthenticatedAppEvent) -> str:
@@ -276,7 +277,7 @@ def dispatch_admitted_event(
     body = reply.strip()[:MAX_REPLY_CHARACTERS]
     try:
         transport = transport_factory(mapping.universe_id)
-        transport(destination, body)
+        transport(destination, body, reply_thread_ts(event))
     except Exception as exc:  # noqa: BLE001 - delivery failure is not a crash
         logger.warning(
             "slack dispatch: delivery failed for universe %s: %s",

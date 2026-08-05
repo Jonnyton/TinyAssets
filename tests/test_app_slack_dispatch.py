@@ -73,14 +73,21 @@ class _Mapping:
 
 
 class _Recorder:
+    """Mirrors the REAL transport signature, thread_ts included.
+
+    Deliberately not a permissive ``*args`` stub: when the transport grew a
+    thread argument this double failed, which is the whole point of a double
+    that tracks the thing it stands in for.
+    """
+
     def __init__(self, fail: bool = False):
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, str]] = []
         self.fail = fail
 
-    def __call__(self, destination, body):
+    def __call__(self, destination, body, thread_ts=""):
         if self.fail:
             raise RuntimeError("slack said no")
-        self.calls.append((destination.address, body))
+        self.calls.append((destination.address, body, thread_ts))
         return object()
 
 
@@ -398,4 +405,24 @@ def test_happy_path(tmp_path, mapped):
     )
 
     assert outcome == DispatchOutcome("delivered", universe_id="u-01ALICE")
-    assert transport.calls == [("C_ORIGIN", "The ingress endpoint.")]
+    assert transport.calls == [
+        ("C_ORIGIN", "The ingress endpoint.", "1700000000.000100")
+    ]
+
+
+def test_reply_is_delivered_into_the_thread(tmp_path, mapped):
+    """The wiring, not just the helper.
+
+    reply_thread_ts existed with passing tests and was never CALLED — the same
+    wired-to-nothing shape as v1's transport. This asserts the thread actually
+    reaches the transport.
+    """
+    transport = _Recorder()
+    _dispatch(
+        tmp_path,
+        _event("message", thread_ts="1700000000.000050"),
+        transport,
+        lambda *a, **k: "in-thread answer",
+    )
+
+    assert transport.calls[0][2] == "1700000000.000050"

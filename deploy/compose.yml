@@ -95,6 +95,12 @@ services:
       # with the same key — so without this any workspace where the app is
       # installed can deliver validly-signed events. Empty admits nobody.
       TINYASSETS_SLACK_TEAM_IDS: ${TINYASSETS_SLACK_TEAM_IDS:-}
+      # The Slack user id this app posts as (e.g. U0123ABC), from the app's
+      # own auth.test. Load-bearing, not cosmetic: our reply re-enters as a
+      # message event, and recognising our own author id is what stops the
+      # universe answering itself forever. Dispatch REFUSES to answer at all
+      # while this is unset, so a missing value is inert, never a loop.
+      TINYASSETS_SLACK_BOT_USER_ID: ${TINYASSETS_SLACK_BOT_USER_ID:-}
     env_file:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env
