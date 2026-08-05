@@ -148,7 +148,9 @@ Tip: to discover any action-based tool's full catalog live, send a bogus `action
 
 ## PART D — Source Pointers (for deeper reading)
 
-**Project repo:** `https://github.com/Jonnyton/Workflow` (MIT platform / CC0 catalog).
+**Project repo:** `https://github.com/Jonnyton/TinyAssets` (MIT platform / CC0 catalog).
+> Repo renamed Workflow -> TinyAssets after this handoff was written (2026-06-23);
+> the rest of this document is a dated snapshot and its surface details have moved on.
 
 **Canonical design docs (in the repo):**
 - `PLAN.md` — design truth (thesis, scoping rules, ~30 design decisions, MCP interface contract). *Edits require host approval.*
