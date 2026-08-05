@@ -476,3 +476,102 @@ def test_reply_is_delivered_into_the_thread(tmp_path, mapped):
     )
 
     assert transport.calls[0][2] == "1700000000.000050"
+
+
+@pytest.mark.parametrize(
+    "event_type,channel,channel_type,expected,why",
+    [
+        # `channel_type` is absent on app_mention, so the id has to carry it.
+        ("app_mention", "D0123", None, FOUNDER, "mention inside a DM"),
+        ("app_mention", "C0123", None, T1, "mention in a public channel"),
+        ("app_mention", "G0123", None, T1, "mention in a private group"),
+        ("message", "D0123", "im", FOUNDER, "DM with both signals"),
+        ("message", "C0123", "channel", T1, "public channel"),
+        # A forged channel_type cannot promote a public channel id.
+        ("message", "C0123", "im", FOUNDER, "channel_type is Slack-authenticated"),
+    ],
+)
+def test_dm_is_recognised_on_every_event_shape(
+    event_type, channel, channel_type, expected, why
+):
+    """app_mention carries no channel_type — only `message` does.
+
+    Without the id check a direct mention in a DM read at T1, so a private
+    universe could not answer a mention at all. Both signals are inside the
+    HMAC-verified body, so neither is attacker-supplied.
+    """
+    event = _event(event_type, channel=channel, channel_type=channel_type)
+    assert reading_tier(event) == expected, why
+
+
+@pytest.mark.parametrize("event_type", ["message", "app_mention"])
+@pytest.mark.parametrize("subtype", ["file_share", "document_mention", "channel_join"])
+def test_a_subtype_is_refused_on_either_event_type(tmp_path, mapped, event_type, subtype):
+    """The subtype filter used to apply only to `message`.
+
+    A reviewer sent an `app_mention` carrying `document_mention` and it went
+    straight through to a billed provider call. A subtype means Slack is
+    describing an occurrence rather than someone talking, which is true
+    whichever event type carries it.
+    """
+    called = []
+    outcome = _dispatch(
+        tmp_path,
+        _event(event_type, subtype=subtype),
+        _Recorder(),
+        lambda *a, **k: called.append(1) or "r",
+    )
+
+    assert outcome.status == "not_conversational"
+    assert called == [], "a subtyped event must not be billed"
+
+
+def test_capacity_covers_delivery_not_just_the_provider_call(tmp_path, mapped):
+    """Capacity used to release before the transport ran.
+
+    That bounded only the cheap half: a reviewer stalled Slack delivery and
+    occupied every Starlette thread token, starving admission itself. A slow
+    DELIVERY must consume capacity exactly like a slow provider call.
+    """
+    release = threading.Event()
+    started = threading.Semaphore(0)
+    live = {"n": 0}
+    peak = {"n": 0}
+    lock = threading.Lock()
+
+    class _SlowTransport:
+        calls: list = []
+
+        def __call__(self, destination, body, thread_ts=""):
+            with lock:
+                live["n"] += 1
+                peak["n"] = max(peak["n"], live["n"])
+            started.release()
+            release.wait(timeout=5)
+            with lock:
+                live["n"] -= 1
+            return object()
+
+    threads = [
+        threading.Thread(
+            target=_dispatch,
+            args=(
+                tmp_path,
+                _event("message", text="m%d" % i),
+                _SlowTransport(),
+                lambda *a, **k: "reply",
+            ),
+        )
+        for i in range(MAX_CONCURRENT_TURNS + 3)
+    ]
+    for t in threads:
+        t.start()
+    for _ in range(MAX_CONCURRENT_TURNS):
+        assert started.acquire(timeout=5)
+    release.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert peak["n"] <= MAX_CONCURRENT_TURNS, (
+        "slow DELIVERY must consume capacity too; peak was %d" % peak["n"]
+    )

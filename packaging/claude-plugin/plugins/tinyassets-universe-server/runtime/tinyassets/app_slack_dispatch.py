@@ -138,7 +138,18 @@ def reading_tier(event: AuthenticatedAppEvent) -> str:
     correct outcome, not a regression: a private universe has nothing it is
     willing to say to an unenumerated audience.
     """
-    return FOUNDER if event.payload.get("channel_type") == "im" else T1
+    payload = event.payload
+    if payload.get("channel_type") == "im":
+        return FOUNDER
+    # `channel_type` is only sent on `message` events — an `app_mention` never
+    # carries it, so the field alone would read every mention at T1 including
+    # one sent inside a DM, and a private universe could not answer a direct
+    # mention at all. Slack DM conversation ids start with "D", which is the
+    # signal available on every event shape.
+    channel = payload.get("channel")
+    if isinstance(channel, str) and channel.startswith("D"):
+        return FOUNDER
+    return T1
 
 
 def _message_text(event: AuthenticatedAppEvent) -> str:
@@ -169,8 +180,12 @@ def _is_conversational(event: AuthenticatedAppEvent) -> bool:
     """A plain message or a mention — never a subtyped occurrence."""
     if event.event_type not in CONVERSATIONAL_EVENT_TYPES:
         return False
-    if event.event_type == "message" and event.payload.get("subtype"):
-        # file_share, channel_join, me_message, message_changed, thread_broadcast…
+    # Any subtype at all, on EITHER type. Restricting this check to `message`
+    # left `app_mention` with a subtype (`document_mention` and friends)
+    # straight through to a billed provider call — a reviewer demonstrated it.
+    # A subtype means Slack is describing an occurrence, not someone talking,
+    # and that is true regardless of which event type carries it.
+    if event.payload.get("subtype"):
         return False
     return True
 
@@ -257,8 +272,35 @@ def dispatch_admitted_event(
 
     # Bounded spend. Shedding is the honest failure here: a queue would keep the
     # user's bill growing while they wait.
+    # Held across BOTH the provider call and the delivery. Releasing after
+    # converse alone bounded only the cheap half: a reviewer stalled Slack
+    # delivery and occupied every Starlette thread token, starving admission
+    # itself while retries piled up behind it.
     if not _turn_capacity.acquire(blocking=False):
         return DispatchOutcome("at_capacity", universe_id=mapping.universe_id)
+    try:
+        return _answer(
+            event,
+            mapping=mapping,
+            text=text,
+            destination=destination,
+            converse=converse,
+            transport_factory=transport_factory,
+        )
+    finally:
+        _turn_capacity.release()
+
+
+def _answer(
+    event: AuthenticatedAppEvent,
+    *,
+    mapping,
+    text: str,
+    destination: ReplyDestination,
+    converse: Callable[..., str],
+    transport_factory: TransportFactory,
+) -> DispatchOutcome:
+    """The billed half: one provider call, one delivery. Runs under capacity."""
     try:
         reply = converse(
             mapping.universe_id,
@@ -291,8 +333,6 @@ def dispatch_admitted_event(
             universe_id=mapping.universe_id,
             detail=type(exc).__name__,
         )
-    finally:
-        _turn_capacity.release()
 
     if not isinstance(reply, str) or not reply.strip():
         return DispatchOutcome("empty_reply", universe_id=mapping.universe_id)
