@@ -48,6 +48,31 @@ BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
 
 
+def _load_windows_user_env(name: str) -> None:
+    """Fall back to the Windows *User* environment for `name`.
+
+    `setx` and `[Environment]::SetEnvironmentVariable(..., 'User')` write to the
+    registry, and only processes started AFTERWARDS inherit them. A shell that
+    was already open — which is the normal case when someone sets the variable
+    and then runs this in an existing terminal — sees nothing, and the script
+    said "set the env vars" to someone who just had. Read the registry directly
+    so the obvious sequence works.
+
+    Reads only; never writes, and never prints the value.
+    """
+    if os.environ.get(name, "").strip() or sys.platform != "win32":
+        return
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+    except (ImportError, OSError):
+        return
+    if isinstance(value, str) and value.strip():
+        os.environ[name] = value.strip()
+
+
 def _step(n: int, text: str) -> None:
     print(f"[{n}/6] {text}", flush=True)
 
@@ -80,15 +105,18 @@ def main() -> int:
 
     # The env vars are checked BEFORE anything slow or side-effecting, so a
     # missing one fails in a second rather than after a network round trip.
-    if not args.skip_deposit and not (
-        os.environ.get(BOT_TOKEN_ENV, "").strip()
-        and os.environ.get(APP_TOKEN_ENV, "").strip()
-    ):
-        _fail(
-            f"set {BOT_TOKEN_ENV} and {APP_TOKEN_ENV} in the environment "
-            "(not as arguments — argv is world-readable), or pass "
-            "--skip-deposit if they are already deposited"
-        )
+    if not args.skip_deposit:
+        _load_windows_user_env(BOT_TOKEN_ENV)
+        _load_windows_user_env(APP_TOKEN_ENV)
+        if not (
+            os.environ.get(BOT_TOKEN_ENV, "").strip()
+            and os.environ.get(APP_TOKEN_ENV, "").strip()
+        ):
+            _fail(
+                f"set {BOT_TOKEN_ENV} and {APP_TOKEN_ENV} in the environment "
+                "(not as arguments — argv is world-readable), or pass "
+                "--skip-deposit if they are already deposited"
+            )
 
     _step(1, "Resolving the universe...")
 

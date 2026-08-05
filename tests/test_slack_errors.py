@@ -300,3 +300,59 @@ def test_a_real_service_name_still_appears_in_the_summary(tmp_path):
     )
 
     assert "slack" in _json.dumps(summary)
+
+
+def test_a_single_record_write_upserts_and_cannot_delete(tmp_path):
+    """Pins the semantics that burned this feature twice, in both directions.
+
+    `write_credential_vault` treats a ONE-record payload as a read-modify-write
+    upsert and a TWO-or-more payload as an exact replacement. Consequences:
+
+    * Depositing one Slack connection replaced another, because the upsert key
+      is (credential_type, service) and ignores `destination` — the depositor
+      now merges by destination itself.
+    * Filtering a record out and writing the remainder back does NOT delete it
+      when the remainder is a single record. A revert that looked like it
+      worked silently left the record in place.
+
+    Neither behaviour is wrong on its own; the trap is that the same call means
+    two different things depending on the length of the list.
+    """
+    from tinyassets.credential_vault import load_credential_vault, write_credential_vault
+
+    write_credential_vault(
+        tmp_path,
+        [
+            {"credential_type": "social", "service": "slack", "destination": "a",
+             "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN"},
+            {"credential_type": "llm_subscription", "service": "claude",
+             "claude_config_dir": str(tmp_path / "cfg")},
+        ],
+    )
+    assert len(load_credential_vault(tmp_path)) == 2
+
+    # Try to "remove" the llm record by writing back only the other one.
+    remaining = [
+        r for r in load_credential_vault(tmp_path)
+        if r.get("credential_type") != "llm_subscription"
+    ]
+    assert len(remaining) == 1
+    write_credential_vault(tmp_path, remaining)
+
+    kinds = {r.get("credential_type") for r in load_credential_vault(tmp_path)}
+    assert kinds == {"social", "llm_subscription"}, (
+        "a single-record write UPSERTS; it does not replace, so the filtered-out "
+        "record survives"
+    )
+
+    # Two or more records DO replace exactly.
+    write_credential_vault(
+        tmp_path,
+        [
+            {"credential_type": "social", "service": "slack", "destination": "a",
+             "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN"},
+            {"credential_type": "social", "service": "slack", "destination": "b",
+             "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN"},
+        ],
+    )
+    assert {r.get("credential_type") for r in load_credential_vault(tmp_path)} == {"social"}
