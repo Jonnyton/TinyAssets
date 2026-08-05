@@ -386,6 +386,37 @@ def resolve_github_token(
     return ""
 
 
+def resolve_slack_token(
+    universe_dir: str | Path | None,
+    connection_id: str,
+) -> str:
+    """Return a Slack bot token for one connection, or an empty string.
+
+    Mirrors :func:`resolve_github_token`: the record must be a ``social``
+    credential for service ``slack`` whose ``destination`` is the exact
+    connection id. Scoping to the connection — rather than to the universe —
+    keeps one universe's Slack workspaces separable, so a second connection
+    cannot be served with the first one's token.
+
+    The caller is responsible for the vault-first / never-fall-through-to-env
+    rule; this returns only what the vault holds.
+    """
+    if universe_dir is None:
+        return ""
+    wanted = connection_id.strip()
+    if not wanted:
+        return ""
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "social":
+            continue
+        if _service(record) != "slack":
+            continue
+        if str(record.get("destination") or "").strip() != wanted:
+            continue
+        return _secret_value(record, "bot_token", "token", "access_token")
+    return ""
+
+
 def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
     if universe_dir is None:
         return []
