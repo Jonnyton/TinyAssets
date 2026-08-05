@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -688,8 +689,35 @@ def _soul_loop_declared_for_universe(universe: Path) -> bool:
 
 
 def _daemon_module_for_universe(universe: Path) -> str:
+    """Pick the child module, never one that cannot be imported.
+
+    `TINYASSETS_SOUL_LOOP_DISPATCH` is set to `on` unconditionally by
+    deploy-prod, so any universe declaring a non-legacy loop routes here to
+    `python -m workflow`. That module does not exist -- not in the image, not
+    in the repo -- so every spawn died instantly with
+    `No module named workflow`, `rc=1`, forever.
+
+    Live 2026-08-05: after the worker fleet was pointed at the founder
+    universe, all four workers registered runtimes and then crash-looped on
+    this, so `subprocess_alive` was never true, `compatible_worker_count`
+    stayed 0, and four admissible slices sat unclaimed for >18h.
+
+    A crash-loop is strictly worse than the legacy route: it produces no work
+    AND no capacity. So the router falls back, and says loudly why -- the
+    missing implementation is surfaced, not silently tolerated.
+    """
     if _soul_loop_declared_for_universe(universe):
-        return "workflow"
+        if importlib.util.find_spec("workflow") is not None:
+            return "workflow"
+        logger.error(
+            "cloud_worker: soul-loop dispatch is enabled and %s declares a "
+            "non-legacy loop, but the `workflow` module is NOT INSTALLED. "
+            "Falling back to fantasy_daemon so this worker can serve at all. "
+            "Ship the workflow module or unset TINYASSETS_SOUL_LOOP_DISPATCH; "
+            "without this fallback every spawn dies with "
+            "'No module named workflow' and the universe gets zero capacity.",
+            universe.name,
+        )
     return "fantasy_daemon"
 
 
