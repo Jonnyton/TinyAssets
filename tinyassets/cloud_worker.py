@@ -544,6 +544,52 @@ def _worker_auth_health(daemon_args: list[str] | None) -> dict[str, str] | None:
     return subscription_auth_health(provider)
 
 
+def _pinned_universe_credential_missing(
+    universe: Path,
+    daemon_args: list[str] | None,
+) -> str:
+    """Return a reason when a PINNED worker's universe has no credential.
+
+    `_worker_auth_health` asks whether the CONTAINER is logged in --
+    `subscription_auth_health` reads the process-global CODEX_HOME /
+    CLAUDE_CONFIG_DIR. That is the wrong question for a universe-pinned
+    executor, because the child resolves credentials per-universe:
+    `providers.base.subprocess_env_for_provider(universe_dir=...)` returns a
+    private runtime root with an EMPTY auth dir when the universe has no
+    vault credential. It does not raise, and it does not fall back to the
+    container's token (verified empirically 2026-08-05).
+
+    So a pinned worker with a healthy container and an uncredentialed universe
+    would beat, advertise capacity, claim every pending row, and fail every
+    one -- burning admissible work into a terminal state. A visible stall is
+    strictly better than that, so this quarantines instead.
+
+    Deliberately scoped to pinned workers only: the shared fleet resolves its
+    universe dynamically and is unchanged by this gate.
+    """
+    if not os.environ.get("TINYASSETS_UNIVERSE", "").strip():
+        return ""
+    provider = (
+        _provider_from_daemon_args(daemon_args)
+        or os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
+    )
+    if not provider:
+        return ""
+    try:
+        from tinyassets.credential_vault import apply_provider_auth_env
+
+        overlay = apply_provider_auth_env({}, provider, universe_dir=universe)
+    except Exception:  # noqa: BLE001 — unresolvable is exactly the bad case
+        return f"{provider} credential resolution failed for {universe.name}"
+    if not overlay:
+        return (
+            f"{provider} has no credential deposited for universe "
+            f"{universe.name}; the container's own auth is NOT used for a "
+            "universe-scoped child"
+        )
+    return ""
+
+
 def _register_worker_runtime(
     universe: Path,
     provider_name: str,
@@ -1442,6 +1488,28 @@ def run_supervisor(
                 "resume. (2026-06-25 loop-wedge prevention)",
                 auth.get("provider"),
                 auth.get("detail"),
+            )
+            write_supervisor_heartbeat(
+                universe,
+                state,
+                iteration=iteration,
+                phase="auth_quarantined",
+                planned_sleep_s=auth_quarantine_backoff,
+            )
+            sleep_fn(auth_quarantine_backoff)
+            continue
+
+        # A pinned executor additionally needs its UNIVERSE to have a
+        # credential. A healthy container proves nothing here: the child
+        # resolves per-universe and gets an empty auth root otherwise, so
+        # claiming would terminalize admissible rows instead of running them.
+        pinned_gap = _pinned_universe_credential_missing(universe, daemon_args)
+        if pinned_gap:
+            state.auth_quarantine_count += 1
+            logger.error(
+                "cloud_worker: %s — QUARANTINING pinned worker, not claiming. "
+                "Deposit the universe's provider credential to resume.",
+                pinned_gap,
             )
             write_supervisor_heartbeat(
                 universe,

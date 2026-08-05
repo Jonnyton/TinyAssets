@@ -2468,3 +2468,68 @@ def test_a_caller_that_knows_the_owner_still_scopes_the_registration(
     cw._spawn_fantasy_daemon(universe, owner_user_id="real-owner")
 
     assert seen["owner_user_id"] == "real-owner"
+def test_a_pinned_worker_quarantines_when_its_universe_has_no_credential(
+    tmp_path,
+    monkeypatch,
+):
+    """Claiming rows it cannot execute is worse than a visible stall.
+
+    `subprocess_env_for_provider(universe_dir=...)` gives the child an EMPTY
+    auth root when the universe has no vault credential -- it does not raise
+    and does not fall back to the container's token. A pinned worker with a
+    healthy container would therefore claim every pending row and fail every
+    one, terminalizing admissible work.
+    """
+    universe = tmp_path / "u-pinned"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe))
+
+    reason = cw._pinned_universe_credential_missing(
+        universe,
+        ["--provider", "claude-code"],
+    )
+    assert "no credential deposited" in reason
+    assert "u-pinned" in reason
+
+
+def test_the_shared_fleet_is_not_gated_by_the_pinned_credential_check(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: unpinned workers must behave exactly as before.
+
+    The shared fleet resolves its universe dynamically; gating it here would
+    quarantine the whole fleet on a universe it merely happens to be serving.
+    """
+    universe = tmp_path / "u-shared"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
+
+    assert cw._pinned_universe_credential_missing(
+        universe,
+        ["--provider", "claude-code"],
+    ) == ""
+
+
+def test_a_pinned_worker_with_a_resolvable_universe_credential_proceeds(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: a credentialed universe must NOT quarantine."""
+    universe = tmp_path / "u-pinned"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe))
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.apply_provider_auth_env",
+        lambda _env, _provider, universe_dir=None: {
+            "CLAUDE_CONFIG_DIR": str(universe / ".claude"),
+        },
+    )
+
+    assert cw._pinned_universe_credential_missing(
+        universe,
+        ["--provider", "claude-code"],
+    ) == ""
