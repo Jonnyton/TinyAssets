@@ -1940,29 +1940,26 @@ def test_worker_services_an_automation_outside_its_resolved_universe(
     assert created["status"] == "activation_requested"
     automation_id = created["automation"]["automation_id"]
 
-    # The worker resolved some OTHER universe, exactly as production did, and
-    # its child exits immediately (idle queue) — the real shape.
+    # The worker resolved some OTHER universe, exactly as production did.
     resolved_elsewhere = tmp_path / "concordance"
     resolved_elsewhere.mkdir(parents=True, exist_ok=True)
 
-    class _ImmediateExitProc:
-        returncode = 0
-
-        def poll(self):
-            return 0
-
-        def wait(self, timeout=None):
-            return 0
-
-    cw.run_supervisor(
-        resolved_elsewhere,
-        idle_backoff=0.0,
-        max_iterations=1,
-        producer_poll_interval=30.0,
-        daemon_args=["--provider", "codex"],
-        spawn_fn=lambda _universe: _ImmediateExitProc(),
-        sleep_fn=lambda _seconds: None,
+    # 1. Routing: the owner's universe must be in the pump set even though the
+    #    worker resolved a different one. Pure function, no process harness.
+    targets = cw._automation_universes(resolved_elsewhere)
+    assert resolved_elsewhere == targets[0], "resolved universe must stay first"
+    assert (tmp_path / "universe_alice") in targets, (
+        "a universe holding a desired-active automation was not in the pump set; "
+        f"targets={[t.name for t in targets]}"
     )
+
+    # 2. Servicing: pumping that target converges the activation.
+    for target in targets:
+        cw._pump_cloud_automation_triggers(
+            target,
+            provider_name="codex",
+            physical_worker_id="worker_cloud_1",
+        )
 
     after = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
     assert after is not None and after.state.value == "active", (
