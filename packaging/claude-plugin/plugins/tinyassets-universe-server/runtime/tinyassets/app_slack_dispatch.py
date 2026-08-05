@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
-from tinyassets.api.interlocutor import FOUNDER
+from tinyassets.api.interlocutor import FOUNDER, T1
 from tinyassets.app_event_ingress import AuthenticatedAppEvent
 from tinyassets.app_principal_mapping import (
     AppPrincipalMappingError,
@@ -116,6 +116,29 @@ def resolve_bot_user_id(env: Mapping[str, str] | None = None) -> str:
     source = os.environ if env is None else env
     value = source.get(BOT_USER_ID_ENV)
     return value.strip() if isinstance(value, str) else ""
+
+
+def reading_tier(event: AuthenticatedAppEvent) -> str:
+    """The tier this turn may READ at, decided by who can see the answer.
+
+    The audience is part of the authorization, and missing that was a CRITICAL.
+    Founder tier pulls the founder's own private grounding (`founder.md`) into
+    the prompt — and the reply goes to a Slack channel, so *everyone in that
+    channel* reads whatever the grounding informed. A reviewer demonstrated it
+    by asking for founder content in a public channel and receiving it.
+
+    A Slack DM (`channel_type == "im"`) is a one-to-one conversation with the
+    mapped user, so founder-tier reading discloses only to the person the
+    mapping already identifies. Anything else — a public channel, a private
+    group, a multi-person DM — has an audience this deployment cannot
+    enumerate, let alone authorize, so it reads at T1.
+
+    A private universe then cannot answer in a channel at all, because T1
+    grounding is withheld and the prompt cannot be assembled. That is the
+    correct outcome, not a regression: a private universe has nothing it is
+    willing to say to an unenumerated audience.
+    """
+    return FOUNDER if event.payload.get("channel_type") == "im" else T1
 
 
 def _message_text(event: AuthenticatedAppEvent) -> str:
@@ -241,7 +264,7 @@ def dispatch_admitted_event(
             mapping.universe_id,
             text,
             actor_id=mapping.subject_id,
-            # Founder tier for READS, and explicitly no writes.
+            # Founder tier for READS only in a DM, and never any writes.
             #
             # T1 was the first choice and it does not work: a private universe
             # withholds all content below founder tier, so the persona prompt
@@ -254,7 +277,7 @@ def dispatch_admitted_event(
             # channel must not durably rewrite the founder's brain, so this
             # turn is read-only by explicit flag as well as being gated on
             # tier inside converse — two independent locks.
-            tier=FOUNDER,
+            tier=reading_tier(event),
             persist_learning=False,
         )
     except Exception as exc:  # noqa: BLE001 - never fake a reply
