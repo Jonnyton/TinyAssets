@@ -27,6 +27,15 @@ compatibility_flags = []
 # Zone name must match the Cloudflare zone that owns tinyassets.io.
 routes = [
     { pattern = "tinyassets.io/mcp*", zone_name = "tinyassets.io" },
+    # OAuth discovery for the MCP resource. RFC 9728 puts the metadata for
+    # resource `https://tinyassets.io/mcp` at
+    # `/.well-known/oauth-protected-resource/mcp` — an APEX path, so the
+    # /mcp* binding above never reached it and every client that follows the
+    # RFC saw a 404 from the website origin instead. Slack's MCP client fails
+    # closed on that with "could not find OAuth info for this server".
+    # worker.js proxies only the two OAuth metadata families under this
+    # binding; everything else still falls through to the site.
+    { pattern = "tinyassets.io/.well-known/*", zone_name = "tinyassets.io" },
 ]
 
 # Observability — enable request logs so post-P0 debugging has a trail.
