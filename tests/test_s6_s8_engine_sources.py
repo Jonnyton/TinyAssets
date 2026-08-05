@@ -82,7 +82,11 @@ def test_host_daemon_persists_and_points_at_summon(tmp_path, monkeypatch):
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
         "engine_source": "host_daemon", "provider": "codex"})))
     assert out["engine_source"] == "host_daemon"
-    assert "daemon_summon" in out["next_step"]
+    # PR-178 collapsed the surface; runtime-daemon binding is deliberately NOT
+    # an advertised handle, so the guidance routes to the operator surface
+    # instead of naming the retired `daemon_summon` verb. Pin the absence.
+    assert "daemon_summon" not in out["next_step"], out["next_step"]
+    assert "operator surface" in out["next_step"], out["next_step"]
     assert load_universe_config(udir).engine_source == "host_daemon"
 
 

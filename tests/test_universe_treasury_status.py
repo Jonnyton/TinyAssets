@@ -36,7 +36,11 @@ def test_universe_treasury_status_is_read_only(monkeypatch, tmp_path: Path) -> N
     after = (tmp_path / DB_FILENAME).stat().st_mtime_ns
 
     assert after == before
-    assert result["universe_id"] == universe_api._default_universe()
+    # `_default_universe` moved from `api.universe` to `api.helpers`; reach it
+    # where it now lives rather than through the module that used to re-export it.
+    from tinyassets.api import helpers as universe_helpers
+
+    assert result["universe_id"] == universe_helpers._default_universe()
     assert result["read_only"] is True
     assert result["autonomous_spend_allowed"] is False
     assert result["treasury"]["fee_collected_total"] == 5000

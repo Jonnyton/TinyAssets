@@ -249,4 +249,8 @@ def test_registration_resolves_in_domain_registry():
     from tinyassets.domain_registry import resolve_domain_callable
 
     gs.register_search_repo_files()
-    assert resolve_domain_callable("workflow", "search_repo_files") is gs.search_repo_files
+    # Assert against the module's own DOMAIN_ID/NODE_ID rather than string
+    # literals: the source renamed its domain to "tinyassets" and this
+    # test kept asserting "workflow", so registration silently resolved
+    # to None. Binding to the constants makes the pair impossible to desync.
+    assert resolve_domain_callable(gs.DOMAIN_ID, gs.NODE_ID) is gs.search_repo_files
