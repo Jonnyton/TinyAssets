@@ -17,11 +17,23 @@ import pytest
 
 
 @pytest.fixture
-def env(tmp_path: Path, monkeypatch):
+def env(tmp_path: Path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    # Scopes are per tool family; this file drives `goals` as well as
+    # `extensions`, and the default credential only carries `extensions.*`.
+    authenticate_request(
+        "alice",
+        capabilities=[
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+            "tinyassets.extensions.admin",
+            "tinyassets.goals.read",
+            "tinyassets.goals.write",
+        ],
+    )
     monkeypatch.setenv("_FORCE_MOCK", "true")
     from tinyassets import universe_server as us
     importlib.reload(us)
@@ -137,13 +149,21 @@ def test_set_selector_empty_branch_version_id_unbinds(env):
 # ---------------------------------------------------------------------------
 
 
-def test_set_selector_requires_author_or_host(env, monkeypatch):
+def test_set_selector_requires_author_or_host(env, monkeypatch, authenticate_request):
     us, base = env
     gid = _seed_goal(us)  # author = alice
     bvid = _seed_published_branch(us, base)
     # Switch actor to eve — not author and no selector-bind grant.
+    # The env var alone does NOT switch identity for the authority check,
+    # which reads the credential-derived request subject; without rebinding
+    # it this test ran as ALICE, the author, and so asserted the refusal
+    # path while actually exercising the success path.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "eve")
     importlib.reload(us)
+    authenticate_request(
+        "eve",
+        capabilities=["tinyassets.goals.read", "tinyassets.goals.write"],
+    )
     try:
         result = _call(
             us, "goals", "set_selector",
@@ -156,7 +176,7 @@ def test_set_selector_requires_author_or_host(env, monkeypatch):
         importlib.reload(us)
 
 
-def test_set_selector_granted_actor_can_bind(env, monkeypatch):
+def test_set_selector_granted_actor_can_bind(env, monkeypatch, authenticate_request):
     us, base = env
     gid = _seed_goal(us)  # author = alice
     bvid = _seed_published_branch(us, base)
@@ -164,6 +184,13 @@ def test_set_selector_granted_actor_can_bind(env, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "operator")
     monkeypatch.setenv("UNIVERSE_SERVER_CAPABILITIES", "set_goal_selector")
     importlib.reload(us)
+    # Rebind the request subject too. Without this the caller stayed ALICE,
+    # the goal author, so the assertion below was satisfied by authorship
+    # rather than by the selector-bind grant this test exists to prove.
+    authenticate_request(
+        "operator",
+        capabilities=["tinyassets.goals.read", "tinyassets.goals.write"],
+    )
     try:
         result = _call(
             us, "goals", "set_selector",
