@@ -1830,6 +1830,34 @@ def test_worker_pump_converges_a_requested_activation_end_to_end(
     before = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
     assert before is not None and before.state.value == "stopped"
 
+    # Stage-by-stage so a failure names the exact broken link. The pump
+    # swallows every error into logger.exception and returns 0, so asserting
+    # only on the end state cannot say WHY — and this test passes on Windows
+    # while failing on Linux, which is the platform production runs.
+    from tinyassets.daemon_registry import list_daemons, select_project_loop_daemon
+
+    all_daemons = list_daemons(tmp_path)
+    daemon = select_project_loop_daemon(
+        tmp_path,
+        universe_id="universe_alice",
+        owner_user_id="acct_alice",
+    )
+    assert daemon is not None, (
+        "select_project_loop_daemon returned None — the pump would `continue` "
+        f"here. daemons present: {[(d.get('daemon_id'), d.get('has_soul'), d.get('owner_user_id'), (d.get('metadata') or {}).get('universe_id'), (d.get('metadata') or {}).get('project_loop_default')) for d in all_daemons]}"
+    )
+
+    runtime_id = cw._register_worker_runtime(
+        tmp_path / "universe_alice",
+        "codex",
+        owner_user_id="acct_alice",
+        worker_id="worker_cloud_1",
+    )
+    assert runtime_id, (
+        "_register_worker_runtime returned falsy — the pump would `continue` "
+        f"here. daemon={daemon.get('daemon_id')}"
+    )
+
     appended = cw._pump_cloud_automation_triggers(
         tmp_path / "universe_alice",
         provider_name="codex",
@@ -1838,8 +1866,9 @@ def test_worker_pump_converges_a_requested_activation_end_to_end(
 
     after = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
     assert appended == 1, (
-        "the worker's own pump did not converge a desired-active automation; "
-        f"activation stayed {after.state.value if after else 'missing'}"
+        "daemon selection and runtime registration both succeeded, so the "
+        "failure is inside activate_one_requested_cloud_automation; activation "
+        f"stayed {after.state.value if after else 'missing'}"
     )
 
 
