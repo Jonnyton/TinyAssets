@@ -2528,23 +2528,25 @@ def _validate_unsafe_recovery_source(
                 raise FenceError(
                     "refusing to retire an unrecorded extra volume consumer"
                 )
-            if bool(entry.get("running")):
-                raise FenceError(
-                    "refusing to retire a RUNNING extra volume consumer"
-                )
+            # The gate is the LIVE state, not the recorded one. The fence
+            # records each consumer immediately BEFORE stopping it, so
+            # `entry["running"]` is true for every member at fence time --
+            # refusing on it made retirement permanently unsatisfiable
+            # (observed live: recovery 31047718991 refused on exactly this).
+            # `entry` is kept as evidence rather than used as a gate.
+            #
+            # Fail closed: retirement requires POSITIVE proof the container is
+            # not running. An inspection that errors is not proof of absence,
+            # so it refuses rather than assuming the container is gone.
             try:
                 info = host.container_info(name)
-            except Exception:  # noqa: BLE001
-                # Absent / uninspectable: docker raises several shapes here,
-                # and "cannot inspect" cannot mean "keep production fenced".
-                # The load-bearing gate stays the recorded-stopped check
-                # above; this re-check only ever ADDS a refusal.
-                info = None
-            if info is not None and bool(
-                info.get("State", {}).get("Running")
-            ):
+            except Exception as exc:  # noqa: BLE001
                 raise FenceError(
-                    "extra volume consumer is running again on the host"
+                    "cannot prove the extra volume consumer is stopped"
+                ) from exc
+            if bool(info.get("State", {}).get("Running")):
+                raise FenceError(
+                    "refusing to retire a RUNNING extra volume consumer"
                 )
             retired[name] = dict(entry)
             extras.pop(name, None)
