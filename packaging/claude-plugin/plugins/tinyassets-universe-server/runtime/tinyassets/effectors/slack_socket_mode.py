@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
@@ -521,5 +522,14 @@ async def pump(
             # escape and end a long-lived connection. A socket that dies on one
             # frame is the worst failure mode here: the process stays up and
             # answers nobody, with nothing a user would look at reporting it.
-            logger.warning("slack socket: dropped one frame", exc_info=True)
+            # Deliberately NOT exc_info=True. The handler runs a provider
+            # turn, a vault read and an HTTP post, so its exception message is
+            # arbitrary upstream text — a review raised one containing a bot
+            # token and read it straight out of the log, right after the
+            # user-facing notice had been carefully sanitised. The type name is
+            # the diagnostic; the message is not ours to publish.
+            logger.warning(
+                "slack socket: dropped one frame (%s)",
+                type(sys.exc_info()[1]).__name__,
+            )
     return handled

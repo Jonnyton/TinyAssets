@@ -59,14 +59,16 @@ def test_a_good_bot_token_yields_the_ids_the_service_needs(monkeypatch):
             "team_id": "T0BN5LK57FT",
             "user_id": "U08BOT0001",
             "team": "Test Workspace",
+            "bot_id": "B08BOT0001",
         },
     )
 
-    team_id, bot_user_id, team_name = deposit.verify_bot_token(BOT_TOKEN)
+    team_id, bot_user_id, team_name, bot_id = deposit.verify_bot_token(BOT_TOKEN)
 
     assert team_id == "T0BN5LK57FT"
     assert bot_user_id == "U08BOT0001"
     assert team_name == "Test Workspace"
+    assert bot_id == "B08BOT0001", "needed to confirm both tokens are one app"
 
 
 @pytest.mark.parametrize(

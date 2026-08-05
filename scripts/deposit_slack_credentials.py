@@ -45,10 +45,14 @@ from tinyassets.credential_vault import (  # noqa: E402
     write_credential_vault,
 )
 from tinyassets.effectors.slack_errors import safe_error_code  # noqa: E402
-from tinyassets.effectors.slack_socket_mode import is_app_token  # noqa: E402
+from tinyassets.effectors.slack_socket_mode import (  # noqa: E402
+    app_id_from_token,
+    is_app_token,
+)
 
 AUTH_TEST_URL = "https://slack.com/api/auth.test"
 CONNECTIONS_OPEN_URL = "https://slack.com/api/apps.connections.open"
+BOTS_INFO_URL = "https://slack.com/api/bots.info"
 BOT_TOKEN_PREFIX = "xoxb-"
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
@@ -82,8 +86,8 @@ def _call(url: str, token: str) -> dict:
     return result
 
 
-def verify_bot_token(token: str) -> tuple[str, str, str]:
-    """Return (team_id, bot_user_id, team_name), or exit with the reason."""
+def verify_bot_token(token: str) -> tuple[str, str, str, str]:
+    """Return (team_id, bot_user_id, team_name, bot_id), or exit with the reason."""
     if not token.startswith(BOT_TOKEN_PREFIX):
         # `auth.test` succeeds for a USER token too, so a green setup could
         # deposit a credential that posts under a person's name. The service
@@ -102,6 +106,7 @@ def verify_bot_token(token: str) -> tuple[str, str, str]:
         str(result.get("team_id") or ""),
         str(result.get("user_id") or ""),
         str(result.get("team") or ""),
+        str(result.get("bot_id") or ""),
     )
 
 
@@ -122,6 +127,46 @@ def verify_app_token(token: str) -> None:
         elif error in {"missing_scope", "no_permission"}:
             hint = " (the token needs the connections:write scope)"
         raise SystemExit(f"App-level token rejected by Slack: {error}{hint}")
+
+
+def verify_same_app(bot_token: str, app_token: str, bot_id: str) -> None:
+    """Refuse a bot token and app token that belong to DIFFERENT Slack apps.
+
+    This is the check that makes the runtime `api_app_id` filter mean anything.
+    The filter compares an incoming event against the app id derived from the
+    APP token — but a socket only ever carries that app's events, so on its own
+    the comparison is tautological. The actual hazard is a vault pairing App A's
+    BOT token with App B's app token: App B's events arrive, pass the filter,
+    and get answered as App A.
+
+    `bots.info` needs the `users:read` scope. If it is missing we WARN rather
+    than block: refusing to deposit over an optional scope would push people to
+    `--skip-verify`, which is worse. The residual is stated out loud instead.
+    """
+    expected = app_id_from_token(app_token)
+    if not expected:
+        print("  note - app id not derivable from the app token; skipping same-app check")
+        return
+    if not bot_id:
+        print("  note - Slack reported no bot_id; skipping same-app check")
+        return
+    result = _call(f"{BOTS_INFO_URL}?bot={bot_id}", bot_token)
+    if not result.get("ok"):
+        code = safe_error_code(result.get("error"), default="unknown_error")
+        print(
+            f"  WARNING - could not confirm both tokens belong to one app ({code}). "
+            "Check they came from the SAME Slack app page."
+        )
+        return
+    actual = str((result.get("bot") or {}).get("app_id") or "").strip()
+    if actual and actual != expected:
+        raise SystemExit(
+            "These two tokens belong to DIFFERENT Slack apps: the bot token is "
+            f"for {actual} and the app-level token is for {expected}. The agent "
+            "would receive one app's messages and answer as the other. Take "
+            "both from the same app's settings page."
+        )
+    print(f"  ok - both tokens belong to app {expected}")
 
 
 def main() -> int:
@@ -177,14 +222,16 @@ def main() -> int:
             "connections:write scope — not the xoxb- bot token."
         )
 
-    team_id = bot_user_id = team_name = ""
+    team_id = bot_user_id = team_name = bot_id = ""
     if not args.skip_verify:
         print("Verifying the bot token with Slack...")
-        team_id, bot_user_id, team_name = verify_bot_token(bot_token)
+        team_id, bot_user_id, team_name, bot_id = verify_bot_token(bot_token)
         print(f"  ok - workspace {team_name or team_id}, bot user {bot_user_id}")
         print("Verifying the app-level token can open a socket...")
         verify_app_token(app_token)
         print("  ok - Socket Mode is reachable")
+        print("Confirming both tokens belong to the same Slack app...")
+        verify_same_app(bot_token, app_token, bot_id)
 
     # Normalised ONCE, then used for both the comparison and the record. A
     # review deposited " conn-b " and got a duplicate: the merge compared the
@@ -210,7 +257,12 @@ def main() -> int:
         for r in load_credential_vault(universe_dir)
         if not (
             r.get("credential_type") == "social"
-            and str(r.get("service") or "").lower() == "slack"
+            # `provider` is an accepted alias for `service` in vault
+            # resolution, so matching only `service` left an aliased record
+            # behind as a duplicate — and it resolved FIRST, so a rotation
+            # silently kept posting with the superseded token.
+            and str(r.get("service") or r.get("provider") or "").strip().lower()
+            == "slack"
             and str(r.get("destination") or "").strip() == connection
         )
     ]

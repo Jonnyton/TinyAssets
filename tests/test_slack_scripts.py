@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.credential_vault import write_credential_vault
+
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 
@@ -238,3 +240,109 @@ def test_the_launcher_passes_the_derived_app_id_into_the_config(tmp_path, monkey
     runner.main()
 
     assert captured["api_app_id"] == "A0BN1Q98MTQ", "production must set it"
+
+
+# --- mismatched-app credentials, and the verified main() path ---------------
+
+
+def test_a_bot_and_app_token_from_different_apps_are_refused(monkeypatch):
+    """The runtime api_app_id filter is tautological on its own: a socket only
+    carries its own app's events. The real hazard is a vault pairing App A's
+    BOT token with App B's app token — B's events arrive, pass the filter, and
+    get answered as A. This is where that pairing is caught."""
+    monkeypatch.setattr(
+        deposit,
+        "_call",
+        lambda *_a: {"ok": True, "bot": {"app_id": "A0AAAAAAAA"}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        deposit.verify_same_app(SECRET_BOT, SECRET_APP, "B08BOT0001")
+
+    assert "DIFFERENT Slack apps" in str(exc.value)
+    assert "A0AAAAAAAA" in str(exc.value) and "A0BN1Q98MTQ" in str(exc.value)
+
+
+def test_a_matched_pair_passes(monkeypatch, capsys):
+    monkeypatch.setattr(
+        deposit,
+        "_call",
+        lambda *_a: {"ok": True, "bot": {"app_id": "A0BN1Q98MTQ"}},
+    )
+
+    deposit.verify_same_app(SECRET_BOT, SECRET_APP, "B08BOT0001")
+
+    assert "both tokens belong to app A0BN1Q98MTQ" in capsys.readouterr().out
+
+
+def test_a_missing_scope_warns_rather_than_blocking(monkeypatch, capsys):
+    """Refusing over an optional scope would push people to --skip-verify,
+    which is strictly worse. State the residual instead."""
+    monkeypatch.setattr(
+        deposit, "_call", lambda *_a: {"ok": False, "error": "missing_scope"}
+    )
+
+    deposit.verify_same_app(SECRET_BOT, SECRET_APP, "B08BOT0001")
+
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "SAME Slack app" in out
+
+
+def test_the_verified_deposit_path_checks_the_app_token(tmp_path, monkeypatch):
+    """Reviewer's mutation: deleting `verify_app_token(app_token)` from main()
+    left all 247 tests green, because nothing exercised main() WITHOUT
+    --skip-verify. This is that path."""
+    calls = []
+
+    monkeypatch.setattr(
+        deposit,
+        "verify_bot_token",
+        lambda _t: calls.append("bot") or ("T1", "U1", "Team", "B1"),
+    )
+    monkeypatch.setattr(
+        deposit, "verify_app_token", lambda _t: calls.append("app")
+    )
+    monkeypatch.setattr(
+        deposit, "verify_same_app", lambda *_a: calls.append("same-app")
+    )
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-AAA")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-1-A0AAAAAAAA-1-a")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["deposit", "--universe-dir", str(tmp_path), "--connection", "conn-a"],
+    )
+
+    deposit.main()
+
+    assert calls == ["bot", "app", "same-app"], "every verification must run"
+
+
+def test_an_aliased_provider_record_is_replaced_not_duplicated(tmp_path, monkeypatch):
+    """`provider` is an accepted alias for `service` in vault resolution.
+
+    Matching only `service` left an aliased record behind as a duplicate — and
+    it resolved FIRST, so a rotation silently kept posting with the superseded
+    token. A reviewer's counterexample.
+    """
+    from tinyassets.credential_vault import load_credential_vault, resolve_slack_token
+
+    write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "social",
+                "provider": "slack",  # the alias, not `service`
+                "destination": "conn-a",
+                "bot_token": "xoxb-OLD",
+            }
+        ],
+    )
+
+    _deposit_into(tmp_path, "conn-a", "xoxb-NEW", "xapp-1-A0AAAAAAAA-1-a", monkeypatch)
+
+    social = [
+        r for r in load_credential_vault(tmp_path)
+        if r.get("credential_type") == "social"
+    ]
+    assert len(social) == 1, "the aliased record must be replaced, not shadowed"
+    assert resolve_slack_token(tmp_path, "conn-a") == "xoxb-NEW"

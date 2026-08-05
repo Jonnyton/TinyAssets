@@ -74,6 +74,12 @@ def contains_secret(exc: BaseException, *secrets: str) -> bool:
         # a token sitting in the context of a chained error read as clean.
         pending.append(current.__cause__)
         pending.append(current.__context__)
+        # An ExceptionGroup holds its members in `.exceptions`, which is not
+        # part of the cause/context chain at all — a token inside a grouped
+        # exception read as clean. asyncio.TaskGroup raises these routinely.
+        members = getattr(current, "exceptions", None)
+        if isinstance(members, (tuple, list)):
+            pending.extend(m for m in members if isinstance(m, BaseException))
     return False
 
 

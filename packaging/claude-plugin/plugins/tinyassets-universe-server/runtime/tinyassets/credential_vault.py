@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -173,6 +174,19 @@ def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_records, list):
         raise ValueError("credential vault 'credentials' must be a list")
     return [_normalize_record(item) for item in raw_records]
+
+
+#: Service names are short lowercase identifiers (slack, github, anthropic...).
+#: Anything else is not a name we issued and must not reach a log surface.
+_SERVICE_NAME = re.compile(r"\A[a-z][a-z0-9._-]{0,39}\Z")
+
+
+def _safe_service_name(value: object) -> str:
+    """A service name fit to print, or "" — an allow-list, never a scrub."""
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip().lower()
+    return candidate if _SERVICE_NAME.match(candidate) else ""
 
 
 def _service(record: dict[str, Any]) -> str:
@@ -348,11 +362,16 @@ def write_credential_vault(
     tmp.replace(path)
     _chmod_best_effort(path, 0o600)
     credential_types = sorted({str(r["credential_type"]) for r in records})
+    # Sanitised, not echoed. This summary is explicitly "suitable for logs and
+    # status surfaces", and `service` is arbitrary vault content — a review put
+    # a live token in that field and read it back out of the summary the
+    # deposit script prints under the words "nothing above contains a token".
+    # Same class as the credential_type echo fixed one round earlier.
     services = sorted(
         {
-            str(r.get("service") or r.get("provider") or "").strip()
+            name
             for r in records
-            if str(r.get("service") or r.get("provider") or "").strip()
+            if (name := _safe_service_name(r.get("service") or r.get("provider")))
         }
     )
     return {
@@ -376,10 +395,17 @@ def _secret_value(record: dict[str, Any], *keys: str) -> str:
             return value.strip()
     b64 = record.get("token_b64") or record.get("secret_b64")
     if isinstance(b64, str) and b64.strip():
+        decoded = None
         try:
-            return base64.b64decode(b64.strip()).decode("utf-8").strip()
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"credential {keys[0]} base64 decode failed") from exc
+            decoded = base64.b64decode(b64.strip()).decode("utf-8").strip()
+        except Exception:  # noqa: BLE001
+            # Not chained, and raised outside the handler. A UnicodeDecodeError
+            # here carries `.object` — the DECODED credential bytes — so
+            # chaining published the very token this was decoding.
+            decoded = None
+        if decoded is None:
+            raise ValueError(f"credential {keys[0]} base64 decode failed")
+        return decoded
     return ""
 
 

@@ -210,3 +210,93 @@ def test_a_secret_in_credential_type_is_not_echoed_back(tmp_path):
 
     assert secret not in rendered
     assert "expected one of" in str(exc), "the allowed set is still named"
+
+
+def test_a_base64_credential_that_fails_to_decode_is_not_exposed(tmp_path):
+    """Round 6: `_secret_value` chained the b64 decode failure, and a
+    UnicodeDecodeError carries `.object` — the DECODED credential bytes. So
+    chaining published the very token it was decoding."""
+    import base64
+    import json as _json
+
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.effectors.slack_transport import resolve_slack_bot_token
+
+    secret = b"xoxb-CHAIN-LEAK\xff"
+    credential_vault_path(tmp_path).write_text(
+        _json.dumps(
+            {
+                "credentials": [
+                    {
+                        "credential_type": "social",
+                        "service": "slack",
+                        "destination": "conn-1",
+                        "token_b64": base64.b64encode(secret).decode(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        resolve_slack_bot_token(tmp_path, "conn-1")
+
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert "xoxb-CHAIN-LEAK" not in rendered + repr(exc.value.__context__)
+
+
+def test_contains_secret_looks_inside_an_exception_group():
+    """`ExceptionGroup.exceptions` is not part of the cause/context chain at
+    all, so a token inside a grouped exception read as clean. asyncio's
+    TaskGroup raises these routinely."""
+    group = ExceptionGroup("outer", [ValueError(f"Bearer {SECRET}")])
+
+    assert contains_secret(group, SECRET) is True
+
+
+def test_a_service_name_holding_a_token_is_not_printed_back(tmp_path):
+    """The deposit script prints this summary under the words 'nothing above
+    contains a token'. `service` is arbitrary vault content — same class as the
+    credential_type echo fixed a round earlier."""
+    from tinyassets.credential_vault import write_credential_vault
+
+    secret = "xoxb-SUMMARY-LEAK"
+    summary = write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "social",
+                "service": secret,
+                "destination": "conn-1",
+                "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN",
+            }
+        ],
+    )
+
+    import json as _json
+
+    assert secret not in _json.dumps(summary)
+
+
+def test_a_real_service_name_still_appears_in_the_summary(tmp_path):
+    """The allow-list must not blank out the field it exists to report."""
+    import json as _json
+
+    from tinyassets.credential_vault import write_credential_vault
+
+    summary = write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "social",
+                "service": "slack",
+                "destination": "conn-1",
+                "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN",
+            }
+        ],
+    )
+
+    assert "slack" in _json.dumps(summary)

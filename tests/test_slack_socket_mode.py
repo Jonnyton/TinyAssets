@@ -819,3 +819,26 @@ def test_the_raised_error_has_no_chain_at_all():
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None, "the token-bearing context must be gone"
     assert secret not in repr(exc.value.__context__)
+
+
+def test_a_handler_exception_is_never_logged_verbatim(caplog):
+    """Round 6: `exc_info=True` published the handler's exception and traceback.
+
+    The handler runs a provider turn, a vault read and an HTTP post, so its
+    message is arbitrary upstream text — a reviewer raised one containing a bot
+    token and read it out of the log, immediately after the user-facing notice
+    had been carefully sanitised.
+    """
+    import asyncio
+
+    secret = "xoxb-HANDLER-LOG-LEAK"
+
+    async def _explode(_event):
+        raise RuntimeError(secret)
+
+    socket = _FakeSocket([envelope()])
+    with caplog.at_level("WARNING"):
+        asyncio.run(pump(socket, bot_user_id=OUR_BOT, handle=_explode))
+
+    assert secret not in caplog.text
+    assert "RuntimeError" in caplog.text, "the type is still the diagnostic"
