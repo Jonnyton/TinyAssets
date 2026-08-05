@@ -842,3 +842,64 @@ def test_a_handler_exception_is_never_logged_verbatim(caplog):
 
     assert secret not in caplog.text
     assert "RuntimeError" in caplog.text, "the type is still the diagnostic"
+
+
+# --- Slack Connect: the sender's workspace is not the delivery workspace ----
+# Codex CRITICAL, founder-recognition review: a user id is unique only WITHIN
+# its workspace, so a foreign member can legitimately hold our founder's id.
+
+
+def test_the_actor_team_is_the_senders_own_workspace():
+    """The exact reviewer counterexample: foreign U_COLLIDE, our delivery team."""
+    frame = json.loads(envelope())
+    frame["payload"]["team_id"] = "T_LOCAL"
+    frame["payload"]["event"] = {
+        "type": "message",
+        "user": "U_COLLIDE",
+        "user_team": "T_FOREIGN",   # Slack Connect: author is elsewhere
+        "text": "hello from another workspace",
+        "channel": "C1",
+        "ts": "1.0",
+    }
+    event = event_of(parse_envelope(json.dumps(frame)))
+
+    assert event["team_id"] == "T_LOCAL", "delivery workspace is still reported"
+    assert event["actor_team_id"] == "T_FOREIGN", (
+        "identity must key on the SENDER's workspace, not the delivering one"
+    )
+
+
+def test_source_team_is_used_when_user_team_is_absent():
+    frame = json.loads(envelope())
+    frame["payload"]["team_id"] = "T_LOCAL"
+    frame["payload"]["event"] = {
+        "type": "message", "user": "U_COLLIDE",
+        "source_team": "T_FOREIGN", "text": "x", "channel": "C1", "ts": "1.0",
+    }
+    event = event_of(parse_envelope(json.dumps(frame)))
+
+    assert event["actor_team_id"] == "T_FOREIGN"
+
+
+def test_a_local_sender_falls_back_to_the_delivery_workspace():
+    """The ordinary case: Slack omits the origin fields when the author is local."""
+    event = event_of(parse_envelope(envelope()))
+
+    assert event["actor_team_id"] == event["team_id"] == "T0BN5LK57FT"
+
+
+def test_an_inner_actor_team_cannot_outrank_an_absent_delivery_team():
+    """With no authenticated delivery team, nothing is attributable — and the
+    actor team must not become a second way to smuggle one in."""
+    frame = json.loads(envelope())
+    frame["payload"].pop("team_id", None)
+    frame["payload"]["event"] = {
+        "type": "message", "user": "U1", "user_team": "T_CLAIMED",
+        "text": "x", "channel": "C1", "ts": "1.0",
+    }
+    event = event_of(parse_envelope(json.dumps(frame)))
+
+    assert "team_id" not in event, "unauthenticated delivery team stays stripped"
+    assert event["actor_team_id"] == "T_CLAIMED", (
+        "reported, but a consumer must require team_id before trusting it"
+    )

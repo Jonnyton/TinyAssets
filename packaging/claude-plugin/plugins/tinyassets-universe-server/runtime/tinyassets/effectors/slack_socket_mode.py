@@ -216,7 +216,37 @@ def event_of(envelope: SocketEnvelope) -> Mapping[str, Any] | None:
         # unattributable envelope into another universe. Absent must mean
         # absent, so the field is either the payload's or it is not there.
         normalised.pop("team_id", None)
+    normalised["actor_team_id"] = _actor_team_id(event, normalised.get("team_id"))
     return normalised
+
+
+#: Fields Slack sets to the AUTHOR's own workspace when a message crosses
+#: workspaces (Slack Connect / shared channels). Checked in this order.
+_ACTOR_ORIGIN_FIELDS = ("user_team", "source_team")
+
+
+def _actor_team_id(event: Mapping[str, Any], delivery_team: object) -> str:
+    """The workspace the SENDER belongs to — not the one that delivered this.
+
+    These differ in a Slack Connect channel, and conflating them is an identity
+    collision rather than a cosmetic slip: Slack guarantees a user id is unique
+    only *within* its own workspace, so a member of a foreign workspace may
+    legitimately hold the same id as someone here. A cross-family review used
+    exactly that — a foreign `U_COLLIDE` arriving on our delivery team resolves
+    as our `U_COLLIDE` — so anything deciding *who* this is must key on the
+    origin workspace.
+
+    Falls back to the delivery team only when Slack supplies no origin field,
+    which is the ordinary same-workspace case. That fallback is the one
+    assumption carrying the Connect case: it holds exactly as far as "Slack
+    omits these fields only when the author is local", so a caller elevating
+    authority on the result should treat it as an assumption, not a proof.
+    """
+    for field in _ACTOR_ORIGIN_FIELDS:
+        value = event.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return delivery_team if isinstance(delivery_team, str) else ""
 
 
 def is_self_authored(event: Mapping[str, Any], bot_user_id: str) -> bool:
