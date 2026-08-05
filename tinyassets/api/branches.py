@@ -3630,8 +3630,8 @@ rejected by the server; in an existing branch patch, pass `node_ref` /
 
 ## New-workflow authoring
 
-Create a Branch through `write_graph target="branch" operation="create"` with
-the complete spec below in `payload_json`. To remix, use operation `remix` and
+Create a Branch through `write_graph target="branch" operation="create"
+payload_json=...` with the complete spec below in `payload_json`. To remix, use operation `remix` and
 include a published `fork_from` version in the same spec. After validation,
 freeze it through operation `publish`; cloud automation binds only immutable
 published versions. Standalone node registration remains unavailable.

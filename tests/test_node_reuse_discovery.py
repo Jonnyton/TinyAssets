@@ -244,16 +244,34 @@ class TestReusePromptNudges:
         text = _BRANCH_DESIGN_GUIDE.lower()
         assert 'read_graph target="branch"' in text
         assert "node_ref" in text
-        # The guide must position search BEFORE the author flow.
+        # The guide must position search BEFORE the author flow. The heading
+        # is "New-workflow authoring" since branch creation shipped; it was
+        # "new-workflow authoring gap" while creation was still unsupported.
         search_idx = text.index("before you invent")
-        author_idx = text.index("new-workflow authoring gap")
+        author_idx = text.index("new-workflow authoring")
         assert search_idx < author_idx, (
             "search-before-invent nudge must appear before the author flow"
         )
 
-    def test_branch_design_guide_reports_unsupported_new_authoring(self, ext_env):
+    def test_branch_design_guide_documents_supported_new_authoring(self, ext_env):
+        """Branch creation is now supported; only standalone node registration is not.
+
+        This test previously asserted the inverse — that the guide "does not
+        currently expose creation of a new branch" and pointed users at GitHub
+        Actions YAML instead. `write_graph target="branch"` since gained
+        operation=create/remix/publish, so that contract is obsolete. Asserting
+        the *new* contract keeps the guide honest in the same place, rather
+        than deleting the coverage.
+        """
         from tinyassets.api.branches import _BRANCH_DESIGN_GUIDE
         text = _BRANCH_DESIGN_GUIDE
-        assert "GitHub Actions YAML" in " ".join(text.split())
-        assert "does not currently expose creation of a new branch" in text
         assert 'write_graph target="branch"' in text
+        # Creation, remix and publish are all documented as reachable.
+        assert 'operation="create"' in text
+        assert "payload_json" in text
+        assert "remix" in text
+        assert "publish" in text
+        # The one authoring path that genuinely remains unavailable.
+        assert "Standalone node registration remains unavailable." in text
+        # And the obsolete claim must not creep back.
+        assert "does not currently expose creation of a new branch" not in text
