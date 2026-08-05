@@ -25,11 +25,16 @@ import pytest
 
 
 @pytest.fixture
-def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # `build_branch` is a branch WRITE action, so it needs a request subject,
+    # not just an env var: `_request_branch_actor()` reads the authenticated
+    # request, and `UNIVERSE_SERVER_USER` alone leaves it None — which returns
+    # `Authenticated branch subject required.` before any spec is parsed.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    authenticate_request("tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)

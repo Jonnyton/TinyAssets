@@ -2,6 +2,23 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _patch_env(tmp_path, monkeypatch, authenticate_request):
+    """Authenticate as the branch author and keep writes inside tmp_path.
+
+    These tests assert the readback SHAPE, so they need to get past the author
+    gate — but they must do it the way a real caller does. `patch_branch` reads
+    `_request_branch_actor()`, which is documented "never an env actor" and
+    resolves the credential-validated request subject; neither
+    `UNIVERSE_SERVER_USER` nor a mock of `_current_actor` reaches it. Tests for
+    the gate itself live in test_patch_branch_auth_gate.py.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    authenticate_request("tester")
+
 
 def _make_branch_dict(branch_def_id="b1", name="Old Name", entry_point="n1",
                       node_defs=None, edges=None):
@@ -37,22 +54,13 @@ def _call_patch(branch_before, branch_after, changes_json):
 
     save_mock = MagicMock(return_value=branch_after)
 
-    # BUG-081: patch_branch now author-gates non-author callers. These
-    # tests build a branch with author="tester" but don't set
-    # UNIVERSE_SERVER_USER — so _current_actor() returns "anonymous"
-    # by default and the gate would reject. Mock _current_actor to
-    # return the branch's author so the readback-shape assertions are
-    # not contaminated by the auth check. Tests covering the auth
-    # behavior itself live in test_patch_branch_auth_gate.py.
+    # The author gate is satisfied by the real authenticated subject bound in
+    # `_patch_env`, not by a mock — see that fixture for why. Storage stays
+    # mocked so these assert the response shape and nothing else.
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_before),
         patch("tinyassets.daemon_server.save_branch_definition", save_mock),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
-        patch(
-            "tinyassets.api.engine_helpers._current_actor",
-            return_value=branch_before.get("author", "tester"),
-        ),
     ):
         result = _ext_branch_patch({
             "branch_def_id": branch_before["branch_def_id"],
