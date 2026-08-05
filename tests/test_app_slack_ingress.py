@@ -598,18 +598,15 @@ def test_long_but_guessable_secrets_are_refused(tmp_path: Path, weak: str, label
     ), f"{label} must be refused"
 
 
-def test_invisible_padding_is_refused_even_with_enough_distinct_characters(tmp_path: Path):
-    """Isolates the printable-ASCII gate.
+def test_non_hex_secret_is_refused_at_full_length(tmp_path: Path):
+    """Isolates the shape gate from the distinct-character gate.
 
-    Mutation-probe finding: removing that gate left the suite green, because
-    every existing weak-secret case had only two distinct characters and was
-    caught by the distinct-character floor instead. This secret clears BOTH the
-    length and distinct floors and is rejected solely for containing invisibles
-    — so the ASCII gate is the only thing standing between it and acceptance.
+    Exactly the right LENGTH, so the length gate passes it; rejected purely for
+    not being Slack's hex shape. That is what makes it a real isolation test
+    rather than one incidentally caught by another rule.
     """
-    sneaky = "abcdefghij" + "\u200b" * 22  # 32 chars, 11 distinct
-    assert len(sneaky) >= MIN_SIGNING_SECRET_LENGTH
-    assert len(set(sneaky)) >= MIN_SIGNING_SECRET_DISTINCT_CHARS
+    sneaky = "abcdefghij" + "​" * 22  # 32 chars, invisible padding
+    assert len(sneaky) == MIN_SIGNING_SECRET_LENGTH
 
     assert (
         resolve_boundary(
@@ -617,6 +614,47 @@ def test_invisible_padding_is_refused_even_with_enough_distinct_characters(tmp_p
         )
         is None
     )
+
+
+def test_patterned_hex_is_refused_despite_correct_shape(tmp_path: Path):
+    """Isolates the distinct-character gate from the shape gate.
+
+    Reviewer counterexample: valid lowercase hex, exactly 32 characters, so the
+    shape gate passes it — refused solely for too few distinct characters.
+    Shape and entropy each catch what the other misses.
+    """
+    patterned = "0123456789" * 3 + "01"  # valid hex, 32 chars, 10 distinct
+    assert len(patterned) == MIN_SIGNING_SECRET_LENGTH
+    assert all(c in "0123456789abcdef" for c in patterned)
+    assert len(set(patterned)) < MIN_SIGNING_SECRET_DISTINCT_CHARS
+
+    assert (
+        resolve_boundary(
+            tmp_path, env={SIGNING_SECRET_ENV: patterned, API_APP_ID_ENV: APP_ID}
+        )
+        is None
+    )
+
+
+def test_handshake_declaring_an_unlisted_team_is_refused(configured):
+    """Reviewer counterexample: `CHAL` echoed back under `team_id: T_ATTACKER`.
+
+    A handshake cannot *require* a team_id (Slack's real one has none), but a
+    present-and-unlisted one must be refused — same rule as api_app_id.
+    """
+    body = json.dumps(
+        {"type": "url_verification", "challenge": "CHAL", "team_id": "T_ATTACKER"}
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401
+    assert "CHAL" not in outcome.body
 
 
 def test_configuration_state_is_not_timeable(configured):
@@ -704,3 +742,127 @@ def test_event_id_membership_is_not_observable(configured):
     assert known == unused, (
         f"ledger membership is observable: known={known} unused={unused}"
     )
+
+
+@pytest.mark.parametrize(
+    "extra,label",
+    [
+        ({"team_id": "T_ATTACKER"}, "unlisted team"),
+        ({"enterprise_id": "E_ATTACKER"}, "enterprise-only, no team to check"),
+        ({"team_id": "T_ATTACKER", "enterprise_id": "E_ATTACKER"}, "both"),
+        ({"api_app_id": "A_OTHER"}, "another app"),
+    ],
+)
+def test_handshake_variants_that_cannot_be_vouched_for_are_refused(configured, extra, label):
+    """All four returned `200 CHAL` before this gate existed.
+
+    The enterprise case is the subtle one: it names no team, so no team check
+    can catch it — and the only authorisation this deployment has is a
+    per-workspace allow-list, which cannot vouch for an org-scoped install.
+    """
+    payload = {"type": "url_verification", "challenge": "CHAL"}
+    payload.update(extra)
+    body = json.dumps(payload).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401, f"{label} must not be answered"
+    assert "CHAL" not in outcome.body
+
+
+@pytest.mark.parametrize(
+    "payload,label",
+    [
+        ({"token": "t", "challenge": "CHAL", "type": "url_verification"}, "real Slack shape"),
+        (
+            {"type": "url_verification", "challenge": "CHAL", "team_id": "T0BN5LK57FT"},
+            "allow-listed team stated explicitly",
+        ),
+    ],
+)
+def test_legitimate_handshakes_still_succeed(configured, payload, label):
+    """The accept direction — a gate that refuses everything is not a gate.
+
+    Guards the failure this whole branch exists to avoid: if the real Slack
+    handshake stops being answered, the Request URL cannot be saved and the
+    endpoint is dead on arrival.
+    """
+    body = json.dumps(payload).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert (outcome.status, outcome.body) == (200, "CHAL"), f"{label} must be answered"
+
+
+def test_non_hex_secret_with_ample_distinct_characters_is_refused(tmp_path: Path):
+    """Isolates the hex gate with the distinct floor deliberately satisfied.
+
+    Mutation-probe finding: the hex gate could be deleted with the suite green,
+    because the previous non-hex case had only 11 distinct characters and was
+    caught by the distinct floor instead. This one has 32 distinct characters
+    and the correct length, so ONLY the hex gate can refuse it.
+    """
+    junk = "ghijklmnopqrstuvwxyzABCDEF!@#$%^"
+    assert len(junk) == MIN_SIGNING_SECRET_LENGTH
+    assert len(set(junk)) >= MIN_SIGNING_SECRET_DISTINCT_CHARS
+    assert any(c not in "0123456789abcdef" for c in junk)
+
+    assert (
+        resolve_boundary(tmp_path, env={SIGNING_SECRET_ENV: junk, API_APP_ID_ENV: APP_ID})
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "secret,label",
+    [
+        ("9f2c41ab7d05e6839c1b4a7e2d508f6", "31 chars — one short"),
+        ("9f2c41ab7d05e6839c1b4a7e2d508f6ab", "33 chars — one long"),
+    ],
+)
+def test_wrong_length_hex_is_refused(tmp_path: Path, secret: str, label: str):
+    """Isolates the exact-length gate.
+
+    Mutation-probe finding: relaxing `!= 32` to a low floor left the suite
+    green, because every existing case failed some *other* gate. These are
+    valid lowercase hex with plenty of distinct characters — only the length
+    is wrong, so only the length gate can refuse them.
+    """
+    assert all(c in "0123456789abcdef" for c in secret), label
+    assert len(set(secret)) >= MIN_SIGNING_SECRET_DISTINCT_CHARS
+
+    assert (
+        resolve_boundary(tmp_path, env={SIGNING_SECRET_ENV: secret, API_APP_ID_ENV: APP_ID})
+        is None
+    )
+
+
+def test_handshake_is_refused_when_no_workspace_is_authorised(configured):
+    """Isolates the authorise-before-anything precondition.
+
+    Mutation-probe finding: removing it left the suite green here, because the
+    only coverage lived in the route test file. A handshake names no team, so
+    the per-event team check cannot catch this — the precondition is the only
+    thing that does.
+    """
+    body = _handshake_body("no-allowlist-no-answer")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=frozenset(),
+    )
+
+    assert outcome.status == 401
+    assert "no-allowlist-no-answer" not in outcome.body

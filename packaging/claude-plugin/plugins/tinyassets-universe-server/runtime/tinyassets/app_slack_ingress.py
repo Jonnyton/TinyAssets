@@ -44,10 +44,11 @@ TEAM_IDS_ENV = "TINYASSETS_SLACK_TEAM_IDS"
 #: and enough distinct characters that a padded or repeated value cannot pass.
 MIN_SIGNING_SECRET_LENGTH = 32
 
-#: A random 32-char hex string averages ~14 distinct characters; the chance of
-#: fewer than 10 is negligible (<1e-4). If a real secret ever did trip this it
-#: fails CLOSED with a diagnosable message, which is the safe direction.
-MIN_SIGNING_SECRET_DISTINCT_CHARS = 10
+#: A random 32-char hex string averages ~14 distinct characters. 12 keeps the
+#: false-reject rate on genuine secrets very low while refusing the patterned
+#: hex a reviewer used to clear a floor of 10 (`"0123456789" * 3 + "01"`). If a
+#: real secret ever did trip this it fails CLOSED, which is the safe direction.
+MIN_SIGNING_SECRET_DISTINCT_CHARS = 12
 
 #: Hard ceiling on bytes buffered from an *unauthenticated* request.
 #: `SlackRequestVerifier` enforces its own 1 MiB limit, but only after it has
@@ -72,17 +73,30 @@ def _clean(value: object) -> str:
 def is_strong_signing_secret(secret: str) -> bool:
     """Reject secrets that are long enough to look fine but trivial to guess.
 
-    Three reviewer counterexamples this must refuse, all of which cleared a
-    bare length floor: ``"0" * 16``, ``"x" + " " * 14 + "x"``, and
-    ``"x" + "\\u200b" * 14 + "x"``. Padding is not entropy, and an invisible
-    character is not a character an operator chose.
+    Reviewer counterexamples this must refuse, each of which cleared the
+    previous version of this check:
+
+    * ``"0" * 16`` — length is not entropy
+    * ``"x" + " " * 14 + "x"`` — whitespace padding inflates a length count
+    * ``"x" + "\\u200b" * 14 + "x"`` — so do zero-width characters
+    * ``"0123456789" * 3 + "01"`` — valid hex, 32 chars, only 10 distinct
+
+    The rule that finally holds is the *real* Slack shape (exactly 32 lowercase
+    hex characters) plus a distinct-character floor, because shape alone still
+    admits patterned hex and a floor alone still admits non-Slack junk.
     """
-    if not isinstance(secret, str) or len(secret) < MIN_SIGNING_SECRET_LENGTH:
+    if not isinstance(secret, str) or len(secret) != MIN_SIGNING_SECRET_LENGTH:
         return False
-    # Printable ASCII, no spaces: excludes whitespace padding, zero-width
-    # characters, and every other invisible that inflates a length check.
-    if any(not ("!" <= character <= "~") for character in secret):
+    # Slack signing secrets are exactly 32 lowercase hex characters. Requiring
+    # the real shape is stronger than any generic "looks random" heuristic:
+    # anything else is a misconfiguration by definition, not a preference. It
+    # also subsumes the earlier printable-ASCII rule, since whitespace and
+    # zero-width characters are not hex digits.
+    if any(character not in "0123456789abcdef" for character in secret):
         return False
+    # Shape alone is not enough — `"0123456789" * 3 + "01"` is valid hex with
+    # only 10 distinct characters, which a reviewer got past a distinct-count
+    # floor of 10. A genuine random 32-hex secret averages ~14 distinct.
     return len(set(secret)) >= MIN_SIGNING_SECRET_DISTINCT_CHARS
 
 
@@ -137,7 +151,12 @@ def resolve_boundary(
     )
 
 
-def _challenge_response(raw_body: bytes, *, expected_api_app_id: str) -> str | None:
+def _challenge_response(
+    raw_body: bytes,
+    *,
+    expected_api_app_id: str,
+    allowed_team_ids: frozenset[str],
+) -> str | None:
     """Return the challenge value if these bytes are a URL-verification handshake.
 
     Only reached after the signature has already been verified, so this parses
@@ -163,6 +182,20 @@ def _challenge_response(raw_body: bytes, *, expected_api_app_id: str) -> str | N
     # disagrees with ours is refused. Absent (the real shape) still passes.
     claimed_app_id = _clean(envelope.get("api_app_id"))
     if claimed_app_id and claimed_app_id != expected_api_app_id:
+        return None
+    # Same rule for the workspace. Slack's genuine handshake carries no team_id
+    # either, so one cannot be required — but a reviewer got `CHAL` echoed back
+    # through handshakes declaring `team_id: T_ATTACKER`, so a *present* team
+    # that is not on the allow-list is refused.
+    claimed_team_id = _clean(envelope.get("team_id"))
+    if claimed_team_id and claimed_team_id not in allowed_team_ids:
+        return None
+    # An Enterprise Grid install is org-scoped, and the only authorisation this
+    # deployment has is a per-workspace allow-list — so there is nothing here
+    # that could vouch for one. A reviewer got `CHAL` echoed through a handshake
+    # carrying only `enterprise_id`, which no team check can catch precisely
+    # because it names no team. Refuse it rather than answer unauthorised.
+    if _clean(envelope.get("enterprise_id")):
         return None
     challenge = envelope.get("challenge")
     if not isinstance(challenge, str) or not challenge:
@@ -284,7 +317,9 @@ def handle_slack_request(
         # the echo returns only the caller's own challenge value, so a
         # secret-holder learns nothing they did not already send.
         challenge = _challenge_response(
-            raw_body, expected_api_app_id=boundary.verifier.expected_api_app_id
+            raw_body,
+            expected_api_app_id=boundary.verifier.expected_api_app_id,
+            allowed_team_ids=allowed,
         )
         if challenge is not None:
             return IngressOutcome(200, challenge)
