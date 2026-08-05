@@ -115,9 +115,16 @@ def test_policy_path_skips_config_for_legacy_4arg_router():
 
 
 @pytest.fixture
-def server_env(tmp_path, monkeypatch):
+def server_env(tmp_path, monkeypatch, authenticate_request):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "founder")
+    # `UNIVERSE_SERVER_USER` alone does not reach branch WRITE actions:
+    # they resolve the caller via `_request_branch_actor()`, which is
+    # credential-derived and documented "never an env actor". Without a
+    # bound request subject they return "Authenticated branch subject
+    # required." before parsing anything, and every later assertion dies on
+    # a KeyError that hides the real cause.
+    authenticate_request("founder")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
