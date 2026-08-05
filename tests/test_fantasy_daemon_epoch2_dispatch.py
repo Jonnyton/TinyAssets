@@ -49,7 +49,9 @@ def _commit_epoch2(
     created_at: str,
     activation: AutomationActivation,
 ) -> dict:
-    key_hash = "hmac-sha256:" + hashlib.sha256(key.encode()).hexdigest()
+    # Always an automation admission here, so the identity is server-derived
+    # and unkeyed -- the cloud worker that mints it has no HMAC secret.
+    key_hash = "sha256:" + hashlib.sha256(key.encode()).hexdigest()
     body = rfc8785.dumps(
         {
             "branch_id": "",

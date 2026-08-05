@@ -9,9 +9,11 @@ layers explicitly call :class:`RequestAdmissionStore`.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import math
+import os
 import re
 import secrets
 import sqlite3
@@ -48,6 +50,31 @@ QUARANTINE_REASONS = frozenset({
     "incomplete",
     "invalid_operator_admission",
 })
+# An admission's idempotency hash is typed by where its identity comes from,
+# and both the writer boundary and `branch_tasks_v2` read that type from here
+# so they cannot drift apart.
+#
+# A caller-supplied key is low entropy and guessable, so it is keyed: without
+# the HMAC anyone could probe whether a given idempotency key was ever used.
+# A server-derived automation identity has no such exposure — its seed is the
+# continuation/activation ids — and it must stay *key-independent*, because
+# the replay lookup is by hash alone while the admission and task ids are
+# derived deterministically from the same seed. Key the automation hash and a
+# retry after a key rotation misses replay and then collides on the
+# unchanged primary keys instead of returning the original aggregate.
+USER_KEYED_IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
+SERVER_DERIVED_IDEMPOTENCY_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+IDEMPOTENCY_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+
+
+def expected_idempotency_hash_re(*, server_derived: bool) -> re.Pattern[str]:
+    """Return the only hash shape valid for this admission's provenance."""
+
+    return (
+        SERVER_DERIVED_IDEMPOTENCY_HASH_RE
+        if server_derived
+        else USER_KEYED_IDEMPOTENCY_HASH_RE
+    )
 _AUTHORITATIVE_UNIVERSE_SCOPE_SQL = """
 COALESCE(
     NULLIF(a.universe_id, ''),
@@ -60,6 +87,35 @@ COALESCE(
     NULLIF(r.universe_id, '')
 ) IS NULL
 """
+
+
+def mint_idempotency_key_hash(raw_key: str) -> str:
+    """Key a caller-supplied idempotency key. Requires the HMAC secret."""
+
+    secret = os.environ.get(IDEMPOTENCY_HMAC_ENV, "").encode("utf-8")
+    if len(secret) < 32:
+        raise RuntimeError("request admission HMAC key is not configured")
+    digest = hmac.new(secret, raw_key.encode("utf-8"), hashlib.sha256)
+    return f"hmac-sha256:{digest.hexdigest()}"
+
+
+def canonical_content_digest(value: object) -> str:
+    """Digest a server-derived identity. Deliberately unkeyed.
+
+    Cloud workers execute user-supplied node source in-process, so they are
+    not given the admission HMAC secret (`deploy/compose.yml`). They are
+    nonetheless the process that commits automation admissions, so the
+    identity they mint has to be derivable without it — and stable across
+    key rotation, so replay keeps working.
+    """
+
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -423,6 +479,23 @@ class RequestAdmissionStore:
             _required(universe_id, "universe_id"),
             _required(idempotency_key_hash, "idempotency_key_hash"),
         )
+        # Reject here rather than let the row land and be quarantined far
+        # away under a state name that explains nothing. Fail loudly at the
+        # boundary that knows what it is looking at. `automation_activation`
+        # is a store-validated object, not a caller-supplied string, so it is
+        # a safe discriminator: a user request cannot claim to be
+        # server-derived to reach the unkeyed shape.
+        expected_hash_re = expected_idempotency_hash_re(
+            server_derived=automation_activation is not None,
+        )
+        if expected_hash_re.fullmatch(scope[3]) is None:
+            raise ValueError(
+                "idempotency_key_hash does not match the shape required for "
+                f"this admission's provenance ({expected_hash_re.pattern}); "
+                f"got {scope[3][:24]!r}. Mint it with "
+                "mint_idempotency_key_hash() for a caller-supplied key or "
+                "canonical_content_digest() for a server-derived identity."
+            )
         _required(body_digest, "body_digest")
         _required(body_digest_version, "body_digest_version")
         clean_branch_def_id = _required(branch_def_id, "branch_def_id")
