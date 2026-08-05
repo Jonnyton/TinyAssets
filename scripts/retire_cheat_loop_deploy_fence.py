@@ -2588,6 +2588,19 @@ def _validate_unsafe_recovery_source(
                 raise FenceError(
                     "refusing to retire a RUNNING extra volume consumer"
                 )
+            # Retiring the RECORD is not enough: a stopped leftover container
+            # still mounts the volume, so `volume_container_names()` keeps
+            # reporting it and the very next check refuses with "fenced volume
+            # has partial or extra writer containers" (observed live, recovery
+            # 31057720758). Remove the container too -- it is explicitly named,
+            # already proven not running, and is not an expected fleet member.
+            if info is not None:
+                try:
+                    host.run(["docker", "rm", name])
+                except Exception:  # noqa: BLE001
+                    raise FenceError(
+                        "could not remove the retired extra volume consumer"
+                    ) from None
             retired[name] = dict(entry or {"note": "extras already cleared"})
             extras.pop(name, None)
             # Retiring a container means retiring it from EVERY recorded

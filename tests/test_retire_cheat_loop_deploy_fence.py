@@ -6541,3 +6541,30 @@ def test_a_planned_removal_plan_is_still_strictly_validated(tmp_path):
         _remove_recorded_stopped_fleet_for_recovery(
             host, state, state_path=state_path
         )
+
+
+def test_retirement_removes_the_stopped_container_not_just_the_record(tmp_path):
+    """A retired-but-present container still blocks the very next check.
+
+    Live 2026-08-05: recovery 31057720758 cleared the record for a leftover
+    `tinyassets-slack-proof` container and then refused with "fenced volume has
+    partial or extra writer containers", because the stopped container still
+    mounts the volume and `volume_container_names()` still reports it.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-leftover")
+    host.containers["tinyassets-leftover"] = {
+        "Id": "e" * 64,
+        "State": {"Running": False, "Pid": 0},
+        "HostConfig": {"RestartPolicy": {"Name": "no"}},
+    }
+
+    try:
+        _validate(host, state_path, retire=("tinyassets-leftover",))
+    except FenceError as exc:
+        assert "extra production-volume consumers" not in str(exc)
+
+    # The container itself must be gone, not merely unrecorded.
+    assert "tinyassets-leftover" not in host.containers
