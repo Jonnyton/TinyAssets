@@ -168,11 +168,36 @@ def _prerequisite_projection(*, actor: str, universe_id: str) -> dict[str, Any]:
     }
 
 
+def _select_owned(
+    candidates: list[dict[str, Any]],
+    *,
+    id_key: str,
+    selected: str,
+) -> str:
+    """Resolve which of the OWNER'S OWN records to use.
+
+    Selection is not authority. `candidates` is already built from the
+    authenticated actor's own records, so honouring a caller's choice among
+    them grants nothing that was not already theirs — it only says WHICH of
+    their things to use. Conflating the two is why an owner with two
+    subscriptions could not use either: the surface demanded exactly one
+    candidate and stripped the id that would have disambiguated it.
+    """
+    if selected:
+        for candidate in candidates:
+            if str(candidate.get(id_key) or "") == selected:
+                return selected
+        return ""
+    return str(candidates[0][id_key]) if len(candidates) == 1 else ""
+
+
 def _hydrate_server_owned_prerequisites(
     raw_definition: dict[str, Any],
     *,
     actor: str,
     universe_id: str,
+    selected_provider_binding_id: str = "",
+    selected_destination_grant_id: str = "",
 ) -> dict[str, Any]:
     definition = dict(raw_definition)
     definition["principal_id"] = actor
@@ -183,28 +208,40 @@ def _hydrate_server_owned_prerequisites(
     prerequisites = _prerequisite_projection(actor=actor, universe_id=universe_id)
     if not str(definition.get("provider_binding_id") or "").strip():
         candidates = prerequisites["provider_bindings"]
-        if len(candidates) != 1:
+        chosen = _select_owned(
+            candidates,
+            id_key="binding_id",
+            selected=selected_provider_binding_id.strip(),
+        )
+        if not chosen:
             detail = (
                 "connect requester-owned compute, then retry "
                 "read_graph target=automations"
                 if not candidates
-                else "select one requester-owned provider binding from "
+                else "name one of your provider bindings in "
+                "definition.provider_binding_id; list them with "
                 "read_graph target=automations"
             )
             raise _AutomationPrerequisiteError(detail, prerequisites)
-        definition["provider_binding_id"] = candidates[0]["binding_id"]
+        definition["provider_binding_id"] = chosen
     if not str(definition.get("destination_grant_id") or "").strip():
         candidates = prerequisites["destination_grants"]
-        if len(candidates) != 1:
+        chosen = _select_owned(
+            candidates,
+            id_key="grant_id",
+            selected=selected_destination_grant_id.strip(),
+        )
+        if not chosen:
             detail = (
                 "connect the target repository, then retry "
                 "read_graph target=automations"
                 if not candidates
-                else "select one requester-owned destination grant from "
+                else "name one of your destination grants in "
+                "definition.destination_grant_id; list them with "
                 "read_graph target=automations"
             )
             raise _AutomationPrerequisiteError(detail, prerequisites)
-        definition["destination_grant_id"] = candidates[0]["grant_id"]
+        definition["destination_grant_id"] = chosen
     return definition
 
 
@@ -230,6 +267,16 @@ def _derive_phone_work_definition(
         human_definition,
         actor=actor,
         universe_id=universe_id,
+        # The ids were pulled out above so they cannot ASSERT authority. They
+        # can still SELECT among the owner's own records — without this an owner
+        # holding two subscriptions is refused with "select one" by a surface
+        # that gave them no way to select.
+        selected_provider_binding_id=str(
+            authority_assertions.get("provider_binding_id") or ""
+        ),
+        selected_destination_grant_id=str(
+            authority_assertions.get("destination_grant_id") or ""
+        ),
     )
     repository = str(definition.get("repository") or "").strip()
     accepted_spec_ref = str(definition.get("accepted_spec_ref") or "").strip()
