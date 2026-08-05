@@ -25,7 +25,7 @@ from tinyassets.app_slack_ingress import (
 from tinyassets.universe_server import create_streamable_http_app
 
 INGRESS_PATH = "/mcp/app/slack/events"
-SECRET = "route-signing-key-long-enough"
+SECRET = "3b81de49fa27c065b9e14d7a802f6c53"
 APP_ID = "A0BN1Q98MTQ"
 
 

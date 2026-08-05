@@ -17,6 +17,7 @@ import pytest
 
 from tinyassets.app_slack_ingress import (
     API_APP_ID_ENV,
+    MIN_SIGNING_SECRET_DISTINCT_CHARS,
     MIN_SIGNING_SECRET_LENGTH,
     REFUSAL_BODY,
     SIGNING_SECRET_ENV,
@@ -28,7 +29,7 @@ from tinyassets.app_slack_ingress import (
 
 ALLOWED = frozenset({"T0BN5LK57FT"})
 
-SECRET = "s3cr3t-signing-key-long-enough"
+SECRET = "9f2c41ab7d05e6839c1b4a7e2d508f6a"
 APP_ID = "A0BN1Q98MTQ"
 TEAM_ID = "T0BN5LK57FT"
 
@@ -520,3 +521,138 @@ def test_event_id_reuse_with_different_content_is_refused_like_anything_else(con
     )
 
     assert (outcome.status, outcome.body) == (401, REFUSAL_BODY)
+
+
+def test_real_slack_handshake_shape_still_works(configured):
+    """Slack's genuine handshake is {token, challenge, type} — no api_app_id.
+
+    Regression guard: a fix for the mismatched-app-id echo briefly REQUIRED
+    api_app_id, which would have made the Request URL unsaveable in Slack and
+    killed the endpoint on arrival. Absent must stay valid.
+    """
+    body = json.dumps(
+        {
+            "token": "Jhj5dZrVaK7ZwHHjRyZWjbDl",
+            "challenge": "3eZbrw1aBm2rZgRNFrufIbFAqTyBRCiDLxWlbwZeUiVXxOTAcJ",
+            "type": "url_verification",
+        }
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 200
+    assert outcome.body == "3eZbrw1aBm2rZgRNFrufIbFAqTyBRCiDLxWlbwZeUiVXxOTAcJ"
+
+
+def test_handshake_claiming_another_app_is_refused(configured):
+    """Reviewer's counterexample: echoed `ORG-BYPASS` under api_app_id A_OTHER."""
+    body = json.dumps(
+        {
+            "type": "url_verification",
+            "challenge": "ORG-BYPASS",
+            "api_app_id": "A_OTHER",
+            "enterprise_id": "E_ATTACKER",
+        }
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401
+    assert "ORG-BYPASS" not in outcome.body
+
+
+@pytest.mark.parametrize(
+    "weak,label",
+    [
+        ("0" * 32, "repeated single character"),
+        ("x" + " " * 30 + "x", "whitespace padding"),
+        ("x" + "\u200b" * 30 + "x", "zero-width padding"),
+        ("ab" * 16, "only two distinct characters"),
+        ("changeme" * 4, "repeated placeholder word"),
+    ],
+)
+def test_long_but_guessable_secrets_are_refused(tmp_path: Path, weak: str, label: str):
+    """Length is not entropy — every one of these cleared a bare length floor."""
+    assert len(weak) >= MIN_SIGNING_SECRET_LENGTH, "must be long enough to prove the point"
+    assert (
+        resolve_boundary(
+            tmp_path, env={SIGNING_SECRET_ENV: weak, API_APP_ID_ENV: APP_ID}
+        )
+        is None
+    ), f"{label} must be refused"
+
+
+def test_invisible_padding_is_refused_even_with_enough_distinct_characters(tmp_path: Path):
+    """Isolates the printable-ASCII gate.
+
+    Mutation-probe finding: removing that gate left the suite green, because
+    every existing weak-secret case had only two distinct characters and was
+    caught by the distinct-character floor instead. This secret clears BOTH the
+    length and distinct floors and is rejected solely for containing invisibles
+    — so the ASCII gate is the only thing standing between it and acceptance.
+    """
+    sneaky = "abcdefghij" + "\u200b" * 22  # 32 chars, 11 distinct
+    assert len(sneaky) >= MIN_SIGNING_SECRET_LENGTH
+    assert len(set(sneaky)) >= MIN_SIGNING_SECRET_DISTINCT_CHARS
+
+    assert (
+        resolve_boundary(
+            tmp_path, env={SIGNING_SECRET_ENV: sneaky, API_APP_ID_ENV: APP_ID}
+        )
+        is None
+    )
+
+
+def test_configuration_state_is_not_timeable(configured):
+    """Coarse guard on the configured-vs-unconfigured timing oracle.
+
+    A reviewer measured a 767x ratio on the missing-headers path, because header
+    validation rejects before any hashing and the original equaliser did not
+    reproduce that. The bound is deliberately loose (25x) so ordinary scheduler
+    noise cannot make this flaky while a regression of that magnitude still
+    fails loudly.
+    """
+    import statistics
+
+    # The leak needs a body large enough that hashing it dominates, and headers
+    # valid enough to reach the hash. With missing headers BOTH paths exit early
+    # and look identical — an earlier version of this test used that shape and
+    # stayed green with the equaliser deleted.
+    body = b'{"type":"event_callback","pad":"' + b"z" * 200_000 + b'"}'
+    headers = _signed(body)
+
+    def median_micros(boundary) -> float:
+        samples = []
+        for _ in range(40):
+            start = time.perf_counter()
+            handle_slack_request(
+                raw_body=body,
+                headers=headers,
+                boundary=boundary,
+                allowed_team_ids=ALLOWED,
+            )
+            samples.append(time.perf_counter() - start)
+        return statistics.median(samples) * 1e6
+
+    # Warm both paths so import/lazy-init cost is not attributed to one of them.
+    median_micros(configured)
+    median_micros(None)
+
+    armed = median_micros(configured)
+    dark = median_micros(None)
+    ratio = max(armed, dark) / max(min(armed, dark), 1e-9)
+
+    assert ratio < 25, (
+        f"configured={armed:.2f}us dark={dark:.2f}us ratio={ratio:.1f} — "
+        "configuration state is distinguishable by timing"
+    )

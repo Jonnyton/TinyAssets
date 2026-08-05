@@ -18,7 +18,6 @@ Two properties carry the whole design:
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import os
 from typing import Any, Mapping
@@ -35,13 +34,20 @@ SIGNING_SECRET_ENV = "TINYASSETS_SLACK_SIGNING_SECRET"
 API_APP_ID_ENV = "TINYASSETS_SLACK_API_APP_ID"
 TEAM_IDS_ENV = "TINYASSETS_SLACK_TEAM_IDS"
 
-#: Slack issues 32-hex-character signing secrets. Anything materially shorter is
-#: a misconfiguration (`changeme`, a truncated paste, a placeholder `0`), not a
-#: deliberate choice — and a short key is brute-forceable, which turns the sole
-#: trust anchor of a public endpoint into a guessing game. Refuse rather than
-#: run with it. Deliberately below 32 so a future Slack format change degrades
-#: to "still refuses the obviously-broken values" instead of refusing everything.
-MIN_SIGNING_SECRET_LENGTH = 16
+#: Slack issues 32-hex-character signing secrets.
+#:
+#: An earlier version of this check used a length floor of 16 alone. A reviewer
+#: broke it three ways in one pass — `"0" * 16`, two visible characters padded
+#: with spaces, and two visible characters padded with U+200B zero-width spaces
+#: all cleared it. **Length is not entropy.** So the check is now shape-based as
+#: well: printable ASCII only (no whitespace, no invisibles), full Slack length,
+#: and enough distinct characters that a padded or repeated value cannot pass.
+MIN_SIGNING_SECRET_LENGTH = 32
+
+#: A random 32-char hex string averages ~14 distinct characters; the chance of
+#: fewer than 10 is negligible (<1e-4). If a real secret ever did trip this it
+#: fails CLOSED with a diagnosable message, which is the safe direction.
+MIN_SIGNING_SECRET_DISTINCT_CHARS = 10
 
 #: Hard ceiling on bytes buffered from an *unauthenticated* request.
 #: `SlackRequestVerifier` enforces its own 1 MiB limit, but only after it has
@@ -61,6 +67,23 @@ def _clean(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def is_strong_signing_secret(secret: str) -> bool:
+    """Reject secrets that are long enough to look fine but trivial to guess.
+
+    Three reviewer counterexamples this must refuse, all of which cleared a
+    bare length floor: ``"0" * 16``, ``"x" + " " * 14 + "x"``, and
+    ``"x" + "\\u200b" * 14 + "x"``. Padding is not entropy, and an invisible
+    character is not a character an operator chose.
+    """
+    if not isinstance(secret, str) or len(secret) < MIN_SIGNING_SECRET_LENGTH:
+        return False
+    # Printable ASCII, no spaces: excludes whitespace padding, zero-width
+    # characters, and every other invisible that inflates a length check.
+    if any(not ("!" <= character <= "~") for character in secret):
+        return False
+    return len(set(secret)) >= MIN_SIGNING_SECRET_DISTINCT_CHARS
 
 
 def resolve_allowed_team_ids(env: Mapping[str, str] | None = None) -> frozenset[str]:
@@ -95,9 +118,9 @@ def resolve_boundary(
     api_app_id = _clean(source.get(API_APP_ID_ENV))
     if not signing_secret or not api_app_id:
         return None
-    if len(signing_secret) < MIN_SIGNING_SECRET_LENGTH:
-        # A one-character secret still constructs a valid HMAC and still
-        # "verifies" — it is brute-forceable, not merely weak.
+    if not is_strong_signing_secret(signing_secret):
+        # A weak secret still constructs a valid HMAC and still "verifies" —
+        # it is guessable, not merely unusual.
         return None
     try:
         verifier = SlackRequestVerifier(
@@ -114,7 +137,7 @@ def resolve_boundary(
     )
 
 
-def _challenge_response(raw_body: bytes) -> str | None:
+def _challenge_response(raw_body: bytes, *, expected_api_app_id: str) -> str | None:
     """Return the challenge value if these bytes are a URL-verification handshake.
 
     Only reached after the signature has already been verified, so this parses
@@ -129,6 +152,17 @@ def _challenge_response(raw_body: bytes) -> str | None:
     if not isinstance(envelope, dict):
         return None
     if envelope.get("type") != "url_verification":
+        return None
+    # Reject a MISMATCHED app id, but do not require one.
+    #
+    # Slack's genuine handshake body is only `{token, challenge, type}` — it
+    # carries no `api_app_id`. Requiring one would make the Request URL
+    # unsaveable in Slack and kill this endpoint on arrival, which is the exact
+    # failure D3 exists to prevent. But a reviewer echoed `ORG-BYPASS` through a
+    # handshake declaring `api_app_id: A_OTHER`, so a *present* value that
+    # disagrees with ours is refused. Absent (the real shape) still passes.
+    claimed_app_id = _clean(envelope.get("api_app_id"))
+    if claimed_app_id and claimed_app_id != expected_api_app_id:
         return None
     challenge = envelope.get("challenge")
     if not isinstance(challenge, str) or not challenge:
@@ -184,14 +218,34 @@ class IngressOutcome:
         self.replay = replay
 
 
-def _burn_equivalent_work(raw_body: bytes) -> None:
-    """Do the same HMAC an authenticated path would, and discard it.
+def _decoy_verifier() -> SlackRequestVerifier:
+    """A throwaway verifier over a random key, used only to equalise timing."""
+    global _DECOY
+    if _DECOY is None:
+        _DECOY = SlackRequestVerifier(
+            signing_secret=hashlib.sha256(os.urandom(32)).hexdigest(),
+            expected_api_app_id="A00000000000",
+        )
+    return _DECOY
 
-    Without this, an unconfigured server answers instantly while a configured
-    one hashes the body — so timing a few large forged requests tells an
-    attacker whether the endpoint is armed. Cheap to equalise, so equalise it.
+
+_DECOY: SlackRequestVerifier | None = None
+
+
+def _burn_equivalent_work(raw_body: bytes, headers: Mapping[str, str]) -> None:
+    """Run the *real* authentication path against a decoy key, discarding it.
+
+    An earlier version hashed the body directly. That equalised only one shape:
+    a reviewer measured a 767x timing ratio on the configured-but-missing-headers
+    path, because header validation rejects before any hashing happens and the
+    hand-rolled burn did not reproduce that. Running the genuine code path is
+    the only version that tracks it — whatever the verifier does, the decoy does
+    too, including its early exits.
     """
-    hmac.new(b"\x00" * 32, b"v0:0:" + raw_body, hashlib.sha256).hexdigest()
+    try:
+        _decoy_verifier().authenticate(raw_body=raw_body, headers=headers)
+    except (AppEventAuthenticationError, AppEventEnvelopeError):
+        pass
 
 
 def handle_slack_request(
@@ -207,7 +261,7 @@ def handle_slack_request(
     — can be tested without a server.
     """
     if boundary is None:
-        _burn_equivalent_work(raw_body)
+        _burn_equivalent_work(raw_body, headers)
         return IngressOutcome(401, REFUSAL_BODY)
 
     try:
@@ -218,7 +272,9 @@ def handle_slack_request(
         # The signature held but the envelope is not an ``event_callback``.
         # The handshake lives here, and it is reachable only because the HMAC
         # already passed — an unsigned request never gets this far.
-        challenge = _challenge_response(raw_body)
+        challenge = _challenge_response(
+            raw_body, expected_api_app_id=boundary.verifier.expected_api_app_id
+        )
         if challenge is not None:
             return IngressOutcome(200, challenge)
         return IngressOutcome(401, REFUSAL_BODY)
