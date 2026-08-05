@@ -34,5 +34,4 @@
 # reported was ALSO failing in the same-tree full run, so the exclusion
 # caused none of them. Recorded as ordinary ratcheted entries so a later
 # fix shows up as a stale line that must be deleted.
-tests/test_cloud_worker.py::test_main_passes_provider_pin_to_supervised_daemon
 tests/test_execution_authority_import_boundary.py::test_database_check_use_swap_fails_before_authority_initialization
