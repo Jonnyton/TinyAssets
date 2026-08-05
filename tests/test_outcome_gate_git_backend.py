@@ -182,6 +182,10 @@ def test_gate_claim_yaml_roundtrip():
         "claimed_at": "2026-05-01T14:22:03Z",
         "retracted_at": None,
         "retracted_reason": "",
+        # Added to the claim record after this test was written. A roundtrip
+        # test exists to pin the exact field set, so a new field SHOULD break
+        # it — the fix is to include the field, not to compare loosely.
+        "conformance_pack_id": "",
     }
     payload = gate_claim_to_yaml_payload(original)
     restored = gate_claim_from_yaml_payload(payload)
