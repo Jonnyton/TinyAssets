@@ -198,163 +198,33 @@ def test_another_authors_private_branch_cannot_become_my_loop(env, monkeypatch):
     assert not read_universe_soul(base / uid).loop_branch_def_id
 
 
-def test_declaring_a_loop_makes_the_universe_servable(env):
-    """A declared loop must also register a project-loop daemon.
+def test_declared_loop_reports_whether_it_is_servable(env):
+    """Declaring reports the servability gap; it must NOT provision a daemon.
 
-    soul.md says WHICH branch the loop runs. It does not make the universe
-    servable: `cloud_worker._register_worker_runtime` calls
-    `select_project_loop_daemon(base, universe_id=...)`, and a None result makes
-    the worker skip runtime registration and return — silently, because
-    registration is best-effort. Observed live on 2026-08-05: the universe held
-    valid queued work with `runtime_instance_count: 0` and nothing claiming it.
+    Three consecutive cross-family reviews rejected provisioning here. The last
+    showed the shape is wrong, not the implementation: `daemon_create` takes
+    caller-supplied metadata and `create_daemon` uses setdefault, so
+    `owner_user_id` is CALLER-SPOOFABLE — any ownership check built on it can be
+    satisfied by an attacker who planted a daemon claiming the victim as owner.
+    So this route reports the gap and provisioning stays with the separately
+    gated daemon lifecycle.
     """
     us, base = env
     uid = _birth(us)
     bid = _build_branch(us)
-    from tinyassets.daemon_registry import select_project_loop_daemon
+    from tinyassets.daemon_registry import list_daemons
 
-    assert select_project_loop_daemon(str(base), universe_id=uid) is None
-
+    before = len(list_daemons(str(base)))
     out = json.loads(us.write_graph(
         target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
     ))
     assert not out.get("error"), out
-    assert out["loop_daemon"]["serving"] is True, out
+    assert out["loop_dispatch"]["declared"] is True
 
-    daemon = select_project_loop_daemon(str(base), universe_id=uid)
-    assert daemon is not None, "declared loop left the universe unservable"
-    assert daemon["metadata"]["universe_id"] == uid
-    assert daemon["has_soul"]
-
-
-def test_declaring_twice_reuses_the_same_loop_daemon(env):
-    """Re-declaring must not accumulate duplicate loop daemons."""
-    us, base = env
-    uid = _birth(us)
-    bid = _build_branch(us)
-    from tinyassets.daemon_registry import select_project_loop_daemon
-
-    first = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
-    ))
-    second = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
-    ))
-    assert first["loop_daemon"]["daemon_id"] == second["loop_daemon"]["daemon_id"]
-    assert select_project_loop_daemon(str(base), universe_id=uid) is not None
-
-
-def test_a_loop_daemon_is_scoped_to_its_own_universe(env):
-    """Universe A's loop daemon must not serve universe B."""
-    us, base = env
-    uid_a = _birth(us)
-    bid = _build_branch(us)
-    json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid_a, branch_id=bid,
-    ))
-    uid_b = _birth(us)
-
-    from tinyassets.daemon_registry import select_project_loop_daemon
-    assert select_project_loop_daemon(str(base), universe_id=uid_a) is not None
-    assert select_project_loop_daemon(str(base), universe_id=uid_b) is None
-
-
-def test_declare_loop_requires_costly_authority(env):
-    """Creating a daemon must cost what daemon_create costs.
-
-    Cross-family review 2026-08-05: `declare_universe_loop` registers a
-    project-loop daemon, and `cloud_worker` uses that flag to select the daemon,
-    register runtime authority and produce work. Explicit `daemon_create` is in
-    _UNIVERSE_COSTLY_ACTIONS. A route that creates a daemon while requiring only
-    universe.write lets a principal with no costly grant provision an executable
-    daemon — privilege escalation through an ordinary write.
-    """
-    from tinyassets.auth import provider as auth_provider
-
-    assert "declare_universe_loop" in auth_provider._UNIVERSE_COSTLY_ACTIONS
-    assert "daemon_create" in auth_provider._UNIVERSE_COSTLY_ACTIONS
-
-
-def test_loop_daemon_dedupe_is_owner_scoped(env):
-    """A daemon planted by another owner must not be adopted as mine.
-
-    `select_project_loop_daemon` is PERMISSIVE — without owner_user_id it
-    accepts any daemon flagged for the universe. Using it as a restrictive
-    dedupe would let a writer plant a default and have the owner's later
-    declaration silently adopt it while reporting serving:true.
-    """
-    us, base = env
-    uid = _birth(us)
-    bid = _build_branch(us)
-
-    from tinyassets.daemon_registry import (
-        PROJECT_LOOP_FLAG,
-        create_daemon,
-        select_project_loop_daemon,
+    # The gap is REPORTED...
+    assert out["loop_daemon"]["serving"] is False
+    assert out["loop_daemon"]["blocker"] == "no_project_loop_daemon"
+    # ...and nothing was provisioned.
+    assert len(list_daemons(str(base))) == before, (
+        "declare_loop must not create a daemon"
     )
-
-    planted = create_daemon(
-        str(base),
-        display_name="planted by someone else",
-        created_by="someone-else",
-        soul_mode="soul",
-        soul_text="planted",
-        metadata={
-            "universe_id": uid,
-            PROJECT_LOOP_FLAG: True,
-            "owner_user_id": "someone-else",
-        },
-    )
-    # The permissive selector sees it...
-    assert select_project_loop_daemon(str(base), universe_id=uid) is not None
-
-    out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
-    ))
-    assert not out.get("error"), out
-    # ...but the declaration must NOT adopt another owner's daemon.
-    assert out["loop_daemon"]["daemon_id"] != planted["daemon_id"], (
-        "adopted a project-loop daemon owned by a different principal"
-    )
-
-
-def test_declare_loop_is_refused_without_costly_scope(
-    tmp_path, monkeypatch, authenticate_request
-):
-    """ENFORCEMENT, not membership.
-
-    The membership assertion above proves the table entry exists; it does not
-    prove the gate fires on this route. This grants every universe scope EXCEPT
-    costly and asserts the call is actually refused — the difference between
-    "configured" and "enforced" is where a privilege escalation hides.
-    """
-    import importlib
-
-    base = tmp_path / "output"
-    base.mkdir()
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    authenticate_request("tester", capabilities=[
-        "tinyassets.extensions.read", "tinyassets.extensions.write",
-        "tinyassets.extensions.admin",
-        "tinyassets.universe.read", "tinyassets.universe.write",
-        "tinyassets.universe.admin",
-        # NOTE: tinyassets.universe.costly deliberately withheld.
-    ])
-    from tinyassets import universe_server as us
-
-    importlib.reload(us)
-    try:
-        out = json.loads(us.write_graph(
-            target="universe",
-            operation="declare_loop",
-            graph_id="u-somewhere",
-            branch_id="deadbeefcafe",
-        ))
-        assert out.get("error"), f"expected a scope refusal, got {out}"
-        blob = json.dumps(out).lower()
-        assert "costly" in blob or "scope" in blob, (
-            f"refused, but not for the costly-scope reason: {out}"
-        )
-    finally:
-        importlib.reload(us)

@@ -375,13 +375,6 @@ _EXTENSION_STANDALONE_WRITE_ACTIONS = frozenset({
 })
 _UNIVERSE_COSTLY_ACTIONS = frozenset({
     "create_universe",
-    # Declaring a loop REGISTERS A PROJECT-LOOP DAEMON when the universe has
-    # none, and `cloud_worker` uses that flag to select the daemon, register
-    # runtime authority, and produce work. Explicit `daemon_create` is costly,
-    # so a route that creates a daemon must be costly too — otherwise a
-    # principal holding only universe.write can provision an executable daemon
-    # through an ordinary write (cross-family review, 2026-08-05).
-    "declare_universe_loop",
     "post_to_goal_pool",
     "submit_node_bid",
     "daemon_create",

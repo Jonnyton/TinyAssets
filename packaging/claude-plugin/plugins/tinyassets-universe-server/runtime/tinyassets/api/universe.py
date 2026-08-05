@@ -6242,73 +6242,6 @@ def _action_offer_engine(
     })
 
 
-def _ensure_project_loop_daemon(uid: str, branch_def_id: str) -> dict[str, Any] | None:
-    """Ensure this universe has a project-loop daemon, or return None.
-
-    Declaring a loop in soul.md says WHICH branch the loop runs. It does not by
-    itself make the universe servable: `cloud_worker._register_worker_runtime`
-    calls `select_project_loop_daemon(base, universe_id=...)`, and when that
-    returns None the worker skips runtime registration for the universe and
-    returns — silently, because registration is best-effort. The result is a
-    universe holding valid queued work with `runtime_instance_count: 0` and
-    nothing able to claim it.
-
-    So a declared loop that no worker will serve is cosmetic. This closes the
-    second half: the universe gets a soul-bearing daemon flagged as its project
-    loop default, scoped to this universe and owned by the declaring actor.
-
-    Best-effort by design — a registry failure must not lose the declaration
-    that already persisted to soul.md.
-    """
-    import sqlite3
-
-    from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.daemon_registry import (
-        PROJECT_LOOP_FLAG,
-        create_daemon,
-        select_project_loop_daemon,
-    )
-
-    base = _base_path()
-    actor = _current_actor()
-    # Dedupe MUST be owner-scoped. `select_project_loop_daemon` is a permissive
-    # selector — without owner_user_id it accepts any daemon flagged for this
-    # universe, including legacy `project_default`+`loop_primary` combinations.
-    # Reusing it as a restrictive check would let one writer plant a default and
-    # have the real owner's later declaration silently adopt it and report
-    # serving:true (cross-family review, 2026-08-05).
-    existing = select_project_loop_daemon(
-        base, universe_id=uid, owner_user_id=actor
-    )
-    if existing is not None:
-        return existing
-    try:
-        return create_daemon(
-            base,
-            display_name=f"Universe loop ({uid})",
-            created_by=actor,
-            soul_mode="soul",
-            # `_is_project_loop_daemon` requires has_soul; the text is the
-            # universe's own operating statement, not a persona we invent.
-            soul_text=(
-                f"Project loop for universe {uid}. Runs the loop branch this "
-                f"universe declared ({branch_def_id}) on behalf of its owner."
-            ),
-            metadata={
-                "universe_id": uid,
-                PROJECT_LOOP_FLAG: True,
-                "loop_branch_def_id": branch_def_id,
-            },
-        )
-    except sqlite3.IntegrityError:
-        # check-then-create is not atomic: a concurrent declaration for this
-        # universe can win the race. Re-select rather than surfacing the
-        # integrity error — the other writer's daemon is a valid outcome.
-        return select_project_loop_daemon(base, universe_id=uid, owner_user_id=actor)
-    except (ValueError, KeyError, OSError):
-        return None
-
-
 def _action_declare_universe_loop(
     universe_id: str = "",
     branch_def_id: str = "",
@@ -6374,10 +6307,26 @@ def _action_declare_universe_loop(
             "current": soul.loop_branch_def_id,
         })
 
-    # A declared loop must also be SERVABLE: without a project-loop daemon for
-    # this universe the cloud worker silently skips runtime registration and
-    # nothing ever claims the universe's work.
-    loop_daemon = _ensure_project_loop_daemon(uid, declared) if declared else None
+    # A declared loop is not yet a SERVABLE loop: without a project-loop daemon
+    # for this universe, `cloud_worker._register_worker_runtime` skips runtime
+    # registration and nothing claims the universe's work.
+    #
+    # This route deliberately does NOT provision that daemon. Three consecutive
+    # cross-family reviews rejected doing so, and the last one showed why the
+    # shape is wrong rather than the implementation: `daemon_create` accepts
+    # caller-supplied metadata and `create_daemon` uses setdefault, so
+    # `owner_user_id` is CALLER-SPOOFABLE. Any ownership check built on it —
+    # including an owner-scoped selector — can be satisfied by an attacker who
+    # planted a daemon claiming to be owned by the victim. Provisioning a loop
+    # daemon needs authority derived from server state, which belongs with the
+    # separately-gated daemon lifecycle, not smuggled into a config write.
+    #
+    # So we report the gap instead of papering over it.
+    from tinyassets.daemon_registry import select_project_loop_daemon
+
+    loop_daemon = (
+        select_project_loop_daemon(_base_path(), universe_id=uid) if declared else None
+    )
 
     return json.dumps({
         "universe_id": uid,
@@ -6388,17 +6337,16 @@ def _action_declare_universe_loop(
             "declared": bool(soul.loop_branch_def_id),
         },
         "loop_daemon": (
-            {
-                "daemon_id": loop_daemon.get("daemon_id"),
-                "serving": True,
-            }
+            {"daemon_id": loop_daemon.get("daemon_id"), "serving": True}
             if loop_daemon
             else {
                 "daemon_id": None,
                 "serving": False,
+                "blocker": "no_project_loop_daemon",
                 "note": (
                     "loop declared, but no project-loop daemon is registered for "
-                    "this universe; workers will not register a runtime for it"
+                    "this universe, so no worker will register a runtime for it "
+                    "and queued work will not be claimed"
                 ),
             }
             if declared
