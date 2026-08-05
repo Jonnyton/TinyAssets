@@ -359,11 +359,6 @@ def test_boundary_reaches_production_only_through_the_ingress_module() -> None:
         "app_conversation_authority.py",
         "app_principal_mapping.py",
         "app_reply_authority.py",
-        # Answers an already-admitted event. Re-authenticates rather than
-        # accepting an event object across a boundary, because the sealed
-        # AuthenticatedAppEvent may only be minted by a verifier — so it
-        # imports the type and the verifier, and admits nothing itself.
-        "app_slack_dispatch.py",
     }
     assert importers == expected, (
         "unexpected consumer of the app-event boundary: "
