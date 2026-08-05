@@ -188,12 +188,17 @@ class TestForkCopyReconcilesCarriedApproval:
     empty-hash (or stale-hash) approval forward.
     """
 
-    def test_fork_copy_clears_empty_hash_approval(self, tmp_path, monkeypatch):
+    def test_fork_copy_clears_empty_hash_approval(
+        self, tmp_path, monkeypatch, authenticate_request,
+    ):
         from tinyassets.api.branches import _ext_branch_build
 
         base = tmp_path / "output"
         base.mkdir()
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+        # Branch WRITE actions resolve the caller via `_request_branch_actor()`,
+        # which is credential-derived and ignores `UNIVERSE_SERVER_USER`.
+        authenticate_request("tester")
 
         src = "def run(state): return {'out': 'carried'}\n"
         bvid = _save_poisoned_parent(base, branch_id="parent1", source_code=src)
@@ -214,7 +219,9 @@ class TestForkCopyReconcilesCarriedApproval:
         assert nd["approved"] is False, nd
         assert not nd.get("approved_source_hash"), nd
 
-    def test_forked_carried_node_fails_runtime_gate(self, tmp_path, monkeypatch):
+    def test_forked_carried_node_fails_runtime_gate(
+        self, tmp_path, monkeypatch, authenticate_request,
+    ):
         """End-to-end: the forked branch with the demoted carried node is
         refused by the fail-closed runtime gate (fail-without-approval).
         """
@@ -226,6 +233,9 @@ class TestForkCopyReconcilesCarriedApproval:
         base = tmp_path / "output"
         base.mkdir()
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+        # Branch WRITE actions resolve the caller via `_request_branch_actor()`,
+        # which is credential-derived and ignores `UNIVERSE_SERVER_USER`.
+        authenticate_request("tester")
 
         src = "def run(state): return {'out': 'carried'}\n"
         bvid = _save_poisoned_parent(base, branch_id="parent2", source_code=src)
