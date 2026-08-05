@@ -2275,3 +2275,41 @@ def test_runtime_switch_clears_retired_slot_and_publishes_replacement(
     beat = json.loads((universe / ".worker_supervisor.worker-a.json").read_text(encoding="utf-8"))
     assert beat["runtime_instance_id"] == runtime_b["runtime_instance_id"]
     assert beat["boot_id"] == descriptor_b["boot_id"]
+
+
+def test_short_lived_child_still_pumps_cloud_automation_triggers(tmp_path, monkeypatch):
+    """A child that exits fast must not starve the first cloud-automation slice.
+
+    The producer clock starts when the child spawns, and the pump only fires
+    once `producer_poll_interval` has elapsed — but the poll loop breaks as soon
+    as `proc.poll()` returns, and every respawn resets the clock. On an idle
+    queue the child exits in well under one interval, so
+    `_pump_cloud_automation_triggers` never ran at all: the only code path that
+    can converge a `desired_state=active` automation into its first slice was
+    reachable only when work already existed.
+
+    Observed live 2026-08-05: two independently created automations sat at
+    `activation.state=stopped`, epoch 0, zero terminal receipts — one of them for
+    over two hours.
+    """
+    pumped: list[int] = []
+    monkeypatch.setattr(
+        cw,
+        "_pump_cloud_automation_triggers",
+        lambda *args, **kwargs: (pumped.append(1), 0)[1],
+    )
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+
+    cw.run_supervisor(
+        tmp_path,
+        idle_backoff=0.0,
+        max_iterations=2,
+        producer_poll_interval=30.0,
+        spawn_fn=lambda universe: FakeProc(returncode=0, steps_until_exit=0),
+        sleep_fn=sleep_fn,
+    )
+
+    assert pumped, (
+        "the cloud-automation trigger pump never ran across two subprocess "
+        "lifecycles, so a desired-active automation can never reach slice 1"
+    )

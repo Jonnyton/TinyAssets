@@ -121,6 +121,11 @@ def test_write_actions_table_is_exhaustive() -> None:
         "set_tier_config",  # Phase H
         "set_engine", "offer_engine",
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
+        # Mutates soul.md from a caller-supplied universe_id. Membership here is
+        # what makes the central universe-ACL gate check it at WRITE strength;
+        # without it the action was gated as a READ, i.e. a cross-tenant write
+        # (cross-family review, 2026-08-05).
+        "declare_universe_loop",
         "daemon_create", "daemon_summon", "daemon_banish",
         "daemon_pause", "daemon_resume", "daemon_restart",
         "daemon_update_behavior",

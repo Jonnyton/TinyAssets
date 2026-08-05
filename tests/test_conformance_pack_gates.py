@@ -9,11 +9,34 @@ import pytest
 
 
 @pytest.fixture
-def gates_env(tmp_path, monkeypatch):
+def gates_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    # Branch WRITE actions resolve the caller via `_request_branch_actor()`,
+    # which is credential-derived and ignores `UNIVERSE_SERVER_USER`.
+    # Scopes are PER TOOL FAMILY (`tinyassets.<tool>.<effect>`), and the
+    # default test credential only carries the `extensions.*` set. This
+    # file drives goals + gates as well, so those families are granted
+    # explicitly — otherwise `goals propose` returns a scope error and the
+    # seed helper dies on KeyError('goal'), which names the wrong problem.
+    authenticate_request(
+        "alice",
+        capabilities=[
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+            "tinyassets.extensions.admin",
+            "tinyassets.goals.read",
+            "tinyassets.goals.write",
+            "tinyassets.gates.read",
+            "tinyassets.gates.write",
+            "tinyassets.gates.admin",
+            # `gates.claim` is costly-gated; this file asserts pack-readiness
+            # outcomes, never a scope refusal, so it opts in.
+            "tinyassets.gates.costly",
+        ],
+    )
     monkeypatch.setenv("GATES_ENABLED", "1")
     monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite")
     from tinyassets import universe_server as us

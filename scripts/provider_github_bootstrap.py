@@ -33,7 +33,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-REPO = "Jonnyton/Workflow"
 TOKEN_ENV_NAMES = ("GH_TOKEN", "GITHUB_TOKEN", "WORKFLOW_PUSH_TOKEN", "GITHUB_PAT")
 
 
