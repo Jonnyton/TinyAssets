@@ -2038,6 +2038,11 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     (tmp_path / "release-state.json").unlink()
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    # This block stands in for a separate worker-a container, so run the boot
+    # ritual it would run. The supervisor's beat identity is frozen there and
+    # deliberately does not follow a later env change (the automation pump
+    # rebinds TINYASSETS_WORKER_ID in-process and never restores it).
+    cw._snapshot_worker_protocol_identity_at_boot()
     monkeypatch.setenv(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
         runtime_a["runtime_instance_id"],
@@ -2313,3 +2318,53 @@ def test_short_lived_child_still_pumps_cloud_automation_triggers(tmp_path, monke
         "the cloud-automation trigger pump never ran across two subprocess "
         "lifecycles, so a desired-active automation can never reach slice 1"
     )
+
+
+def test_beat_stays_findable_after_the_pump_rebinds_worker_identity(
+    tmp_path,
+    monkeypatch,
+):
+    """The healthcheck must still find the beat once an automation ran.
+
+    `_pump_cloud_automation_triggers` rebinds ``TINYASSETS_WORKER_ID``
+    in-process to a per-owner logical slot and never restores it. The
+    supervisor derives its beat filename from that id, while
+    `cloud_worker_healthcheck` runs in a FRESH process and reads the
+    container's configured value -- so a drifted filename makes a healthy
+    worker read as dead. Live 2026-08-05: three of four workers reported
+    `supervisor beat stale` for ~50 minutes while beating normally, and the
+    host's autoheal timer was inactive so nothing recovered them.
+    """
+    from tinyassets import cloud_worker_healthcheck as hc
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+
+    # Boot as the container does, then let the pump rebind identity.
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    cw._snapshot_worker_protocol_identity_at_boot()
+    monkeypatch.setenv(
+        "TINYASSETS_WORKER_ID",
+        cw._automation_worker_slot("claude-1", "universe-a", "user-a"),
+    )
+    assert cw._worker_id().startswith("worker_cloud_automation_")
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    # The healthcheck's fresh process sees the container's configured id.
+    healthy, reason = hc.check(universe, worker_id="claude-1")
+    assert healthy, reason
+
+
+def test_supervisor_worker_id_falls_back_before_boot(monkeypatch):
+    """Not yet booted (tests, direct calls) must still resolve an id."""
+
+    monkeypatch.setattr(cw, "_SUPERVISOR_WORKER_ID", "")
+    assert cw._supervisor_worker_id() == cw._worker_id()
