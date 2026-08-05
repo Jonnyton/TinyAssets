@@ -196,13 +196,25 @@ def create_daemon(
                 "a copied soul must be recorded as a fork or renamed descendant",
             )
     merged_metadata = dict(metadata or {})
-    merged_metadata.setdefault("owner_user_id", created_by)
-    merged_metadata.setdefault("tenant_id", merged_metadata["owner_user_id"])
-    merged_metadata.setdefault("created_by", created_by)
     merged_metadata.update({
         "daemon_registry": True,
         "daemon_soul_mode": mode,
         "domain_claims": clean_claims,
+        # SERVER-DERIVED, never caller-supplied. These were `setdefault`, which
+        # let a caller's metadata WIN over the authenticated `created_by` — and
+        # `daemon_create` accepts caller metadata straight from the public
+        # surface. An attacker could therefore mint a daemon carrying
+        # owner_user_id="victim" and satisfy any owner-scoped check built on it,
+        # including `_is_project_loop_daemon`, whose flag `cloud_worker` uses to
+        # select a daemon and register runtime authority.
+        #
+        # Found by cross-family review 2026-08-05 and reproduced: ownership must
+        # come from the authenticated actor, not from the request body. The
+        # fields below now follow the same force-override rule the rest of this
+        # block already used for server-owned values.
+        "owner_user_id": created_by,
+        "tenant_id": created_by,
+        "created_by": created_by,
     })
     if mode == "soul":
         wiki_metadata = (
