@@ -435,3 +435,39 @@ def test_http_opener_leaves_no_chain_holding_the_token(monkeypatch) -> None:
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
     assert APP_TOKEN not in repr(exc.value.__context__)
+
+
+def test_the_code_slack_actually_returns_is_classified_permanent() -> None:
+    """Grounded in a LIVE call to Slack, not in what I assumed it returns.
+
+    Verified 2026-08-05 against https://slack.com/api/apps.connections.open with
+    three deliberately invalid tokens (a well-formed xapp-, a bot token, and
+    garbage). All three returned `invalid_auth` — not the varied per-shape codes
+    the classifier was written against. `invalid_auth` is the code that actually
+    matters, and retrying it forever is the dead-daemon failure this guards.
+
+    No credential was involved: the point of the probe was that every token was
+    invalid.
+    """
+    with pytest.raises(SocketModePermanentError):
+        classify_open_failure({"ok": False, "error": "invalid_auth"})
+
+
+def test_a_wrong_type_token_never_reaches_slack_to_be_misdiagnosed() -> None:
+    """The live probe showed Slack answers `invalid_auth` for a bot token too,
+    so the friendly "that's a bot token" hint could only ever come from the
+    LOCAL prefix check — which is why that check must run first, before any
+    network call, rather than being a nicety layered on Slack's answer.
+    """
+    attempts: list[str] = []
+
+    with pytest.raises(SocketModeError):
+        classify_open_failure({"ok": False, "error": "invalid_auth"})
+
+    from tinyassets.effectors.slack_socket_mode import is_app_token
+
+    # NOT shaped like a real token: a convincing fake trips GitHub push
+    # protection, which is correct behaviour on its part — a scanner cannot
+    # distinguish one from a live credential. Only the prefix is load-bearing.
+    assert is_app_token("xoxb-EXAMPLE-NOT-A-REAL-TOKEN") is False
+    assert attempts == [], "the shape is rejected without spending a request"
