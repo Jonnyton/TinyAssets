@@ -2404,3 +2404,67 @@ def test_one_supervisors_frozen_id_cannot_leak_into_another(
 
     assert (universe / ".worker_supervisor.codex-1.json").exists()
     assert not (universe / ".worker_supervisor.claude-1.json").exists()
+
+
+def test_a_spawn_does_not_inherit_the_pumps_leaked_owner(tmp_path, monkeypatch):
+    """A spawn must scope its runtime registration to ITS universe's owner.
+
+    `_pump_cloud_automation_triggers` sets TINYASSETS_AUTOMATION_OWNER_USER_ID
+    per pumped automation and never restores it. The spawn used to read that
+    env, so a spawn against universe A was filtered by whichever owner the
+    pump last touched in universe B. When no project-loop daemon matched that
+    (universe, stale owner) pair, registration returned None and the spawn
+    CLEARED TINYASSETS_RUNTIME_INSTANCE_ID -- leaving the beat with no runtime,
+    so the universe advertised no capacity at all.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+
+    # The pump leaked a DIFFERENT universe's owner into the process.
+    monkeypatch.setenv("TINYASSETS_AUTOMATION_OWNER_USER_ID", "owner-of-some-other-universe")
+
+    seen: dict[str, str] = {}
+
+    def _fake_register(universe_arg, provider_name, *, owner_user_id="", worker_id=""):
+        seen["owner_user_id"] = owner_user_id
+        return "runtime-a"
+
+    monkeypatch.setattr(cw, "_register_worker_runtime", _fake_register)
+    monkeypatch.setattr(
+        cw.subprocess,
+        "Popen",
+        lambda *a, **k: type("P", (), {"pid": 1, "returncode": None})(),
+    )
+
+    cw._spawn_fantasy_daemon(universe)
+
+    assert seen["owner_user_id"] == ""
+
+
+def test_a_caller_that_knows_the_owner_still_scopes_the_registration(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: an explicit owner must still be honoured."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_AUTOMATION_OWNER_USER_ID", "leaked-owner")
+
+    seen: dict[str, str] = {}
+
+    def _fake_register(universe_arg, provider_name, *, owner_user_id="", worker_id=""):
+        seen["owner_user_id"] = owner_user_id
+        return "runtime-a"
+
+    monkeypatch.setattr(cw, "_register_worker_runtime", _fake_register)
+    monkeypatch.setattr(
+        cw.subprocess,
+        "Popen",
+        lambda *a, **k: type("P", (), {"pid": 1, "returncode": None})(),
+    )
+
+    cw._spawn_fantasy_daemon(universe, owner_user_id="real-owner")
+
+    assert seen["owner_user_id"] == "real-owner"

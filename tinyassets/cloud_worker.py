@@ -1056,10 +1056,25 @@ def _spawn_fantasy_daemon(
     python: str = sys.executable,
     module: str = "fantasy_daemon",
     extra_args: list[str] | None = None,
+    owner_user_id: str = "",
 ) -> subprocess.Popen:
     """Spawn ``python -m fantasy_daemon --universe <path> --no-tray``.
 
     Returns the ``Popen`` handle. Caller owns lifecycle.
+
+    ``owner_user_id`` scopes this spawn's runtime registration and MUST be
+    passed by a caller that actually knows the owner. It used to be read from
+    ``TINYASSETS_AUTOMATION_OWNER_USER_ID``, which
+    `_pump_cloud_automation_triggers` sets per pumped automation and never
+    restores -- so a spawn against universe A inherited the owner of whichever
+    automation the pump last touched, in a DIFFERENT universe. When no
+    project-loop daemon matched that (universe, stale owner) pair,
+    `_register_worker_runtime` returned None and the spawn then CLEARED
+    ``TINYASSETS_RUNTIME_INSTANCE_ID`` -- leaving the liveness beat with no
+    runtime, hence no queue descriptor and no advertised capacity.
+
+    Same env-smuggled-identity class as the beat-filename drift fixed in #2323.
+    Found by cross-family review 2026-08-05.
     """
     args = [
         python,
@@ -1074,10 +1089,7 @@ def _spawn_fantasy_daemon(
     runtime_instance_id = _register_worker_runtime(
         universe,
         _provider_from_daemon_args(extra_args),
-        owner_user_id=os.environ.get(
-            "TINYASSETS_AUTOMATION_OWNER_USER_ID",
-            "",
-        ).strip(),
+        owner_user_id=owner_user_id.strip(),
     )
     if runtime_instance_id:
         os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
