@@ -879,6 +879,22 @@ class CloudAutomationHealth:
         }
 
 
+#: Queue operational states in which the claimed slice cannot make progress.
+#: Health previously reported `state=running, blocker=null` for all of these,
+#: because it read only the trigger and never the admission outcome. Observed
+#: live 2026-08-05: a slice sat `invalid_operator_admission` — an inert row with
+#: a quarantine receipt — while the owner's health surface said "running" and
+#: named no blocker and no next action.
+_INERT_QUEUE_STATES = {
+    "quarantined",
+    "invalid_operator_admission",
+    "awaiting_compatible_capacity",
+    "policy_parked",
+    "unsupported_protocol",
+    "incomplete",
+}
+
+
 def project_cloud_automation_health(
     control: CloudAutomationControl,
     *,
@@ -886,8 +902,16 @@ def project_cloud_automation_health(
     triggers: list[CloudAutomationSliceTrigger],
     receipts: list[CloudAutomationTerminalReceipt],
     now: datetime,
+    branch_task_state: str = "",
 ) -> CloudAutomationHealth:
-    """Derive cloud-authoritative health only from durable typed records."""
+    """Derive cloud-authoritative health only from durable typed records.
+
+    ``branch_task_state`` is the queue's operational state for the currently
+    claimed slice's ``branch_task_id`` (empty when unknown or runnable). A
+    claimed slice whose queue row is inert is NOT running, and saying so is the
+    difference between an owner who can act and one who watches "running"
+    forever.
+    """
 
     if not isinstance(control, CloudAutomationControl):
         raise ValueError("control must be a CloudAutomationControl")
@@ -955,6 +979,15 @@ def project_cloud_automation_health(
     # automation that never reached its first slice reported
     # `blocker: null, next_action: null` no matter how stuck it was — the owner
     # could see that nothing was happening but never why.
+    inert_queue_state = (
+        branch_task_state.strip()
+        if branch_task_state.strip() in _INERT_QUEUE_STATES
+        else ""
+    )
+    if blocker is None and inert_queue_state:
+        # The queue's own word for why this slice cannot proceed, surfaced
+        # verbatim so the owner sees the same term the maintenance tooling uses.
+        blocker = inert_queue_state
     if blocker is None and control.desired_state is CloudAutomationDesiredState.ACTIVE:
         if not activation_active:
             blocker = (
@@ -970,6 +1003,10 @@ def project_cloud_automation_health(
         state = "activation_stopped"
     elif no_progress_alarm:
         state = "no_progress"
+    elif inert_queue_state:
+        # The trigger says claimed, but its queue row cannot run. Reporting
+        # "running" here is what left an owner watching a dead slice.
+        state = "blocked"
     elif current is not None and current.status in {
         CloudAutomationTriggerStatus.CLAIMED,
         CloudAutomationTriggerStatus.ADMITTED,
@@ -1012,6 +1049,7 @@ def project_cloud_automation_health(
             control,
             latest_receipt=latest_receipt,
             activation_active=activation_active,
+            inert_queue_state=inert_queue_state,
         ),
     )
 
@@ -1021,10 +1059,16 @@ def _next_action(
     *,
     latest_receipt: CloudAutomationTerminalReceipt | None,
     activation_active: bool,
+    inert_queue_state: str = "",
 ) -> str | None:
     """The one step the OWNER can take, when a receipt does not supply one."""
     if latest_receipt is not None and latest_receipt.next_action:
         return latest_receipt.next_action
+    if inert_queue_state:
+        # The owner cannot clear a queue row themselves. Say that plainly
+        # rather than name a control that will not help — an owner sent at
+        # `resume` here would get success and no change.
+        return "await_operator_maintenance"
     if control.desired_state is CloudAutomationDesiredState.STOPPED:
         return "resume"
     if control.desired_state is CloudAutomationDesiredState.PAUSED:
