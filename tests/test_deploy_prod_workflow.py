@@ -2449,3 +2449,149 @@ def test_cleanup_derives_cutover_only_from_current_run_generation():
     assert "current_run_cutover_started" in script
     assert "str(bool(status.get(\"state_exists\")))" not in script
     assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
+
+
+def test_only_declared_isolated_executors_may_pin_a_universe():
+    """The pin is permitted for ONE declared service, and only conditionally.
+
+    Shared-fleet workers resolve the host-global `.active_universe` marker and
+    share /data/.codex + /data/.claude. Pinning one to a user's universe would
+    execute that user's rows on the maintainer's subscription, so the original
+    blanket refusal stays for them.
+    """
+    wf = _load()
+    worker_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
+        None,
+    )
+    assert worker_step is not None
+    run_script = worker_step.get("run", "") or ""
+
+    # The shared fleet is still refused a pin, unchanged.
+    assert "grep -q '^TINYASSETS_UNIVERSE='" in run_script
+    assert "stdio-only override" in run_script
+
+    # Exactly one declared isolated executor, and it is NOT in the shared list.
+    assert 'isolated_executors="tinyassets-worker-founder"' in run_script
+    shared_list = next(
+        line for line in run_script.splitlines()
+        if line.strip().startswith("worker_containers=")
+    )
+    assert "tinyassets-worker-founder" not in shared_list
+
+
+def test_a_pinned_executor_must_prove_its_credential_isolation():
+    """Permission to pin is conditional on not reading the shared roots.
+
+    A pinned worker still reading /data/.codex or /data/.claude is the exact
+    failure the shared-fleet refusal exists to prevent, just relocated.
+    """
+    wf = _load()
+    worker_step = next(
+        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
+        None,
+    )
+    run_script = worker_step.get("run", "") or ""
+
+    # Must fail when the pin is missing...
+    assert "carries no TINYASSETS_UNIVERSE pin" in run_script
+    # ...and when the credential root is still shared.
+    assert "still reads a SHARED credential root" in run_script
+    assert '*"CODEX_HOME=/data/.codex "*|*"CLAUDE_CONFIG_DIR=/data/.claude "*)' in run_script
+    # ...and the shared fleet must fail if ITS roots stop being shared.
+    assert "is a shared-fleet worker but its credential roots are not" in run_script
+
+
+def test_the_isolated_executor_service_is_pinned_and_credential_isolated():
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    founder = compose["services"]["worker-founder"]
+    env = founder["environment"]
+    shared = compose["services"]["worker"]["environment"]
+
+    assert env["TINYASSETS_UNIVERSE"] == "/data/u-01kxm1vszd8hwp7em418asq8h9"
+    # The whole point: its credential roots are its own.
+    assert env["CODEX_HOME"] != shared["CODEX_HOME"]
+    assert env["CLAUDE_CONFIG_DIR"] != shared["CLAUDE_CONFIG_DIR"]
+    assert env["CODEX_HOME"].startswith("/data/.executors/")
+    assert env["CLAUDE_CONFIG_DIR"].startswith("/data/.executors/")
+    # And it is distinguishable in logs and in the worker registry.
+    assert env["TINYASSETS_WORKER_ID"] == "founder-1"
+    assert founder["container_name"] == "tinyassets-worker-founder"
+
+
+def test_shared_fleet_workers_still_share_their_credential_roots():
+    """Accept-direction control: the shared fleet must stay shared."""
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    for name in ("worker", "worker-codex-2", "worker-claude-1", "worker-claude-2"):
+        env = compose["services"][name]["environment"]
+        assert env["CODEX_HOME"] == "/data/.codex", name
+        assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
+        assert "TINYASSETS_UNIVERSE" not in env, name
+
+
+def test_the_isolated_executor_seeds_its_own_credential_roots():
+    """The isolated roots are self-seeding; no host hands are required.
+
+    The entrypoint honours whatever CODEX_HOME / CLAUDE_CONFIG_DIR the service
+    declares and seeds auth into THAT path from the same repo secrets that
+    seed the shared fleet. If either default were hardcoded to the shared
+    path, a pinned executor would boot unauthenticated and every claim would
+    fail closed -- a silent 24/7 outage that looks like "no work available".
+    """
+    entrypoint = Path("deploy/docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    # Parameterised, not hardcoded.
+    assert 'export CODEX_HOME="${CODEX_HOME:-/data/.codex}"' in entrypoint
+    assert 'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"' in entrypoint
+    # Seeding targets the declared root, not the shared default.
+    assert 'CODEX_AUTH_FILE="${CODEX_HOME}/auth.json"' in entrypoint
+    assert 'CLAUDE_CREDENTIALS_FILE="${CLAUDE_CONFIG_DIR}/.credentials.json"' in entrypoint
+    # First-boot-only, so an in-place rotated token is never clobbered.
+    assert '&& ! -f "${CODEX_AUTH_FILE}"' in entrypoint
+    assert '&& ! -f "${CLAUDE_CREDENTIALS_FILE}"' in entrypoint
+
+
+def test_the_isolated_executor_is_covered_by_every_fleet_boundary_check():
+    """A fleet member no boundary check enumerates reads as verified.
+
+    The executor inherits the worker env_file (no request-idempotency.env), so
+    it is keyless by construction -- but "by construction" is not evidence.
+    Both the HMAC boundary proof and the offsite log archive enumerate workers
+    by an explicit list, and an omission there is silent.
+    """
+    verifier = Path("deploy/verify-request-hmac-rotation-fleet.sh").read_text(
+        encoding="utf-8",
+    )
+    assert "tinyassets-worker-founder" in verifier
+
+    shipper = Path("deploy/ship-logs.sh").read_text(encoding="utf-8")
+    assert "tinyassets-worker-founder" in shipper
+
+    # And it must NOT be smuggled into the shared-fleet list, which is what
+    # forbids the universe pin the executor exists to carry.
+    wf = _load()
+    worker_step = next(
+        s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"
+    )
+    shared_list = next(
+        line for line in (worker_step.get("run", "") or "").splitlines()
+        if line.strip().startswith("worker_containers=")
+    )
+    assert "tinyassets-worker-founder" not in shared_list
+
+
+def test_the_isolated_executor_does_not_receive_the_admission_minting_key():
+    """The worker env_file must never gain the request-idempotency secret.
+
+    `openspec/changes/correct-cloud-admission-worker-secret-boundary` exists
+    because that key once crossed into the worker fleet, where approved source
+    nodes execute Python in-process with full builtins.
+    """
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    founder_env_files = compose["services"]["worker-founder"].get("env_file", [])
+    assert "/etc/tinyassets/request-idempotency.env" not in founder_env_files
+    # The daemon is the only service that may carry it.
+    assert (
+        "/etc/tinyassets/request-idempotency.env"
+        in compose["services"]["daemon"]["env_file"]
+    )
