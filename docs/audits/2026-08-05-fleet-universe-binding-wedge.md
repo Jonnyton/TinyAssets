@@ -115,13 +115,23 @@ Three couplings make the current path platform-owned rather than user-owned:
    (`daemon_registry.py:810-835`), and a runtime's `provider_name` comes from
    the *container's* `--provider` flag (`cloud_worker.py:987-999`). N providers
    x M users cannot be pre-provisioned as containers.
-2. **Credential resolution fails open.**
-   `credential_vault.py:596-628` returns env overrides only when a
-   per-universe credential exists; otherwise the slice inherits whatever
-   ambient `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_HOME` the container carries —
-   the maintainer's. Invisible with one user (the founder *is* the host);
-   a cross-tenant identity leak at scale. This is STATUS concern R2-1 and is
-   still live in code.
+2. ~~**Credential resolution fails open.**~~ **RETRACTED, `current: 2026-08-05`.**
+   An earlier revision of this audit claimed a universe with no deposited
+   credential inherits the container's ambient `CLAUDE_CODE_OAUTH_TOKEN` /
+   `CODEX_HOME`, citing `credential_vault.py:596-628`. That function does
+   return `{}`, but it is **not on the execution path**. The providers call
+   `providers/base.py:348` `subprocess_env_for_provider`, which — given a
+   universe — builds a private per-universe runtime root
+   (`<universe>/.runtime/provider-child/<provider>/home`) and raises
+   `ProviderUnavailableError` when credential resolution fails
+   (`providers/base.py:385-408`). It fails **closed**. Callers verified:
+   `claude_provider.py:121,212`, `codex_provider.py:143`.
+
+   The error was reading a function body and attributing it to a call site
+   without checking who calls it. Found by cross-family review. Whether the
+   rest of STATUS concern R2-1 (`set_engine` not constraining
+   `allowed_providers`) still holds is a separate question and is NOT
+   settled by this correction.
 3. **The scheduler is a platform container** whose served universe comes from
    the fleet-global marker described above.
 
