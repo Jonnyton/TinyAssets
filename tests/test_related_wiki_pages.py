@@ -24,7 +24,7 @@ import pytest
 
 
 @pytest.fixture
-def branch_wiki_env(tmp_path, monkeypatch):
+def branch_wiki_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "base"
     wiki = tmp_path / "wiki"
     (wiki / "pages" / "notes").mkdir(parents=True)
@@ -33,6 +33,13 @@ def branch_wiki_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki))
+
+    # Branch mutation requires a credential-derived subject. Without one
+    # `extensions build_branch` returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die on `KeyError: 'branch_def_id'` before reaching the wiki-linking
+    # behaviour under test. `extensions.costly` stays withheld.
+    authenticate_request("tester")
 
     from tinyassets import universe_server as us
 
