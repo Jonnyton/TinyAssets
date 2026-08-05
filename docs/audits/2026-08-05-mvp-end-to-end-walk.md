@@ -5,8 +5,18 @@
 HEAD), deployed `2026-08-04T23:00:39Z`, `forward_canary_status: passed`.
 Hard Rule 14 satisfied — this walk exercised the code production actually runs.
 
-**Verdict: the golden path cannot be walked end to end.** It stops before step 5
-of 8. Three blockers, none of which is a defect in the code that exists.
+**Verdict: the golden path cannot be walked end to end**, but it reaches
+considerably further than a first pass suggested. Authoring and **execution
+work on production**; the walk stops at binding a workflow to a scheduled cloud
+automation.
+
+> **Correction to this document's own first revision.** It originally claimed
+> the walk "stops before step 5 of 8" because the platform had no compute. That
+> was wrong and is retracted. `converse` and `run_graph` are **independent
+> engine surfaces**: `converse` has no engine, but `run_graph` does, and a
+> workflow ran to completion with real provider calls. Generalising from the
+> `held/setup_required` response to the whole platform was an inference, not a
+> measurement — the error was corrected only by actually executing a run.
 
 > Scope note: this is **supporting evidence, not final chatbot-surface proof**.
 > Per AGENTS.md, final acceptance needs a browser-rendered connector
@@ -26,6 +36,62 @@ An earlier definition ("V1 Intelligence Agent") describes itself as a remix but
 has `lineage: []`. That is a prior test artifact published via `publish` rather
 than `remix`, **not** a lineage defect — a fresh `remix` records lineage
 correctly, as above.
+
+## Execution works — verified by running one
+
+| Step | Result | Evidence |
+|---|---|---|
+| 5. Author a workflow | **pass** | Branch `36370cd19f90` built; validation named the exact fix on each rejection (missing node, cycle without exit, `edge spec missing 'from' or 'to'`) |
+| 5b. Compiler safety | **pass** | `strict_input_isolation` correctly refused a run whose `input_keys: ["topic"]` had no `state_schema` field to initialise it |
+| 5c. Immutable publish | **pass** | `branch_version_id 36370cd19f90@6373b09b`, content hash `6373b09b…` |
+| 6. **Execute** | **pass** | Run `c327a8af2ec34142` → `status: completed`, node `summarize: ran`, `__system__: provider_calls`, 10.4s |
+
+Authoring emits an evidence-only receipt that explicitly disclaims being an
+authorization grant ("clients must not treat it as permission to execute future
+writes") — the right posture.
+
+## Blocker 0 — automation binding rejects every real branch id
+
+The scheduled / computer-off step cannot be reached:
+
+```
+write_graph target=automation operation=create  →
+{"error":"automation_setup_invalid",
+ "detail":"branch_def_id must be a nominal non-bearer reference"}
+```
+
+Production mints branch ids as **bare hex** (`36370cd19f90`), while
+`_NOMINAL_REFERENCE_PREFIXES` on `origin/main` carries only `branch_` /
+`branch:` (`background_branch_authority.py:182-194`). `_reference()` hard-requires
+`str.startswith(_NOMINAL_REFERENCE_PREFIXES)`, so **no workaround exists** — no
+real branch can bind to a cloud automation until the code changes.
+
+This is **#2291's defect class one line down in the same tuple**. The comment
+immediately above `branch_` documents the identical universe-id bug: *"every
+fixture in this package uses the `universe_` spelling, so omitting this prefix
+rejected every REAL universe while the suite stayed green."* Same allowlist,
+same fixture-versus-production spelling gap.
+
+**Already owned:** PR #2292 ("Admit the branch identity shapes production
+actually mints") fixes it — open, **draft**, unreviewed, `required-tests` red.
+Live production repro attached there as a comment. Not fixed here.
+
+### Related: automation rollback violates its documented contract
+
+`tests/test_cloud_automation_api.py::test_phone_rebinds_and_rolls_back_to_published_branch_versions`
+fails with:
+
+```
+{'error': 'automation_rebind_invalid',
+ 'detail': 'background_binding_mismatch: background Branch binding does not match the immutable definition'}
+```
+
+The handle documentation states *"binding an earlier version rolls back without
+mutating either version."* The test encodes that contract and the code now
+refuses it, so this is a **real regression, not a stale test** —
+quarantining it to green a gate would bury an MVP-relevant capability
+(the demo requires preserving prior versions). Owner: the cloud-automation /
+background-authority lanes.
 
 ## Blocker 1 — a user cannot give their universe an engine
 
