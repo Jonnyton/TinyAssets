@@ -2540,11 +2540,34 @@ def _validate_unsafe_recovery_source(
             # so it refuses rather than assuming the container is gone.
             try:
                 info = host.container_info(name)
-            except Exception as exc:  # noqa: BLE001
-                raise FenceError(
-                    "cannot prove the extra volume consumer is stopped"
-                ) from exc
-            if bool(info.get("State", {}).get("Running")):
+            except Exception:  # noqa: BLE001
+                # Inspect failing is ambiguous alone, so prove ABSENCE
+                # positively rather than assuming it: a SUCCESSFUL `ps -a`
+                # listing that does not contain the name means the container
+                # no longer exists -- the safest possible state, since a
+                # removed container cannot be writing to the volume. If that
+                # probe also fails, host.run raises and we still refuse, so an
+                # unreachable docker never unlocks retirement.
+                #
+                # Observed live: recovery 31047957677 refused here because
+                # cleanup had REMOVED the container, not merely stopped it.
+                listed = host.run(
+                    [
+                        "docker",
+                        "ps",
+                        "-a",
+                        "--filter",
+                        f"name=^/{name}$",
+                        "--format",
+                        "{{.Names}}",
+                    ]
+                )
+                if listed.strip():
+                    raise FenceError(
+                        "cannot prove the extra volume consumer is stopped"
+                    )
+                info = None
+            if info is not None and bool(info.get("State", {}).get("Running")):
                 raise FenceError(
                     "refusing to retire a RUNNING extra volume consumer"
                 )
