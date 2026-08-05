@@ -107,6 +107,14 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Dump fence state (read-only diagnosis)
+        run: |
+          echo "::group::fence state"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo python3 -c "import json;d=json.load(open('/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json'));p=d.get('stopped_fleet_removal') or {};print('phase',d.get('phase'));print('source_run_id',d.get('source_run_id') or d.get('run_id'));print('removal_phase',p.get('removal_phase'));print('recorded_source',p.get('recorded_source'));print('plan_ids',sorted((p.get('container_ids') or {}).keys()));print('old_ids',sorted((d.get('old_container_ids') or {}).keys()));print('recovery_ids',sorted((d.get('recovery_container_ids') or {}).keys()));print('extras',sorted((d.get('extra_volume_consumers') or {}).keys()))"; echo ---LIVE---; sudo docker ps -a --format '{{.Names}} {{.Status}}'' \
+              || true
+          echo "::endgroup::"
       - name: Validate host HMAC pair before recovery mutation
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
