@@ -242,14 +242,36 @@ _RECEIPT_REFERENCE_PREFIXES = {
 }
 _MAX_JSON_INTEGER = (1 << 53) - 1
 
+# Branch identities carry no domain prefix. A branch def id is minted as
+# ``uuid4().hex[:12]`` (``tinyassets/branches.py``) and a branch version id as
+# ``<branch_def_id>@<content_hash[:8]>``, widening to 16 hex only on a hash
+# prefix collision (``tinyassets/branch_versions.py``). The nominal ``branch_``
+# / ``branch:`` prefixes therefore match NO branch production actually mints,
+# so the exact canonical shapes are admitted for the fields that carry them.
+# Both shapes are far too constrained to smuggle a bearer secret. Values that
+# already carry a nominal prefix are returned before these are consulted.
+_BRANCH_DEF_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
+_BRANCH_VERSION_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{12}@(?:[0-9a-f]{8}|[0-9a-f]{16})$"
+)
+_CANONICAL_REFERENCE_PATTERNS = {
+    "allowed_branch_def_ids": _BRANCH_DEF_ID_PATTERN,
+    "branch_def_id": _BRANCH_DEF_ID_PATTERN,
+    "branch_version_id": _BRANCH_VERSION_ID_PATTERN,
+    "pinned_branch_version_id": _BRANCH_VERSION_ID_PATTERN,
+}
+
 
 def _reference(value: Any, field_name: str) -> str:
     result = _text(value, field_name)
-    if not _REFERENCE_PATTERN.fullmatch(result) or not result.startswith(
-        _NOMINAL_REFERENCE_PREFIXES
-    ):
+    if not _REFERENCE_PATTERN.fullmatch(result):
         raise ValueError(f"{field_name} must be a nominal non-bearer reference")
-    return result
+    if result.startswith(_NOMINAL_REFERENCE_PREFIXES):
+        return result
+    canonical = _CANONICAL_REFERENCE_PATTERNS.get(field_name)
+    if canonical is not None and canonical.fullmatch(result):
+        return result
+    raise ValueError(f"{field_name} must be a nominal non-bearer reference")
 
 
 def _optional_reference(value: Any, field_name: str) -> str | None:
