@@ -2527,3 +2527,25 @@ def test_shared_fleet_workers_still_share_their_credential_roots():
         assert env["CODEX_HOME"] == "/data/.codex", name
         assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
         assert "TINYASSETS_UNIVERSE" not in env, name
+
+
+def test_the_isolated_executor_seeds_its_own_credential_roots():
+    """The isolated roots are self-seeding; no host hands are required.
+
+    The entrypoint honours whatever CODEX_HOME / CLAUDE_CONFIG_DIR the service
+    declares and seeds auth into THAT path from the same repo secrets that
+    seed the shared fleet. If either default were hardcoded to the shared
+    path, a pinned executor would boot unauthenticated and every claim would
+    fail closed -- a silent 24/7 outage that looks like "no work available".
+    """
+    entrypoint = Path("deploy/docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    # Parameterised, not hardcoded.
+    assert 'export CODEX_HOME="${CODEX_HOME:-/data/.codex}"' in entrypoint
+    assert 'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"' in entrypoint
+    # Seeding targets the declared root, not the shared default.
+    assert 'CODEX_AUTH_FILE="${CODEX_HOME}/auth.json"' in entrypoint
+    assert 'CLAUDE_CREDENTIALS_FILE="${CLAUDE_CONFIG_DIR}/.credentials.json"' in entrypoint
+    # First-boot-only, so an in-place rotated token is never clobbered.
+    assert '&& ! -f "${CODEX_AUTH_FILE}"' in entrypoint
+    assert '&& ! -f "${CLAUDE_CREDENTIALS_FILE}"' in entrypoint

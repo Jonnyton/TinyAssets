@@ -271,12 +271,18 @@ services:
   # The deploy verifies BOTH properties before accepting the fleet; see
   # "Verify cloud worker is running" in .github/workflows/deploy-prod.yml.
   #
-  # HOST ACTION REQUIRED before this can execute anything: seed
-  # `/data/.executors/founder/.codex` and `/data/.executors/founder/.claude`
-  # with the owner's own subscription auth. Until then the service runs and
-  # fails closed with `ProviderUnavailableError` from
-  # `providers/base.py:385-408` -- it will NOT silently fall back to the
-  # maintainer's credentials, which is the entire point of the isolation.
+  # These roots SELF-SEED on first boot: deploy/docker-entrypoint.sh honours
+  # whatever CODEX_HOME / CLAUDE_CONFIG_DIR the service declares and seeds
+  # auth into that path from the same repo secrets that seed the shared fleet
+  # (entrypoint lines 105-170). No host hands, and seeding is first-boot-only
+  # so an in-place rotated token is never clobbered.
+  #
+  # Honest scope: the seeded credential is currently the SAME founder
+  # subscription the shared fleet uses, because it comes from the same secret.
+  # What is isolated today is the ROOT -- this executor reads its own path, so
+  # depositing a different credential for this universe changes only this
+  # service. That is the structural precondition for per-user compute; it is
+  # not itself per-user compute.
   worker-founder:
     <<: *cloud_worker_base
     container_name: tinyassets-worker-founder
