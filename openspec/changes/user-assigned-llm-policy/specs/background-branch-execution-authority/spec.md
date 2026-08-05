@@ -61,3 +61,22 @@ reference rules for identity fields.
 #### Scenario: credential-shaped provider value is refused
 - **WHEN** a record carries a credential- or bearer-shaped value in a provider policy field
 - **THEN** the record is refused
+
+### Requirement: A universe hosts many automations and can declare loops after birth
+
+A universe SHALL be able to host multiple automations of differing kinds. Loop
+declaration SHALL NOT be a single write-once value on the universe: an owner
+SHALL be able to declare and change automation loops after the universe exists,
+through the advertised canonical handles.
+
+#### Scenario: publicly created universe can declare a loop
+- **WHEN** an owner creates a universe through the advertised handles and later declares an automation loop
+- **THEN** the declaration succeeds and work can be queued, rather than failing with an undeclared-loop error
+
+#### Scenario: a second automation of a different kind
+- **WHEN** an owner adds a second automation of a different kind to a universe that already has one
+- **THEN** both are hosted, and declaring the second does not replace or invalidate the first
+
+#### Scenario: an undeclared loop is reported actionably
+- **WHEN** work is queued in a universe with no declared loop
+- **THEN** the refusal names the missing declaration and the action that would supply it, rather than failing silently at worker registration

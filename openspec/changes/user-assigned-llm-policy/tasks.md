@@ -35,6 +35,14 @@ rejected in favour of one unified authority-derivation model.
 - [ ] 4.3 Prove two active automations for one owner execute concurrently, neither waiting on the other's terminal receipt.
 - [ ] 4.4 Confirm no maintainer-owned credential can be substituted when no compatible requester-owned executor is live; the automation must wait, visibly.
 
+## 4b. Universe hosts many automations (unblocks scheduled execution)
+
+- [ ] 4b.1 Confirm and record the live chain: `write_graph target=request` on a publicly created universe returns `universe_loop_not_declared`; `select_project_loop_daemon` returns None; `cloud_worker._register_worker_runtime` logs "no project loop daemon registered" and returns without raising; `runtime_instance_count` stays 0. This is the mechanical cause of scheduled execution never running.
+- [ ] 4b.2 Move loop declaration off the universe scalar: an owner may declare and change automation loops AFTER birth through the advertised handles. Any universe-level default becomes a mutable set, never a write-once value. Add no advertised handle.
+- [ ] 4b.3 Assert a universe hosts two automations of different kinds simultaneously, and that declaring the second neither replaces nor invalidates the first.
+- [ ] 4b.4 Make an undeclared loop actionable rather than silent: the queue refusal names the missing declaration and the action supplying it, and worker registration reports the skip instead of returning quietly.
+- [ ] 4b.5 Re-run the live walk end to end and confirm the created automation reaches an active activation and produces a terminal receipt.
+
 ## 5. Actionable health
 
 - [x] 5.1 Populate `health.blocker` and `health.next_action` for every BLOCKED state (stopped, paused, activation_stopped, no_progress). Assert non-null for `activation_stopped`, which today returns null for both, and assert a normally scheduled `waiting` automation stays unblocked — healthy idling must not become a false alarm.

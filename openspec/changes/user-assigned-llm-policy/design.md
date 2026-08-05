@@ -107,6 +107,67 @@ accepted set) and is removed where only a default lived. Naming *which* input
 emptied the set is what keeps the error actionable rather than another dead end
 (see D7).
 
+### D4a — A universe is an account, not a workflow
+
+Host clarification, 2026-08-05: *"a universe is like a users account and
+hardrive, so a user should be able to run any number of automations in there
+universe. though not all loops and automations are the same."*
+
+A universe is a **container the owner owns** — account plus storage. It hosts
+**N automations**, and automations are **typed**: different kinds with different
+capabilities. The kind this change serves is a **custom agent the owner
+converses with, which can also act inside their universe** — building other
+automations, other custom agents, even other universes: *"all the things a user
+would normally otherwise do through chatbot mcp connetor."*
+
+**Therefore `loop_branch_def_id` is a category error and blocks this shape.**
+It is a *scalar* on the universe, set *only at birth*
+(`_action_create_universe(..., branch_def_id=...)`), and the public handle
+`write_graph target=universe` does not even pass it — it forwards only
+`universe_id` and `text`. So:
+
+- an account and "the one workflow the account runs" are the same field, which
+  cannot express N automations; and
+- no universe born through the public surface can ever declare a loop, or gain
+  one later.
+
+That single field is the mechanical cause of the step-8 dead end observed live:
+no loop declared → `select_project_loop_daemon` returns `None` →
+`cloud_worker._register_worker_runtime` logs *"no project loop daemon
+registered"* and returns (best-effort, non-fatal) → `runtime_instance_count: 0`
+→ nothing converges an automation's activation → scheduled execution never runs.
+Confirmed directly: `write_graph target=request` on the founder's universe
+returns `universe_loop_not_declared`.
+
+**Design consequence.** Loop declaration belongs to the *automation*, not the
+universe. Where a universe-level default is still wanted it must be a mutable
+**set**, never a write-once scalar. Executor selection already follows from this
+(D6). An owner must be able to declare, add, and change automations after birth
+— that is what an account is for.
+
+*Why this is not merely the D6 decoupling:* D6 says *who may claim* an
+automation. D4a says *whether the universe can host more than one at all*.
+Fixing D6 alone leaves every public-born universe unable to declare any loop.
+
+### D4b — A custom-agent automation acts with the owner's connector surface
+
+The custom-agent kind is conversational **and** agentic: within its owner's
+universe it may do what the owner could do through the connector, including
+minting other automations, agents, and universes.
+
+That capability is **authority-bearing** and gets the same treatment as provider
+selection in this change: derived from the owner's bounded, requester-owned
+grant — never ambient, never the maintainer's — and confined to the owner's
+container. An agent that can mint agents must not be able to widen its own
+grant, act outside its universe, or escalate beyond what its owner holds.
+
+*Why flag it here:* this change already establishes that *selection* is not
+*custody* and that authority must be frozen at admission (D5). The agent
+capability surface is the same class of question, and specifying it loosely is
+how an autonomous peer becomes a confused deputy. It is scoped out of this
+change's implementation, but named so a successor owns it explicitly rather than
+inheriting it by accident.
+
 ### D5 — Automation policy lives inside the immutable definition digest
 
 `preferred_provider` and `accepted_fallbacks` are part of the automation

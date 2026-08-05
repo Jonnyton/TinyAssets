@@ -66,6 +66,22 @@ A user's scheduled work must not wait on the maintainer's OpenSpec drain.
   named maintainer daemon. Multiple automations per owner run concurrently
   within declared budgets. `daemon::tinyassets-cloud-drain` becomes one ordinary
   consumer among many rather than the required path.
+- **A universe hosts many automations; loop declaration leaves the universe.**
+  A universe is the owner's account and storage, not a workflow.
+  `loop_branch_def_id` is today a *scalar* set *only at birth*, and the public
+  `write_graph target=universe` never passes it — so no publicly created
+  universe can declare a loop, then or later. Declaration moves to the
+  automation; any universe-level default becomes a mutable set, never a
+  write-once scalar. This is the mechanical cause of scheduled execution never
+  running: no loop → no project-loop daemon → the worker silently skips runtime
+  registration → nothing converges activation.
+- **Custom-agent automations are typed and act with the owner's surface.**
+  Automations are not one thing. The custom-agent kind is conversational *and*
+  agentic within its owner's universe, able to do what the owner could do
+  through the connector — including minting other automations, agents, and
+  universes. That capability is authority-bearing: derived from the owner's
+  bounded grant, never ambient, and confined to the owner's container. Specified
+  here, implemented by a successor.
 - **Actionable health.** When an automation cannot activate, `health.blocker`
   and `health.next_action` SHALL be populated. Production currently returns
   `state: activation_stopped` with **both fields `null`**, which dead-ends the
