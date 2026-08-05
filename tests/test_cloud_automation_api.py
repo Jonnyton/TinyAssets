@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -19,7 +20,33 @@ from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
-NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
+#: Anchored to the real clock, deliberately NOT a fixed literal.
+#:
+#: `prepare_cloud_automation` derives the background Branch binding's
+#: `expires_at` from the injected clock as `now + max(86_400, ...)`, but the
+#: `cloud_automations` rebind path validates that expiry against the REAL clock
+#: — it accepts no clock parameter, so there is nothing to inject. A hardcoded
+#: NOW therefore arms a 24-hour fuse: `expires_at` is the only one of the
+#: binding guard's eleven conditions that depends on wall-clock time, and it
+#: flips to False exactly one day after the literal. The suite then goes red
+#: with no commit touching it, which is how `main` broke on 2026-08-04 23:00Z.
+#:
+#: Nothing here asserts a literal date; NOW is only ever a relative anchor.
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
+
+#: Provider-grant expiry, expressed RELATIVE to NOW instead of as a literal.
+#:
+#: A literal here is a SECOND fuse, distinct from the binding one above and not
+#: fixed by anchoring NOW: `resolve_inactive_cloud_authority` refuses a provider
+#: grant whose `expires_at` has passed, also measured against the real clock. So
+#: the hardcoded 2026-08-30 would have gone red on 2026-08-30 with
+#: `provider_binding_unavailable` — trading a fuse that had already blown for
+#: one 25 days out. Found by cross-family review of the first fix, which
+#: reproduced it by running the test with NOW moved to 2026-09-01.
+#:
+#: The offset preserves the original literals' relationship: the old grant
+#: expiry sat ~26 days after the old NOW.
+GRANT_EXPIRES_AT = (NOW + timedelta(days=26)).strftime("%Y-%m-%dT%H:%M:%SZ")
 ACCEPTED_SPEC_CONTENT = "# Accepted repository specification\n"
 
 
@@ -160,7 +187,7 @@ def _seed_setup_authority(
             max_invocations=4,
             max_tokens=100_000,
             max_cost_microunits=5_000_000,
-            expires_at="2026-08-30T00:00:00Z",
+            expires_at=GRANT_EXPIRES_AT,
         )
     )
     assert installed.record is not None
@@ -975,7 +1002,7 @@ def test_non_owner_cannot_activate_private_branch_version(tmp_path) -> None:
             max_invocations=4,
             max_tokens=100_000,
             max_cost_microunits=5_000_000,
-            expires_at="2026-08-30T00:00:00Z",
+            expires_at=GRANT_EXPIRES_AT,
         )
     )
     assert installed.record is not None
@@ -1064,7 +1091,7 @@ def test_phone_list_discovers_safe_requester_owned_prerequisites(
             "max_invocations": 4,
             "max_tokens": 100_000,
             "max_cost_microunits": 5_000_000,
-            "expires_at": "2026-08-30T00:00:00Z",
+            "expires_at": GRANT_EXPIRES_AT,
         }
     ]
     assert result["prerequisites"]["destination_grants"] == [
@@ -1604,3 +1631,148 @@ def test_phone_create_rejects_missing_content_and_internal_authority_inputs(
     assert "accepted_spec_content is required" in missing_content["detail"]
     assert asserted_authority["error"] == "automation_setup_invalid"
     assert "provider binding id assertion" in asserted_authority["detail"]
+
+
+def test_rollback_is_refused_once_the_original_binding_ttl_has_lapsed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Rolling back to an earlier definition fails after the binding expires.
+
+    A real production limitation, and until now the only thing asserting it was
+    the calendar. Background-binding identity is derived from the definition
+    (`cloud_automation_setup.py`), so a rollback re-selects the binding minted
+    at SETUP time rather than a fresh one. `prepare_cloud_automation` pins that
+    binding's `expires_at` to setup-time + max(86_400, ...), and
+    `cloud_automations()` validates it against the REAL clock — it accepts no
+    clock parameter. So once ~24h have passed, forward rebinds still work
+    (each mints a current binding) while ROLLBACK is refused.
+
+    That asymmetry is why a simpler A -> A rebind does not reproduce it: the
+    sequence has to be A -> B -> A. Verified by building exactly that.
+
+    The module's NOW literal used to age past the TTL and expose this by
+    accident, turning `main` red with no commit touching it (2026-08-04
+    23:00Z). Anchoring NOW to the real clock removes the fuse, and would have
+    removed this signal too, so it is asserted deliberately here. `stale` is
+    relative to the real clock, so it is always in the past and can never
+    itself become a fuse.
+
+    If binding renewal on rebind is ever implemented, this test SHOULD fail —
+    update it then, on purpose.
+    """
+    from tinyassets.api import cloud_automations, permissions
+    from tinyassets.branch_versions import get_branch_version, publish_branch_version
+    from tinyassets.cloud_automation_control import CloudAutomationDesiredState
+    from tinyassets.cloud_automation_setup import prepare_cloud_automation
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
+
+    stale = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
+
+    original = _seed_setup_authority(tmp_path)
+    setup = prepare_cloud_automation(
+        tmp_path,
+        original,
+        automation_id="automation_spec_drain",
+        cadence_seconds=300,
+        operator_display_name="Alice Cloud Builder",
+        operator_soul_text="Run Alice's published repository workflow.",
+        clock=lambda: stale,
+    )
+    controls = CloudAutomationControlStore(tmp_path, clock=lambda: stale)
+    stopped = controls.set_desired_state(
+        expected=setup.control,
+        desired_state=CloudAutomationDesiredState.STOPPED,
+    )
+
+    original_version = get_branch_version(tmp_path, original.branch_version_id)
+    assert original_version is not None
+    edited_snapshot = json.loads(json.dumps(original_version.snapshot))
+    edited_snapshot["node_defs"][0]["prompt_template"] = (
+        "Apply the evolved accepted specification safely."
+    )
+    save_branch_definition(tmp_path, branch_def=edited_snapshot)
+    evolved_version = publish_branch_version(
+        tmp_path,
+        edited_snapshot,
+        publisher="acct_alice",
+    )
+    evolved_raw = original.to_dict()
+    evolved_raw["branch_version_id"] = evolved_version.branch_version_id
+    evolved_raw["branch_content_digest"] = f"sha256:{evolved_version.content_hash}"
+    evolved_raw["input_artifact_digests"] = [
+        evolved_raw["accepted_spec_digest"],
+        evolved_raw["branch_content_digest"],
+    ]
+    evolved = RepositorySpecWorkDefinition.from_dict(evolved_raw)
+
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    # Forward rebind still succeeds: it mints a binding at the current time.
+    rebound = cloud_automations.cloud_automations(
+        action="rebind",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        expected_revision=stopped.revision,
+        payload={"definition": evolved.to_dict()},
+    )
+    assert rebound["status"] == "activation_requested", rebound
+
+    rebound_control = controls.get_control(
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+    )
+    assert rebound_control is not None
+    restopped = controls.set_desired_state(
+        expected=rebound_control,
+        desired_state=CloudAutomationDesiredState.STOPPED,
+    )
+
+    # Rollback re-selects the ORIGINAL binding, whose TTL lapsed while stopped.
+    rolled_back = cloud_automations.cloud_automations(
+        action="rebind",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        expected_revision=restopped.revision,
+        payload={"definition": original.to_dict()},
+    )
+    assert rolled_back["error"] == "automation_rebind_invalid", rolled_back
+    assert "background_binding_mismatch" in rolled_back["detail"], rolled_back
+
+
+def test_no_hardcoded_date_literals_in_this_module() -> None:
+    """Guard: every timestamp here must be relative to the real clock.
+
+    This module has now armed the same fuse twice — once on the background
+    binding TTL (red on 2026-08-04) and once on the provider grant expiry
+    (would have been red on 2026-08-30). Both were absolute dates compared
+    against wall-clock time by code that takes no injectable clock, so both
+    were guaranteed to fail on a date rather than on a defect.
+
+    A calendar-driven failure is worse than a normal one: it lands on an
+    unrelated PR, names a test nobody touched, and blocks the merge queue
+    until someone re-derives all of this. So the literal itself is banned
+    rather than each instance being fixed as it detonates.
+
+    Comments and docstrings may name dates — they are documenting incidents.
+    """
+    import re
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    offenders: list[str] = []
+    for lineno, line in enumerate(source.splitlines(), start=1):
+        code = line.split("#", 1)[0]
+        if not re.search(r"\d{4}-\d{2}-\d{2}", code):
+            continue
+        # Docstring prose naming an incident date is fine; a quoted timestamp
+        # used as a VALUE is not. The distinguishing mark is the RFC 3339 T.
+        if re.search(r"[\"']\d{4}-\d{2}-\d{2}T", code):
+            offenders.append(f"{lineno}: {line.strip()}")
+    assert not offenders, (
+        "hardcoded timestamp literal(s) found — express them relative to NOW "
+        "instead, or this module goes red on a date:\n" + "\n".join(offenders)
+    )

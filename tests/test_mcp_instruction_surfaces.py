@@ -491,6 +491,38 @@ def test_runtime_source_route_heads_use_valid_first_parameter() -> None:
     assert not violations, json.dumps(violations, sort_keys=True)
 
 
+#: `write_graph target="branch"` gained operation=create/remix/patch/publish,
+#: so one requirement set no longer describes the handle. create/remix carry
+#: the whole spec in `payload_json`; only patch takes `branch_id` +
+#: `changes_json`; publish freezes a named branch and needs `branch_id` alone.
+#: Requiring the patch arguments everywhere rejected valid create examples.
+_BRANCH_WRITE_REQUIREMENTS: dict[str, set[str]] = {
+    "create": {"payload_json"},
+    "remix": {"payload_json"},
+    "patch": {"branch_id", "changes_json"},
+    "publish": {"branch_id"},
+}
+#: No explicit operation means the default patch shape.
+_BRANCH_WRITE_DEFAULT: set[str] = {"branch_id", "changes_json"}
+
+
+def _branch_write_requirements(argument_text: str) -> set[str] | None:
+    """Required companion arguments for one `write_graph target="branch"` hit.
+
+    Returns ``None`` when the mention carries no arguments at all: prose that
+    merely names the handle ("use `write_graph target=\"branch\"`") is not an
+    example anyone can copy, so there is nothing to hold executable. Any hit
+    that does carry arguments is still checked strictly, against the set its
+    own ``operation`` requires.
+    """
+    if not argument_text.strip():
+        return None
+    match = re.search(r"""operation=["']?([a-z_]+)""", argument_text)
+    if match is None:
+        return set(_BRANCH_WRITE_DEFAULT)
+    return set(_BRANCH_WRITE_REQUIREMENTS.get(match.group(1), _BRANCH_WRITE_DEFAULT))
+
+
 def test_runtime_graph_routes_include_required_companion_arguments() -> None:
     """Response examples must be executable, not merely canonical-looking."""
     route = re.compile(
@@ -518,7 +550,13 @@ def test_runtime_graph_routes_include_required_companion_arguments() -> None:
                     example.group("arguments"),
                 )
             )
-            missing = required_all.get(key, set()) - assigned
+            if key == ("write_graph", "branch"):
+                needed = _branch_write_requirements(example.group("arguments"))
+                if needed is None:
+                    continue
+            else:
+                needed = required_all.get(key, set())
+            missing = needed - assigned
             if missing:
                 violations[surface] = f"{key} misses {sorted(missing)}"
             alternatives = required_any.get(key)
@@ -596,7 +634,15 @@ def test_graph_target_examples_include_semantic_companion_arguments() -> None:
                     example.group("arguments"),
                 )
             )
-            if key in required_all:
+            if key == ("write_graph", "branch"):
+                needed = _branch_write_requirements(example.group("arguments"))
+                if needed is not None:
+                    missing = needed - assigned
+                    assert not missing, (
+                        f"{surface} omits {sorted(missing)} from "
+                        f"{example.group(0)}"
+                    )
+            elif key in required_all:
                 missing = required_all[key] - assigned
                 assert not missing, (
                     f"{surface} omits {sorted(missing)} from "

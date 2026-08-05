@@ -1177,7 +1177,9 @@ jobs:
           import os
 
           destination = "Jonnyton/TinyAssets"
-          historical_destination = "Jonnyton/Workflow"
+          # Accepts a capability secret still keyed under the pre-rename slug;
+          # removing it breaks deploys for any operator who has not re-keyed.
+          historical_destination = "Jonnyton/Workflow"  # rename-allow: deliberate
           def reject_duplicate_members(pairs):
               result = {}
               for key, value in pairs:

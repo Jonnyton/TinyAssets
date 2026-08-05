@@ -137,7 +137,11 @@ def test_build_branch_returns_batch_receipt(comp_env):
         us,
         "build_branch",
         spec_json=json.dumps(RECIPE_SPEC),
-        request_id="chat-plan-123",
+        # `request_id` is an idempotency key and must be 16-128 characters.
+        # "chat-plan-123" is 14, so the call was rejected before a receipt was
+        # minted and this test failed on a missing key rather than on receipt
+        # content. Keep every assertion below; only the key length was wrong.
+        request_id="chat-plan-123-valid-idempotency-key",
     )
 
     receipt = result["batch_receipt"]
@@ -157,7 +161,10 @@ def test_build_branch_returns_batch_receipt(comp_env):
     }
     assert receipt["source_code_approval"]["runnable"] is True
     assert receipt["source_code_approval"]["unapproved_count"] == 0
-    assert receipt["plan_context"]["request_id"] == "chat-plan-123"
+    assert (
+        receipt["plan_context"]["request_id"]
+        == "chat-plan-123-valid-idempotency-key"
+    )
     assert receipt["plan_context"]["authoritative"] is False
     assert receipt["authorization_effect"] == {
         "grants_authorization": False,

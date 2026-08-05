@@ -13,6 +13,7 @@ refactor that bypasses the chokepoint regresses a test.
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 
@@ -23,11 +24,18 @@ def _canon_with_escape(tmp_path: Path) -> tuple[Path, Path]:
     """Build canon/ with one legit file and one symlink to an external secret.
 
     Returns ``(canon_dir, secret_path)``. Skips if symlinks are unavailable.
+
+    Both bodies keep their prose paragraph at or above 50 characters. Some
+    readers drop shorter paragraphs as noise (``raptor._MIN_PARAGRAPH_LEN``),
+    which would silently empty the legitimate side of the comparison and leave
+    the test asserting containment against nothing at all.
     """
     canon = tmp_path / "canon"
     canon.mkdir()
     (canon / "real_topic.md").write_text(
-        "# Real Topic\n\nLegitimate canon content lives here.", encoding="utf-8"
+        "# Real Topic\n\nLegitimate canon content lives here, and is long "
+        "enough to survive paragraph filtering.",
+        encoding="utf-8",
     )
     secret = tmp_path / "SECRET.md"
     secret.write_text(
@@ -82,7 +90,10 @@ def test_writer_tools_render_canon_skips_symlink(tmp_path):
 
 
 def test_plan_constraint_synthesis_skips_symlink(tmp_path, monkeypatch):
-    from domains.fantasy_daemon.phases import plan as plan_mod
+    # `phases/__init__.py` re-exports the `plan` FUNCTION, which shadows the
+    # `plan` submodule for `from ... import plan`. Reach the module by its full
+    # dotted name so this resolves to the module regardless of that re-export.
+    plan_mod = importlib.import_module("domains.fantasy_daemon.phases.plan")
 
     canon, _ = _canon_with_escape(tmp_path)
     captured: dict[str, object] = {}
@@ -253,10 +264,11 @@ def _setup_universe(tmp_path, monkeypatch):
 
 
 def test_universe_read_canon_rejects_symlink(tmp_path, monkeypatch):
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     canon = udir / "canon"
@@ -278,10 +290,11 @@ def test_universe_read_canon_rejects_symlink(tmp_path, monkeypatch):
 
 
 def test_universe_list_canon_skips_symlink(tmp_path, monkeypatch):
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     canon = udir / "canon"
@@ -301,10 +314,11 @@ def test_universe_list_canon_skips_symlink(tmp_path, monkeypatch):
 
 def test_universe_read_source_rejects_traversal(tmp_path, monkeypatch):
     """Traversal filename to read_source is rejected (runs live, no symlink)."""
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     (udir / "canon" / "sources").mkdir(parents=True)
@@ -317,10 +331,11 @@ def test_universe_read_source_rejects_traversal(tmp_path, monkeypatch):
 def test_universe_read_source_legit_file_still_works(tmp_path, monkeypatch):
     """A real ``canon/sources/<name>`` file must still be readable after the
     containment-root fix (no regression of the happy path)."""
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     sources = udir / "canon" / "sources"
@@ -338,10 +353,11 @@ def test_universe_read_source_rejects_symlinked_sources_dir(tmp_path, monkeypatc
     symlink target outside canon, containment is measured against the canon
     ROOT, so the read is rejected and no external content leaks.
     """
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     canon = udir / "canon"
@@ -360,10 +376,11 @@ def test_universe_read_source_rejects_symlinked_sources_dir(tmp_path, monkeypatc
 
 def test_universe_list_sources_skips_symlinked_sources_dir(tmp_path, monkeypatch):
     """A symlinked ``canon/sources`` dir must surface no source files."""
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     canon = udir / "canon"
@@ -382,10 +399,11 @@ def test_universe_list_sources_skips_symlinked_sources_dir(tmp_path, monkeypatch
 
 def test_universe_list_sources_legit_files_still_listed(tmp_path, monkeypatch):
     """Real ``canon/sources/*`` files must still be enumerated (no regression)."""
+    from tinyassets.api import helpers
     from tinyassets.api import universe as uni
 
     uid, udir = _setup_universe(tmp_path, monkeypatch)
-    monkeypatch.setattr(uni, "_default_universe", lambda: uid)
+    monkeypatch.setattr(helpers, "_default_universe", lambda: uid)
     monkeypatch.setattr(uni, "_universe_dir", lambda _id: udir)
 
     sources = udir / "canon" / "sources"

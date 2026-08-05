@@ -61,6 +61,13 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "execute_branch",
     ),
     CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "claim_task"),
+    # Reviewed 2026-08-05 (added by 64f27fe7, "Wire cloud drain epoch-2 Branch
+    # consumer" #2182, without registration here). `recover_expired()` is
+    # queue-owner maintenance over the canonical store: it grants no execution
+    # authority. Every recovered task is filtered to this universe and to
+    # `status == "pending"`, and must still pass the exact worker + activation
+    # claim transaction below before anything executes.
+    CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "recover_expired"),
     CallSite(
         "fantasy_daemon/__main__.py",
         "_try_execute_claimed_branch_task",
