@@ -306,7 +306,13 @@ class TestExtBranchListSandboxFilter:
         from tinyassets.api.branches import _ext_branch_list
 
         with patch("tinyassets.daemon_server.list_branch_definitions", return_value=rows):
-            kwargs: dict = {}
+            # scope="all" is required, not incidental: the DEFAULT scope is
+            # "published", which re-queries `list_branch_versions` per row and
+            # drops any branch with no published version. These rows are
+            # constructed in-memory and were never published, so the default
+            # filtered all of them out and every count came back 0 — masking
+            # what this class actually tests, the requires_sandbox filter.
+            kwargs: dict = {"scope": "all"}
             if rs_filter:
                 kwargs["requires_sandbox"] = rs_filter
             return json.loads(_ext_branch_list(kwargs))

@@ -211,7 +211,16 @@ def write_universe_soul(
     edit_authority: str = DEFAULT_EDIT_AUTHORITY,
     loop_branch_def_id: str = NO_LOOP_DECLARED,
     effect_authority: tuple[str, ...] = (),
+    clear_loop_branch: bool = False,
 ) -> UniverseSoul:
+    """Write or update a universe soul.
+
+    ``clear_loop_branch`` exists because an empty ``loop_branch_def_id``
+    PRESERVES the existing value (every field here treats blank as "leave
+    alone"). Without an explicit flag a caller cannot un-declare a loop, and a
+    caller that tries gets silent success — reported by cross-family review
+    2026-08-05.
+    """
     universe_dir.mkdir(parents=True, exist_ok=True)
     # Collapse the persona name to a single line: a multiline name would inject
     # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
@@ -259,7 +268,9 @@ def write_universe_soul(
             lineage=lineage.strip() or existing.lineage,
             edit_authority=edit_authority.strip() or existing.edit_authority,
             loop_branch_def_id=(
-                loop_branch_def_id.strip() or existing.loop_branch_def_id
+                NO_LOOP_DECLARED
+                if clear_loop_branch
+                else (loop_branch_def_id.strip() or existing.loop_branch_def_id)
             ),
             effect_authority=(
                 tuple(item.strip() for item in effect_authority if item.strip())
