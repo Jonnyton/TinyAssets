@@ -1,8 +1,10 @@
 """Run one universe's Slack agent.
 
-    python scripts/run_slack_agent.py --universe-dir <path> [--connection slack-main]
+    python scripts/run_slack_agent.py --universe-id <id> [--connection slack-main]
 
 Everything it needs beyond those two arguments is derived, not configured. The
+universe's directory comes from its id through the canonical resolver, so a
+config can never name one universe while reading another's credentials. The
 workspace id and the bot's own user id both come from `auth.test` at startup,
 using the credential already in the vault — so there is nothing to copy between
 the deposit step and this one, and therefore nothing to copy wrongly. Getting
@@ -70,8 +72,11 @@ def identify(bot_token: str) -> tuple[str, str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one universe's Slack agent.")
-    parser.add_argument("--universe-dir", required=True)
-    parser.add_argument("--universe-id", default="")
+    parser.add_argument(
+        "--universe-id",
+        required=True,
+        help="the universe to run; its directory is derived from this",
+    )
     parser.add_argument("--connection", default="slack-main")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -81,10 +86,24 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    universe_dir = Path(args.universe_dir).expanduser().resolve()
+    universe_id = args.universe_id.strip()
+    try:
+        # Built once with placeholder identity purely to resolve the directory
+        # through the canonical resolver — which carries the path-traversal
+        # guard — then rebuilt below with the identity Slack reports.
+        universe_dir = SlackAgentConfig(
+            universe_id=universe_id,
+            connection_id=args.connection,
+            team_id="pending",
+            bot_user_id="pending",
+        ).universe_dir
+    except SlackAgentConfigError as exc:
+        raise SystemExit(str(exc)) from None
     if not universe_dir.is_dir():
-        raise SystemExit(f"No such universe directory: {universe_dir}")
-    universe_id = args.universe_id.strip() or universe_dir.name
+        raise SystemExit(
+            f"Universe {universe_id!r} resolves to {universe_dir}, "
+            "which does not exist."
+        )
 
     bot_token = resolve_slack_token(universe_dir, args.connection)
     if not bot_token:
@@ -104,9 +123,9 @@ def main() -> int:
     )
 
     try:
+        # Rebuilt with the real identity now that Slack has told us who we are.
         config = SlackAgentConfig(
             universe_id=universe_id,
-            universe_dir=universe_dir,
             connection_id=args.connection,
             team_id=team_id,
             bot_user_id=bot_user_id,
