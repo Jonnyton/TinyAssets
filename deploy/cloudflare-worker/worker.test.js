@@ -468,3 +468,38 @@ describe('constants', () => {
         }
     });
 });
+
+// ------- OAuth discovery reachability ---------------------------------------
+//
+// RFC 9728 puts the metadata for resource `https://tinyassets.io/mcp` at the
+// APEX path `/.well-known/oauth-protected-resource/mcp`. The /mcp-only rule
+// made that unreachable, so every RFC-following client got a 404 from the
+// website origin. Slack's MCP client fails closed on it with "could not find
+// OAuth info for this server".
+
+describe('shouldProxy — OAuth discovery', () => {
+    it('accepts the RFC 9728 path-suffix PRM path', () => {
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp'), true);
+    });
+
+    it('accepts the bare PRM path', () => {
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource'), true);
+    });
+
+    it('accepts the RFC 8414 path-suffix AS-metadata path', () => {
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/mcp'), true);
+    });
+
+    it('does NOT become a general apex proxy', () => {
+        // The binding is /.well-known/* but the Worker must stay narrow —
+        // anything else under it still belongs to the website origin.
+        assert.equal(shouldProxy('/.well-known/acme-challenge/token'), false);
+        assert.equal(shouldProxy('/.well-known/security.txt'), false);
+        assert.equal(shouldProxy('/.well-known/'), false);
+    });
+
+    it('still rejects unrelated apex paths', () => {
+        assert.equal(shouldProxy('/'), false);
+        assert.equal(shouldProxy('/index.html'), false);
+    });
+});

@@ -127,6 +127,16 @@ def starlette_discovery_routes() -> list[Any]:
             methods=["GET"],
         ),
         Route(
+            # RFC 9728 §3.1: for resource `https://host/mcp`, metadata lives at
+            # `/.well-known/oauth-protected-resource/mcp` — the resource path is
+            # a SUFFIX of the well-known path. Slack's MCP client probes exactly
+            # here and reported "could not find OAuth info for this server"
+            # because we only served the two variants above.
+            "/.well-known/oauth-protected-resource/mcp",
+            _handle_protected_resource_metadata,
+            methods=["GET"],
+        ),
+        Route(
             "/.well-known/oauth-authorization-server",
             _handle_authz_server_metadata,
             methods=["GET"],
@@ -136,6 +146,12 @@ def starlette_discovery_routes() -> list[Any]:
             # so a client probing the apex AS-metadata path would 404 and lose
             # the AuthKit proxy fallback. Serve the /mcp-prefixed variant too.
             "/mcp/.well-known/oauth-authorization-server",
+            _handle_authz_server_metadata,
+            methods=["GET"],
+        ),
+        Route(
+            # RFC 8414 §3.1 path-suffix form, same reason as the PRM above.
+            "/.well-known/oauth-authorization-server/mcp",
             _handle_authz_server_metadata,
             methods=["GET"],
         ),

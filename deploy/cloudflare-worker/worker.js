@@ -207,7 +207,21 @@ function shouldProxy(pathname) {
     // Only canonical `/mcp` belongs to the tunnel. The broader Cloudflare
     // `tinyassets.io/mcp*` binding intentionally reaches this Worker so stale
     // directory callers receive the same method-independent ordinary 404.
-    return pathname === '/mcp' || pathname.startsWith('/mcp/');
+    if (pathname === '/mcp' || pathname.startsWith('/mcp/')) return true;
+    // RFC 9728 / RFC 8414 discovery. For resource `https://host/mcp` the
+    // metadata path is `/.well-known/oauth-protected-resource/mcp` — apex, not
+    // under /mcp — so the /mcp-only rule above made it unreachable and OAuth
+    // discovery failed. Slack's MCP client probes here and reported "could not
+    // find OAuth info for this server".
+    //
+    // Deliberately narrow: only these two metadata families, never all of
+    // /.well-known/, so this does not become a general apex proxy.
+    return (
+        pathname === '/.well-known/oauth-protected-resource' ||
+        pathname.startsWith('/.well-known/oauth-protected-resource/') ||
+        pathname === '/.well-known/oauth-authorization-server' ||
+        pathname.startsWith('/.well-known/oauth-authorization-server/')
+    );
 }
 
 export default {
