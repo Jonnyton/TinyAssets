@@ -6262,7 +6262,7 @@ def _action_declare_universe_loop(
     Scoped to the caller's own universe via ``_request_universe``; the branch
     must exist. Passing an empty ``branch_def_id`` clears the declaration.
     """
-    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.storage import data_dir
     from tinyassets.universe_soul import write_universe_soul
 
@@ -6273,26 +6273,33 @@ def _action_declare_universe_loop(
 
     declared = str(branch_def_id or "").strip()
     if declared:
-        try:
-            branch = get_branch_definition(data_dir(), branch_def_id=declared)
-        except Exception:  # noqa: BLE001 - a lookup failure is "not found" here
-            branch = None
-        if not branch:
+        # MUST use the authority-aware resolver, not raw get_branch_definition:
+        # the raw query ignores author/visibility, which would both bind another
+        # author's PRIVATE branch as this universe's loop and turn the
+        # found/not-found answer into a cross-tenant existence oracle
+        # (cross-family review 2026-08-05).
+        resolved = _resolve_readable_branch(declared, str(data_dir()))
+        if resolved is None:
             return json.dumps({
                 "error": "branch_not_found",
                 "universe_id": uid,
                 "branch_def_id": declared,
                 "note": (
-                    "Declare a branch that exists. Build one with "
+                    "Declare a branch you can read. Build one with "
                     '`write_graph target="branch" operation="create" '
                     "payload_json=...` first."
                 ),
             })
+        declared = resolved[0]
 
-    soul = write_universe_soul(udir, loop_branch_def_id=declared)
-    if declared and soul.loop_branch_def_id != declared:
-        # write_universe_soul preserves the existing value when handed a blank;
-        # a mismatch on a non-blank write means the declaration did not stick.
+    soul = write_universe_soul(
+        udir,
+        loop_branch_def_id=declared,
+        # A blank means "leave alone" everywhere else in this writer, so
+        # clearing needs an explicit flag or it silently reports success.
+        clear_loop_branch=not declared,
+    )
+    if soul.loop_branch_def_id != declared:
         return json.dumps({
             "error": "loop_declaration_failed",
             "universe_id": uid,

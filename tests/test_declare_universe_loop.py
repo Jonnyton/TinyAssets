@@ -133,3 +133,66 @@ def test_declare_loop_refuses_a_universe_the_caller_cannot_write(env, monkeypatc
     soul = read_universe_soul(base / uid)
     assert soul is not None
     assert not soul.loop_branch_def_id, "refused call must not have mutated soul.md"
+
+
+def test_clearing_a_loop_actually_clears_it(env):
+    """Clearing must clear, not silently report success.
+
+    `write_universe_soul` treats a blank `loop_branch_def_id` as "leave alone"
+    — like every other field — so the first version of this action reported
+    status "cleared" while the declaration remained. Found by cross-family
+    review 2026-08-05.
+    """
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+    from tinyassets.universe_soul import read_universe_soul
+
+    json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert read_universe_soul(base / uid).loop_branch_def_id == bid
+
+    out = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id="",
+    ))
+    assert not out.get("error"), out
+    assert out["status"] == "cleared"
+    assert out["loop_dispatch"]["declared"] is False
+    # The claim must match the disk.
+    assert not read_universe_soul(base / uid).loop_branch_def_id, (
+        "reported cleared but soul.md still carries a loop declaration"
+    )
+
+
+def test_another_authors_private_branch_cannot_become_my_loop(env, monkeypatch):
+    """A private branch owned by someone else must not bind, and must not leak.
+
+    The raw `get_branch_definition` ignores author/visibility, so using it made
+    any KNOWN private id succeed (unauthorized binding) while an unknown id
+    returned branch_not_found — a cross-tenant existence oracle. The action must
+    go through the authority-aware resolver instead.
+    """
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+
+    # Re-label the branch as another author's private branch.
+    from tinyassets.daemon_server import _connect
+    with _connect(str(base)) as conn:
+        conn.execute(
+            "UPDATE branch_definitions SET author = ?, visibility = ? "
+            "WHERE branch_def_id = ?",
+            ("someone-else", "private", bid),
+        )
+        conn.commit()
+
+    out = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert out.get("error") == "branch_not_found", (
+        f"another author's private branch must not bind, got {out}"
+    )
+
+    from tinyassets.universe_soul import read_universe_soul
+    assert not read_universe_soul(base / uid).loop_branch_def_id
