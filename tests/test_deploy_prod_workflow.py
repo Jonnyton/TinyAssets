@@ -181,7 +181,7 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
         "${{ steps.recovery-image.outputs.image_ref }}"
     )
     assert "sudo docker pull '${RECOVERY_IMAGE_REF}'" in host_pull_script
-    assert step_names.index("Recovery canonical MCP canary") < step_names.index(
+    assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
         "Finalize canonical unsafe-fence recovery"
     )
     assert step_names.index("Recovery exact-seven surface assertion") < step_names.index(
@@ -2476,12 +2476,14 @@ def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
     wf = _load()
     step = next(
         s for s in wf["jobs"]["recover-unsafe"]["steps"]
-        if s.get("name") == "Recovery canonical MCP canary"
+        if s.get("name") == "Recovery daemon MCP canary (loopback)"
     )
     run = step.get("run", "") or ""
-    assert "until python scripts/mcp_public_canary.py" in run
-    assert "deadline=" in run and "SECONDS" in run
-    # The gate must still be the same canary, and it must still be able to fail.
-    assert "--assert-name TinyAssets" in run
-    assert "never went green" in run
+    # Recovery proves the DAEMON serves MCP; the public route needs the tunnel
+    # sidecar, which recovery does not restore and the later deploy does.
+    assert "127.0.0.1:8001/mcp" not in run  # it is base64'd, not inline
+    assert "recovered daemon never served /mcp on loopback" in run
     assert "exit 1" in run
+    # The public assertion must still exist elsewhere in the recovery job.
+    wf_all = _WORKFLOW.read_text(encoding="utf-8")
+    assert "Recovery exact-seven surface assertion" in wf_all

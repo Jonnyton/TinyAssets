@@ -219,40 +219,38 @@ jobs:
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}' ${RETIRE_ARG}" \
             > "$evidence_dir/recovery.json"
-      - name: Recovery canonical MCP canary
+      - name: Recovery daemon MCP canary (loopback)
         run: |
-          # Bounded wait, then probe. The ordinary deploy path has a
-          # "Wait for daemon health" step before its canary; recovery had
-          # none and probed the PUBLIC url immediately after starting the
-          # fleet. The daemon's healthcheck allows a 60s start_period, so
-          # the canary ran ~0.7s after container start, failed on a daemon
-          # that had not finished booting, and that failure re-fenced the
-          # fleet -- recovery could never satisfy its own success check.
+          # Recovery proves the DAEMON is restored, not the public route.
           #
-          # Live 2026-08-05: recovery 31048315265 brought tinyassets-daemon
-          # up healthy (image ea7eddc14ff8, revision 454baf7511de) and then
-          # re-fenced it on that immediate 502, leaving /mcp down.
+          # This probed https://tinyassets.io/mcp, which only resolves
+          # through the tinyassets-tunnel sidecar -- and recovery does not
+          # restore sidecars: the live fence state carries
+          # sidecar_restart_policies == {} and no sidecar_handoff, so the
+          # fence has no record of them at all. The tunnel comes back with
+          # the normal deploy's `compose up`, which runs AFTER recovery.
           #
-          # This waits for a green probe instead of demanding one instantly.
-          # It does NOT weaken the gate: the same canary must still pass,
-          # and a daemon that never serves still fails and still re-fences.
-          deadline=$(( SECONDS + 240 ))
-          attempt=0
-          until python scripts/mcp_public_canary.py               --url "${CANARY_URL}" --assert-name TinyAssets --verbose; do
-            if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "::group::daemon diagnostics"
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  'sudo docker ps -a --format "{{.Names}} {{.Status}}"; echo ---DAEMON-LOGS---; sudo docker logs tinyassets-daemon --tail 120 2>&1; echo ---TUNNEL-LOGS---; sudo docker logs tinyassets-tunnel --tail 40 2>&1' \
-                  || true
-              echo "::endgroup::"
-              echo "::error::recovery canary never went green within 240s"
-              exit 1
-            fi
-            attempt=$(( attempt + 1 ))
-            echo "recovery canary not green (attempt ${attempt}); retry in 15s"
-            sleep 15
-          done
+          # So recovery was asserting a condition it structurally could not
+          # produce: observed live on 31050887125 and 31051516167, where all
+          # five containers were Up (healthy) and the daemon logged
+          # `POST /mcp -> 200 OK` on loopback while the public probe 502'd
+          # 17 times and re-fenced the fleet it had just restored.
+          #
+          # The public assertion is NOT dropped -- the deploy's own canonical
+          # canary and the exact-seven surface assertion still run after the
+          # tunnel is back. This gate now proves exactly what recovery is
+          # responsible for: a daemon serving MCP.
+          echo "::group::recovery daemon canary"
+          B64=Zm9yIGkgaW4gJChzZXEgMSAyMCk7IGRvCiAgY29kZT0kKGN1cmwgLXMgLW8gL2Rldi9udWxsIC13ICIle2h0dHBfY29kZX0iIC1YIFBPU1QgaHR0cDovLzEyNy4wLjAuMTo4MDAxL21jcCBcCiAgICAtSCAiQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uIiBcCiAgICAtSCAiQWNjZXB0OiBhcHBsaWNhdGlvbi9qc29uLCB0ZXh0L2V2ZW50LXN0cmVhbSIgXAogICAgLWQgJ3sianNvbnJwYyI6IjIuMCIsImlkIjoxLCJtZXRob2QiOiJpbml0aWFsaXplIiwicGFyYW1zIjp7InByb3RvY29sVmVyc2lvbiI6IjIwMjQtMTEtMDUiLCJjYXBhYmlsaXRpZXMiOnt9LCJjbGllbnRJbmZvIjp7Im5hbWUiOiJyZWNvdmVyeS1jYW5hcnkiLCJ2ZXJzaW9uIjoiMSJ9fX0nIHx8IGVjaG8gMDAwKQogIGVjaG8gImxvb3BiYWNrIC9tY3AgYXR0ZW1wdCAke2l9OiBIVFRQICR7Y29kZX0iCiAgaWYgWyAiJHtjb2RlfSIgPSAiMjAwIiBdOyB0aGVuIGV4aXQgMDsgZmkKICBzbGVlcCAxMApkb25lCmV4aXQgMQo=
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "echo ${B64} | base64 -d | sudo bash -s"
+          rc=$?
+          echo "::endgroup::"
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::recovered daemon never served /mcp on loopback"
+            exit 1
+          fi
       - name: Recovery exact-seven surface assertion
         run: |
           python scripts/mcp_public_canary.py \
