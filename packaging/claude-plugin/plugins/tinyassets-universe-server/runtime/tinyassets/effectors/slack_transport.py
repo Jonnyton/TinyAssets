@@ -36,6 +36,15 @@ from tinyassets.app_reply_authority import ReplyDestination
 #: tests can point it at a local stub without monkeypatching urllib globally.
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 
+#: Slack bot tokens start with this. A user token (``xoxp-``) posts as the
+#: human and turns our own reply into an inbound message from them.
+BOT_TOKEN_PREFIX = "xoxb-"
+
+
+def is_bot_token(token: object) -> bool:
+    """True only for a Slack *bot* token."""
+    return isinstance(token, str) and token.startswith(BOT_TOKEN_PREFIX)
+
 #: Slack rejects oversized posts; bound the body before we spend a round trip.
 _MAX_BODY_BYTES = 40_000
 
@@ -111,7 +120,11 @@ def build_slack_transport(
     identifier — never the message text.
     """
 
-    def _transport(destination: ReplyDestination, body: str) -> AppTransportReceipt:
+    def _transport(
+        destination: ReplyDestination,
+        body: str,
+        thread_ts: str = "",
+    ) -> AppTransportReceipt:
         if destination.provider != "slack":
             raise SlackTransportError("slack transport received a non-slack destination")
         text = body if isinstance(body, str) else ""
@@ -127,13 +140,22 @@ def build_slack_transport(
             raise SlackTransportError(
                 "no requester-owned slack credential for this connection"
             )
+        if not is_bot_token(token):
+            # A *user* token (xoxp-) posts as the human, so our own reply
+            # re-enters as an ordinary message authored by them — no bot marker,
+            # fresh event_id — and the universe answers itself forever on the
+            # user's subscription. The vault accepts bot_token/token/
+            # access_token without distinguishing them, so the check belongs
+            # here, where the token is about to be used.
+            raise SlackTransportError("slack credential is not a bot token")
 
-        decoded = _post(
-            url,
-            {"channel": destination.address, "text": text},
-            token,
-            timeout,
-        )
+        payload = {"channel": destination.address, "text": text}
+        if thread_ts:
+            # Answer in the thread the question was asked in. Without this a
+            # reply to a threaded question lands at the top of the channel.
+            payload["thread_ts"] = thread_ts
+
+        decoded = _post(url, payload, token, timeout)
         if not decoded.get("ok"):
             # Slack reports failure in-band with HTTP 200. Surface the error
             # CODE only — never the echoed message payload Slack returns.

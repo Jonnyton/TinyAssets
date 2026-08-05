@@ -481,6 +481,7 @@ def converse(
     *,
     actor_id: str = "",
     tier: str | None = None,
+    persist_learning: bool = True,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -528,9 +529,28 @@ def converse(
         universe_context=ctx,
         config=_sandboxed_config(ctx),
     )
-    try:
-        proposed = extract_learning(founder_message, reply, ctx)
-        commit_learning(udir, proposed, universe_id=uid, actor_id=actor_id)
-    except Exception:  # persistence must never break the conversation turn
-        logger.exception("converse: learning persistence failed for %s", uid)
+    # Only a FOUNDER teaches the universe.
+    #
+    # `tier` used to gate reads and nothing else: `commit_learning` takes an
+    # actor_id and no tier at all, so every caller — at any tier — wrote durable
+    # soul and canon state. A cross-family review found this while assessing a
+    # Slack channel that speaks at T1, where it would have let any mapped sender
+    # inject durable facts into the founder's own brain.
+    #
+    # The read gate lives in `_build_persona_system_prompt` above; this is the
+    # matching write gate, placed here rather than at any one call site so a
+    # future non-founder caller inherits it instead of having to remember it.
+    #
+    # `persist_learning=False` is the second, independent lock. Read authority
+    # and write authority are not the same question: a channel can legitimately
+    # prove founder linkage for READS (an external app mapping the founder
+    # provisioned) while still being too weak to durably rewrite the founder's
+    # own brain. Both conditions must hold, so neither a tier mistake nor a
+    # forgotten flag is sufficient on its own.
+    if bound_tier == interlocutor.FOUNDER and persist_learning:
+        try:
+            proposed = extract_learning(founder_message, reply, ctx)
+            commit_learning(udir, proposed, universe_id=uid, actor_id=actor_id)
+        except Exception:  # persistence must never break the conversation turn
+            logger.exception("converse: learning persistence failed for %s", uid)
     return reply

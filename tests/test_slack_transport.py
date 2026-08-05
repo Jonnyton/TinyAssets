@@ -205,3 +205,38 @@ def test_delivers_to_the_authorized_channel(tmp_path: Path, monkeypatch):
 
     assert receipt.provider_receipt_ref.startswith("slack:")
     assert stub.calls[0]["payload"] == {"channel": "C0123ABC", "text": "hello there"}
+
+
+def test_user_token_is_refused(tmp_path: Path):
+    """A user token posts as the human and loops our own reply back in."""
+    universe = tmp_path / "u-usertoken"
+    universe.mkdir()
+    _vault(universe, [_slack_record("conn-a", "xoxp-user-token")])
+
+    with pytest.raises(SlackTransportError) as exc:
+        build_slack_transport(universe)(_destination(), "hello")
+    assert "not a bot token" in str(exc.value)
+
+
+def test_thread_ts_reaches_slack_when_supplied(tmp_path: Path, monkeypatch):
+    universe = tmp_path / "u-thread"
+    universe.mkdir()
+    _vault(universe, [_slack_record("conn-a")])
+    stub = _StubSlack({"ok": True, "ts": "1.0", "channel": "C0123ABC"})
+    monkeypatch.setattr("tinyassets.effectors.slack_transport._post", stub)
+
+    build_slack_transport(universe)(_destination(), "hi", "1700000000.000050")
+
+    assert stub.calls[0]["payload"]["thread_ts"] == "1700000000.000050"
+
+
+def test_thread_ts_is_omitted_for_a_top_level_reply(tmp_path: Path, monkeypatch):
+    universe = tmp_path / "u-nothread"
+    universe.mkdir()
+    _vault(universe, [_slack_record("conn-a")])
+    stub = _StubSlack({"ok": True, "ts": "1.0", "channel": "C0123ABC"})
+    monkeypatch.setattr("tinyassets.effectors.slack_transport._post", stub)
+
+    build_slack_transport(universe)(_destination(), "hi")
+
+    assert "thread_ts" not in stub.calls[0]["payload"]

@@ -325,11 +325,48 @@ def test_persisted_receipt_tampering_fails_integrity_check(tmp_path: Path) -> No
         boundary.admit(raw_body=body, headers=_headers(body))
 
 
-def test_boundary_is_dark_and_has_no_production_consumer() -> None:
+def test_boundary_reaches_production_only_through_the_ingress_module() -> None:
+    """Supersedes the original "boundary is dark" guard, deliberately.
+
+    That guard asserted the literal string ``app_event_ingress`` was absent
+    from ``universe_server.py`` and ``tinyassets/api/*.py``. It was correct
+    when written (#2246 landed the boundary before anything downstream
+    existed) but it checked a *name*, not reachability — so routing through
+    one intermediate module satisfied it while the boundary was fully wired
+    to a public endpoint. It passed green in exactly the situation it was
+    written to catch.
+
+    The invariant that is actually worth holding now is narrower: the
+    boundary has exactly ONE production consumer, and that consumer is the
+    fail-closed ingress module. This walks the import graph instead of
+    grepping for a name, so another indirection cannot dodge it either.
+    """
     root = Path(__file__).parents[1]
-    consumers = (
-        root / "tinyassets" / "universe_server.py",
-        *(root / "tinyassets" / "api").glob("*.py"),
+    package = root / "tinyassets"
+
+    importers = {
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if "app_event_ingress" in path.read_text(encoding="utf-8")
+        and path.name != "app_event_ingress.py"
+    }
+
+    # The authority modules consume the authenticated-event *type*; the
+    # ingress module is the only thing that drives the boundary from a
+    # request. Anything else appearing here is a new, unreviewed door.
+    expected = {
+        "app_slack_ingress.py",
+        "app_conversation_authority.py",
+        "app_principal_mapping.py",
+        "app_reply_authority.py",
+    }
+    assert importers == expected, (
+        "unexpected consumer of the app-event boundary: "
+        f"{sorted(importers ^ expected)}"
     )
-    for consumer in consumers:
-        assert "app_event_ingress" not in consumer.read_text(encoding="utf-8")
+
+    # And the one request-driven consumer must refuse when unconfigured —
+    # activation is gated by configuration, not by the absence of a caller.
+    from tinyassets.app_slack_ingress import resolve_boundary
+
+    assert resolve_boundary(root, env={}) is None

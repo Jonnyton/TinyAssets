@@ -291,6 +291,68 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
     return HTMLResponse(_LANDING_HTML)
 
 
+@mcp.custom_route("/mcp/app/slack/events", methods=["POST"])
+async def _slack_app_events(request):  # type: ignore[no-untyped-def]
+    """Admit Slack Events API deliveries.
+
+    Lives under ``/mcp/`` because that is the only prefix the public edge
+    forwards: the Cloudflare route binding is ``tinyassets.io/mcp*`` and the
+    Worker's ``shouldProxy`` re-checks it. A top-level path would be
+    unreachable without a dashboard change. ``/mcp/.well-known/...`` already
+    proves a non-MCP route coexists with the MCP mount here.
+
+    The body is read once and passed through untouched — Slack's HMAC covers
+    the exact bytes, so any re-encoding on this path would invalidate every
+    signature.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import PlainTextResponse
+
+    from tinyassets.app_slack_ingress import (
+        REFUSAL_BODY,
+        BodyTooLarge,
+        RawHeaders,
+        handle_slack_request,
+        read_bounded_body,
+        resolve_allowed_team_ids,
+        resolve_boundary,
+    )
+    from tinyassets.storage import data_dir
+
+    try:
+        raw_body = await read_bounded_body(request)
+    except BodyTooLarge:
+        # Refused before authentication, so it must not disclose anything a
+        # refusal wouldn't — same body as every other rejection.
+        return PlainTextResponse(REFUSAL_BODY, status_code=413)
+
+    # Admission does synchronous SQLite work whose busy timeout is 30s. Running
+    # that inline would let a burst of valid events block the event loop and
+    # stall every other request on the server, including /mcp.
+    #
+    # `resolve_boundary` has to be offloaded *too*, not just the admission. It
+    # opens the admission store, which touches storage — passing it as an
+    # argument evaluates it on the event loop before the offload ever happens,
+    # which a reviewer measured as a 255ms stall from 250ms of I/O. Everything
+    # blocking therefore lives inside this one sync closure.
+    # NOT dict(request.headers): that collapses duplicates and would defeat the
+    # verifier's single-signature-header rule, which exists to stop signature
+    # smuggling. Hand over every pair as received.
+    headers = RawHeaders(request.headers.items())
+
+    def _admit():
+        return handle_slack_request(
+            raw_body=raw_body,
+            headers=headers,
+            boundary=resolve_boundary(data_dir()),
+            allowed_team_ids=resolve_allowed_team_ids(),
+        )
+
+    outcome = await run_in_threadpool(_admit)
+
+    return PlainTextResponse(outcome.body, status_code=outcome.status)
+
+
 # Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
 _warn_if_no_upload_whitelist()
 
