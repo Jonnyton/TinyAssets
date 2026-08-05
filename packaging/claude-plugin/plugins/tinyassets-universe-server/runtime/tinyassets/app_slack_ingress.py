@@ -180,22 +180,34 @@ def _challenge_response(
     # failure D3 exists to prevent. But a reviewer echoed `ORG-BYPASS` through a
     # handshake declaring `api_app_id: A_OTHER`, so a *present* value that
     # disagrees with ours is refused. Absent (the real shape) still passes.
-    claimed_app_id = _clean(envelope.get("api_app_id"))
-    if claimed_app_id and claimed_app_id != expected_api_app_id:
-        return None
-    # Same rule for the workspace. Slack's genuine handshake carries no team_id
-    # either, so one cannot be required — but a reviewer got `CHAL` echoed back
-    # through handshakes declaring `team_id: T_ATTACKER`, so a *present* team
-    # that is not on the allow-list is refused.
-    claimed_team_id = _clean(envelope.get("team_id"))
-    if claimed_team_id and claimed_team_id not in allowed_team_ids:
-        return None
+    # Presence is judged by the KEY, not by truthiness after cleaning.
+    #
+    # A reviewer defeated the earlier truthiness form by sending `api_app_id`
+    # as `None`, `0`, `{}`, or `"   "`: `_clean` maps each to `""`, which then
+    # read as "absent" and passed. Anything the caller bothered to state must
+    # be a string that matches — only genuine omission is permitted, because
+    # Slack's real handshake body is `{token, challenge, type}` and requiring
+    # these fields would make the Request URL unsaveable (see D3).
+    if "api_app_id" in envelope:
+        claimed_app_id = envelope.get("api_app_id")
+        if not isinstance(claimed_app_id, str):
+            return None
+        if claimed_app_id.strip() != expected_api_app_id:
+            return None
+    # Same rule for the workspace: a reviewer got `CHAL` echoed back through a
+    # handshake declaring `team_id: T_ATTACKER`.
+    if "team_id" in envelope:
+        claimed_team_id = envelope.get("team_id")
+        if not isinstance(claimed_team_id, str):
+            return None
+        if claimed_team_id.strip() not in allowed_team_ids:
+            return None
     # An Enterprise Grid install is org-scoped, and the only authorisation this
     # deployment has is a per-workspace allow-list — so there is nothing here
     # that could vouch for one. A reviewer got `CHAL` echoed through a handshake
     # carrying only `enterprise_id`, which no team check can catch precisely
-    # because it names no team. Refuse it rather than answer unauthorised.
-    if _clean(envelope.get("enterprise_id")):
+    # because it names no team. Its mere presence is refused.
+    if "enterprise_id" in envelope:
         return None
     challenge = envelope.get("challenge")
     if not isinstance(challenge, str) or not challenge:

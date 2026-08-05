@@ -866,3 +866,73 @@ def test_handshake_is_refused_when_no_workspace_is_authorised(configured):
 
     assert outcome.status == 401
     assert "no-allowlist-no-answer" not in outcome.body
+
+
+@pytest.mark.parametrize(
+    "value,label",
+    [
+        (None, "null"),
+        (0, "integer"),
+        ({}, "object"),
+        ([], "array"),
+        ("   ", "whitespace"),
+        ("", "empty string"),
+    ],
+)
+def test_stated_but_non_string_app_id_is_refused(configured, value, label):
+    """Presence is judged by the KEY, not truthiness after cleaning.
+
+    Reviewer counterexample: `api_app_id` as null/0/{}/"   " each cleaned to
+    "" and then read as *absent*, so the mismatch check was skipped and `ECHO`
+    came back 200. Anything the caller bothered to state must be a matching
+    string; only genuine omission is allowed.
+    """
+    body = json.dumps(
+        {"type": "url_verification", "challenge": "ECHO", "api_app_id": value}
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401, f"stated-as-{label} must not be treated as absent"
+    assert "ECHO" not in outcome.body
+
+
+@pytest.mark.parametrize("value", [None, 0, {}, "   ", ""])
+def test_stated_but_non_string_team_id_is_refused(configured, value):
+    """Same type-confusion path, via team_id."""
+    body = json.dumps(
+        {"type": "url_verification", "challenge": "ECHO", "team_id": value}
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401
+    assert "ECHO" not in outcome.body
+
+
+@pytest.mark.parametrize("value", [None, 0, "", "E_ATTACKER"])
+def test_any_stated_enterprise_id_is_refused(configured, value):
+    """Presence alone disqualifies — falsy values must not slip through."""
+    body = json.dumps(
+        {"type": "url_verification", "challenge": "ECHO", "enterprise_id": value}
+    ).encode("utf-8")
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=_signed(body),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401
+    assert "ECHO" not in outcome.body
