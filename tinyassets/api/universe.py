@@ -6307,6 +6307,35 @@ def _action_declare_universe_loop(
             "current": soul.loop_branch_def_id,
         })
 
+    # A declared loop is not yet a SERVABLE loop: without a project-loop daemon
+    # for this universe, `cloud_worker._register_worker_runtime` skips runtime
+    # registration and nothing claims the universe's work.
+    #
+    # This route deliberately does NOT provision that daemon. Three consecutive
+    # cross-family reviews rejected doing so, and the last one showed why the
+    # shape is wrong rather than the implementation: `daemon_create` accepts
+    # caller-supplied metadata and `create_daemon` uses setdefault, so
+    # `owner_user_id` is CALLER-SPOOFABLE. Any ownership check built on it —
+    # including an owner-scoped selector — can be satisfied by an attacker who
+    # planted a daemon claiming to be owned by the victim. Provisioning a loop
+    # daemon needs authority derived from server state, which belongs with the
+    # separately-gated daemon lifecycle, not smuggled into a config write.
+    #
+    # So we report the gap instead of papering over it.
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.daemon_registry import select_project_loop_daemon
+
+    # Owner-scoped: an UNSCOPED lookup would select an attacker-owned daemon
+    # whose (caller-controlled) metadata names this universe, leaking its id and
+    # falsely reporting the owner's loop as served (cross-family review).
+    loop_daemon = (
+        select_project_loop_daemon(
+            _base_path(), universe_id=uid, owner_user_id=_current_actor()
+        )
+        if declared
+        else None
+    )
+
     return json.dumps({
         "universe_id": uid,
         "status": "declared" if declared else "cleared",
@@ -6315,7 +6344,33 @@ def _action_declare_universe_loop(
             "branch_def_id": soul.loop_branch_def_id,
             "declared": bool(soul.loop_branch_def_id),
         },
-    })
+        "loop_daemon": (
+            {
+                "daemon_id": loop_daemon.get("daemon_id"),
+                # Registry presence only. A registered daemon is NOT proof of a
+                # live runtime — `runtime_instance_count` can still be 0 — so do
+                # not call this "serving" and invite a false all-clear.
+                "registered": True,
+                "note": (
+                    "a project-loop daemon is registered for this universe; "
+                    "this does not prove a worker has a live runtime for it"
+                ),
+            }
+            if loop_daemon
+            else {
+                "daemon_id": None,
+                "registered": False,
+                "blocker": "no_project_loop_daemon",
+                "note": (
+                    "loop declared, but no project-loop daemon is registered for "
+                    "this universe, so no worker will register a runtime for it "
+                    "and queued work will not be claimed"
+                ),
+            }
+            if declared
+            else None
+        ),
+    }, default=str)
 
 
 def _action_soul_edit(
