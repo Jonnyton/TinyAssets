@@ -108,8 +108,12 @@ def _canonical_json(value: object) -> str:
 
 
 def _content_digest(value: object) -> str:
-    payload = _canonical_json(value).encode("utf-8")
-    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    # Same bytes as before; the canonical implementation now lives beside the
+    # column it is stored in so the writer and the epoch-2 reader that judges
+    # it cannot drift apart again.
+    from tinyassets.storage.request_admissions import canonical_content_digest
+
+    return canonical_content_digest(value)
 
 
 def _branch_execution_subject(
