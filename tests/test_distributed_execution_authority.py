@@ -200,7 +200,7 @@ def _signed_authority_records(root: AuthorityRoot):
     )
 
 
-def test_epoch2_claim_remains_outside_execution_while_consumer_gate_is_closed(
+def test_epoch2_claim_enters_execution_for_its_claiming_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -238,9 +238,23 @@ def test_epoch2_claim_remains_outside_execution_while_consumer_gate_is_closed(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", descriptor.worker_id)
 
-    assert materialize_pending_requests(universe_path) == []
-    assert list_selectable_targets(universe_path) == []
-    assert _restartable_work_exists(universe_path) is False
+    # `64f27fe7` (#2182) wired the epoch-2 Branch consumer, so the gate this
+    # test was built around is open: a claim held by THIS worker now enters
+    # execution instead of being withheld. Previously all three were empty or
+    # False. Assert the replacement contract rather than dropping the coverage.
+    materialized = materialize_pending_requests(universe_path)
+    assert len(materialized) == 1
+    target = materialized[0]
+    # It must be exactly this admission, claimed by exactly this worker.
+    assert target.metadata["branch_task_id"] == admission["branch_task_id"]
+    assert target.metadata["admission_id"] == admission["admission_id"]
+    assert target.metadata["claimed_by"] == descriptor.worker_id
+    assert target.metadata["queue_epoch"] == 2
+
+    selectable = list_selectable_targets(universe_path)
+    assert [t.target_id for t in selectable] == [target.target_id]
+
+    assert _restartable_work_exists(universe_path) is True
 
 
 def test_signed_execution_record_domains_cannot_promote_into_one_another(
