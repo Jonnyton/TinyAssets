@@ -137,3 +137,61 @@ lane before this endpoint carries untrusted multi-tenant traffic.
 
 Stating it rather than silently closing it: a MEDIUM finding downgraded by a
 mitigation is still open.
+
+## Review rounds 2 and 3
+
+The endpoint went through three adversarial rounds. Recording all of them,
+because the pattern in what got caught is more useful than the final list.
+
+**Round 2 (against `f41b49de`) — REJECT.** Every finding was a flaw in a
+*round-1 fix*, not in the original design:
+
+- `MIN_SIGNING_SECRET_LENGTH = 16` was security theatre. `"0" * 16`,
+  `"x" + " " * 14 + "x"`, and `"x" + "\u200b" * 14 + "x"` all cleared it.
+  **Length is not entropy**, and an invisible character is not a character an
+  operator chose. Replaced with printable-ASCII + 32 chars + ≥10 distinct.
+- The timing equaliser was fake. Hand-rolling an HMAC equalised one shape and
+  left a 767× gap on the path where header validation rejects before hashing.
+  Replaced with a decoy verifier running the genuine `authenticate()`, so it
+  reproduces every early exit the real one has.
+- The handshake echoed a challenge for a body claiming another `api_app_id`.
+
+**Round 3 (against `b5378594`) — REJECT.** Findings moved from the feature to
+its authorization ordering:
+
+- Every path below authorization was reachable before it: the handshake
+  answered for unlisted workspaces and enterprise-only envelopes. It cannot be
+  team-gated (Slack's handshake body has no `team_id`), so it is now gated on
+  the deployment having authorised at least one workspace.
+- The replay-conflict fix was still an oracle. 401-on-conflict meant a known
+  `event_id` answered 401 and an unused one 200 — membership readable from the
+  status. Both now answer `(200, "")`.
+- The threadpool offload missed the blocking part: `resolve_boundary` was an
+  *argument*, so it evaluated on the event loop. 250 ms of I/O stalled the loop
+  for 255 ms.
+
+### Two things worth carrying forward
+
+**A patch can reintroduce the bug the design exists to prevent.** Fixing the
+handshake app-id echo, the first attempt *required* `api_app_id` — but Slack's
+genuine handshake is only `{token, challenge, type}`. That would have made the
+Request URL unsaveable and killed the endpoint on arrival, exactly what D3
+guards against. A test caught it. Both directions are now pinned: absent
+passes, mismatched refuses.
+
+**Two mutants survived the first probe, and both were real coverage holes.**
+The printable-ASCII gate could be deleted with the suite green, because every
+weak-secret case had only two distinct characters and was caught by the
+distinct-character floor instead. The timing equaliser could be deleted with
+the suite green, because the test used missing headers — the one shape where
+both paths exit early and look identical. Neither was a false alarm. The
+surviving mutants, not the passing tests, were the signal.
+
+### Known residual, introduced by the round-3 conflict fix
+
+Answering `200` on a replay conflict means an allow-listed workspace could in
+principle suppress a legitimate event by pre-claiming its `event_id`. It
+requires insider access to an authorised workspace *and* guessing an
+unpredictable Slack event id, so it is narrow — but it is a real consequence of
+choosing indistinguishability over signalling, and it is written down rather
+than discovered later.
