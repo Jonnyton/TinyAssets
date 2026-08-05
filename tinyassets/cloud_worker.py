@@ -172,6 +172,44 @@ def _worker_id() -> str:
     return override or _cloud_host_user()
 
 
+def _supervisor_worker_id(state: "SupervisorState | None" = None) -> str:
+    """This container's identity, frozen at supervisor boot.
+
+    Deliberately NOT a live `_worker_id()` read. The automation pump rebinds
+    ``TINYASSETS_WORKER_ID`` in-process to a per-owner logical slot
+    (``worker_cloud_automation_<hash>``) and never restores it, so after the
+    first pump a live read returns the slot. The liveness beat's filename is
+    derived from this id, while `cloud_worker_healthcheck` runs in a FRESH
+    process and reads the container's configured value -- so a drifted
+    filename makes a perfectly healthy worker read as dead.
+
+    Live 2026-08-05: three of four workers reported `supervisor beat stale`
+    for ~50 minutes while beating normally under the slot name, and the
+    host's autoheal timer was inactive so nothing recovered them.
+
+    CONTAINMENT, NOT THE WHOLE FIX. The pump also leaks
+    ``TINYASSETS_RUNTIME_INSTANCE_ID``, which can name a runtime in an
+    automation *target* universe while the descriptor is built from the
+    supervisor's own universe -- that, not this id, is what raises
+    ``queue_universe_id_mismatch``. So the beat can now carry the container's
+    name while its descriptor fields still describe the logical slot, and a
+    green healthcheck no longer proves the pump is progressing. The complete
+    fix threads a universe-qualified execution context through pump, spawn,
+    and descriptor code instead of passing identity through the environment;
+    a `try`/`finally` restore is NOT the answer (it forces a re-register on
+    every pump call and strands audience-bound work). Cross-family review:
+    Codex `adapt`, 2026-08-05.
+
+    The frozen value lives on the caller's `SupervisorState`, never a module
+    global: a global survives between supervisors that share an interpreter,
+    so one supervisor's identity would silently win over the next one's
+    configured id.
+    """
+
+    frozen = getattr(state, "supervisor_worker_id", "") or ""
+    return frozen.strip() or _worker_id()
+
+
 def _automation_worker_slot(
     physical_worker_id: str,
     universe_id: str,
@@ -282,9 +320,17 @@ def _load_worker_release_identity() -> dict[str, str] | None:
 
 def _snapshot_worker_protocol_identity_at_boot(
     physical_worker_id: str = "",
+    *,
+    state: "SupervisorState | None" = None,
 ) -> dict[str, str] | None:
     """Bind terminal release identity and boot ID before supervisor work."""
     worker_id = physical_worker_id.strip() or _worker_id()
+    # Freeze the container's own identity here, in the one ritual that runs
+    # before any supervisor work and never again. The automation pump rebinds
+    # TINYASSETS_WORKER_ID in-process and does not restore it, so a later live
+    # read is not this container. See `_supervisor_worker_id`.
+    if state is not None:
+        state.supervisor_worker_id = worker_id
     if worker_id in _WORKER_PROTOCOL_IDENTITIES:
         return _WORKER_PROTOCOL_IDENTITIES[worker_id]
     release = _load_worker_release_identity()
@@ -1088,6 +1134,15 @@ class SupervisorState:
         self.started_at = _utcnow_iso()
         self.last_spawn_at = ""
         self.last_exit_rc: int | None = None
+        # This container's identity, captured once when the supervisor boots.
+        # Deliberately NOT a live `_worker_id()` read at beat time: the
+        # automation pump rebinds TINYASSETS_WORKER_ID in-process to a
+        # per-owner logical slot and never restores it, so a live read would
+        # drift the beat FILENAME away from the value
+        # `cloud_worker_healthcheck` looks for in its own fresh process.
+        # Carried on the state (not a module global) so it cannot leak between
+        # supervisors sharing an interpreter.
+        self.supervisor_worker_id = ""
 
     def record_exit(self, returncode: int) -> None:
         self.total_spawns += 1
@@ -1163,6 +1218,12 @@ def write_supervisor_heartbeat(
         "subprocess_pid": subprocess_pid,
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
+        # NOTE: left as the live id on purpose. `beat.update(descriptor)`
+        # below overwrites this field with the queue descriptor's own
+        # worker_id when one was persisted, and the descriptor legitimately
+        # belongs to the logical automation slot. Only the FILENAME has to be
+        # the container's frozen identity -- that is what the healthcheck
+        # resolves.
         "worker_id": _worker_id(),
         "runtime_instance_id": os.environ.get(
             "TINYASSETS_RUNTIME_INSTANCE_ID",
@@ -1171,7 +1232,7 @@ def write_supervisor_heartbeat(
     }
     if descriptor is not None and descriptor_persisted:
         beat.update(descriptor)
-    filenames = [supervisor_heartbeat_filename(_worker_id())]
+    filenames = [supervisor_heartbeat_filename(_supervisor_worker_id(state))]
     if filenames[0] != SUPERVISOR_HEARTBEAT_FILENAME:
         filenames.append(SUPERVISOR_HEARTBEAT_FILENAME)
     for filename in filenames:
@@ -1303,7 +1364,6 @@ def run_supervisor(
     monkeypatch the module attribute freely.
     """
     physical_worker_id = _worker_id()
-    _snapshot_worker_protocol_identity_at_boot(physical_worker_id)
     if spawn_fn is None:
         if daemon_args:
 
@@ -1318,6 +1378,12 @@ def run_supervisor(
         sleep_fn = time.sleep
 
     state = SupervisorState()
+    # Runs before any supervisor work and never again: freezes this
+    # container's identity onto the state the beat writer uses.
+    _snapshot_worker_protocol_identity_at_boot(
+        physical_worker_id,
+        state=state,
+    )
     iteration = 0
     # True only when a shutdown terminated the child AND confirmed its exit —
     # gates the graceful-drain lease release (see _terminate_child_for_stop).
