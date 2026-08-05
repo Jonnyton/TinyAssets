@@ -620,3 +620,85 @@ def test_admitted_trigger_is_not_reclaimed_after_producer_lease_expires(tmp_path
         is None
     )
     assert store.get_trigger_for_task(admitted.branch_task_id) == admitted
+
+
+def test_health_reports_blocked_when_the_claimed_slice_sits_in_an_inert_queue_row(
+    tmp_path,
+) -> None:
+    """A claimed slice whose queue row cannot run is NOT running.
+
+    Health read only the trigger, never the admission outcome. Observed live
+    2026-08-05: a slice sat `invalid_operator_admission` — an inert row carrying
+    a quarantine receipt — while health reported `state=running`,
+    `blocker=null`, `next_action=null`. The owner had no way to see that the
+    work was dead, and `resume` would have returned success and changed nothing.
+    """
+    definition, _activations, active = _active(tmp_path)
+    store = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    store.schedule_initial(
+        definition,
+        automation_id="automation_spec_drain",
+        activation=active,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    control = store.get_control(
+        universe_id=definition.universe_id,
+        automation_id="automation_spec_drain",
+    )
+    assert control is not None
+    triggers = store.list_triggers(automation_id="automation_spec_drain", limit=10)
+
+    health = project_cloud_automation_health(
+        control,
+        activation=active,
+        triggers=triggers,
+        receipts=[],
+        now=NOW,
+        branch_task_state="invalid_operator_admission",
+    )
+
+    assert health.state == "blocked"
+    assert health.blocker == "invalid_operator_admission"
+    assert health.next_action == "await_operator_maintenance"
+
+
+def test_health_still_reports_running_for_a_healthy_queue_row(tmp_path) -> None:
+    """A runnable slice must not be reported as blocked."""
+    definition, _activations, active = _active(tmp_path)
+    store = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    store.schedule_initial(
+        definition,
+        automation_id="automation_spec_drain",
+        activation=active,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    control = store.get_control(
+        universe_id=definition.universe_id,
+        automation_id="automation_spec_drain",
+    )
+    assert control is not None
+    triggers = store.list_triggers(automation_id="automation_spec_drain", limit=10)
+
+    healthy = project_cloud_automation_health(
+        control,
+        activation=active,
+        triggers=triggers,
+        receipts=[],
+        now=NOW,
+        branch_task_state="",
+    )
+    unknown_state = project_cloud_automation_health(
+        control,
+        activation=active,
+        triggers=triggers,
+        receipts=[],
+        now=NOW,
+        branch_task_state="some_future_state_we_do_not_know",
+    )
+
+    assert healthy.blocker is None
+    # An unrecognised queue state must not be treated as inert — that would
+    # turn every future state addition into a false alarm.
+    assert unknown_state.blocker is None

@@ -288,6 +288,34 @@ def _derive_phone_work_definition(
     return definition
 
 
+def _current_branch_task_state(current_trigger: Any) -> str:
+    """The queue's operational state for the currently claimed slice.
+
+    Health used to read only the trigger, so a slice whose queue row was inert
+    still reported `state=running, blocker=null`. Reuses the same bounded
+    operational read the status surface uses, so the owner sees the queue's own
+    term rather than a second opinion.
+
+    Best-effort by construction: any failure returns "" and health falls back to
+    its previous behaviour. A diagnostic lookup must never break the surface it
+    is diagnosing.
+    """
+    branch_task_id = str(getattr(current_trigger, "branch_task_id", "") or "").strip()
+    universe_id = str(getattr(current_trigger, "universe_id", "") or "").strip()
+    if not branch_task_id or not universe_id:
+        return ""
+    try:
+        from tinyassets.api.universe import _epoch2_operational_snapshot
+
+        summary = _epoch2_operational_snapshot(_base_path() / universe_id)
+        for entry in summary.get("diagnostics") or []:
+            if str(entry.get("branch_task_id") or "") == branch_task_id:
+                return str(entry.get("operational_state") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def _projection(
     control: CloudAutomationControl,
     *,
@@ -339,6 +367,7 @@ def _projection(
         triggers=triggers,
         receipts=receipts,
         now=datetime.now(timezone.utc),
+        branch_task_state=_current_branch_task_state(current_trigger),
     )
     return {
         "automation": _control_projection(control),
