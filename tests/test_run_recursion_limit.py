@@ -87,6 +87,11 @@ class TestOverrideThreading:
             node_defs = []
             graph_nodes = []
 
+        # `_invoke_graph` now reads run identity (owner/daemon/runtime/worker)
+        # from the `runs` table before compiling, so the schema has to exist
+        # even though these tests patch out compilation and event recording.
+        runs.initialize_runs_db(tmp_path)
+
         runs._invoke_graph(
             tmp_path,
             run_id="test-run",
@@ -146,6 +151,11 @@ class TestRecursionLimitAppliedEvent:
             lambda _base, ev: recorded_events.append(ev),
         )
         stub = self._make_stubs(monkeypatch)
+
+        # `_invoke_graph` now reads run identity (owner/daemon/runtime/worker)
+        # from the `runs` table before compiling, so the schema has to exist
+        # even though these tests patch out compilation and event recording.
+        runs.initialize_runs_db(tmp_path)
 
         runs._invoke_graph(
             tmp_path,
