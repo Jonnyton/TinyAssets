@@ -616,6 +616,20 @@ def _extract_daemon_memory_promote(
     )
 
 
+def _extract_declare_universe_loop(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    from tinyassets.api.engine_helpers import _truncate
+    declared = str(result.get("loop_dispatch", {}).get("branch_def_id", ""))
+    return (
+        SOUL_FILENAME,
+        _truncate(
+            f"loop branch declared: {declared}" if declared else "loop declaration cleared"
+        ),
+        {"branch_def_id": declared, "status": result.get("status")},
+    )
+
+
 def _extract_soul_edit(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
@@ -675,6 +689,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
     "soul.edit": (_extract_soul_edit, None),
+    "declare_universe_loop": (_extract_declare_universe_loop, None),
     "set_engine": (_extract_set_engine, None),
     "offer_engine": (_extract_offer_engine, None),
     "add_canon": (_extract_add_canon, None),

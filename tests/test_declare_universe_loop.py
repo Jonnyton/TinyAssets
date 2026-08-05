@@ -88,3 +88,48 @@ def test_plain_universe_write_still_creates_and_declares_nothing(env):
     uid = _birth(us)
     from tinyassets.universe_soul import read_universe_soul
     assert not read_universe_soul(base / uid).loop_branch_def_id
+
+
+def test_declare_loop_is_gated_as_a_write(env):
+    """`declare_universe_loop` must be a WRITE, not a read.
+
+    Regression guard for a hole I nearly shipped. `_request_universe` is a
+    RESOLVER, not an authorizer — "an explicit id wins", with no ownership
+    check. So an action that takes a caller-supplied `universe_id` and mutates
+    soul.md is a cross-tenant write primitive unless the central
+    universe-access gate treats it as a write. That gate keys off
+    WRITE_ACTIONS, which the module calls the single source of truth.
+
+    If this membership is dropped, the action is gated at READ strength while
+    still mutating another founder's soul.
+    """
+    us, _base = env
+    from tinyassets.api import universe as api
+
+    assert "declare_universe_loop" in api.WRITE_ACTIONS, (
+        "declare_universe_loop must be in WRITE_ACTIONS or the universe-access "
+        "gate checks it at read strength while it mutates soul.md"
+    )
+    assert "declare_universe_loop" in api.UNIVERSE_ACTIONS
+
+
+def test_declare_loop_refuses_a_universe_the_caller_cannot_write(env, monkeypatch):
+    """An explicit universe_id must not bypass the access gate."""
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+
+    from tinyassets.api import permissions
+
+    monkeypatch.setattr(
+        permissions, "universe_access_allows", lambda _uid, write=False: not write
+    )
+    out = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert out.get("error"), f"expected refusal, got {out}"
+
+    from tinyassets.universe_soul import read_universe_soul
+    soul = read_universe_soul(base / uid)
+    assert soul is not None
+    assert not soul.loop_branch_def_id, "refused call must not have mutated soul.md"
