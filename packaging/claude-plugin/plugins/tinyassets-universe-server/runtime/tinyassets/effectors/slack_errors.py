@@ -58,17 +58,22 @@ def contains_secret(exc: BaseException, *secrets: str) -> bool:
         return False
 
     seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
         seen.add(id(current))
         rendered = "".join(
             traceback.format_exception_only(type(current), current)
         ) + "".join(traceback.format_tb(current.__traceback__))
         if any(secret in rendered for secret in real):
             return True
-        # Cause first, then context — following both, since either can hold it.
-        nxt = current.__cause__ or current.__context__
-        current = nxt
+        # BOTH branches, not `cause or context`. That short-circuit meant an
+        # exception with an explicit cause never had its context inspected — so
+        # a token sitting in the context of a chained error read as clean.
+        pending.append(current.__cause__)
+        pending.append(current.__context__)
     return False
 
 

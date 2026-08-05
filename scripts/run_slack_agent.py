@@ -29,13 +29,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tinyassets.credential_vault import resolve_slack_token  # noqa: E402
+from tinyassets.credential_vault import (  # noqa: E402
+    resolve_slack_app_token,
+    resolve_slack_token,
+)
 from tinyassets.effectors.slack_agent_service import (  # noqa: E402
     SlackAgentConfig,
     SlackAgentConfigError,
     run_slack_agent,
 )
 from tinyassets.effectors.slack_errors import safe_error_code  # noqa: E402
+from tinyassets.effectors.slack_socket_mode import (  # noqa: E402
+    app_id_from_token,
+)
 
 AUTH_TEST_URL = "https://slack.com/api/auth.test"
 
@@ -129,6 +135,21 @@ def main() -> int:
         team_id,
     )
 
+    # Derived, not configured. A review found the api_app_id check was opt-in
+    # and production never set it — so a vault pairing App A's bot token with
+    # App B's app token would receive B's events and answer as A. The app token
+    # carries its own app id, so there is nothing for an operator to look up.
+    api_app_id = app_id_from_token(
+        resolve_slack_app_token(universe_dir, args.connection)
+    )
+    if api_app_id:
+        logger.info("enforcing events for app %s only", api_app_id)
+    else:
+        logger.warning(
+            "could not derive the app id from the app-level token; "
+            "cross-app event filtering is OFF"
+        )
+
     try:
         # Rebuilt with the real identity now that Slack has told us who we are.
         config = SlackAgentConfig(
@@ -136,6 +157,7 @@ def main() -> int:
             connection_id=args.connection,
             team_id=team_id,
             bot_user_id=bot_user_id,
+            api_app_id=api_app_id,
         )
     except SlackAgentConfigError as exc:
         raise SystemExit(str(exc)) from None

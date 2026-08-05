@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
@@ -84,6 +85,30 @@ def is_app_token(token: object) -> bool:
     Slack error rather than an obvious one. Check the shape we require.
     """
     return isinstance(token, str) and token.startswith(APP_TOKEN_PREFIX)
+
+
+#: Slack app ids: `A` then uppercase alphanumerics.
+_APP_ID = re.compile(r"\AA[A-Z0-9]{6,}\Z")
+
+
+def app_id_from_token(app_token: str) -> str:
+    """The Slack app id embedded in an app-level token, or "".
+
+    App-level tokens are `xapp-1-<APP_ID>-<issued>-<secret>`, so the app this
+    socket belongs to is derivable without extra configuration. That matters:
+    the api_app_id check is worthless if nothing sets it, and asking an operator
+    to look up and paste an app id is a step that gets skipped or mistyped.
+
+    Returns "" rather than guessing when the shape does not match — the check is
+    then simply not applied, which is the same position as before it existed.
+    """
+    if not isinstance(app_token, str):
+        return ""
+    parts = app_token.split("-")
+    if len(parts) < 3:
+        return ""
+    candidate = parts[2].strip()
+    return candidate if _APP_ID.match(candidate) else ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -186,10 +186,18 @@ def main() -> int:
         verify_app_token(app_token)
         print("  ok - Socket Mode is reachable")
 
+    # Normalised ONCE, then used for both the comparison and the record. A
+    # review deposited " conn-b " and got a duplicate: the merge compared the
+    # untrimmed CLI value while the vault stored the trimmed one, so the stale
+    # record survived and kept being resolved first.
+    connection = args.connection.strip()
+    if not connection:
+        raise SystemExit("--connection cannot be blank")
+
     record = {
         "credential_type": "social",
         "service": "slack",
-        "destination": args.connection,
+        "destination": connection,
         "bot_token": bot_token,
         "app_token": app_token,
     }
@@ -203,14 +211,14 @@ def main() -> int:
         if not (
             r.get("credential_type") == "social"
             and str(r.get("service") or "").lower() == "slack"
-            and str(r.get("destination") or "") == args.connection
+            and str(r.get("destination") or "").strip() == connection
         )
     ]
     summary = write_credential_vault(universe_dir, [*existing, record])
 
     print()
     print(f"Deposited into {universe_dir}")
-    print(f"  connection : {args.connection}")
+    print(f"  connection : {connection}")
     if team_id:
         # Printed because the running service needs both, and neither is secret.
         print(f"  team_id    : {team_id}")

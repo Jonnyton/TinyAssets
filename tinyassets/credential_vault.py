@@ -113,18 +113,24 @@ def _decode_codex_auth_json(value: Any) -> bytes:
     normalized = value.translate(str.maketrans("", "", " \t\r\n"))
     try:
         decoded = base64.b64decode(normalized, validate=True)
-    except ValueError as exc:
-        raise ValueError("credential auth_json_b64 base64 decode failed") from exc
+    except ValueError:
+        raise ValueError(
+            "credential auth_json_b64 base64 decode failed"
+        ) from None
     if not decoded:
         raise ValueError("credential auth_json_b64 decoded content is empty")
     if decoded.startswith(b"\xef\xbb\xbf"):
         raise ValueError("credential auth_json_b64 decoded content has a UTF-8 BOM")
+    invalid = False
     try:
         json.loads(decoded)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(
-            "credential auth_json_b64 does not contain valid JSON"
-        ) from exc
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Not chained: both of these retain the decoded credential blob
+        # (`.doc` / `.object`). Raised outside the handler so no context
+        # survives either.
+        invalid = True
+    if invalid:
+        raise ValueError("credential auth_json_b64 does not contain valid JSON")
     return decoded
 
 
@@ -137,10 +143,12 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
         raise ValueError("credential_type is required")
     normalized_type = credential_type.strip()
     if normalized_type not in VALID_CREDENTIAL_TYPES:
+        # The rejected value is NOT echoed. It is attacker- or typo-supplied
+        # vault content, and a reviewer put a live token in this field and read
+        # it back out of the exception. Naming the allowed set is enough to fix
+        # a real mistake.
         allowed = ", ".join(sorted(VALID_CREDENTIAL_TYPES))
-        raise ValueError(
-            f"unknown credential_type {normalized_type!r}; expected one of: {allowed}"
-        )
+        raise ValueError(f"unknown credential_type; expected one of: {allowed}")
     record["credential_type"] = normalized_type
     for key in ("service", "provider", "destination", "purpose"):
         if isinstance(record.get(key), str):
@@ -269,6 +277,11 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     malformed = ""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        # `UnicodeDecodeError.object` is the whole file too — a second channel
+        # with the same consequence as JSONDecodeError.doc, found only because
+        # a reviewer tried invalid UTF-8 rather than invalid JSON.
+        malformed = "an undecodable byte"
     except json.JSONDecodeError as exc:
         # `exc.doc` is the ENTIRE vault file — every token for every service.
         # Chaining it, or interpolating `exc`, hands the whole thing to any

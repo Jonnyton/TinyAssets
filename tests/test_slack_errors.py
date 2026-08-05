@@ -122,3 +122,91 @@ def test_scrubbed_result_carries_no_chain():
         traceback.format_exception(type(result), result, result.__traceback__)
     )
     assert SECRET not in rendered
+
+
+def test_contains_secret_follows_both_cause_and_context():
+    """`cause or context` short-circuited: an exception with an explicit cause
+    never had its context inspected, so a token there read as clean.
+
+    The cause is CONSTRUCTED, not raised, so it carries no chain of its own.
+    That detail is the whole test: a first draft raised it, which gave it the
+    secret-bearing exception as its own context — so the short-circuit walked
+    cause -> its context and found the token anyway. The mutation survived and
+    the test looked fine. The secret has to be reachable ONLY through the outer
+    exception's context for this to distinguish anything.
+    """
+    innocuous = _Boom("innocuous")  # never raised: no __context__ of its own
+    try:
+        try:
+            raise _Boom(f"Bearer {SECRET}")  # becomes the OUTER's __context__
+        except _Boom:
+            raise _Boom("outer") from innocuous
+    except _Boom as exc:
+        assert exc.__cause__ is innocuous
+        assert exc.__cause__.__context__ is None, "the cause is a dead end"
+        assert SECRET in str(exc.__context__), "the secret is only in the context"
+        assert contains_secret(exc, SECRET) is True, "both branches must be walked"
+
+
+# --- the vault loader: three more channels a reviewer walked out through -----
+
+
+def _vault_leak_rendered(tmp_path, content: bytes) -> tuple[str, BaseException]:
+    from tinyassets.credential_vault import credential_vault_path, load_credential_vault
+
+    credential_vault_path(tmp_path).write_bytes(content)
+    with pytest.raises(ValueError) as exc:
+        load_credential_vault(tmp_path)
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    return rendered + repr(exc.value.__context__) + repr(exc.value.args), exc.value
+
+
+def test_undecodable_bytes_do_not_expose_the_vault(tmp_path):
+    """`UnicodeDecodeError.object` is the whole file — a second channel with the
+    same consequence as JSONDecodeError.doc, found by trying invalid UTF-8
+    rather than invalid JSON."""
+    secret = "xoxb-UTF8-VAULT-SECRET"
+    rendered, _ = _vault_leak_rendered(
+        tmp_path, b'{"credentials":[{"bot_token":"' + secret.encode() + b'"}]}\xff\xfe'
+    )
+
+    assert secret not in rendered
+
+
+def test_malformed_nested_codex_auth_does_not_expose_its_contents(tmp_path):
+    """Valid outer JSON, malformed base64-decoded inner auth: the nested
+    JSONDecodeError's `.doc` held the decoded credential blob."""
+    import base64
+    import json as _json
+
+    secret = "xoxb-NESTED-CONTENT-SECRET"
+    inner = base64.b64encode(f'{{"token":"{secret}" BROKEN'.encode()).decode()
+    payload = _json.dumps(
+        {
+            "credentials": [
+                {
+                    "credential_type": "llm_subscription",
+                    "service": "codex",
+                    "auth_json_b64": inner,
+                }
+            ]
+        }
+    ).encode()
+    rendered, _ = _vault_leak_rendered(tmp_path, payload)
+
+    assert secret not in rendered
+
+
+def test_a_secret_in_credential_type_is_not_echoed_back(tmp_path):
+    """The rejected value is attacker- or typo-supplied vault content, and a
+    reviewer put a live token in this field and read it out of the error."""
+    import json as _json
+
+    secret = "xoxb-CREDTYPE-SECRET"
+    payload = _json.dumps({"credentials": [{"credential_type": secret}]}).encode()
+    rendered, exc = _vault_leak_rendered(tmp_path, payload)
+
+    assert secret not in rendered
+    assert "expected one of" in str(exc), "the allowed set is still named"
