@@ -2500,7 +2500,13 @@ def _validate_unsafe_recovery_source(
     if any(key not in state for key in required):
         raise FenceError("unsafe fence lacks complete inherited preflight state")
     extras = dict(state.get("extra_volume_consumers") or {})
-    if extras and retire_extra_consumers:
+    # NOT gated on `extras` being non-empty. A prior recovery attempt can
+    # already have cleared `extra_volume_consumers` while the OTHER fleet
+    # enumerations still name the retired container -- observed live on
+    # recoveries 31049384995 and 31049698106, which both refused with
+    # "stopped fleet removal intent is invalid" because this block was
+    # skipped once extras was empty, leaving the stale removal plan intact.
+    if retire_extra_consumers:
         # Narrow, operator-named retirement of a recorded extra consumer.
         #
         # Live 2026-08-05: a deploy added a container the exact-fleet fence did
@@ -2524,11 +2530,22 @@ def _validate_unsafe_recovery_source(
                     "refusing to retire an expected fleet container"
                 )
             entry = extras.get(name)
-            if entry is None:
+            enumerated = any(
+                name in dict(state.get(key) or {})
+                for key in ("old_container_ids", "recovery_container_ids")
+            ) or name in dict(
+                (state.get("stopped_fleet_removal") or {}).get(
+                    "container_ids"
+                )
+                or {}
+            )
+            if entry is None and not enumerated:
                 raise FenceError(
                     "refusing to retire an unrecorded extra volume consumer"
                 )
-            # The gate is the LIVE state, not the recorded one. The fence
+            # The gate is the LIVE state, not the recorded one.
+            # (Runs whether or not an extras entry survives: a container that
+            # is running again must never be retired from ANY enumeration.) The fence
             # records each consumer immediately BEFORE stopping it, so
             # `entry["running"]` is true for every member at fence time --
             # refusing on it made retirement permanently unsatisfiable
@@ -2571,7 +2588,7 @@ def _validate_unsafe_recovery_source(
                 raise FenceError(
                     "refusing to retire a RUNNING extra volume consumer"
                 )
-            retired[name] = dict(entry)
+            retired[name] = dict(entry or {"note": "extras already cleared"})
             extras.pop(name, None)
             # Retiring a container means retiring it from EVERY recorded
             # structure that enumerates the fleet, not just this one.
