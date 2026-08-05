@@ -1811,6 +1811,14 @@ def test_worker_pump_converges_a_requested_activation_end_to_end(
     ):
         monkeypatch.delenv(leaked, raising=False)
 
+    # CI containers hold no provider subscription, and
+    # `_register_worker_runtime` returns None when
+    # `_subscription_auth_available` is False — so without this the test is
+    # really asserting "does this machine have a Claude/Codex login", which is
+    # why it passed on a dev box and failed on Linux CI. Routing is what is
+    # under test here, not credential presence.
+    monkeypatch.setattr(cw, "_subscription_auth_available", lambda _provider: True)
+
     created = cloud_automations.cloud_automations(
         action="create",
         universe_id="universe_alice",
@@ -1906,6 +1914,14 @@ def test_worker_services_an_automation_outside_its_resolved_universe(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
     ):
         monkeypatch.delenv(leaked, raising=False)
+
+    # CI containers hold no provider subscription, and
+    # `_register_worker_runtime` returns None when
+    # `_subscription_auth_available` is False — so without this the test is
+    # really asserting "does this machine have a Claude/Codex login", which is
+    # why it passed on a dev box and failed on Linux CI. Routing is what is
+    # under test here, not credential presence.
+    monkeypatch.setattr(cw, "_subscription_auth_available", lambda _provider: True)
 
     created = cloud_automations.cloud_automations(
         action="create",
