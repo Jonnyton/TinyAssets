@@ -8,11 +8,6 @@ WORKERS=(
     tinyassets-worker-codex-2
     tinyassets-worker-claude-1
     tinyassets-worker-claude-2
-    # Declared credential-isolated executor. It inherits the same worker
-    # env_file (no /etc/tinyassets/request-idempotency.env), so it must be
-    # PROVEN keyless like every other worker -- a fleet member no boundary
-    # check enumerates reads as "verified" while being unverified.
-    tinyassets-worker-founder
 )
 RUNTIME_CONTAINERS=(tinyassets-daemon "${WORKERS[@]}")
 
