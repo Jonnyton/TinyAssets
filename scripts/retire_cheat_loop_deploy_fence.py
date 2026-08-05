@@ -2573,6 +2573,30 @@ def _validate_unsafe_recovery_source(
                 )
             retired[name] = dict(entry)
             extras.pop(name, None)
+            # Retiring a container means retiring it from EVERY recorded
+            # structure that enumerates the fleet, not just this one.
+            #
+            # `_validate_stopped_fleet` requires
+            # `set(stopped_fleet_removal["container_ids"]) == EXPECTED_CONTAINERS`
+            # and that it still equal its `recorded_source` map. Those were
+            # captured while the retired container existed, so leaving it in
+            # place keeps the fleet enumerations one name too long and the
+            # next recovery fails with "stopped fleet removal intent is
+            # invalid" -- observed live on recovery 31049384995, after the
+            # extra-consumer record had already been cleared.
+            plan = state.get("stopped_fleet_removal")
+            if isinstance(plan, dict):
+                planned = plan.get("container_ids")
+                if isinstance(planned, dict):
+                    planned.pop(name, None)
+                source_key = str(plan.get("recorded_source", ""))
+                source_map = state.get(source_key)
+                if isinstance(source_map, dict):
+                    source_map.pop(name, None)
+            for enumeration in ("old_container_ids", "recovery_container_ids"):
+                recorded_map = state.get(enumeration)
+                if isinstance(recorded_map, dict):
+                    recorded_map.pop(name, None)
         state["extra_volume_consumers"] = extras
         state["retired_extra_volume_consumers"] = retired
     if extras:
