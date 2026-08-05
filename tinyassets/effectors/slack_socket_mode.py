@@ -151,7 +151,13 @@ def is_conversational(event: Mapping[str, Any]) -> bool:
     shared, someone joined, a message was edited) rather than someone talking to
     us. Answering those spends a provider call per occurrence.
     """
-    if event.get("type") not in CONVERSATIONAL_EVENT_TYPES:
+    event_type = event.get("type")
+    # The isinstance check is not decoration. `x in frozenset` raises TypeError
+    # for an unhashable x, so a frame carrying `"type": ["app_mention"]` used to
+    # crash here — and because this filter runs before the handler's try block,
+    # that TypeError escaped `pump` and killed the whole socket. One malformed
+    # frame silently ended the agent.
+    if not isinstance(event_type, str) or event_type not in CONVERSATIONAL_EVENT_TYPES:
         return False
     return not event.get("subtype")
 
@@ -250,18 +256,22 @@ async def pump(
         if envelope.type != ENVELOPE_EVENTS_API:
             continue
 
-        event = event_of(envelope)
-        if event is None:
-            continue
-        if is_self_authored(event, bot_user_id):
-            # The loop guard. Our own reply arrives back as a message event.
-            continue
-        if not is_conversational(event):
-            continue
-
         try:
+            event = event_of(envelope)
+            if event is None:
+                continue
+            if is_self_authored(event, bot_user_id):
+                # The loop guard. Our own reply arrives back as a message event.
+                continue
+            if not is_conversational(event):
+                continue
             await handle(event)
             handled += 1
-        except Exception:  # noqa: BLE001 - one bad turn must not drop the socket
-            logger.warning("slack socket: handler failed for one event", exc_info=True)
+        except Exception:  # noqa: BLE001 - one bad frame must not drop the socket
+            # The filters are inside this block deliberately. They read
+            # attacker-shaped JSON, and an exception from *any* of them used to
+            # escape and end a long-lived connection. A socket that dies on one
+            # frame is the worst failure mode here: the process stays up and
+            # answers nobody, with nothing a user would look at reporting it.
+            logger.warning("slack socket: dropped one frame", exc_info=True)
     return handled

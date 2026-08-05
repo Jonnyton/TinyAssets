@@ -377,3 +377,49 @@ async def test_hello_is_not_treated_as_an_event():
 
     assert handled == 0
     assert socket.sent == [], "a hello frame takes no acknowledgement"
+
+
+# --- Regression: a hostile frame must not end the socket -------------------
+# Found by a cross-family (Codex) review framed as "refute that this is safe".
+# The counterexample it produced is below verbatim: `"type"` as a list.
+
+
+def test_a_non_string_event_type_does_not_raise():
+    """`x in frozenset` raises TypeError for an unhashable x.
+
+    Slack will not send this, but the frame arrives over a socket carrying
+    workspace traffic, and the cost of being wrong is the whole connection.
+    """
+    assert is_conversational({"type": ["app_mention"], "user": "U1"}) is False
+    assert is_conversational({"type": {"a": 1}, "user": "U1"}) is False
+    assert is_conversational({"type": 7, "user": "U1"}) is False
+    assert is_conversational({"type": None, "user": "U1"}) is False
+
+
+@pytest.mark.asyncio
+async def test_an_unhashable_event_type_does_not_kill_the_connection():
+    """The exact reviewer counterexample, end to end through the pump.
+
+    Before the fix this raised out of `pump`: the filters ran outside the
+    handler's try block, so one malformed frame ended a long-lived socket and
+    the agent silently stopped answering.
+    """
+    hostile = envelope({"type": ["app_mention"], "user": "U_HUMAN", "text": "x"})
+    socket = _FakeSocket([hostile, envelope()])
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 1, "the good frame after a hostile one is still handled"
+    assert len(socket.sent) == 2, "both envelopes are still acknowledged"
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_frame_is_acknowledged_before_it_is_dropped():
+    """Dropping without acking would make Slack redeliver it forever."""
+    hostile = envelope({"type": ["app_mention"], "user": "U_HUMAN"})
+    socket = _FakeSocket([hostile])
+
+    handled = await pump(socket, bot_user_id=OUR_BOT, handle=lambda _e: _noop())
+
+    assert handled == 0
+    assert [json.loads(s)["envelope_id"] for s in socket.sent] == ["Ev-env-1"]
