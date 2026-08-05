@@ -215,6 +215,42 @@ def _challenge_response(
     return challenge
 
 
+class RawHeaders(Mapping):
+    """A header view that preserves duplicates.
+
+    `SlackRequestVerifier._single_header` refuses a request carrying more than
+    one signature header — that check is the defence against signature
+    smuggling, where a valid header is followed by a conflicting one and the
+    two ends of the stack disagree about which is real.
+
+    Collapsing headers into a plain `dict` silently destroys it: a reviewer sent
+    duplicate signature headers and the route admitted and WROTE the event while
+    the verifier, handed the original headers, rejected it. So the route hands
+    over every pair exactly as received and lets the verifier decide.
+    """
+
+    __slots__ = ("_pairs",)
+
+    def __init__(self, pairs) -> None:
+        self._pairs = tuple((str(name), str(value)) for name, value in pairs)
+
+    def items(self):  # noqa: D102 - the verifier iterates this, duplicates included
+        return iter(self._pairs)
+
+    def __getitem__(self, key: str) -> str:
+        wanted = key.casefold()
+        for name, value in self._pairs:
+            if name.casefold() == wanted:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (name for name, _ in self._pairs)
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+
 class BodyTooLarge(Exception):
     """The peer sent more bytes than we will buffer before authenticating."""
 
@@ -277,6 +313,19 @@ def _decoy_verifier() -> SlackRequestVerifier:
 _DECOY: SlackRequestVerifier | None = None
 
 
+def _burn_envelope_work(raw_body: bytes) -> None:
+    """Decode and parse the body the way a *successful* verification would.
+
+    Pairs with `_burn_equivalent_work`: that one equalises the HMAC stage, this
+    one equalises the stage after it, so a failed signature costs roughly what a
+    passing one does instead of exiting early and advertising the difference.
+    """
+    try:
+        json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        pass
+
+
 def _burn_equivalent_work(raw_body: bytes, headers: Mapping[str, str]) -> None:
     """Run the *real* authentication path against a decoy key, discarding it.
 
@@ -291,6 +340,10 @@ def _burn_equivalent_work(raw_body: bytes, headers: Mapping[str, str]) -> None:
         _decoy_verifier().authenticate(raw_body=raw_body, headers=headers)
     except (AppEventAuthenticationError, AppEventEnvelopeError):
         pass
+    # The decoy's HMAC always fails, so on its own it exits before the decode
+    # and parse a real success performs — leaving the very gap it exists to
+    # close. Tightening the test bound from 25x to 3x surfaced this at 3.6x.
+    _burn_envelope_work(raw_body)
 
 
 def handle_slack_request(
@@ -316,6 +369,11 @@ def handle_slack_request(
     try:
         event = boundary.verifier.authenticate(raw_body=raw_body, headers=headers)
     except AppEventAuthenticationError:
+        # A wrong key stops at the HMAC; a right key goes on to decode and parse
+        # the body. That difference is a candidate-key oracle — a reviewer
+        # measured a 3.4-3.5x separation with ~100% classification on a 200 KB
+        # envelope. Do the same decode+parse here and discard it.
+        _burn_envelope_work(raw_body)
         return IngressOutcome(401, REFUSAL_BODY)
     except AppEventEnvelopeError:
         # The signature held but the envelope is not an ``event_callback``.

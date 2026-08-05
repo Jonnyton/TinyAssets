@@ -696,7 +696,10 @@ def test_configuration_state_is_not_timeable(configured):
     dark = median_micros(None)
     ratio = max(armed, dark) / max(min(armed, dark), 1e-9)
 
-    assert ratio < 25, (
+    # 25x was too loose: a reviewer built a ~100%-accurate classifier from a
+    # 3.5x separation on a different path while this test stayed green. A
+    # working discriminator is the bar, not a dramatic one.
+    assert ratio < 3, (
         f"configured={armed:.2f}us dark={dark:.2f}us ratio={ratio:.1f} — "
         "configuration state is distinguishable by timing"
     )
@@ -936,3 +939,110 @@ def test_any_stated_enterprise_id_is_refused(configured, value):
 
     assert outcome.status == 401
     assert "ECHO" not in outcome.body
+
+
+def test_duplicate_signature_headers_are_refused(configured):
+    """Signature smuggling: a valid header followed by a conflicting one.
+
+    Reviewer counterexample against `dict(request.headers)`, which collapsed
+    duplicates — the route admitted and WROTE the event while the verifier,
+    handed the original headers, rejected it. The two ends of the stack
+    disagreed about which header was real.
+    """
+    from tinyassets.app_slack_ingress import RawHeaders
+
+    body = _event_body(event_id="EvSMUGGLE")
+    valid = _signed(body)
+    smuggled = RawHeaders(
+        [
+            ("x-slack-request-timestamp", valid["x-slack-request-timestamp"]),
+            ("x-slack-signature", valid["x-slack-signature"]),
+            ("x-slack-signature", "v0=" + "0" * 64),
+        ]
+    )
+
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=smuggled,
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 401
+    assert outcome.admitted is False
+    assert _receipt_count(configured) == 0, "a smuggled header must not write a row"
+
+
+def test_raw_headers_preserves_duplicates_that_dict_would_lose():
+    """Pins the property the fix depends on, not just its consequence."""
+    from tinyassets.app_slack_ingress import RawHeaders
+
+    pairs = [("x-slack-signature", "v0=aaa"), ("x-slack-signature", "v0=bbb")]
+    raw = RawHeaders(pairs)
+
+    assert len(list(raw.items())) == 2, "duplicates must survive"
+    assert len(dict(pairs)) == 1, "a plain dict is exactly what loses them"
+
+
+def test_single_valid_header_still_works(configured):
+    """Accept direction — the ordinary one-header case must stay green."""
+    from tinyassets.app_slack_ingress import RawHeaders
+
+    body = _event_body(event_id="EvSINGLE")
+    outcome = handle_slack_request(
+        raw_body=body,
+        headers=RawHeaders(_signed(body).items()),
+        boundary=configured,
+        allowed_team_ids=ALLOWED,
+    )
+
+    assert outcome.status == 200
+    assert outcome.admitted is True
+
+
+def test_signing_key_is_not_recoverable_by_timing(configured):
+    """The candidate-key oracle the previous timing test never covered.
+
+    A wrong key stops at the HMAC; a right key goes on to decode and parse the
+    body. On a 200 KB envelope a reviewer turned that gap into a ~100%-accurate
+    classifier at only 3.4-3.5x — which the old 25x bound happily allowed. This
+    exercises the right-key-vs-wrong-key shape specifically.
+    """
+    import statistics
+
+    body = json.dumps(
+        {
+            "type": "event_callback",
+            "api_app_id": APP_ID,
+            "team_id": "T_NOT_ALLOWED",
+            "event_id": "EvTIMING",
+            "event": {"type": "app_mention", "user": "U1", "text": "z" * 200_000},
+        }
+    ).encode("utf-8")
+
+    def median_micros(secret: str) -> float:
+        samples = []
+        for _ in range(40):
+            headers = _signed(body, secret=secret)
+            start = time.perf_counter()
+            handle_slack_request(
+                raw_body=body,
+                headers=headers,
+                boundary=configured,
+                allowed_team_ids=ALLOWED,
+            )
+            samples.append(time.perf_counter() - start)
+        return statistics.median(samples) * 1e6
+
+    wrong_key = "deadbeefdeadbeefdeadbeefdeadbeef"
+    median_micros(SECRET)      # warm
+    median_micros(wrong_key)
+
+    right = median_micros(SECRET)
+    wrong = median_micros(wrong_key)
+    ratio = max(right, wrong) / max(min(right, wrong), 1e-9)
+
+    assert ratio < 3, (
+        f"right-key={right:.1f}us wrong-key={wrong:.1f}us ratio={ratio:.2f} — "
+        "signature validity is distinguishable by timing"
+    )

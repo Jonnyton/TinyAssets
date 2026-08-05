@@ -311,6 +311,7 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
     from tinyassets.app_slack_ingress import (
         REFUSAL_BODY,
         BodyTooLarge,
+        RawHeaders,
         handle_slack_request,
         read_bounded_body,
         resolve_allowed_team_ids,
@@ -334,7 +335,10 @@ async def _slack_app_events(request):  # type: ignore[no-untyped-def]
     # argument evaluates it on the event loop before the offload ever happens,
     # which a reviewer measured as a 255ms stall from 250ms of I/O. Everything
     # blocking therefore lives inside this one sync closure.
-    headers = dict(request.headers)
+    # NOT dict(request.headers): that collapses duplicates and would defeat the
+    # verifier's single-signature-header rule, which exists to stop signature
+    # smuggling. Hand over every pair as received.
+    headers = RawHeaders(request.headers.items())
 
     def _admit():
         return handle_slack_request(
