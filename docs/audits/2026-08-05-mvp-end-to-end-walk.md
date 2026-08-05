@@ -241,3 +241,66 @@ No delete operation is exposed on the canonical handle set:
 4. Clear the six task-2.3 preconditions, including creating the three
    hardening changes that do not exist.
 5. Re-walk, then perform the `ui-test` rendered-connector proof.
+
+
+---
+
+## UPDATE 02:30Z — blocker 0 is fixed and deployed; the wall moved to activation
+
+`#2300` (main's 9 regressions) merged as `0d8f7ccb`, which unblocked `#2292`.
+`#2292` merged and **deployed** as `df80b753` — verified the deployed sha
+*contains* `_CANONICAL_REFERENCE_PATTERNS`, not merely that it merged.
+Cross-family security review of that merge: **approve** — its strongest
+objection (attacker-controlled canonical hex) did not survive, because
+`_REFERENCE_PATTERN` still gates first, the fields are branch identities only,
+and ownership is independently enforced. The widening admits identifiers, not
+authority or secrets.
+
+**Step 7 now works.** The exact call that failed earlier succeeded:
+
+```
+write_graph target=automation operation=create
+→ automation_repo_7a09c311891da0f773aa1a8b024ecd19
+  branch_def_id: 36370cd19f90        ← the bare hex previously rejected
+  status: activation_requested
+  authority.source: requester_owned_provider_binding
+  destination: jonnyton/tinyassets · baseline_evaluation: admitted
+```
+
+**The remaining wall is activation, not creation.** The automation is
+`desired_state: active`, yet:
+
+- `activation.state: stopped`, `executor_class: null`, `subject: null`, and
+  `activation.updated_at` is **two hours older than the automation itself** —
+  the activation row is executor-owned and nothing advanced it.
+- `terminal_receipts: []`, `current_trigger: null`.
+- `operation=resume` is accepted but is a **no-op**: `desired_state` was
+  already active, so there is no owner-side control left to pull.
+- `get_status`: `compatible_worker_count: 0`, cloud-drain
+  `runtime_instance_count: 0`.
+
+`deploy/compose.yml` defines four cloud workers (`codex-1/2`, `claude-1/2`
+running `python -m tinyassets.cloud_worker`) and the deploy reports success, so
+this is a live-state question — no drain runtime instance is claiming work —
+not a missing definition. It is the tray-to-cloud cutover, owned by the
+`wf-cloud-drain-live-activation-20260803` lane.
+
+### Product finding — the health surface dead-ends
+
+`health` reports `state: activation_stopped` with **`blocker: null` and
+`next_action: null`**. An owner who reaches this state is told their automation
+is stopped and given nothing to act on — no cause, no remedy. Both fields exist
+precisely to carry that, and both are empty in the one state where they matter.
+Worth a row independent of the cutover.
+
+### Score after this update
+
+Working live: discover → remix (lineage/credit-share/fingerprints) → customize
+→ private binding (no public leakage) → author → immutable publish → **execute
+with real provider calls** → **create a scheduled cloud automation under
+requester-owned authority**.
+
+Not yet: scheduled *execution* (no drain runtime instance), `converse` (no
+engine assigned), Slack (**adapter unbuilt** — `cloud_connections.py` wires only
+`github`; `app_outbound_adapter.py` says "a later server-owned Slack adapter
+supplies the injected callback"), second-account remix isolation.
