@@ -1,7 +1,10 @@
 """End-to-end check: an existing universe can declare a Loop branch after birth."""
 from __future__ import annotations
-import importlib, json
+
+import importlib
+import json
 from pathlib import Path
+
 import pytest
 
 
