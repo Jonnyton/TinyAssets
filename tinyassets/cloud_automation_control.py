@@ -1030,10 +1030,13 @@ def _next_action(
     if control.desired_state is CloudAutomationDesiredState.PAUSED:
         return "resume"
     if not activation_active:
-        # Desired-active but no cloud worker has converged the activation.
-        # `run_once` is the owner's escape hatch; without naming it here the
-        # only honest answer available to the owner is "wait indefinitely".
-        return "run_once"
+        # Desired-active but no cloud worker has converged the activation yet.
+        # Name only what the owner can ACTUALLY do: `resume` is a no-op here
+        # (desired state is already active), and there is no run-once verb on
+        # this target, so pointing at either would send them at a control that
+        # cannot help. Running the pinned Branch version directly is the one
+        # real move available today.
+        return "run_branch_version"
     return None
 
 
