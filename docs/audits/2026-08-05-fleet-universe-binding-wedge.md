@@ -204,3 +204,55 @@ answering all of these:
 - **259 directories under the data root.** Any per-universe sweep is an
   O(dirs) cost, and `read_graph target=graphs` already surfaces storage dirs
   (`cloud-automation-inputs`, `daemon_wikis`) as universes.
+
+## Route decision (cross-family, 2026-08-05)
+
+Five routes were ranked. Verdict: **R5 — build a dedicated, binding-scoped
+executor service for the founder universe, explicitly pinned AND
+credential-isolated.** Ranking R5 > R3 > R4 > R1 > R2.
+
+**There is no safe route that unblocks these four rows without a deploy-config
+change.** Marker manipulation redirects shared workers; a fabricated or copied
+beat either fails descriptor matching or advertises capacity that cannot
+execute (`api/universe.py:1324`).
+
+Why each alternative fails:
+
+- **R1 — pin an existing worker to the universe:** rejected. The workers share
+  `/data/.codex` and `/data/.claude` and subprocesses inherit the parent
+  environment (`deploy/compose.yml:165`), so pinning one would execute this
+  user's rows on **maintainer credentials**. Amending the deploy guard is
+  acceptable *only* for a new, explicitly declared, credential-isolated
+  service; relaxing it for the existing fleet would regress the
+  fleet-diversion protection it enforces today
+  (`.github/workflows/deploy-prod.yml:1413`).
+- **R2 — make `UNIVERSE_SERVER_DEFAULT_UNIVERSE` outrank the marker:**
+  rejected as "plainly routing around the guard with a sibling variable, not a
+  legitimate security distinction". Both variables select the worker's
+  universe; changing precedence just makes the guard's grep blind to
+  equivalent diversion (`cloud_worker.py:133`).
+- **R3 — one supervisor per served universe in one container:** rejected as
+  stated. One process resolves one universe once. Public directories, pending
+  rows, and provisioned runtimes are *demand*, not *serving authority*; the
+  enrollment manifest is the only plausible authority signal in current code,
+  and shared in-container credentials remain unisolated (`cloud_worker.py:1707`).
+- **R4 — `user-assigned-llm-policy` task 4.1:** does **not** unblock these
+  rows. 4.1 changes automation executor selection from `daemon_id` to
+  `provider_binding_id`; it does not touch epoch-2 capacity discovery, which
+  still begins with heartbeat files inside the universe's own directory
+  (`api/universe.py:1285`).
+
+R5 must derive deployment eligibility from an active, unexpired,
+operator-enrolled `{owner, universe, provider, credential_reference_digest}`
+record — not directory existence, queued rows, or public runtime records
+(`provider_work_enrollment.py:99`).
+
+## Independent security finding
+
+**The runtime fence never attests the credential reference.** It verifies the
+binding's owner/universe/provider against the runtime's universe/provider but
+never compares `credential_reference_digest`
+(`storage/provider_work_authority.py:1956`). That omission is what permits
+ambient maintainer credentials to satisfy the fence, and it is why R5 needs
+credential isolation at the service level rather than trusting the binding
+check alone. Filed as its own STATUS row; not fixed here.
