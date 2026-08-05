@@ -195,3 +195,44 @@ requires insider access to an authorised workspace *and* guessing an
 unpredictable Slack event id, so it is narrow — but it is a real consequence of
 choosing indistinguishability over signalling, and it is written down rather
 than discovered later.
+
+## Round 4 — the shape gate
+
+Two more hits against `9b593cc9`:
+
+- A 32-character secret with exactly 10 distinct characters cleared the entropy
+  floor (`"0123456789" * 3 + "01"` — valid hex, correct length). Generic
+  "looks random" heuristics kept losing this argument, so the check now requires
+  the **real Slack shape**: exactly 32 lowercase hex characters, plus a distinct
+  floor of 12. Shape and entropy each catch what the other misses — hex alone
+  admits patterned hex, a floor alone admits non-Slack junk.
+- The handshake still answered for workspaces it could not vouch for: `CHAL`
+  echoed under `team_id: T_ATTACKER`, and under an enterprise-only envelope.
+  The same present-and-mismatched rule used for `api_app_id` now covers
+  `team_id`, and enterprise envelopes are refused outright — an Enterprise Grid
+  install is org-scoped and a per-workspace allow-list cannot speak for one.
+  That case names no team at all, so no team check could ever have caught it.
+
+Independent confirmation of the round-3 threadpool fix: the reviewer injected a
+250 ms delay into `data_dir`/boundary construction and observed it run entirely
+on a worker thread (`boundary_tid` != main thread) while the event loop kept
+ticking 16 times over the same 250 ms window.
+
+### The mutation probe keeps being the most valuable single step
+
+Across four rounds it surfaced five coverage holes that a green suite hid, and
+**not one was a false alarm**:
+
+| Gate deleted | Suite stayed green because |
+|---|---|
+| printable-ASCII | every weak-secret case had 2 distinct chars — the distinct floor caught them |
+| timing equaliser | the test used missing headers, the one shape where both paths exit early |
+| hex shape | the non-hex case had 11 distinct chars — the distinct floor caught it |
+| exact length | every case failed some *other* gate first |
+| authorise-before-anything | its only coverage lived in the route test file, not the logic one |
+
+The pattern is the same each time: a test appears to cover a gate, but a
+*different* gate is what actually fails it, so deleting the intended one changes
+nothing. The fix is always to construct an input that satisfies every other gate
+and violates only the one under test. **The surviving mutants, not the passing
+tests, were the signal.**
