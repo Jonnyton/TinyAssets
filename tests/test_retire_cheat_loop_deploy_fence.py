@@ -6372,23 +6372,28 @@ def test_retirement_refuses_a_container_that_is_running_right_now(tmp_path):
 
 def test_retirement_refuses_when_it_cannot_prove_the_container_is_stopped(
     tmp_path,
+    monkeypatch,
 ):
     """Fail closed: an inspection error is not proof of absence.
 
-    Otherwise a transient docker failure would retire the record for a
-    container that is actually still writing to the production volume.
+    A container that STILL EXISTS but cannot be inspected must refuse --
+    otherwise a transient docker failure would retire the record for a
+    container still writing to the production volume.
     """
     host = LifecycleHost(tmp_path)
     state_path = tmp_path / "state.json"
     _unsafe_recovery_state(host, state_path)
-    _record_extra_consumer(state_path, "tinyassets-worker-ghost-uninspectable")
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+    # Exists (so `ps -a` reports it) but inspection fails.
+    host.containers["tinyassets-worker-founder"] = {"Id": "c" * 64}
+    monkeypatch.setattr(
+        type(host),
+        "container_info",
+        lambda self, name: (_ for _ in ()).throw(FenceError("boom")),
+    )
 
     with pytest.raises(FenceError, match="cannot prove"):
-        _validate(
-            host,
-            state_path,
-            retire=("tinyassets-worker-ghost-uninspectable",),
-        )
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
 
 
 def test_retirement_can_never_target_an_expected_fleet_container(tmp_path):
