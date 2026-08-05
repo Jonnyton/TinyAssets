@@ -1629,8 +1629,13 @@ def test_phone_create_rejects_missing_content_and_internal_authority_inputs(
 
     assert missing_content["error"] == "automation_setup_invalid"
     assert "accepted_spec_content is required" in missing_content["detail"]
-    assert asserted_authority["error"] == "automation_setup_invalid"
-    assert "provider binding id assertion" in asserted_authority["detail"]
+    # Still refused — an id the caller does not hold grants nothing. The refusal
+    # now happens at SELECTION rather than at the later derived-vs-asserted
+    # comparison, so the caller is told to name one of their own bindings
+    # instead of being shown an internal "assertion does not match" message.
+    # The intent of this test is unchanged: unowned authority input is rejected.
+    assert asserted_authority["error"] == "automation_setup_required"
+    assert "name one of your provider bindings" in asserted_authority["detail"]
 
 
 def test_rollback_is_refused_once_the_original_binding_ttl_has_lapsed(
@@ -1776,3 +1781,117 @@ def test_no_hardcoded_date_literals_in_this_module() -> None:
         "hardcoded timestamp literal(s) found — express them relative to NOW "
         "instead, or this module goes red on a date:\n" + "\n".join(offenders)
     )
+
+
+def _install_second_binding(tmp_path, *, provider: str) -> str:
+    """Give the owner a SECOND provider binding, e.g. their other subscription."""
+    provider_store = SQLiteProviderWorkAuthorityStore(
+        tmp_path,
+        clock=lambda: NOW,
+        allow_test_fixtures=True,
+    )
+    installed = provider_store.install_test_binding(
+        ProviderWorkBindingSeed(
+            owner_user_id="acct_alice",
+            universe_id="universe_alice",
+            provider=provider,
+            credential_reference_digest=f"sha256:{'5' * 64}",
+            allowed_operations=("repository_spec_delivery",),
+            allowed_roles=("writer",),
+            assignment_generation=1,
+            assignment_digest=f"sha256:{'4' * 64}",
+            max_invocations=64,
+            max_tokens=1_000_000,
+            max_cost_microunits=64,
+            expires_at=GRANT_EXPIRES_AT,
+        )
+    )
+    assert installed.record is not None
+    return installed.record.binding_id
+
+
+def test_owner_with_two_subscriptions_can_name_which_one_to_use(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """An owner holding two subscriptions must be able to use either.
+
+    `_derive_phone_work_definition` pulls `provider_binding_id` out of the
+    caller's definition so it cannot ASSERT authority, then hydration demanded
+    exactly one candidate. With two bindings the owner was refused with "select
+    one" by a surface that had just discarded their selection — so a universe
+    with both a Claude and a ChatGPT subscription could use neither.
+    """
+    from tinyassets.api import cloud_automations, permissions
+
+    definition = _seed_setup_authority(tmp_path)
+    second = _install_second_binding(tmp_path, provider="claude-code")
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    # A phone user sends only the human fields plus which binding to use.
+    raw = {
+        "repository": definition.repository,
+        "accepted_spec_ref": definition.accepted_spec_ref,
+        "branch_version_id": definition.branch_version_id,
+        "provider_binding_id": second,
+    }
+
+    created = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        payload={
+            "definition": raw,
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {
+                "display_name": "Alice Cloud Builder",
+                "soul_text": "Execute Alice's versioned user-authored Branches.",
+            },
+        },
+    )
+
+    assert created.get("status") == "activation_requested", created
+    assert created["definition"]["provider_binding_id"] == second
+
+
+def test_naming_a_binding_the_owner_does_not_hold_is_refused(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Selection must stay selection — it cannot conjure authority."""
+    from tinyassets.api import cloud_automations, permissions
+
+    definition = _seed_setup_authority(tmp_path)
+    _install_second_binding(tmp_path, provider="claude-code")
+    monkeypatch.setattr(cloud_automations, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
+    monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
+
+    raw = {
+        "repository": definition.repository,
+        "accepted_spec_ref": definition.accepted_spec_ref,
+        "branch_version_id": definition.branch_version_id,
+        "provider_binding_id": "pwb_not_mine_at_all",
+    }
+
+    created = cloud_automations.cloud_automations(
+        action="create",
+        universe_id="universe_alice",
+        automation_id="automation_spec_drain",
+        payload={
+            "definition": raw,
+            "accepted_spec_content": ACCEPTED_SPEC_CONTENT,
+            "cadence_seconds": 300,
+            "operator": {
+                "display_name": "Alice Cloud Builder",
+                "soul_text": "Execute Alice's versioned user-authored Branches.",
+            },
+        },
+    )
+
+    assert created.get("error") == "automation_setup_required", created
