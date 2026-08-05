@@ -44,9 +44,16 @@ _BASIC_SPEC = {
 
 
 @pytest.fixture
-def server_env(tmp_path, monkeypatch):
+def server_env(tmp_path, monkeypatch, authenticate_request):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "founder")
+    # `UNIVERSE_SERVER_USER` alone does not reach branch WRITE actions:
+    # they resolve the caller via `_request_branch_actor()`, which is
+    # credential-derived and documented "never an env actor". Without a
+    # bound request subject they return "Authenticated branch subject
+    # required." before parsing anything, and every later assertion dies on
+    # a KeyError that hides the real cause.
+    authenticate_request("founder")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -118,7 +125,7 @@ def test_public_branch_is_commons_readable_cross_user(server_env, monkeypatch):
     assert branch.get("branch_def_id") == bid
 
 
-def test_private_branch_hidden_from_non_author(server_env, monkeypatch):
+def test_private_branch_hidden_from_non_author(server_env, monkeypatch, authenticate_request):
     """A PRIVATE branch is author-gated: the author reads it, a stranger gets
     the same not-found envelope (existence is not leaked)."""
     us = server_env
@@ -137,7 +144,13 @@ def test_private_branch_hidden_from_non_author(server_env, monkeypatch):
     assert own.get("branch_def_id") == bid, own
 
     # A different user cannot — and cannot even confirm it exists.
+    # The identity switch MUST rebind the request subject:
+    # `UNIVERSE_SERVER_USER` does not reach the reader, which resolves the
+    # caller from the credential. Setting the env var alone left this test
+    # still reading as the author, so the non-disclosure assertion below
+    # was passing on the author's own view rather than a stranger's.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "stranger")
     importlib.reload(us)
+    authenticate_request("stranger")
     blocked = json.loads(us.read_graph(target="branch", branch_id=bid))
     assert "not found" in blocked.get("error", "").lower(), blocked

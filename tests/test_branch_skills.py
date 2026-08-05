@@ -21,11 +21,18 @@ from tinyassets.daemon_server import (
 
 
 @pytest.fixture
-def branch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def branch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "skill-tester")
+    # `UNIVERSE_SERVER_USER` alone does not reach branch WRITE actions:
+    # they resolve the caller via `_request_branch_actor()`, which is
+    # credential-derived and documented "never an env actor". Without a
+    # bound request subject they return "Authenticated branch subject
+    # required." before parsing anything, and every later assertion dies on
+    # a KeyError that hides the real cause.
+    authenticate_request("skill-tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
