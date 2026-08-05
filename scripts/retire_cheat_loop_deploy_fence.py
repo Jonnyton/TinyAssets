@@ -2473,6 +2473,7 @@ def _validate_unsafe_recovery_source(
     image_ref: str,
     revision: str,
     state_path: Path,
+    retire_extra_consumers: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], str, str]:
     """Validate an immutable unsafe-fence generation before any mutation."""
 
@@ -2498,7 +2499,124 @@ def _validate_unsafe_recovery_source(
     )
     if any(key not in state for key in required):
         raise FenceError("unsafe fence lacks complete inherited preflight state")
-    if state.get("extra_volume_consumers"):
+    extras = dict(state.get("extra_volume_consumers") or {})
+    # NOT gated on `extras` being non-empty. A prior recovery attempt can
+    # already have cleared `extra_volume_consumers` while the OTHER fleet
+    # enumerations still name the retired container -- observed live on
+    # recoveries 31049384995 and 31049698106, which both refused with
+    # "stopped fleet removal intent is invalid" because this block was
+    # skipped once extras was empty, leaving the stale removal plan intact.
+    if retire_extra_consumers:
+        # Narrow, operator-named retirement of a recorded extra consumer.
+        #
+        # Live 2026-08-05: a deploy added a container the exact-fleet fence did
+        # not admit; cleanup fenced the whole fleet (daemon included, so /mcp
+        # 502'd) AND recorded the newcomer here, which made recovery refuse
+        # unconditionally. Reverting the container is not enough -- the RECORD
+        # outlives it, so production stays down with no in-band way back.
+        #
+        # Retirement is deliberately not a bypass:
+        #   * the operator must name the container EXACTLY -- no wildcards;
+        #   * a name in EXPECTED_CONTAINERS can never be retired;
+        #   * the recorded entry must already be stopped;
+        #   * the container must be absent or still stopped on the host NOW,
+        #     re-checked here rather than trusted from the record;
+        #   * every retirement is returned as evidence.
+        # Anything else still raises.
+        retired: dict[str, Any] = {}
+        for name in retire_extra_consumers:
+            if name in EXPECTED_CONTAINERS:
+                raise FenceError(
+                    "refusing to retire an expected fleet container"
+                )
+            entry = extras.get(name)
+            enumerated = any(
+                name in dict(state.get(key) or {})
+                for key in ("old_container_ids", "recovery_container_ids")
+            ) or name in dict(
+                (state.get("stopped_fleet_removal") or {}).get(
+                    "container_ids"
+                )
+                or {}
+            )
+            if entry is None and not enumerated:
+                raise FenceError(
+                    "refusing to retire an unrecorded extra volume consumer"
+                )
+            # The gate is the LIVE state, not the recorded one.
+            # (Runs whether or not an extras entry survives: a container that
+            # is running again must never be retired from ANY enumeration.) The fence
+            # records each consumer immediately BEFORE stopping it, so
+            # `entry["running"]` is true for every member at fence time --
+            # refusing on it made retirement permanently unsatisfiable
+            # (observed live: recovery 31047718991 refused on exactly this).
+            # `entry` is kept as evidence rather than used as a gate.
+            #
+            # Fail closed: retirement requires POSITIVE proof the container is
+            # not running. An inspection that errors is not proof of absence,
+            # so it refuses rather than assuming the container is gone.
+            try:
+                info = host.container_info(name)
+            except Exception:  # noqa: BLE001
+                # Inspect failing is ambiguous alone, so prove ABSENCE
+                # positively rather than assuming it: a SUCCESSFUL `ps -a`
+                # listing that does not contain the name means the container
+                # no longer exists -- the safest possible state, since a
+                # removed container cannot be writing to the volume. If that
+                # probe also fails, host.run raises and we still refuse, so an
+                # unreachable docker never unlocks retirement.
+                #
+                # Observed live: recovery 31047957677 refused here because
+                # cleanup had REMOVED the container, not merely stopped it.
+                listed = host.run(
+                    [
+                        "docker",
+                        "ps",
+                        "-a",
+                        "--filter",
+                        f"name=^/{name}$",
+                        "--format",
+                        "{{.Names}}",
+                    ]
+                )
+                if listed.strip():
+                    raise FenceError(
+                        "cannot prove the extra volume consumer is stopped"
+                    )
+                info = None
+            if info is not None and bool(info.get("State", {}).get("Running")):
+                raise FenceError(
+                    "refusing to retire a RUNNING extra volume consumer"
+                )
+            retired[name] = dict(entry or {"note": "extras already cleared"})
+            extras.pop(name, None)
+            # Retiring a container means retiring it from EVERY recorded
+            # structure that enumerates the fleet, not just this one.
+            #
+            # `_validate_stopped_fleet` requires
+            # `set(stopped_fleet_removal["container_ids"]) == EXPECTED_CONTAINERS`
+            # and that it still equal its `recorded_source` map. Those were
+            # captured while the retired container existed, so leaving it in
+            # place keeps the fleet enumerations one name too long and the
+            # next recovery fails with "stopped fleet removal intent is
+            # invalid" -- observed live on recovery 31049384995, after the
+            # extra-consumer record had already been cleared.
+            plan = state.get("stopped_fleet_removal")
+            if isinstance(plan, dict):
+                planned = plan.get("container_ids")
+                if isinstance(planned, dict):
+                    planned.pop(name, None)
+                source_key = str(plan.get("recorded_source", ""))
+                source_map = state.get(source_key)
+                if isinstance(source_map, dict):
+                    source_map.pop(name, None)
+            for enumeration in ("old_container_ids", "recovery_container_ids"):
+                recorded_map = state.get(enumeration)
+                if isinstance(recorded_map, dict):
+                    recorded_map.pop(name, None)
+        state["extra_volume_consumers"] = extras
+        state["retired_extra_volume_consumers"] = retired
+    if extras:
         raise FenceError("unsafe fence recorded extra production-volume consumers")
     if not CANONICAL_IMAGE_RE.fullmatch(image_ref):
         raise FenceError("runner-bound recovery image is not immutable")
@@ -2775,6 +2893,31 @@ def _remove_recorded_stopped_fleet_for_recovery(
     if raw_plan is not None and not isinstance(raw_plan, dict):
         raise FenceError("stopped fleet removal intent is invalid")
     plan = raw_plan if isinstance(raw_plan, dict) else None
+    # A COMPLETED removal plan is history, not a live invariant.
+    #
+    # A recovery that starts a fresh generation and is then re-fenced leaves
+    # `stopped_fleet_removal["container_ids"]` describing the generation it
+    # removed, while `recovery_container_ids` describes the one it started.
+    # Same keys, different ids -- so the equality check below refuses forever
+    # and the fleet can never be recovered again.
+    #
+    # Observed live 2026-08-05 after recovery 31048315265: phase=unsafe_fenced,
+    # removal_phase=removed, all five expected containers present and Exited,
+    # extras empty, every enumeration carrying exactly the right NAMES.
+    #
+    # When the plan says the removal already completed, drop it and let the
+    # `if not plan:` branch re-derive from the CURRENT generation. That path is
+    # strict -- it requires the live container ids to equal a recorded map
+    # exactly -- so this loosens no identity guarantee, it just stops treating
+    # finished work as a contradiction.
+    if isinstance(plan, dict) and plan.get("removal_phase") == "removed":
+        source_key = str(plan.get("recorded_source", ""))
+        planned_now = {
+            str(name): str(identity)
+            for name, identity in dict(plan.get("container_ids") or {}).items()
+        }
+        if dict(state.get(source_key) or {}) != planned_now:
+            plan = None
     recorded: dict[str, str] = {}
     recorded_source = ""
     if plan:
@@ -3598,6 +3741,7 @@ def recover_unsafe(
     revision: str,
     state_path: Path,
     recovery_script_sha256: str = "",
+    retire_extra_consumers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Start one exact admitted fleet in a restart-fenced canary phase."""
 
@@ -3614,6 +3758,7 @@ def recover_unsafe(
         image_ref=image_ref,
         revision=revision,
         state_path=state_path,
+        retire_extra_consumers=retire_extra_consumers,
     )
     attempts = list(state.get("recovery_attempts") or [])
     if run_id in attempts:
@@ -3652,7 +3797,27 @@ def recover_unsafe(
             removed_recovery_sidecars
         )
         _atomic_json(state_path, state)
-    recover_sidecars = "sidecar_handoff" in state
+    # Restore the sidecars whenever cleanup fenced them, not only when it
+    # recorded an explicit handoff.
+    #
+    # The recovery canary probes the PUBLIC url, which only resolves through
+    # the `tinyassets-tunnel` sidecar. Gating restoration on `sidecar_handoff`
+    # alone means a cleanup that fenced the sidecars WITHOUT writing that key
+    # leaves recovery unable to satisfy its own success check: the fleet comes
+    # up healthy, the daemon serves `POST /mcp -> 200` on loopback, the public
+    # probe 502s because nothing is fronting it, and the failing probe
+    # re-fences the fleet. Forever.
+    #
+    # Observed live 2026-08-05 (recovery 31050887125): all five containers
+    # `Up (healthy)`, daemon logging 200s, NO tinyassets-tunnel in `docker ps
+    # -a`, and state carrying `sidecar_restart_policies` but no
+    # `sidecar_handoff`.
+    #
+    # `sidecar_restart_policies` is the record that cleanup fenced them, and
+    # it is exactly what the restore path below consumes.
+    recover_sidecars = "sidecar_handoff" in state or bool(
+        state.get("sidecar_restart_policies")
+    )
     if recover_sidecars:
         sidecar_policies = {
             str(name): str(policy)
@@ -4137,6 +4302,17 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--image-ref", required=True)
     recover.add_argument("--revision", required=True)
     recover.add_argument("--expected-script-sha256", required=True)
+    recover.add_argument(
+        "--retire-extra-consumer",
+        action="append",
+        default=[],
+        metavar="CONTAINER_NAME",
+        help=(
+            "Retire one EXACT recorded extra volume consumer that is already "
+            "stopped. Repeatable. Never matches an expected fleet container, "
+            "never a wildcard, and re-checks the live container state."
+        ),
+    )
     finalize = subparsers.add_parser("finalize-recovery")
     finalize.add_argument("--source-run-id", required=True)
     finalize.add_argument("--run-id", required=True)
@@ -4219,6 +4395,7 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             revision=args.revision,
             state_path=args.state_path,
             recovery_script_sha256=recovery_script_sha256,
+            retire_extra_consumers=tuple(args.retire_extra_consumer),
         )
     if args.command == "finalize-recovery":
         return finalize_recovery(

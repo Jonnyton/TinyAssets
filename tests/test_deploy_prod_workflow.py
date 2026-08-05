@@ -181,10 +181,10 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
         "${{ steps.recovery-image.outputs.image_ref }}"
     )
     assert "sudo docker pull '${RECOVERY_IMAGE_REF}'" in host_pull_script
-    assert step_names.index("Recovery canonical MCP canary") < step_names.index(
+    assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
         "Finalize canonical unsafe-fence recovery"
     )
-    assert step_names.index("Recovery exact-seven surface assertion") < step_names.index(
+    assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
         "Finalize canonical unsafe-fence recovery"
     )
     assert "inputs.unsafe_fence_source_run_id == ''" in str(
@@ -2449,3 +2449,69 @@ def test_cleanup_derives_cutover_only_from_current_run_generation():
     assert "current_run_cutover_started" in script
     assert "str(bool(status.get(\"state_exists\")))" not in script
     assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
+
+
+def test_shared_fleet_workers_still_share_their_credential_roots():
+    """Accept-direction control: the shared fleet must stay shared."""
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    for name in ("worker", "worker-codex-2", "worker-claude-1", "worker-claude-2"):
+        env = compose["services"][name]["environment"]
+        assert env["CODEX_HOME"] == "/data/.codex", name
+        assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
+        assert "TINYASSETS_UNIVERSE" not in env, name
+
+
+
+def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
+    """Recovery must not fail its own success check on a booting daemon.
+
+    The ordinary deploy path has a "Wait for daemon health" step before its
+    canary; the recovery path had none and probed the PUBLIC url immediately
+    after starting the fleet. The daemon's healthcheck allows a 60s
+    start_period, so live recovery 31048315265 probed ~0.7s after container
+    start, got 502 from a daemon that had not finished booting, and that
+    failure re-fenced the fleet — leaving /mcp down while the daemon itself
+    was healthy.
+    """
+    wf = _load()
+    step = next(
+        s for s in wf["jobs"]["recover-unsafe"]["steps"]
+        if s.get("name") == "Recovery daemon MCP canary (loopback)"
+    )
+    run = step.get("run", "") or ""
+    # Recovery proves the DAEMON serves MCP; the public route needs the tunnel
+    # sidecar, which recovery does not restore and the later deploy does.
+    assert "127.0.0.1:8001/mcp" not in run  # it is base64'd, not inline
+    assert "recovered daemon never served /mcp on loopback" in run
+    assert "exit 1" in run
+    # The public assertion must still exist elsewhere in the recovery job.
+    wf_all = _WORKFLOW.read_text(encoding="utf-8")
+    assert 'python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles' in wf_all
+
+
+def test_active_universe_repoint_is_explicit_input_only_and_validated():
+    """The marker that decides which universe the fleet serves.
+
+    `cloud_worker._resolve_universe` reads /data/.active_universe before any
+    other default, and an AUTHENTICATED `switch_universe` is request-scoped by
+    design and never writes it — so there is no in-band way for a user to
+    repoint the fleet at their own universe. Four admissible slices sat
+    unclaimed for >18h because of exactly this.
+
+    It must never move by default, and never to an unvalidated value.
+    """
+    wf = _load()
+    inputs = wf[True]["workflow_dispatch"]["inputs"] if True in wf else wf["on"]["workflow_dispatch"]["inputs"]
+    assert "set_active_universe" in inputs
+    assert not inputs["set_active_universe"].get("required", False)
+    assert "default" not in inputs["set_active_universe"]
+
+    step = next(
+        s for s in wf["jobs"]["deploy"]["steps"]
+        if s.get("name", "").startswith("Repoint the active-universe marker")
+    )
+    # Only ever on an explicit non-empty input.
+    assert "inputs.set_active_universe != ''" in str(step.get("if", ""))
+    run = step.get("run", "") or ""
+    assert "invalid universe id" in run
+    assert "^[A-Za-z0-9._-]{1,128}$" in run

@@ -19,6 +19,7 @@ from scripts.retire_cheat_loop_deploy_fence import (
     EXPECTED_CONTAINERS,
     RESTART_RACER_UNITS,
     FenceError,
+    _validate_unsafe_recovery_source,
     expire_recovery,
     fence_status,
     finalize_recovery,
@@ -30,6 +31,7 @@ from scripts.retire_cheat_loop_deploy_fence import (
     quiesce_unsafe,
     receipt_snapshot,
     recover_unsafe,
+    _remove_recorded_stopped_fleet_for_recovery,
     refence_recovery,
     resolve_receipt_store,
     restore_if_safe,
@@ -6296,3 +6298,246 @@ def test_parent_directory_fsync_is_attempted_on_posix(
         ("fsync", 91),
         ("close", 91),
     ]
+
+
+def _record_extra_consumer(state_path, name, *, running=False, cid="c" * 64):
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["extra_volume_consumers"] = {name: {"id": cid, "running": running}}
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _validate(host, state_path, retire=()):
+    return _validate_unsafe_recovery_source(
+        host,
+        source_run_id="source-run-1",
+        image_ref=host.target_image_ref,
+        revision=host.target_revision,
+        state_path=state_path,
+        retire_extra_consumers=tuple(retire),
+    )
+
+
+def test_recorded_extra_consumer_still_blocks_recovery_by_default(tmp_path):
+    """The default must stay a hard refusal — retirement is opt-in only."""
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+
+    with pytest.raises(FenceError, match="extra production-volume consumers"):
+        _validate(host, state_path)
+
+
+def test_an_exactly_named_stopped_extra_consumer_clears_that_gate(tmp_path):
+    """The in-band way back from a fence that outlived its cause.
+
+    Live 2026-08-05: a deploy added a container the exact-fleet fence did not
+    admit. Cleanup fenced the whole fleet — daemon included, so /mcp returned
+    502 — AND recorded the newcomer, which made recovery refuse forever.
+    Reverting the container is not enough; the RECORD outlives it.
+
+    Asserted precisely: WITHOUT retirement the extra-consumer gate raises;
+    WITH it, that gate no longer does. Later validation still applies and is
+    not weakened here -- this test deliberately does not assert recovery
+    succeeds, only that this one refusal is lifted.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+
+    with pytest.raises(FenceError, match="extra production-volume consumers"):
+        _validate(host, state_path)
+
+    try:
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+    except FenceError as exc:
+        assert "extra production-volume consumers" not in str(exc)
+
+
+def test_retirement_refuses_a_container_that_is_running_right_now(tmp_path):
+    """The gate is the LIVE container, not the recorded flag."""
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+    host.containers["tinyassets-worker-founder"] = {
+        "Id": "c" * 64,
+        "State": {"Running": True, "Pid": 42},
+        "HostConfig": {"RestartPolicy": {"Name": "always"}},
+    }
+
+    with pytest.raises(FenceError, match="RUNNING extra volume consumer"):
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+
+
+def test_retirement_refuses_when_it_cannot_prove_the_container_is_stopped(
+    tmp_path,
+    monkeypatch,
+):
+    """Fail closed: an inspection error is not proof of absence.
+
+    A container that STILL EXISTS but cannot be inspected must refuse --
+    otherwise a transient docker failure would retire the record for a
+    container still writing to the production volume.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+    # Exists (so `ps -a` reports it) but inspection fails.
+    host.containers["tinyassets-worker-founder"] = {"Id": "c" * 64}
+    monkeypatch.setattr(
+        type(host),
+        "container_info",
+        lambda self, name: (_ for _ in ()).throw(FenceError("boom")),
+    )
+
+    with pytest.raises(FenceError, match="cannot prove"):
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+
+
+def test_retirement_can_never_target_an_expected_fleet_container(tmp_path):
+    """The whole fleet must stay unretirable — otherwise this is a bypass."""
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+
+    for name in EXPECTED_CONTAINERS:
+        with pytest.raises(FenceError, match="expected fleet container"):
+            _validate(host, state_path, retire=(name,))
+
+
+def test_retirement_refuses_a_name_that_was_never_recorded(tmp_path):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+
+    with pytest.raises(FenceError, match="unrecorded extra volume consumer"):
+        _validate(host, state_path, retire=("tinyassets-worker-ghost",))
+
+
+def test_retirement_purges_every_fleet_enumeration_not_just_the_extras(
+    tmp_path,
+    monkeypatch,
+):
+    """A retired container must vanish from every recorded fleet list.
+
+    `_validate_stopped_fleet` requires the removal plan's container_ids to
+    equal EXPECTED_CONTAINERS and to match its recorded_source map. Those were
+    captured while the retired container existed, so clearing only
+    `extra_volume_consumers` leaves the enumerations one name too long and the
+    NEXT recovery fails with "stopped fleet removal intent is invalid" --
+    observed live on recovery 31049384995.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    _record_extra_consumer(state_path, "tinyassets-worker-founder")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["old_container_ids"]["tinyassets-worker-founder"] = "c" * 64
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "planned",
+        "recorded_source": "old_container_ids",
+        "container_ids": dict(state["old_container_ids"]),
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(
+        "scripts.retire_cheat_loop_deploy_fence._configured_image",
+        lambda: host.target_image_ref,
+    )
+
+    # Later, unrelated validation may still refuse in this fixture; what must
+    # NOT survive the purge is the removal-intent refusal it exists for.
+    try:
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+    except FenceError as exc:
+        assert "stopped fleet removal intent is invalid" not in str(exc)
+
+
+def test_purge_runs_even_when_a_prior_attempt_cleared_the_extras(tmp_path):
+    """The second recovery attempt must still purge the enumerations.
+
+    Live 2026-08-05: recovery 31048315265 cleared `extra_volume_consumers`,
+    so recoveries 31049384995 and 31049698106 found it empty, skipped the
+    retirement block entirely, and refused with "stopped fleet removal intent
+    is invalid" because the stale removal plan still named the container.
+    """
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["extra_volume_consumers"] = {}          # a prior attempt cleared it
+    state["old_container_ids"]["tinyassets-worker-founder"] = "c" * 64
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "planned",
+        "recorded_source": "old_container_ids",
+        "container_ids": dict(state["old_container_ids"]),
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    try:
+        _validate(host, state_path, retire=("tinyassets-worker-founder",))
+    except FenceError as exc:
+        assert "stopped fleet removal intent is invalid" not in str(exc)
+        assert "unrecorded extra volume consumer" not in str(exc)
+
+
+def test_a_completed_removal_plan_does_not_deadlock_recovery(tmp_path):
+    """A finished removal must not lock the fleet out of recovery forever.
+
+    Observed live 2026-08-05: recovery 31048315265 started a fresh generation
+    and was then re-fenced, leaving stopped_fleet_removal describing the
+    generation it REMOVED while recovery_container_ids described the one it
+    STARTED — same keys, different ids. Every later recovery refused with
+    "stopped fleet removal intent is invalid", with production down.
+    """
+    host = LifecycleHost(tmp_path)
+    host.install_target_fleet()
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    live = {
+        name: str(host.containers[name]["Id"]) for name in EXPECTED_CONTAINERS
+    }
+    state["recovery_container_ids"] = live
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "removed",
+        "recorded_source": "recovery_container_ids",
+        # the generation that was removed — different ids, same names
+        "container_ids": {name: "d" * 64 for name in EXPECTED_CONTAINERS},
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    try:
+        _remove_recorded_stopped_fleet_for_recovery(
+            host, state, state_path=state_path
+        )
+    except FenceError as exc:
+        assert "stopped fleet removal intent is invalid" not in str(exc)
+
+
+def test_a_planned_removal_plan_is_still_strictly_validated(tmp_path):
+    """Accept-direction control: an in-flight plan keeps its full checks."""
+    host = LifecycleHost(tmp_path)
+    host.install_target_fleet()
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "planned",
+        "recorded_source": "recovery_container_ids",
+        "container_ids": {name: "d" * 64 for name in EXPECTED_CONTAINERS},
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(FenceError, match="stopped fleet removal intent is invalid"):
+        _remove_recorded_stopped_fleet_for_recovery(
+            host, state, state_path=state_path
+        )

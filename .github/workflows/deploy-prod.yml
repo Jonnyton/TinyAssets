@@ -45,6 +45,14 @@ on:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
         required: false
         type: string
+      set_active_universe:
+        description: 'Repoint /data/.active_universe at this universe id (workers resolve their served universe through it). Leave empty for no change.'
+        required: false
+        type: string
+      retire_extra_consumer:
+        description: 'EXACT name of one recorded, already-stopped extra volume consumer to retire during recovery (leave empty unless a fence recorded a container that no longer exists)'
+        required: false
+        type: string
       rotate_request_idempotency_hmac:
         description: 'Replace the exposed production request HMAC during a reviewed correction deploy'
         required: false
@@ -103,6 +111,14 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Dump fence state (read-only diagnosis)
+        run: |
+          echo "::group::fence state"
+          B64=cHl0aG9uMyAtIDw8J1BZRU9GMicKaW1wb3J0IGpzb24KZCA9IGpzb24ubG9hZChvcGVuKCcvdmFyL2xpYi90aW55YXNzZXRzLWRlcGxveS9yZXRpcmUtY2hlYXQtbG9vcC10YXNrLTItMS1mZW5jZS5qc29uJykpCnNycCA9IGQuZ2V0KCdzaWRlY2FyX3Jlc3RhcnRfcG9saWNpZXMnKQpwcmludCgnc2lkZWNhcl9yZXN0YXJ0X3BvbGljaWVzIHR5cGUgPScsIHR5cGUoc3JwKS5fX25hbWVfXykKcHJpbnQoJ3NpZGVjYXJfcmVzdGFydF9wb2xpY2llcyBrZXlzID0nLCBzb3J0ZWQoc3JwLmtleXMoKSkgaWYgaXNpbnN0YW5jZShzcnAsIGRpY3QpIGVsc2Ugc3JwKQpwcmludCgnYm9vbChzcnApID0nLCBib29sKHNycCkpCnByaW50KCdoYXMgc2lkZWNhcl9oYW5kb2ZmID0nLCAnc2lkZWNhcl9oYW5kb2ZmJyBpbiBkKQpwcmludCgncmVjb3Zlcnlfc2lkZWNhcl9yZWZlbmNlX2Vycm9yID0nLCByZXByKGQuZ2V0KCdyZWNvdmVyeV9zaWRlY2FyX3JlZmVuY2VfZXJyb3InKSlbOjIwMF0pCnByaW50KCdyZWNvdmVyeV9wcm9qZWN0X25hbWUgPScsIGQuZ2V0KCdyZWNvdmVyeV9wcm9qZWN0X25hbWUnKSkKUFlFT0YyCmVjaG8gLS0tTElWRS0tLQpkb2NrZXIgcHMgLWEgLS1mb3JtYXQgInt7Lk5hbWVzfX0ge3suU3RhdHVzfX0iCg==
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "echo ${B64} | base64 -d | sudo bash -s" || true
+          echo "::endgroup::"
       - name: Validate host HMAC pair before recovery mutation
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -158,6 +174,7 @@ jobs:
       - name: Recover canonical unsafe fence
         env:
           SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+          RETIRE_EXTRA_CONSUMER: ${{ inputs.retire_extra_consumer }}
           RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
           RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
         run: |
@@ -167,6 +184,17 @@ jobs:
           if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
             echo "::error::refusing invalid unsafe fence source run ID"
             exit 1
+          fi
+          # Optional, single, exactly-named retirement of a recorded extra
+          # volume consumer. Empty by default: the fence's refusal is the
+          # correct behaviour unless a container it recorded no longer exists.
+          RETIRE_ARG=""
+          if [ -n "${RETIRE_EXTRA_CONSUMER}" ]; then
+            if [[ ! "${RETIRE_EXTRA_CONSUMER}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; then
+              echo "::error::refusing invalid extra-consumer container name"
+              exit 1
+            fi
+            RETIRE_ARG="--retire-extra-consumer '${RETIRE_EXTRA_CONSUMER}'"
           fi
           script_sha="$(sha256sum scripts/retire_cheat_loop_deploy_fence.py | awk '{print $1}')"
           override_sha="$(sha256sum deploy/recovery-restart-no.yml | awk '{print $1}')"
@@ -193,16 +221,52 @@ jobs:
              sudo systemctl enable tinyassets-recovery-reconcile.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}'" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}' ${RETIRE_ARG}" \
             > "$evidence_dir/recovery.json"
-      - name: Recovery canonical MCP canary
+      - name: Recovery daemon MCP canary (loopback)
         run: |
-          python scripts/mcp_public_canary.py \
-            --url "${CANARY_URL}" --assert-name TinyAssets --verbose
-      - name: Recovery exact-seven surface assertion
-        run: |
-          python scripts/mcp_public_canary.py \
-            --url "${CANARY_URL}" --assert-handles --verbose
+          # Recovery proves the DAEMON is restored, not the public route.
+          #
+          # This probed https://tinyassets.io/mcp, which only resolves
+          # through the tinyassets-tunnel sidecar -- and recovery does not
+          # restore sidecars: the live fence state carries
+          # sidecar_restart_policies == {} and no sidecar_handoff, so the
+          # fence has no record of them at all. The tunnel comes back with
+          # the normal deploy's `compose up`, which runs AFTER recovery.
+          #
+          # So recovery was asserting a condition it structurally could not
+          # produce: observed live on 31050887125 and 31051516167, where all
+          # five containers were Up (healthy) and the daemon logged
+          # `POST /mcp -> 200 OK` on loopback while the public probe 502'd
+          # 17 times and re-fenced the fleet it had just restored.
+          #
+          # The public assertion is NOT dropped -- the deploy's own canonical
+          # canary and the exact-seven surface assertion still run after the
+          # tunnel is back. This gate now proves exactly what recovery is
+          # responsible for: a daemon serving MCP.
+          echo "::group::recovery daemon canary"
+          B64=Zm9yIGkgaW4gJChzZXEgMSAyMCk7IGRvCiAgY29kZT0kKGN1cmwgLXMgLW8gL2Rldi9udWxsIC13ICIle2h0dHBfY29kZX0iIC1YIFBPU1QgaHR0cDovLzEyNy4wLjAuMTo4MDAxL21jcCBcCiAgICAtSCAiQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uIiBcCiAgICAtSCAiQWNjZXB0OiBhcHBsaWNhdGlvbi9qc29uLCB0ZXh0L2V2ZW50LXN0cmVhbSIgXAogICAgLWQgJ3sianNvbnJwYyI6IjIuMCIsImlkIjoxLCJtZXRob2QiOiJpbml0aWFsaXplIiwicGFyYW1zIjp7InByb3RvY29sVmVyc2lvbiI6IjIwMjQtMTEtMDUiLCJjYXBhYmlsaXRpZXMiOnt9LCJjbGllbnRJbmZvIjp7Im5hbWUiOiJyZWNvdmVyeS1jYW5hcnkiLCJ2ZXJzaW9uIjoiMSJ9fX0nIHx8IGVjaG8gMDAwKQogIGVjaG8gImxvb3BiYWNrIC9tY3AgYXR0ZW1wdCAke2l9OiBIVFRQICR7Y29kZX0iCiAgaWYgWyAiJHtjb2RlfSIgPSAiMjAwIiBdOyB0aGVuIGV4aXQgMDsgZmkKICBzbGVlcCAxMApkb25lCmV4aXQgMQo=
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "echo ${B64} | base64 -d | sudo bash -s"
+          rc=$?
+          echo "::endgroup::"
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::recovered daemon never served /mcp on loopback"
+            exit 1
+          fi
+      # The exact-seven PUBLIC handle assertion deliberately does NOT run
+      # here. It cannot: the daemon's OAuth resource metadata is bound to the
+      # canonical public url, so asserting it over a loopback forward fails
+      # with `converse auth gate resource metadata drift` (observed live, run
+      # 31052742713), and asserting it over the public url fails because the
+      # tunnel sidecar is not restored by recovery.
+      #
+      # It is not lost: AGENTS.md Hard Rule 11's PR-178 drift guard runs in
+      # the ordinary deploy path (`--assert-handles` against CANARY_URL),
+      # which follows recovery once the tunnel is back. Recovery's job is to
+      # restore a serving daemon; the public surface is asserted where the
+      # public surface exists.
       - name: Finalize canonical unsafe-fence recovery
         env:
           SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
@@ -1286,6 +1350,29 @@ jobs:
             exit 1
           }
 
+      - name: Repoint the active-universe marker (explicit input only)
+        if: inputs.set_active_universe != ''
+        env:
+          TARGET_UNIVERSE: ${{ inputs.set_active_universe }}
+        run: |
+          # `cloud_worker._resolve_universe` reads /data/.active_universe
+          # before any other default, so this marker decides which universe
+          # the whole worker fleet serves. An AUTHENTICATED switch_universe
+          # is request-scoped by design and never writes it, so there is no
+          # in-band way for a user to repoint the fleet at their own
+          # universe -- which is why four admissible slices sat unclaimed
+          # while the fleet served a different universe.
+          #
+          # Explicit input only, never a default, and the target must already
+          # exist on the volume. Reversible by dispatching with the old value.
+          if [[ ! "${TARGET_UNIVERSE}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::invalid universe id"
+            exit 1
+          fi
+          B64=c2V0IC1ldW8gcGlwZWZhaWwKVEFSR0VUPSIkMSIKIyAvZGF0YSBpcyBhIE5BTUVEIERPQ0tFUiBWT0xVTUUsIG5vdCBhIGhvc3QgcGF0aCDigJQgaXQgb25seSBleGlzdHMgaW5zaWRlIGEKIyBjb250YWluZXIuIFRoZSBmaXJzdCBjdXQgb2YgdGhpcyBjaGVja2VkIC9kYXRhIG9uIHRoZSBob3N0LCB3aGVyZSBpdCBkb2VzIG5vdAojIGV4aXN0LCBhbmQgaXRzIG93biBndWFyZCBjb3JyZWN0bHkgcmVmdXNlZCAocnVuIDMxMDUzNTIzODY3KS4KZG9ja2VyIHJ1biAtLXJtIC12IHRpbnlhc3NldHMtZGF0YTovZGF0YSBhbHBpbmU6MyBzaCAtYyAiCiAgc2V0IC1lCiAgaWYgWyAhIC1kIC9kYXRhLyR7VEFSR0VUfSBdOyB0aGVuCiAgICBlY2hvICdyZWZ1c2luZzogL2RhdGEvJHtUQVJHRVR9IGlzIG5vdCBhbiBleGlzdGluZyB1bml2ZXJzZSBkaXJlY3RvcnknID4mMgogICAgZXhpdCAxCiAgZmkKICBlY2hvIFwiY3VycmVudCBtYXJrZXI6IFwkKGNhdCAvZGF0YS8uYWN0aXZlX3VuaXZlcnNlIDI+L2Rldi9udWxsIHx8IGVjaG8gJzxub25lPicpXCIKICBwcmludGYgJyVzJyAnJHtUQVJHRVR9JyA+IC9kYXRhLy5hY3RpdmVfdW5pdmVyc2UudG1wCiAgbXYgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZS50bXAgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZQogIGVjaG8gXCJuZXcgbWFya2VyOiBcJChjYXQgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZSlcIgoiCg==
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "echo ${B64} | base64 -d | sudo bash -s -- ${TARGET_UNIVERSE}"
       - name: Wait for daemon health
         id: candidate_health
         run: |

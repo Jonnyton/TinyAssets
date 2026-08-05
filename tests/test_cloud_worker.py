@@ -2038,6 +2038,11 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     (tmp_path / "release-state.json").unlink()
     monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    # This block stands in for a separate worker-a container, so run the boot
+    # ritual it would run. The supervisor's beat identity is frozen there and
+    # deliberately does not follow a later env change (the automation pump
+    # rebinds TINYASSETS_WORKER_ID in-process and never restores it).
+    cw._snapshot_worker_protocol_identity_at_boot()
     monkeypatch.setenv(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
         runtime_a["runtime_instance_id"],
@@ -2148,7 +2153,7 @@ def test_run_supervisor_snapshots_protocol_identity_before_polling(
     monkeypatch.setattr(
         cw,
         "_snapshot_worker_protocol_identity_at_boot",
-        lambda _physical_worker_id="": snapshots.append("boot"),
+        lambda _physical_worker_id="", state=None: snapshots.append("boot"),
     )
     monkeypatch.setattr(cw, "threading_is_main", lambda: False)
 
@@ -2313,3 +2318,225 @@ def test_short_lived_child_still_pumps_cloud_automation_triggers(tmp_path, monke
         "the cloud-automation trigger pump never ran across two subprocess "
         "lifecycles, so a desired-active automation can never reach slice 1"
     )
+
+
+def test_beat_stays_findable_after_the_pump_rebinds_worker_identity(
+    tmp_path,
+    monkeypatch,
+):
+    """The healthcheck must still find the beat once an automation ran.
+
+    `_pump_cloud_automation_triggers` rebinds ``TINYASSETS_WORKER_ID``
+    in-process to a per-owner logical slot and never restores it. The
+    supervisor derives its beat filename from that id, while
+    `cloud_worker_healthcheck` runs in a FRESH process and reads the
+    container's configured value -- so a drifted filename makes a healthy
+    worker read as dead. Live 2026-08-05: three of four workers reported
+    `supervisor beat stale` for ~50 minutes while beating normally, and the
+    host's autoheal timer was inactive so nothing recovered them.
+    """
+    from tinyassets import cloud_worker_healthcheck as hc
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+
+    # Boot as the container does, then let the pump rebind identity.
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    state = cw.SupervisorState()
+    cw._snapshot_worker_protocol_identity_at_boot(state=state)
+    monkeypatch.setenv(
+        "TINYASSETS_WORKER_ID",
+        cw._automation_worker_slot("claude-1", "universe-a", "user-a"),
+    )
+    assert cw._worker_id().startswith("worker_cloud_automation_")
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        state,
+        iteration=1,
+        phase="polling",
+    )
+
+    # The healthcheck's fresh process sees the container's configured id.
+    healthy, reason = hc.check(universe, worker_id="claude-1")
+    assert healthy, reason
+
+
+def test_supervisor_worker_id_falls_back_before_boot(monkeypatch):
+    """Not yet booted (tests, direct calls) must still resolve an id."""
+
+    assert cw._supervisor_worker_id(None) == cw._worker_id()
+    assert cw._supervisor_worker_id(cw.SupervisorState()) == cw._worker_id()
+
+
+def test_one_supervisors_frozen_id_cannot_leak_into_another(
+    tmp_path,
+    monkeypatch,
+):
+    """A second supervisor must beat under ITS configured id, not the first's.
+
+    The frozen identity lives on `SupervisorState` rather than a module
+    global precisely so it cannot survive between supervisors that share an
+    interpreter. A leaked global made a worker write its beat under a peer's
+    name -- the same false-dead failure this freeze exists to prevent.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
+    booted = cw.SupervisorState()
+    cw._snapshot_worker_protocol_identity_at_boot(state=booted)
+
+    # A LATER beat that never booted (a direct caller, or another
+    # supervisor in the same interpreter) must resolve its own configured
+    # id -- not inherit `claude-1` from the supervisor that booted first.
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "codex-1")
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    assert (universe / ".worker_supervisor.codex-1.json").exists()
+    assert not (universe / ".worker_supervisor.claude-1.json").exists()
+
+
+def test_a_spawn_does_not_inherit_the_pumps_leaked_owner(tmp_path, monkeypatch):
+    """A spawn must scope its runtime registration to ITS universe's owner.
+
+    `_pump_cloud_automation_triggers` sets TINYASSETS_AUTOMATION_OWNER_USER_ID
+    per pumped automation and never restores it. The spawn used to read that
+    env, so a spawn against universe A was filtered by whichever owner the
+    pump last touched in universe B. When no project-loop daemon matched that
+    (universe, stale owner) pair, registration returned None and the spawn
+    CLEARED TINYASSETS_RUNTIME_INSTANCE_ID -- leaving the beat with no runtime,
+    so the universe advertised no capacity at all.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+
+    # The pump leaked a DIFFERENT universe's owner into the process.
+    monkeypatch.setenv("TINYASSETS_AUTOMATION_OWNER_USER_ID", "owner-of-some-other-universe")
+
+    seen: dict[str, str] = {}
+
+    def _fake_register(universe_arg, provider_name, *, owner_user_id="", worker_id=""):
+        seen["owner_user_id"] = owner_user_id
+        return "runtime-a"
+
+    monkeypatch.setattr(cw, "_register_worker_runtime", _fake_register)
+    monkeypatch.setattr(
+        cw.subprocess,
+        "Popen",
+        lambda *a, **k: type("P", (), {"pid": 1, "returncode": None})(),
+    )
+
+    cw._spawn_fantasy_daemon(universe)
+
+    assert seen["owner_user_id"] == ""
+
+
+def test_a_caller_that_knows_the_owner_still_scopes_the_registration(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: an explicit owner must still be honoured."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "universe-a"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_AUTOMATION_OWNER_USER_ID", "leaked-owner")
+
+    seen: dict[str, str] = {}
+
+    def _fake_register(universe_arg, provider_name, *, owner_user_id="", worker_id=""):
+        seen["owner_user_id"] = owner_user_id
+        return "runtime-a"
+
+    monkeypatch.setattr(cw, "_register_worker_runtime", _fake_register)
+    monkeypatch.setattr(
+        cw.subprocess,
+        "Popen",
+        lambda *a, **k: type("P", (), {"pid": 1, "returncode": None})(),
+    )
+
+    cw._spawn_fantasy_daemon(universe, owner_user_id="real-owner")
+
+    assert seen["owner_user_id"] == "real-owner"
+def test_a_pinned_worker_quarantines_when_its_universe_has_no_credential(
+    tmp_path,
+    monkeypatch,
+):
+    """Claiming rows it cannot execute is worse than a visible stall.
+
+    `subprocess_env_for_provider(universe_dir=...)` gives the child an EMPTY
+    auth root when the universe has no vault credential -- it does not raise
+    and does not fall back to the container's token. A pinned worker with a
+    healthy container would therefore claim every pending row and fail every
+    one, terminalizing admissible work.
+    """
+    universe = tmp_path / "u-pinned"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe))
+
+    reason = cw._pinned_universe_credential_missing(
+        universe,
+        ["--provider", "claude-code"],
+    )
+    assert "no credential deposited" in reason
+    assert "u-pinned" in reason
+    # The message must name the artifact to deposit AND say plainly that the
+    # container's own credential root is not consulted -- otherwise the
+    # operator seeds CODEX_HOME/CLAUDE_CONFIG_DIR (the obvious guess) and the
+    # worker keeps quarantining with no explanation.
+    assert ".credential-vault.json" in reason
+    assert ".credentials" in reason
+    assert "NOT consulted" in reason
+
+
+def test_the_shared_fleet_is_not_gated_by_the_pinned_credential_check(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: unpinned workers must behave exactly as before.
+
+    The shared fleet resolves its universe dynamically; gating it here would
+    quarantine the whole fleet on a universe it merely happens to be serving.
+    """
+    universe = tmp_path / "u-shared"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
+
+    assert cw._pinned_universe_credential_missing(
+        universe,
+        ["--provider", "claude-code"],
+    ) == ""
+
+
+def test_a_pinned_worker_with_a_resolvable_universe_credential_proceeds(
+    tmp_path,
+    monkeypatch,
+):
+    """Accept-direction control: a credentialed universe must NOT quarantine."""
+    universe = tmp_path / "u-pinned"
+    universe.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe))
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.apply_provider_auth_env",
+        lambda _env, _provider, universe_dir=None: {
+            "CLAUDE_CONFIG_DIR": str(universe / ".claude"),
+        },
+    )
+
+    assert cw._pinned_universe_credential_missing(
+        universe,
+        ["--provider", "claude-code"],
+    ) == ""

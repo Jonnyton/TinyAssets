@@ -172,6 +172,44 @@ def _worker_id() -> str:
     return override or _cloud_host_user()
 
 
+def _supervisor_worker_id(state: "SupervisorState | None" = None) -> str:
+    """This container's identity, frozen at supervisor boot.
+
+    Deliberately NOT a live `_worker_id()` read. The automation pump rebinds
+    ``TINYASSETS_WORKER_ID`` in-process to a per-owner logical slot
+    (``worker_cloud_automation_<hash>``) and never restores it, so after the
+    first pump a live read returns the slot. The liveness beat's filename is
+    derived from this id, while `cloud_worker_healthcheck` runs in a FRESH
+    process and reads the container's configured value -- so a drifted
+    filename makes a perfectly healthy worker read as dead.
+
+    Live 2026-08-05: three of four workers reported `supervisor beat stale`
+    for ~50 minutes while beating normally under the slot name, and the
+    host's autoheal timer was inactive so nothing recovered them.
+
+    CONTAINMENT, NOT THE WHOLE FIX. The pump also leaks
+    ``TINYASSETS_RUNTIME_INSTANCE_ID``, which can name a runtime in an
+    automation *target* universe while the descriptor is built from the
+    supervisor's own universe -- that, not this id, is what raises
+    ``queue_universe_id_mismatch``. So the beat can now carry the container's
+    name while its descriptor fields still describe the logical slot, and a
+    green healthcheck no longer proves the pump is progressing. The complete
+    fix threads a universe-qualified execution context through pump, spawn,
+    and descriptor code instead of passing identity through the environment;
+    a `try`/`finally` restore is NOT the answer (it forces a re-register on
+    every pump call and strands audience-bound work). Cross-family review:
+    Codex `adapt`, 2026-08-05.
+
+    The frozen value lives on the caller's `SupervisorState`, never a module
+    global: a global survives between supervisors that share an interpreter,
+    so one supervisor's identity would silently win over the next one's
+    configured id.
+    """
+
+    frozen = getattr(state, "supervisor_worker_id", "") or ""
+    return frozen.strip() or _worker_id()
+
+
 def _automation_worker_slot(
     physical_worker_id: str,
     universe_id: str,
@@ -282,9 +320,17 @@ def _load_worker_release_identity() -> dict[str, str] | None:
 
 def _snapshot_worker_protocol_identity_at_boot(
     physical_worker_id: str = "",
+    *,
+    state: "SupervisorState | None" = None,
 ) -> dict[str, str] | None:
     """Bind terminal release identity and boot ID before supervisor work."""
     worker_id = physical_worker_id.strip() or _worker_id()
+    # Freeze the container's own identity here, in the one ritual that runs
+    # before any supervisor work and never again. The automation pump rebinds
+    # TINYASSETS_WORKER_ID in-process and does not restore it, so a later live
+    # read is not this container. See `_supervisor_worker_id`.
+    if state is not None:
+        state.supervisor_worker_id = worker_id
     if worker_id in _WORKER_PROTOCOL_IDENTITIES:
         return _WORKER_PROTOCOL_IDENTITIES[worker_id]
     release = _load_worker_release_identity()
@@ -496,6 +542,61 @@ def _worker_auth_health(daemon_args: list[str] | None) -> dict[str, str] | None:
     from tinyassets.providers.base import subscription_auth_health
 
     return subscription_auth_health(provider)
+
+
+def _pinned_universe_credential_missing(
+    universe: Path,
+    daemon_args: list[str] | None,
+) -> str:
+    """Return a reason when a PINNED worker's universe has no credential.
+
+    `_worker_auth_health` asks whether the CONTAINER is logged in --
+    `subscription_auth_health` reads the process-global CODEX_HOME /
+    CLAUDE_CONFIG_DIR. That is the wrong question for a universe-pinned
+    executor, because the child resolves credentials per-universe:
+    `providers.base.subprocess_env_for_provider(universe_dir=...)` returns a
+    private runtime root with an EMPTY auth dir when the universe has no
+    vault credential. It does not raise, and it does not fall back to the
+    container's token (verified empirically 2026-08-05).
+
+    So a pinned worker with a healthy container and an uncredentialed universe
+    would beat, advertise capacity, claim every pending row, and fail every
+    one -- burning admissible work into a terminal state. A visible stall is
+    strictly better than that, so this quarantines instead.
+
+    Deliberately scoped to pinned workers only: the shared fleet resolves its
+    universe dynamically and is unchanged by this gate.
+    """
+    if not os.environ.get("TINYASSETS_UNIVERSE", "").strip():
+        return ""
+    provider = (
+        _provider_from_daemon_args(daemon_args)
+        or os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
+    )
+    if not provider:
+        return ""
+    try:
+        from tinyassets.credential_vault import apply_provider_auth_env
+
+        overlay = apply_provider_auth_env({}, provider, universe_dir=universe)
+    except Exception:  # noqa: BLE001 — unresolvable is exactly the bad case
+        return f"{provider} credential resolution failed for {universe.name}"
+    if not overlay:
+        from tinyassets.credential_vault import (
+            CREDENTIAL_ARTIFACT_DIR,
+            VAULT_FILENAME,
+        )
+
+        return (
+            f"{provider} has no credential deposited IN universe "
+            f"{universe.name}. The container's own CODEX_HOME / "
+            "CLAUDE_CONFIG_DIR is NOT consulted for a universe-scoped child: "
+            "`credential_vault.resolve_claude_config_dir` reads this "
+            f"universe's vault records ({universe / VAULT_FILENAME}) or a "
+            f"materialized {universe / CREDENTIAL_ARTIFACT_DIR / provider}. "
+            "Deposit one of those to resume."
+        )
+    return ""
 
 
 def _register_worker_runtime(
@@ -1010,10 +1111,25 @@ def _spawn_fantasy_daemon(
     python: str = sys.executable,
     module: str = "fantasy_daemon",
     extra_args: list[str] | None = None,
+    owner_user_id: str = "",
 ) -> subprocess.Popen:
     """Spawn ``python -m fantasy_daemon --universe <path> --no-tray``.
 
     Returns the ``Popen`` handle. Caller owns lifecycle.
+
+    ``owner_user_id`` scopes this spawn's runtime registration and MUST be
+    passed by a caller that actually knows the owner. It used to be read from
+    ``TINYASSETS_AUTOMATION_OWNER_USER_ID``, which
+    `_pump_cloud_automation_triggers` sets per pumped automation and never
+    restores -- so a spawn against universe A inherited the owner of whichever
+    automation the pump last touched, in a DIFFERENT universe. When no
+    project-loop daemon matched that (universe, stale owner) pair,
+    `_register_worker_runtime` returned None and the spawn then CLEARED
+    ``TINYASSETS_RUNTIME_INSTANCE_ID`` -- leaving the liveness beat with no
+    runtime, hence no queue descriptor and no advertised capacity.
+
+    Same env-smuggled-identity class as the beat-filename drift fixed in #2323.
+    Found by cross-family review 2026-08-05.
     """
     args = [
         python,
@@ -1028,10 +1144,7 @@ def _spawn_fantasy_daemon(
     runtime_instance_id = _register_worker_runtime(
         universe,
         _provider_from_daemon_args(extra_args),
-        owner_user_id=os.environ.get(
-            "TINYASSETS_AUTOMATION_OWNER_USER_ID",
-            "",
-        ).strip(),
+        owner_user_id=owner_user_id.strip(),
     )
     if runtime_instance_id:
         os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
@@ -1088,6 +1201,15 @@ class SupervisorState:
         self.started_at = _utcnow_iso()
         self.last_spawn_at = ""
         self.last_exit_rc: int | None = None
+        # This container's identity, captured once when the supervisor boots.
+        # Deliberately NOT a live `_worker_id()` read at beat time: the
+        # automation pump rebinds TINYASSETS_WORKER_ID in-process to a
+        # per-owner logical slot and never restores it, so a live read would
+        # drift the beat FILENAME away from the value
+        # `cloud_worker_healthcheck` looks for in its own fresh process.
+        # Carried on the state (not a module global) so it cannot leak between
+        # supervisors sharing an interpreter.
+        self.supervisor_worker_id = ""
 
     def record_exit(self, returncode: int) -> None:
         self.total_spawns += 1
@@ -1163,6 +1285,12 @@ def write_supervisor_heartbeat(
         "subprocess_pid": subprocess_pid,
         "subprocess_alive": subprocess_alive,
         "planned_sleep_s": planned_sleep_s,
+        # NOTE: left as the live id on purpose. `beat.update(descriptor)`
+        # below overwrites this field with the queue descriptor's own
+        # worker_id when one was persisted, and the descriptor legitimately
+        # belongs to the logical automation slot. Only the FILENAME has to be
+        # the container's frozen identity -- that is what the healthcheck
+        # resolves.
         "worker_id": _worker_id(),
         "runtime_instance_id": os.environ.get(
             "TINYASSETS_RUNTIME_INSTANCE_ID",
@@ -1171,7 +1299,7 @@ def write_supervisor_heartbeat(
     }
     if descriptor is not None and descriptor_persisted:
         beat.update(descriptor)
-    filenames = [supervisor_heartbeat_filename(_worker_id())]
+    filenames = [supervisor_heartbeat_filename(_supervisor_worker_id(state))]
     if filenames[0] != SUPERVISOR_HEARTBEAT_FILENAME:
         filenames.append(SUPERVISOR_HEARTBEAT_FILENAME)
     for filename in filenames:
@@ -1303,7 +1431,6 @@ def run_supervisor(
     monkeypatch the module attribute freely.
     """
     physical_worker_id = _worker_id()
-    _snapshot_worker_protocol_identity_at_boot(physical_worker_id)
     if spawn_fn is None:
         if daemon_args:
 
@@ -1318,6 +1445,12 @@ def run_supervisor(
         sleep_fn = time.sleep
 
     state = SupervisorState()
+    # Runs before any supervisor work and never again: freezes this
+    # container's identity onto the state the beat writer uses.
+    _snapshot_worker_protocol_identity_at_boot(
+        physical_worker_id,
+        state=state,
+    )
     iteration = 0
     # True only when a shutdown terminated the child AND confirmed its exit —
     # gates the graceful-drain lease release (see _terminate_child_for_stop).
@@ -1364,6 +1497,28 @@ def run_supervisor(
                 "resume. (2026-06-25 loop-wedge prevention)",
                 auth.get("provider"),
                 auth.get("detail"),
+            )
+            write_supervisor_heartbeat(
+                universe,
+                state,
+                iteration=iteration,
+                phase="auth_quarantined",
+                planned_sleep_s=auth_quarantine_backoff,
+            )
+            sleep_fn(auth_quarantine_backoff)
+            continue
+
+        # A pinned executor additionally needs its UNIVERSE to have a
+        # credential. A healthy container proves nothing here: the child
+        # resolves per-universe and gets an empty auth root otherwise, so
+        # claiming would terminalize admissible rows instead of running them.
+        pinned_gap = _pinned_universe_credential_missing(universe, daemon_args)
+        if pinned_gap:
+            state.auth_quarantine_count += 1
+            logger.error(
+                "cloud_worker: %s — QUARANTINING pinned worker, not claiming. "
+                "Deposit the universe's provider credential to resume.",
+                pinned_gap,
             )
             write_supervisor_heartbeat(
                 universe,

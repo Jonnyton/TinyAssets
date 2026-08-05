@@ -49,7 +49,6 @@ to ``tinyassets.api.engine_helpers``.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -1818,11 +1817,14 @@ def _request_validation_error() -> str:
 
 
 def _request_idempotency_key_hash(raw_key: str) -> str:
-    secret = os.environ.get(_REQUEST_HMAC_ENV, "").encode("utf-8")
-    if len(secret) < 32:
-        raise RuntimeError("request admission HMAC key is not configured")
-    digest = hmac.new(secret, raw_key.encode("ascii"), hashlib.sha256)
-    return f"hmac-sha256:{digest.hexdigest()}"
+    # `_REQUEST_IDEMPOTENCY_KEY_RE` already restricts the key to ASCII, so
+    # delegating to the shared minter is byte-identical to the old
+    # ascii-encoded HMAC.
+    from tinyassets.storage.request_admissions import (
+        mint_idempotency_key_hash,
+    )
+
+    return mint_idempotency_key_hash(raw_key)
 
 
 def _request_body_digest(

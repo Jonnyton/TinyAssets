@@ -32,6 +32,7 @@ from tinyassets.storage.request_admissions import (
     QUEUE_PROTOCOL_VERSION,
     RequestAdmissionStore,
     _quarantine_row_digest,
+    expected_idempotency_hash_re,
 )
 
 
@@ -93,7 +94,6 @@ EPOCH2_TASK_LEASE_SECONDS = 1800
 # optional domain package.
 EPOCH2_QUEUE_CONSUMER_READY = True
 logger = logging.getLogger(__name__)
-_IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SOUL_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _BODY_DIGEST_VERSION = "rfc8785-v1"
@@ -1073,7 +1073,9 @@ def _classify_epoch2_row(
         and row.get("linked_admission_state") == "committed"
         and row.get("linked_request_status") == row.get("status")
         and isinstance(key_hash, str)
-        and _IDEMPOTENCY_HASH_RE.fullmatch(key_hash) is not None
+        and expected_idempotency_hash_re(
+            server_derived=all(populated_activation_fields),
+        ).fullmatch(key_hash) is not None
         and isinstance(body_digest, str)
         and _BODY_DIGEST_RE.fullmatch(body_digest) is not None
         and row.get("linked_admission_body_digest_version")

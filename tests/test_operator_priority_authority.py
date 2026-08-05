@@ -131,7 +131,7 @@ def _commit_priority_admission(
         tenant_id="tenant-a",
         actor_id=actor_id,
         universe_id="universe-a",
-        idempotency_key_hash="hmac:key-a",
+        idempotency_key_hash="hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         body_digest="sha256:body-a",
         body_digest_version="rfc8785-v1",
         request_type="general",
@@ -837,7 +837,7 @@ def test_admission_callback_rereads_current_grant_in_write_transaction(
         tenant_id="tenant-a",
         actor_id=subject_id,
         universe_id="universe-a",
-        idempotency_key_hash="hmac:key-a",
+        idempotency_key_hash="hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         body_digest="sha256:body-a",
         body_digest_version="rfc8785-v1",
         request_type="general",
@@ -870,7 +870,7 @@ def test_admission_callback_rereads_current_grant_in_write_transaction(
             tenant_id="tenant-a",
             actor_id=subject_id,
             universe_id="universe-a",
-            idempotency_key_hash="hmac:key-b",
+            idempotency_key_hash="hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             body_digest="sha256:body-b",
             body_digest_version="rfc8785-v1",
             request_type="general",
@@ -1379,7 +1379,7 @@ def test_replay_reauthorizes_every_ordinary_leg_before_lookup(
     result = _lookup_operator_request_replay(
         NoLookupStore(),
         universe_id="universe-a",
-        idempotency_key_hash="hmac:key-a",
+        idempotency_key_hash="hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         body_digest="sha256:body-a",
         body_digest_version="rfc8785-v1",
     )
@@ -1438,7 +1438,7 @@ def test_replay_after_acl_loss_is_non_enumerating_and_mutation_free(
     result = _lookup_operator_request_replay(
         store,
         universe_id="universe-a",
-        idempotency_key_hash="hmac:key-a",
+        idempotency_key_hash="hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         body_digest="sha256:body-a",
         body_digest_version="rfc8785-v1",
     )
@@ -1508,7 +1508,7 @@ def test_priority_only_loss_preserves_replay_but_blocks_new_priority(
     replay = _lookup_operator_request_replay(
         store,
         universe_id="universe-a",
-        idempotency_key_hash="hmac:key-a",
+        idempotency_key_hash="hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         body_digest="sha256:body-a",
         body_digest_version="rfc8785-v1",
     )

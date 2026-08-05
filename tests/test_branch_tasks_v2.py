@@ -72,8 +72,12 @@ def _commit(
     created_at: str = "2026-07-24T08:00:00+00:00",
     automation_activation: AutomationActivation | None = None,
 ) -> dict:
-    if not key.startswith("hmac-sha256:"):
-        key = "hmac-sha256:" + hashlib.sha256(key.encode()).hexdigest()
+    # Provenance decides the algorithm: a caller-supplied key is keyed, a
+    # server-derived automation identity is not (the cloud worker that mints
+    # it is denied the admission HMAC secret).
+    prefix = "sha256:" if automation_activation is not None else "hmac-sha256:"
+    if not key.startswith(prefix):
+        key = prefix + hashlib.sha256(key.encode()).hexdigest()
     del body
     canonical_body = rfc8785.dumps({
         "branch_id": "",
