@@ -22,6 +22,10 @@ from tinyassets.storage.request_admissions import (
     migrate_request_admission_schema,
 )
 
+_USER_KEY_HASH_A = "hmac-sha256:" + "a" * 64
+_USER_KEY_HASH_B = "hmac-sha256:" + "b" * 64
+_SERVER_KEY_HASH_B = "sha256:" + "b" * 64
+
 
 def _activation_subject(
     ref: str,
@@ -39,7 +43,7 @@ def _commit_kwargs(**overrides):
         "tenant_id": "tenant-a",
         "actor_id": "alice",
         "universe_id": "universe-a",
-        "idempotency_key_hash": "hmac:scope-key-a",
+        "idempotency_key_hash": _USER_KEY_HASH_A,
         "body_digest": "sha256:body-a",
         "body_digest_version": "rfc8785-v1",
         "request_type": "general",
@@ -55,6 +59,13 @@ def _commit_kwargs(**overrides):
         "created_at": "2026-07-24T08:00:00Z",
     }
     values.update(overrides)
+    if (
+        values.get("automation_activation") is not None
+        and "idempotency_key_hash" not in overrides
+    ):
+        # A server-derived automation identity is unkeyed on purpose; the
+        # cloud worker that mints it is denied the admission HMAC secret.
+        values["idempotency_key_hash"] = "sha256:" + "a" * 64
     return values
 
 
@@ -246,8 +257,7 @@ def test_commit_persists_only_the_exact_current_automation_activation(
     store = RequestAdmissionStore(tmp_path)
 
     committed = store.commit_admission(
-        **_commit_kwargs(),
-        automation_activation=active,
+        **_commit_kwargs(automation_activation=active),
     )
 
     with _connect(tmp_path) as conn:
@@ -290,10 +300,10 @@ def test_commit_persists_only_the_exact_current_automation_activation(
     ):
         store.commit_admission(
             **_commit_kwargs(
-                idempotency_key_hash="hmac:scope-key-b",
+                idempotency_key_hash=_SERVER_KEY_HASH_B,
                 body_digest="sha256:body-b",
+                automation_activation=active,
             ),
-            automation_activation=active,
         )
     assert _table_count(tmp_path, "branch_tasks_v2") == 1
 
@@ -321,8 +331,7 @@ def test_branch_task_admission_rejects_agent_manifest_activation(
 
     with pytest.raises(ValueError, match="requires a branch_version subject"):
         RequestAdmissionStore(tmp_path).commit_admission(
-            **_commit_kwargs(),
-            automation_activation=active,
+            **_commit_kwargs(automation_activation=active),
         )
 
     assert _table_count(tmp_path, "request_admissions") == 0
@@ -510,7 +519,7 @@ def test_access_precedes_lookup_and_priority_runs_only_after_replay_miss(
         tenant_id="tenant-a",
         actor_id="alice",
         universe_id="universe-a",
-        idempotency_key_hash="hmac:scope-key-a",
+        idempotency_key_hash=_USER_KEY_HASH_A,
         body_digest="sha256:body-a",
         body_digest_version="rfc8785-v1",
         access_check=access,
@@ -526,7 +535,7 @@ def test_access_precedes_lookup_and_priority_runs_only_after_replay_miss(
             tenant_id="tenant-a",
             actor_id="alice",
             universe_id="universe-a",
-            idempotency_key_hash="hmac:scope-key-a",
+            idempotency_key_hash=_USER_KEY_HASH_A,
             body_digest="sha256:body-a",
             body_digest_version="rfc8785-v1",
             access_check=lost_access,
@@ -562,7 +571,7 @@ def test_random_id_collision_retries_in_a_fresh_transaction(tmp_path):
 
     second = store.commit_admission(
         **_commit_kwargs(
-            idempotency_key_hash="hmac:scope-key-b",
+            idempotency_key_hash=_USER_KEY_HASH_B,
             body_digest="sha256:body-b",
         )
     )
@@ -749,7 +758,7 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
     terminal = store.commit_admission(**_commit_kwargs())
     pending = store.commit_admission(
         **_commit_kwargs(
-            idempotency_key_hash="hmac:scope-key-b",
+            idempotency_key_hash=_USER_KEY_HASH_B,
             body_digest="sha256:body-b",
             text="keep pending detail",
         )
@@ -832,7 +841,7 @@ def test_terminal_compaction_retains_tombstone_but_not_private_detail(tmp_path):
         assert terminal_request["preferred_author_id"] is None
         assert pending_request["text"] == "keep pending detail"
         assert admission["body_digest"] == "sha256:body-a"
-        assert admission["idempotency_key_hash"] == "hmac:scope-key-a"
+        assert admission["idempotency_key_hash"] == _USER_KEY_HASH_A
         assert json.loads(admission["result_json"]) == {
             "admission_id": terminal["admission_id"],
             "branch_task_id": terminal["branch_task_id"],
