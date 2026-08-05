@@ -257,3 +257,62 @@ def test_a_loop_daemon_is_scoped_to_its_own_universe(env):
     from tinyassets.daemon_registry import select_project_loop_daemon
     assert select_project_loop_daemon(str(base), universe_id=uid_a) is not None
     assert select_project_loop_daemon(str(base), universe_id=uid_b) is None
+
+
+def test_declare_loop_requires_costly_authority(env):
+    """Creating a daemon must cost what daemon_create costs.
+
+    Cross-family review 2026-08-05: `declare_universe_loop` registers a
+    project-loop daemon, and `cloud_worker` uses that flag to select the daemon,
+    register runtime authority and produce work. Explicit `daemon_create` is in
+    _UNIVERSE_COSTLY_ACTIONS. A route that creates a daemon while requiring only
+    universe.write lets a principal with no costly grant provision an executable
+    daemon — privilege escalation through an ordinary write.
+    """
+    from tinyassets.auth import provider as auth_provider
+
+    assert "declare_universe_loop" in auth_provider._UNIVERSE_COSTLY_ACTIONS
+    assert "daemon_create" in auth_provider._UNIVERSE_COSTLY_ACTIONS
+
+
+def test_loop_daemon_dedupe_is_owner_scoped(env):
+    """A daemon planted by another owner must not be adopted as mine.
+
+    `select_project_loop_daemon` is PERMISSIVE — without owner_user_id it
+    accepts any daemon flagged for the universe. Using it as a restrictive
+    dedupe would let a writer plant a default and have the owner's later
+    declaration silently adopt it while reporting serving:true.
+    """
+    us, base = env
+    uid = _birth(us)
+    bid = _build_branch(us)
+
+    from tinyassets.daemon_registry import (
+        PROJECT_LOOP_FLAG,
+        create_daemon,
+        select_project_loop_daemon,
+    )
+
+    planted = create_daemon(
+        str(base),
+        display_name="planted by someone else",
+        created_by="someone-else",
+        soul_mode="soul",
+        soul_text="planted",
+        metadata={
+            "universe_id": uid,
+            PROJECT_LOOP_FLAG: True,
+            "owner_user_id": "someone-else",
+        },
+    )
+    # The permissive selector sees it...
+    assert select_project_loop_daemon(str(base), universe_id=uid) is not None
+
+    out = json.loads(us.write_graph(
+        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+    ))
+    assert not out.get("error"), out
+    # ...but the declaration must NOT adopt another owner's daemon.
+    assert out["loop_daemon"]["daemon_id"] != planted["daemon_id"], (
+        "adopted a project-loop daemon owned by a different principal"
+    )

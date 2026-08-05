@@ -6260,6 +6260,8 @@ def _ensure_project_loop_daemon(uid: str, branch_def_id: str) -> dict[str, Any] 
     Best-effort by design — a registry failure must not lose the declaration
     that already persisted to soul.md.
     """
+    import sqlite3
+
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_registry import (
         PROJECT_LOOP_FLAG,
@@ -6269,7 +6271,15 @@ def _ensure_project_loop_daemon(uid: str, branch_def_id: str) -> dict[str, Any] 
 
     base = _base_path()
     actor = _current_actor()
-    existing = select_project_loop_daemon(base, universe_id=uid)
+    # Dedupe MUST be owner-scoped. `select_project_loop_daemon` is a permissive
+    # selector — without owner_user_id it accepts any daemon flagged for this
+    # universe, including legacy `project_default`+`loop_primary` combinations.
+    # Reusing it as a restrictive check would let one writer plant a default and
+    # have the real owner's later declaration silently adopt it and report
+    # serving:true (cross-family review, 2026-08-05).
+    existing = select_project_loop_daemon(
+        base, universe_id=uid, owner_user_id=actor
+    )
     if existing is not None:
         return existing
     try:
@@ -6290,6 +6300,11 @@ def _ensure_project_loop_daemon(uid: str, branch_def_id: str) -> dict[str, Any] 
                 "loop_branch_def_id": branch_def_id,
             },
         )
+    except sqlite3.IntegrityError:
+        # check-then-create is not atomic: a concurrent declaration for this
+        # universe can win the race. Re-select rather than surfacing the
+        # integrity error — the other writer's daemon is a valid outcome.
+        return select_project_loop_daemon(base, universe_id=uid, owner_user_id=actor)
     except (ValueError, KeyError, OSError):
         return None
 
