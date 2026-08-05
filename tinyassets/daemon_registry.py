@@ -337,9 +337,14 @@ def summon_daemon(
             "renamed fork, or update the active soul version before changing models",
         )
     merged_metadata = dict(metadata or {})
-    merged_metadata.setdefault("owner_user_id", daemon["owner_user_id"])
-    merged_metadata.setdefault("tenant_id", daemon["tenant_id"])
     merged_metadata.update({
+        # Same rule as create_daemon: ownership is derived, never caller-supplied.
+        # These were `setdefault`, and `daemon_summon` forwards caller metadata
+        # from the public surface, so an attacker could mint a RUNTIME carrying
+        # owner_user_id/tenant_id naming a victim. Ownership belongs to the
+        # daemon row, which is server state (cross-family review 2026-08-05).
+        "owner_user_id": daemon["owner_user_id"],
+        "tenant_id": daemon["tenant_id"],
         "daemon_id": daemon["daemon_id"],
         "daemon_soul_hash": daemon["soul_hash"],
         "daemon_soul_mode": daemon["soul_mode"],

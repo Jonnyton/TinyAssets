@@ -222,7 +222,7 @@ def test_declared_loop_reports_whether_it_is_servable(env):
     assert out["loop_dispatch"]["declared"] is True
 
     # The gap is REPORTED...
-    assert out["loop_daemon"]["serving"] is False
+    assert out["loop_daemon"]["registered"] is False
     assert out["loop_daemon"]["blocker"] == "no_project_loop_daemon"
     # ...and nothing was provisioned.
     assert len(list_daemons(str(base))) == before, (

@@ -52,3 +52,40 @@ def test_ownership_still_derives_from_created_by(tmp_path: Path):
     )
     assert daemon["owner_user_id"] == "alice"
     assert daemon["tenant_id"] == "alice"
+
+
+def test_summon_cannot_spoof_runtime_ownership(tmp_path: Path):
+    """summon_daemon had the same setdefault hole as create_daemon.
+
+    `daemon_summon` forwards caller metadata from the public surface, so with
+    setdefault an attacker could mint a RUNTIME carrying owner_user_id/tenant_id
+    naming a victim — even though the daemon row itself was protected.
+    Ownership must come from the daemon row, which is server state.
+    """
+    from tinyassets.daemon_registry import summon_daemon
+
+    daemon = create_daemon(
+        str(tmp_path),
+        display_name="victim daemon",
+        created_by="victim",
+        soul_mode="soul",
+        soul_text="victim soul",
+        metadata={"universe_id": "u-victim"},
+    )
+    assert daemon["owner_user_id"] == "victim"
+
+    runtime = summon_daemon(
+        str(tmp_path),
+        daemon_id=daemon["daemon_id"],
+        universe_id="u-victim",
+        provider_name="claude-code",
+        model_name="claude-opus",
+        created_by="attacker",
+        metadata={
+            "owner_user_id": "attacker",   # spoof attempt
+            "tenant_id": "attacker",       # spoof attempt
+        },
+    )
+    meta = runtime.get("metadata") or runtime
+    owner = str(meta.get("owner_user_id") or runtime.get("owner_user_id") or "")
+    assert owner == "victim", f"runtime ownership was spoofable: {owner}"
