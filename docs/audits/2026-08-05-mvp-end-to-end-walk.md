@@ -304,3 +304,61 @@ Not yet: scheduled *execution* (no drain runtime instance), `converse` (no
 engine assigned), Slack (**adapter unbuilt** — `cloud_connections.py` wires only
 `github`; `app_outbound_adapter.py` says "a later server-owned Slack adapter
 supplies the injected callback"), second-account remix isolation.
+
+
+---
+
+## UPDATE 03:10Z — step 8's blocker is ops, and the design fix alone will not clear it
+
+Worth stating plainly because it redirects effort: implementing D6 (decouple
+executor selection from `daemon_id`) would **not** make step 8 run today.
+
+D6 lets *any* compatible executor claim a requester-owned automation instead of
+one named daemon. But production has **zero registered executors**
+(`runtime_instance_count: 0`), so there is nothing for a decoupled claim to
+match. The blocker is not "an executor refuses this automation" — it is "no
+executor is registered at all".
+
+### The exact mechanism, and the one-command diagnostic
+
+`cloud_worker._register_worker_runtime()` (`tinyassets/cloud_worker.py:501`)
+registers a runtime instance at startup. Two properties make the current state
+invisible:
+
+1. **It is per-universe.** `selector = {"universe_id": universe.name}` →
+   `select_project_loop_daemon(...)`. A worker registers for the universes it
+   selects a project-loop daemon for, not globally.
+2. **It is best-effort.** Both failure paths `return` without raising, so a
+   worker stays alive and healthy while silently unregistered.
+
+So the four `cloud_worker` containers in `deploy/compose.yml` can all be running
+correctly and still leave `runtime_instance_count: 0` for
+`u-01kxm1vszd8hwp7em418asq8h9`.
+
+**Exactly two log lines distinguish the causes.** On the production host:
+
+```bash
+docker ps --filter name=cloud_worker
+docker logs <cloud_worker_container> 2>&1 | grep -E   'subscription auth not available|no project loop daemon registered|runtime registered'
+```
+
+- `"<provider> subscription auth not available; runtime registration will retry
+  on next spawn"` → the container cannot see subscription auth. A credential/
+  mount problem inside the container, **not** a code defect.
+- `"no project loop daemon registered; skipping runtime registration"` →
+  `select_project_loop_daemon` returned `None` for that universe. A
+  registry/scoping problem: the universe has no project-loop daemon the worker
+  will bind to.
+- `"runtime registered worker_id=… provider=… runtime=…"` → workers *are*
+  registering, and the blocker is elsewhere.
+
+Whichever line appears determines the fix, and none of the three is reachable
+without shell on the production host. Owner:
+`wf-cloud-drain-live-activation-20260803`.
+
+### Consequence for sequencing
+
+`user-assigned-llm-policy` task 4.x (D6) remains correct and worth landing — it
+removes a real coupling — but it is **not** the step-8 unblocker and should not
+be scheduled as if it were. The unblocker is getting one worker runtime
+registered for the owner's universe.
