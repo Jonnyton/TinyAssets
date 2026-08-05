@@ -31,6 +31,7 @@ from scripts.retire_cheat_loop_deploy_fence import (
     quiesce_unsafe,
     receipt_snapshot,
     recover_unsafe,
+    _remove_recorded_stopped_fleet_for_recovery,
     refence_recovery,
     resolve_receipt_store,
     restore_if_safe,
@@ -6484,3 +6485,59 @@ def test_purge_runs_even_when_a_prior_attempt_cleared_the_extras(tmp_path):
     except FenceError as exc:
         assert "stopped fleet removal intent is invalid" not in str(exc)
         assert "unrecorded extra volume consumer" not in str(exc)
+
+
+def test_a_completed_removal_plan_does_not_deadlock_recovery(tmp_path):
+    """A finished removal must not lock the fleet out of recovery forever.
+
+    Observed live 2026-08-05: recovery 31048315265 started a fresh generation
+    and was then re-fenced, leaving stopped_fleet_removal describing the
+    generation it REMOVED while recovery_container_ids described the one it
+    STARTED — same keys, different ids. Every later recovery refused with
+    "stopped fleet removal intent is invalid", with production down.
+    """
+    host = LifecycleHost(tmp_path)
+    host.install_target_fleet()
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    live = {
+        name: str(host.containers[name]["Id"]) for name in EXPECTED_CONTAINERS
+    }
+    state["recovery_container_ids"] = live
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "removed",
+        "recorded_source": "recovery_container_ids",
+        # the generation that was removed — different ids, same names
+        "container_ids": {name: "d" * 64 for name in EXPECTED_CONTAINERS},
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    try:
+        _remove_recorded_stopped_fleet_for_recovery(
+            host, state, state_path=state_path
+        )
+    except FenceError as exc:
+        assert "stopped fleet removal intent is invalid" not in str(exc)
+
+
+def test_a_planned_removal_plan_is_still_strictly_validated(tmp_path):
+    """Accept-direction control: an in-flight plan keeps its full checks."""
+    host = LifecycleHost(tmp_path)
+    host.install_target_fleet()
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["stopped_fleet_removal"] = {
+        "removal_phase": "planned",
+        "recorded_source": "recovery_container_ids",
+        "container_ids": {name: "d" * 64 for name in EXPECTED_CONTAINERS},
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(FenceError, match="stopped fleet removal intent is invalid"):
+        _remove_recorded_stopped_fleet_for_recovery(
+            host, state, state_path=state_path
+        )

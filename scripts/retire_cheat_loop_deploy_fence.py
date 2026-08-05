@@ -2893,6 +2893,31 @@ def _remove_recorded_stopped_fleet_for_recovery(
     if raw_plan is not None and not isinstance(raw_plan, dict):
         raise FenceError("stopped fleet removal intent is invalid")
     plan = raw_plan if isinstance(raw_plan, dict) else None
+    # A COMPLETED removal plan is history, not a live invariant.
+    #
+    # A recovery that starts a fresh generation and is then re-fenced leaves
+    # `stopped_fleet_removal["container_ids"]` describing the generation it
+    # removed, while `recovery_container_ids` describes the one it started.
+    # Same keys, different ids -- so the equality check below refuses forever
+    # and the fleet can never be recovered again.
+    #
+    # Observed live 2026-08-05 after recovery 31048315265: phase=unsafe_fenced,
+    # removal_phase=removed, all five expected containers present and Exited,
+    # extras empty, every enumeration carrying exactly the right NAMES.
+    #
+    # When the plan says the removal already completed, drop it and let the
+    # `if not plan:` branch re-derive from the CURRENT generation. That path is
+    # strict -- it requires the live container ids to equal a recorded map
+    # exactly -- so this loosens no identity guarantee, it just stops treating
+    # finished work as a contradiction.
+    if isinstance(plan, dict) and plan.get("removal_phase") == "removed":
+        source_key = str(plan.get("recorded_source", ""))
+        planned_now = {
+            str(name): str(identity)
+            for name, identity in dict(plan.get("container_ids") or {}).items()
+        }
+        if dict(state.get(source_key) or {}) != planned_now:
+            plan = None
     recorded: dict[str, str] = {}
     recorded_source = ""
     if plan:
