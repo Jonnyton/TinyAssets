@@ -16,14 +16,55 @@ import time
 
 import pytest
 
+#: Runs are attributed to this universe; registered + ACL-granted in `env`.
+REDACTION_UNIVERSE = "redaction-universe"
+
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.setenv("_FORCE_MOCK", "true")
+    # Branch mutation requires a credential-derived subject, and the scope
+    # check is per-family: this file drives `goals` as well as `extensions`.
+    # Nothing here asserts a *scope* refusal, so granting the writes these
+    # tests perform costs no assertion strength. `extensions.costly` and
+    # `goals.costly` stay withheld.
+    authenticate_request("tester", capabilities=[
+        "tinyassets.extensions.read",
+        "tinyassets.extensions.write",
+        "tinyassets.extensions.admin",
+        # `extensions.costly` IS needed here: this file exists to prove run
+        # IDs are redacted from the text channel, so it has to actually
+        # execute `run_branch`. Nothing in it asserts a scope refusal.
+        "tinyassets.extensions.costly",
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+    ])
+
+    # Runs are owned by a universe now: without `universe_id` run_branch
+    # returns `branch_run_requires_universe`, and with an unregistered id it
+    # returns `universe_access_denied` — the ACL grant is the half that is
+    # easy to miss.
+    from tinyassets.daemon_server import (
+        ensure_universe_registered,
+        grant_universe_access,
+    )
+
+    udir = base / REDACTION_UNIVERSE
+    udir.mkdir(parents=True, exist_ok=True)
+    ensure_universe_registered(
+        base, universe_id=REDACTION_UNIVERSE, universe_path=udir,
+    )
+    grant_universe_access(
+        base,
+        universe_id=REDACTION_UNIVERSE,
+        actor_id="tester",
+        permission="write",
+        granted_by="env",
+    )
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -56,7 +97,7 @@ def _build_min_branch(us, name="id redaction fixture"):
 
 
 def _run_and_wait(us, *, branch_def_id, inputs_json, timeout_s=10.0):
-    queued = _call(us, "extensions", "run_branch",
+    queued = _call(us, "extensions", "run_branch", universe_id=REDACTION_UNIVERSE,
                    branch_def_id=branch_def_id,
                    inputs_json=inputs_json)
     rid = queued["run_id"]
@@ -103,9 +144,15 @@ def test_build_branch_text_hides_branch_def_id(env):
 def test_patch_branch_text_hides_branch_def_id(env):
     us, _ = env
     bid = _build_min_branch(us, name="patch fixture")
-    ops = [{"op": "update_node", "node_id": "capture", "updates": {
+    # Update fields go FLAT on the op, not nested under "updates" — the
+    # nested form makes `updates` itself read as one unknown field and the
+    # patch is rejected. Every other test in the suite uses the flat shape
+    # (see test_composite_branch_actions.py); this one had drifted.
+    ops = [{
+        "op": "update_node",
+        "node_id": "capture",
         "display_name": "Capture (renamed)",
-    }}]
+    }]
     result = _call(us, "extensions", "patch_branch",
                    branch_def_id=bid,
                    changes_json=json.dumps(ops))
@@ -117,7 +164,7 @@ def test_patch_branch_text_hides_branch_def_id(env):
 def test_run_branch_text_hides_run_id(env):
     us, _ = env
     bid = _build_min_branch(us)
-    result = _call(us, "extensions", "run_branch",
+    result = _call(us, "extensions", "run_branch", universe_id=REDACTION_UNIVERSE,
                    branch_def_id=bid,
                    inputs_json=json.dumps({"raw": "abc"}))
     assert "run_id" in result  # structuredContent still carries it

@@ -1465,6 +1465,24 @@ def run_supervisor(
         if stopping["flag"]:
             break
 
+        # Bootstrap the first slice. The in-loop producer poll above can only
+        # fire while the child stays alive for a full producer_poll_interval,
+        # and every respawn resets that clock — so on an idle queue, where the
+        # child exits in well under one interval, the pump never ran at all.
+        # That made the ONLY path which converges a desired-active automation
+        # into its first slice reachable only when work already existed.
+        #
+        # Pumping here is safe in a way pumping earlier is not: the child has
+        # already exited, so the restart-loop hazard the in-loop delay guards
+        # against (terminating a child before it can claim pending BranchTasks)
+        # cannot apply. Anything queued is picked up by the next spawn.
+        if producer_poll_interval > 0:
+            _pump_cloud_automation_triggers(
+                universe,
+                provider_name=_provider_from_daemon_args(daemon_args),
+                physical_worker_id=physical_worker_id,
+            )
+
         if returncode == 0:
             delay = _compute_backoff(
                 state.clean_exit_count,

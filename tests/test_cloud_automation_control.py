@@ -317,6 +317,81 @@ def test_health_alarms_on_active_liveness_without_useful_progress(tmp_path) -> N
     assert health.alarm_after == "2026-08-04T00:10:00Z"
 
 
+def test_health_names_the_blocker_and_owner_action_before_any_receipt(
+    tmp_path,
+) -> None:
+    """A wedged automation must explain itself, not report two nulls.
+
+    `blocker` and `next_action` used to derive ONLY from the latest terminal
+    receipt, so an automation that never reached its first slice reported
+    `blocker: null, next_action: null`. Observed live on 2026-08-04: the owner
+    could see `state=activation_stopped` and had no way to learn why or what to
+    do about it.
+    """
+    definition, activations, active = _active(tmp_path)
+    store = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    store.schedule_initial(
+        definition,
+        automation_id="automation_spec_drain",
+        activation=active,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    stopped_activation = activations.stop(expected=active)
+    control = store.get_control(
+        universe_id=definition.universe_id,
+        automation_id="automation_spec_drain",
+    )
+    assert control is not None
+    assert control.desired_state is CloudAutomationDesiredState.ACTIVE
+
+    health = project_cloud_automation_health(
+        control,
+        activation=stopped_activation,
+        triggers=[],
+        receipts=[],
+        now=NOW,
+    )
+
+    assert health.state == "activation_stopped"
+    assert health.blocker == "awaiting_cloud_worker"
+    assert health.next_action == "run_once"
+
+
+def test_health_keeps_reporting_the_receipt_next_action_when_one_exists(
+    tmp_path,
+) -> None:
+    """The receipt stays authoritative — the fallback must not shadow it."""
+    definition, _activations, active = _active(tmp_path)
+    store = CloudAutomationControlStore(tmp_path, clock=lambda: NOW)
+    store.schedule_initial(
+        definition,
+        automation_id="automation_spec_drain",
+        activation=active,
+        cadence_seconds=300,
+        due_at=NOW,
+    )
+    control = store.get_control(
+        universe_id=definition.universe_id,
+        automation_id="automation_spec_drain",
+    )
+    assert control is not None
+    triggers = store.list_triggers(automation_id="automation_spec_drain", limit=10)
+
+    health = project_cloud_automation_health(
+        control,
+        activation=active,
+        triggers=triggers,
+        receipts=[],
+        now=NOW,
+    )
+
+    # Active activation with a pending trigger is healthy waiting, not a
+    # blocker — the new fallback must not manufacture one.
+    assert health.blocker is None
+    assert health.next_action is None
+
+
 def test_initial_trigger_rejects_stale_or_mismatched_activation(tmp_path) -> None:
     definition, activations, active = _active(tmp_path)
     stopped = activations.stop(expected=active)

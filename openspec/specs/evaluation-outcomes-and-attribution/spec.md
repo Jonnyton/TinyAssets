@@ -186,3 +186,29 @@ The attribution system SHALL preserve each public agent remix as append-only chi
 - **WHEN** an imported portable definition declares a parent component that is not resolvable in the local commons
 - **THEN** the platform may preserve that declaration as informational origin metadata
 - **AND** it does not write a verified attribution edge or assign local credit for that declaration
+
+### Requirement: Payout splitting conserves the total and refuses unattributed payouts
+Splitting a payout across contributors SHALL return integer MicroToken amounts
+that sum exactly to the gross payout, SHALL route exactly the declared fee
+percentage (floored) to `_treasury`, and SHALL refuse a positive payout that has
+no attribution to split over rather than absorbing it as platform revenue.
+
+#### Scenario: The split conserves the gross payout
+- **WHEN** a positive payout is split across one or more credited contributors
+- **THEN** `_treasury` receives the declared fee percentage, floored to an integer
+- **AND** the remainder is distributed by largest-remainder, so every amount is a
+  non-negative integer and the returned amounts sum to exactly the gross payout
+- **AND** no rounding residue is created or discarded at any actor count or fee rate
+
+#### Scenario: A payout with no attribution is refused
+- **WHEN** a positive payout is requested for an artifact that has no credit
+  records and no lineage edges
+- **THEN** the platform raises `NoAttributionError` and produces no split
+- **AND** it does NOT route the gross to `_treasury`, because that would convert a
+  missing-attribution defect into platform revenue and destroy the evidence of it
+
+#### Scenario: A credited contributor is never dropped by the depth cap
+- **WHEN** a contributor's generation depth exceeds the configured `depth_cap`
+- **THEN** the depth is clamped to the cap and the contributor still receives a share
+- **AND** the unattributed-payout refusal therefore only ever signals genuinely
+  absent attribution data, never a contributor silently filtered out

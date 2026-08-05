@@ -18,11 +18,19 @@ import pytest
 
 
 @pytest.fixture
-def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+            authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin; `extensions.costly` stays withheld so a
+    # costly-refusal test would still assert something.
+    authenticate_request("tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -100,7 +108,12 @@ class TestUpdateNodeNameBasedRef:
 
         res = _call(
             us, "extensions", "update_node",
-            branch_def_id="climate workflow",
+            # Lowercase of the branch's ACTUAL name — the point of the test.
+            # Commit 8ac167eb ("finish TinyAssets label cleanup") renamed the
+            # _build name "Climate Workflow" -> "Climate TinyAssets" but left
+            # this lookup string behind, so the pair stopped matching in any
+            # casing and the test was asserting nothing about case-insensitivity.
+            branch_def_id="climate tinyassets",
             node_id=nid,
             description="updated via lowercase name",
         )
@@ -108,7 +121,18 @@ class TestUpdateNodeNameBasedRef:
         assert res.get("status") == "updated", res
 
     def test_update_node_unknown_name_returns_error(self, ext_env):
-        """update_node with unrecognized name returns a clear error."""
+        """update_node with an unrecognized name returns the BARE error.
+
+        No `status` key, deliberately. `update_node` resolves through
+        `_branch_not_found` (branches.py:452), shared by 14 call sites, and
+        the bare shape is a NON-DISCLOSURE guarantee:
+        `test_branch_mutation_authority.py` asserts
+        `denied == missing == expected`, so a mutation the caller is not
+        authorized to make must be byte-identical to a branch that does not
+        exist — otherwise the error becomes a probe for private branches.
+        This test previously expected `{"status": "rejected"}`, which would
+        have required breaking that.
+        """
         us, base = ext_env
         _build(us, name="real-workflow")
 
@@ -119,7 +143,7 @@ class TestUpdateNodeNameBasedRef:
             display_name="new name",
         )
 
-        assert res.get("status") == "rejected", res
+        assert res == {"error": "Branch 'nonexistent-workflow-name' not found."}, res
         assert "error" in res
 
     def test_update_node_by_exact_id_still_works(self, ext_env):

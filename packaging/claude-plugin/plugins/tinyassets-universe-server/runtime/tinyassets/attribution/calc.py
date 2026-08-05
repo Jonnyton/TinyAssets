@@ -19,6 +19,27 @@ from tinyassets.payments.identifiers import MicroToken
 _DEFAULT_DEPTH_CAP = 10
 
 
+class NoAttributionError(ValueError):
+    """A positive payout arrived with nothing to attribute it to.
+
+    This is a data-integrity failure, not a normal outcome, and it is narrow:
+    ``depth_cap`` CLAMPS a contributor's depth rather than filtering them out
+    (see ``_shares_from_credits``), and the edge path raises on a cycle rather
+    than returning empty. So a credited contributor can never be silently
+    dropped. The only way to reach here is a payout for an artifact with no
+    credit records AND no lineage edges at all — meaning the caller passed the
+    wrong id, or the attribution records were never written.
+
+    It is therefore refused rather than absorbed. Routing the gross to
+    ``_treasury`` would convert a missing-data bug into platform revenue and
+    destroy the evidence that anything went wrong; the money should not have
+    been authorized against an unattributed artifact in the first place, so the
+    correct response is to surface the gap loudly (hard rule 8).
+
+    Host decision 2026-08-05.
+    """
+
+
 def compute_credit_shares(
     edges: list[AttributionEdge],
     credits: list[AttributionCredit] | None = None,
@@ -164,6 +185,11 @@ def compute_payout_shares(
         Special key "_treasury" holds the platform fee in MicroTokens.
         All returned amounts are integers, and the result sums exactly to
         `total_payout`.
+
+    Raises:
+        NoAttributionError: if a positive payout has no attribution to split
+            it over. See the class docstring for why this is not treated as
+            platform revenue.
     """
     gross_total = int(total_payout)
     if gross_total <= 0:
@@ -171,7 +197,10 @@ def compute_payout_shares(
 
     shares = compute_credit_shares(edges=edges, credits=credits or None, depth_cap=depth_cap)
     if not shares:
-        return {"_treasury": MicroToken(gross_total)}
+        raise NoAttributionError(
+            f"payout of {gross_total} has no attribution to split over: "
+            f"{len(credits or [])} credit(s), {len(edges or [])} edge(s)"
+        )
 
     fee = int(gross_total * fee_pct)
     distributable = gross_total - fee
