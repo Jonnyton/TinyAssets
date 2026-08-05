@@ -19,7 +19,19 @@ from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
-NOW = datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc)
+#: Anchored to the real clock, deliberately NOT a fixed literal.
+#:
+#: `prepare_cloud_automation` derives the background Branch binding's
+#: `expires_at` from the injected clock as `now + max(86_400, ...)`, but the
+#: `cloud_automations` rebind path validates that expiry against the REAL clock
+#: — it accepts no clock parameter, so there is nothing to inject. A hardcoded
+#: NOW therefore arms a 24-hour fuse: `expires_at` is the only one of the
+#: binding guard's eleven conditions that depends on wall-clock time, and it
+#: flips to False exactly one day after the literal. The suite then goes red
+#: with no commit touching it, which is how `main` broke on 2026-08-04 23:00Z.
+#:
+#: Nothing here asserts a literal date; NOW is only ever a relative anchor.
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 ACCEPTED_SPEC_CONTENT = "# Accepted repository specification\n"
 
 
