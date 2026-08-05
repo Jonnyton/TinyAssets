@@ -2473,6 +2473,7 @@ def _validate_unsafe_recovery_source(
     image_ref: str,
     revision: str,
     state_path: Path,
+    retire_extra_consumers: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], str, str]:
     """Validate an immutable unsafe-fence generation before any mutation."""
 
@@ -2498,7 +2499,58 @@ def _validate_unsafe_recovery_source(
     )
     if any(key not in state for key in required):
         raise FenceError("unsafe fence lacks complete inherited preflight state")
-    if state.get("extra_volume_consumers"):
+    extras = dict(state.get("extra_volume_consumers") or {})
+    if extras and retire_extra_consumers:
+        # Narrow, operator-named retirement of a recorded extra consumer.
+        #
+        # Live 2026-08-05: a deploy added a container the exact-fleet fence did
+        # not admit; cleanup fenced the whole fleet (daemon included, so /mcp
+        # 502'd) AND recorded the newcomer here, which made recovery refuse
+        # unconditionally. Reverting the container is not enough -- the RECORD
+        # outlives it, so production stays down with no in-band way back.
+        #
+        # Retirement is deliberately not a bypass:
+        #   * the operator must name the container EXACTLY -- no wildcards;
+        #   * a name in EXPECTED_CONTAINERS can never be retired;
+        #   * the recorded entry must already be stopped;
+        #   * the container must be absent or still stopped on the host NOW,
+        #     re-checked here rather than trusted from the record;
+        #   * every retirement is returned as evidence.
+        # Anything else still raises.
+        retired: dict[str, Any] = {}
+        for name in retire_extra_consumers:
+            if name in EXPECTED_CONTAINERS:
+                raise FenceError(
+                    "refusing to retire an expected fleet container"
+                )
+            entry = extras.get(name)
+            if entry is None:
+                raise FenceError(
+                    "refusing to retire an unrecorded extra volume consumer"
+                )
+            if bool(entry.get("running")):
+                raise FenceError(
+                    "refusing to retire a RUNNING extra volume consumer"
+                )
+            try:
+                info = host.container_info(name)
+            except Exception:  # noqa: BLE001
+                # Absent / uninspectable: docker raises several shapes here,
+                # and "cannot inspect" cannot mean "keep production fenced".
+                # The load-bearing gate stays the recorded-stopped check
+                # above; this re-check only ever ADDS a refusal.
+                info = None
+            if info is not None and bool(
+                info.get("State", {}).get("Running")
+            ):
+                raise FenceError(
+                    "extra volume consumer is running again on the host"
+                )
+            retired[name] = dict(entry)
+            extras.pop(name, None)
+        state["extra_volume_consumers"] = extras
+        state["retired_extra_volume_consumers"] = retired
+    if extras:
         raise FenceError("unsafe fence recorded extra production-volume consumers")
     if not CANONICAL_IMAGE_RE.fullmatch(image_ref):
         raise FenceError("runner-bound recovery image is not immutable")
@@ -3598,6 +3650,7 @@ def recover_unsafe(
     revision: str,
     state_path: Path,
     recovery_script_sha256: str = "",
+    retire_extra_consumers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Start one exact admitted fleet in a restart-fenced canary phase."""
 
@@ -3614,6 +3667,7 @@ def recover_unsafe(
         image_ref=image_ref,
         revision=revision,
         state_path=state_path,
+        retire_extra_consumers=retire_extra_consumers,
     )
     attempts = list(state.get("recovery_attempts") or [])
     if run_id in attempts:
@@ -4137,6 +4191,17 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--image-ref", required=True)
     recover.add_argument("--revision", required=True)
     recover.add_argument("--expected-script-sha256", required=True)
+    recover.add_argument(
+        "--retire-extra-consumer",
+        action="append",
+        default=[],
+        metavar="CONTAINER_NAME",
+        help=(
+            "Retire one EXACT recorded extra volume consumer that is already "
+            "stopped. Repeatable. Never matches an expected fleet container, "
+            "never a wildcard, and re-checks the live container state."
+        ),
+    )
     finalize = subparsers.add_parser("finalize-recovery")
     finalize.add_argument("--source-run-id", required=True)
     finalize.add_argument("--run-id", required=True)
@@ -4219,6 +4284,7 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             revision=args.revision,
             state_path=args.state_path,
             recovery_script_sha256=recovery_script_sha256,
+            retire_extra_consumers=tuple(args.retire_extra_consumer),
         )
     if args.command == "finalize-recovery":
         return finalize_recovery(

@@ -45,6 +45,10 @@ on:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
         required: false
         type: string
+      retire_extra_consumer:
+        description: 'EXACT name of one recorded, already-stopped extra volume consumer to retire during recovery (leave empty unless a fence recorded a container that no longer exists)'
+        required: false
+        type: string
       rotate_request_idempotency_hmac:
         description: 'Replace the exposed production request HMAC during a reviewed correction deploy'
         required: false
@@ -158,6 +162,7 @@ jobs:
       - name: Recover canonical unsafe fence
         env:
           SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+          RETIRE_EXTRA_CONSUMER: ${{ inputs.retire_extra_consumer }}
           RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
           RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
         run: |
@@ -167,6 +172,17 @@ jobs:
           if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
             echo "::error::refusing invalid unsafe fence source run ID"
             exit 1
+          fi
+          # Optional, single, exactly-named retirement of a recorded extra
+          # volume consumer. Empty by default: the fence's refusal is the
+          # correct behaviour unless a container it recorded no longer exists.
+          RETIRE_ARG=""
+          if [ -n "${RETIRE_EXTRA_CONSUMER}" ]; then
+            if [[ ! "${RETIRE_EXTRA_CONSUMER}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; then
+              echo "::error::refusing invalid extra-consumer container name"
+              exit 1
+            fi
+            RETIRE_ARG="--retire-extra-consumer '${RETIRE_EXTRA_CONSUMER}'"
           fi
           script_sha="$(sha256sum scripts/retire_cheat_loop_deploy_fence.py | awk '{print $1}')"
           override_sha="$(sha256sum deploy/recovery-restart-no.yml | awk '{print $1}')"
@@ -193,7 +209,7 @@ jobs:
              sudo systemctl enable tinyassets-recovery-reconcile.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}'" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}' ${RETIRE_ARG}" \
             > "$evidence_dir/recovery.json"
       - name: Recovery canonical MCP canary
         run: |
