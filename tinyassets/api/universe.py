@@ -6227,6 +6227,75 @@ def _action_offer_engine(
     })
 
 
+def _action_declare_universe_loop(
+    universe_id: str = "",
+    branch_def_id: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Declare (or change) the Loop branch of an EXISTING universe.
+
+    A universe is the owner's account and storage, not a workflow: it hosts many
+    automations, and an owner must be able to declare a loop after birth. Until
+    this action existed, ``loop_branch_def_id`` could only be set by
+    ``_action_create_universe``, and the public ``write_graph target="universe"``
+    never forwarded it — so no publicly created universe could declare a loop,
+    then or ever. Every downstream consequence followed silently: no loop ->
+    ``select_project_loop_daemon`` returns None -> the cloud worker skips runtime
+    registration -> nothing converges an automation's activation -> scheduled
+    execution never runs.
+
+    Scoped to the caller's own universe via ``_request_universe``; the branch
+    must exist. Passing an empty ``branch_def_id`` clears the declaration.
+    """
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.storage import data_dir
+    from tinyassets.universe_soul import write_universe_soul
+
+    uid = _request_universe(universe_id)
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    declared = str(branch_def_id or "").strip()
+    if declared:
+        try:
+            branch = get_branch_definition(data_dir(), branch_def_id=declared)
+        except Exception:  # noqa: BLE001 - a lookup failure is "not found" here
+            branch = None
+        if not branch:
+            return json.dumps({
+                "error": "branch_not_found",
+                "universe_id": uid,
+                "branch_def_id": declared,
+                "note": (
+                    "Declare a branch that exists. Build one with "
+                    '`write_graph target="branch" operation="create" '
+                    "payload_json=...` first."
+                ),
+            })
+
+    soul = write_universe_soul(udir, loop_branch_def_id=declared)
+    if declared and soul.loop_branch_def_id != declared:
+        # write_universe_soul preserves the existing value when handed a blank;
+        # a mismatch on a non-blank write means the declaration did not stick.
+        return json.dumps({
+            "error": "loop_declaration_failed",
+            "universe_id": uid,
+            "requested": declared,
+            "current": soul.loop_branch_def_id,
+        })
+
+    return json.dumps({
+        "universe_id": uid,
+        "status": "declared" if declared else "cleared",
+        "loop_dispatch": {
+            "source": SOUL_FILENAME,
+            "branch_def_id": soul.loop_branch_def_id,
+            "declared": bool(soul.loop_branch_def_id),
+        },
+    })
+
+
 def _action_soul_edit(
     universe_id: str = "",
     inputs_json: str = "",
@@ -6343,6 +6412,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "control_daemon": _action_control_daemon,
     "switch_universe": _action_switch_universe,
     "create_universe": _action_create_universe,
+    "declare_universe_loop": _action_declare_universe_loop,
     "queue_list": _action_queue_list,
     "queue_cancel": _action_queue_cancel,
     "subscribe_goal": _action_subscribe_goal,
