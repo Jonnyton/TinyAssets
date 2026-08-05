@@ -51,7 +51,11 @@ for arg in "$@"; do
 done
 
 log() {
-    local msg="[restore $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+    # SC2155: declaring and assigning together masks the command
+    # substitution's exit status, so a failing `date` would go unnoticed.
+    local stamp
+    stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local msg="[restore ${stamp}] $*"
     echo "${msg}"
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }

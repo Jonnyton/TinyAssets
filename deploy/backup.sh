@@ -66,7 +66,11 @@ BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 VOLUME_DIR="/var/lib/docker/volumes/${BACKUP_VOLUME}/_data"
 
 log() {
-    local msg="[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+    # SC2155: declaring and assigning together masks the command
+    # substitution's exit status, so a failing `date` would go unnoticed.
+    local stamp
+    stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local msg="[backup ${stamp}] $*"
     echo "${msg}"
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }
