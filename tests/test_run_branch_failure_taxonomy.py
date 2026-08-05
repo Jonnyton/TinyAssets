@@ -43,7 +43,13 @@ class TestClassifyRunError:
         exc = RuntimeError("source_code node requires approval")
         result = _classify_run_error(exc, "b1")
         assert result["failure_class"] == "node_not_approved"
-        assert "approve_source_code" in result["suggested_action"]
+        # PR-178 collapsed the surface to the canonical handles, and approval
+        # is deliberately NOT one of them — so the guidance must route the user
+        # to the operator surface rather than name a handle that no longer
+        # exists. Pinning the absence keeps a retired verb from creeping back.
+        action = result["suggested_action"]
+        assert "approve_source_code" not in action, action
+        assert "operator surface" in action, action
 
     def test_quota_exhausted_rate_limit(self):
         exc = RuntimeError("rate limit exceeded for this model")
@@ -71,7 +77,10 @@ class TestClassifyRunError:
         exc = RuntimeError("concurrent modification detected on branch")
         result = _classify_run_error(exc, "b1")
         assert result["failure_class"] == "state_mutation_conflict"
-        assert "get_branch" in result["suggested_action"]
+        # `get_branch` was retired into `read_graph target="branch"`.
+        action = result["suggested_action"]
+        assert "get_branch" not in action, action
+        assert 'read_graph target="branch"' in action, action
 
     def test_state_mutation_conflict_stale(self):
         exc = RuntimeError("stale state — resource was modified externally")
@@ -87,7 +96,10 @@ class TestClassifyRunError:
         exc = ValueError("some unknown internal error")
         result = _classify_run_error(exc, "b1")
         assert result["failure_class"] == "unknown"
-        assert "get_run" in result["suggested_action"]
+        # `get_run` was retired the same way.
+        action = result["suggested_action"]
+        assert "get_run" not in action, action
+        assert 'read_graph target="branch"' in action, action
 
     def test_error_message_always_present(self):
         """All failure classes include the original error message."""
