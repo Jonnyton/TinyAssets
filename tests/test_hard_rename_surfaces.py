@@ -19,13 +19,33 @@ SKIP_DIRS = {
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "attic",
     "dist",
     "docs",
     "node_modules",
     "out",
     "tests",
     "venv",
+    # Historical RECORDS, not active surfaces. A log or an archived snapshot is
+    # evidence of what was true at the time; rewriting the old name out of it
+    # would make it say something it did not say. Renaming is for things a
+    # reader might still act on.
+    ".cowork-uploads",
 }
+
+#: Directory-name prefixes skipped for the same reason as `.cowork-uploads`.
+#: Dated handoff snapshots are archives that happen to live at the repo root.
+SKIP_DIR_PREFIXES = ("COWORK_HANDOFF_",)
+
+#: An inline marker declaring that a retired name on this line is DELIBERATE.
+#:
+#: Needed because not every occurrence is a straggler. `deploy-prod.yml` keeps
+#: `Jonnyton/Workflow` as `historical_destination`, a back-compat branch that
+#: accepts a capability secret still keyed under the pre-rename slug. Sweeping
+#: it would have broken production deploys for exactly the operators who had
+#: not re-keyed. A blanket file exclusion would hide any FUTURE straggler in
+#: that file, so the opt-out is per line and has to be written down.
+ALLOW_MARKER = "rename-allow"
 
 TEXT_SUFFIXES = {
     "",
@@ -75,7 +95,10 @@ RETIRED_STRINGS = {
 def _active_text_files() -> list[Path]:
     files: list[Path] = []
     for path in ROOT.rglob("*"):
-        if any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts):
+        parts = path.relative_to(ROOT).parts
+        if any(part in SKIP_DIRS for part in parts):
+            continue
+        if any(part.startswith(SKIP_DIR_PREFIXES) for part in parts):
             continue
         if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES:
             files.append(path)
@@ -88,9 +111,16 @@ def test_active_surfaces_have_no_high_confidence_retired_workflow_names():
     for path in _active_text_files():
         text = path.read_text(encoding="utf-8", errors="ignore")
         rel = path.relative_to(ROOT)
-        for needle, reason in RETIRED_STRINGS.items():
-            if needle in text:
-                failures.append(f"{rel}: {reason}: {needle!r}")
+        # Scanned per LINE so a deliberate occurrence can be declared next to
+        # itself with ALLOW_MARKER, instead of exempting a whole file and going
+        # blind to real stragglers that land in it later. Line numbers also make
+        # a failure directly actionable.
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if ALLOW_MARKER in line:
+                continue
+            for needle, reason in RETIRED_STRINGS.items():
+                if needle in line:
+                    failures.append(f"{rel}:{lineno}: {reason}: {needle!r}")
 
     assert not failures, (
         "Retired Workflow names found in active source/config surfaces:\n"
