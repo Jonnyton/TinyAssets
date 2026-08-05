@@ -146,9 +146,29 @@ async def serve_universe(universe_id: str, connection: str) -> None:
         raise
 
 
+async def _report_unexpected(universe_id: str, coro) -> None:
+    """Run one universe task and LOG anything it raises unexpectedly.
+
+    `asyncio.gather(return_exceptions=True)` is what stops one universe from
+    cancelling the others — but it also swallows whatever they raise. A
+    PermissionError reading a vault surfaced as a clean `exit 0` with nothing
+    in the log, twice, during the first real deployment. Fault isolation must
+    not mean fault silence.
+    """
+    try:
+        await coro
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - isolate the universe, report the cause
+        logger.exception("slack agent: %s failed unexpectedly", universe_id)
+
+
 async def serve_all(universe_ids: list[str], connection: str) -> int:
     tasks = [
-        asyncio.create_task(serve_universe(uid, connection), name=f"slack:{uid}")
+        asyncio.create_task(
+            _report_unexpected(uid, serve_universe(uid, connection)),
+            name=f"slack:{uid}",
+        )
         for uid in universe_ids
     ]
     if not tasks:

@@ -290,6 +290,14 @@ services:
       TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-slack-agent-1
+      # Required, and found only by RUNNING it: docker-entrypoint.sh hard-exits
+      # with ENV-UNREADABLE unless one of CLOUDFLARE_TUNNEL_TOKEN /
+      # SUPABASE_DB_URL / TINYASSETS_IMAGE is set. That canary exists to catch a
+      # silently-empty env_file — but this service deliberately has NO env_file,
+      # so it tripped the very guard meant to protect services that do. The
+      # image ref is the one sentinel that is not a secret, so it satisfies the
+      # canary without reopening the blast radius.
+      TINYASSETS_IMAGE: ${TINYASSETS_IMAGE}
       # Comma-separated universe ids to serve. Credentials are NOT set here.
       TINYASSETS_SLACK_UNIVERSES: ${TINYASSETS_SLACK_UNIVERSES:-}
       TINYASSETS_SLACK_CONNECTION: ${TINYASSETS_SLACK_CONNECTION:-slack-main}

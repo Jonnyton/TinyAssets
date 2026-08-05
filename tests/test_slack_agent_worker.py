@@ -170,3 +170,25 @@ async def test_one_universe_finishing_does_not_cancel_the_others(monkeypatch):
         "the healthy universes must run to completion, not be cancelled by the "
         "one that returned first"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_is_logged_not_swallowed(monkeypatch, caplog):
+    """Fault isolation must not become fault silence.
+
+    `gather(return_exceptions=True)` is what stops one universe cancelling the
+    others, but it also eats whatever they raise. During the first real
+    deployment a PermissionError reading a vault surfaced as a clean `exit 0`
+    with nothing in the log — twice.
+    """
+    async def _boom(_uid, _conn):
+        raise PermissionError("/data/u-x/.credential-vault.json")
+
+    monkeypatch.setattr(worker, "serve_universe", _boom)
+
+    with caplog.at_level("ERROR"):
+        rc = await worker.serve_all(["u-x"], "slack-main")
+
+    assert rc == 0, "the process still exits cleanly"
+    assert "failed unexpectedly" in caplog.text
+    assert "PermissionError" in caplog.text
