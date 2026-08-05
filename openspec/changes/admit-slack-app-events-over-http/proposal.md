@@ -60,6 +60,31 @@ HMAC verification requires — a body rewrite would break every signature.
 This does not weaken the "`tinyassets.io/mcp` is the only public user-facing URL"
 invariant: a Slack webhook is a machine callback, not a user-facing URL.
 
+## A reversed invariant this change must retire explicitly
+
+`tests/test_app_event_ingress.py` carried
+`test_boundary_is_dark_and_has_no_production_consumer`, asserting the boundary
+had **no** production consumer. That was correct when #2246 landed it — the
+boundary existed before anything downstream did. This change reverses it, so it
+cannot be left to pass quietly.
+
+It also has to be *replaced* rather than deleted, because it was already
+unsound: it grepped `universe_server.py` and `tinyassets/api/*.py` for the
+literal string `app_event_ingress`. Routing through one intermediate module
+(`app_slack_ingress.py`) satisfies the substring check while the boundary is
+fully wired to a public endpoint — **verified: it passes green against this
+branch.** It failed in exactly the situation it was written to catch.
+
+The replacement walks the import graph instead of matching a name, pins the
+exact expected consumer set, and additionally asserts the ingress module is
+fail-closed when unconfigured. Proof it guards: planting a second module that
+imports the boundary turns it red, while the original guard was demonstrably
+blind to this branch's real wiring.
+
+Activation is therefore gated by *configuration* (both env vars present), not
+by the absence of a caller — which is the honest gate, since a caller's absence
+was never actually being checked.
+
 ## Impact
 
 - Affected specs: `live-mcp-connector-surface` (new non-MCP route under the same

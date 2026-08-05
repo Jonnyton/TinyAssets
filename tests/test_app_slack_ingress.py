@@ -334,3 +334,24 @@ async def test_malformed_content_length_is_refused():
     request = _FakeRequest([b"{}"], {"content-length": "not-a-number"})
     with pytest.raises(BodyTooLarge):
         await read_bounded_body(request)
+
+
+def test_unconfigured_boundary_is_never_invoked():
+    """`None` boundary must short-circuit, not merely produce a 401 later."""
+
+    class _Recorder:
+        def __init__(self):
+            self.calls = 0
+
+        def admit(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("boundary must not be reached")
+
+    recorder = _Recorder()
+    body = _event_body()
+    outcome = handle_slack_request(
+        raw_body=body, headers=_signed(body), boundary=None
+    )
+
+    assert outcome.status == 401
+    assert recorder.calls == 0
