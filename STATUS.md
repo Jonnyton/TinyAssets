@@ -4,6 +4,7 @@
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
+- [filed:2026-08-05 verified:2026-08-05] Cloud automation ROLLBACK is refused >24h after setup: binding id derives from the definition, so it re-selects the expired original (forward rebind is fine). Covered by test, not fixed.
 - [filed:2026-04-17 verified:2026-07-25] Privacy Q6.3: legacy set_engine writes no ceiling; gemini/groq/grok remain fallbacks (router.py:89-92), and ambient no-universe env can reach maintainer auth until V2.
 - **[P1 filed:2026-08-03 verified:2026-08-04]** #2182's `EPOCH2_QUEUE_CONSUMER_READY=True`: 3 tests still assert the closed gate — now the ONLY blockers of main's `full-tests` tripwire (run 30875123887 names them). NOT quarantined.
 ## Work
