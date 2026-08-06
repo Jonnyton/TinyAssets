@@ -1,6 +1,6 @@
 # Cloudflare OS — architecture implications for TinyAssets
 
-`initial_provider: claude-code` · `required_reviewer: codex` · `verdict: pending`
+`initial_provider: claude-code` · `required_reviewer: codex` · **`verdict: adapt`** (2026-08-06)
 
 ## Source freshness
 
@@ -225,3 +225,86 @@ The reviewer should re-read the primary sources and specifically:
 - Cloudflare OS is early access and rewriting fast (v2, pushed daily). Any claim
   here should be re-stamped before it drives a build more than a few weeks out.
 - Cap'n Web as the gatekeeper API shape was not studied; it may or may not matter.
+
+
+---
+
+# Codex review — verdict `adapt` (2026-08-06)
+
+## O-1 is CONFIRMED, and it is a live exposure, not a design question
+
+Codex did not reason about it — it **reproduced** it: *"anonymous search returned
+the confidential excerpt and anonymous read returned the complete draft."*
+
+I re-verified the two load-bearing facts independently:
+
+* `visibility.py:88` — `DEFAULT_CREATE_VISIBILITY = "public"`, and
+  `PUBLIC = VisibilityLevel("public", True, True, True)`.
+* `universe_intelligence.py:549-552` — a FOUNDER turn calls
+  `commit_learning(udir, proposed, ...)`. There is no visibility argument, and
+  learned canon pages get no restrictive frontmatter, so page visibility defers
+  to the universe (`visibility.py:256-288`).
+
+**Chain:** founder says something confidential to their universe → founder tier
+commits it as canon → universe is public by default → anonymous `read_page` and
+search return it.
+
+**This does not depend on the Slack work.** `converse` is a live canonical
+handle, so the chain is reachable through the chatbot today. The un-landed
+`app_ingress` adds a second entrance (a private Slack channel), it does not
+create the problem.
+
+**Framing that matters for the fix:** public-by-default is a defensible commons
+choice and is probably not what should change. What is missing is that input
+gathered in a *private* context inherits the public default with **no narrowing
+step and no prompt**. Codex also notes `universe_acl`/`public_read` protect the
+whole universe, never upstream entitlements — TinyAssets tracks who may read the
+destination, never whether a reader could have read every source folded into it.
+That is precisely the property Cloudflare's observers enforce.
+
+Scoped out by Codex: legitimate branch remix DOES require the parent version to
+be readable first (`branches.py:2426-2435, 2285-2324`), so forking a private
+branch is blocked; and `_action_record_remix` copies no content
+(`market.py:996-1072`) — it is not an exfiltration path, though it validates
+neither artifact existence nor ACL.
+
+## A-1 must EXTEND an existing ledger, not add one
+
+I would have built a duplicate. Codex found:
+
+* `tinyassets/storage/app_events.py:21-37,107-187` — the replay ledger already
+  writes one **content-free** row per authenticated event: provider,
+  installation, event id/type, timestamp, body digest. A-1 should add delivery
+  outcome, routed universe, actor/channel and receipt to **this**.
+* `tinyassets/app_outbound_adapter.py:120-203` — an `app_outbound_receipts`
+  outcome/digest store already exists and is **not wired into**
+  `deliver_app_event` (`app_ingress.py:172-179`). That is a gap in the new code
+  from this session, not in the old code.
+* Attribution records remix edges and credit, not user actions
+  (`attribution/schema.py:32-82`); `runs.py` receipts require a run and accept
+  only three provenance types, and chat ingress creates no run.
+
+## W-1: my objection was right about the hazard, wrong about the reason
+
+Codex: not currently reachable. Universe turns allow only `WebFetch` and deny
+MCP/remote-effect tools; learning sees only the founder message and the reply and
+commits only at founder tier (`universe_intelligence.py:61-93,330-345,531-552`).
+A future integration hazard, not a present defect.
+
+## Two factual corrections to my own artifact
+
+1. **"Cloudflare's gadgets are largely stateless per action" is WRONG.** Gadgets
+   are Durable-Object-backed persistent applications, and the current code keeps
+   provisional state through **accept/revert lifecycles** (`workshop-backend/src/overseer.ts`).
+   This inverts my conclusion: they did not avoid the durable-state problem, they
+   *solved* it — so the thing to consider adopting is the accept/revert
+   lifecycle, not to avoid simulation because we have durable state.
+2. **"Each gatekeeper verifies" is overstated.** Enforcement covers in-scope
+   bindings; documented strategies include no-op/low-stakes and non-shareable
+   resources.
+
+## Resulting priority change
+
+O-1 stops being a research implication and becomes a production concern in its
+own lane. It is filed as a STATUS Concern; it must not ride on the chat-ingress
+PR.
