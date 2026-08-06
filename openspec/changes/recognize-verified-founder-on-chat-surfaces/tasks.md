@@ -232,8 +232,36 @@ allowlist and over folding the pump into the daemon).
       - The timestamp is inside the signed message, so a captured request
         cannot be re-dated; every auth failure returns an identical 401 body so
         a caller cannot probe which check it failed.
-- [ ] 10.2b-ii Serve it: run the ingress app on a container-network-only port
-      and add the client that signs and posts from the agent.
+- [x] 10.2b-ii Served + client. `serve_in_background()` starts the ingress on
+      its own port from `universe_server.main()`; `app_ingress_client` signs and
+      posts. 11 tests, including a ROUND TRIP — the client's own signature is
+      fed to `handle_request` and must verify, so the two halves cannot drift.
+      - **No key means no open port**, not a port that refuses everything: a
+        port that is not listening cannot be probed or later misrouted.
+      - The port must NEVER get a compose `ports:` entry. The daemon publishes
+        `127.0.0.1:8001` and the tunnel's dashboard rule resolves to that
+        loopback-published port, so publishing this one would put an internal
+        route exactly where the public one already reaches.
+      - A bad port value is refused, not defaulted — defaulting opens a
+        listener somewhere unintended.
+      - Missing key fails at BUILD time in the agent, so a misconfigured
+        transport dies at startup instead of silently dropping every message.
+      - `test_universe_server_five_handles` still passes: the ingress adds no
+        MCP handle, so hard rule 11 is untouched.
+- [ ] 10.2c **Blocks dropping the volume mount.** The agent still needs the
+      Slack APP-level token to open the socket, and today it reads that from
+      the vault ON the volume. Removing `tinyassets-data:/data` before this
+      exists does not free the agent, it just breaks it differently. Deliver
+      that one token over the same authenticated channel.
+- [ ] 10.2d Honest note for the compose change when it lands: the service
+      comment currently says it "holds no ambient credential to leak", because
+      credentials came from each universe's own vault on the volume. After this
+      it holds ONE — the ingress key. That is strictly less than mounting every
+      universe's vault, but it is not nothing, and a compromised transport can
+      still ASSERT an identity (including the founder's). That is inherent to
+      any transport terminating the provider connection; what it can no longer
+      do is read every universe's data. Say so rather than reusing the old
+      sentence.
 - [ ] 10.2c Deliver the socket-level app token to the agent over that same
       channel, so it holds one short-scoped credential and no volume.
 - [ ] 10.3 Keep the agent a separate container. Folding the pump into the daemon
