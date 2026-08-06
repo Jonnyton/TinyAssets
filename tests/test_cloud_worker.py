@@ -77,6 +77,24 @@ def _make_sleep_recorder() -> tuple[list, callable]:
 # ---- _compute_backoff ----------------------------------------------------
 
 
+
+def _state_for_runtime(universe_id, runtime):
+    """A SupervisorState carrying the context the real spawn would record.
+
+    The owner comes from the runtime's own registry metadata, because that is
+    what `set_worker_queue_descriptor` compares `expected_worker_id` against.
+    Reading it from TINYASSETS_WORKER_ID would reintroduce exactly the second
+    authority this change removes.
+    """
+    state = cw.SupervisorState()
+    state.record_execution_context(
+        universe_id,
+        (runtime.get("metadata") or {}).get("worker_id", ""),
+        runtime["runtime_instance_id"],
+    )
+    return state
+
+
 def test_compute_backoff_first_crash_is_base():
     assert cw._compute_backoff(1, base=5.0, mult=2.0, ceiling=300.0) == 5.0
 
@@ -485,7 +503,7 @@ def _seed_epoch2_worker_capacity(
     cw._snapshot_worker_protocol_identity_at_boot()
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime),
         iteration=1,
         phase="polling",
         subprocess_alive=True,
@@ -840,7 +858,7 @@ def test_supervisor_restarts_for_current_worker_epoch2_candidate_after_grace(
 ):
     import itertools
 
-    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+    universe, _daemon, runtime = _seed_epoch2_worker_capacity(
         tmp_path,
         monkeypatch,
     )
@@ -850,7 +868,17 @@ def test_supervisor_restarts_for_current_worker_epoch2_candidate_after_grace(
     _sleep_calls, sleep_fn = _make_sleep_recorder()
     spawned: list[FakeProc] = []
 
-    def spawn(universe_path):
+    def spawn(universe_path, *, state=None):
+        # Record what the real spawn closure records. Seeding at state
+        # construction does NOT work: the iteration-start clear runs before the
+        # spawn and wipes it, so the beat would advertise nothing and this test
+        # would pass without ever exercising restart-on-candidate.
+        if state is not None:
+            state.record_execution_context(
+                universe_path.name,
+                (runtime.get("metadata") or {}).get("worker_id", ""),
+                runtime["runtime_instance_id"],
+            )
         proc = FakeProc(returncode=0, steps_until_exit=10)
         spawned.append(proc)
         return proc
@@ -1646,9 +1674,10 @@ def test_main_passes_provider_pin_to_supervised_daemon(tmp_path, monkeypatch):
     (universe / "PROGRAM.md").write_text("x", encoding="utf-8")
     captured = {}
 
-    def fake_spawn(u, *, extra_args=None):
+    def fake_spawn(u, *, extra_args=None, state=None):
         captured["universe"] = u
         captured["extra_args"] = list(extra_args or [])
+        captured["state"] = state
         return FakeProc(returncode=0, steps_until_exit=0)
 
     monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
@@ -1689,7 +1718,7 @@ def test_main_exits_zero_after_max_iterations(tmp_path, monkeypatch):
     # dereferences `spawn_fn=_spawn_fantasy_daemon` at call-time (via
     # default arg evaluated each call), so monkeypatching the module
     # attribute is enough.
-    def fake_spawn(u):
+    def fake_spawn(u, *, state=None):
         return FakeProc(returncode=0, steps_until_exit=0)
 
     monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
@@ -1997,7 +2026,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     )
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime_a),
         iteration=1,
         phase="polling",
     )
@@ -2022,7 +2051,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     )
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime_b),
         iteration=1,
         phase="polling",
     )
@@ -2049,7 +2078,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     )
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime_a),
         iteration=2,
         phase="polling",
     )
@@ -2075,7 +2104,7 @@ def test_supervisor_heartbeat_persists_isolated_worker_descriptors(
     )
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime_a),
         iteration=3,
         phase="polling",
     )
@@ -2122,16 +2151,22 @@ def test_supervisor_clears_last_durable_descriptor_when_runtime_id_is_lost(
         runtime["runtime_instance_id"],
     )
 
+    state = _state_for_runtime("universe-a", runtime)
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        state,
         iteration=1,
         phase="polling",
     )
+    # Losing the runtime is no longer a `delenv` -- the environment is not an
+    # authority any more. It is the SAME supervisor discovering its child is
+    # gone. Reusing the state is load-bearing: a fresh SupervisorState would
+    # publish nothing and the test would pass without exercising withdrawal.
     monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID")
+    state.clear_execution_context("universe-a")
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        state,
         iteration=2,
         phase="registration_failed",
     )
@@ -2241,7 +2276,7 @@ def test_runtime_switch_clears_retired_slot_and_publishes_replacement(
     )
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime_a),
         iteration=1,
         phase="polling",
     )
@@ -2257,7 +2292,7 @@ def test_runtime_switch_clears_retired_slot_and_publishes_replacement(
 
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        _state_for_runtime("universe-a", runtime_b),
         iteration=2,
         phase="polling",
     )

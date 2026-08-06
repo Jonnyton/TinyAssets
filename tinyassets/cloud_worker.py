@@ -65,6 +65,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -364,12 +365,19 @@ def _worker_queue_descriptor(
     universe: Path,
     *,
     runtime_instance_id: str,
+    worker_id: str = "",
     _now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Return trusted v2 evidence, or no evidence when any source is missing."""
+    """Return trusted v2 evidence, or no evidence when any source is missing.
+
+    ``worker_id`` is explicit because the automation pump rebinds
+    ``TINYASSETS_WORKER_ID`` in-process and never restores it, so a live read
+    here describes whichever logical slot pumped last rather than the worker
+    this descriptor is for.
+    """
     if not _epoch2_claim_consumer_ready():
         return None
-    worker_id = _worker_id()
+    worker_id = str(worker_id or "").strip() or _worker_id()
     runtime_id = str(runtime_instance_id or "").strip()
     universe_id = universe.name.strip()
     if not runtime_id or not universe_id:
@@ -394,8 +402,17 @@ def _worker_queue_descriptor(
 
 def _persist_worker_queue_descriptor(
     descriptor: dict[str, Any] | None,
+    *,
+    worker_id: str = "",
 ) -> bool:
-    worker_id = _worker_id()
+    """Publish the descriptor and retire any runtime it superseded.
+
+    ``worker_id`` is explicit for the same reason as
+    `_worker_queue_descriptor`. Retirement of superseded contexts is NOT done
+    here -- see `_retire_queue_descriptor`, which issues each withdrawal under
+    the worker that registered it.
+    """
+    worker_id = str(worker_id or "").strip() or _worker_id()
     descriptor_runtime_id = str((descriptor or {}).get("runtime_instance_id") or "").strip()
     current_runtime_id = os.environ.get(
         "TINYASSETS_RUNTIME_INSTANCE_ID",
@@ -776,17 +793,23 @@ def _spawn_daemon_for_universe(
     universe: Path,
     *,
     extra_args: list[str] | None = None,
+    state: "SupervisorState | None" = None,
 ) -> subprocess.Popen:
     """Spawn the legacy daemon, or the workflow bridge for flagged soul loops."""
     module = _daemon_module_for_universe(universe)
     if module == "fantasy_daemon":
         if extra_args is None:
-            return _spawn_fantasy_daemon(universe)
-        return _spawn_fantasy_daemon(universe, extra_args=extra_args)
+            return _spawn_fantasy_daemon(universe, state=state)
+        return _spawn_fantasy_daemon(
+            universe,
+            extra_args=extra_args,
+            state=state,
+        )
     return _spawn_fantasy_daemon(
         universe,
         module=module,
         extra_args=extra_args,
+        state=state,
     )
 
 
@@ -1046,6 +1069,7 @@ def _pump_cloud_automation_triggers(
     *,
     provider_name: str = "",
     physical_worker_id: str = "",
+    state: "SupervisorState | None" = None,
 ) -> int:
     """Materialize one due persisted Trigger through this exact worker."""
 
@@ -1142,6 +1166,13 @@ def _pump_cloud_automation_triggers(
                 os.environ["TINYASSETS_AUTOMATION_OWNER_USER_ID"] = principal_id
                 os.environ["TINYASSETS_WORKER_ID"] = logical_worker_id
             os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_id
+            # Deliberately records NO execution context. The pump does not own
+            # a child, and no heartbeat is ever written for its TARGET universe,
+            # so a context recorded here could never be cleared -- it would sit
+            # as an unbacked capacity claim for a universe this supervisor does
+            # not serve. The env writes above remain for the spawned child; what
+            # they no longer do is decide what any universe's beat advertises,
+            # which is the whole point of this fix.
             audience = BackgroundBranchExecutorAudience(
                 executor_class=BackgroundBranchExecutorClass.CLOUD,
                 daemon_id=str(daemon["daemon_id"]),
@@ -1191,6 +1222,7 @@ def _spawn_fantasy_daemon(
     module: str = "fantasy_daemon",
     extra_args: list[str] | None = None,
     owner_user_id: str = "",
+    state: "SupervisorState | None" = None,
 ) -> subprocess.Popen:
     """Spawn ``python -m fantasy_daemon --universe <path> --no-tray``.
 
@@ -1220,6 +1252,10 @@ def _spawn_fantasy_daemon(
     ]
     if extra_args:
         args.extend(extra_args)
+    # Captured BEFORE registration: `_register_worker_runtime` binds the
+    # runtime to this same live read, and the descriptor's expected_worker_id
+    # must match what registration stored or persistence fails closed.
+    registering_worker_id = _worker_id()
     runtime_instance_id = _register_worker_runtime(
         universe,
         _provider_from_daemon_args(extra_args),
@@ -1229,18 +1265,38 @@ def _spawn_fantasy_daemon(
         os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
     else:
         os.environ.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
-    env = _build_subprocess_env(universe)
-    env["TINYASSETS_WORKER_ID"] = _worker_id()
-    if runtime_instance_id:
-        env["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
-    else:
-        env.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
-    logger.info(
-        "spawning fantasy_daemon: universe=%s host_user=%s",
-        universe,
-        env.get("UNIVERSE_SERVER_HOST_USER"),
-    )
-    return subprocess.Popen(args, env=env)
+    # CRITICAL 2: bind the context only once a child actually EXISTS, and
+    # protect EVERY step that can raise before that point. `_build_subprocess_env`
+    # sat outside this block, so an OSError while composing the environment
+    # still leaked the prior context into the `spawn_failed` beat.
+    try:
+        env = _build_subprocess_env(universe)
+        env["TINYASSETS_WORKER_ID"] = _worker_id()
+        if runtime_instance_id:
+            env["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
+        else:
+            env.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
+        logger.info(
+            "spawning fantasy_daemon: universe=%s host_user=%s",
+            universe,
+            env.get("UNIVERSE_SERVER_HOST_USER"),
+        )
+        proc = subprocess.Popen(args, env=env)
+    except BaseException:
+        if state is not None:
+            state.retire_context_later(
+                state.clear_execution_context(universe.name)
+            )
+        raise
+    if state is not None:
+        state.retire_context_later(
+            state.record_execution_context(
+                universe.name,
+                registering_worker_id,
+                runtime_instance_id or "",
+            )
+        )
+    return proc
 
 
 def _compute_backoff(
@@ -1289,6 +1345,98 @@ class SupervisorState:
         # Carried on the state (not a module global) so it cannot leak between
         # supervisors sharing an interpreter.
         self.supervisor_worker_id = ""
+        # universe_id -> runtime_instance_id of the child currently executing
+        # FOR THAT UNIVERSE. Universe-qualified on purpose: the automation pump
+        # runs against OTHER universes (`_automation_universes`) and used to
+        # publish its runtime id through `os.environ`, so the supervisor's own
+        # beat described a runtime registered in a different universe. That
+        # raised `queue_universe_id_mismatch`, descriptor persistence failed,
+        # and the beat shipped with no `capabilities` -- which the admission
+        # gate reads as an incompatible worker. Live 2026-08-05: ten runtimes,
+        # `compatible_worker_count: 0`, queue frozen 22.5h.
+        #
+        # A missing entry is deliberately fail-closed (no descriptor, zero
+        # advertised capacity). Do NOT substitute the physical supervisor's own
+        # identity as a fallback: that manufactures capacity for an executor
+        # that does not match the audience the work was bound to.
+        #
+        # CONTAINMENT, NOT THE WHOLE FIX -- same standing as #2323. This is the
+        # THIRD patch to one root cause: #2323 froze TINYASSETS_WORKER_ID,
+        # #2325 stopped the spawn inheriting a leaked
+        # TINYASSETS_AUTOMATION_OWNER_USER_ID, and this does the same for
+        # TINYASSETS_RUNTIME_INSTANCE_ID. Three patches to "identity smuggled
+        # through os.environ" means the shape is wrong, not that a fourth is
+        # due. Do NOT grow this into a general execution-context primitive:
+        # `openspec/changes/harden-background-branch-execution-authority`
+        # already owns that (its Why names "process environment" explicitly,
+        # and task 5.1 specifies the injected delegation context). This map
+        # exists only to keep capacity advertisement honest until that lands.
+        # The value is the (worker_id, runtime_instance_id) pair captured AT
+        # REGISTRATION. The worker id must travel with the runtime:
+        # `_register_worker_runtime` binds the runtime to a live `_worker_id()`
+        # read, so a runtime registered just after a pump belongs to the
+        # logical slot, and `set_worker_queue_descriptor` rejects any other
+        # `expected_worker_id` with `queue_worker_id_mismatch`. Reconstructing
+        # the worker id later trades one silent failure for another.
+        self.execution_context_by_universe: dict[str, tuple[str, str]] = {}
+        # Contexts this worker has moved off, withdrawn on the next beat. Each
+        # entry keeps its OWN (worker_id, runtime_instance_id): retiring under
+        # the CURRENT worker made `set_worker_queue_descriptor` reject the call
+        # with `queue_worker_id_mismatch`, which was swallowed as success, so
+        # the retirement was dropped and a dead descriptor kept advertising.
+        self.pending_retire_contexts: list[tuple[str, str]] = []
+
+    def record_execution_context(
+        self,
+        universe_id: str,
+        worker_id: str,
+        runtime_instance_id: str,
+    ) -> tuple[str, str] | None:
+        """Bind a universe to its active context; return the pair it replaced.
+
+        The caller retires the returned PAIR -- not just its runtime id -- so
+        the withdrawal is issued under the worker that actually registered it.
+        """
+        key = str(universe_id or "").strip()
+        runtime_id = str(runtime_instance_id or "").strip()
+        owner = str(worker_id or "").strip()
+        if not key:
+            return None
+        previous = self.execution_context_by_universe.get(key)
+        if runtime_id and owner:
+            self.execution_context_by_universe[key] = (owner, runtime_id)
+        else:
+            self.execution_context_by_universe.pop(key, None)
+        if previous is None or previous == (owner, runtime_id):
+            return None
+        return previous
+
+    def clear_execution_context(
+        self,
+        universe_id: str,
+    ) -> tuple[str, str] | None:
+        """Drop a universe's active context; return the pair it held.
+
+        CRITICAL 1/2: a context is not merely *set* at registration, it must be
+        CLEARED when the child exits, fails to spawn, or is quarantined.
+        A context that is only ever written is a capacity claim that outlives
+        its child -- the beat would keep renewing a dead runtime, which is
+        strictly worse than the fail-closed zero it replaced.
+        """
+        key = str(universe_id or "").strip()
+        if not key:
+            return None
+        return self.execution_context_by_universe.pop(key, None)
+
+    def retire_context_later(self, previous: tuple[str, str] | None) -> None:
+        """Queue a superseded context for withdrawal on the next beat."""
+        if not (previous and previous[0] and previous[1]):
+            return
+        # Deduplicated: a pair whose withdrawal failed stays pending, and the
+        # same pair can be re-recorded and cleared again, which would otherwise
+        # queue it twice and retire it twice.
+        if previous not in self.pending_retire_contexts:
+            self.pending_retire_contexts.append(previous)
 
     def record_exit(self, returncode: int) -> None:
         self.total_spawns += 1
@@ -1326,6 +1474,46 @@ def _utcnow_iso() -> str:
 SUPERVISOR_HEARTBEAT_FILENAME = ".worker_supervisor.json"
 
 
+def _retire_queue_descriptor(worker_id: str, runtime_instance_id: str) -> bool:
+    """Withdraw one superseded descriptor under ITS OWN registering worker.
+
+    Returns True only when the registry actually accepted the withdrawal (or
+    the row is already gone). A `queue_worker_id_mismatch` means this runtime
+    belongs to a different worker and we must NOT report success -- reporting
+    success is what let the caller clear the pending list and drop the
+    retirement on the floor.
+    """
+    owner = str(worker_id or "").strip()
+    runtime_id = str(runtime_instance_id or "").strip()
+    if not owner or not runtime_id:
+        return False
+    try:
+        from tinyassets.daemon_registry import set_worker_queue_descriptor
+        from tinyassets.storage import data_dir
+
+        set_worker_queue_descriptor(
+            data_dir(),
+            runtime_instance_id=runtime_id,
+            descriptor=None,
+            expected_worker_id=owner,
+        )
+        return True
+    except KeyError:
+        # Already absent: the withdrawal is satisfied.
+        logger.info(
+            "cloud_worker: retired runtime already absent runtime=%s",
+            runtime_id,
+        )
+        return True
+    except Exception:  # noqa: BLE001 — never take down the supervisor loop
+        logger.exception(
+            "cloud_worker: descriptor retirement FAILED runtime=%s worker=%s",
+            runtime_id,
+            owner,
+        )
+        return False
+
+
 def write_supervisor_heartbeat(
     universe: Path,
     state: SupervisorState,
@@ -1342,15 +1530,45 @@ def write_supervisor_heartbeat(
     uptime surface), so failures log loudly and return.
     """
     now = _utcnow()
+    # Universe-qualified, never `os.environ`. The pump runs against OTHER
+    # universes and leaves its runtime id in the process environment, so an
+    # env read here describes a runtime registered elsewhere -- which is what
+    # raised `queue_universe_id_mismatch` and shipped beats with no
+    # `capabilities`. No entry means no active child for THIS universe, and
+    # advertising zero capacity is the correct, fail-closed answer.
+    context_worker_id, context_runtime_id = (
+        getattr(state, "execution_context_by_universe", {}) or {}
+    ).get(universe.name.strip(), ("", ""))
+    # NO environment fallback. `TINYASSETS_RUNTIME_INSTANCE_ID` was a SECOND
+    # authority for "which runtime is live", and the two cancelled: clearing a
+    # dead child's context did nothing because the next beat reconstructed it
+    # from the environment -- and the reconstruction validated, because that
+    # runtime really does belong to this universe. One beat could retire a pair
+    # and republish it. Every production heartbeat comes from `run_supervisor`,
+    # whose default spawn closure always records the context, so the fallback
+    # had no production consumer at all; it only ever propped up test fixtures
+    # that set the variable by hand.
     descriptor = _worker_queue_descriptor(
         universe,
-        runtime_instance_id=os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID",
-            "",
-        ),
+        runtime_instance_id=context_runtime_id,
+        worker_id=context_worker_id,
         _now=now,
     )
-    descriptor_persisted = _persist_worker_queue_descriptor(descriptor)
+    # Retire superseded contexts FIRST, each under its own registering worker,
+    # and keep any that did not actually retire. Clearing the queue on the
+    # publish call's return value dropped failed retirements silently.
+    pending = list(getattr(state, "pending_retire_contexts", ()))
+    if pending:
+        still_pending = [
+            (owner, runtime_id)
+            for owner, runtime_id in pending
+            if not _retire_queue_descriptor(owner, runtime_id)
+        ]
+        state.pending_retire_contexts = still_pending
+    descriptor_persisted = _persist_worker_queue_descriptor(
+        descriptor,
+        worker_id=context_worker_id,
+    )
     beat = {
         "ts": _format_utc(now),
         "phase": phase,
@@ -1371,10 +1589,11 @@ def write_supervisor_heartbeat(
         # the container's frozen identity -- that is what the healthcheck
         # resolves.
         "worker_id": _worker_id(),
-        "runtime_instance_id": os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID",
-            "",
-        ).strip(),
+        # From the recorded context, NOT the environment. An env read here was
+        # the last surviving second authority: it is why `runtime_instance_count`
+        # reported ten live runtimes while `compatible_worker_count` was zero --
+        # the beat named a runtime whose descriptor had never been published.
+        "runtime_instance_id": context_runtime_id,
     }
     if descriptor is not None and descriptor_persisted:
         beat.update(descriptor)
@@ -1510,20 +1729,27 @@ def run_supervisor(
     monkeypatch the module attribute freely.
     """
     physical_worker_id = _worker_id()
+    state = SupervisorState()
     if spawn_fn is None:
-        if daemon_args:
-
-            def spawn_fn(universe: Path) -> subprocess.Popen:
-                return _spawn_daemon_for_universe(
-                    universe,
-                    extra_args=daemon_args,
-                )
-        else:
-            spawn_fn = _spawn_daemon_for_universe
+        # Both branches close over `state` so the spawn records the
+        # (worker_id, runtime_instance_id) pair it registers. An injected
+        # `spawn_fn` keeps the plain (universe) seam and records nothing --
+        # tests that supply one advertise no capacity, which is correct.
+        def spawn_fn(universe: Path) -> subprocess.Popen:
+            return _spawn_daemon_for_universe(
+                universe,
+                extra_args=daemon_args or None,
+                state=state,
+            )
     if sleep_fn is None:
         sleep_fn = time.sleep
+    try:
+        _spawn_fn_takes_state = (
+            "state" in inspect.signature(spawn_fn).parameters
+        )
+    except (TypeError, ValueError):
+        _spawn_fn_takes_state = False
 
-    state = SupervisorState()
     # Runs before any supervisor work and never again: freezes this
     # container's identity onto the state the beat writer uses.
     _snapshot_worker_protocol_identity_at_boot(
@@ -1561,6 +1787,17 @@ def run_supervisor(
             break
         iteration += 1
 
+        # No child is running at the top of an iteration -- the previous one
+        # exited, crashed, or was never spawned. Clearing here is the backstop
+        # for the paths the post-exit clear cannot reach: an exception raised
+        # during heartbeat writing or polling skips that clear, and without
+        # this the NEXT iteration's beats would advertise a runtime whose child
+        # is long gone. Cheap and idempotent: `pop` returns None when empty and
+        # the pending queue is deduplicated.
+        state.retire_context_later(
+            state.clear_execution_context(universe.name)
+        )
+
         # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
         # whose writer provider is unauthenticated must NOT spawn the claim
         # subprocess. A dead-auth worker claims tasks, fails every one, and
@@ -1570,6 +1807,11 @@ def run_supervisor(
         auth = _worker_auth_health(daemon_args)
         if auth is not None and auth.get("status") == "not_logged_in":
             state.auth_quarantine_count += 1
+            # No child will run this iteration; a surviving context would
+            # advertise capacity a quarantined worker cannot honour.
+            state.retire_context_later(
+                state.clear_execution_context(universe.name)
+            )
             logger.error(
                 "cloud_worker: writer provider %s is unauthenticated (%s) — "
                 "QUARANTINING worker, not claiming. Re-seed provider auth to "
@@ -1594,6 +1836,11 @@ def run_supervisor(
         pinned_gap = _pinned_universe_credential_missing(universe, daemon_args)
         if pinned_gap:
             state.auth_quarantine_count += 1
+            # No child will run this iteration; a surviving context would
+            # advertise capacity a quarantined worker cannot honour.
+            state.retire_context_later(
+                state.clear_execution_context(universe.name)
+            )
             logger.error(
                 "cloud_worker: %s — QUARANTINING pinned worker, not claiming. "
                 "Deposit the universe's provider credential to resume.",
@@ -1610,7 +1857,15 @@ def run_supervisor(
             continue
 
         try:
-            proc = spawn_fn(universe)
+            # An injected spawn_fn gets `state` when it declares it, so a test
+            # double can record the execution context the real closure records.
+            # Without this a seeded state is useless: the iteration-start clear
+            # runs BEFORE the spawn and wipes it, so the beat advertises nothing
+            # and any restart-on-candidate behaviour silently stops being tested.
+            if _spawn_fn_takes_state:
+                proc = spawn_fn(universe, state=state)
+            else:
+                proc = spawn_fn(universe)
         except OSError as exc:
             logger.error("cloud_worker: spawn failed: %s", exc)
             state.crash_count += 1
@@ -1685,6 +1940,7 @@ def run_supervisor(
                             universe,
                             provider_name=_provider_from_daemon_args(daemon_args),
                             physical_worker_id=physical_worker_id,
+                            state=state,
                         )
                         appended += _pump_branch_task_producers(universe)
                         if appended > 0:
@@ -1718,6 +1974,13 @@ def run_supervisor(
                             break
             sleep_fn(poll_interval)
 
+        # CRITICAL 1: the context dies with the child. Leaving it set let
+        # the backoff beat keep RENEWING a dead runtime's descriptor --
+        # live capacity for a process that has exited, which is strictly
+        # worse than the fail-closed zero this replaced.
+        state.retire_context_later(
+            state.clear_execution_context(universe.name)
+        )
         state.record_exit(returncode if returncode is not None else -1)
         logger.info(
             "cloud_worker: subprocess exited rc=%s (%s); %s",
@@ -1752,6 +2015,7 @@ def run_supervisor(
                     target,
                     provider_name=_provider_from_daemon_args(daemon_args),
                     physical_worker_id=physical_worker_id,
+                    state=state,
                 )
 
         if returncode == 0:
