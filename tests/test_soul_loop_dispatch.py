@@ -175,7 +175,13 @@ def test_cloud_worker_defaults_to_fantasy_spawn_when_flag_off(
     monkeypatch.delenv("TINYASSETS_SOUL_LOOP_DISPATCH", raising=False)
     calls: list[dict[str, object]] = []
 
-    def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
+    def fake_spawn(
+        universe,
+        *,
+        module="fantasy_daemon",
+        extra_args=None,
+        state=None,
+    ):
         calls.append({
             "universe": universe,
             "module": module,
@@ -204,7 +210,13 @@ def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
     )
     calls: list[dict[str, object]] = []
 
-    def fake_spawn(universe, *, module="fantasy_daemon", extra_args=None):
+    def fake_spawn(
+        universe,
+        *,
+        module="fantasy_daemon",
+        extra_args=None,
+        state=None,
+    ):
         calls.append({
             "universe": universe,
             "module": module,

@@ -850,14 +850,20 @@ def test_supervisor_descriptor_has_exact_90_second_validity(
     monkeypatch.setattr(
         cw,
         "_persist_worker_queue_descriptor",
-        lambda _descriptor: True,
+        # Explicit, not **kwargs: the stub should break loudly if the
+        # persistence contract changes again rather than silently absorb it.
+        lambda _descriptor, *, worker_id="", retire_runtime_ids=(): True,
     )
     universe = tmp_path / "universe-a"
     universe.mkdir()
 
+    # The descriptor's runtime now comes from the universe-qualified context
+    # the spawn recorded, not from the process environment.
+    state = cw.SupervisorState()
+    state.record_execution_context("universe-a", "worker-a", "runtime-a")
     cw.write_supervisor_heartbeat(
         universe,
-        cw.SupervisorState(),
+        state,
         iteration=1,
         phase="polling",
     )
@@ -966,7 +972,9 @@ def test_supervisor_does_not_advertise_v2_without_runtime_release_evidence(
     monkeypatch.setattr(
         cw,
         "_persist_worker_queue_descriptor",
-        lambda _descriptor: True,
+        # Explicit, not **kwargs: the stub should break loudly if the
+        # persistence contract changes again rather than silently absorb it.
+        lambda _descriptor, *, worker_id="", retire_runtime_ids=(): True,
     )
     universe = tmp_path / "universe-a"
     universe.mkdir()
@@ -992,3 +1000,111 @@ def test_supervisor_does_not_advertise_v2_without_runtime_release_evidence(
         "universe_id",
         "expires_at",
     }.intersection(beat)
+
+
+def test_heartbeat_refuses_an_environment_runtime_from_another_universe(
+    tmp_path,
+    monkeypatch,
+):
+    """The env fallback must prove universe ownership before advertising.
+
+    The automation pump runs against OTHER universes and leaves its runtime id
+    in `os.environ`. Pairing that id with this universe's `universe_id` is what
+    raised `queue_universe_id_mismatch`, so persistence failed and the beat
+    shipped with no `capabilities` -- ten live workers, zero compatible, queue
+    frozen 22.5h. Advertising nothing is the correct answer; advertising a
+    foreign runtime would be worse than the bug.
+    """
+    import tinyassets.daemon_registry as registry
+    from tinyassets.storage import DB_FILENAME
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    (tmp_path / DB_FILENAME).touch()
+
+    foreign = {
+        "runtime_instance_id": "runtime-from-universe-b",
+        "metadata": {"worker_id": "worker-b"},
+    }
+    mine = {
+        "runtime_instance_id": "runtime-mine",
+        "metadata": {"worker_id": "worker-a"},
+    }
+
+    listed: list[dict] = []
+    monkeypatch.setattr(
+        registry,
+        "list_runtime_instances",
+        lambda _base, universe_id="": list(listed),
+    )
+
+    # The registry does not vouch for it -> fail closed, no owner.
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        "runtime-from-universe-b",
+    )
+    assert cw._universe_bound_runtime_owner(
+        universe,
+        "runtime-from-universe-b",
+    ) == ""
+
+    # Present but registered in another universe: still not ours, because the
+    # lookup is scoped by universe_id and this list is what that scope returns.
+    listed.append(mine)
+    assert cw._universe_bound_runtime_owner(
+        universe,
+        foreign["runtime_instance_id"],
+    ) == ""
+
+    # ACCEPT DIRECTION -- a runtime this universe does own resolves to the
+    # worker id the REGISTRY recorded, which is what expected_worker_id is
+    # compared against. Guessing it would trade one silent failure for another.
+    assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == (
+        "worker-a"
+    )
+
+
+def test_runtime_ownership_lookup_failure_fails_closed(tmp_path, monkeypatch):
+    """A registry read that raises must advertise nothing, not guess."""
+    import tinyassets.daemon_registry as registry
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    from tinyassets.storage import DB_FILENAME
+
+    (tmp_path / DB_FILENAME).touch()
+
+    def boom(_base, universe_id=""):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(registry, "list_runtime_instances", boom)
+    assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == ""
+
+
+def test_runtime_ownership_lookup_never_creates_the_registry(
+    tmp_path,
+    monkeypatch,
+):
+    """A heartbeat is a read. It must not bring the registry into existence.
+
+    Opening the store to answer an ownership question created `.tinyassets.db`
+    as a side effect, which leaked durable state out of a pure read and made an
+    unrelated test see epoch-2 as available.
+    """
+    import tinyassets.daemon_registry as registry
+    from tinyassets.storage import DB_FILENAME
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    def must_not_be_called(_base, universe_id=""):
+        raise AssertionError("registry opened when no store exists")
+
+    monkeypatch.setattr(
+        registry,
+        "list_runtime_instances",
+        must_not_be_called,
+    )
+    assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == ""
+    assert not (tmp_path / DB_FILENAME).exists()

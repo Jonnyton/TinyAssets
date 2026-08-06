@@ -1646,9 +1646,10 @@ def test_main_passes_provider_pin_to_supervised_daemon(tmp_path, monkeypatch):
     (universe / "PROGRAM.md").write_text("x", encoding="utf-8")
     captured = {}
 
-    def fake_spawn(u, *, extra_args=None):
+    def fake_spawn(u, *, extra_args=None, state=None):
         captured["universe"] = u
         captured["extra_args"] = list(extra_args or [])
+        captured["state"] = state
         return FakeProc(returncode=0, steps_until_exit=0)
 
     monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
@@ -1689,7 +1690,7 @@ def test_main_exits_zero_after_max_iterations(tmp_path, monkeypatch):
     # dereferences `spawn_fn=_spawn_fantasy_daemon` at call-time (via
     # default arg evaluated each call), so monkeypatching the module
     # attribute is enough.
-    def fake_spawn(u):
+    def fake_spawn(u, *, state=None):
         return FakeProc(returncode=0, steps_until_exit=0)
 
     monkeypatch.setattr(cw, "_spawn_fantasy_daemon", fake_spawn)
