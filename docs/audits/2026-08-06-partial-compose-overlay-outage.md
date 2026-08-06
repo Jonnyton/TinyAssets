@@ -86,9 +86,16 @@ re-run under the new project name, and all eight containers survived.
 
 The overlay only exists because PR #2348 has not merged. `deploy/compose.yml`
 already carries the `slack-agent` service behind `profiles: ["slack"]`, so
-landing it removes the second file — and this failure mode — entirely. Overlays
+landing it removes the second file — and *this* failure mode — entirely. Overlays
 sharing a project with the main stack are a temporary shape and should be
 treated as one.
+
+**Correction `current: 2026-08-06` — landing #2348 does NOT fix the fencing.**
+This section originally said it did. It does not, and the addendum below is the
+reason. Getting the container into the right compose *project* is necessary and
+insufficient: the fence keys on which containers **mount the production
+volume**, not on which project owns them, and `slack-agent` mounts
+`tinyassets-data`. See "Why an allowlist is not enough" below.
 
 ## Generalisation
 
@@ -138,5 +145,40 @@ Integration is now verified in an **ephemeral** container: the production image,
 the branch's modules bind-mounted read-only, a temp `TINYASSETS_DATA_DIR`, and
 **no production volume mount**. That exercises the same seams — setup API,
 routing, recognition, replay, the tier reaching `converse` — without creating a
-volume consumer. The durable fix remains landing #2348 so `slack-agent` is a
-first-class service in `deploy/compose.yml`.
+volume consumer.
+
+## Why an allowlist is not enough
+
+`current: 2026-08-06`, cross-family reviewed (Codex, `confirm`), line numbers
+verified against `scripts/retire_cheat_loop_deploy_fence.py` at `39d92bc`.
+
+The first instinct — add `tinyassets-slack-agent` to an permitted-consumer set —
+does not work, for three independent reasons:
+
+1. **It is not one check.** `Host.volume_container_names()`
+   (`docker ps -a --filter volume=tinyassets-data`) is consumed in ~18 places.
+   Lines 474–477, 1690/1710–1713, 2915/2953–2965, 3089/3095–3098 and 3146–3147
+   require the consumer set to be **exactly** the canonical five; lines
+   1758–1759, 2899–2900, 3016–3017 and 3075–3076 require it to be **empty**
+   during removal/convergence. An allowlist would have to be threaded through
+   fencing, recovery, identity recording and restart restoration.
+2. **The kill path is broader than the equality checks.** Emergency fencing sets
+   `restart=no` on *every* volume consumer (2268) and stops them (2297–2300);
+   retirement then removes the stopped container (2602–2614). Because the filter
+   is `docker ps -a`, **stopping the agent does not remove it from the
+   inventory** — which is why it had to be deleted six times on 2026-08-06.
+3. **Docker labels are self-asserted.** Gating admission on
+   `com.docker.compose.project` / `org.tinyassets.component` is forgeable by the
+   very rogue writer the fence exists to catch, so the "verified label" variant
+   of the allowlist buys no real guarantee.
+
+**Chosen remedy: the Slack agent stops mounting the production volume** and
+reaches universe data through the daemon over an authenticated protocol. That
+leaves the fence's no-rogue-writer guarantee completely untouched and keeps the
+agent's separate `mem_limit`/`pids_limit` blast-radius bounds. Running the pump
+*inside* the daemon was rejected for the opposite reason: it would put an
+external socket pump and CLI turns inside the availability-critical service.
+
+The cost is honest: routing, replay admission, founder recognition, the
+`converse` call and scoped credential delivery all currently read
+`TINYASSETS_DATA_DIR` directly and must move behind that protocol.

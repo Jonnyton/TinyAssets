@@ -152,8 +152,8 @@ across all of them. That made two shipped assumptions category errors.
       `--assert-handles`. Fixed by running the overlay in its own project
       (`-p tinyassets-slack`) with external volume/network, PROVEN by re-running
       the exact outage command and watching the main stack survive. Postmortem:
-      `docs/audits/2026-08-06-partial-compose-overlay-outage.md`. The durable
-      fix is landing #2348, which removes the second compose file entirely.
+      `docs/audits/2026-08-06-partial-compose-overlay-outage.md`. Landing #2348
+      removes the second compose file — but NOT the fencing; see 10.1.
 
 - [x] 9.2 **Addendum — the overlay also FENCED production deploys, so the 24/7
       claim for it is retracted.** A container on `tinyassets-data` outside the
@@ -164,5 +164,38 @@ across all of them. That made two shipped assumptions category errors.
       which deletes it — so the agent silently stopped twice, with nothing in
       its own logs. A service a routine deploy is designed to delete is not
       continuously available. Integration is now proven in an EPHEMERAL
-      container (prod image, temp data dir, no volume mount) instead; the
-      durable fix is landing #2348.
+      container (prod image, temp data dir, no volume mount) instead. The
+      durable fix is 10.1 below, NOT landing #2348 — that claim was wrong.
+
+## 10. The agent must not mount the production volume
+
+`current: 2026-08-06`. Cross-family reviewed (Codex: `confirm`, chose B over an
+allowlist and over folding the pump into the daemon).
+
+- [ ] 10.1 **Landing #2348 does not make the agent survive deploys, and the
+      earlier claim that it would was wrong.** The fence keys on which
+      containers MOUNT `tinyassets-data`, not on which compose project owns
+      them, and `slack-agent` mounts it. Evidence it is structural rather than a
+      missing allowlist entry:
+      - ~18 call sites consume `Host.volume_container_names()`. Lines 474–477,
+        1690/1710–1713, 2915/2953–2965, 3089/3095–3098, 3146–3147 require the
+        consumer set to be EXACTLY the canonical five; 1758–1759, 2899–2900,
+        3016–3017, 3075–3076 require it to be EMPTY during removal.
+      - The kill path is wider than the equality checks: `restart=no` on every
+        consumer (2268), stop (2297–2300), remove (2602–2614). The filter is
+        `docker ps -a`, so STOPPING the agent does not clear it — which is why
+        it was deleted six times between 03:36 and 04:25 UTC.
+      - Docker labels are self-asserted, so a "verified label" allowlist is
+        forgeable by the rogue writer the fence exists to catch.
+- [ ] 10.2 Remove `tinyassets-data:/data` from the `slack-agent` service and
+      give it an authenticated daemon-facing protocol. Five couplings move
+      behind it, all currently reading `TINYASSETS_DATA_DIR` directly:
+      credential vault (Slack tokens), `ChannelRouter`, `AppEventAdmissionStore`
+      (replay), founder recognition (universe ACLs), and the universe dir used
+      by `converse` and the reply transport.
+- [ ] 10.3 Keep the agent a separate container. Folding the pump into the daemon
+      was rejected: it would surrender the agent's own `mem_limit`/`pids_limit`
+      and let a Slack defect degrade the MCP service.
+- [ ] 10.4 Regression proof: with the agent running, a production deploy must
+      complete without `--retire-extra-consumer`, and the agent must still be
+      running afterwards. That is the actual 24/7 claim; nothing weaker counts.
