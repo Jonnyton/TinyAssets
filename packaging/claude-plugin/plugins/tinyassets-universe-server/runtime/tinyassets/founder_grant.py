@@ -25,7 +25,7 @@ binding, or deleting the universe takes effect on the very next message.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from tinyassets.app_event_ingress import is_admissible_principal_event
@@ -33,7 +33,7 @@ from tinyassets.app_principal_mapping import (
     AppPrincipalMappingError,
     AppPrincipalMappingService,
 )
-from tinyassets.daemon_server import list_universe_acl
+from tinyassets.daemon_server import get_founder_home, list_universe_acl
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +44,20 @@ class FounderRecognitionError(PermissionError):
     """Recognition failed closed. Never raised to distinguish *why*."""
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, init=False)
 class FounderGrant:
     """Proof that this exact turn is with the verified founder.
 
     Possession is the authority. The constructor refuses to build one without
     the recognizer's seal, so no caller — including a compromised transport —
     can forge founder capability by constructing the type it expects.
+
+    ``_seal`` is deliberately NOT a dataclass field. As one it was assignable
+    by :func:`dataclasses.replace`, which passes every field back to the
+    constructor: a cross-family review turned a legitimate grant into one for
+    *another universe* — ``replace(grant, universe_id='u2')`` — and it still
+    passed :func:`is_founder_grant`. Off the field list, ``replace`` cannot
+    supply the seal and fails instead.
     """
 
     universe_id: str
@@ -61,7 +68,6 @@ class FounderGrant:
     provider: str
     workspace_id: str
     external_sender_id: str
-    _seal: object = field(repr=False, compare=False)
 
     def __init__(
         self,
@@ -90,9 +96,16 @@ class FounderGrant:
 
 
 def is_founder_grant(value: object) -> bool:
-    """Return whether ``value`` carries this process's recognizer seal."""
+    """Return whether ``value`` carries this process's recognizer seal.
 
-    return isinstance(value, FounderGrant) and value._seal is _FOUNDER_GRANT_SEAL
+    ``type(...) is`` rather than ``isinstance``: a subclass is a caller-defined
+    type, and inheriting the check is not the same as passing it.
+    """
+
+    return (
+        type(value) is FounderGrant
+        and getattr(value, "_seal", None) is _FOUNDER_GRANT_SEAL
+    )
 
 
 class FounderRecognizer:
@@ -140,18 +153,24 @@ class FounderRecognizer:
         # admin row, binding `configured`, and matching revision. Two checks
         # remain, both of which it cannot make.
 
-        # Founder cardinality. `resolve` asserts that *this subject* holds
-        # exactly one admin row; it does not assert that the universe has
-        # exactly one admin. Two subjects could each hold one, and "verified
-        # founder" would stop being a single answerable fact. Binary
-        # recognition requires the universe to have exactly one admin, and it
-        # must be this subject.
-        admins = [
-            row
+        # Founder cardinality. `resolve` asserts that *this subject* holds an
+        # admin row and that this universe is their founder home; it does not
+        # assert that nobody ELSE also calls it home. Two subjects could, and
+        # "the verified founder" would stop being a single answerable fact.
+        #
+        # The test is deliberately NOT "exactly one admin". A cross-family
+        # review pointed out that would lock the real founder out the moment
+        # they add a co-admin — an availability bug, and a co-admin is not a
+        # rival claim to being the founder. What must be unique is the set of
+        # admins who call this universe their founder home.
+        claimants = {
+            actor
             for row in list_universe_acl(self.base_path, universe_id=record.universe_id)
             if row.get("permission") == "admin"
-        ]
-        if len(admins) != 1 or admins[0].get("actor_id") != record.subject_id:
+            and (actor := row.get("actor_id"))
+            and get_founder_home(self.base_path, actor) == record.universe_id
+        }
+        if claimants != {record.subject_id}:
             return None
 
         # The universe directory must exist. A mapping can outlive the thing it

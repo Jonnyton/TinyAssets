@@ -13,9 +13,12 @@ convention someone can forget.
 from __future__ import annotations
 
 import base64
+import copy
+import dataclasses
 import hashlib
 import hmac
 import json
+import pickle
 import time
 from pathlib import Path
 
@@ -378,10 +381,10 @@ def test_revoking_admin_takes_effect_on_the_very_next_message(tmp_path: Path) ->
     assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000007")) is None
 
 
-def test_a_second_admin_makes_founder_recognition_refuse(tmp_path: Path) -> None:
-    """Binary recognition needs exactly one answerable founder. `resolve` only
-    asserts that *this subject* holds one admin row, so two subjects could each
-    hold one and both be "the founder"."""
+def test_a_co_admin_does_not_lock_the_founder_out(tmp_path: Path) -> None:
+    """Cross-family review, availability: an "exactly one admin" rule would
+    revoke the real founder's own recognition the moment they add a co-admin.
+    A co-admin is not a rival claim to being the founder."""
     recognizer, target, grant = _recognized(tmp_path, event_id="Ev0000000008")
     assert is_founder_grant(grant)
 
@@ -393,7 +396,29 @@ def test_a_second_admin_makes_founder_recognition_refuse(tmp_path: Path) -> None
         granted_by=FOUNDER_ID,
     )
 
-    assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000010")) is None
+    still = recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000010"))
+    assert is_founder_grant(still), "adding a co-admin must not revoke the founder"
+
+
+def test_a_second_founder_home_claimant_makes_recognition_refuse(
+    tmp_path: Path,
+) -> None:
+    """What must be unique is the set of admins calling this universe home. Two
+    of those, and "the verified founder" stops being a single answerable fact —
+    so the honest answer is to refuse rather than pick one."""
+    recognizer, target, grant = _recognized(tmp_path, event_id="Ev0000000018")
+    assert is_founder_grant(grant)
+
+    grant_universe_access(
+        tmp_path,
+        universe_id=target.universe_id,
+        actor_id=STRANGER_ID,
+        permission="admin",
+        granted_by=FOUNDER_ID,
+    )
+    set_founder_home(tmp_path, founder_sub=STRANGER_ID, universe_id=target.universe_id)
+
+    assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000019")) is None
 
 
 def test_a_rotated_binding_revokes_recognition(tmp_path: Path) -> None:
@@ -455,6 +480,67 @@ def test_a_founder_grant_cannot_be_constructed_by_a_caller() -> None:
             external_sender_id=FOUNDER_ID,
             _seal=object(),
         )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda g: dataclasses.replace(g, universe_id="u-someone-else"),
+            id="dataclasses.replace",
+        ),
+        pytest.param(lambda g: copy.deepcopy(g), id="deepcopy"),
+        pytest.param(lambda g: pickle.loads(pickle.dumps(g)), id="pickle"),
+    ],
+)
+def test_a_grant_cannot_be_copied_into_a_different_authority(
+    tmp_path: Path, mutate
+) -> None:
+    """Cross-family review, HIGH: `_seal` used to be a dataclass *field*, and
+    `dataclasses.replace` passes every field straight back to the constructor.
+    So a holder of one legitimate grant could mint one for ANOTHER universe —
+    `replace(grant, universe_id=...)` — and it still passed `is_founder_grant`.
+    """
+    _, _, grant = _recognized(tmp_path, event_id="Ev00SEAL01")
+    assert is_founder_grant(grant)
+
+    try:
+        forged = mutate(grant)
+    except (TypeError, ValueError):
+        return  # refused outright, which is the stronger outcome
+
+    assert not is_founder_grant(forged)
+
+
+def test_an_admitted_event_cannot_be_rewritten_to_another_sender(
+    tmp_path: Path,
+) -> None:
+    """The same defect on the evidence itself, and worse: it also affected the
+    pre-existing `AuthenticatedAppEvent`, so any holder of one admitted event
+    could rewrite the sender to the founder's id and keep the seal."""
+    event = _socket_event(tmp_path, sender=STRANGER_ID, event_id="Ev00SEAL02")
+    assert is_socket_mode_app_event(event)
+
+    with pytest.raises((TypeError, ValueError)):
+        dataclasses.replace(event, external_sender_id=FOUNDER_ID)
+
+
+def test_a_subclass_does_not_inherit_the_seal(tmp_path: Path) -> None:
+    """Inheriting the check is not the same as passing it."""
+    _, _, grant = _recognized(tmp_path, event_id="Ev00SEAL03")
+
+    class Sneaky(FounderGrant):
+        pass
+
+    impostor = Sneaky.__new__(Sneaky)
+    for name in (
+        "universe_id", "subject_id", "agent_binding_id", "binding_revision",
+        "mapping_generation", "provider", "workspace_id", "external_sender_id",
+    ):
+        object.__setattr__(impostor, name, getattr(grant, name))
+    object.__setattr__(impostor, "_seal", getattr(grant, "_seal"))
+
+    assert not is_founder_grant(impostor), "a subclass is a caller-defined type"
 
 
 def test_a_forged_grant_is_downgraded_not_honoured(monkeypatch) -> None:

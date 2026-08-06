@@ -67,7 +67,33 @@
 - [ ] 6.1 Live proof: founder teaches Tiny through Slack, `origin.md` changes;
       a non-founder in the same channel teaches nothing and cannot read
       `founder.md`.
-- [ ] 6.2 Cross-family review of the implementation, framed as "refute that a
-      non-founder can reach founder capability".
+      **BLOCKED, and the block is the next build.** There is no way for a user
+      to say "this Slack account is me". `AppPrincipalMappingService.provision`
+      needs a trusted-setup resolver and has no user-facing caller, so no
+      founder mapping exists in production — `u-tiny` has no ACL rows at all.
+      This is exactly the surface the host described: *editing your custom
+      agent, list the founder accounts for the platforms it should recognise
+      you from.* Until it exists only the non-founder half is live-provable.
+- [x] 6.2 Cross-family review returned **reject** with two findings that
+      survived; both are now closed or reported:
+      - **Seal defeated by `dataclasses.replace`.** `_seal` was a dataclass
+        *field*, so `replace` passed it back to the constructor: a legitimate
+        grant became one for another universe, and — worse, on the
+        *pre-existing* `AuthenticatedAppEvent` — one admitted event could be
+        rewritten to another sender and keep its seal. Fixed on all three
+        sealed types by taking the seal off the field list.
+      - **Cardinality locked out the real founder.** "Exactly one admin" would
+        revoke recognition the moment the founder adds a co-admin. Now the
+        unique thing is the set of admins whose founder *home* is this
+        universe.
+      Still open, both **outside this change's diff**:
+      - `interlocutor.resolve_interlocutor_tier` returns **T2/FOUNDER for any
+        `write` ACL holder**, so on the MCP path a collaborator reads
+        `founder.md` and commits learning. Pre-existing; needs its own lane.
+      - The seal is an importable module global, so arbitrary in-process code
+        can mint a grant. That is the honest limit of in-process capability
+        sealing — such code can equally call `converse(tier="T2")` — so the
+        seal defends against a transport passing the wrong thing, not against
+        code execution. Documented rather than overclaimed.
 - [ ] 6.3 State the account-principal-not-human-presence invariant in the
       capability spec, not just this proposal.

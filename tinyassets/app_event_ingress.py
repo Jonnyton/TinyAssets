@@ -32,9 +32,18 @@ class AppEventEnvelopeError(ValueError):
     """An authenticated request did not contain an admissible event."""
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, init=False)
 class AuthenticatedAppEvent:
-    """Transient provider evidence; this is not TinyAssets user authority."""
+    """Transient provider evidence; this is not TinyAssets user authority.
+
+    ``_seal`` is deliberately NOT a dataclass field. As one it was assignable
+    by :func:`dataclasses.replace`, which passes every field straight back to
+    the constructor — so anyone holding one admitted event could rewrite
+    ``external_sender_id`` to the founder's and keep the seal. Cross-family
+    review found it. Keeping the seal off the field list means ``replace``
+    cannot supply it and fails, and ``slots`` is dropped so the attribute can
+    still be set on a frozen instance.
+    """
 
     provider: str
     installation_id: str
@@ -46,7 +55,6 @@ class AuthenticatedAppEvent:
     request_timestamp: int
     body_sha256: str
     payload: Mapping[str, Any] = field(repr=False, compare=False)
-    _seal: object = field(repr=False, compare=False)
 
     def __init__(
         self,
@@ -79,12 +87,19 @@ class AuthenticatedAppEvent:
 
 
 def is_authenticated_app_event(value: object) -> bool:
-    """Return whether ``value`` carries this process's verifier seal."""
+    """Return whether ``value`` carries this process's verifier seal.
 
-    return isinstance(value, AuthenticatedAppEvent) and value._seal is _AUTHENTICATION_SEAL
+    ``type(...) is`` rather than ``isinstance``: a subclass is a caller-defined
+    type, and inheriting the seal check is not the same as passing it.
+    """
+
+    return (
+        type(value) is AuthenticatedAppEvent
+        and getattr(value, "_seal", None) is _AUTHENTICATION_SEAL
+    )
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, init=False)
 class SocketModeAppEvent:
     """Evidence that Slack delivered this envelope on *this app's own* socket.
 
@@ -122,7 +137,6 @@ class SocketModeAppEvent:
     actor_team_id: str
     external_sender_id: str
     payload: Mapping[str, Any] = field(repr=False, compare=False)
-    _seal: object = field(repr=False, compare=False)
 
     def __init__(
         self,
@@ -155,7 +169,10 @@ class SocketModeAppEvent:
 def is_socket_mode_app_event(value: object) -> bool:
     """Return whether ``value`` carries this process's socket-admitter seal."""
 
-    return isinstance(value, SocketModeAppEvent) and value._seal is _SOCKET_MODE_SEAL
+    return (
+        type(value) is SocketModeAppEvent
+        and getattr(value, "_seal", None) is _SOCKET_MODE_SEAL
+    )
 
 
 def is_admissible_principal_event(value: object) -> bool:
