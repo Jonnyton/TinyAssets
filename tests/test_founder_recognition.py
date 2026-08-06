@@ -637,7 +637,7 @@ def test_the_resolver_puts_the_grant_on_the_binding(tmp_path: Path, monkeypatch)
 
     resolve = build_resolver(
         _slack_config(tmp_path),
-        recognize=lambda event: seen.append(event) or sentinel,
+        recognize=lambda event, routed=None: seen.append(event) or sentinel,
     )
     binding = resolve(_inner_event())
 
@@ -654,7 +654,7 @@ def test_an_unrecognized_sender_gets_a_binding_with_no_grant(
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
-    resolve = build_resolver(_slack_config(tmp_path), recognize=lambda _e: None)
+    resolve = build_resolver(_slack_config(tmp_path), recognize=lambda _e, _r=None: None)
     binding = resolve(_inner_event(sender=STRANGER_ID))
 
     assert binding is not None, "a stranger is answered, not ignored"

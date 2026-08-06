@@ -103,26 +103,42 @@ class SlackAgentConfig:
             raise SlackAgentConfigError(str(exc)) from None
 
 
-def build_resolver(config: SlackAgentConfig, *, recognize=None):
-    """Bind exactly one workspace to one universe, and recognise the founder.
+def build_resolver(config: SlackAgentConfig, *, recognize=None, route=None):
+    """Bind one workspace to the universe that answers, and recognise the founder.
 
     Every other workspace resolves to ``None``, which the handler answers with
     silence. This is the check that keeps a socket — which carries whatever
     Slack sends us — from becoming a way to address someone else's universe.
 
-    ``recognize`` is injected for tests; the default re-derives founder
-    authority from current server state on every single event. It is called
-    here rather than in the handler so the transport receives an answer it
-    cannot influence: it gets a sealed grant or it gets ``None``.
+    Which universe answers is *routed*, not fixed: a user keeps several, and a
+    channel binding can point one at a different one. With nothing bound, the
+    universe whose vault opened this socket answers, so the zero-configuration
+    case needs no binding step at all.
+
+    ``recognize`` and ``route`` are injected for tests; both defaults re-derive
+    from current server state on every single event. They are called here
+    rather than in the handler so the transport receives answers it cannot
+    influence: a sealed grant or ``None``, a routed universe or ``None``.
     """
+    if route is None:
+        def route(event: Mapping[str, Any]):
+            try:
+                return _route_universe(config, event)
+            except Exception:  # noqa: BLE001 - a turn must survive this
+                logger.warning(
+                    "slack agent: channel routing failed closed (%s)",
+                    type(sys.exc_info()[1]).__name__,
+                )
+                return None
+
     if recognize is None:
-        def recognize(event: Mapping[str, Any]):
+        def recognize(event: Mapping[str, Any], routed=None):
             # The net is here rather than inside `_recognize_founder` so it
             # covers everything that function does, including its imports.
             # Recognition failing must degrade a founder to an ordinary sender,
             # never take the workspace's agent down.
             try:
-                return _recognize_founder(config, event)
+                return _recognize_founder(config, event, routed=routed)
             except Exception:  # noqa: BLE001 - a turn must survive this
                 logger.warning(
                     "slack agent: founder recognition failed closed (%s)",
@@ -148,18 +164,57 @@ def build_resolver(config: SlackAgentConfig, *, recognize=None):
         user = event.get("user")
         if not isinstance(user, str) or not user.strip():
             return None
+
+        routed = route(event)
+        if routed is None:
+            # Nowhere valid to send this. Silence, for the same reason an
+            # unbound workspace gets silence: guessing a universe answers as
+            # somebody else's brain.
+            logger.info("slack agent: no universe routes this message, ignoring")
+            return None
+
         return SlackBinding(
-            universe_id=config.universe_id,
-            universe_dir=config.universe_dir,
+            universe_id=routed.universe_id,
+            universe_dir=_universe_dir_for(config, routed.universe_id),
             connection_id=config.connection_id,
             actor_id=actor_id_for(config.team_id, user),
-            founder_grant=recognize(event),
+            founder_grant=recognize(event, routed),
         )
 
     return _resolve
 
 
-def _recognize_founder(config: SlackAgentConfig, event: Mapping[str, Any]):
+def _universe_dir_for(config: SlackAgentConfig, universe_id: str):
+    """The routed universe's own directory.
+
+    NOT `config.universe_dir`: that is the socket host's, and a routed message
+    belongs to a different universe entirely. Returning the host's directory
+    would have the agent answer about one universe while reading another's
+    grounding — the multi-universe version of answering as somebody else.
+    """
+    from tinyassets.api.helpers import _universe_dir
+
+    if universe_id == config.universe_id:
+        return config.universe_dir
+    return _universe_dir(universe_id)
+
+
+def _route_universe(config: SlackAgentConfig, event: Mapping[str, Any]):
+    """Which universe answers this message. Falls back to the socket's host."""
+    from tinyassets.app_channel_routing import ChannelRouter
+    from tinyassets.storage import data_dir
+
+    channel = event.get("channel")
+    return ChannelRouter(data_dir()).route(
+        provider="slack",
+        installation_id=f"{config.api_app_id}:{config.team_id}",
+        workspace_id=config.team_id,
+        channel_id=channel.strip() if isinstance(channel, str) else "",
+        fallback_universe_id=config.universe_id,
+    )
+
+
+def _recognize_founder(config: SlackAgentConfig, event: Mapping[str, Any], *, routed=None):
     """Re-derive founder authority for one event, or return ``None``.
 
     May raise; ``build_resolver`` owns the safety net, so that net also covers
@@ -196,7 +251,15 @@ def _recognize_founder(config: SlackAgentConfig, event: Mapping[str, Any]):
         # learning commit this ledger exists to prevent.
         logger.info("slack agent: replayed event, withholding founder authority")
         return None
-    return FounderRecognizer(base).recognize(admitted.event)
+    # Recognition is asked about the ROUTED universe. Ownership is per-universe,
+    # so being the founder of the socket's host universe says nothing about the
+    # one a channel binding pointed this message at.
+    return FounderRecognizer(base).recognize(
+        admitted.event,
+        universe_id=getattr(routed, "universe_id", ""),
+        agent_binding_id=getattr(routed, "agent_binding_id", ""),
+        binding_revision=getattr(routed, "binding_revision", 0) or 0,
+    )
 
 
 def resolve_credentials(config: SlackAgentConfig) -> str:

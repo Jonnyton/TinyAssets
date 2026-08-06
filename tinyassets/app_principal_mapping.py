@@ -148,6 +148,23 @@ class AppPrincipalMappingService:
         ) as exc:
             raise AppPrincipalStaleError(str(exc)) from exc
 
+    def current_founder_binding(
+        self,
+        target: AppPrincipalTarget,
+    ) -> CurrentFounderBinding | None:
+        """Public: is ``target.subject_id`` a current founder of that universe?
+
+        Needed because channel routing can send a message to a universe other
+        than the one this sender's mapping was created against. Ownership is
+        per-universe, so the question has to be askable per-universe rather
+        than only about the mapping's own.
+        """
+        try:
+            _validate_target(target)
+        except AppPrincipalEvidenceError:
+            return None
+        return self._current_founder_binding(target)
+
     def _current_founder_binding(
         self,
         target: AppPrincipalTarget,

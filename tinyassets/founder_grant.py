@@ -25,13 +25,14 @@ binding, or deleting the universe takes effect on the very next message.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tinyassets.app_event_ingress import is_admissible_principal_event
 from tinyassets.app_principal_mapping import (
     AppPrincipalMappingError,
     AppPrincipalMappingService,
+    AppPrincipalTarget,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,21 +120,46 @@ class FounderRecognizer:
         self.base_path = Path(base_path)
         self.mapping = mapping or AppPrincipalMappingService(self.base_path)
 
-    def recognize(self, event: object) -> FounderGrant | None:
+    def recognize(
+        self,
+        event: object,
+        *,
+        universe_id: str = "",
+        agent_binding_id: str = "",
+        binding_revision: int = 0,
+    ) -> FounderGrant | None:
         """Return a grant, or ``None`` for every other sender.
 
         ``None`` is the answer for a stranger, a revoked founder, a rotated
         binding and a malformed event alike. The caller's job is to treat the
         absence of a grant as "not the founder" — never to inspect why, and
         never to fall back to a tier of its own choosing.
+
+        The optional universe triple asks "is this sender the founder of *that*
+        universe", which is what channel routing needs: a message can be routed
+        to a universe other than the one this sender's mapping was created
+        against, and ownership is a per-universe fact. Omitted, the question is
+        asked about the mapping's own universe.
         """
         try:
-            return self._recognize(event)
+            return self._recognize(
+                event,
+                universe_id=universe_id,
+                agent_binding_id=agent_binding_id,
+                binding_revision=binding_revision,
+            )
         except (AppPrincipalMappingError, OSError, TypeError, ValueError) as exc:
             logger.debug("founder recognition failed closed (%s)", type(exc).__name__)
             return None
 
-    def _recognize(self, event: object) -> FounderGrant | None:
+    def _recognize(
+        self,
+        event: object,
+        *,
+        universe_id: str = "",
+        agent_binding_id: str = "",
+        binding_revision: int = 0,
+    ) -> FounderGrant | None:
         if not is_admissible_principal_event(event):
             return None
 
@@ -148,8 +174,34 @@ class FounderRecognizer:
 
         record = self.mapping.resolve(event)
 
-        # `resolve` already re-derived this subject's admin row on THIS
+        # `resolve` already re-derived this subject's admin row on the MAPPED
         # universe, the binding being `configured`, and a matching revision.
+        #
+        # When routing sent the message somewhere else, that proves nothing
+        # about where it actually landed: ownership is per-universe, so it is
+        # re-derived from scratch against the routed universe. Only the
+        # *identity* — which subject this sender is — carries over.
+        universe = universe_id or record.universe_id
+        agent_binding = agent_binding_id or record.agent_binding_id
+        revision = binding_revision or record.binding_revision
+        if universe != record.universe_id:
+            current = self.mapping.current_founder_binding(
+                AppPrincipalTarget(
+                    subject_id=record.subject_id,
+                    universe_id=universe,
+                    agent_binding_id=agent_binding,
+                    binding_revision=revision,
+                )
+            )
+            if current is None:
+                return None
+            record = replace(
+                record,
+                universe_id=current.universe_id,
+                agent_binding_id=current.agent_binding_id,
+                binding_revision=current.binding_revision,
+                membership_generation=current.membership_generation,
+            )
 
         # No cardinality rule, deliberately.
         #
