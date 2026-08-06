@@ -1108,3 +1108,280 @@ def test_runtime_ownership_lookup_never_creates_the_registry(
     )
     assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == ""
     assert not (tmp_path / DB_FILENAME).exists()
+
+
+def test_context_is_cleared_when_the_child_exits(tmp_path):
+    """CRITICAL 1: a context that outlives its child is false capacity.
+
+    Child A registers R-A and exits. If the context survives, the backoff beat
+    keeps RENEWING R-A's descriptor -- advertising a live executor for a
+    process that is gone, which is strictly worse than the fail-closed zero it
+    replaced.
+    """
+    state = cw.SupervisorState()
+    state.record_execution_context("universe-a", "worker-a", "runtime-a")
+    assert state.execution_context_by_universe["universe-a"] == (
+        "worker-a",
+        "runtime-a",
+    )
+
+    dropped = state.clear_execution_context("universe-a")
+    assert dropped == ("worker-a", "runtime-a")
+    assert "universe-a" not in state.execution_context_by_universe
+
+    # And the withdrawal is queued under the worker that registered it.
+    state.retire_context_later(dropped)
+    assert state.pending_retire_contexts == [("worker-a", "runtime-a")]
+
+
+def test_retirement_keeps_the_registering_worker_not_the_current_one(tmp_path):
+    """CRITICAL 3: retiring under the wrong worker loses the retirement.
+
+    `set_worker_queue_descriptor` rejects a mismatched `expected_worker_id`.
+    Issuing the withdrawal under whatever worker happens to be current made
+    that rejection look like success, so the pending entry was cleared and the
+    dead descriptor kept advertising.
+    """
+    state = cw.SupervisorState()
+    state.record_execution_context("universe-a", "worker-old", "runtime-old")
+    superseded = state.record_execution_context(
+        "universe-a", "worker-new", "runtime-new"
+    )
+    assert superseded == ("worker-old", "runtime-old")
+    state.retire_context_later(superseded)
+    # The queued pair carries the ORIGINAL worker, not "worker-new".
+    assert state.pending_retire_contexts == [("worker-old", "runtime-old")]
+
+
+def test_a_failed_retirement_stays_pending(tmp_path, monkeypatch):
+    """A withdrawal that did not happen must not be reported as done."""
+    import tinyassets.daemon_registry as registry
+
+    def reject(_base, *, runtime_instance_id, descriptor, expected_worker_id):
+        raise ValueError("queue_worker_id_mismatch")
+
+    monkeypatch.setattr(registry, "set_worker_queue_descriptor", reject)
+    assert cw._retire_queue_descriptor("worker-a", "runtime-a") is False
+
+    # An already-absent row IS satisfied, so it must not linger forever.
+    def gone(_base, *, runtime_instance_id, descriptor, expected_worker_id):
+        raise KeyError(runtime_instance_id)
+
+    monkeypatch.setattr(registry, "set_worker_queue_descriptor", gone)
+    assert cw._retire_queue_descriptor("worker-a", "runtime-a") is True
+
+    # ACCEPT DIRECTION -- a clean withdrawal reports success and passes the
+    # REGISTERING worker through as expected_worker_id.
+    seen = {}
+
+    def ok(_base, *, runtime_instance_id, descriptor, expected_worker_id):
+        seen["runtime"] = runtime_instance_id
+        seen["descriptor"] = descriptor
+        seen["expected_worker_id"] = expected_worker_id
+
+    monkeypatch.setattr(registry, "set_worker_queue_descriptor", ok)
+    assert cw._retire_queue_descriptor("worker-a", "runtime-a") is True
+    assert seen == {
+        "runtime": "runtime-a",
+        "descriptor": None,
+        "expected_worker_id": "worker-a",
+    }
+
+
+def test_a_raising_spawn_leaves_no_context_behind(tmp_path, monkeypatch):
+    """CRITICAL 2: the `spawn_failed` beat must advertise nothing.
+
+    The context used to be recorded before `Popen`, so a raising spawn left a
+    registered runtime bound to a child that never existed.
+    """
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    state = cw.SupervisorState()
+    state.record_execution_context("universe-a", "worker-old", "runtime-old")
+
+    monkeypatch.setattr(cw, "_register_worker_runtime", lambda *a, **k: "r-new")
+    monkeypatch.setattr(cw, "_build_subprocess_env", lambda _u: {})
+
+    def boom(*_args, **_kwargs):
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(cw.subprocess, "Popen", boom)
+
+    try:
+        cw._spawn_fantasy_daemon(universe, state=state)
+    except OSError:
+        pass
+    else:  # pragma: no cover - the stub always raises
+        raise AssertionError("spawn should have raised")
+
+    assert "universe-a" not in state.execution_context_by_universe
+    assert state.pending_retire_contexts == [("worker-old", "runtime-old")]
+
+
+def test_a_successful_spawn_records_the_context(tmp_path, monkeypatch):
+    """ACCEPT DIRECTION for the spawn path -- must stay green.
+
+    Without this, every assertion above passes against a spawn that simply
+    never records anything.
+    """
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    state = cw.SupervisorState()
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(cw, "_register_worker_runtime", lambda *a, **k: "r-new")
+    monkeypatch.setattr(cw, "_build_subprocess_env", lambda _u: {})
+    monkeypatch.setattr(cw.subprocess, "Popen", lambda *a, **k: object())
+
+    cw._spawn_fantasy_daemon(universe, state=state)
+    assert state.execution_context_by_universe["universe-a"] == (
+        "worker-a",
+        "r-new",
+    )
+
+
+def test_supervisor_loop_clears_the_context_after_the_child_exits(
+    tmp_path,
+    monkeypatch,
+):
+    """CRITICAL 1 at the LOOP level, where the defect actually lived.
+
+    Asserting on `SupervisorState` alone would pass even if `run_supervisor`
+    never called the clear -- which is exactly how the original 205 green tests
+    missed this.
+    """
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    (universe / "PROGRAM.md").write_text("x", encoding="utf-8")
+
+    class _Proc:
+        def __init__(self):
+            self._polls = 0
+
+        def poll(self):
+            self._polls += 1
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_spawn(u, *, extra_args=None, state=None):
+        # Stand in for a real spawn that registered a runtime.
+        state.record_execution_context(u.name, "worker-a", "runtime-a")
+        return _Proc()
+
+    monkeypatch.setattr(cw, "_spawn_daemon_for_universe", fake_spawn)
+    monkeypatch.setattr(cw, "write_supervisor_heartbeat", lambda *a, **k: None)
+    monkeypatch.setattr(cw, "_pump_cloud_automation_triggers", lambda *a, **k: 0)
+    monkeypatch.setattr(cw, "_pump_branch_task_producers", lambda *a, **k: 0)
+    monkeypatch.setattr(cw, "_worker_auth_health", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cw, "_pinned_universe_credential_missing", lambda *a, **k: ""
+    )
+
+    state = cw.run_supervisor(
+        universe,
+        max_iterations=1,
+        poll_interval=0,
+        idle_backoff=0,
+        sleep_fn=lambda _s: None,
+    )
+
+    # The child has exited. Nothing may still advertise its runtime.
+    assert state.execution_context_by_universe == {}
+    assert ("worker-a", "runtime-a") in state.pending_retire_contexts
+
+
+def test_ownership_lookup_fails_closed_when_registration_recorded_no_owner(
+    tmp_path,
+    monkeypatch,
+):
+    """CRITICAL 4: an unowned registration must NOT be guessed into ownership.
+
+    `set_worker_queue_descriptor` compares `expected_worker_id` against the
+    registry's own `metadata.worker_id`. Substituting a live `_worker_id()`
+    read when that field is missing produces a confident wrong answer that
+    trips `queue_worker_id_mismatch` -- one silent failure traded for another.
+    """
+    import tinyassets.daemon_registry as registry
+    from tinyassets.storage import DB_FILENAME, data_dir
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (data_dir() / DB_FILENAME).touch()
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-live")
+
+    monkeypatch.setattr(
+        registry,
+        "list_runtime_instances",
+        lambda _base, universe_id="": [
+            {"runtime_instance_id": "runtime-a", "metadata": {}},
+        ],
+    )
+    assert cw._universe_bound_runtime_owner(universe, "runtime-a") == ""
+
+    # ACCEPT DIRECTION -- a recorded owner still resolves.
+    monkeypatch.setattr(
+        registry,
+        "list_runtime_instances",
+        lambda _base, universe_id="": [
+            {
+                "runtime_instance_id": "runtime-a",
+                "metadata": {"worker_id": "worker-registered"},
+            },
+        ],
+    )
+    assert cw._universe_bound_runtime_owner(universe, "runtime-a") == (
+        "worker-registered"
+    )
+
+
+def test_ownership_lookup_uses_the_data_dir_not_the_universe_parent(
+    tmp_path,
+    monkeypatch,
+):
+    """CRITICAL 5: the registry authority is `data_dir()`.
+
+    `_register_worker_runtime` writes through `data_dir()`. Deriving the base
+    from `universe.parent` silently disabled a VALID fallback whenever
+    TINYASSETS_UNIVERSE pointed outside the data root -- the store-exists guard
+    looked in the wrong place, found nothing, and returned fail-closed "" for a
+    runtime that was properly registered.
+
+    The fixture deliberately puts the universe OUTSIDE the data dir; when the
+    two coincide the bug is invisible.
+    """
+    import tinyassets.daemon_registry as registry
+    from tinyassets.storage import DB_FILENAME, data_dir
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    universe = elsewhere / "universe-a"
+    universe.mkdir()
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    assert data_dir() == data_root
+    assert universe.parent != data_root
+    # The registry exists ONLY under the data dir.
+    (data_root / DB_FILENAME).touch()
+
+    seen_bases: list[object] = []
+
+    def _list(base, universe_id=""):
+        seen_bases.append(base)
+        return [
+            {
+                "runtime_instance_id": "runtime-a",
+                "metadata": {"worker_id": "worker-registered"},
+            },
+        ]
+
+    monkeypatch.setattr(registry, "list_runtime_instances", _list)
+    assert cw._universe_bound_runtime_owner(universe, "runtime-a") == (
+        "worker-registered"
+    )
+    assert seen_bases == [data_root]
