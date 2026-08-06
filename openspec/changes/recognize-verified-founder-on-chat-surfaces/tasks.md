@@ -208,11 +208,32 @@ allowlist and over folding the pump into the daemon).
       was failing closed on EVERY delivery because the admission envelope
       requires `event.type` and the first draft omitted it, so the replay guard
       was never reached. Two guards read as "vacuous" until that was fixed.
-- [ ] 10.2b Wire it: an authenticated route so the agent can call
-      `deliver_app_event` over the network, then drop `tinyassets-data:/data`
-      from the compose service. `deliver_app_event` takes every field on trust
-      and must never be mounted unauthenticated — the daemon currently serves
-      only `/mcp` plus OAuth discovery, so this seam does not exist yet.
+- [x] 10.2b Authenticated wire: `tinyassets/api/app_ingress_http.py`. HMAC over
+      `purpose:timestamp:sha256(body)`, 300s skew window, `compare_digest`,
+      field allowlist, 128 KiB cap. 18 tests; 9/10 guards mutation-verified
+      individually and the 10th proven load-bearing as a pair (see below).
+      - **Separate port, not a path on the public app.** Production runs the
+        tunnel in TOKEN mode, so its ingress rules live in the Cloudflare
+        dashboard, not this repo. Probing the live host shows every non-`/mcp`
+        path 404ing, but a 404 from the app and a 404 from a tunnel that
+        refuses to forward are indistinguishable from outside — so path
+        isolation is unproven, and an internal route does not go on an app
+        whose public exposure cannot be read from the repo.
+      - **The key guards were tested vacuously at first, and the fix is a
+        pattern worth keeping.** Asserting 401 while signing with the GOOD key
+        proves nothing about a missing-key guard: the request fails on
+        signature mismatch either way. The real attack signs with the key the
+        deployment falls back to — `b""` — which the attacker knows. Tests now
+        sign with the weak/empty key, i.e. they exercise the ACCEPT direction.
+      - Removing the presence guard alone still 401s (an empty key trips the
+        length guard), so it reads MISSED under one-at-a-time probing. Disabling
+        BOTH together turns the test red, which is the honest statement: the
+        pair is load-bearing, neither is individually necessary.
+      - The timestamp is inside the signed message, so a captured request
+        cannot be re-dated; every auth failure returns an identical 401 body so
+        a caller cannot probe which check it failed.
+- [ ] 10.2b-ii Serve it: run the ingress app on a container-network-only port
+      and add the client that signs and posts from the agent.
 - [ ] 10.2c Deliver the socket-level app token to the agent over that same
       channel, so it holds one short-scoped credential and no volume.
 - [ ] 10.3 Keep the agent a separate container. Folding the pump into the daemon
