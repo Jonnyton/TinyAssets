@@ -38,10 +38,14 @@
       constructor refuses without the recognizer's seal.
 - [x] 4.2 `FounderRecognizer.recognize` re-derives per call and returns `None`
       for every failure, never distinguishing why.
-- [x] 4.3 **Decided: exactly one admin on the universe, and it must be this
-      subject.** `resolve` only asserts *this subject* holds one admin row, so
-      two subjects could each hold one and "the verified founder" would stop
-      being a single answerable fact.
+- [x] 4.3 **Decided, after two wrong answers: no cardinality rule at all.**
+      "Exactly one admin on the universe" locked the real founder out the
+      moment they added a co-admin. "Exactly one admin whose founder *home* is
+      this universe" then broke multi-universe — `founder_home` holds one row
+      per subject, so on a user's second and third universes the claimant set
+      is empty and no grant could ever mint. Ownership is per-universe (the
+      admin ACL row) and needs no uniqueness tiebreak; a non-owner stays
+      structurally excluded, which is the property that matters.
 - [x] 4.4 Each failure mode tested independently: stranger, Connect guest with
       a colliding id, revoked admin, second admin, rotated binding, deleted
       universe, unsealed evidence.
@@ -67,7 +71,11 @@
 - [ ] 6.1 Live proof: founder teaches Tiny through Slack, `origin.md` changes;
       a non-founder in the same channel teaches nothing and cannot read
       `founder.md`.
-      **BLOCKED, and the block is the next build.** There is no way for a user
+      **Unblocked in code, still needs a signed-in browser.** The setup surface
+      now exists (`write_graph target=chat_surface`), so a founder mapping CAN
+      be created; the remaining gap is that the Slack round-trip needs the
+      host's logged-in session.
+      Historical note — this used to read:  There is no way for a user
       to say "this Slack account is me". `AppPrincipalMappingService.provision`
       needs a trusted-setup resolver and has no user-facing caller, so no
       founder mapping exists in production — `u-tiny` has no ACL rows at all.
@@ -83,9 +91,9 @@
         rewritten to another sender and keep its seal. Fixed on all three
         sealed types by taking the seal off the field list.
       - **Cardinality locked out the real founder.** "Exactly one admin" would
-        revoke recognition the moment the founder adds a co-admin. Now the
-        unique thing is the set of admins whose founder *home* is this
-        universe.
+        revoke recognition the moment the founder adds a co-admin. The first
+        replacement (unique founder *home*) was itself wrong — see 4.3 — and
+        the rule is now gone entirely in favour of per-universe ownership.
       Still open, both **outside this change's diff**:
       - `interlocutor.resolve_interlocutor_tier` returns **T2/FOUNDER for any
         `write` ACL holder**, so on the MCP path a collaborator reads
@@ -97,3 +105,52 @@
         code execution. Documented rather than overclaimed.
 - [ ] 6.3 State the account-principal-not-human-presence invariant in the
       capability spec, not just this proposal.
+
+## 7. Multi-universe (host 2026-08-05: users keep several)
+
+Users have work / personal / hobby universes, and billing is total storage
+across all of them. That made two shipped assumptions category errors.
+
+- [x] 7.1 Ownership is per-universe. Dropped the `founder_home == universe`
+      check: `founder_home` holds ONE row per subject, so it made a user the
+      founder of exactly one of their universes and a stranger on the rest.
+      It is a first-contact default, not an ownership predicate.
+- [x] 7.2 Channel routing — `app_channel_bindings`, separate from the principal
+      mapping because identity and routing are different questions. Conflating
+      them is what capped a workspace at one universe. One rule: most specific
+      wins (channel > workspace > the socket's host universe).
+- [x] 7.3 Recognition follows the routing. Owning the socket's host universe
+      says nothing about the one a channel binding pointed a message at, so
+      ownership is re-derived against the ROUTED universe.
+- [x] 7.4 A routed message reads the ROUTED universe's directory. Reading the
+      socket host's would answer about one universe while grounded in another.
+- [x] 7.5 11 routing guards mutation-verified.
+
+## 8. Setup surface (reachability)
+
+- [x] 8.1 `write_graph target=chat_surface` — connect_account / bind_channel /
+      unbind_channel; `read_graph target=chat_surface` for resolved routing.
+      An ACTION on an existing handle: hard rule 11 pins the live catalog, and
+      a test asserts the canonical seven are unchanged.
+- [x] 8.2 Authority derived, never asserted. Ownership is checked FIRST (the
+      binding lookup ran first and refused strangers with
+      "no_unique_agent_binding", which reads like a fixable setup problem
+      rather than a universe that is not theirs). `payload_json` is filtered to
+      an allowlist, so `subject_id` cannot reach a handler that derives
+      authority.
+- [x] 8.3 Every write answers with the RESOLVED routing, not the row written —
+      a forgotten channel binding is exactly what makes the default surprising.
+- [x] 8.4 8 setup guards mutation-verified.
+
+## 9. Incident
+
+- [x] 9.1 **Production outage, self-inflicted, 2026-08-06.** Deploying the
+      pre-merge overlay with `docker compose -p tinyassets -f compose.slack.yml`
+      converged the main project down to that one service and destroyed the
+      daemon, tunnel, logs and four workers; `tinyassets.io/mcp` served 502.
+      Recovered via `systemctl start tinyassets-daemon`; canary green with
+      `--assert-handles`. Fixed by running the overlay in its own project
+      (`-p tinyassets-slack`) with external volume/network, PROVEN by re-running
+      the exact outage command and watching the main stack survive. Postmortem:
+      `docs/audits/2026-08-06-partial-compose-overlay-outage.md`. The durable
+      fix is landing #2348, which removes the second compose file entirely.
