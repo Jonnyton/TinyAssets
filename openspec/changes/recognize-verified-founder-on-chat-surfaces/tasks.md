@@ -154,3 +154,15 @@ across all of them. That made two shipped assumptions category errors.
       the exact outage command and watching the main stack survive. Postmortem:
       `docs/audits/2026-08-06-partial-compose-overlay-outage.md`. The durable
       fix is landing #2348, which removes the second compose file entirely.
+
+- [x] 9.2 **Addendum — the overlay also FENCED production deploys, so the 24/7
+      claim for it is retracted.** A container on `tinyassets-data` outside the
+      main compose project is recorded as an "extra production-volume consumer"
+      and the fence refuses to deploy
+      (`retire_cheat_loop_deploy_fence.py:1619`). Two deploy runs failed until
+      an operator dispatched `retire_extra_consumer=tinyassets-slack-agent`,
+      which deletes it — so the agent silently stopped twice, with nothing in
+      its own logs. A service a routine deploy is designed to delete is not
+      continuously available. Integration is now proven in an EPHEMERAL
+      container (prod image, temp data dir, no volume mount) instead; the
+      durable fix is landing #2348.

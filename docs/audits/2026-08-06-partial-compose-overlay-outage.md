@@ -95,3 +95,48 @@ treated as one.
 Any tool whose verb is *"make reality match this file"* deletes what the file
 omits. Before pointing one at shared infrastructure, establish what it thinks
 the **scope** is. For Compose the scope is `-p`, not `-f`.
+
+## Addendum — the overlay also fenced production deploys
+
+`current: 2026-08-06` — found ~3 hours after the outage, same root decision.
+
+Attaching a container to the `tinyassets-data` volume outside the main compose
+project makes the deploy fence record an **extra production-volume consumer**
+and refuse to deploy:
+
+```
+scripts/retire_cheat_loop_deploy_fence.py:1619
+    "extra production-volume consumer was fenced; refusing deployment"
+```
+
+Two `deploy-prod` runs failed (04:20, 04:21 UTC) until an operator unblocked
+them by dispatching with `retire_extra_consumer=tinyassets-slack-agent`, which
+deletes the container. So the agent also silently stopped running — twice —
+with nothing in its own logs to say why.
+
+**The 24/7 claim for the pre-merge overlay is therefore retracted.** A service
+that a routine deploy is designed to delete is not continuously available, and
+saying otherwise on the strength of "it was up when I checked" is the exact
+mistake this project has a rule against.
+
+### Diagnosing this class
+
+```bash
+docker ps -a --filter volume=tinyassets-data --format '{{.Names}}'
+```
+
+Should list ONLY the main stack. Anything else is simultaneously a deploy
+blocker and a reap target.
+
+Note that `docker events --filter container=<name>` shows **nothing** once the
+container is removed — the name no longer resolves. `journalctl | grep <name>`
+is what surfaces the retirement, including the exact command that did it.
+
+### What replaces it
+
+Integration is now verified in an **ephemeral** container: the production image,
+the branch's modules bind-mounted read-only, a temp `TINYASSETS_DATA_DIR`, and
+**no production volume mount**. That exercises the same seams — setup API,
+routing, recognition, replay, the tier reaching `converse` — without creating a
+volume consumer. The durable fix remains landing #2348 so `slack-agent` is a
+first-class service in `deploy/compose.yml`.
