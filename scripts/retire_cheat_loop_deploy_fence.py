@@ -102,7 +102,18 @@ DEFAULT_STATE_PATH = Path(
 DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 HOST_COMMAND_TIMEOUT_SECONDS = 45
 LOCK_TIMEOUT_SECONDS = 60
-UNIT_RESTORE_TIMEOUT_SECONDS = 120
+# 120s was shorter than the daemon service's real startup. Live 2026-08-05,
+# twice (runs 31057866767 and 31058104613): finalize failed with
+# `mismatches={'tinyassets-daemon.service': {'expected': {'active': 'active'},
+# 'actual': {'active': 'activating'}}}` -- the unit was starting correctly and
+# simply had not finished, and the failure RE-FENCED a fleet that had already
+# come up healthy, leaving /mcp at 502.
+#
+# The daemon's own healthcheck allows a 60s start_period before it even begins
+# reporting, and the service waits on that, so 120s could not reliably cover a
+# cold start. This is the same shape as the recovery canary that probed 0.7s
+# after container start.
+UNIT_RESTORE_TIMEOUT_SECONDS = 420
 AUTHORITATIVE_UNIT_ACTIVE_STATES = frozenset(
     {
         "active",
@@ -2588,6 +2599,19 @@ def _validate_unsafe_recovery_source(
                 raise FenceError(
                     "refusing to retire a RUNNING extra volume consumer"
                 )
+            # Retiring the RECORD is not enough: a stopped leftover container
+            # still mounts the volume, so `volume_container_names()` keeps
+            # reporting it and the very next check refuses with "fenced volume
+            # has partial or extra writer containers" (observed live, recovery
+            # 31057720758). Remove the container too -- it is explicitly named,
+            # already proven not running, and is not an expected fleet member.
+            if info is not None:
+                try:
+                    host.run(["docker", "rm", name])
+                except Exception:  # noqa: BLE001
+                    raise FenceError(
+                        "could not remove the retired extra volume consumer"
+                    ) from None
             retired[name] = dict(entry or {"note": "extras already cleared"})
             extras.pop(name, None)
             # Retiring a container means retiring it from EVERY recorded
