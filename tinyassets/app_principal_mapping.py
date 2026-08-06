@@ -16,7 +16,7 @@ from tinyassets.app_event_ingress import (
     is_admissible_principal_event,
 )
 from tinyassets.custom_agents import get_binding
-from tinyassets.daemon_server import get_founder_home, list_universe_acl
+from tinyassets.daemon_server import list_universe_acl
 from tinyassets.storage.app_principal_mappings import (
     AppPrincipalMappingConflict,
     AppPrincipalMappingGenerationConflict,
@@ -152,9 +152,20 @@ class AppPrincipalMappingService:
         self,
         target: AppPrincipalTarget,
     ) -> CurrentFounderBinding | None:
+        # NOT tested here: `get_founder_home(subject) == universe`.
+        #
+        # `founder_home` holds ONE row per subject — `set_founder_home`
+        # re-binding overwrites — so it answers "which universe do I drop this
+        # person into on first contact", a default. Using it as an *ownership*
+        # predicate silently caps a user at one universe: with work, personal
+        # and hobby universes they would be the verified founder on whichever
+        # happens to be home and a stranger on the rest, so their work agent
+        # would answer fluently and refuse to learn.
+        #
+        # Ownership is the admin ACL row below, which is already per-universe
+        # — `universe_acl` is keyed `(universe_id, actor_id)` — and is the
+        # honest per-universe question.
         try:
-            if get_founder_home(self.base_path, target.subject_id) != target.universe_id:
-                return None
             acl_rows = [
                 row
                 for row in list_universe_acl(

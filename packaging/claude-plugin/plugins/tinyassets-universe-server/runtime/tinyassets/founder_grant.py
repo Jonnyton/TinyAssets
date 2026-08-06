@@ -33,7 +33,6 @@ from tinyassets.app_principal_mapping import (
     AppPrincipalMappingError,
     AppPrincipalMappingService,
 )
-from tinyassets.daemon_server import get_founder_home, list_universe_acl
 
 logger = logging.getLogger(__name__)
 
@@ -149,29 +148,25 @@ class FounderRecognizer:
 
         record = self.mapping.resolve(event)
 
-        # `resolve` already re-derived: founder home, this subject's single
-        # admin row, binding `configured`, and matching revision. Two checks
-        # remain, both of which it cannot make.
+        # `resolve` already re-derived this subject's admin row on THIS
+        # universe, the binding being `configured`, and a matching revision.
 
-        # Founder cardinality. `resolve` asserts that *this subject* holds an
-        # admin row and that this universe is their founder home; it does not
-        # assert that nobody ELSE also calls it home. Two subjects could, and
-        # "the verified founder" would stop being a single answerable fact.
+        # No cardinality rule, deliberately.
         #
-        # The test is deliberately NOT "exactly one admin". A cross-family
-        # review pointed out that would lock the real founder out the moment
-        # they add a co-admin — an availability bug, and a co-admin is not a
-        # rival claim to being the founder. What must be unique is the set of
-        # admins who call this universe their founder home.
-        claimants = {
-            actor
-            for row in list_universe_acl(self.base_path, universe_id=record.universe_id)
-            if row.get("permission") == "admin"
-            and (actor := row.get("actor_id"))
-            and get_founder_home(self.base_path, actor) == record.universe_id
-        }
-        if claimants != {record.subject_id}:
-            return None
+        # Two earlier attempts were both wrong, in opposite directions. "The
+        # universe has exactly one admin" locked the real founder out the
+        # moment they added a co-admin. Replacing it with "exactly one admin
+        # whose founder HOME is this universe" then broke multi-universe: a
+        # user with work, personal and hobby universes has `founder_home`
+        # pointing at just one of them, so on the other two the claimant set is
+        # empty and no grant could ever mint.
+        #
+        # The question that actually needs answering is per-universe and has a
+        # per-universe answer: does this subject own THIS universe? That is the
+        # admin ACL row `resolve` already re-derived. Co-owners are then both
+        # founders of that universe, which is a coherent product answer and the
+        # host's to change later; what matters is that a NON-owner is
+        # structurally excluded, and that property does not need uniqueness.
 
         # The universe directory must exist. A mapping can outlive the thing it
         # points at, and every founder-only capability downstream writes into

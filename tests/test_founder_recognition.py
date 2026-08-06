@@ -400,25 +400,57 @@ def test_a_co_admin_does_not_lock_the_founder_out(tmp_path: Path) -> None:
     assert is_founder_grant(still), "adding a co-admin must not revoke the founder"
 
 
-def test_a_second_founder_home_claimant_makes_recognition_refuse(
+def test_the_founder_is_recognized_on_a_universe_that_is_not_their_home(
     tmp_path: Path,
 ) -> None:
-    """What must be unique is the set of admins calling this universe home. Two
-    of those, and "the verified founder" stops being a single answerable fact —
-    so the honest answer is to refuse rather than pick one."""
-    recognizer, target, grant = _recognized(tmp_path, event_id="Ev0000000018")
+    """Users keep several universes — work, personal, hobby. `founder_home`
+    holds ONE row per subject, so requiring "this universe is your home" made a
+    user the verified founder of exactly one of them and a stranger on the
+    rest: their work agent would answer fluently and refuse to learn.
+
+    Ownership is the per-universe admin ACL. This binds the Slack identity to
+    the NON-home universe and asserts recognition still succeeds.
+    """
+    home = _founder_universe(tmp_path, universe="u-personal")
+    work = _founder_universe(tmp_path, universe="u-work")
+    # `set_founder_home` overwrites, so only the LAST one is home. Point it
+    # deliberately away from the universe under test.
+    set_founder_home(tmp_path, founder_sub=FOUNDER_ID, universe_id=home.universe_id)
+
+    service = AppPrincipalMappingService(tmp_path)
+    service.provision(_socket_event(tmp_path), resolve_target=lambda _key: work)
+    recognizer = FounderRecognizer(tmp_path, mapping=service)
+
+    grant = recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000018"))
+
+    assert is_founder_grant(grant), "a second universe is still yours"
+    assert grant.universe_id == "u-work"
+
+
+def test_a_sender_who_does_not_own_the_universe_is_not_the_founder(
+    tmp_path: Path,
+) -> None:
+    """The exclusion that replaces the cardinality rule: ownership is the admin
+    ACL row on THIS universe, so losing it ends recognition regardless of what
+    `founder_home` says."""
+    recognizer, target, grant = _recognized(tmp_path, event_id="Ev0000000019")
     assert is_founder_grant(grant)
 
+    # Hand ownership to someone else. The binding is still one the founder
+    # created, and `founder_home` still points here — so the ONLY thing that
+    # changed is who holds admin. Checking merely that *an* admin exists would
+    # now find the stranger's row and mint a grant for the founder anyway.
+    revoke_universe_access(tmp_path, universe_id=target.universe_id, actor_id=FOUNDER_ID)
     grant_universe_access(
         tmp_path,
         universe_id=target.universe_id,
         actor_id=STRANGER_ID,
         permission="admin",
-        granted_by=FOUNDER_ID,
+        granted_by=STRANGER_ID,
     )
-    set_founder_home(tmp_path, founder_sub=STRANGER_ID, universe_id=target.universe_id)
+    set_founder_home(tmp_path, founder_sub=FOUNDER_ID, universe_id=target.universe_id)
 
-    assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000019")) is None
+    assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000020")) is None
 
 
 def test_a_rotated_binding_revokes_recognition(tmp_path: Path) -> None:
