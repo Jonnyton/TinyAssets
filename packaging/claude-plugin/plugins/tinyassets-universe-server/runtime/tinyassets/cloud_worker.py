@@ -1231,17 +1231,13 @@ def _pump_cloud_automation_triggers(
                 os.environ["TINYASSETS_AUTOMATION_OWNER_USER_ID"] = principal_id
                 os.environ["TINYASSETS_WORKER_ID"] = logical_worker_id
             os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_id
-            # Keyed by the universe this runtime was registered IN. The env
-            # writes above stay for the spawned child's benefit, but they no
-            # longer decide what any universe's beat advertises -- that is what
-            # let a pump against universe B describe universe A's worker.
-            if state is not None:
-                superseded = state.record_execution_context(
-                    universe.name,
-                    logical_worker_id,
-                    runtime_id,
-                )
-                state.retire_context_later(superseded)
+            # Deliberately records NO execution context. The pump does not own
+            # a child, and no heartbeat is ever written for its TARGET universe,
+            # so a context recorded here could never be cleared -- it would sit
+            # as an unbacked capacity claim for a universe this supervisor does
+            # not serve. The env writes above remain for the spawned child; what
+            # they no longer do is decide what any universe's beat advertises,
+            # which is the whole point of this fix.
             audience = BackgroundBranchExecutorAudience(
                 executor_class=BackgroundBranchExecutorClass.CLOUD,
                 daemon_id=str(daemon["daemon_id"]),
@@ -1334,23 +1330,22 @@ def _spawn_fantasy_daemon(
         os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
     else:
         os.environ.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
-    env = _build_subprocess_env(universe)
-    env["TINYASSETS_WORKER_ID"] = _worker_id()
-    if runtime_instance_id:
-        env["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
-    else:
-        env.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
-    logger.info(
-        "spawning fantasy_daemon: universe=%s host_user=%s",
-        universe,
-        env.get("UNIVERSE_SERVER_HOST_USER"),
-    )
-    # CRITICAL 2: bind the context only once a child actually EXISTS. Recording
-    # before `Popen` meant a raising spawn left a context behind, and the
-    # `spawn_failed` beat then advertised a runtime with no process under it.
-    # On failure the universe's prior context is cleared and queued for
-    # withdrawal, so the failure beat advertises nothing.
+    # CRITICAL 2: bind the context only once a child actually EXISTS, and
+    # protect EVERY step that can raise before that point. `_build_subprocess_env`
+    # sat outside this block, so an OSError while composing the environment
+    # still leaked the prior context into the `spawn_failed` beat.
     try:
+        env = _build_subprocess_env(universe)
+        env["TINYASSETS_WORKER_ID"] = _worker_id()
+        if runtime_instance_id:
+            env["TINYASSETS_RUNTIME_INSTANCE_ID"] = runtime_instance_id
+        else:
+            env.pop("TINYASSETS_RUNTIME_INSTANCE_ID", None)
+        logger.info(
+            "spawning fantasy_daemon: universe=%s host_user=%s",
+            universe,
+            env.get("UNIVERSE_SERVER_HOST_USER"),
+        )
         proc = subprocess.Popen(args, env=env)
     except BaseException:
         if state is not None:
@@ -1500,7 +1495,12 @@ class SupervisorState:
 
     def retire_context_later(self, previous: tuple[str, str] | None) -> None:
         """Queue a superseded context for withdrawal on the next beat."""
-        if previous and previous[0] and previous[1]:
+        if not (previous and previous[0] and previous[1]):
+            return
+        # Deduplicated: a pair whose withdrawal failed stays pending, and the
+        # same pair can be re-recorded and cleared again, which would otherwise
+        # queue it twice and retire it twice.
+        if previous not in self.pending_retire_contexts:
             self.pending_retire_contexts.append(previous)
 
     def record_exit(self, returncode: int) -> None:
@@ -1847,6 +1847,17 @@ def run_supervisor(
         if max_iterations is not None and iteration >= max_iterations:
             break
         iteration += 1
+
+        # No child is running at the top of an iteration -- the previous one
+        # exited, crashed, or was never spawned. Clearing here is the backstop
+        # for the paths the post-exit clear cannot reach: an exception raised
+        # during heartbeat writing or polling skips that clear, and without
+        # this the NEXT iteration's beats would advertise a runtime whose child
+        # is long gone. Cheap and idempotent: `pop` returns None when empty and
+        # the pending queue is deduplicated.
+        state.retire_context_later(
+            state.clear_execution_context(universe.name)
+        )
 
         # Pre-claim auth gate (2026-06-25 loop-wedge root cause): a worker
         # whose writer provider is unauthenticated must NOT spawn the claim

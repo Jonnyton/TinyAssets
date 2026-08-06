@@ -1385,3 +1385,161 @@ def test_ownership_lookup_uses_the_data_dir_not_the_universe_parent(
         "worker-registered"
     )
     assert seen_bases == [data_root]
+
+
+def test_env_build_failure_leaves_no_context_behind(tmp_path, monkeypatch):
+    """FINDING 2 (reopened): `_build_subprocess_env` can raise too.
+
+    It sat outside the protected block, so an OSError composing the child's
+    environment still leaked the prior context into the `spawn_failed` beat.
+    """
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    state = cw.SupervisorState()
+    state.record_execution_context("universe-a", "worker-old", "runtime-old")
+
+    monkeypatch.setattr(cw, "_register_worker_runtime", lambda *a, **k: "r-new")
+
+    def boom(_u):
+        raise OSError("env refused")
+
+    monkeypatch.setattr(cw, "_build_subprocess_env", boom)
+
+    try:
+        cw._spawn_fantasy_daemon(universe, state=state)
+    except OSError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("env build should have raised")
+
+    assert "universe-a" not in state.execution_context_by_universe
+    assert state.pending_retire_contexts == [("worker-old", "runtime-old")]
+
+
+def test_pending_retirements_are_deduplicated(tmp_path):
+    """FINDING 6: a failed withdrawal stays pending and can be re-queued."""
+    state = cw.SupervisorState()
+    pair = ("worker-a", "runtime-a")
+    state.retire_context_later(pair)
+    state.retire_context_later(pair)
+    assert state.pending_retire_contexts == [pair]
+
+    # A cleared-then-re-recorded-then-cleared cycle must not double up either.
+    state.record_execution_context("universe-a", "worker-a", "runtime-a")
+    state.retire_context_later(state.clear_execution_context("universe-a"))
+    assert state.pending_retire_contexts == [pair]
+
+
+def test_a_failed_withdrawal_survives_the_heartbeat(tmp_path, monkeypatch):
+    """FINDING 8: assert the PENDING QUEUE through the real heartbeat.
+
+    The earlier test only checked `_retire_queue_descriptor`'s return value,
+    which would pass even if the heartbeat cleared the queue regardless.
+    """
+    import tinyassets.daemon_registry as registry
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+
+    state = cw.SupervisorState()
+    state.retire_context_later(("worker-gone", "runtime-gone"))
+
+    def reject(_base, **_kwargs):
+        raise ValueError("queue_worker_id_mismatch")
+
+    monkeypatch.setattr(registry, "set_worker_queue_descriptor", reject)
+
+    cw.write_supervisor_heartbeat(universe, state, iteration=1, phase="polling")
+
+    # The withdrawal did not happen, so it must still be queued.
+    assert state.pending_retire_contexts == [("worker-gone", "runtime-gone")]
+
+    # ACCEPT DIRECTION -- once it succeeds the queue drains, or a failed
+    # withdrawal would be retried forever.
+    monkeypatch.setattr(
+        registry, "set_worker_queue_descriptor", lambda _b, **_k: None
+    )
+    cw.write_supervisor_heartbeat(universe, state, iteration=2, phase="polling")
+    assert state.pending_retire_contexts == []
+
+
+def test_the_pump_records_no_cross_universe_context(tmp_path, monkeypatch):
+    """FINDING 7: a pump context for a TARGET universe could never be cleared.
+
+    The supervisor only ever clears its OWN universe and only ever beats for
+    its own universe, so a context recorded against a pump target would sit
+    forever as an unbacked capacity claim.
+    """
+    import inspect
+
+    source = inspect.getsource(cw._pump_cloud_automation_triggers)
+    assert "record_execution_context" not in source, (
+        "the pump must not record an execution context: it owns no child and "
+        "no heartbeat is written for its target universe, so nothing could "
+        "ever clear it"
+    )
+
+
+def test_a_stale_context_is_cleared_before_any_beat_in_the_next_iteration(
+    tmp_path,
+    monkeypatch,
+):
+    """FINDING 1: the backstop for paths the post-exit clear cannot reach.
+
+    An exception during heartbeat writing or polling skips the post-exit
+    clear. Without an iteration-start clear the NEXT iteration's beats -- here
+    `spawn_failed`, which must advertise nothing -- would still carry a runtime
+    whose child is gone.
+
+    The stale context is seeded through a SupervisorState subclass because
+    `run_supervisor` constructs its own state, which is exactly the situation
+    an exception on a previous iteration would leave behind.
+    """
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    (universe / "PROGRAM.md").write_text("x", encoding="utf-8")
+
+    class _SeededState(cw.SupervisorState):
+        def __init__(self):
+            super().__init__()
+            self.execution_context_by_universe["universe-a"] = (
+                "worker-dead",
+                "runtime-dead",
+            )
+
+    beats: list[tuple[str, dict]] = []
+
+    def fake_beat(u, state, **kwargs):
+        beats.append((
+            kwargs.get("phase", ""),
+            dict(state.execution_context_by_universe),
+        ))
+
+    def refuse(_u):
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(cw, "SupervisorState", _SeededState)
+    monkeypatch.setattr(cw, "write_supervisor_heartbeat", fake_beat)
+    monkeypatch.setattr(cw, "_worker_auth_health", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cw, "_pinned_universe_credential_missing", lambda *a, **k: ""
+    )
+
+    state = cw.run_supervisor(
+        universe,
+        max_iterations=1,
+        poll_interval=0,
+        crash_backoff=0,
+        spawn_fn=refuse,
+        sleep_fn=lambda _s: None,
+    )
+
+    assert beats, "expected at least the spawn_failed beat"
+    for phase, context in beats:
+        assert context == {}, (
+            f"the {phase} beat still carried a dead child's context: {context}"
+        )
+    assert ("worker-dead", "runtime-dead") in state.pending_retire_contexts
