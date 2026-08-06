@@ -536,6 +536,18 @@ def read_graph(
                 universe_id=graph_id,
             )
         )
+    if normalized == "chat_surface":
+        # The RESOLVED routing, which is the only thing an intent can be
+        # checked against — a channel binding the user forgot about is exactly
+        # what makes the workspace default surprising.
+        from tinyassets.api import chat_surface
+
+        return json.dumps(
+            chat_surface.describe(
+                universe_id=graph_id,
+                workspace_id=query.strip(),
+            )
+        )
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -606,6 +618,37 @@ _mcp_read_graph = _register_structured_tool(
         openWorldHint=False,
     ),
 )
+
+
+def _chat_surface_payload(payload_json: str) -> dict | None:
+    """Parse the chat-surface payload, refusing anything that is not an object.
+
+    Keys are restricted to the declared setup fields. Passing `**payload` into
+    a handler otherwise lets a caller reach a keyword the handler never meant
+    to expose — and these handlers derive authority, so a stray `subject_id`
+    would be exactly the wrong thing to accept.
+    """
+    import json as _json
+
+    raw = (payload_json or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = _json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    allowed = {
+        "universe_id",
+        "workspace_id",
+        "channel_id",
+        "external_sender_id",
+        "provider",
+        "agent_binding_id",
+        "app_id",
+    }
+    return {k: v for k, v in parsed.items() if k in allowed}
 
 
 def write_graph(
@@ -891,6 +934,44 @@ def write_graph(
                 payload=payload_json,
             )
         )
+    if normalized == "chat_surface":
+        # Recognition and routing were buildable but unreachable: neither
+        # `provision` nor `bind` had a user-facing caller, so in production no
+        # founder mapping could exist and every channel routed to one universe.
+        # This is the caller. It adds no advertised handle — the live tool
+        # catalog is pinned, and an unreachable setup path is the thing being
+        # fixed rather than a thing to add more of.
+        from tinyassets.api import chat_surface
+
+        chat_operation = (operation or "").strip().lower()
+        handler = {
+            "connect_account": chat_surface.connect_account,
+            "bind_channel": chat_surface.bind_channel,
+            "unbind_channel": chat_surface.unbind_channel,
+        }.get(chat_operation)
+        if handler is None:
+            return json.dumps(
+                {
+                    "error": "unknown_chat_surface_operation",
+                    "target": "chat_surface",
+                    "operation": operation,
+                    "allowed_operations": [
+                        "connect_account",
+                        "bind_channel",
+                        "unbind_channel",
+                    ],
+                }
+            )
+        payload = _chat_surface_payload(payload_json)
+        if payload is None:
+            return json.dumps({"error": "payload_json_must_be_a_json_object"})
+        payload.setdefault("universe_id", graph_id)
+        try:
+            return json.dumps(handler(**payload))
+        except TypeError as exc:
+            return json.dumps(
+                {"error": "unexpected_chat_surface_field", "detail": str(exc)}
+            )
     if normalized == "agent":
         agent_operation = (operation or "publish").strip().lower()
         action = {
