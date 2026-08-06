@@ -888,6 +888,26 @@ def test_a_local_sender_falls_back_to_the_delivery_workspace():
     assert event["actor_team_id"] == event["team_id"] == "T0BN5LK57FT"
 
 
+def test_the_authenticated_event_id_wins_over_an_inner_one():
+    """`event_id` is the key the durable replay ledger dedupes on."""
+    frame = json.loads(envelope())
+    frame["payload"]["event_id"] = "Ev_REAL"
+    frame["payload"]["event"]["event_id"] = "Ev_CLAIMED"
+
+    assert event_of(parse_envelope(json.dumps(frame)))["event_id"] == "Ev_REAL"
+
+
+def test_an_inner_event_id_cannot_stand_in_for_an_absent_one():
+    """An attacker-chosen id would let a founder turn be replayed under a fresh
+    ledger key, or collide with a real one to suppress somebody else's message.
+    Absent must mean absent."""
+    frame = json.loads(envelope())
+    frame["payload"].pop("event_id", None)
+    frame["payload"]["event"]["event_id"] = "Ev_CLAIMED"
+
+    assert "event_id" not in event_of(parse_envelope(json.dumps(frame)))
+
+
 def test_an_inner_actor_team_cannot_outrank_an_absent_delivery_team():
     """With no authenticated delivery team, nothing is attributable — and the
     actor team must not become a second way to smuggle one in."""

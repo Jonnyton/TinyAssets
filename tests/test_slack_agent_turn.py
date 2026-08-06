@@ -1,10 +1,14 @@
 """The join between a Slack event and the universe's own voice.
 
-The tier assertion below is the most important test in this file. `converse`
-uses the bound tier for both halves of its gate — which grounding files load,
-and whether the turn may write durable soul state. If a Slack sender were ever
-passed as FOUNDER, anyone who can type in a channel could read `founder.md` and
-commit facts into the founder's brain.
+The authority assertions below are the most important tests in this file.
+`converse` uses the bound tier for both halves of its gate — which grounding
+files load, and whether the turn may write durable soul state. If a Slack
+sender were ever treated as FOUNDER, anyone who can type in a channel could
+read `founder.md` and commit facts into the founder's brain.
+
+What is asserted is that this transport passes *no tier at all*: it carries an
+identity and a sealed grant it cannot mint. Recognition itself is tested in
+`test_founder_recognition.py`.
 """
 
 from __future__ import annotations
@@ -13,12 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.api import interlocutor
 from tinyassets.app_reply_authority import ReplyDestination
 from tinyassets.effectors.slack_agent_turn import (
     FAILURE_NOTICE,
     MAX_PROMPT_CHARS,
-    SLACK_SENDER_TIER,
     SlackBinding,
     actor_id_for,
     build_handlers,
@@ -60,14 +62,12 @@ class _Recorder:
         self.converse_calls: list[dict] = []
         self.posts: list[tuple] = []
 
-    def converse(self, universe_id, message, *, actor_id="", tier=None):
+    def converse(self, universe_id, message, **kwargs):
+        # `**kwargs` on purpose: the assertion that matters is which keywords
+        # the transport passes, and a named `tier=None` parameter would accept
+        # a tier silently and record it as absent.
         self.converse_calls.append(
-            {
-                "universe_id": universe_id,
-                "message": message,
-                "actor_id": actor_id,
-                "tier": tier,
-            }
+            {"universe_id": universe_id, "message": message, **kwargs}
         )
         if isinstance(self.reply, Exception):
             raise self.reply
@@ -97,20 +97,34 @@ def _handlers(rec, resolve=None):
 
 @pytest.mark.asyncio
 async def test_a_slack_sender_speaks_at_t1_never_as_the_founder():
-    """The whole disclosure gate hangs off this one argument."""
+    """The transport hands over identity, never a tier.
+
+    `SLACK_SENDER_TIER = T1` used to be passed from here. That was authority
+    policy living in a transport: every new surface would have grown its own
+    copy, and it silently capped the founder's own turns at T1.
+    """
     rec = _Recorder()
     handle, _ = _handlers(rec)
 
     await handle(event())
 
-    assert rec.converse_calls[0]["tier"] == interlocutor.T1
-    assert rec.converse_calls[0]["tier"] != interlocutor.FOUNDER
+    call = rec.converse_calls[0]
+    assert "tier" not in call, "a transport must not be able to claim a tier"
+    assert call["founder_grant"] is None, "no grant means not the founder"
 
 
-def test_the_tier_constant_is_t1():
-    """Guards the constant itself, so raising it cannot pass silently."""
-    assert SLACK_SENDER_TIER == interlocutor.T1
-    assert SLACK_SENDER_TIER != interlocutor.FOUNDER
+def test_the_transport_cannot_name_a_tier_at_all():
+    """Structural, not conventional: the external entry point has no `tier`.
+
+    A surface cannot pass one by mistake because the parameter does not exist.
+    """
+    import inspect
+
+    from tinyassets.universe_intelligence import converse_as_external_sender
+
+    params = inspect.signature(converse_as_external_sender).parameters
+    assert "tier" not in params
+    assert "founder_grant" in params
 
 
 def test_actor_ids_are_namespaced_by_workspace():

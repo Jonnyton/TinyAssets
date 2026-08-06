@@ -211,8 +211,9 @@ async def test_the_documented_socket_lifecycle_end_to_end(tmp_path, monkeypatch)
 
         turns: list[str] = []
 
-        def _converse(universe_id, message, *, actor_id="", tier=None):
-            turns.append(f"{universe_id}|{tier}|{actor_id}|{message}")
+        def _converse(universe_id, message, *, actor_id="", founder_grant=None):
+            who = "founder" if founder_grant is not None else "not-founder"
+            turns.append(f"{universe_id}|{who}|{actor_id}|{message}")
             return f"answering: {message}"
 
         config = service.SlackAgentConfig(
@@ -234,8 +235,10 @@ async def test_the_documented_socket_lifecycle_end_to_end(tmp_path, monkeypatch)
     assert handled == 2, f"expected 2 handled, got {handled}"
     assert [t.split("|")[-1] for t in turns] == ["first question", "second question"]
 
-    # The tier and identity that reached the provider.
-    assert all(f"|T1|slack:{TEAM}:{HUMAN}|" in t for t in turns)
+    # The recognition outcome and identity that reached the provider. This
+    # sender has no founder mapping, so the platform hands the engine no grant
+    # and the turn runs at the external floor.
+    assert all(f"|not-founder|slack:{TEAM}:{HUMAN}|" in t for t in turns)
 
     # Every envelope acknowledged, including the ones never answered.
     assert [json.loads(a)["envelope_id"] for a in acks] == [

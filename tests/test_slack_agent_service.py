@@ -241,8 +241,9 @@ async def test_a_real_frame_becomes_a_real_answer(universe, monkeypatch):
     _deposit(universe)
     posted = []
 
-    def _fake_converse(universe_id, message, *, actor_id="", tier=None):
-        return f"[{universe_id}|{tier}|{actor_id}] you asked: {message}"
+    def _fake_converse(universe_id, message, *, actor_id="", founder_grant=None):
+        who = "founder" if founder_grant is not None else "not-founder"
+        return f"[{universe_id}|{who}|{actor_id}] you asked: {message}"
 
     def _fake_transport(_universe_dir, **_kw):
         def _post(destination, body, *, thread_ts=""):
@@ -280,7 +281,7 @@ async def test_a_real_frame_becomes_a_real_answer(universe, monkeypatch):
     channel, body, thread_ts = posted[0]
     assert channel == "C0123"
     assert "you asked: what is the status?" in body, "mention markup stripped"
-    assert "|T1|" in body, "the sender spoke at T1, not as the founder"
+    assert "|not-founder|" in body, "an unmapped sender is never the founder"
     assert f"slack:{TEAM}:{HUMAN}" in body, "namespaced actor id reached converse"
     assert thread_ts == "1700000000.000100", "answered in thread"
     assert json.loads(socket.sent[0])["envelope_id"] == "Ev-e2e-1", "and acked"

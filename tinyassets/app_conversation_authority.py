@@ -15,7 +15,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from tinyassets.app_event_ingress import AuthenticatedAppEvent
+from tinyassets.app_event_ingress import AuthenticatedAppEvent, is_authenticated_app_event
 from tinyassets.app_principal_mapping import AppPrincipalMappingService
 from tinyassets.conversation_custody import (
     ConversationCustodyAuthorizationError,
@@ -81,6 +81,16 @@ class AppConversationAuthority:
         idempotency_key_digest: str | None = None,
         ttl_seconds: int = 60,
     ) -> AppConversationGrant:
+        # A custody grant asserts "these exact request bytes were signed by
+        # Slack at this timestamp" — the signature is what the Ed25519 grant is
+        # issued against. Socket Mode evidence identifies a sender but attests
+        # nothing about request bytes, so it must not reach here. This check is
+        # explicit rather than inherited from `mapping.resolve`, which admits
+        # the weaker evidence type on purpose for founder recognition.
+        if not is_authenticated_app_event(event):
+            raise AppConversationAuthorityError(
+                "custody grants require verified request-signature evidence"
+            )
         _validate_request(action, request_digest, idempotency_key_digest, ttl_seconds)
         try:
             record = self.mapping.resolve(event)

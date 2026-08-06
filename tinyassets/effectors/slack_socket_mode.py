@@ -216,6 +216,16 @@ def event_of(envelope: SocketEnvelope) -> Mapping[str, Any] | None:
         # unattributable envelope into another universe. Absent must mean
         # absent, so the field is either the payload's or it is not there.
         normalised.pop("team_id", None)
+    # Same treatment again, for the same reason: `event_id` is the key the
+    # durable replay ledger dedupes on, so an inner value must never be able to
+    # stand in for the authenticated one. An attacker-chosen id would otherwise
+    # let a founder turn be replayed under a fresh key, or collide with a real
+    # one to suppress somebody else's message.
+    event_id = payload.get("event_id")
+    if isinstance(event_id, str) and event_id.strip():
+        normalised["event_id"] = event_id.strip()
+    else:
+        normalised.pop("event_id", None)
     normalised["actor_team_id"] = _actor_team_id(event, normalised.get("team_id"))
     return normalised
 

@@ -4,12 +4,14 @@ This is the join between the transport (`slack_socket_mode`, `slack_socket_runne
 and the universe's own voice (`universe_intelligence.converse`). It owns three
 decisions, and each one is a place this could quietly do the wrong thing:
 
-* **A Slack sender speaks at T1, never as the founder.** `converse` uses the
-  bound tier for both halves of its gate: T1 excludes `founder.md` from the
-  persona grounding, and T1 cannot `commit_learning`. Passing FOUNDER here
-  would let anyone who can type in a channel read the founder's private
-  grounding and write durable facts into their brain. The tier is a constant in
-  this module for exactly that reason — there is no code path that raises it.
+* **This module never decides what a sender is allowed to do.** It hands over
+  an authenticated external identity and the sealed founder grant the platform
+  minted for it — or nothing. `converse_as_external_sender` has no `tier`
+  parameter at all, so a transport cannot claim authority even by mistake, and
+  Discord and Teams inherit the rule instead of re-implementing it. The earlier
+  design put a `SLACK_SENDER_TIER = T1` constant here, which was wrong twice:
+  authority policy in a transport, and a ceiling that silently applied to the
+  founder's own turns too.
 
 * **The identity is namespaced.** A Slack user id is meaningless outside its
   workspace and must never be mistaken for a TinyAssets actor id. Every actor
@@ -36,16 +38,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from tinyassets.api import interlocutor
 from tinyassets.app_reply_authority import ReplyDestination
 from tinyassets.effectors.slack_socket_mode import reply_thread_ts
 
 logger = logging.getLogger(__name__)
 
-#: The tier a Slack sender speaks at. A durable, identified, non-founder
-#: subject. Deliberately a module constant, not a parameter: see the module
-#: docstring. Raising this is a disclosure bug, not a configuration choice.
-SLACK_SENDER_TIER = interlocutor.T1
+# `SLACK_SENDER_TIER = interlocutor.T1` used to live here. It was wrong twice:
+# hardcoded, and in the wrong layer. Authority policy does not belong in a
+# transport — Discord and Teams would each have grown their own copy of the
+# rule, and the constant silently capped the founder's own turns at T1, so a
+# founder teaching Tiny through Slack got a fluent reply and nothing persisted.
+# This module now hands over an authenticated identity and lets the platform
+# decide what it means: see `universe_intelligence.converse_as_external_sender`.
 
 #: `<@U123>` / `<@U123|display>`. The display segment excludes `<` and is
 #: length-bounded: with an open `[^>]*` a string of `"<@U1|" * n` made the
@@ -69,6 +73,10 @@ class SlackBinding:
     universe_dir: Path
     connection_id: str
     actor_id: str
+    #: The sealed grant when the platform recognised this sender as the verified
+    #: founder, otherwise ``None``. The transport never inspects it and cannot
+    #: mint one; it only carries it across to the platform.
+    founder_grant: object | None = None
 
 
 #: Answers "whose universe is this workspace, and who is speaking?" Returns
@@ -133,7 +141,9 @@ def build_handlers(
     """
 
     if converse is None:
-        from tinyassets.universe_intelligence import converse as _converse
+        from tinyassets.universe_intelligence import (
+            converse_as_external_sender as _converse,
+        )
     else:
         _converse = converse
 
@@ -157,7 +167,7 @@ def build_handlers(
             binding.universe_id,
             prompt,
             actor_id=binding.actor_id,
-            tier=SLACK_SENDER_TIER,
+            founder_grant=binding.founder_grant,
         )
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("the universe returned an empty reply")

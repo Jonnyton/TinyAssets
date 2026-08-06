@@ -19,7 +19,7 @@ from tinyassets.app_conversation_authority import (
     AppConversationGrant,
     _grant_signing_bytes,
 )
-from tinyassets.app_event_ingress import AuthenticatedAppEvent
+from tinyassets.app_event_ingress import AuthenticatedAppEvent, is_authenticated_app_event
 from tinyassets.app_principal_mapping import AppPrincipalMappingService
 from tinyassets.conversation_custody import canonical_json_bytes
 from tinyassets.storage.app_principal_mappings import AppPrincipalMappingRecord
@@ -95,6 +95,14 @@ class AppReplyAuthority:
         *,
         response_digest: str,
     ) -> AppReplyAuthorization:
+        # Same reasoning as the issuing side: this authorises a reply against a
+        # signed custody handoff, so it requires the request-signature evidence
+        # that handoff was minted from. `mapping.resolve` alone would admit the
+        # weaker Socket Mode evidence.
+        if not is_authenticated_app_event(event):
+            raise AppReplyAuthorityError(
+                "reply authorisation requires verified request-signature evidence"
+            )
         if type(handoff) is not AppConversationGrant:
             raise AppReplyAuthorityError("reply requires an authority-issued custody handoff")
         if not isinstance(response_digest, str) or not _DIGEST.fullmatch(response_digest):

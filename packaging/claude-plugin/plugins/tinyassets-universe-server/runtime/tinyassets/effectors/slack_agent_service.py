@@ -19,6 +19,7 @@ inside a routing table.
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -102,13 +103,32 @@ class SlackAgentConfig:
             raise SlackAgentConfigError(str(exc)) from None
 
 
-def build_resolver(config: SlackAgentConfig):
-    """Bind exactly one workspace to one universe.
+def build_resolver(config: SlackAgentConfig, *, recognize=None):
+    """Bind exactly one workspace to one universe, and recognise the founder.
 
     Every other workspace resolves to ``None``, which the handler answers with
     silence. This is the check that keeps a socket — which carries whatever
     Slack sends us — from becoming a way to address someone else's universe.
+
+    ``recognize`` is injected for tests; the default re-derives founder
+    authority from current server state on every single event. It is called
+    here rather than in the handler so the transport receives an answer it
+    cannot influence: it gets a sealed grant or it gets ``None``.
     """
+    if recognize is None:
+        def recognize(event: Mapping[str, Any]):
+            # The net is here rather than inside `_recognize_founder` so it
+            # covers everything that function does, including its imports.
+            # Recognition failing must degrade a founder to an ordinary sender,
+            # never take the workspace's agent down.
+            try:
+                return _recognize_founder(config, event)
+            except Exception:  # noqa: BLE001 - a turn must survive this
+                logger.warning(
+                    "slack agent: founder recognition failed closed (%s)",
+                    type(sys.exc_info()[1]).__name__,
+                )
+                return None
 
     def _resolve(event: Mapping[str, Any]) -> SlackBinding | None:
         # `team_id` is normalised onto the event by `event_of` from the
@@ -133,9 +153,50 @@ def build_resolver(config: SlackAgentConfig):
             universe_dir=config.universe_dir,
             connection_id=config.connection_id,
             actor_id=actor_id_for(config.team_id, user),
+            founder_grant=recognize(event),
         )
 
     return _resolve
+
+
+def _recognize_founder(config: SlackAgentConfig, event: Mapping[str, Any]):
+    """Re-derive founder authority for one event, or return ``None``.
+
+    May raise; ``build_resolver`` owns the safety net, so that net also covers
+    this function's imports. The grant is minted per event and never cached, so
+    revoking admin or rotating the binding takes effect on the next message.
+    """
+    from tinyassets.app_event_ingress import SlackSocketModeBoundary
+    from tinyassets.founder_grant import FounderRecognizer
+    from tinyassets.storage import data_dir
+    from tinyassets.storage.app_events import AppEventAdmissionStore
+
+    if not config.api_app_id:
+        # Without the app id there is nothing to check the envelope against.
+        return None
+    base = data_dir()
+    # `event_of` already resolved these from the authenticated payload and
+    # stripped anything the inner event tried to assert, so re-wrapping is a
+    # shape change, not a new trust decision.
+    admitted = SlackSocketModeBoundary(
+        expected_api_app_id=config.api_app_id,
+        store=AppEventAdmissionStore(base),
+    ).admit(
+        payload={
+            "type": "event_callback",
+            "api_app_id": event.get("api_app_id"),
+            "team_id": event.get("team_id"),
+            "event_id": event.get("event_id"),
+            "event": event,
+        }
+    )
+    if admitted.replay:
+        # Already admitted in some earlier process. Answer, but never mint
+        # founder authority twice for one event: that is the second durable
+        # learning commit this ledger exists to prevent.
+        logger.info("slack agent: replayed event, withholding founder authority")
+        return None
+    return FounderRecognizer(base).recognize(admitted.event)
 
 
 def resolve_credentials(config: SlackAgentConfig) -> str:
