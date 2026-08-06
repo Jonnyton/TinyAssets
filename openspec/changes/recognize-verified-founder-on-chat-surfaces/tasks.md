@@ -187,12 +187,34 @@ allowlist and over folding the pump into the daemon).
         it was deleted six times between 03:36 and 04:25 UTC.
       - Docker labels are self-asserted, so a "verified label" allowlist is
         forgeable by the rogue writer the fence exists to catch.
-- [ ] 10.2 Remove `tinyassets-data:/data` from the `slack-agent` service and
-      give it an authenticated daemon-facing protocol. Five couplings move
-      behind it, all currently reading `TINYASSETS_DATA_DIR` directly:
-      credential vault (Slack tokens), `ChannelRouter`, `AppEventAdmissionStore`
-      (replay), founder recognition (universe ACLs), and the universe dir used
-      by `converse` and the reply transport.
+- [x] 10.2a Server-side delivery exists: `tinyassets/api/app_ingress.py`
+      `deliver_app_event()` does routing, replay admission, founder recognition,
+      `converse` AND the reply post. Four of the five couplings now live here;
+      only the socket-level app token stays with the transport. 12 tests, 7
+      guards mutation-verified (each disabled in turn, named test must go red).
+      Three findings from building it:
+      - **The daemon must POST the reply**, not just compose it. The bot token
+        is resolved from `(universe_dir, connection_id)` under the data dir, so
+        a transport that posts is a transport that must mount the volume. That
+        alone would have defeated the whole move.
+      - **`fallback_universe_id` is gone.** The transport passed its own
+        configured universe, which made "which brain answers" a caller-supplied
+        value — the same defect class as a transport passing its own `tier`.
+        Routing is now server-authoritative and fails closed; the cost is that
+        an unbound installation is silent until `bind_channel` runs.
+      - **The connection id is server-side too** (`DEFAULT_SLACK_CONNECTION`).
+        It is not authority, but it selects a credential.
+      The probe also caught a real defect rather than a test gap: recognition
+      was failing closed on EVERY delivery because the admission envelope
+      requires `event.type` and the first draft omitted it, so the replay guard
+      was never reached. Two guards read as "vacuous" until that was fixed.
+- [ ] 10.2b Wire it: an authenticated route so the agent can call
+      `deliver_app_event` over the network, then drop `tinyassets-data:/data`
+      from the compose service. `deliver_app_event` takes every field on trust
+      and must never be mounted unauthenticated — the daemon currently serves
+      only `/mcp` plus OAuth discovery, so this seam does not exist yet.
+- [ ] 10.2c Deliver the socket-level app token to the agent over that same
+      channel, so it holds one short-scoped credential and no volume.
 - [ ] 10.3 Keep the agent a separate container. Folding the pump into the daemon
       was rejected: it would surrender the agent's own `mem_limit`/`pids_limit`
       and let a Slack defect degrade the MCP service.
