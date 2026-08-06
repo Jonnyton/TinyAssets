@@ -1235,17 +1235,33 @@ def _worker_liveness(
     return out
 
 
-def _compatible_epoch2_workers(
+def _classify_epoch2_workers(
     udir: Path,
     *,
     now: datetime | None = None,
     trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
-) -> list[dict[str, str]]:
-    """Return workers with live, complete, universe-bound v2 evidence."""
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Return compatible workers plus why every other worker was rejected.
+
+    The accept decision is unchanged; the second element only records which
+    gate turned each worker away. Before this existed, ten live workers could
+    yield ``compatible_worker_count: 0`` with no way to tell which of the
+    admission gates was responsible, and production sat blocked for 22.5h on
+    a cause no read-only surface could name.
+
+    Attribution is first-failure-wins, following the original short-circuit
+    order, so the counts sum to the number of rejected workers.
+    """
     from tinyassets.branch_tasks_v2 import (
         WorkerClaimDescriptor,
         _descriptor_is_live,
     )
+
+    rejected: dict[str, int] = {}
+    mismatch_fields: set[str] = set()
+
+    def reject(gate: str) -> None:
+        rejected[gate] = rejected.get(gate, 0) + 1
 
     observed_at = now or datetime.now(timezone.utc)
     if observed_at.tzinfo is None:
@@ -1286,11 +1302,14 @@ def _compatible_epoch2_workers(
     compatible: list[dict[str, str]] = []
     for worker in workers:
         capabilities = worker.get("capabilities")
-        if (
-            not worker.get("alive")
-            or not worker.get("subprocess_alive")
-            or not isinstance(capabilities, (list, tuple, set, frozenset))
-        ):
+        if not worker.get("alive"):
+            reject("beat_not_alive")
+            continue
+        if not worker.get("subprocess_alive"):
+            reject("subprocess_not_alive")
+            continue
+        if not isinstance(capabilities, (list, tuple, set, frozenset)):
+            reject("capabilities_not_a_collection")
             continue
         try:
             descriptor = WorkerClaimDescriptor(
@@ -1309,6 +1328,7 @@ def _compatible_epoch2_workers(
                 expires_at=str(worker.get("expires_at") or ""),
             )
         except (TypeError, ValueError):
+            reject("descriptor_malformed")
             continue
         heartbeat_descriptor = {
             "queue_protocol_version": descriptor.queue_protocol_version,
@@ -1323,29 +1343,71 @@ def _compatible_epoch2_workers(
         }
         trusted = trusted_descriptors.get(descriptor.runtime_instance_id)
         runtime = runtime_by_id.get(descriptor.runtime_instance_id)
-        if (
-            descriptor.universe_id == udir.name
-            and runtime is not None
-            and trusted == heartbeat_descriptor
-            and _descriptor_is_live(
-                descriptor,
-                transaction_at=observed_at.isoformat(),
-            )
+        if descriptor.universe_id != udir.name:
+            reject("universe_id_mismatch")
+            continue
+        if runtime is None:
+            reject("no_provisioned_runtime_row")
+            continue
+        if trusted != heartbeat_descriptor:
+            if trusted is None:
+                reject("descriptor_never_published")
+            else:
+                reject("descriptor_not_trusted")
+                # Field NAMES only — never the values, which carry
+                # build/config identity.
+                if isinstance(trusted, dict):
+                    mismatch_fields.update(
+                        key
+                        for key in set(trusted) | set(heartbeat_descriptor)
+                        if trusted.get(key) != heartbeat_descriptor.get(key)
+                    )
+            continue
+        if not _descriptor_is_live(
+            descriptor,
+            transaction_at=observed_at.isoformat(),
         ):
-            compatible.append({
-                "worker_id": descriptor.worker_id,
-                "runtime_instance_id": descriptor.runtime_instance_id,
-                "daemon_id": str(runtime.get("daemon_id") or ""),
-                "provider_name": str(runtime.get("provider_name") or ""),
-                "model_name": str(runtime.get("model_name") or ""),
-            })
-    return sorted(
-        compatible,
-        key=lambda worker: (
-            worker["worker_id"],
-            worker["runtime_instance_id"],
+            reject("descriptor_lease_not_live")
+            continue
+        compatible.append({
+            "worker_id": descriptor.worker_id,
+            "runtime_instance_id": descriptor.runtime_instance_id,
+            "daemon_id": str(runtime.get("daemon_id") or ""),
+            "provider_name": str(runtime.get("provider_name") or ""),
+            "model_name": str(runtime.get("model_name") or ""),
+        })
+    evidence: dict[str, Any] = {
+        "observed_worker_beats": len(workers),
+        "provisioned_runtime_count": len(runtime_by_id),
+        "rejected": dict(sorted(rejected.items())),
+    }
+    if mismatch_fields:
+        evidence["descriptor_mismatch_fields"] = sorted(mismatch_fields)
+    return (
+        sorted(
+            compatible,
+            key=lambda worker: (
+                worker["worker_id"],
+                worker["runtime_instance_id"],
+            ),
         ),
+        evidence,
     )
+
+
+def _compatible_epoch2_workers(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
+) -> list[dict[str, str]]:
+    """Return workers with live, complete, universe-bound v2 evidence."""
+    workers, _ = _classify_epoch2_workers(
+        udir,
+        now=now,
+        trusted_descriptors=trusted_descriptors,
+    )
+    return workers
 
 
 def _compatible_epoch2_worker_ids(
@@ -1438,12 +1500,13 @@ def _epoch2_operational_read(
     cfg = dispatcher_config or load_dispatcher_config(udir)
     capacity_error = ""
     consumer_ready = EPOCH2_QUEUE_CONSUMER_READY is True
+    capacity_evidence: dict[str, Any] = {}
     if not consumer_ready:
         workers = []
         capacity_error = "epoch2_consumer_not_ready"
     else:
         try:
-            workers = _compatible_epoch2_workers(udir)
+            workers, capacity_evidence = _classify_epoch2_workers(udir)
         except Exception as exc:  # noqa: BLE001 — surface trust-read failure
             workers = []
             capacity_error = str(exc)
@@ -1485,6 +1548,9 @@ def _epoch2_operational_read(
     result.summary["compatible_worker_count"] = len(workers)
     result.summary["consumer_ready"] = consumer_ready
     result.summary["capacity_evidence_available"] = not capacity_error
+    # Name the admission gate when capacity is zero; a bare 0 is unactionable.
+    if capacity_evidence and not workers:
+        result.summary["capacity_rejections"] = capacity_evidence
     if capacity_error:
         result.summary["operational_counts_authoritative"] = False
         result.summary["capacity_evidence_error"] = capacity_error
