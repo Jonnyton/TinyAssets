@@ -65,6 +65,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -1742,6 +1743,12 @@ def run_supervisor(
             )
     if sleep_fn is None:
         sleep_fn = time.sleep
+    try:
+        _spawn_fn_takes_state = (
+            "state" in inspect.signature(spawn_fn).parameters
+        )
+    except (TypeError, ValueError):
+        _spawn_fn_takes_state = False
 
     # Runs before any supervisor work and never again: freezes this
     # container's identity onto the state the beat writer uses.
@@ -1850,7 +1857,15 @@ def run_supervisor(
             continue
 
         try:
-            proc = spawn_fn(universe)
+            # An injected spawn_fn gets `state` when it declares it, so a test
+            # double can record the execution context the real closure records.
+            # Without this a seeded state is useless: the iteration-start clear
+            # runs BEFORE the spawn and wipes it, so the beat advertises nothing
+            # and any restart-on-candidate behaviour silently stops being tested.
+            if _spawn_fn_takes_state:
+                proc = spawn_fn(universe, state=state)
+            else:
+                proc = spawn_fn(universe)
         except OSError as exc:
             logger.error("cloud_worker: spawn failed: %s", exc)
             state.crash_count += 1

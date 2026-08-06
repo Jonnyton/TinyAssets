@@ -868,26 +868,20 @@ def test_supervisor_restarts_for_current_worker_epoch2_candidate_after_grace(
     _sleep_calls, sleep_fn = _make_sleep_recorder()
     spawned: list[FakeProc] = []
 
-    def spawn(universe_path):
-        proc = FakeProc(returncode=0, steps_until_exit=10)
-        spawned.append(proc)
-        return proc
-
-    # An injected spawn_fn cannot record the execution context the real spawn
-    # closure records, and the environment is no longer an authority -- so seed
-    # the state exactly as a real spawn would leave it. Without this the
-    # supervisor correctly advertises zero capacity and never sees a candidate
-    # to restart for, which would make this test pass for the wrong reason.
-    class _SpawnedState(cw.SupervisorState):
-        def __init__(self):
-            super().__init__()
-            self.record_execution_context(
-                universe.name,
+    def spawn(universe_path, *, state=None):
+        # Record what the real spawn closure records. Seeding at state
+        # construction does NOT work: the iteration-start clear runs before the
+        # spawn and wipes it, so the beat would advertise nothing and this test
+        # would pass without ever exercising restart-on-candidate.
+        if state is not None:
+            state.record_execution_context(
+                universe_path.name,
                 (runtime.get("metadata") or {}).get("worker_id", ""),
                 runtime["runtime_instance_id"],
             )
-
-    monkeypatch.setattr(cw, "SupervisorState", _SpawnedState)
+        proc = FakeProc(returncode=0, steps_until_exit=10)
+        spawned.append(proc)
+        return proc
 
     state = cw.run_supervisor(
         universe,
