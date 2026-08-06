@@ -1002,114 +1002,6 @@ def test_supervisor_does_not_advertise_v2_without_runtime_release_evidence(
     }.intersection(beat)
 
 
-def test_heartbeat_refuses_an_environment_runtime_from_another_universe(
-    tmp_path,
-    monkeypatch,
-):
-    """The env fallback must prove universe ownership before advertising.
-
-    The automation pump runs against OTHER universes and leaves its runtime id
-    in `os.environ`. Pairing that id with this universe's `universe_id` is what
-    raised `queue_universe_id_mismatch`, so persistence failed and the beat
-    shipped with no `capabilities` -- ten live workers, zero compatible, queue
-    frozen 22.5h. Advertising nothing is the correct answer; advertising a
-    foreign runtime would be worse than the bug.
-    """
-    import tinyassets.daemon_registry as registry
-    from tinyassets.storage import DB_FILENAME
-
-    universe = tmp_path / "universe-a"
-    universe.mkdir()
-    (tmp_path / DB_FILENAME).touch()
-
-    foreign = {
-        "runtime_instance_id": "runtime-from-universe-b",
-        "metadata": {"worker_id": "worker-b"},
-    }
-    mine = {
-        "runtime_instance_id": "runtime-mine",
-        "metadata": {"worker_id": "worker-a"},
-    }
-
-    listed: list[dict] = []
-    monkeypatch.setattr(
-        registry,
-        "list_runtime_instances",
-        lambda _base, universe_id="": list(listed),
-    )
-
-    # The registry does not vouch for it -> fail closed, no owner.
-    monkeypatch.setenv(
-        "TINYASSETS_RUNTIME_INSTANCE_ID",
-        "runtime-from-universe-b",
-    )
-    assert cw._universe_bound_runtime_owner(
-        universe,
-        "runtime-from-universe-b",
-    ) == ""
-
-    # Present but registered in another universe: still not ours, because the
-    # lookup is scoped by universe_id and this list is what that scope returns.
-    listed.append(mine)
-    assert cw._universe_bound_runtime_owner(
-        universe,
-        foreign["runtime_instance_id"],
-    ) == ""
-
-    # ACCEPT DIRECTION -- a runtime this universe does own resolves to the
-    # worker id the REGISTRY recorded, which is what expected_worker_id is
-    # compared against. Guessing it would trade one silent failure for another.
-    assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == (
-        "worker-a"
-    )
-
-
-def test_runtime_ownership_lookup_failure_fails_closed(tmp_path, monkeypatch):
-    """A registry read that raises must advertise nothing, not guess."""
-    import tinyassets.daemon_registry as registry
-
-    universe = tmp_path / "universe-a"
-    universe.mkdir()
-
-    from tinyassets.storage import DB_FILENAME
-
-    (tmp_path / DB_FILENAME).touch()
-
-    def boom(_base, universe_id=""):
-        raise RuntimeError("registry unavailable")
-
-    monkeypatch.setattr(registry, "list_runtime_instances", boom)
-    assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == ""
-
-
-def test_runtime_ownership_lookup_never_creates_the_registry(
-    tmp_path,
-    monkeypatch,
-):
-    """A heartbeat is a read. It must not bring the registry into existence.
-
-    Opening the store to answer an ownership question created `.tinyassets.db`
-    as a side effect, which leaked durable state out of a pure read and made an
-    unrelated test see epoch-2 as available.
-    """
-    import tinyassets.daemon_registry as registry
-    from tinyassets.storage import DB_FILENAME
-
-    universe = tmp_path / "universe-a"
-    universe.mkdir()
-
-    def must_not_be_called(_base, universe_id=""):
-        raise AssertionError("registry opened when no store exists")
-
-    monkeypatch.setattr(
-        registry,
-        "list_runtime_instances",
-        must_not_be_called,
-    )
-    assert cw._universe_bound_runtime_owner(universe, "runtime-mine") == ""
-    assert not (tmp_path / DB_FILENAME).exists()
-
-
 def test_context_is_cleared_when_the_child_exits(tmp_path):
     """CRITICAL 1: a context that outlives its child is false capacity.
 
@@ -1293,100 +1185,6 @@ def test_supervisor_loop_clears_the_context_after_the_child_exits(
     assert ("worker-a", "runtime-a") in state.pending_retire_contexts
 
 
-def test_ownership_lookup_fails_closed_when_registration_recorded_no_owner(
-    tmp_path,
-    monkeypatch,
-):
-    """CRITICAL 4: an unowned registration must NOT be guessed into ownership.
-
-    `set_worker_queue_descriptor` compares `expected_worker_id` against the
-    registry's own `metadata.worker_id`. Substituting a live `_worker_id()`
-    read when that field is missing produces a confident wrong answer that
-    trips `queue_worker_id_mismatch` -- one silent failure traded for another.
-    """
-    import tinyassets.daemon_registry as registry
-    from tinyassets.storage import DB_FILENAME, data_dir
-
-    universe = tmp_path / "universe-a"
-    universe.mkdir()
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    (data_dir() / DB_FILENAME).touch()
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-live")
-
-    monkeypatch.setattr(
-        registry,
-        "list_runtime_instances",
-        lambda _base, universe_id="": [
-            {"runtime_instance_id": "runtime-a", "metadata": {}},
-        ],
-    )
-    assert cw._universe_bound_runtime_owner(universe, "runtime-a") == ""
-
-    # ACCEPT DIRECTION -- a recorded owner still resolves.
-    monkeypatch.setattr(
-        registry,
-        "list_runtime_instances",
-        lambda _base, universe_id="": [
-            {
-                "runtime_instance_id": "runtime-a",
-                "metadata": {"worker_id": "worker-registered"},
-            },
-        ],
-    )
-    assert cw._universe_bound_runtime_owner(universe, "runtime-a") == (
-        "worker-registered"
-    )
-
-
-def test_ownership_lookup_uses_the_data_dir_not_the_universe_parent(
-    tmp_path,
-    monkeypatch,
-):
-    """CRITICAL 5: the registry authority is `data_dir()`.
-
-    `_register_worker_runtime` writes through `data_dir()`. Deriving the base
-    from `universe.parent` silently disabled a VALID fallback whenever
-    TINYASSETS_UNIVERSE pointed outside the data root -- the store-exists guard
-    looked in the wrong place, found nothing, and returned fail-closed "" for a
-    runtime that was properly registered.
-
-    The fixture deliberately puts the universe OUTSIDE the data dir; when the
-    two coincide the bug is invisible.
-    """
-    import tinyassets.daemon_registry as registry
-    from tinyassets.storage import DB_FILENAME, data_dir
-
-    data_root = tmp_path / "data"
-    data_root.mkdir()
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    universe = elsewhere / "universe-a"
-    universe.mkdir()
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
-    assert data_dir() == data_root
-    assert universe.parent != data_root
-    # The registry exists ONLY under the data dir.
-    (data_root / DB_FILENAME).touch()
-
-    seen_bases: list[object] = []
-
-    def _list(base, universe_id=""):
-        seen_bases.append(base)
-        return [
-            {
-                "runtime_instance_id": "runtime-a",
-                "metadata": {"worker_id": "worker-registered"},
-            },
-        ]
-
-    monkeypatch.setattr(registry, "list_runtime_instances", _list)
-    assert cw._universe_bound_runtime_owner(universe, "runtime-a") == (
-        "worker-registered"
-    )
-    assert seen_bases == [data_root]
-
-
 def test_env_build_failure_leaves_no_context_behind(tmp_path, monkeypatch):
     """FINDING 2 (reopened): `_build_subprocess_env` can raise too.
 
@@ -1543,3 +1341,61 @@ def test_a_stale_context_is_cleared_before_any_beat_in_the_next_iteration(
             f"the {phase} beat still carried a dead child's context: {context}"
         )
     assert ("worker-dead", "runtime-dead") in state.pending_retire_contexts
+
+
+def test_the_environment_is_not_an_authority_for_the_live_runtime(
+    tmp_path,
+    monkeypatch,
+):
+    """The single-authority invariant, guarded.
+
+    `TINYASSETS_RUNTIME_INSTANCE_ID` was a SECOND authority for "which runtime
+    is live". The two cancelled: clearing a dead child's context did nothing,
+    because the next beat rebuilt it from the environment -- and the rebuild
+    validated, since the runtime really did belong to this universe. One beat
+    could retire a pair and republish it.
+
+    Every production heartbeat comes from `run_supervisor`, whose default spawn
+    closure always records the context, so the environment never had a
+    production consumer. If a future change reintroduces a fallback, this test
+    is what should stop it.
+    """
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    # An environment id is present and would resolve if consulted.
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-from-env")
+
+    published: list[object] = []
+    monkeypatch.setattr(
+        cw,
+        "_persist_worker_queue_descriptor",
+        lambda descriptor, *, worker_id="": (
+            published.append(descriptor) or True
+        ),
+    )
+
+    # A state with NO recorded context must advertise nothing at all.
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+    assert published == [None], (
+        "the environment was consulted: it is not an authority for the live "
+        "runtime"
+    )
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "queue_protocol_version" not in beat
+    assert "capabilities" not in beat
+    assert beat["runtime_instance_id"] == ""
+
+    # The source is dead too -- no caller may reintroduce it.
+    assert not hasattr(cw, "_universe_bound_runtime_owner")

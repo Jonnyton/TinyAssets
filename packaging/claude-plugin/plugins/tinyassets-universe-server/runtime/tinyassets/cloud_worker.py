@@ -360,72 +360,6 @@ def _epoch2_claim_consumer_ready() -> bool:
     return EPOCH2_QUEUE_CONSUMER_READY is True
 
 
-def _universe_bound_runtime_owner(
-    universe: Path,
-    runtime_instance_id: str,
-) -> str:
-    """Worker id owning ``runtime_instance_id``, ONLY if it is in this universe.
-
-    This is the guard that makes an environment fallback safe. The automation
-    pump leaves its runtime id in `os.environ` and that id may name a runtime
-    registered in a DIFFERENT universe; pairing it with this universe's
-    `universe_id` is what raised `queue_universe_id_mismatch` and silently
-    stripped `capabilities` from the beat.
-
-    Returning the registry's own `metadata.worker_id` (rather than a live
-    `_worker_id()` read) is load-bearing: `set_worker_queue_descriptor`
-    compares `expected_worker_id` against exactly that field, so guessing it
-    trades one silent failure for another.
-
-    Empty means "do not advertise" -- fail closed.
-    """
-    runtime_id = str(runtime_instance_id or "").strip()
-    if not runtime_id or not universe.name.strip():
-        return ""
-    try:
-        from tinyassets.storage import DB_FILENAME, data_dir
-
-        # CRITICAL 5: the registry authority is `data_dir()`, which is what
-        # `_register_worker_runtime` writes through. Deriving it from
-        # `universe.parent` instead silently disabled a valid fallback whenever
-        # TINYASSETS_UNIVERSE pointed outside the data root.
-        base = data_dir()
-        # Never CREATE the registry from a heartbeat. Opening it would make a
-        # pure read produce durable state, and "no registry yet" already means
-        # we cannot prove ownership -- which is a fail-closed "" either way.
-        if not (base / DB_FILENAME).exists():
-            return ""
-    except Exception:  # noqa: BLE001
-        return ""
-    try:
-        from tinyassets.daemon_registry import list_runtime_instances
-
-        for runtime in list_runtime_instances(
-            base,
-            universe_id=universe.name,
-        ):
-            if str(
-                runtime.get("runtime_instance_id") or ""
-            ).strip() != runtime_id:
-                continue
-            # CRITICAL 4: fail closed. A runtime whose registration recorded no
-            # owner cannot be vouched for, and guessing `_worker_id()` here is
-            # exactly what this function's docstring forbids -- the guess trips
-            # `queue_worker_id_mismatch` and turns one silent failure into
-            # another.
-            return str(
-                (runtime.get("metadata") or {}).get("worker_id") or ""
-            ).strip()
-    except Exception:  # noqa: BLE001 — a probe must never take down the loop
-        logger.exception(
-            "cloud_worker: runtime ownership lookup failed runtime=%s universe=%s",
-            runtime_id,
-            universe.name,
-        )
-        return ""
-    return ""
-
-
 def _worker_queue_descriptor(
     universe: Path,
     *,
@@ -1604,18 +1538,15 @@ def write_supervisor_heartbeat(
     context_worker_id, context_runtime_id = (
         getattr(state, "execution_context_by_universe", {}) or {}
     ).get(universe.name.strip(), ("", ""))
-    if not context_runtime_id:
-        # No recorded context: an injected spawn seam, or a runtime registered
-        # by a path that predates the state plumbing. Accept the environment's
-        # id ONLY when the registry confirms it belongs to THIS universe.
-        env_runtime_id = os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID",
-            "",
-        ).strip()
-        env_owner = _universe_bound_runtime_owner(universe, env_runtime_id)
-        if env_owner:
-            context_worker_id = env_owner
-            context_runtime_id = env_runtime_id
+    # NO environment fallback. `TINYASSETS_RUNTIME_INSTANCE_ID` was a SECOND
+    # authority for "which runtime is live", and the two cancelled: clearing a
+    # dead child's context did nothing because the next beat reconstructed it
+    # from the environment -- and the reconstruction validated, because that
+    # runtime really does belong to this universe. One beat could retire a pair
+    # and republish it. Every production heartbeat comes from `run_supervisor`,
+    # whose default spawn closure always records the context, so the fallback
+    # had no production consumer at all; it only ever propped up test fixtures
+    # that set the variable by hand.
     descriptor = _worker_queue_descriptor(
         universe,
         runtime_instance_id=context_runtime_id,
@@ -1657,10 +1588,11 @@ def write_supervisor_heartbeat(
         # the container's frozen identity -- that is what the healthcheck
         # resolves.
         "worker_id": _worker_id(),
-        "runtime_instance_id": os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID",
-            "",
-        ).strip(),
+        # From the recorded context, NOT the environment. An env read here was
+        # the last surviving second authority: it is why `runtime_instance_count`
+        # reported ten live runtimes while `compatible_worker_count` was zero --
+        # the beat named a runtime whose descriptor had never been published.
+        "runtime_instance_id": context_runtime_id,
     }
     if descriptor is not None and descriptor_persisted:
         beat.update(descriptor)
