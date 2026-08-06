@@ -45,6 +45,11 @@ on:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
         required: false
         type: string
+      clear_pinned_writer:
+        description: 'Remove TINYASSETS_PIN_WRITER from /etc/tinyassets/env so an exhausted writer falls back to the rest of the chain. Leave empty for no change.'
+        required: false
+        type: boolean
+        default: false
       set_active_universe:
         description: 'Repoint /data/.active_universe at this universe id (workers resolve their served universe through it). Leave empty for no change.'
         required: false
@@ -1350,6 +1355,22 @@ jobs:
             exit 1
           }
 
+      - name: Clear the pinned writer (explicit input only)
+        if: inputs.clear_pinned_writer
+        run: |
+          # TINYASSETS_PIN_WRITER narrows the writer chain to ONE provider
+          # with no fallback -- the only hard-pin in the system. Live
+          # 2026-08-06, run 7ca009898ead4fe9: a soul-loop slice executed
+          # correctly and then failed with 'Pinned writer provider
+          # 'claude-code' exhausted. TINYASSETS_PIN_WRITER disables
+          # fallback', so the drain could not use the owner's other
+          # subscription even though it was authenticated and idle.
+          #
+          # Explicit input only; never clears on an ordinary deploy.
+          B64=c2V0IC1ldW8gcGlwZWZhaWwKZWNobyAiY3VycmVudCBwaW46ICQoZ3JlcCAtRSAnXlRJTllBU1NFVFNfUElOX1dSSVRFUj0nIC9ldGMvdGlueWFzc2V0cy9lbnYgfHwgZWNobyAnPHVuc2V0PicpIgpiYXNoIC90bXAvaW5zdGFsbC10aW55YXNzZXRzLWVudi5zaCBkZWxldGUgVElOWUFTU0VUU19QSU5fV1JJVEVSCmVjaG8gImFmdGVyOiAkKGdyZXAgLUUgJ15USU5ZQVNTRVRTX1BJTl9XUklURVI9JyAvZXRjL3Rpbnlhc3NldHMvZW52IHx8IGVjaG8gJzx1bnNldD4nKSIK
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "echo ${B64} | base64 -d | sudo bash -s"
       - name: Repoint the active-universe marker (explicit input only)
         if: inputs.set_active_universe != ''
         env:
