@@ -102,7 +102,18 @@ DEFAULT_STATE_PATH = Path(
 DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 HOST_COMMAND_TIMEOUT_SECONDS = 45
 LOCK_TIMEOUT_SECONDS = 60
-UNIT_RESTORE_TIMEOUT_SECONDS = 120
+# 120s was shorter than the daemon service's real startup. Live 2026-08-05,
+# twice (runs 31057866767 and 31058104613): finalize failed with
+# `mismatches={'tinyassets-daemon.service': {'expected': {'active': 'active'},
+# 'actual': {'active': 'activating'}}}` -- the unit was starting correctly and
+# simply had not finished, and the failure RE-FENCED a fleet that had already
+# come up healthy, leaving /mcp at 502.
+#
+# The daemon's own healthcheck allows a 60s start_period before it even begins
+# reporting, and the service waits on that, so 120s could not reliably cover a
+# cold start. This is the same shape as the recovery canary that probed 0.7s
+# after container start.
+UNIT_RESTORE_TIMEOUT_SECONDS = 420
 AUTHORITATIVE_UNIT_ACTIVE_STATES = frozenset(
     {
         "active",
