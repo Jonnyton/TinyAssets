@@ -294,6 +294,7 @@ def _scheduled_work(
                 inputs_json=str(fields.get("inputs_json") or ""),
                 cadence_seconds=fields.get("cadence_seconds") or 3600,
                 declared_operations=list(fields.get("declared_operations") or []),
+                deliver_to=str(fields.get("deliver_to") or ""),
                 owner_id=subject_id,
             )
             return created.as_dict()

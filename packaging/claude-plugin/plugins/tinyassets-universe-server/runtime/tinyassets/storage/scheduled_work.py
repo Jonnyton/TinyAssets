@@ -1,4 +1,4 @@
-"""Automations of ANY kind: schedule + branch + inputs + declared operations.
+"""Automations of ANY kind: schedule + branch + inputs + operations + delivery.
 
 Why this exists
 ---------------
@@ -23,6 +23,21 @@ differ in their BRANCH and their DECLARED OPERATIONS, not in platform code.
 
 `kind` is a free label the user chooses. It is deliberately not an enum: the
 moment the platform enumerates kinds, adding one becomes our job again.
+
+Delivery
+--------
+``deliver_to`` is where the DELIVERABLE lands — a Slack channel or DM id today.
+An automation whose output goes nowhere is a cron job nobody reads, and the
+whole point is that a founder receives the thing in the app they already use.
+The transport already exists (`app_outbound_adapter` + `build_slack_transport`,
+the same path `deliver_app_event` posts replies through), so delivery is a
+DESTINATION the automation declares, not new machinery.
+
+The reply to a delivered artifact arrives back through the ordinary chat ingress
+as a `message` event, which is what makes the loop closable: the founder answers
+the deliverable in the same thread, and that answer is already an input the
+universe receives. Tying that reply to the RUN that produced it is the next
+piece — see the note in ideas/INBOX.md.
 
 Authority
 ---------
@@ -68,6 +83,7 @@ class ScheduledWork:
     state: str
     revision: int
     owner_id: str
+    deliver_to: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -78,6 +94,7 @@ class ScheduledWork:
             "inputs_json": self.inputs_json,
             "cadence_seconds": self.cadence_seconds,
             "declared_operations": list(self.declared_operations),
+            "deliver_to": self.deliver_to,
             "state": self.state,
             "revision": self.revision,
         }
@@ -93,6 +110,7 @@ CREATE TABLE IF NOT EXISTS scheduled_work (
     inputs_json TEXT NOT NULL,
     cadence_seconds INTEGER NOT NULL CHECK (cadence_seconds >= 60),
     declared_operations_json TEXT NOT NULL,
+    deliver_to TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL CHECK (state IN ('active','paused')),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     owner_id TEXT NOT NULL,
@@ -122,6 +140,7 @@ class ScheduledWorkStore:
         self, *, universe_id: str, name: str, kind: str, branch_def_id: str,
         inputs_json: str = "", cadence_seconds: int = 3600,
         declared_operations: list[str] | None = None, owner_id: str,
+        deliver_to: str = "",
     ) -> ScheduledWork:
         uid = (universe_id or "").strip()
         label = (name or "").strip().lower()
@@ -172,12 +191,12 @@ class ScheduledWorkStore:
                 conn.execute(
                     "INSERT INTO scheduled_work (work_id, universe_id, name, kind,"
                     " branch_def_id, inputs_json, cadence_seconds,"
-                    " declared_operations_json, state, revision, owner_id,"
-                    " created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " declared_operations_json, deliver_to, state, revision,"
+                    " owner_id, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (work_id, uid, label, kind_label, branch, json.dumps(parsed),
-                     cadence, json.dumps(list(operations)), "paused", 1, owner,
-                     now, now),
+                     cadence, json.dumps(list(operations)),
+                     (deliver_to or "").strip(), "paused", 1, owner, now, now),
                 )
         except sqlite3.IntegrityError as exc:
             raise ScheduledWorkError(
@@ -190,6 +209,7 @@ class ScheduledWorkStore:
             branch_def_id=branch, inputs_json=json.dumps(parsed),
             cadence_seconds=cadence, declared_operations=operations,
             state="paused", revision=1, owner_id=owner,
+            deliver_to=(deliver_to or "").strip(),
         )
 
     def list_for(self, *, universe_id: str) -> list[ScheduledWork]:
@@ -259,6 +279,7 @@ class ScheduledWorkStore:
             cadence_seconds=row["cadence_seconds"],
             declared_operations=operations, state=row["state"],
             revision=row["revision"], owner_id=row["owner_id"],
+            deliver_to=(row["deliver_to"] if "deliver_to" in row.keys() else ""),
         )
 
 

@@ -468,3 +468,54 @@ composable primitive. Sketch:
 **Do NOT** solve this by adding a `CryptoWalletWorkDefinition` next to
 `RepositorySpecWorkDefinition`. That is the same mistake one domain wider — see
 `enabling-primitives-not-prebuilt-complexity`.
+
+## 2026-08-07 — The closed loop: deliverable OUT, real-world feedback back IN
+
+Host: *"the output from that niche watcher is a great example of something the
+user should be able to receive in the desired deliverable on their desired app…
+how does real world action feedback from the user go back into that workflow?…
+if an automation posts vids based on a niche, the comments and engagement levels
+should feed back into that same automation."*
+
+Two halves. The first is nearly free; the second is the real design.
+
+### OUT — delivery
+`deliver_to` now exists on a scheduled automation (`storage/scheduled_work.py`),
+so the destination is DECLARED at build time. The transport is already built and
+proven: `app_outbound_adapter` + `effectors/slack_transport.build_slack_transport`,
+the same path `deliver_app_event` posts replies through.
+
+**Missing: the completion hook.** `run_graph` returns `status: queued`, so the
+result does not exist when the run is requested. Delivery must fire when the run
+COMPLETES. That hook does not exist — nothing watches `runs` for terminal state
+and fans out to a destination. This is the next slice and it is small.
+
+### IN — feedback, and why it is not just "read the reply"
+The founder's reply already reaches the universe: it arrives as an ordinary
+`message` event through the chat ingress (verified live 2026-08-07). What is
+missing is the LINK — nothing ties that reply to the RUN that produced the thing
+being replied to. Without it the universe gets a comment with no referent.
+
+The general shape, which covers the founder replying in Slack AND comments and
+engagement on a posted video, because they are the same thing:
+
+1. A delivery produces a RECEIPT (`external-effect-receipts` already specs this)
+   carrying `run_id` + `automation_id` + the provider's own message/post id.
+2. Inbound signals — a chat reply, a comment, a like count, a CRM status change
+   — resolve to that receipt by provider id (Slack `thread_ts`, a post id, …).
+3. The resolved signal becomes an INPUT to the automation's next run, alongside
+   its declared `inputs_json`. That is what closes the loop: the next run sees
+   what happened to the last one's output.
+4. Engagement METRICS are the same path with a numeric payload rather than text,
+   which is why "did anyone reply" and "how did the video do" should not be two
+   mechanisms.
+
+Design notes worth keeping:
+- Feedback intake must be scoped like everything else: a signal is admitted only
+  if its receipt belongs to this universe. Otherwise anyone who can guess a post
+  id can inject inputs into someone else's automation.
+- Reuse `app_events` replay admission — a comment webhook will be delivered more
+  than once, and the same run must not be re-fed the same signal twice.
+- Do NOT build a separate "engagement" subsystem per platform. One receipt →
+  signal → next-run-input path, with adapters per provider, or this becomes the
+  bundled-workflow trap again one layer down.

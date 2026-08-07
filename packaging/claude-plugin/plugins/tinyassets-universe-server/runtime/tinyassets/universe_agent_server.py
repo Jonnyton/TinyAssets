@@ -186,7 +186,7 @@ def list_my_automations() -> str:
 @mcp.tool()
 def build_automation(name: str, kind: str, branch_def_id: str,
                      inputs_json: str = "{}", cadence_seconds: int = 3600,
-                     declared_operations: str = "") -> str:
+                     declared_operations: str = "", deliver_to: str = "") -> str:
     """Build an automation of ANY kind — this is the general one.
 
     An automation is: run this BRANCH, on this SCHEDULE, with these INPUTS,
@@ -210,6 +210,10 @@ def build_automation(name: str, kind: str, branch_def_id: str,
         cadence_seconds: How often it runs; minimum 60.
         declared_operations: Comma-separated operations it may perform. These
             decide what it may spend — see `list_operation_scopes`.
+        deliver_to: WHERE the result should land — a chat channel or DM id. An
+            automation whose output goes nowhere is a cron job nobody reads.
+            Default to the conversation my founder asked in, so they receive the
+            thing where they already are, and they can reply to it there.
     """
     return _platform_action(
         "scheduled_work", "create",
@@ -218,6 +222,7 @@ def build_automation(name: str, kind: str, branch_def_id: str,
         declared_operations=[
             o.strip() for o in declared_operations.split(",") if o.strip()
         ],
+        deliver_to=deliver_to,
     )
 
 
