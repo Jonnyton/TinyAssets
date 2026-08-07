@@ -133,9 +133,32 @@ def build_branch(spec_json: str) -> str:
     `list_branch_versions` does what my founder asked for, I build it here
     rather than telling them it is impossible.
 
-    A branch is nodes and edges: what to fetch, what to think about, what to
-    write. Call `read_branch` on one that already works FIRST and follow its
-    structure — I do not have to guess at the schema.
+    `read_branch` shows an existing one, but it returns every field including
+    server-owned ones (`author`, `approved_*`, `registered_at`) that I must NOT
+    send back. Most fields have defaults. This is the minimal spec that works:
+
+        {"name": "niche_watch",
+         "description": "watch sites and draft a post",
+         "entry_point": "draft",
+         "nodes": [
+           {"node_id": "draft",
+            "display_name": "Draft a post",
+            "input_keys": ["topic"],
+            "output_keys": ["post"],
+            "prompt_template": "Write a short post about: {topic}"}
+         ],
+         "edges": [{"from": "draft", "to": "END"}]}
+
+    Verified working 2026-08-07. Three things the validator insists on, each of
+    which it will also TELL me if I get it wrong — its errors carry a
+    `proposed_fix`, so a rejection is a correction, not a dead end:
+      - `entry_point` is required once there are nodes
+      - edges use `from`/`to`, NOT `source`/`target`
+      - every path must reach `END` or it is a cycle without an exit
+
+    Add nodes and edges for multi-step work. `input_keys` are what the
+    automation supplies at run time; a node fails to compile if a declared key
+    is missing, so keep them consistent with the automation's `inputs_json`.
 
     Args:
         spec_json: The branch specification as JSON — its name, nodes and edges.

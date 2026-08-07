@@ -263,7 +263,9 @@ def _list_branch_versions(subject_id: str) -> dict[str, Any]:
 
 #: Actions whose cost must be covered by a declared operation. Anything absent
 #: needs no capability at all, so reads stay free.
-_ACTIONS_REQUIRING_DECLARED_OPERATION = frozenset({("branch", "run")})
+_ACTIONS_REQUIRING_DECLARED_OPERATION = frozenset(
+    {("branch", "run"), ("branch", "build")}
+)
 
 
 def _scheduled_work(

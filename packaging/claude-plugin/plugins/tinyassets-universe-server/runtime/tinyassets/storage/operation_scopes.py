@@ -51,6 +51,10 @@ _OPERATION = re.compile(r"[a-z][a-z0-9_]{2,63}\Z")
 DELEGABLE_SCOPES: frozenset[str] = frozenset(
     {
         "tinyassets.extensions.costly",
+        # Authoring a branch is composing work, not spending compute. Separate
+        # from `costly` on purpose: a founder may well want an agent that can
+        # DESIGN automations but not run them, or the reverse.
+        "tinyassets.extensions.write",
         "tinyassets.knowledge",
         "tinyassets.memory",
         "tinyassets.planning",
@@ -64,6 +68,10 @@ DELEGABLE_SCOPES: frozenset[str] = frozenset(
 #: override for their own universe, the same way a harness template seeds files.
 BUILTIN_OPERATION_SCOPES: dict[str, tuple[str, ...]] = {
     "repository_spec_delivery": ("tinyassets.extensions.costly",),
+    # Composing the work itself. A user who wants their agent to BUILD new
+    # automations declares this; one who only wants it to run existing ones
+    # does not.
+    "branch_authoring": ("tinyassets.extensions.write",),
 }
 
 _SCHEMA = """
