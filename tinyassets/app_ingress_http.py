@@ -417,21 +417,37 @@ def create_app_ingress_app():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
+    from starlette.concurrency import run_in_threadpool
+
+    # Every handler below is SYNCHRONOUS and slow: `deliver_app_event` runs a
+    # provider subprocess that can take a minute. Calling one directly inside an
+    # `async def` route blocks uvicorn's whole event loop, so the server accepts
+    # further connections and answers none of them.
+    #
+    # That is not theoretical. It deadlocked the first live agent action: the
+    # universe's tool server called `/agent-actions` from inside a turn that
+    # `/app-events` was still serving, so the action waited on a loop that was
+    # waiting on the action. The port ACCEPTED the connection and timed out,
+    # which reads like a network problem and is not one.
     async def _app_events(request):
         body = await request.body()
-        status, payload = handle_request(body=body, headers=dict(request.headers))
+        status, payload = await run_in_threadpool(
+            handle_request, body=body, headers=dict(request.headers)
+        )
         return JSONResponse(payload, status_code=status)
 
     async def _app_credentials(request):
         body = await request.body()
-        status, payload = handle_credentials_request(
-            body=body, headers=dict(request.headers)
+        status, payload = await run_in_threadpool(
+            handle_credentials_request, body=body, headers=dict(request.headers)
         )
         return JSONResponse(payload, status_code=status)
 
     async def _agent_actions(request):
         body = await request.body()
-        status, payload = handle_agent_action_request(body=body)
+        status, payload = await run_in_threadpool(
+            handle_agent_action_request, body=body
+        )
         return JSONResponse(payload, status_code=status)
 
     return Starlette(

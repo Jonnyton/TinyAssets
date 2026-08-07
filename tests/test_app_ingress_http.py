@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 import pytest
 
@@ -450,3 +451,85 @@ def test_a_stale_credential_request_expires():
 
     assert status == 401
     assert called == []
+
+
+def test_a_slow_request_does_not_block_the_ingress(monkeypatch):
+    """A nested call must be served while a turn is still running.
+
+    The universe's tool server calls `/agent-actions` from INSIDE a turn that
+    `/app-events` is still serving. If the slow handler runs on the event loop,
+    the second request waits on a loop waiting on the first — the port accepts
+    the connection and never answers, which looks like a network fault and is
+    not one. Deadlocked the first live agent action on 2026-08-07.
+
+    Uses a REAL uvicorn server, not TestClient: TestClient runs each request in
+    its own portal, so it cannot reproduce event-loop contention and stays green
+    against the blocking version. (Verified — the first draft of this test did
+    exactly that.)
+    """
+    import socket
+    import threading
+    import urllib.request
+
+    import uvicorn
+
+    from tinyassets import app_ingress_http as mod
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow(**kwargs):
+        started.set()
+        assert release.wait(timeout=15), "nested request never completed"
+        return 200, {"handled": True}
+
+    monkeypatch.setattr(mod, "handle_request", _slow)
+    monkeypatch.setattr(
+        mod, "handle_agent_action_request", lambda **k: (200, {"result": "ok"})
+    )
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            mod.create_app_ingress_app(), host="127.0.0.1", port=port,
+            log_level="error",
+        )
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        assert server.started, "server never came up"
+
+        def _post(path, out, key):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}", data=b"{}", method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    out[key] = response.status
+            except Exception as exc:  # noqa: BLE001
+                out[key] = type(exc).__name__
+
+        out: dict = {}
+        slow = threading.Thread(target=_post, args=("/app-events", out, "slow"))
+        slow.start()
+        assert started.wait(timeout=10), "slow handler never started"
+
+        # The real assertion: this must complete while the slow one is held.
+        _post("/agent-actions", out, "nested")
+        assert out["nested"] == 200, f"nested request blocked: {out['nested']}"
+        release.set()
+        slow.join(timeout=15)
+        assert out["slow"] == 200
+    finally:
+        release.set()
+        server.should_exit = True
+        thread.join(timeout=10)
