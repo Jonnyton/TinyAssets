@@ -91,7 +91,31 @@ def _identify(bot_token: str) -> tuple[str, str]:
 
 
 def build_config(universe_id: str, connection: str) -> SlackAgentConfig:
-    """Resolve one universe's Slack identity entirely from its own vault."""
+    """Resolve one universe's Slack identity — from the ingress, or the vault.
+
+    In ingress mode the identity comes from the daemon, because this container
+    has no vault to read: it learned `team_id`/`bot_user_id` by calling Slack's
+    `auth.test` with the BOT token, and the bot token is exactly what the
+    ingress rework keeps server-side.
+
+    This runs BEFORE `run_slack_agent`, which is where the mode was originally
+    (and wrongly) selected — so a volume-less agent died here with "no Slack bot
+    token deposited" before it ever reached the ingress path. Found live.
+    """
+    from tinyassets.app_ingress_http import should_serve as _ingress_configured
+
+    if _ingress_configured():
+        from tinyassets.effectors.app_ingress_client import fetch_identity
+
+        identity = fetch_identity(universe_id=universe_id, connection_id=connection)
+        return SlackAgentConfig(
+            universe_id=universe_id,
+            connection_id=connection,
+            team_id=identity["team_id"],
+            bot_user_id=identity["bot_user_id"],
+            api_app_id=identity["api_app_id"],
+        )
+
     from tinyassets.credential_vault import (
         resolve_slack_app_token,
         resolve_slack_token,

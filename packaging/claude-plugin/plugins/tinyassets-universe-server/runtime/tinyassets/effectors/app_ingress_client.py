@@ -108,6 +108,30 @@ def build_ingress_client(
     return _deliver
 
 
+def fetch_identity(
+    *,
+    universe_id: str,
+    connection_id: str,
+    env: Mapping[str, str] | None = None,
+    **kwargs: Any,
+) -> dict[str, str]:
+    """The socket token AND who this transport is, in one signed call.
+
+    `build_config` needs `team_id` / `bot_user_id` / `api_app_id`, which it used
+    to get from Slack's `auth.test` using the bot token. The daemon resolves
+    them instead, so the bot token never leaves it.
+    """
+    payload = _credentials_call(
+        universe_id=universe_id, connection_id=connection_id, env=env, **kwargs
+    )
+    return {
+        "app_token": str(payload.get("app_token") or ""),
+        "team_id": str(payload.get("team_id") or ""),
+        "bot_user_id": str(payload.get("bot_user_id") or ""),
+        "api_app_id": str(payload.get("api_app_id") or ""),
+    }
+
+
 def fetch_app_token(
     *,
     universe_id: str,
@@ -127,6 +151,29 @@ def fetch_app_token(
     transport that starts with no socket credential should die at startup, not
     sit connected to nothing.
     """
+    payload = _credentials_call(
+        universe_id=universe_id,
+        connection_id=connection_id,
+        env=env,
+        timeout=timeout,
+        urlopen=urlopen,
+        now=now,
+    )
+    token = str(payload.get("app_token") or "")
+    if not token:
+        raise AppIngressError("app ingress returned no app token")
+    return token
+
+
+def _credentials_call(
+    *,
+    universe_id: str,
+    connection_id: str,
+    env: Mapping[str, str] | None = None,
+    timeout: float = 30.0,
+    urlopen: Callable[..., Any] | None = None,
+    now: Callable[[], float] = time.time,
+) -> dict[str, Any]:
     key = load_key(env)
     url = ingress_url(env).replace("/app-events", "/app-credentials")
     _open = urlopen if urlopen is not None else urllib.request.urlopen
@@ -156,10 +203,7 @@ def fetch_app_token(
     except Exception as exc:  # noqa: BLE001
         raise AppIngressError("app ingress was unreachable") from exc
 
-    token = str((payload or {}).get("app_token") or "")
-    if not token:
-        raise AppIngressError("app ingress returned no app token")
-    return token
+    return payload if isinstance(payload, dict) else {}
 
 
 __all__ = [
@@ -169,5 +213,6 @@ __all__ = [
     "HMAC_ENV",
     "build_ingress_client",
     "fetch_app_token",
+    "fetch_identity",
     "ingress_url",
 ]
