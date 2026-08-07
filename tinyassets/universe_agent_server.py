@@ -141,19 +141,24 @@ def create_automation(name: str, description: str = "", goal: str = "") -> str:
 
 
 @mcp.tool()
-def control_automation(automation_id: str, action: str) -> str:
+def control_automation(automation_id: str, action: str,
+                       expected_revision: int) -> str:
     """Pause, resume or rebind one of this universe's automations.
+
+    `expected_revision` is required, not optional: without it the call returns
+    an empty envelope and changes NOTHING, which reads exactly like success.
+    Get the current revision from `list_automations` first.
 
     Args:
         automation_id: The automation to control.
         action: One of `pause`, `resume`, `rebind`.
+        expected_revision: The automation's current `revision`.
     """
     return _platform_action(
-        (
-            "automation"
-        ),
+        "automation",
         action,
         automation_id=automation_id,
+        expected_revision=expected_revision,
     )
 
 

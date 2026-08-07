@@ -201,11 +201,21 @@ def _execute(
         if surface == "automation":
             from tinyassets.api.cloud_automations import cloud_automations
 
+            # `expected_revision` is optimistic concurrency control. Without
+            # it a pause/resume/rebind returns a null envelope and changes
+            # NOTHING — found live 2026-08-07: the automation stayed
+            # `desired_state: active` and the call looked like it worked.
+            fields = payload or {}
+            try:
+                expected_revision = int(fields.get("expected_revision") or 0)
+            except (TypeError, ValueError):
+                expected_revision = 0
             return cloud_automations(
                 action=action,
                 universe_id=universe_id,
-                automation_id=str((payload or {}).get("automation_id") or ""),
-                payload=(payload or {}).get("payload"),
+                automation_id=str(fields.get("automation_id") or ""),
+                expected_revision=expected_revision,
+                payload=fields.get("payload"),
             )
         if surface == "connection":
             from tinyassets.api.cloud_connections import cloud_connections
