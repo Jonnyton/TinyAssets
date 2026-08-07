@@ -160,6 +160,24 @@ def deliver_app_event(
             converse_as_external_sender as converse,
         )
 
+    # Tell the founder something is happening BEFORE the turn, not after it.
+    # A universe turn runs a provider subprocess and routinely takes minutes,
+    # during which the founder sees nothing at all — the AI SDK's whole UI model
+    # is that a user watches tool calls stream through states, and ours is
+    # silence then a wall of text. This is the cheapest half of that: an
+    # immediate acknowledgement so the difference between "thinking" and "broken"
+    # is visible. Best-effort — a failed ack must never cost the actual answer.
+    try:
+        _post(
+            routed=routed,
+            channel_id=channel_id,
+            body="_on it…_",
+            thread_ts=thread_ts,
+            transport=transport,
+        )
+    except Exception:  # noqa: BLE001
+        logger.info("app ingress: could not post the working acknowledgement")
+
     reply = converse(
         routed.universe_id,
         prompt,

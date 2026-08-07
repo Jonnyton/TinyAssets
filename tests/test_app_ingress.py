@@ -129,7 +129,56 @@ def test_a_bound_workspace_is_answered(base):
 
     assert result.handled is True
     assert calls["converse"][0]["universe_id"] == "u-ingress-a"
-    assert calls["post"][0]["body"] == "the universe answers"
+    # Two posts now: an immediate acknowledgement, then the answer. A universe
+    # turn takes minutes and the founder used to see nothing at all until it
+    # landed.
+    assert calls["post"][-1]["body"] == "the universe answers"
+
+
+def test_the_founder_hears_something_before_the_turn(base):
+    """Silence for minutes is indistinguishable from broken.
+
+    Asserts ORDER: the acknowledgement must precede the provider call, not be
+    batched with the reply afterwards.
+    """
+    binding = _make_universe(base, "u-ingress-a")
+    _bind(base, "u-ingress-a", binding)
+
+    order: list = []
+
+    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None):
+        order.append("converse")
+        return "the universe answers"
+
+    def _transport(destination, body, *, thread_ts=""):
+        order.append(f"post:{body}")
+        return _Receipt("1700000000.000100")
+
+    _deliver(converse=_converse, transport=_transport)
+
+    assert order[0].startswith("post:"), order
+    assert order.index("converse") < len(order) - 1, order
+    assert order[-1] == "post:the universe answers", order
+
+
+def test_a_failed_acknowledgement_never_costs_the_answer(base):
+    """Best-effort: if the ack cannot post, the real reply still must."""
+    binding = _make_universe(base, "u-ingress-a")
+    _bind(base, "u-ingress-a", binding)
+
+    posts: list = []
+
+    def _transport(destination, body, *, thread_ts=""):
+        if not posts:
+            posts.append(body)
+            raise RuntimeError("slack hiccup on the ack")
+        posts.append(body)
+        return _Receipt("1700000000.000100")
+
+    result, _ = _deliver(transport=_transport)
+
+    assert result.handled is True
+    assert posts[-1] == "the universe answers"
 
 
 def test_an_unbound_installation_is_silent(base):
