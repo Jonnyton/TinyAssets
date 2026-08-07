@@ -230,3 +230,106 @@ rejected 2026-08-04 as redundant with `run_graph` and as more pre-built
 complexity. The gap is the missing primitive, not a missing convenience.
 
 Needs promotion to an OpenSpec change before any build.
+
+## 2026-08-07 — Custom agent needs hands: governed workflow actions, not MCP tools
+
+Host (Slack live test): the custom agent should manage workflows — build new
+ones, remix from other designs, iterate, test. **Today it cannot.**
+`_ENGINE_ALLOWED_TOOLS = ("WebFetch",)` and `_ENGINE_DISALLOWED_TOOLS` wildcards
+`mcp__*`, so `write_graph`/`run_graph`/`read_graph` are all denied to the
+universe turn (`tinyassets/universe_intelligence.py:61-93`). Only side effect
+available is `commit_learning` (soul/canon/wiki).
+
+The denial is the 2026-07-03 host-leak P0 fix and cannot be made surgical: the
+logged-in claude.ai account's MCP connectors load regardless of
+`--setting-sources`, so "allow only the TinyAssets MCP" is not expressible via
+the CLI's name-based deny.
+
+**Host correction 2026-08-07: `commit_learning` is the WRONG shape to build on.**
+It is not agency — it is a post-hoc transcript miner. `converse` generates the
+reply with NO tools, then a SECOND LLM call (`extract_learning`) re-reads the
+transcript and emits a HARDCODED JSON schema (name + five fixed soul files +
+canon[]), which `commit_learning` writes after the turn ends
+(`universe_intelligence.py:525-556`). The agent never decides to write, is never
+told what was written, and can never produce a file outside that schema. Live
+evidence: it truthfully reported "my founder status is not-learned" while the
+extractor wrote `founder.md` moments later behind its back.
+
+**Wanted shape: talking to an OpenClaw-style agent.** In-turn tool use, its own
+working directory, real-time writes, and it tells you what it did.
+
+**Therefore the OS engine sandbox IS on the critical path** (correcting an
+earlier note in this entry that said otherwise). Real-time writes require real
+in-turn tools; in-turn tools require real confinement, which a CLI name-denylist
+cannot give — `Read` is not scopeable to a directory and account MCP connectors
+load regardless of `--setting-sources` (see the comment block at
+`universe_intelligence.py:45-93`).
+
+A container unlocks BOTH blockers at once:
+- mount only `/data/u-tiny` → the kernel confines `Read`/`Write`/`Edit`, no name list needed;
+- control `HOME` → no logged-in claude.ai account → no ambient connectors → "allow
+  exactly the TinyAssets MCP and nothing else" becomes expressible, which is what
+  makes `write_graph`/`run_graph`/`read_graph` grantable in-turn.
+
+`commit_learning` then becomes unnecessary rather than a foundation.
+
+Related: `universe-is-account-not-workflow`, `enabling-primitives-not-prebuilt-complexity`,
+`user-subscription-runs-the-universe`, STATUS P1 "No OS engine sandbox".
+
+## 2026-08-07 — `reset.py` predates the chat surface: clean slate is a BROKEN slate
+
+Host asked whether the test-round clean-slate reset was ever built. It was —
+`tinyassets/reset.py` (confirm-gated, preserves branch/wiki commons). But it was
+written before the Slack/app ingress existed, so `_RESET_TABLES` does not know
+those tables. Verified empirically against the PRODUCTION db 2026-08-07:
+
+    CLEARED   universes, universe_acl, founder_home, branches, author_*
+    SURVIVES  app_principal_mappings (1)   <- founder<->Slack mapping
+    SURVIVES  app_channel_bindings   (1)   <- channel -> u-tiny routing
+    SURVIVES  agent_definitions (5), agent_bindings (5)
+    SURVIVES  app_event_admissions   (9)   <- replay ledger
+    SURVIVES  agent_component_lineage, agent_conversion_receipt*, agent_import_stages,
+              agent_interchange_idempotency
+
+Consequence: after a reset the universe and its admin ACL are gone, but Slack
+still ROUTES to `u-tiny` and still holds a founder mapping naming a deleted
+universe + dead binding. The next test round cannot "reteach it who it is" —
+first contact never happens because routing resolves to a corpse.
+
+Fix: extend `_RESET_TABLES` with the chat-surface tables, and decide
+deliberately per table. Recommended: `app_channel_bindings` and
+`app_principal_mappings` BOTH cleared, so first contact re-teaches identity from
+scratch (that is the point of the round). `app_event_admissions` cleared too, or
+stale event ids block replay. Custom-agent definitions/bindings are arguably
+commons-like — decide explicitly rather than by omission.
+
+Blocks: next testing round. Related: memory `s6-clean-slate-reset-authorized`,
+STATUS row "R2-2 repeatable test identity" (files already name
+`openspec/changes/test-identity-and-reset/`, `tinyassets/reset.py`).
+
+## 2026-08-07 — LIVE: a build request overwrote the universe's identity
+
+Reproduced in one Slack message. Asked Tiny to *build* an OpenClaw-style agent;
+`extract_learning`/`commit_learning` overwrote `body.md` from "My body is the
+repository at github.com/Jonnyton/TinyAssets" to "An OpenClaw-style autonomous
+agent that can browse the web, write code, and run tasks on its own schedule."
+
+A request to BUILD became a claim about WHAT IT IS. Replace, not merge. No
+confirmation. The agent never chose it — `converse` had already returned and the
+second-pass extractor filled the `body.md` slot of its hardcoded schema.
+
+The SAME turn wrote `wiki/drafts/projects/openclaw-style-autonomous-agent.md`
+correctly ("The founder intends to build..."). Canon path understood the intent;
+soul path did not; the destructive one won silently. Recoverable only via
+`soul_versions/0002.md` — nothing surfaces it to the user.
+
+Requirements this puts on the rebuild (see also the `commit_learning` entry
+above): the agent DECIDES its own writes and is told what was written; identity
+files merge with provenance instead of replacing; an ambiguous self-description
+change requires confirmation. Prompt-tuning the extractor is not the fix.
+
+Host framing: OpenClaw/Hermes/Claude Code/Codex are HARNESS TEMPLATES for the
+agent's project folder (what the instruction file is called, memory/skills
+layout, conventions). Browse/code/schedule are BASELINE for every agent. The
+universe dir IS the harness, and its layout is currently hardcoded to our OKF
+startup-agent shape for every user.
