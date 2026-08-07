@@ -227,6 +227,30 @@ def build_automation(name: str, kind: str, branch_def_id: str,
 
 
 @mcp.tool()
+def update_automation_inputs(work_id: str, inputs_json: str,
+                             expected_revision: int) -> str:
+    """Change what an automation feeds its branch.
+
+    A branch declares `input_keys` and FAILS TO COMPILE if one is missing
+    ("references declared input_keys ['topic'] that are not present"). This is
+    how I fix that — read the branch, see what it declares, supply those keys.
+
+    It is also how my founder changes what an automation DOES without rebuilding
+    it: for most automations the inputs are the spec.
+
+    Args:
+        work_id: From `list_my_automations`.
+        inputs_json: JSON object of inputs for the branch.
+        expected_revision: Its current `revision`.
+    """
+    return _platform_action(
+        "scheduled_work", "update_inputs",
+        work_id=work_id, inputs_json=inputs_json,
+        expected_revision=expected_revision,
+    )
+
+
+@mcp.tool()
 def start_automation(work_id: str, expected_revision: int) -> str:
     """Start one of my automations running on its schedule.
 

@@ -79,7 +79,9 @@ OPERATION_SCOPE_ACTIONS = frozenset({"list", "define"})
 #: Automations of ANY kind — schedule + branch + inputs + declared operations.
 #: The repo-spec surface builds exactly one shape; this one builds whatever the
 #: user composed a branch for. See `storage/scheduled_work.py`.
-SCHEDULED_WORK_ACTIONS = frozenset({"list", "create", "pause", "resume", "run_now"})
+SCHEDULED_WORK_ACTIONS = frozenset(
+    {"list", "create", "update_inputs", "pause", "resume", "run_now"}
+)
 
 #: Outbound connections — GitHub above all. An automation cannot be created
 #: until requester-owned compute is enrolled AND a destination is authorized;
@@ -298,6 +300,13 @@ def _scheduled_work(
                 owner_id=subject_id,
             )
             return created.as_dict()
+        if action == "update_inputs":
+            return store.update_inputs(
+                universe_id=universe_id,
+                work_id=str(fields.get("work_id") or ""),
+                inputs_json=str(fields.get("inputs_json") or ""),
+                expected_revision=int(fields.get("expected_revision") or 0),
+            ).as_dict()
         if action in {"pause", "resume"}:
             updated = store.set_state(
                 universe_id=universe_id,

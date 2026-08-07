@@ -111,3 +111,47 @@ def test_listing_is_scoped_to_the_universe(store):
     _make(store, universe_id="u-b", name="other_thing")
     names = [i.name for i in store.list_for(universe_id="u-a")]
     assert names == ["niche_watch"]
+
+
+def test_inputs_can_be_repaired_without_rebuilding(store):
+    """A branch declaring an input the automation lacks must be FIXABLE.
+
+    Found live 2026-08-07: the agent looped correctly, ran the automation twice,
+    and could not repair it because create was the only verb. An automation you
+    can only replace is not one a founder can iterate on.
+    """
+    item = _make(store, inputs_json="{}")
+    fixed = store.update_inputs(
+        universe_id="u-a", work_id=item.work_id,
+        inputs_json='{"topic": "prediction markets"}',
+        expected_revision=item.revision,
+    )
+    assert json.loads(fixed.inputs_json) == {"topic": "prediction markets"}
+    assert fixed.revision == 2
+
+
+def test_updating_inputs_honours_the_revision(store):
+    item = _make(store)
+    store.update_inputs(universe_id="u-a", work_id=item.work_id,
+                        inputs_json='{"a": 1}', expected_revision=item.revision)
+    with pytest.raises(ScheduledWorkError, match="revision conflict"):
+        store.update_inputs(universe_id="u-a", work_id=item.work_id,
+                            inputs_json='{"b": 2}',
+                            expected_revision=item.revision)
+
+
+def test_inputs_cannot_be_edited_from_another_universe(store):
+    item = _make(store)
+    with pytest.raises(ScheduledWorkError, match="no such automation"):
+        store.update_inputs(universe_id="u-other", work_id=item.work_id,
+                            inputs_json='{"a": 1}',
+                            expected_revision=item.revision)
+
+
+@pytest.mark.parametrize("bad", ["not json", "[1,2]"])
+def test_malformed_replacement_inputs_are_refused(store, bad):
+    item = _make(store)
+    with pytest.raises(ScheduledWorkError, match="inputs_json"):
+        store.update_inputs(universe_id="u-a", work_id=item.work_id,
+                            inputs_json=bad, expected_revision=item.revision)
+    assert json.loads(store.get(universe_id="u-a", work_id=item.work_id).inputs_json)

@@ -212,6 +212,47 @@ class ScheduledWorkStore:
             deliver_to=(deliver_to or "").strip(),
         )
 
+    def update_inputs(
+        self, *, universe_id: str, work_id: str, inputs_json: str,
+        expected_revision: int,
+    ) -> ScheduledWork:
+        """Change what an automation feeds its branch.
+
+        Without this an automation is create-only: a branch declaring an input
+        the automation does not supply can never be fixed, only replaced. Found
+        live 2026-08-07 — the agent looped correctly, ran the automation twice,
+        and could not repair it because nothing could edit it.
+
+        This is also the founder-facing shape of "change the spec and your
+        project changes": the inputs ARE the spec for most automations.
+        """
+        current = self.get(universe_id=universe_id, work_id=work_id)
+        if current is None:
+            raise ScheduledWorkError("no such automation in this universe")
+        if int(expected_revision) != current.revision:
+            raise ScheduledWorkError(
+                f"revision conflict: it is at {current.revision}, you sent "
+                f"{expected_revision} — re-read it and retry"
+            )
+        payload = (inputs_json or "").strip() or "{}"
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, ValueError) as exc:
+            raise ScheduledWorkError("inputs_json must be valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ScheduledWorkError("inputs_json must be a JSON object")
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE scheduled_work SET inputs_json = ?,"
+                " revision = revision + 1, updated_at = ?"
+                " WHERE universe_id = ? AND work_id = ?",
+                (json.dumps(parsed), time.time(), current.universe_id,
+                 current.work_id),
+            )
+        updated = self.get(universe_id=universe_id, work_id=work_id)
+        assert updated is not None
+        return updated
+
     def list_for(self, *, universe_id: str) -> list[ScheduledWork]:
         with self._connect() as conn:
             rows = conn.execute(
