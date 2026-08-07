@@ -541,6 +541,27 @@ exhausted; the three `-free` providers are disabled by the subscription-only
 policy (`TINYASSETS_ALLOW_API_KEY_PROVIDERS` unset, by design); ollama-local
 needs a local server that is not running. The chain drains to nothing.
 
+**CORRECTION 2026-08-07 (same session): the exhaustion is NOT REAL.** I told the
+host their provider subscriptions were spent. They are not. Verified by direct
+call inside the daemon container:
+
+    claude -p "reply with one word: alive"                        -> alive
+    CLAUDE_CONFIG_DIR=/data/u-tiny/.credentials/claude claude -p  -> alive
+
+Both the host's ambient token AND the universe's OWN credential answer. The
+daemon's `QuotaTracker._cooldowns` is also empty ({}), so nothing is marked
+unavailable there either. So "Pinned writer provider 'claude-code' exhausted" is
+a FALSE state produced somewhere on the run path, not a rate limit — and the
+real cause is still unidentified.
+
+Where to look next, in order: the run executes via a background executor, so
+check whether it runs in the WORKER containers (tinyassets-worker*, which have
+their own env and their own tracker instance) rather than in the daemon process
+whose tracker I inspected. Also check `invocation_carrier.provider` — the
+message says "Pinned writer" and `TINYASSETS_PIN_WRITER` is unset, which means
+the pin is coming from the automation's PROVIDER BINDING, and a bound-provider
+failure deliberately does not fall back.
+
 **Two fixes, both user-experience:**
 
 1. Make the error tell the truth: name each provider TRIED and why it was
