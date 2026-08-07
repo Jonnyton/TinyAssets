@@ -131,7 +131,6 @@ def test_no_grant_means_no_mcp_flags(tmp_path):
 def _capture_turn(monkeypatch, tmp_path, tier):
     """Run one `converse` turn and return the ModelConfig it launched with."""
     from tinyassets import universe_intelligence as ui
-
     from tinyassets.universe_bundle import seed_okf_bundle
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
