@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from tinyassets.api.app_ingress_http import (
+from tinyassets.app_ingress_http import (
     HMAC_ENV,
     SIGNATURE_HEADER,
     TIMESTAMP_HEADER,

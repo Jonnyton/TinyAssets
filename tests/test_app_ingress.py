@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tinyassets.api import app_ingress
+from tinyassets import app_ingress
 from tinyassets.custom_agents import create_binding, publish_definition
 from tinyassets.daemon_server import (
     grant_universe_access,

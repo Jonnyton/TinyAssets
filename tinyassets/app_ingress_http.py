@@ -188,7 +188,7 @@ def handle_request(
         return 400, {"error": "malformed"}
 
     if deliver is None:
-        from tinyassets.api.app_ingress import deliver_app_event as deliver
+        from tinyassets.app_ingress import deliver_app_event as deliver
 
     result = deliver(**fields)
     return 200, {

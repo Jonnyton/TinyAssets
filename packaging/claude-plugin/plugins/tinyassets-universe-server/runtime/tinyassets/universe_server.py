@@ -2811,7 +2811,7 @@ def main(
         # that app is the tunnel's origin, and production's ingress rules live
         # in the Cloudflare dashboard, so its public path exposure cannot be
         # read from this repo. A no-op when unconfigured.
-        from tinyassets.api.app_ingress_http import serve_in_background
+        from tinyassets.app_ingress_http import serve_in_background
 
         serve_in_background()
         app = create_streamable_http_app()

@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from tinyassets.api import app_ingress_http as http
+from tinyassets import app_ingress_http as http
 
 KEY_BYTES = b"k" * 32
 KEY_B64 = base64.b64encode(KEY_BYTES).decode("ascii")

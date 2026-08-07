@@ -8,7 +8,7 @@ import urllib.error
 
 import pytest
 
-from tinyassets.api import app_ingress_http as http
+from tinyassets import app_ingress_http as http
 from tinyassets.effectors import app_ingress_client as client
 
 KEY_BYTES = b"k" * 32
