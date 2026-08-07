@@ -35,12 +35,18 @@ Findings become failing tests, not documents.
 
 - [ ] 2.1 `tinyassets/universe_agent_tools.py`: a stdio MCP server bound to ONE
       universe at construction. No tool takes a universe id.
-- [ ] 2.2 File tools scoped to the universe dir: `fs_list`, `fs_read`,
-      `fs_write`, `fs_delete`. Containment via `Path.resolve()` + `is_relative_to`.
-- [ ] 2.3 Containment tests BOTH directions: `..` traversal, absolute paths
-      outside the root, and symlinks resolving outside are all rejected; and
-      ordinary in-root paths are ACCEPTED (a guard that rejects everything must
-      fail this).
+- [x] 2.2 **DONE** — `tinyassets/universe_agent_tools.py`: `UniverseWorkspace`
+      + `list_files`/`read_file`/`write_file`/`delete_file`, containment via
+      `Path.resolve()` + `is_relative_to` (never a string prefix). Atomic
+      temp+replace write. `.credentials` is RESERVED — containment alone is not
+      enough, since the provider vault lives INSIDE the workspace and a confined
+      agent could otherwise read its own credentials and quote them into chat.
+- [x] 2.3 **DONE** — 21 tests, both directions. Mutation-probed: containment
+      always-true reds 5 escape tests; refuse-everything reds 12 accept tests.
+      Symlink escape verified on LINUX (skips on Windows): read AND write
+      refused, in-workspace symlinks still resolve, sibling-prefix
+      (`u-test-evil` vs `u-test`) refused with the string-prefix trap asserted
+      explicitly in the test.
 - [ ] 2.4 Platform tools delegating to the existing surface — `agent`,
       `agent_binding`, `automation`, `connection`, `branch`, `goal`. Thin
       wrappers over `write_graph`/`read_graph`; no new authority logic.
