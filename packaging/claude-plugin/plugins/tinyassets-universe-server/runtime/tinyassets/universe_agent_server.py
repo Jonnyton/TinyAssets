@@ -112,32 +112,61 @@ def list_automations() -> str:
 
 
 @mcp.tool()
-def create_automation(name: str, description: str = "", goal: str = "") -> str:
-    """Create a new automation on this universe.
+def list_branch_versions() -> str:
+    """The branch versions I can build an automation from.
 
-    Automations need a provider binding and a destination grant before they can
-    run. `list_automations` reports those under `prerequisites` — read it first
-    and tell your founder what is still missing rather than guessing.
+    Call this BEFORE `create_automation`: it is where `accepted_spec_ref` and
+    `branch_version_id` come from. Never invent those values — if this returns
+    nothing, say so rather than guessing.
+    """
+    return _platform_action("branch", "list_versions")
+
+
+@mcp.tool()
+def create_automation(repository: str, accepted_spec_ref: str,
+                      branch_version_id: str, accepted_spec_content: str,
+                      cadence_seconds: int = 3600) -> str:
+    """Create a repository automation — the thing that opens pull requests.
+
+    This is how changes get made to a repo I am connected to, including my own.
+    I do not touch git: I create the automation and the platform runs it.
+
+    The exact shape matters and the API is strict about it (learned live
+    2026-08-07): `accepted_spec_content` and `cadence_seconds` sit at the TOP
+    level, while `repository` / `accepted_spec_ref` / `branch_version_id` go
+    inside `definition`. Putting `cadence_seconds` in `definition` is rejected as
+    an unknown field, and it must be at least 60.
+
+    If `list_automations` shows `ready: false`, fix that first — `enroll_compute`
+    for a provider, `connect_destination` for the repo — and say what was
+    missing instead of guessing.
 
     Args:
-        name: Short name for the automation.
-        description: What it is for.
-        goal: What the automation should accomplish each run.
+        repository: `owner/name`, e.g. `Jonnyton/TinyAssets`.
+        accepted_spec_ref: The accepted spec reference, e.g. `745e637dd8fb@99cb5a8f`.
+        branch_version_id: The branch version this runs against.
+        accepted_spec_content: The spec text itself.
+        cadence_seconds: How often it runs; minimum 60.
     """
-    # The API takes a `definition` OBJECT, not loose fields — a flat
-    # {"name": ..., "description": ...} is refused with
-    # "payload_json.definition must be an object" (found live 2026-08-07).
-    return _platform_action(
-        "automation",
-        "create",
-        payload={
-            "definition": {
-                "name": name,
-                "description": description,
-                "goal": goal or description or name,
-            }
+    # A universe's FIRST automation must carry `operator.soul_text` — the API
+    # refuses it with "operator.soul_text is required for the first universe
+    # loop" (found live 2026-08-07; later automations do not need it). Read it
+    # from the workspace rather than making the model hand over its own soul:
+    # it is already ours, and asking the model for it invites it to invent one.
+    payload = {
+        "accepted_spec_content": accepted_spec_content,
+        "cadence_seconds": max(int(cadence_seconds or 0), 60),
+        "definition": {
+            "repository": repository,
+            "accepted_spec_ref": accepted_spec_ref,
+            "branch_version_id": branch_version_id,
         },
-    )
+    }
+    try:
+        payload["operator"] = {"soul_text": read_file(_workspace(), "soul.md")}
+    except AgentToolError:
+        pass
+    return _platform_action("automation", "create", payload=payload)
 
 
 @mcp.tool()

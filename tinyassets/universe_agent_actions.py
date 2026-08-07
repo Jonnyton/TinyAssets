@@ -65,6 +65,12 @@ AGENT_ACTIONS = frozenset(
 #: take it back without opening a support ticket.
 CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 
+#: Discovery. A repository automation needs an `accepted_spec_ref` and a
+#: `branch_version_id`, and without a way to LIST them the agent can only be
+#: handed them by its founder — observed live 2026-08-07: it refused to invent
+#: them (correctly) and simply could not proceed. Read-only.
+BRANCH_ACTIONS = frozenset({"list_versions"})
+
 #: Outbound connections — GitHub above all. An automation cannot be created
 #: until requester-owned compute is enrolled AND a destination is authorized;
 #: `list` reports both as `prerequisites`. Without these the agent can see that
@@ -171,6 +177,9 @@ def execute_action(
     elif kind == "connection":
         if normalized not in CONNECTION_ACTIONS:
             raise AgentActionError(f"unsupported connection action: {normalized}")
+    elif kind == "branch":
+        if normalized not in BRANCH_ACTIONS:
+            raise AgentActionError(f"unsupported branch action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
     return _execute(
@@ -180,6 +189,44 @@ def execute_action(
         subject_id=subject_id,
         payload=payload,
     )
+
+
+def _list_branch_versions(subject_id: str) -> dict[str, Any]:
+    """Branch versions THIS subject published, newest first.
+
+    Filtered on `publisher`, taken from the token — never from the caller. A
+    branch version is a remixable artifact, but which ones a given agent may
+    build an automation from is an ownership question, and ownership here is
+    "you published it".
+    """
+    import sqlite3
+
+    from tinyassets.storage import data_dir
+
+    versions: list[dict[str, Any]] = []
+    try:
+        con = sqlite3.connect(f"file:{data_dir()}/.runs.db?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT branch_version_id, branch_def_id, notes, status, published_at"
+                " FROM branch_versions WHERE publisher = ?"
+                " ORDER BY published_at DESC LIMIT 50",
+                (subject_id,),
+            ).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        raise AgentActionError("could not read branch versions") from exc
+    for row in rows:
+        versions.append(
+            {
+                "branch_version_id": row[0],
+                "branch_def_id": row[1],
+                "notes": row[2] or "",
+                "status": row[3] or "",
+            }
+        )
+    return {"branch_versions": versions, "count": len(versions)}
 
 
 def _execute(
@@ -217,6 +264,9 @@ def _execute(
                 expected_revision=expected_revision,
                 payload=fields.get("payload"),
             )
+        if surface == "branch":
+            return _list_branch_versions(subject_id)
+
         if surface == "connection":
             from tinyassets.api.cloud_connections import cloud_connections
 
@@ -267,6 +317,7 @@ def _execute(
 
 __all__ = [
     "AGENT_ACTIONS",
+    "BRANCH_ACTIONS",
     "CONNECTION_ACTIONS",
     "CHAT_SURFACE_ACTIONS",
     "AUTOMATION_ACTIONS",

@@ -248,3 +248,47 @@ def test_the_connection_surface_uses_the_token_universe(monkeypatch):
     execute_action(token=token, surface="connection", action="list",
                    payload={"universe_id": "u-victim"})
     assert seen["universe_id"] == "u-mine"
+
+
+def test_branch_versions_are_scoped_to_the_token_subject(tmp_path, monkeypatch):
+    """Discovery must not leak another publisher's branch versions.
+
+    The subject comes from the TOKEN; a caller supplying a publisher must not
+    be able to widen the result.
+    """
+    import sqlite3
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    con = sqlite3.connect(tmp_path / ".runs.db")
+    con.execute(
+        "CREATE TABLE branch_versions (branch_version_id TEXT, branch_def_id TEXT,"
+        " content_hash TEXT, snapshot_json TEXT, notes TEXT, publisher TEXT,"
+        " published_at REAL, parent_version_id TEXT, status TEXT,"
+        " rolled_back_at REAL, rolled_back_by TEXT, rolled_back_reason TEXT,"
+        " watch_window_seconds INTEGER)"
+    )
+    con.executemany(
+        "INSERT INTO branch_versions (branch_version_id, branch_def_id, notes,"
+        " publisher, published_at, status) VALUES (?,?,?,?,?,?)",
+        [
+            ("mine@aaaa", "mine", "ok", "user_me", 2.0, "published"),
+            ("theirs@bbbb", "theirs", "secret", "user_other", 3.0, "published"),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    token = mint_turn_token(universe_id="u-a", subject_id="user_me")
+    result = execute_action(
+        token=token, surface="branch", action="list_versions",
+        payload={"publisher": "user_other"},
+    )
+    ids = [v["branch_version_id"] for v in result["branch_versions"]]
+    assert ids == ["mine@aaaa"], ids
+    assert result["count"] == 1
+
+
+def test_an_unknown_branch_action_is_refused():
+    token = mint_turn_token(universe_id="u-a", subject_id="user_me")
+    with pytest.raises(AgentActionError, match="unsupported branch action"):
+        execute_action(token=token, surface="branch", action="delete_version")
