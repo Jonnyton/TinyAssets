@@ -432,3 +432,39 @@ mapping against the host's real WorkOS subject.
 recreated. Given three deploy-caused outages on 2026-08-07, that is a host
 decision, not something to do unilaterally.
 
+## 2026-08-07 — BLOCKER for "any kind of automation": the platform has exactly ONE type
+
+Host goal: a power user on a phone should be able to build and manage ANY
+automation — a crypto wallet trading prediction markets, a scraper that drafts
+posts in your niche, CRM tasks. The repo-spec one is just an example.
+
+**Today only the repo-spec one is possible.** `api/cloud_automations.py` create
+路 is hardcoded: `_derive_phone_work_definition` (named for phone input, but not
+generic) requires `repository`, `accepted_spec_ref` and `branch_version_id`, and
+the result is always constructed as `RepositorySpecWorkDefinition.from_dict(...)`.
+There is no type switch and no second definition class.
+
+Confirmed as a user 2026-08-07: asked the live agent for a niche-watching
+post-drafting automation. It made ZERO tool calls and did not fabricate one —
+correct behaviour, no capability.
+
+**What this needs — a generic work-definition primitive.** The current shape is
+pre-built complexity (one bundled workflow) where the theme calls for a reduced
+composable primitive. Sketch:
+
+- A work definition is `{kind, inputs, schedule, declared_operations}`; the
+  repo-spec one becomes ONE registered kind, not the only shape.
+- `kind` resolves to a validator + a runner. Users compose new kinds from
+  existing branch/node primitives rather than us shipping a class per domain —
+  otherwise "crypto trading" and "CRM" become platform features and the
+  bundled-workflow trap returns.
+- Capability comes from `declared_operations` -> `operation_scopes` (already
+  built and user-definable), so a trading automation declares wallet operations
+  and a scraper declares fetch/post ones, each getting only its own scopes.
+- The effect surfaces those kinds need (wallet signing, HTTP fetch, social
+  post, CRM write) are `external-effect-adapters` / `outbound-boundary-layer`
+  concerns — check those specs before inventing anything.
+
+**Do NOT** solve this by adding a `CryptoWalletWorkDefinition` next to
+`RepositorySpecWorkDefinition`. That is the same mistake one domain wider — see
+`enabling-primitives-not-prebuilt-complexity`.
