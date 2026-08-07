@@ -2512,6 +2512,34 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
     return (_universe_dir(uid) / "wiki").resolve()
 
 
+#: What a universe's own learned canon declares, unless a caller says otherwise.
+#:
+#: `private` here does NOT mean "the founder cannot see it" — a *granted* reader
+#: of the universe is exempt from page-level restriction
+#: (`visibility.page_content_permitted`). It means a page the universe learned
+#: from a conversation is not served to readers who were never granted the
+#: universe, even though the universe itself defaults to `public`
+#: (`visibility.DEFAULT_CREATE_VISIBILITY`).
+CANON_DEFAULT_VISIBILITY = "private"
+
+
+def _stamp_page_visibility(content: str, visibility: str) -> str:
+    """Force a page's declared visibility, overriding whatever the body said.
+
+    Stamped by the server rather than trusted from the content because the
+    content of learned canon is model-generated: a page that could decline to
+    declare its visibility would silently inherit the universe's, which is the
+    whole defect this closes. `content_visibility` is dropped for the same
+    reason — leaving a second key that also answers this question means a future
+    reader could consult the one the model set.
+    """
+    meta, body = _parse_frontmatter(content)
+    meta.pop("content_visibility", None)
+    meta["visibility"] = visibility
+    rendered = "\n".join(f"{key}: {value}" for key, value in meta.items())
+    return f"---\n{rendered}\n---\n{body.lstrip(chr(10))}"
+
+
 def write_universe_canon(
     universe_id: str,
     *,
@@ -2519,6 +2547,7 @@ def write_universe_canon(
     filename: str,
     content: str,
     log_entry: str = "",
+    visibility: str = CANON_DEFAULT_VISIBILITY,
 ) -> str:
     """First-party, in-process canon write into a universe's OWN wiki.
 
@@ -2536,7 +2565,7 @@ def write_universe_canon(
         return _wiki_write(
             category=category,
             filename=filename,
-            content=content,
+            content=_stamp_page_visibility(content, visibility),
             log_entry=log_entry,
         )
 

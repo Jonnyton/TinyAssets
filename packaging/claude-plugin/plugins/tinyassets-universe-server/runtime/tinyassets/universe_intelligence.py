@@ -373,6 +373,19 @@ def _commit_canon(universe_id: str, canon: object) -> list[str]:
     First-party wiki write (:func:`tinyassets.api.wiki.write_universe_canon`) —
     the intelligence is the sole writer of its own canon. Returns the titles
     actually written; skips malformed / empty entries.
+
+    "Private" used to be aspirational: this docstring and
+    :func:`commit_learning`'s both said it, while the write declared no
+    visibility at all, so a learned page deferred to its universe — and a
+    universe is created ``public`` by default
+    (``visibility.DEFAULT_CREATE_VISIBILITY``). A founder speaking confidentially
+    to their universe therefore produced canon that anonymous ``read_page`` and
+    search returned; reproduced by cross-family review 2026-08-06.
+
+    `write_universe_canon` now stamps ``visibility: private`` server-side. The
+    founder still reads it — a *granted* reader of the universe is exempt from
+    page-level restriction — so conversing stays exactly as frictionless as it
+    was. Publishing a learned page stays a deliberate act.
     """
     written: list[str] = []
     if not universe_id or not isinstance(canon, list):
