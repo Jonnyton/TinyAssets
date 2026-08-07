@@ -9,6 +9,7 @@ stops deciding the grant.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -200,3 +201,24 @@ def test_a_non_founder_turn_is_launched_with_none(monkeypatch, tmp_path):
     config = _capture_turn(monkeypatch, tmp_path, interlocutor.T1)
     assert config.mcp_config_path == "", "a non-founder turn was handed tools"
     assert "mcp__*" in config.disallowed_tools
+
+
+def test_the_grant_makes_the_server_importable(ctx):
+    """The server runs with the SANDBOXED cwd, so it needs PYTHONPATH.
+
+    Found live 2026-08-07: without it the server started and died with
+    "No module named 'tinyassets'". The CLI surfaces that only as
+    "Connection closed", and the turn simply sees a tool that is not there — so
+    a missing PYTHONPATH is indistinguishable from a policy refusal unless
+    someone reads the MCP log.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    import tinyassets
+
+    config = _sandboxed_config(ctx, grant_tools=True)
+    payload = json.loads(_Path(config.mcp_config_path).read_text(encoding="utf-8"))
+    env = payload["mcpServers"][_ENGINE_TOOL_SERVER]["env"]
+    package_root = str(_Path(tinyassets.__file__).resolve().parent.parent)
+    assert package_root in env["PYTHONPATH"].split(os.pathsep)

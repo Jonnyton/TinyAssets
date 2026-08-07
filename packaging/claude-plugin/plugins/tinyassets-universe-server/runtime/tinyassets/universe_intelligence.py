@@ -126,6 +126,17 @@ def _write_turn_tool_grant(universe_dir: Path) -> str:
     import json
     import tempfile
 
+    # The CLI launches this server with the SANDBOXED cwd (the universe dir), so
+    # `-m tinyassets.…` cannot find the package the way the daemon does. Found
+    # live 2026-08-07: the server started and died with "No module named
+    # 'tinyassets'", which the CLI reports only as "Connection closed" — the turn
+    # itself just sees a tool that is not there.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    existing_path = os.environ.get("PYTHONPATH", "")
+    python_path = (
+        f"{package_root}{os.pathsep}{existing_path}" if existing_path else package_root
+    )
+
     config = {
         "mcpServers": {
             _ENGINE_TOOL_SERVER: {
@@ -137,6 +148,7 @@ def _write_turn_tool_grant(universe_dir: Path) -> str:
                     # daemon does; without this an inherited value could point a
                     # turn at another deployment's data.
                     "TINYASSETS_DATA_DIR": os.environ.get("TINYASSETS_DATA_DIR", ""),
+                    "PYTHONPATH": python_path,
                 },
             }
         }
