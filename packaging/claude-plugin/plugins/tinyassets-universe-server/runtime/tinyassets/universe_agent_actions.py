@@ -76,6 +76,11 @@ BRANCH_ACTIONS = frozenset({"list_versions", "run"})
 #: authority the founder already has.
 OPERATION_SCOPE_ACTIONS = frozenset({"list", "define"})
 
+#: Automations of ANY kind — schedule + branch + inputs + declared operations.
+#: The repo-spec surface builds exactly one shape; this one builds whatever the
+#: user composed a branch for. See `storage/scheduled_work.py`.
+SCHEDULED_WORK_ACTIONS = frozenset({"list", "create", "pause", "resume", "run_now"})
+
 #: Outbound connections — GitHub above all. An automation cannot be created
 #: until requester-owned compute is enrolled AND a destination is authorized;
 #: `list` reports both as `prerequisites`. Without these the agent can see that
@@ -188,6 +193,9 @@ def execute_action(
     elif kind == "operation_scope":
         if normalized not in OPERATION_SCOPE_ACTIONS:
             raise AgentActionError(f"unsupported operation-scope action: {normalized}")
+    elif kind == "scheduled_work":
+        if normalized not in SCHEDULED_WORK_ACTIONS:
+            raise AgentActionError(f"unsupported automation action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
     return _execute(
@@ -256,6 +264,74 @@ def _list_branch_versions(subject_id: str) -> dict[str, Any]:
 #: Actions whose cost must be covered by a declared operation. Anything absent
 #: needs no capability at all, so reads stay free.
 _ACTIONS_REQUIRING_DECLARED_OPERATION = frozenset({("branch", "run")})
+
+
+def _scheduled_work(
+    action: str, universe_id: str, subject_id: str, fields: dict
+) -> dict[str, Any]:
+    """Automations of any kind, composed from a branch the user already built."""
+    from tinyassets.storage.scheduled_work import (
+        ScheduledWorkError,
+        ScheduledWorkStore,
+    )
+
+    store = ScheduledWorkStore(_base_path_for_scopes())
+    try:
+        if action == "list":
+            return {
+                "automations": [
+                    item.as_dict() for item in store.list_for(universe_id=universe_id)
+                ]
+            }
+        if action == "create":
+            created = store.create(
+                universe_id=universe_id,
+                name=str(fields.get("name") or ""),
+                kind=str(fields.get("kind") or ""),
+                branch_def_id=str(fields.get("branch_def_id") or ""),
+                inputs_json=str(fields.get("inputs_json") or ""),
+                cadence_seconds=fields.get("cadence_seconds") or 3600,
+                declared_operations=list(fields.get("declared_operations") or []),
+                owner_id=subject_id,
+            )
+            return created.as_dict()
+        if action in {"pause", "resume"}:
+            updated = store.set_state(
+                universe_id=universe_id,
+                work_id=str(fields.get("work_id") or ""),
+                state="paused" if action == "pause" else "active",
+                expected_revision=int(fields.get("expected_revision") or 0),
+            )
+            return updated.as_dict()
+    except ScheduledWorkError as exc:
+        raise AgentActionError(str(exc)) from exc
+
+    # run_now: execute the branch this automation was built around, right now,
+    # with its own inputs. Same executor the schedule would use, so "does it
+    # work" is answerable before waiting a cadence.
+    item = store.get(
+        universe_id=universe_id, work_id=str(fields.get("work_id") or "")
+    )
+    if item is None:
+        raise AgentActionError("no such automation in this universe")
+    from tinyassets.universe_server import run_graph
+
+    raw = run_graph(
+        branch_def_id=item.branch_def_id,
+        graph_id=universe_id,
+        inputs_json=item.inputs_json,
+        run_name=f"{item.name} (manual)",
+    )
+    try:
+        result = json.loads(raw)
+    except (TypeError, ValueError):
+        result = {"result": str(raw)[:2000]}
+    run_id = str(result.get("run_id") or "")
+    if run_id:
+        store.record_run(
+            universe_id=universe_id, work_id=item.work_id, run_id=run_id
+        )
+    return result
 
 
 def _base_path_for_scopes():
@@ -343,6 +419,9 @@ def _execute(
                 expected_revision=expected_revision,
                 payload=fields.get("payload"),
             )
+        if surface == "scheduled_work":
+            return _scheduled_work(action, universe_id, subject_id, payload or {})
+
         if surface == "operation_scope":
             from tinyassets.storage.operation_scopes import (
                 OperationScopeError,
@@ -457,6 +536,7 @@ __all__ = [
     "AGENT_ACTIONS",
     "BRANCH_ACTIONS",
     "OPERATION_SCOPE_ACTIONS",
+    "SCHEDULED_WORK_ACTIONS",
     "CONNECTION_ACTIONS",
     "CHAT_SURFACE_ACTIONS",
     "AUTOMATION_ACTIONS",

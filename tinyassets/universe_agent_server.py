@@ -123,6 +123,91 @@ def list_branch_versions() -> str:
 
 
 @mcp.tool()
+def list_my_automations() -> str:
+    """Every automation I have built, of any kind."""
+    return _platform_action("scheduled_work", "list")
+
+
+@mcp.tool()
+def build_automation(name: str, kind: str, branch_def_id: str,
+                     inputs_json: str = "{}", cadence_seconds: int = 3600,
+                     declared_operations: str = "") -> str:
+    """Build an automation of ANY kind — this is the general one.
+
+    An automation is: run this BRANCH, on this SCHEDULE, with these INPUTS,
+    spending only what its DECLARED OPERATIONS allow. A crypto-trading one and a
+    CRM one differ in their branch and their operations, not in anything I have
+    to ask the platform for.
+
+    So the real question is always "which branch does this work?" — use
+    `list_branch_versions` to see what exists. If nothing does, say so: the
+    branch has to exist before an automation can run it.
+
+    Created PAUSED. Nothing starts spending my founder's compute the moment they
+    describe it; I tell them it is built and let them start it.
+
+    Args:
+        name: Short lowercase name, unique in this universe.
+        kind: A free label for what sort of work this is, e.g. `niche_watch`,
+            `crm_sync`, `wallet_trade`. Not a fixed menu.
+        branch_def_id: The branch that does the work, from `list_branch_versions`.
+        inputs_json: JSON object of inputs for the branch.
+        cadence_seconds: How often it runs; minimum 60.
+        declared_operations: Comma-separated operations it may perform. These
+            decide what it may spend — see `list_operation_scopes`.
+    """
+    return _platform_action(
+        "scheduled_work", "create",
+        name=name, kind=kind, branch_def_id=branch_def_id,
+        inputs_json=inputs_json, cadence_seconds=cadence_seconds,
+        declared_operations=[
+            o.strip() for o in declared_operations.split(",") if o.strip()
+        ],
+    )
+
+
+@mcp.tool()
+def start_automation(work_id: str, expected_revision: int) -> str:
+    """Start one of my automations running on its schedule.
+
+    Args:
+        work_id: From `list_my_automations`.
+        expected_revision: Its current `revision`.
+    """
+    return _platform_action(
+        "scheduled_work", "resume",
+        work_id=work_id, expected_revision=expected_revision,
+    )
+
+
+@mcp.tool()
+def stop_automation(work_id: str, expected_revision: int) -> str:
+    """Pause one of my automations.
+
+    Args:
+        work_id: From `list_my_automations`.
+        expected_revision: Its current `revision`.
+    """
+    return _platform_action(
+        "scheduled_work", "pause",
+        work_id=work_id, expected_revision=expected_revision,
+    )
+
+
+@mcp.tool()
+def run_automation_now(work_id: str) -> str:
+    """Run one of my automations immediately, without waiting for its schedule.
+
+    Same executor the schedule uses, so "does this actually work" is answerable
+    straight away instead of after a cadence.
+
+    Args:
+        work_id: From `list_my_automations`.
+    """
+    return _platform_action("scheduled_work", "run_now", work_id=work_id)
+
+
+@mcp.tool()
 def list_operation_scopes() -> str:
     """The kinds of work my automations may do, and what each may spend.
 
