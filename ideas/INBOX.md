@@ -392,36 +392,43 @@ workspace route independently with no schema change.
 Until 1 and 2 exist, "create an agent I can talk to" can only mean re-pointing
 the one bot. Say that plainly rather than implying a second presence exists.
 
-## 2026-08-07 — Self-modification chain: exactly where it stops, and why
+## 2026-08-07 — Self-modification chain: CORRECTED — compute enrollment is an env var, not missing code
 
-The agent can now REACH every automation control that exists (`list`, `get`,
-`create`, `pause`, `resume`, `rebind`, `bind_provider`, plus a `connection`
-surface). Walked the whole prerequisite chain live through the same action path
-the agent uses. Three distinct outcomes, only one of which is agent-side:
+**I claimed twice that requester-owned compute enrollment was "unbuilt platform
+work" and that "nobody can create an automation, agent or human". Both wrong.**
+`RequesterProviderEnrollmentResolver.from_environment()` reads
+`TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON` and returns an EMPTY resolver
+when it is unset — so "requester-owned provider enrollment is unavailable" means
+*this deployment has no enrollment document*, not *this feature does not exist*.
 
-1. `automation.bind_provider` -> **`provider_binding_setup_required`:
-   "requester-owned provider enrollment is unavailable"** (PermissionError).
-   This is a PLATFORM gap, not an agent gap — enrolling the founder's own
-   compute is not implemented. See openspec changes
-   `activate-requester-owned-cloud-compute-binding` and
-   `activate-fingerprint-bound-provider-enrollment`. Until it lands, NO
-   automation can be created by anyone, agent or human.
-2. `connection.list` -> **works**, returns `{connections: [], count: 0}`.
-3. `connection.connect` -> validates correctly and stops at
-   **"WorkOS user identity is invalid"**.
+Proven locally end-to-end: with the document set, `bind_provider` returns
+`status: provider_bound`, `state: active`, `binding_id: pwb_...`, and the
+prerequisites message changes from "enroll requester-owned compute" to "bind one
+enrolled requester-owned provider".
 
-(3) is the important one, and it is our own doing. The founder app-principal
-mapping points at `u-tiny-operator`, a SYNTHETIC actor created by hand on
-2026-08-07 to prove recognition. The connection flow needs a real
-WorkOS-authenticated subject. So the token's `subject_id` is honest about who it
-names — it just names somebody who does not exist in WorkOS.
+**The document shape, with the two traps that silently reject it.** The parser
+`continue`s on any mismatch and logs nothing, so a wrong field looks identical to
+no configuration at all:
 
-**Consequence for the next round:** re-provision the founder mapping against the
-host's real WorkOS subject, not a synthetic operator. Recognition, soul writes,
-and agent creation all work with the synthetic one because they authorise
-against the universe ACL; anything reaching an EXTERNAL identity provider does
-not. That split is worth remembering — a synthetic actor passes every
-local check and fails at the first federated one.
+- `credential_reference_digest` / `assignment_digest` must be
+  **`sha256:<64 hex>`**. A bare hex digest is refused ("must be a canonical
+  sha256 digest") and so is `v1:<hex>`.
+- `expires_at` must be **`...Z`-suffixed or bare**, NEVER `+00:00`.
+  `_not_expired` does `value.removesuffix("Z") + "+00:00"`, so a correctly
+  formatted ISO-8601 offset becomes `+00:00+00:00`, fails to parse, and is
+  treated as EXPIRED. A valid future date silently reads as stale.
 
-The GitHub connection is the self-modification path: authorize the destination,
-then an automation opens the PR. Nothing gives the engine git or shell.
+All 12 keys in `_FIELDS` must be present exactly — no more, no less.
+
+**What actually remains for the full chain:** `connection.connect` requires
+WorkOS Pipes and a real WorkOS user (`cloud_connections` constructs
+`WorkOSPipesClient`). On production it stops at "WorkOS user identity is
+invalid" because the founder mapping names `u-tiny-operator`, a synthetic actor
+created by hand on 2026-08-07. That one is genuinely external — re-provision the
+mapping against the host's real WorkOS subject.
+
+**To enable on production:** the daemon reads the env at call time, but
+`docker restart` does NOT pick up a new `env_file` entry — the container must be
+recreated. Given three deploy-caused outages on 2026-08-07, that is a host
+decision, not something to do unilaterally.
+
