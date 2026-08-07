@@ -222,3 +222,59 @@ def test_the_grant_makes_the_server_importable(ctx):
     env = payload["mcpServers"][_ENGINE_TOOL_SERVER]["env"]
     package_root = str(_Path(tinyassets.__file__).resolve().parent.parent)
     assert package_root in env["PYTHONPATH"].split(os.pathsep)
+
+
+def test_a_granted_turn_is_told_it_has_hands(monkeypatch, tmp_path):
+    """Tools it does not know about are tools it does not use.
+
+    Observed live 2026-08-07: the turn discovered the server via ToolSearch and
+    made 26 `workspace_read` calls, then wrote nothing — because its prompt still
+    described a universe whose files were maintained for it.
+    """
+    from tinyassets import universe_intelligence as ui
+    from tinyassets.api import interlocutor
+
+    captured: dict = {}
+    real = ui._build_persona_system_prompt
+    monkeypatch.setattr(ui, "_build_persona_system_prompt", lambda *a, **k: "PERSONA")
+
+    def _capture(prompt, *, system="", **kwargs):
+        captured.setdefault("systems", []).append(system)
+        return "reply"
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "u-hands"
+    universe.mkdir()
+    monkeypatch.setattr(ui, "_universe_dir", lambda uid: universe)
+    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-hands")
+    monkeypatch.setattr(ui, "call_provider", _capture)
+    monkeypatch.setattr(ui, "extract_learning", lambda *a, **k: {})
+    monkeypatch.setattr(ui, "commit_learning", lambda *a, **k: None)
+
+    ui.converse("u-hands", "hello", tier=interlocutor.FOUNDER)
+    assert "workspace_write" in captured["systems"][0]
+    assert "not a description of what I AM" in captured["systems"][0]
+    assert real is not None  # keep the real builder referenced for clarity
+
+
+def test_an_ungranted_turn_is_not_told_about_tools(monkeypatch, tmp_path):
+    """Describing tools a turn does not hold makes it promise what it cannot do."""
+    from tinyassets import universe_intelligence as ui
+    from tinyassets.api import interlocutor
+
+    captured: dict = {}
+    monkeypatch.setattr(ui, "_build_persona_system_prompt", lambda *a, **k: "PERSONA")
+
+    def _capture(prompt, *, system="", **kwargs):
+        captured.setdefault("systems", []).append(system)
+        return "reply"
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    universe = tmp_path / "u-nohands"
+    universe.mkdir()
+    monkeypatch.setattr(ui, "_universe_dir", lambda uid: universe)
+    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-nohands")
+    monkeypatch.setattr(ui, "call_provider", _capture)
+
+    ui.converse("u-nohands", "hello", tier=interlocutor.T1)
+    assert "workspace_write" not in captured["systems"][0]

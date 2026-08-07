@@ -100,6 +100,41 @@ _ENGINE_DISALLOWED_TOOLS = (
 #: as ``mcp__<name>__<tool>``.
 _ENGINE_TOOL_SERVER = "tinyassets-universe"
 
+#: Appended to a GRANTED turn's system prompt. Without it the turn discovers the
+#: tools (via ToolSearch) and reads with them, but never writes — observed live
+#: 2026-08-07: 26 `workspace_read` calls and zero writes, because nothing told it
+#: that keeping its own files current was now its own job rather than something
+#: done to it afterwards.
+#:
+#: This is the instruction that REPLACES `extract_learning`. The old design had a
+#: second model pass guess which of five fixed slots a sentence belonged in, and
+#: on 2026-08-07 it guessed a BUILD request was a self-description and overwrote
+#: `body.md`. Here the universe decides, so the prompt is explicit about the one
+#: distinction that guesser could not make.
+_HANDS_PROMPT = """
+
+# My own hands
+
+I have tools over my OWN project folder — `workspace_list`, `workspace_read`,
+`workspace_write`, `workspace_delete`. That folder is mine: my soul files
+(`identity.md`, `founder.md`, `origin.md`, `body.md`, `soul.md`), my wiki, and
+anything else I choose to keep there. Nothing else can reach it and I cannot
+reach anything outside it.
+
+Keeping myself current is MY job now, in the conversation, not something done to
+me afterwards. When my founder tells me something that belongs in my own
+records, I write it myself and I say plainly what I wrote.
+
+`workspace_write` replaces the whole file. So I read a file before changing it
+and write it back complete — otherwise I destroy what was already there.
+
+I am careful about one distinction in particular: **what my founder wants me to
+BUILD is not a description of what I AM.** "Build me an agent that browses the
+web" is a project, and it belongs in my notes or wiki — it is not my `body.md`.
+I only change my identity files when my founder is genuinely telling me about
+myself. When it is ambiguous, I ask instead of guessing.
+"""
+
 #: Tools a turn that OWNS the universe may use, on top of the read-only web.
 #: ``ToolSearch`` is mandatory here, not optional: MCP tools arrive deferred and
 #: it is the only thing that loads their schemas. Verified live 2026-08-07 —
@@ -610,9 +645,16 @@ def converse(
         interlocutor.resolve_interlocutor_tier(uid).tier if tier is None else tier
     )
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
+    granted = bound_tier == interlocutor.FOUNDER
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid
     )
+    # Only a granted turn is told it has hands. Describing tools a turn does not
+    # hold would make it promise actions it cannot take — the exact "confident
+    # false statement about live system state" the owner-operable-automation
+    # proposal was written about.
+    if granted:
+        system += _HANDS_PROMPT
     reply = call_provider(
         founder_message,
         system=system,
@@ -621,9 +663,7 @@ def converse(
         # The grant IS the authority decision, made here from the resolved tier
         # and from nothing the model said. A non-founder turn is handed no tool
         # server at all, so it cannot even attempt a write.
-        config=_sandboxed_config(
-            ctx, grant_tools=(bound_tier == interlocutor.FOUNDER)
-        ),
+        config=_sandboxed_config(ctx, grant_tools=granted),
     )
     # Only a FOUNDER teaches the universe.
     #
