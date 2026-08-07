@@ -7,6 +7,8 @@ credential, and the transport gets back nothing it could forge or leak.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from tinyassets import app_ingress
@@ -282,6 +284,55 @@ def test_recognition_failure_degrades_instead_of_killing_the_turn(base, monkeypa
     # undoing reverts the data dir too and every later lookup silently misses.)
     assert result.handled is True
     assert calls["converse"][0]["founder_grant"] is None
+
+
+def test_an_unmapped_principal_is_named_in_the_log(base, caplog):
+    """An operator must be able to discover which id has no mapping.
+
+    Found live: `u-tiny` answered in Slack for a whole evening and learned
+    nothing, because the founder had no app-principal mapping. Every surface
+    was silent about it — `recognize` returns None for a stranger and for an
+    unprovisioned founder alike, by design — so the id needed to fix it existed
+    nowhere: not in the logs, not in the ledger (which is content-free), and
+    not in any persisted actor record, because nothing was persisted.
+
+    Asserts the SENDER's workspace, not the delivery workspace: the mapping is
+    keyed on the former, so logging the latter would send an operator to
+    provision a key that never matches.
+    """
+    binding = _make_universe(base, "u-ingress-a")
+    _bind(base, "u-ingress-a", binding)
+
+    with caplog.at_level(logging.INFO, logger="tinyassets.app_ingress"):
+        result, _ = _deliver(actor_team_id="T-GUEST-HOME")
+
+    assert result.handled is True
+    unmapped = [r.getMessage() for r in caplog.records if "no founder mapping" in r.getMessage()]
+    assert len(unmapped) == 1, caplog.text
+    message = unmapped[0]
+    assert SENDER in message
+    assert "workspace=T-GUEST-HOME" in message
+    assert f"installation={APP}:{TEAM}" in message
+
+
+def test_a_recognised_founder_is_not_logged_as_unmapped(base, monkeypatch, caplog):
+    """The notice must track recognition, not merely "we looked".
+
+    Without this, a log line emitted unconditionally still passes the test
+    above while telling an operator their working founder is broken.
+    """
+    binding = _make_universe(base, "u-ingress-a")
+    _bind(base, "u-ingress-a", binding)
+    monkeypatch.setattr(
+        "tinyassets.founder_grant.FounderRecognizer.recognize",
+        lambda self, event, **kwargs: object(),
+        raising=True,
+    )
+
+    with caplog.at_level(logging.INFO, logger="tinyassets.app_ingress"):
+        _deliver()
+
+    assert not [r for r in caplog.records if "no founder mapping" in r.getMessage()]
 
 
 def test_an_empty_reply_is_a_fault_not_a_silent_success(base):

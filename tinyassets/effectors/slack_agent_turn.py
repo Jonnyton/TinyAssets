@@ -230,6 +230,24 @@ def build_ingress_handlers(
         if not isinstance(user, str) or not user.strip():
             return
 
+        # The sender's provider id, in the operator's own log. This transport
+        # already reads it two lines up to validate the event, so logging it
+        # discloses nothing new — and without it an operator whose agent does
+        # not recognise them has no way to find the id that would fix it. The
+        # message text is deliberately NOT logged: who spoke is operations,
+        # what they said is the universe's.
+        # Both workspaces, because a principal is keyed on the SENDER's
+        # workspace, not the delivery one — they differ for a Slack Connect
+        # guest, and an operator reading only the delivery id would provision
+        # a mapping that never matches.
+        logger.info(
+            "slack agent: forwarding %s from sender=%s actor_team=%s delivery_team=%s",
+            str(event.get("type") or "event"),
+            user.strip(),
+            str(event.get("actor_team_id") or "") or team.strip(),
+            team.strip(),
+        )
+
         await to_thread(
             deliver,
             provider="slack",

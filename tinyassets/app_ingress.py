@@ -265,12 +265,32 @@ def _recognize(
             # that is the second durable learning commit the ledger prevents.
             logger.info("app ingress: replayed event, withholding founder authority")
             return None
-        return FounderRecognizer(base).recognize(
+        grant = FounderRecognizer(base).recognize(
             admitted.event,
             universe_id=routed.universe_id,
             agent_binding_id=routed.agent_binding_id,
             binding_revision=routed.binding_revision,
         )
+        if grant is None:
+            # An ordinary sender and an unprovisioned founder look identical
+            # from here, and must — the recognizer refuses to say which. But
+            # the operator needs SOME way to discover that their own account
+            # has no mapping, and until then the universe silently forgets
+            # every conversation they have with it. So log the exact tuple a
+            # mapping is keyed on, and nothing about the message itself.
+            # `workspace` here is the SENDER's own workspace, which is what the
+            # mapping is keyed on — not the delivery workspace in the
+            # installation id. They differ for a Slack Connect guest.
+            logger.info(
+                "app ingress: no founder mapping for provider=slack "
+                "installation=%s:%s workspace=%s sender=%s (answering as a "
+                "stranger; nothing this sender says will be learned)",
+                api_app_id,
+                workspace_id,
+                actor_team_id or workspace_id,
+                external_sender_id,
+            )
+        return grant
     except Exception:  # noqa: BLE001 - a turn must survive this
         logger.warning("app ingress: founder recognition failed closed")
         return None
