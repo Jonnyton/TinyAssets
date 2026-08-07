@@ -193,3 +193,58 @@ def test_the_api_ownership_check_still_runs(tmp_path, monkeypatch):
     result = execute_action(token=token, surface="automation", action="list")
     # `_not_found()` — the API refuses a non-owner rather than listing.
     assert "error" in result or not result.get("automations")
+
+
+def test_the_connection_surface_reaches_the_api(monkeypatch):
+    """Enrolling compute and authorizing GitHub are the automation prerequisites.
+
+    Without these the agent can SEE it is blocked and do nothing about it, which
+    is exactly the complaint `owner-operable-automation` records: "I can request
+    state changes but I can't spin one up myself."
+    """
+    seen = []
+    monkeypatch.setattr(
+        "tinyassets.api.cloud_connections.cloud_connections",
+        lambda **k: seen.append(k["action"]) or {"ok": True},
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    for action in sorted(actions.CONNECTION_ACTIONS):
+        execute_action(token=token, surface="connection", action=action)
+    assert seen == sorted(actions.CONNECTION_ACTIONS)
+
+
+def test_an_unknown_connection_action_is_refused(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "tinyassets.api.cloud_connections.cloud_connections",
+        lambda **k: called.append(k) or {},
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    with pytest.raises(AgentActionError, match="unsupported connection action"):
+        execute_action(token=token, surface="connection", action="revoke_everything")
+    assert called == []
+
+
+def test_bind_provider_is_reachable(monkeypatch):
+    """The prerequisite the agent must be able to satisfy itself."""
+    seen = []
+    monkeypatch.setattr(
+        "tinyassets.api.cloud_automations.cloud_automations",
+        lambda **k: seen.append(k["action"]) or {"ok": True},
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    execute_action(token=token, surface="automation", action="bind_provider",
+                   payload={"payload": {"provider": "claude-code"}})
+    assert seen == ["bind_provider"]
+
+
+def test_the_connection_surface_uses_the_token_universe(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(
+        "tinyassets.api.cloud_connections.cloud_connections",
+        lambda **k: seen.update(k) or {},
+    )
+    token = mint_turn_token(universe_id="u-mine", subject_id="user_1")
+    execute_action(token=token, surface="connection", action="list",
+                   payload={"universe_id": "u-victim"})
+    assert seen["universe_id"] == "u-mine"

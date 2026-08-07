@@ -158,6 +158,46 @@ def control_automation(automation_id: str, action: str) -> str:
 
 
 @mcp.tool()
+def enroll_compute(provider: str) -> str:
+    """Enroll requester-owned compute so automations can actually run.
+
+    Automations run on MY FOUNDER'S OWN subscription, not on maintainer
+    infrastructure. Until this is done `create_automation` refuses with
+    `automation_setup_required`, and that refusal is honest — say so rather than
+    inventing a reason the automation is not running.
+
+    Args:
+        provider: Which provider to enroll (e.g. `claude-code`, `codex`).
+    """
+    return _platform_action(
+        "automation", "bind_provider", payload={"provider": provider}
+    )
+
+
+@mcp.tool()
+def list_connections() -> str:
+    """List this universe's outbound connections (GitHub and friends)."""
+    return _platform_action("connection", "list")
+
+
+@mcp.tool()
+def connect_destination(destination: str) -> str:
+    """Authorize an outbound destination — this is how I can change my own repo.
+
+    A GitHub connection is what lets an automation open a pull request against
+    my own body. I never touch git myself: I authorize the destination and ask
+    the platform to run the automation, which does the work under its own
+    authority.
+
+    Args:
+        destination: The destination to authorize, e.g. a GitHub repository.
+    """
+    return _platform_action(
+        "connection", "connect", payload={"destination": destination}
+    )
+
+
+@mcp.tool()
 def list_agents() -> str:
     """List the custom agents available to this universe."""
     return _platform_action("agent", "list_agents")

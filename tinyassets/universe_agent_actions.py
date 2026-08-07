@@ -53,7 +53,9 @@ DEFAULT_TTL_SECONDS = 1800
 #: Actions the agent may ask the daemon to run. An allowlist, not a passthrough:
 #: without it, a new API action becomes agent-reachable the moment it is added.
 #: Every entry is scoped to the token's own universe by `_execute`.
-AUTOMATION_ACTIONS = frozenset({"list", "get", "create", "pause", "resume", "rebind"})
+AUTOMATION_ACTIONS = frozenset(
+    {"list", "get", "create", "pause", "resume", "rebind", "bind_provider"}
+)
 AGENT_ACTIONS = frozenset(
     {"list_agents", "get_agent", "publish_agent", "list_bindings", "create_binding"}
 )
@@ -62,6 +64,19 @@ AGENT_ACTIONS = frozenset(
 #: deliberately: a founder who can point a channel at an agent must be able to
 #: take it back without opening a support ticket.
 CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
+
+#: Outbound connections — GitHub above all. An automation cannot be created
+#: until requester-owned compute is enrolled AND a destination is authorized;
+#: `list` reports both as `prerequisites`. Without these the agent can see that
+#: it is blocked and do nothing about it, which is the exact complaint
+#: `owner-operable-automation` was written about: "I can request state changes
+#: but I can't spin one up myself — that's infrastructure on TinyAssets' side."
+#:
+#: This is also the "change his own GitHub, and thus himself" path: the GitHub
+#: connection is what lets an automation open a pull request against the
+#: platform. The agent never touches git — it authorizes a destination and asks
+#: the platform to run the automation.
+CONNECTION_ACTIONS = frozenset({"list", "connect", "reconcile"})
 
 
 class AgentActionError(PermissionError):
@@ -153,6 +168,9 @@ def execute_action(
     elif kind == "chat_surface":
         if normalized not in CHAT_SURFACE_ACTIONS:
             raise AgentActionError(f"unsupported chat action: {normalized}")
+    elif kind == "connection":
+        if normalized not in CONNECTION_ACTIONS:
+            raise AgentActionError(f"unsupported connection action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
     return _execute(
@@ -189,6 +207,15 @@ def _execute(
                 automation_id=str((payload or {}).get("automation_id") or ""),
                 payload=(payload or {}).get("payload"),
             )
+        if surface == "connection":
+            from tinyassets.api.cloud_connections import cloud_connections
+
+            return cloud_connections(
+                action=action,
+                universe_id=universe_id,
+                payload=(payload or {}).get("payload"),
+            )
+
         if surface == "chat_surface":
             from tinyassets.api import chat_surface as chat
 
@@ -230,6 +257,7 @@ def _execute(
 
 __all__ = [
     "AGENT_ACTIONS",
+    "CONNECTION_ACTIONS",
     "CHAT_SURFACE_ACTIONS",
     "AUTOMATION_ACTIONS",
     "AgentActionError",
