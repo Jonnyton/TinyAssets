@@ -260,3 +260,31 @@ def test_shared_paged_marker_blocks_duplicate_immediate_page():
 
     assert page is False
     assert reason == "within_window_3300s_to_next"
+
+
+def test_probe_is_not_gated_on_the_deploy_succeeding():
+    """A failed deploy is the HIGHEST-signal moment to probe, not a reason to skip.
+
+    Live 2026-08-05: deploy 31043701408 failed and restart-fenced the fleet,
+    `https://tinyassets.io/mcp` began returning 502, and the two canary runs
+    that followed (20:26Z, 20:42Z) both SKIPPED the probe job because they were
+    `workflow_run` events whose deploy conclusion was `failure`. No outage
+    alarm was filed. The `*/5` schedule did not cover the gap either -- GitHub
+    throttles it to roughly 1.5-2h in practice, so `workflow_run` is the
+    canary's real cadence.
+    """
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    probe_if = str(workflow["jobs"]["probe"].get("if", ""))
+    assert "workflow_run.conclusion" not in probe_if, (
+        "probe must not skip when the deploy failed — that is exactly when "
+        "production is most likely down"
+    )
+
+
+def test_the_canary_still_runs_after_a_successful_deploy():
+    """Accept-direction control: post-deploy verification must not be lost."""
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow[True] if True in workflow else workflow["on"]
+    assert "workflow_run" in triggers
+    assert "Deploy prod" in triggers["workflow_run"]["workflows"]
+    assert "completed" in triggers["workflow_run"]["types"]
