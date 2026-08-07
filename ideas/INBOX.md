@@ -519,3 +519,43 @@ Design notes worth keeping:
 - Do NOT build a separate "engagement" subsystem per platform. One receipt →
   signal → next-run-input path, with adapters per provider, or this becomes the
   bundled-workflow trap again one layer down.
+
+## 2026-08-07 — The provider error blames a var that is not set (blocks ALL execution)
+
+Every run now fails with:
+
+    CompilerError: Provider call failed in node 'accept_spec':
+    Pinned writer provider 'claude-code' exhausted.
+    TINYASSETS_PIN_WRITER disables fallback - clear the env var to re-enable
+    the default chain.
+
+**`TINYASSETS_PIN_WRITER` IS NOT SET** — verified absent from both the daemon
+process env and `/etc/tinyassets/env`. The message names a cause that is not
+true and sends the reader to clear a variable that does not exist. I followed
+that advice before checking, and would have "fixed" nothing.
+
+What is actually happening: the writer chain is
+`["claude-code", "codex", "gemini-free", "groq-free", "grok-free",
+"ollama-local"]` (`providers/router.py`). claude-code and codex are quota
+exhausted; the three `-free` providers are disabled by the subscription-only
+policy (`TINYASSETS_ALLOW_API_KEY_PROVIDERS` unset, by design); ollama-local
+needs a local server that is not running. The chain drains to nothing.
+
+**Two fixes, both user-experience:**
+
+1. Make the error tell the truth: name each provider TRIED and why it was
+   skipped or failed ("codex: quota exhausted; gemini-free: disabled by
+   subscription-only policy; ollama-local: no server at $OLLAMA_HOST").
+   Mention the pin ONLY when a pin exists. A user whose automation stops must
+   be able to see which of their providers is out, not be sent to a phantom
+   env var.
+2. Decide what a founder on their own subscription should fall back to when
+   their compute is spent. Silently draining to a total failure is the worst
+   option; a paused automation with "your claude-code quota is exhausted" is
+   honest and actionable, and matches the `prerequisites` pattern
+   `list_automations` already uses well.
+
+Blocks: every branch run, therefore every automation deliverable, therefore the
+chat_post effector's first live firing. Not a defect in anything built
+2026-08-07 — the effector is registered, dispatched and unit-tested; it simply
+has never had a completed run to fire on.
