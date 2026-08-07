@@ -2535,8 +2535,28 @@ def _stamp_page_visibility(content: str, visibility: str) -> str:
     """
     meta, body = _parse_frontmatter(content)
     meta.pop("content_visibility", None)
-    meta["visibility"] = visibility
-    rendered = "\n".join(f"{key}: {value}" for key, value in meta.items())
+    meta.pop("visibility", None)
+
+    lines: list[str] = []
+    for key, value in meta.items():
+        text = str(value)
+        if "\n" in text:
+            # Re-render as an indented block, the shape `_parse_frontmatter`
+            # reads back. Flattening to `key: first line\nsecond line` both
+            # LOSES the tail and promotes it to top level — and a continuation
+            # line reading `visibility: public` would then become a real key.
+            # That turns the function meant to close an injection into one.
+            lines.append(f"{key}:")
+            lines.extend(f"  {part}" for part in text.split("\n"))
+        else:
+            lines.append(f"{key}: {text}")
+
+    # Stamped LAST on purpose. `_parse_frontmatter` assigns into a dict as it
+    # scans, so on a duplicate key the last occurrence wins. Emitting ours last
+    # means no earlier line — however it got there — can outrank it.
+    lines.append(f"visibility: {visibility}")
+
+    rendered = "\n".join(lines)
     return f"---\n{rendered}\n---\n{body.lstrip(chr(10))}"
 
 

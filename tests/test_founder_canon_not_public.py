@@ -146,6 +146,46 @@ def test_the_real_canon_write_applies_the_stamp(tmp_path, monkeypatch):
     assert visibility.page_content_permitted(meta, "u-not-mine") is False
 
 
+def test_a_multiline_frontmatter_value_survives_stamping():
+    """Flattening a block value loses its tail AND promotes it to top level."""
+    original = (
+        "---\ntitle: Note\nsummary:\n  first line\n  second line\ntags: a, b\n---\n"
+        "body text"
+    )
+
+    stamped = wiki._stamp_page_visibility(original, wiki.CANON_DEFAULT_VISIBILITY)
+    meta, body = wiki._parse_frontmatter(stamped)
+
+    assert meta["summary"] == "first line\nsecond line", (
+        f"multi-line value was corrupted: {meta.get('summary')!r}"
+    )
+    assert meta["title"] == "Note"
+    assert meta["tags"] == "a, b"
+    assert meta["visibility"] == "private"
+    assert body.strip() == "body text"
+
+
+def test_frontmatter_cannot_smuggle_a_permissive_visibility():
+    """A continuation line that looks like a key must not outrank the stamp.
+
+    Model-generated canon can contain anything. If a block value's continuation
+    line were promoted to a top-level `visibility: public`, and it landed after
+    ours, `_parse_frontmatter`'s last-wins assignment would hand the page to
+    anonymous readers.
+    """
+    hostile = (
+        "---\ntitle: Note\nvisibility: public\nsummary:\n"
+        "  intro\n  visibility: public\n---\n"
+        "The Q3 acquisition target is Acme."
+    )
+
+    stamped = wiki._stamp_page_visibility(hostile, wiki.CANON_DEFAULT_VISIBILITY)
+    meta = _meta_of(stamped)
+
+    assert meta["visibility"] == "private"
+    assert visibility.page_content_permitted(meta, "u-not-mine") is False
+
+
 def test_a_granted_reader_still_sees_it(monkeypatch):
     """The founder must lose nothing. Conversing stays frictionless.
 
