@@ -264,7 +264,7 @@ def _list_branch_versions(subject_id: str) -> dict[str, Any]:
 #: Actions whose cost must be covered by a declared operation. Anything absent
 #: needs no capability at all, so reads stay free.
 _ACTIONS_REQUIRING_DECLARED_OPERATION = frozenset(
-    {("branch", "run"), ("branch", "build")}
+    {("branch", "run"), ("branch", "build"), ("scheduled_work", "run_now")}
 )
 
 
@@ -344,7 +344,8 @@ def _base_path_for_scopes():
 
 
 def _capabilities_for(
-    surface: str, action: str, *, universe_id: str, subject_id: str
+    surface: str, action: str, *, universe_id: str, subject_id: str,
+    payload: Any = None,
 ) -> tuple[str, ...]:
     """Scopes this turn may use, derived from what the OWNER declared.
 
@@ -356,6 +357,32 @@ def _capabilities_for(
     """
     if (surface, action) not in _ACTIONS_REQUIRING_DECLARED_OPERATION:
         return ()
+
+    # Running an AUTOMATION spends what THAT automation declared — not what the
+    # universe's provider binding happens to allow. The declaration lives on the
+    # work item because the user put it there when they built it, and two
+    # automations in one universe may legitimately be allowed different things.
+    #
+    # Missing this is what silently broke execution: run_now got capabilities=[]
+    # and every run was refused as unscoped while the tool reported a result.
+    if surface == "scheduled_work":
+        from tinyassets.storage.operation_scopes import OperationScopeStore
+        from tinyassets.storage.scheduled_work import ScheduledWorkStore
+
+        item = ScheduledWorkStore(_base_path_for_scopes()).get(
+            universe_id=universe_id,
+            work_id=str((payload or {}).get("work_id") or ""),
+        )
+        if item is None:
+            return ()
+        scope_store = OperationScopeStore(_base_path_for_scopes())
+        granted: set[str] = set()
+        for operation in item.declared_operations:
+            granted.update(
+                scope_store.scopes_for(universe_id=universe_id, operation=operation)
+            )
+        return tuple(sorted(granted))
+
     try:
         from tinyassets.api.helpers import _base_path
         from tinyassets.storage.provider_work_authority import (
@@ -397,7 +424,8 @@ def _execute(
         user_id=subject_id, username=subject_id,
         capabilities=list(
             _capabilities_for(
-                surface, action, universe_id=universe_id, subject_id=subject_id
+                surface, action, universe_id=universe_id, subject_id=subject_id,
+                payload=payload,
             )
         ),
     )
