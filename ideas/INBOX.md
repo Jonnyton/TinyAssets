@@ -358,3 +358,36 @@ Two toggles at api.slack.com/apps → Demo App (`A0BN1Q98MTQ`), host-only:
 
 Until both are set, every test has to be an `@mention` in a channel, which is
 not how anyone works with their own agent.
+
+## 2026-08-07 — A created agent needs its OWN Slack app, not a channel rebind
+
+Host correction: "you would need to add them like you added demo app." Talking
+to a created agent directly means addressing it BY ITS OWN NAME in Slack, which
+means its own Slack app installed alongside Demo App — a second bot user.
+
+What I built instead (`connect_agent_to_chat` → `chat_surface.bind_channel`)
+re-points the EXISTING Demo App bot at a different agent binding. The founder
+still types `@Demo App`; only the brain behind it changes. Worse, the agent bound
+workspace-wide rather than to one channel, so Tiny became unreachable until I
+rebound it. Useful primitive, wrong answer to this request.
+
+**Good news — the routing table is already right.** `app_channel_bindings` keys
+on `installation_id = f"{api_app_id}:{workspace_id}"`, so two apps in the SAME
+workspace route independently with no schema change.
+
+**What is actually missing:**
+1. **Per-agent Slack app credentials.** A second app means a second bot token +
+   app-level token deposited under a NEW connection id (`slack-openclaw`), not
+   `slack-main`. `chat_surface.connect_account` does NOT do this — it maps an
+   external ACCOUNT to a universe (the founder mapping).
+2. **Multi-connection worker.** `slack_agent_worker` takes ONE
+   `--connection` / `TINYASSETS_SLACK_CONNECTION` for all universes
+   (`serve_all(universe_ids, connection)`), so it holds one socket per universe.
+   Per-agent presence needs N sockets: a list of connections per universe.
+3. **App creation itself is a human/OAuth step.** Creating a Slack app and
+   installing it is not something the platform can do headlessly; the realistic
+   shape is a connect-flow the founder completes, then deposits the tokens —
+   the same custody question as `credential-vault-modular-architecture`.
+
+Until 1 and 2 exist, "create an agent I can talk to" can only mean re-pointing
+the one bot. Say that plainly rather than implying a second presence exists.
