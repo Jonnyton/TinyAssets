@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -113,18 +114,24 @@ def _decode_codex_auth_json(value: Any) -> bytes:
     normalized = value.translate(str.maketrans("", "", " \t\r\n"))
     try:
         decoded = base64.b64decode(normalized, validate=True)
-    except ValueError as exc:
-        raise ValueError("credential auth_json_b64 base64 decode failed") from exc
+    except ValueError:
+        raise ValueError(
+            "credential auth_json_b64 base64 decode failed"
+        ) from None
     if not decoded:
         raise ValueError("credential auth_json_b64 decoded content is empty")
     if decoded.startswith(b"\xef\xbb\xbf"):
         raise ValueError("credential auth_json_b64 decoded content has a UTF-8 BOM")
+    invalid = False
     try:
         json.loads(decoded)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(
-            "credential auth_json_b64 does not contain valid JSON"
-        ) from exc
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Not chained: both of these retain the decoded credential blob
+        # (`.doc` / `.object`). Raised outside the handler so no context
+        # survives either.
+        invalid = True
+    if invalid:
+        raise ValueError("credential auth_json_b64 does not contain valid JSON")
     return decoded
 
 
@@ -137,10 +144,12 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
         raise ValueError("credential_type is required")
     normalized_type = credential_type.strip()
     if normalized_type not in VALID_CREDENTIAL_TYPES:
+        # The rejected value is NOT echoed. It is attacker- or typo-supplied
+        # vault content, and a reviewer put a live token in this field and read
+        # it back out of the exception. Naming the allowed set is enough to fix
+        # a real mistake.
         allowed = ", ".join(sorted(VALID_CREDENTIAL_TYPES))
-        raise ValueError(
-            f"unknown credential_type {normalized_type!r}; expected one of: {allowed}"
-        )
+        raise ValueError(f"unknown credential_type; expected one of: {allowed}")
     record["credential_type"] = normalized_type
     for key in ("service", "provider", "destination", "purpose"):
         if isinstance(record.get(key), str):
@@ -165,6 +174,19 @@ def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_records, list):
         raise ValueError("credential vault 'credentials' must be a list")
     return [_normalize_record(item) for item in raw_records]
+
+
+#: Service names are short lowercase identifiers (slack, github, anthropic...).
+#: Anything else is not a name we issued and must not reach a log surface.
+_SERVICE_NAME = re.compile(r"\A[a-z][a-z0-9._-]{0,39}\Z")
+
+
+def _safe_service_name(value: object) -> str:
+    """A service name fit to print, or "" — an allow-list, never a scrub."""
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip().lower()
+    return candidate if _SERVICE_NAME.match(candidate) else ""
 
 
 def _service(record: dict[str, Any]) -> str:
@@ -265,10 +287,24 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     path = credential_vault_path(universe_dir)
     if not path.is_file():
         return []
+    payload = None
+    malformed = ""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        # `UnicodeDecodeError.object` is the whole file too — a second channel
+        # with the same consequence as JSONDecodeError.doc, found only because
+        # a reviewer tried invalid UTF-8 rather than invalid JSON.
+        malformed = "an undecodable byte"
     except json.JSONDecodeError as exc:
-        raise ValueError(f"credential vault is not valid JSON: {exc}") from exc
+        # `exc.doc` is the ENTIRE vault file — every token for every service.
+        # Chaining it, or interpolating `exc`, hands the whole thing to any
+        # traceback, log, or error collector. Keep only the position, and raise
+        # after this handler exits so no chain survives (`from None` clears
+        # __cause__ but leaves __context__).
+        malformed = f"line {exc.lineno} column {exc.colno}"
+    if malformed:
+        raise ValueError(f"credential vault is not valid JSON at {malformed}")
     return _records_from_payload(payload)
 
 
@@ -326,11 +362,16 @@ def write_credential_vault(
     tmp.replace(path)
     _chmod_best_effort(path, 0o600)
     credential_types = sorted({str(r["credential_type"]) for r in records})
+    # Sanitised, not echoed. This summary is explicitly "suitable for logs and
+    # status surfaces", and `service` is arbitrary vault content — a review put
+    # a live token in that field and read it back out of the summary the
+    # deposit script prints under the words "nothing above contains a token".
+    # Same class as the credential_type echo fixed one round earlier.
     services = sorted(
         {
-            str(r.get("service") or r.get("provider") or "").strip()
+            name
             for r in records
-            if str(r.get("service") or r.get("provider") or "").strip()
+            if (name := _safe_service_name(r.get("service") or r.get("provider")))
         }
     )
     return {
@@ -354,10 +395,17 @@ def _secret_value(record: dict[str, Any], *keys: str) -> str:
             return value.strip()
     b64 = record.get("token_b64") or record.get("secret_b64")
     if isinstance(b64, str) and b64.strip():
+        decoded = None
         try:
-            return base64.b64decode(b64.strip()).decode("utf-8").strip()
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"credential {keys[0]} base64 decode failed") from exc
+            decoded = base64.b64decode(b64.strip()).decode("utf-8").strip()
+        except Exception:  # noqa: BLE001
+            # Not chained, and raised outside the handler. A UnicodeDecodeError
+            # here carries `.object` — the DECODED credential bytes — so
+            # chaining published the very token this was decoding.
+            decoded = None
+        if decoded is None:
+            raise ValueError(f"credential {keys[0]} base64 decode failed")
+        return decoded
     return ""
 
 
@@ -414,6 +462,39 @@ def resolve_slack_token(
         if str(record.get("destination") or "").strip() != wanted:
             continue
         return _secret_value(record, "bot_token", "token", "access_token")
+    return ""
+
+
+def resolve_slack_app_token(
+    universe_dir: str | Path | None,
+    connection_id: str,
+) -> str:
+    """Return a Slack **app-level** token for one connection, or an empty string.
+
+    A Slack connection needs two different credentials, and they are not
+    interchangeable: the bot token (``xoxb-``) posts messages, while the
+    app-level token (``xapp-``, scope ``connections:write``) is the only one
+    that can open a Socket Mode connection. Both live on the same vault record
+    because they come from the same app install.
+
+    Deliberately does NOT fall back to ``bot_token``/``token``. Handing a bot
+    token to `apps.connections.open` fails with an opaque Slack error, and a
+    silent fallback would turn "the app token was never deposited" into a
+    mystery instead of the plain answer it is.
+    """
+    if universe_dir is None:
+        return ""
+    wanted = connection_id.strip()
+    if not wanted:
+        return ""
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "social":
+            continue
+        if _service(record) != "slack":
+            continue
+        if str(record.get("destination") or "").strip() != wanted:
+            continue
+        return _secret_value(record, "app_token", "app_level_token")
     return ""
 
 

@@ -31,6 +31,7 @@ from typing import Any
 
 from tinyassets.app_outbound_adapter import AppTransportReceipt
 from tinyassets.app_reply_authority import ReplyDestination
+from tinyassets.effectors.slack_errors import safe_error_code
 
 #: Slack Web API endpoint for posting a message. Kept a module constant so
 #: tests can point it at a local stub without monkeypatching urllib globally.
@@ -38,6 +39,9 @@ SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 
 #: Slack rejects oversized posts; bound the body before we spend a round trip.
 _MAX_BODY_BYTES = 40_000
+
+#: Bot tokens only. An `xoxp-` user token posts under a person's name.
+BOT_TOKEN_PREFIX = "xoxb-"
 
 _DEFAULT_TIMEOUT_SECONDS = 15.0
 
@@ -82,17 +86,27 @@ def _post(url: str, payload: dict[str, Any], token: str, timeout: float) -> dict
             "Content-Type": "application/json; charset=utf-8",
         },
     )
+    # Raised AFTER the handler exits, not with `from None` inside it. `from
+    # None` clears __cause__ but leaves __context__ holding the URLError whose
+    # message quotes the Authorization header — hidden from a normal traceback,
+    # readable via `exc.__context__`. A review read the bot token out of it.
+    raw = b""
+    failure = ""
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             raw = response.read()
     except urllib.error.HTTPError as exc:  # pragma: no cover - network shape
-        raise SlackTransportError(f"slack transport http {exc.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise SlackTransportError("slack transport unreachable") from exc
+        failure = f"slack transport http {exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError):
+        failure = "slack transport unreachable"
+    if failure:
+        raise SlackTransportError(failure)
     try:
         decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SlackTransportError("slack transport returned malformed JSON") from exc
+    except Exception:  # noqa: BLE001 - decode errors and hostile nesting alike
+        failure = "slack transport returned malformed JSON"
+    if failure:
+        raise SlackTransportError(failure)
     if not isinstance(decoded, dict):
         raise SlackTransportError("slack transport returned a non-object response")
     return decoded
@@ -111,7 +125,16 @@ def build_slack_transport(
     identifier — never the message text.
     """
 
-    def _transport(destination: ReplyDestination, body: str) -> AppTransportReceipt:
+    def _transport(
+        destination: ReplyDestination,
+        body: str,
+        *,
+        thread_ts: str = "",
+    ) -> AppTransportReceipt:
+        # `thread_ts` is keyword-only with a default so the two-positional-arg
+        # `Transport` contract `app_outbound_adapter` calls remains exactly as
+        # it was. Answering in the thread the question was asked in is the
+        # difference between a conversation and a channel full of loose replies.
         if destination.provider != "slack":
             raise SlackTransportError("slack transport received a non-slack destination")
         text = body if isinstance(body, str) else ""
@@ -127,17 +150,25 @@ def build_slack_transport(
             raise SlackTransportError(
                 "no requester-owned slack credential for this connection"
             )
+        if not token.startswith(BOT_TOKEN_PREFIX):
+            # Checked HERE, not only at startup. The token is re-read from the
+            # vault on every post (so rotation is picked up), which makes a
+            # startup-only check time-of-check/time-of-use: a review swapped in
+            # an `xoxp-` user token after validation and the already-built
+            # transport used it. A user token posts under a HUMAN's name, so
+            # the agent would silently impersonate whoever installed the app.
+            raise SlackTransportError(
+                "the stored slack credential is not a bot token"
+            )
 
-        decoded = _post(
-            url,
-            {"channel": destination.address, "text": text},
-            token,
-            timeout,
-        )
+        payload: dict[str, Any] = {"channel": destination.address, "text": text}
+        if isinstance(thread_ts, str) and thread_ts.strip():
+            payload["thread_ts"] = thread_ts.strip()
+        decoded = _post(url, payload, token, timeout)
         if not decoded.get("ok"):
             # Slack reports failure in-band with HTTP 200. Surface the error
             # CODE only — never the echoed message payload Slack returns.
-            code = str(decoded.get("error") or "unknown_error")
+            code = safe_error_code(decoded.get("error"), default="unknown_error")
             raise SlackTransportError(f"slack rejected the reply: {code}")
 
         receipt_ref = str(decoded.get("ts") or "").strip()

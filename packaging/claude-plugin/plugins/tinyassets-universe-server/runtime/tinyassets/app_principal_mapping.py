@@ -12,10 +12,11 @@ from typing import Callable
 
 from tinyassets.app_event_ingress import (
     AuthenticatedAppEvent,
-    is_authenticated_app_event,
+    SocketModeAppEvent,
+    is_admissible_principal_event,
 )
 from tinyassets.custom_agents import get_binding
-from tinyassets.daemon_server import get_founder_home, list_universe_acl
+from tinyassets.daemon_server import list_universe_acl
 from tinyassets.storage.app_principal_mappings import (
     AppPrincipalMappingConflict,
     AppPrincipalMappingGenerationConflict,
@@ -147,13 +148,41 @@ class AppPrincipalMappingService:
         ) as exc:
             raise AppPrincipalStaleError(str(exc)) from exc
 
+    def current_founder_binding(
+        self,
+        target: AppPrincipalTarget,
+    ) -> CurrentFounderBinding | None:
+        """Public: is ``target.subject_id`` a current founder of that universe?
+
+        Needed because channel routing can send a message to a universe other
+        than the one this sender's mapping was created against. Ownership is
+        per-universe, so the question has to be askable per-universe rather
+        than only about the mapping's own.
+        """
+        try:
+            _validate_target(target)
+        except AppPrincipalEvidenceError:
+            return None
+        return self._current_founder_binding(target)
+
     def _current_founder_binding(
         self,
         target: AppPrincipalTarget,
     ) -> CurrentFounderBinding | None:
+        # NOT tested here: `get_founder_home(subject) == universe`.
+        #
+        # `founder_home` holds ONE row per subject — `set_founder_home`
+        # re-binding overwrites — so it answers "which universe do I drop this
+        # person into on first contact", a default. Using it as an *ownership*
+        # predicate silently caps a user at one universe: with work, personal
+        # and hobby universes they would be the verified founder on whichever
+        # happens to be home and a stranger on the rest, so their work agent
+        # would answer fluently and refuse to learn.
+        #
+        # Ownership is the admin ACL row below, which is already per-universe
+        # — `universe_acl` is keyed `(universe_id, actor_id)` — and is the
+        # honest per-universe question.
         try:
-            if get_founder_home(self.base_path, target.subject_id) != target.universe_id:
-                return None
             acl_rows = [
                 row
                 for row in list_universe_acl(
@@ -193,18 +222,34 @@ class AppPrincipalMappingService:
 
 
 def _external_key(event: object) -> ExternalAppPrincipalKey:
-    if not is_authenticated_app_event(event):
+    """Derive the principal key from either admissible evidence type.
+
+    This helper reads like an identity extractor, but it is also the *only*
+    place the evidence seal is checked, and three consumers depend on it for
+    three different guarantees. Widening it to admit Socket Mode evidence
+    therefore widens what can reach signed thread-custody grants — so the
+    custody and reply paths now assert the request seal themselves rather than
+    inheriting whatever this function happens to allow.
+    """
+    if not is_admissible_principal_event(event):
         raise AppPrincipalEvidenceError("mapping requires fresh verifier evidence")
-    assert isinstance(event, AuthenticatedAppEvent)
+    assert isinstance(event, (AuthenticatedAppEvent, SocketModeAppEvent))
     if event.provider != "slack" or not event.external_sender_id:
         raise AppPrincipalEvidenceError("event has no admissible Slack sender")
     expected_installation = f"{event.api_app_id}:{event.team_id}"
     if event.installation_id != expected_installation:
         raise AppPrincipalEvidenceError("event installation identity is inconsistent")
+    # The principal's workspace is the SENDER's, not the delivery workspace.
+    # Slack user ids are unique only within a workspace, so under Slack Connect
+    # a guest `U123` from another workspace would otherwise key to the same
+    # principal as a local `U123` — and if the local one is the founder, the
+    # guest inherits founder authority. Only the socket path can tell the two
+    # apart today; the HTTP type carries no sender-origin field at all.
+    workspace_id = getattr(event, "actor_team_id", "") or event.team_id
     return ExternalAppPrincipalKey(
         provider=event.provider,
         installation_id=event.installation_id,
-        workspace_id=event.team_id,
+        workspace_id=workspace_id,
         external_sender_id=event.external_sender_id,
     )
 
