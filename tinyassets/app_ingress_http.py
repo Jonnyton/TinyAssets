@@ -261,6 +261,67 @@ def serve_in_background(env: Mapping[str, str] | None = None) -> bool:
     return True
 
 
+def handle_credentials_request(
+    *,
+    body: bytes,
+    headers: Mapping[str, str],
+    env: Mapping[str, str] | None = None,
+    now: float | None = None,
+    resolve: Callable[..., str] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Hand the transport the ONE credential it cannot do without.
+
+    A Socket Mode connection can only be opened by the app-level token
+    (``xapp-``, scope ``connections:write``), and the transport is the thing
+    holding the socket, so this token has to reach it. Everything else stays
+    server-side: the bot token never leaves, because the daemon posts the reply
+    itself (:func:`tinyassets.app_ingress.deliver_app_event`).
+
+    That split is the whole reason the agent can stop mounting the production
+    volume. It ends up holding one narrowly-scoped token instead of read access
+    to every universe's vault.
+    """
+    lowered = {str(k).lower(): v for k, v in headers.items()}
+    try:
+        key = load_key(env)
+        verify(
+            body=body,
+            signature=str(lowered.get(SIGNATURE_HEADER, "")),
+            timestamp=str(lowered.get(TIMESTAMP_HEADER, "")),
+            key=key,
+            now=now,
+        )
+    except IngressAuthError as exc:
+        logger.warning("app ingress credentials: refused (%s)", exc)
+        return 401, {"error": "unauthenticated"}
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        universe_id = str(payload["universe_id"]).strip()
+        connection_id = str(payload.get("connection_id") or "").strip()
+        if not universe_id or not connection_id:
+            raise ValueError("universe_id and connection_id are required")
+    except Exception:  # noqa: BLE001
+        return 400, {"error": "malformed"}
+
+    if resolve is None:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.credential_vault import resolve_slack_app_token
+
+        def resolve(uid: str, cid: str) -> str:
+            return resolve_slack_app_token(_universe_dir(uid), cid)
+
+    token = resolve(universe_id, connection_id)
+    if not token:
+        # Absent is not an error the caller can distinguish from unauthorised
+        # by content, but it IS a different status: the transport must be able
+        # to say "this universe has no socket credential" at startup rather
+        # than retry a signature it got right.
+        logger.info("app ingress credentials: no app token deposited")
+        return 404, {"error": "no_credential"}
+    return 200, {"app_token": token}
+
+
 def create_app_ingress_app():
     """A Starlette app serving POST ``/app-events`` and nothing else.
 
@@ -276,4 +337,16 @@ def create_app_ingress_app():
         status, payload = handle_request(body=body, headers=dict(request.headers))
         return JSONResponse(payload, status_code=status)
 
-    return Starlette(routes=[Route("/app-events", _app_events, methods=["POST"])])
+    async def _app_credentials(request):
+        body = await request.body()
+        status, payload = handle_credentials_request(
+            body=body, headers=dict(request.headers)
+        )
+        return JSONResponse(payload, status_code=status)
+
+    return Starlette(
+        routes=[
+            Route("/app-events", _app_events, methods=["POST"]),
+            Route("/app-credentials", _app_credentials, methods=["POST"]),
+        ]
+    )

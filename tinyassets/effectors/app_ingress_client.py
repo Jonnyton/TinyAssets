@@ -108,11 +108,66 @@ def build_ingress_client(
     return _deliver
 
 
+def fetch_app_token(
+    *,
+    universe_id: str,
+    connection_id: str,
+    env: Mapping[str, str] | None = None,
+    timeout: float = 30.0,
+    urlopen: Callable[..., Any] | None = None,
+    now: Callable[[], float] = time.time,
+) -> str:
+    """The Socket Mode app-level token for one connection.
+
+    The only credential the transport needs, and the reason it no longer mounts
+    the production volume. The bot token stays server-side because the daemon
+    posts replies itself.
+
+    Raises :class:`AppIngressError` rather than returning "" on failure: a
+    transport that starts with no socket credential should die at startup, not
+    sit connected to nothing.
+    """
+    key = load_key(env)
+    url = ingress_url(env).replace("/app-events", "/app-credentials")
+    _open = urlopen if urlopen is not None else urllib.request.urlopen
+
+    body = json.dumps(
+        {"universe_id": universe_id, "connection_id": connection_id},
+        sort_keys=True,
+    ).encode("utf-8")
+    timestamp = str(int(now()))
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            SIGNATURE_HEADER: sign(body, timestamp, key),
+            TIMESTAMP_HEADER: timestamp,
+        },
+    )
+    try:
+        with _open(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise AppIngressError(
+            f"app ingress refused the credential request: {exc.code}"
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise AppIngressError("app ingress was unreachable") from exc
+
+    token = str((payload or {}).get("app_token") or "")
+    if not token:
+        raise AppIngressError("app ingress returned no app token")
+    return token
+
+
 __all__ = [
     "AppIngressError",
     "IngressAuthError",
     "IngressResult",
     "HMAC_ENV",
     "build_ingress_client",
+    "fetch_app_token",
     "ingress_url",
 ]

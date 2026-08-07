@@ -152,3 +152,45 @@ def test_an_unusable_port_is_refused_rather_than_defaulted(bad):
     """Defaulting a bad port would open a listener somewhere unintended."""
     with pytest.raises(http.IngressAuthError):
         http.bind_target({http.BIND_PORT_ENV: bad})
+
+
+def test_fetching_the_app_token_round_trips_through_the_server():
+    """The transport's only credential — signed here, verified there."""
+    seen = {}
+
+    def _urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["body"] = request.data
+        seen["headers"] = {k.lower(): v for k, v in request.headers.items()}
+        return _Response({"app_token": "xapp-1-A0TEST-secret"})
+
+    token = client.fetch_app_token(
+        universe_id="u-cred-1",
+        connection_id="slack-main",
+        env=ENV,
+        urlopen=_urlopen,
+        now=lambda: 1_700_000_000.0,
+    )
+
+    assert token == "xapp-1-A0TEST-secret"
+    assert seen["url"].endswith("/app-credentials")
+
+    status, payload = http.handle_credentials_request(
+        body=seen["body"],
+        headers=seen["headers"],
+        env=ENV,
+        now=1_700_000_000.0,
+        resolve=lambda u, c: "xapp-1-A0TEST-secret",
+    )
+    assert status == 200, "the client's own signature must verify server-side"
+    assert payload["app_token"] == "xapp-1-A0TEST-secret"
+
+
+def test_a_missing_app_token_is_a_startup_failure_not_an_empty_string():
+    def _urlopen(request, timeout=None):
+        return _Response({})
+
+    with pytest.raises(client.AppIngressError):
+        client.fetch_app_token(
+            universe_id="u-cred-1", connection_id="slack-main", env=ENV, urlopen=_urlopen
+        )

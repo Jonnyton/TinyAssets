@@ -336,3 +336,117 @@ def test_header_names_are_case_insensitive():
 
     assert status == 200
     assert len(calls) == 1
+
+
+# ── the app-token handover (10.2c) ───────────────────────────────────────────
+
+
+def _cred_body(universe_id="u-cred-1", connection_id="slack-main"):
+    return json.dumps(
+        {"universe_id": universe_id, "connection_id": connection_id}
+    ).encode("utf-8")
+
+
+def _cred_headers(raw, timestamp=str(int(NOW))):
+    return {
+        http.SIGNATURE_HEADER: http.sign(raw, timestamp, KEY_BYTES),
+        http.TIMESTAMP_HEADER: timestamp,
+    }
+
+
+def test_a_signed_transport_gets_the_app_token():
+    raw = _cred_body()
+    seen = []
+
+    def _resolve(uid, cid):
+        seen.append((uid, cid))
+        return "xapp-1-A0TEST-secret"
+
+    status, payload = http.handle_credentials_request(
+        body=raw, headers=_cred_headers(raw), env=ENV, now=NOW, resolve=_resolve
+    )
+
+    assert status == 200
+    assert payload == {"app_token": "xapp-1-A0TEST-secret"}
+    assert seen == [("u-cred-1", "slack-main")]
+
+
+def test_an_unsigned_caller_gets_no_credential():
+    """The whole point: this hands out a secret, so auth is the gate."""
+    raw = _cred_body()
+    called = []
+
+    status, payload = http.handle_credentials_request(
+        body=raw,
+        headers={},
+        env=ENV,
+        now=NOW,
+        resolve=lambda u, c: called.append((u, c)) or "xapp-leak",
+    )
+
+    assert status == 401
+    assert payload == {"error": "unauthenticated"}
+    assert called == [], "the vault was consulted for an unauthenticated caller"
+
+
+def test_a_tampered_universe_id_invalidates_the_signature():
+    """Otherwise a captured request could be re-aimed at another universe."""
+    raw = _cred_body()
+    headers = _cred_headers(raw)
+    called = []
+
+    status, _ = http.handle_credentials_request(
+        body=_cred_body(universe_id="u-someone-else"),
+        headers=headers,
+        env=ENV,
+        now=NOW,
+        resolve=lambda u, c: called.append(u) or "xapp-leak",
+    )
+
+    assert status == 401
+    assert called == []
+
+
+def test_a_missing_credential_is_404_not_an_empty_success():
+    """The transport must be able to tell "not deposited" from "bad signature"."""
+    raw = _cred_body()
+
+    status, payload = http.handle_credentials_request(
+        body=raw, headers=_cred_headers(raw), env=ENV, now=NOW, resolve=lambda u, c: ""
+    )
+
+    assert status == 404
+    assert "app_token" not in payload
+
+
+def test_the_credential_route_needs_both_ids():
+    """A universe-only request must not be answered with some default connection."""
+    raw = json.dumps({"universe_id": "u-cred-1"}).encode("utf-8")
+    called = []
+
+    status, _ = http.handle_credentials_request(
+        body=raw,
+        headers=_cred_headers(raw),
+        env=ENV,
+        now=NOW,
+        resolve=lambda u, c: called.append(u) or "xapp-leak",
+    )
+
+    assert status == 400
+    assert called == []
+
+
+def test_a_stale_credential_request_expires():
+    raw = _cred_body()
+    called = []
+
+    status, _ = http.handle_credentials_request(
+        body=raw,
+        headers=_cred_headers(raw),
+        env=ENV,
+        now=NOW + http.MAX_SKEW_SECONDS + 1,
+        resolve=lambda u, c: called.append(u) or "xapp-leak",
+    )
+
+    assert status == 401
+    assert called == []
