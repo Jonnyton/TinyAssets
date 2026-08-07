@@ -112,15 +112,31 @@ def list_automations() -> str:
 
 
 @mcp.tool()
-def create_automation(name: str, description: str = "") -> str:
+def create_automation(name: str, description: str = "", goal: str = "") -> str:
     """Create a new automation on this universe.
+
+    Automations need a provider binding and a destination grant before they can
+    run. `list_automations` reports those under `prerequisites` — read it first
+    and tell your founder what is still missing rather than guessing.
 
     Args:
         name: Short name for the automation.
         description: What it is for.
+        goal: What the automation should accomplish each run.
     """
+    # The API takes a `definition` OBJECT, not loose fields — a flat
+    # {"name": ..., "description": ...} is refused with
+    # "payload_json.definition must be an object" (found live 2026-08-07).
     return _platform_action(
-        "automation", "create", payload={"name": name, "description": description}
+        "automation",
+        "create",
+        payload={
+            "definition": {
+                "name": name,
+                "description": description,
+                "goal": goal or description or name,
+            }
+        },
     )
 
 
@@ -174,6 +190,55 @@ def create_agent(name: str, description: str, instructions: str,
             },
         },
     )
+
+
+@mcp.tool()
+def activate_agent(definition_id: str, name: str, model: str = "claude-code") -> str:
+    """Make a published agent RUNNABLE on this universe.
+
+    `create_agent` publishes a definition — a design. This binds it to this
+    universe so it can actually be used and talked to.
+
+    Args:
+        definition_id: The `agent_definition_id` returned by `create_agent`.
+        name: What to call this running instance.
+        model: Which engine it runs on.
+    """
+    return _platform_action(
+        "agent",
+        "create_binding",
+        definition_id=definition_id,
+        payload={"schema_version": 1, "name": name, "model": model},
+    )
+
+
+@mcp.tool()
+def connect_agent_to_chat(agent_binding_id: str, workspace_id: str,
+                          channel_id: str = "") -> str:
+    """Let people TALK to one of my agents directly in chat.
+
+    Routes a chat scope to that agent. An empty `channel_id` binds the whole
+    workspace; a specific one binds just that channel, and the most specific
+    binding wins. Same operation either way.
+
+    Args:
+        agent_binding_id: From `activate_agent`.
+        workspace_id: The chat workspace id.
+        channel_id: Optional channel; empty means workspace-wide.
+    """
+    return _platform_action(
+        "chat_surface",
+        "bind_channel",
+        agent_binding_id=agent_binding_id,
+        workspace_id=workspace_id,
+        channel_id=channel_id,
+    )
+
+
+@mcp.tool()
+def describe_chat_surface() -> str:
+    """Show which chat workspaces and channels currently route to me or my agents."""
+    return _platform_action("chat_surface", "describe")
 
 
 @mcp.tool()

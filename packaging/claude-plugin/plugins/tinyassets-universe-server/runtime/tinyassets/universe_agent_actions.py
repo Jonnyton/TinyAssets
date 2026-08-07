@@ -57,6 +57,11 @@ AUTOMATION_ACTIONS = frozenset({"list", "get", "create", "pause", "resume", "reb
 AGENT_ACTIONS = frozenset(
     {"list_agents", "get_agent", "publish_agent", "list_bindings", "create_binding"}
 )
+#: Routing a chat channel to an agent, so a created agent can be TALKED TO
+#: directly rather than only existing in a table. `unbind_channel` is included
+#: deliberately: a founder who can point a channel at an agent must be able to
+#: take it back without opening a support ticket.
+CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 
 
 class AgentActionError(PermissionError):
@@ -145,6 +150,9 @@ def execute_action(
     elif kind == "agent":
         if normalized not in AGENT_ACTIONS:
             raise AgentActionError(f"unsupported agent action: {normalized}")
+    elif kind == "chat_surface":
+        if normalized not in CHAT_SURFACE_ACTIONS:
+            raise AgentActionError(f"unsupported chat action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
     return _execute(
@@ -181,6 +189,20 @@ def _execute(
                 automation_id=str((payload or {}).get("automation_id") or ""),
                 payload=(payload or {}).get("payload"),
             )
+        if surface == "chat_surface":
+            from tinyassets.api import chat_surface as chat
+
+            fields = payload or {}
+            if action == "describe":
+                return chat.describe(universe_id=universe_id)
+            handler = chat.bind_channel if action == "bind_channel" else chat.unbind_channel
+            return handler(
+                universe_id=universe_id,
+                workspace_id=str(fields.get("workspace_id") or ""),
+                channel_id=str(fields.get("channel_id") or ""),
+                agent_binding_id=str(fields.get("agent_binding_id") or ""),
+            )
+
         from tinyassets.api.custom_agents import custom_agents
 
         return custom_agents(
@@ -199,6 +221,7 @@ def _execute(
 
 __all__ = [
     "AGENT_ACTIONS",
+    "CHAT_SURFACE_ACTIONS",
     "AUTOMATION_ACTIONS",
     "AgentActionError",
     "DEFAULT_TTL_SECONDS",
