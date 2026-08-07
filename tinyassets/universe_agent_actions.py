@@ -69,7 +69,7 @@ CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 #: `branch_version_id`, and without a way to LIST them the agent can only be
 #: handed them by its founder — observed live 2026-08-07: it refused to invent
 #: them (correctly) and simply could not proceed. Read-only.
-BRANCH_ACTIONS = frozenset({"list_versions", "run"})
+BRANCH_ACTIONS = frozenset({"list_versions", "run", "build"})
 
 #: Defining what a kind of automation work may spend. Bounded by
 #: `DELEGABLE_SCOPES` at define time, so a self-declaration can only re-express
@@ -458,6 +458,24 @@ def _execute(
         if surface == "branch":
             if action == "list_versions":
                 return _list_branch_versions(subject_id)
+            if action == "build":
+                # Composing the WORK itself. Without this the agent can wrap a
+                # branch in an automation but cannot create one, so "any kind of
+                # automation" stops at whatever branches happen to exist —
+                # observed live 2026-08-07: asked for a niche watcher, it listed
+                # branches, found none that did the work, and correctly stopped.
+                from tinyassets.universe_server import write_graph
+
+                raw = write_graph(
+                    target="branch",
+                    operation="create",
+                    graph_id=universe_id,
+                    payload_json=str((payload or {}).get("spec_json") or "{}"),
+                )
+                try:
+                    return json.loads(raw)
+                except (TypeError, ValueError):
+                    return {"result": str(raw)[:2000]}
             # `run`. A freshly created automation sits at
             # `blocker: awaiting_cloud_worker` with `next_action:
             # run_branch_version` — an operation the automation surface does NOT

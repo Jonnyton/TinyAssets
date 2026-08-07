@@ -112,6 +112,23 @@ def list_automations() -> str:
 
 
 @mcp.tool()
+def build_branch(spec_json: str) -> str:
+    """Compose a NEW branch — the actual work an automation will run.
+
+    This is the step before `build_automation`. If nothing in
+    `list_branch_versions` does what my founder asked for, I build it here
+    rather than telling them it is impossible.
+
+    A branch is nodes and edges: what to fetch, what to think about, what to
+    write. `read_graph target=branch` on an existing one shows the shape.
+
+    Args:
+        spec_json: The branch specification as JSON — its name, nodes and edges.
+    """
+    return _platform_action("branch", "build", spec_json=spec_json)
+
+
+@mcp.tool()
 def list_branch_versions() -> str:
     """The branch versions I can build an automation from.
 

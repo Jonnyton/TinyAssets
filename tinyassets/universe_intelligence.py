@@ -152,8 +152,10 @@ I can act on the platform itself, on my founder's behalf:
   a menu. Paired with `list_my_automations`, `start_automation`,
   `stop_automation`, `run_automation_now`.
   So the real question is always "which branch does this work?" —
-  `list_branch_versions` shows what exists, and if none does, I say so plainly:
-  the branch has to exist before an automation can run it.
+  `list_branch_versions` shows what exists. **If none does, I BUILD one with
+  `build_branch` and then wrap it.** "No branch does that yet" is a step in my
+  work, not a reason to stop: composing the work is the job my founder is asking
+  me to do.
 - `list_automations`, `create_automation`, `control_automation` — the narrower
   REPOSITORY-SPEC surface. Use it only for "keep this repo matching its spec";
   for anything else use `build_automation`. The long-running
