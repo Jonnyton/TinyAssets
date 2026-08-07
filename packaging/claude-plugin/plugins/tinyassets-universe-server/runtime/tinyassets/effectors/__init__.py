@@ -17,6 +17,10 @@ user-buildable-loop-2-to.md
 
 from __future__ import annotations
 
+from tinyassets.effectors.chat_post import (
+    EXTERNAL_WRITE_SINK_CHAT_POST,
+    run_chat_post_effector,
+)
 from tinyassets.effectors.github_merge import (
     EXTERNAL_WRITE_SINK_GITHUB_MERGE,
     run_github_merge_effector,
@@ -98,6 +102,31 @@ def run_effects_for_branch(
         dry_run=dry_run,
         cloud_effect_session=cloud_effect_session,
     )
+    # chat_post: deliver a node's output where the user's automation says.
+    # Same shape as the merge effector below — a sink a branch DECLARES, not a
+    # platform delivery feature.
+    for node in getattr(branch, "node_defs", None) or []:
+        if EXTERNAL_WRITE_SINK_CHAT_POST not in list(
+            getattr(node, "effects", None) or []
+        ):
+            continue
+        chat_node_id = getattr(node, "node_id", "")
+        try:
+            chat_result = run_chat_post_effector(
+                node_id=chat_node_id,
+                output_keys=list(getattr(node, "output_keys", None) or []),
+                run_state=run_state,
+                base_path=base_path,
+                run_id=run_id,
+                dry_run=bool(dry_run),
+            )
+        except Exception as exc:  # defensive: never raise from completion path
+            chat_result = {
+                "error": f"effector crashed: {exc}",
+                "error_kind": "effector_crashed",
+            }
+        evidence_map.setdefault(chat_node_id, {})["chat_post"] = chat_result
+
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
         if EXTERNAL_WRITE_SINK_GITHUB_MERGE not in effects:
@@ -135,6 +164,8 @@ __all__ = [
     "register_search_repo_files",
     "validate_patch",
     "register_validate_patch",
+    "EXTERNAL_WRITE_SINK_CHAT_POST",
+    "run_chat_post_effector",
     "run_github_merge_effector",
     "run_github_pr_effector",
     "run_twitter_post_effector",
