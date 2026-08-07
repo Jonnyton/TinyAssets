@@ -76,3 +76,34 @@ against the platform. The agent drives it through
 `write_graph target=automation`, the same verb a chatbot user has today. Nothing
 here grants the engine git or shell access — it asks the platform to run an
 automation, and the automation does the work under its own authority.
+
+## The platform tools cannot call the API directly (found 2026-08-07)
+
+`api/cloud_automations.py:49-55` authorises through
+`permissions.is_authenticated_request()` + `permissions.current_actor_id()` —
+**request-scoped daemon state**. `api/custom_agents.py` is the same shape. The
+MCP server is spawned by the CLI, which is spawned by the daemon, so it is a
+separate process with none of that context: a direct call returns
+`authentication_required`, or worse, resolves to `anonymous` and quietly reads
+nothing.
+
+Do NOT solve this by having the subprocess assert an identity from the
+environment. That path is already a known dead end — four security tests once
+passed while running as the resource OWNER because `UNIVERSE_SERVER_USER` never
+reaches the credential-derived authority checks. An env var that names an actor
+is a wish, not an authorization.
+
+**The universe MCP server is a thin client of the daemon**, exactly like the
+Slack transport became for `deliver_app_event`. It holds no authority; it
+describes an intent and the daemon executes it under the founder's own,
+server-derived authority. The daemon already serves an authenticated local
+ingress on `8002` (`app_ingress_http`), so this is a second route on a proven
+channel rather than a new mechanism.
+
+One difference from the chat ingress, and it matters: the app-ingress HMAC key
+authorises "deliver an event as any sender" — deliberately broad, because the
+transport serves many universes. A per-turn tool server serves exactly ONE
+universe, so it must get a **per-turn, universe-scoped, expiring token**, not
+the shared key. Otherwise a token that leaks out of one universe's subprocess
+can act on every universe, which is precisely the blast radius the
+bind-one-universe-at-construction rule exists to prevent.

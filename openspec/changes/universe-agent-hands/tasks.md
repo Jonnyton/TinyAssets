@@ -47,9 +47,22 @@ Findings become failing tests, not documents.
       refused, in-workspace symlinks still resolve, sibling-prefix
       (`u-test-evil` vs `u-test`) refused with the string-prefix trap asserted
       explicitly in the test.
-- [ ] 2.4 Platform tools delegating to the existing surface — `agent`,
-      `agent_binding`, `automation`, `connection`, `branch`, `goal`. Thin
-      wrappers over `write_graph`/`read_graph`; no new authority logic.
+- [ ] 2.4 Platform tools — `agent`, `agent_binding`, `automation`,
+      `connection`, `branch`, `goal`. **BLOCKED ON 2.5**: they cannot call
+      `api/cloud_automations.py` or `api/custom_agents.py` in-process, because
+      both authorise from request-scoped daemon state
+      (`permissions.is_authenticated_request()` / `current_actor_id()`,
+      `cloud_automations.py:49-55`) that a CLI-spawned subprocess does not have.
+- [ ] 2.5 Route the platform tools through the daemon's authenticated local
+      ingress (the `app_ingress_http` pattern), so the daemon executes under
+      server-derived founder authority and the subprocess holds none. Do NOT
+      have the subprocess assert an identity from env — that is the
+      `UNIVERSE_SERVER_USER` dead end where four security tests passed while
+      running as the resource owner.
+- [ ] 2.6 Per-turn, universe-scoped, expiring token — NOT the shared
+      app-ingress HMAC key, which authorises "deliver as any sender" across all
+      universes. A one-universe tool server must not hold all-universe
+      authority.
 
 ## 3. Wire it into the turn
 
