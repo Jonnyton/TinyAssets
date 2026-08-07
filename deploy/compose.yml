@@ -86,6 +86,7 @@ services:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env
       - /etc/tinyassets/request-idempotency.env
+      - /etc/tinyassets/app-ingress.env
     volumes:
       - tinyassets-data:/data
     healthcheck:
@@ -263,10 +264,28 @@ services:
   # from the internet via Slack, so a defect in it would have had stack-wide
   # secret access and could starve the droplet. It gets only what it needs.
   #
-  # Note what is absent: no `env_file`. Slack and LLM credentials come from each
-  # universe's OWN vault on the data volume, which is the point — one container
-  # serves several universes without any of them borrowing another's identity,
-  # and it holds no ambient credential to leak.
+  # Note what is absent: no `env_file` (every secret on the box) and, since
+  # 2026-08-06, no `tinyassets-data` mount either.
+  #
+  # It used to read each universe's vault off the data volume. That could not
+  # survive: `retire_cheat_loop_deploy_fence.py` deletes any container mounting
+  # that volume outside the canonical five, and it did so six times between
+  # 03:36 and 04:25 UTC on 2026-08-06 while failing two production deploys. The
+  # invariant is structural, not an allowlist gap — several fence call sites
+  # require the consumer set be EXACTLY the five and four require it be EMPTY
+  # during removal, and Docker labels are self-asserted so a label-gated
+  # allowlist is forgeable by the writer the fence exists to catch.
+  #
+  # So routing, replay admission, founder recognition, the turn and the reply
+  # POST all happen on the daemon now (tinyassets/app_ingress.py), reached over
+  # an HMAC-signed internal port. This service holds exactly two secrets: the
+  # ingress key, and the `xapp-` socket token it fetches with it. It cannot
+  # post, and it cannot read any universe's data.
+  #
+  # Honest about the trade: it is no longer "no ambient credential to leak" —
+  # it holds one. That is strictly less than read access to every universe's
+  # vault, but a compromised transport can still ASSERT an identity, which is
+  # inherent to anything terminating the provider connection.
   #
   # Behind a profile because the worker exits non-zero with no universes
   # configured, and `restart: unless-stopped` would crash-loop an otherwise
@@ -286,7 +305,9 @@ services:
     command: ["python", "-m", "tinyassets.slack_agent_worker"]
     environment:
       HOME: /app
-      TINYASSETS_DATA_DIR: /data
+      # No TINYASSETS_DATA_DIR, deliberately. With no volume behind it, `/data`
+      # would resolve to an empty container-local directory and any residual
+      # vault read would quietly find nothing instead of failing loudly.
       TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-slack-agent-1
@@ -301,8 +322,15 @@ services:
       # Comma-separated universe ids to serve. Credentials are NOT set here.
       TINYASSETS_SLACK_UNIVERSES: ${TINYASSETS_SLACK_UNIVERSES:-}
       TINYASSETS_SLACK_CONNECTION: ${TINYASSETS_SLACK_CONNECTION:-slack-main}
-    volumes:
-      - tinyassets-data:/data
+      # Container-network address. This port is NEVER published — the daemon
+      # publishes 127.0.0.1:8001 and the tunnel's dashboard rule resolves to
+      # that, so publishing the ingress would put an internal route exactly
+      # where the public one already reaches.
+      TINYASSETS_APP_INGRESS_URL: http://daemon:8002/app-events
+    # The shared ingress secret, and nothing else. Its own file so this service
+    # does not inherit /etc/tinyassets/env the way the daemon does.
+    env_file:
+      - /etc/tinyassets/app-ingress.env
     depends_on:
       daemon:
         condition: service_healthy

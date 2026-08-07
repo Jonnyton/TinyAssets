@@ -316,13 +316,32 @@ async def run_slack_agent(
     nothing" from "ran and answered", rather than treating a clean exit as
     success.
     """
-    app_token = resolve_credentials(config)
-    post = build_slack_transport(config.universe_dir)
-    handle, on_failure = build_handlers(
-        resolve=build_resolver(config),
-        post=post,
-        converse=converse,
-    )
+    from tinyassets.app_ingress_http import should_serve as _ingress_configured
+
+    if _ingress_configured():
+        # Ingress mode: this container holds no universe state and no token
+        # that can post. It fetches only the socket credential and forwards
+        # events. See `build_ingress_handlers`.
+        from tinyassets.effectors.app_ingress_client import (
+            build_ingress_client,
+            fetch_app_token,
+        )
+        from tinyassets.effectors.slack_agent_turn import build_ingress_handlers
+
+        app_token = fetch_app_token(
+            universe_id=config.universe_id, connection_id=config.connection_id
+        )
+        handle, on_failure = build_ingress_handlers(
+            config=config, deliver=build_ingress_client()
+        )
+    else:
+        app_token = resolve_credentials(config)
+        post = build_slack_transport(config.universe_dir)
+        handle, on_failure = build_handlers(
+            resolve=build_resolver(config),
+            post=post,
+            converse=converse,
+        )
     logger.info(
         "slack agent: starting for universe %s, workspace %s",
         config.universe_id,

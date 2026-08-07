@@ -194,3 +194,69 @@ def build_handlers(
         )
 
     return handle, on_failure
+
+
+def build_ingress_handlers(
+    *,
+    config,
+    deliver,
+    to_thread: Callable[..., Any] = asyncio.to_thread,
+):
+    """Handlers for a transport that owns NOTHING but the socket.
+
+    The ingress shape: the agent forwards a description of the event and the
+    daemon does routing, replay admission, founder recognition, the turn, and
+    the reply post. Nothing here reads universe state, and nothing here holds a
+    credential that can post — which is exactly why the container can stop
+    mounting the production volume.
+
+    Contrast `build_handlers`, which keeps the legacy in-process shape for
+    deployments that have not moved yet.
+    """
+
+    async def handle(event: Mapping[str, Any]) -> None:
+        # Cheap local guards first. The daemon re-derives all of this and would
+        # refuse anyway; doing it here just avoids a round trip per stray event.
+        team = event.get("team_id")
+        if not isinstance(team, str) or team.strip() != config.team_id:
+            logger.info("slack agent: event from an unbound workspace, ignoring")
+            return
+        if config.api_app_id:
+            app_id = event.get("api_app_id")
+            if not isinstance(app_id, str) or app_id.strip() != config.api_app_id:
+                logger.info("slack agent: event for a different app, ignoring")
+                return
+        user = event.get("user")
+        if not isinstance(user, str) or not user.strip():
+            return
+
+        await to_thread(
+            deliver,
+            provider="slack",
+            api_app_id=str(event.get("api_app_id") or ""),
+            workspace_id=team.strip(),
+            actor_team_id=str(event.get("actor_team_id") or ""),
+            external_sender_id=user.strip(),
+            channel_id=str(event.get("channel") or ""),
+            event_id=str(event.get("event_id") or ""),
+            event_type=str(event.get("type") or ""),
+            text=str(event.get("text") or ""),
+            thread_ts=str(reply_thread_ts(event) or ""),
+        )
+
+    async def on_failure(event: Mapping[str, Any], exc: BaseException) -> None:
+        """Log. It cannot tell the user, and that is a deliberate trade.
+
+        The legacy handler posts FAILURE_NOTICE so a lost message is visible.
+        This transport has no token that can post — that is the point — so it
+        cannot. Giving it one, or adding a "post this text" route, would hand a
+        transport the ability to make the universe say arbitrary things, which
+        is a worse hole than a silent failure.
+
+        The right home for the notice is the daemon, which already knows the
+        routed universe and holds the credential. Until that exists, a failed
+        turn is silent to the user and loud in the log.
+        """
+        logger.warning("slack turn failed at the ingress: %s", type(exc).__name__)
+
+    return handle, on_failure
