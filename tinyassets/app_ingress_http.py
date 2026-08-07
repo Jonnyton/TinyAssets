@@ -305,13 +305,16 @@ def handle_credentials_request(
         return 400, {"error": "malformed"}
 
     if resolve is None:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.credential_vault import resolve_slack_app_token
+        resolve = _resolve_socket_identity
 
-        def resolve(uid: str, cid: str) -> str:
-            return resolve_slack_app_token(_universe_dir(uid), cid)
-
-    token = resolve(universe_id, connection_id)
+    # A resolver may return the bare token (tests, and the original shape) or
+    # the full identity mapping. Both are accepted so the security tests can
+    # stay focused on auth without also standing up an identity fixture.
+    result = resolve(universe_id, connection_id)
+    if isinstance(result, dict):
+        token = str(result.get("app_token") or "")
+    else:
+        token = str(result or "")
     if not token:
         # Absent is not an error the caller can distinguish from unauthorised
         # by content, but it IS a different status: the transport must be able
@@ -319,7 +322,42 @@ def handle_credentials_request(
         # than retry a signature it got right.
         logger.info("app ingress credentials: no app token deposited")
         return 404, {"error": "no_credential"}
-    return 200, {"app_token": token}
+    if not isinstance(result, dict):
+        return 200, {"app_token": token}
+    return 200, {
+        "app_token": token,
+        "team_id": str(result.get("team_id") or ""),
+        "bot_user_id": str(result.get("bot_user_id") or ""),
+        "api_app_id": str(result.get("api_app_id") or ""),
+    }
+
+
+def _resolve_socket_identity(universe_id: str, connection_id: str) -> dict[str, str]:
+    """The app token plus who the transport is, resolved server-side.
+
+    The identity is here rather than in the transport because the transport
+    used to learn it by calling Slack's `auth.test` with the BOT token — the one
+    credential this rework deliberately keeps on the server. Sending the bot
+    token out just so the agent can ask Slack its own name would give back
+    everything the move was for.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.credential_vault import resolve_slack_app_token, resolve_slack_token
+    from tinyassets.effectors.slack_socket_mode import app_id_from_token
+    from tinyassets.slack_agent_worker import _identify
+
+    universe_dir = _universe_dir(universe_id)
+    app_token = resolve_slack_app_token(universe_dir, connection_id)
+    if not app_token:
+        return {}
+    bot_token = resolve_slack_token(universe_dir, connection_id)
+    team_id, bot_user_id = _identify(bot_token) if bot_token else ("", "")
+    return {
+        "app_token": app_token,
+        "team_id": team_id,
+        "bot_user_id": bot_user_id,
+        "api_app_id": app_id_from_token(app_token),
+    }
 
 
 def create_app_ingress_app():
