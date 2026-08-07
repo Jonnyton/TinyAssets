@@ -71,6 +71,11 @@ CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 #: them (correctly) and simply could not proceed. Read-only.
 BRANCH_ACTIONS = frozenset({"list_versions", "run"})
 
+#: Defining what a kind of automation work may spend. Bounded by
+#: `DELEGABLE_SCOPES` at define time, so a self-declaration can only re-express
+#: authority the founder already has.
+OPERATION_SCOPE_ACTIONS = frozenset({"list", "define"})
+
 #: Outbound connections — GitHub above all. An automation cannot be created
 #: until requester-owned compute is enrolled AND a destination is authorized;
 #: `list` reports both as `prerequisites`. Without these the agent can see that
@@ -180,6 +185,9 @@ def execute_action(
     elif kind == "branch":
         if normalized not in BRANCH_ACTIONS:
             raise AgentActionError(f"unsupported branch action: {normalized}")
+    elif kind == "operation_scope":
+        if normalized not in OPERATION_SCOPE_ACTIONS:
+            raise AgentActionError(f"unsupported operation-scope action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
     return _execute(
@@ -240,15 +248,20 @@ def _list_branch_versions(subject_id: str) -> dict[str, Any]:
 #: made the platform decide what every automation may do. That is the wrong
 #: shape: different automations do different work and must carry different
 #: capabilities, chosen by whoever built them. Host correction 2026-08-07.
-_OPERATION_SCOPES: dict[str, tuple[str, ...]] = {
-    # Delivering a repository spec means running the branch that writes the
-    # change and opens the pull request — costly by definition.
-    "repository_spec_delivery": ("tinyassets.extensions.costly",),
-}
+#: Operation -> scope now lives in `storage/operation_scopes.py`, per universe,
+#: because users define their own operations too (host 2026-08-07: "seems users
+#: should also be able to make operation scopes"). The shipped names are a
+#: starting vocabulary, not policy.
 
 #: Actions whose cost must be covered by a declared operation. Anything absent
 #: needs no capability at all, so reads stay free.
 _ACTIONS_REQUIRING_DECLARED_OPERATION = frozenset({("branch", "run")})
+
+
+def _base_path_for_scopes():
+    from tinyassets.api.helpers import _base_path
+
+    return _base_path()
 
 
 def _capabilities_for(
@@ -276,10 +289,15 @@ def _capabilities_for(
     except Exception:  # noqa: BLE001 - no binding readable means no capability
         logger.warning("universe agent: could not read declared operations")
         return ()
+    from tinyassets.storage.operation_scopes import OperationScopeStore
+
+    store = OperationScopeStore(_base_path())
     granted: set[str] = set()
     for binding in bindings:
         for operation in getattr(binding, "allowed_operations", ()) or ():
-            granted.update(_OPERATION_SCOPES.get(operation, ()))
+            granted.update(
+                store.scopes_for(universe_id=universe_id, operation=operation)
+            )
     return tuple(sorted(granted))
 
 
@@ -325,6 +343,39 @@ def _execute(
                 expected_revision=expected_revision,
                 payload=fields.get("payload"),
             )
+        if surface == "operation_scope":
+            from tinyassets.storage.operation_scopes import (
+                OperationScopeError,
+                OperationScopeStore,
+            )
+
+            scope_store = OperationScopeStore(_base_path_for_scopes())
+            if action == "list":
+                return {
+                    "operations": [
+                        {
+                            "operation": item.operation,
+                            "scopes": list(item.scopes),
+                            "defined_by": item.defined_by,
+                        }
+                        for item in scope_store.list_for(universe_id=universe_id)
+                    ]
+                }
+            try:
+                defined = scope_store.define(
+                    universe_id=universe_id,
+                    operation=str((payload or {}).get("operation") or ""),
+                    scopes=list((payload or {}).get("scopes") or []),
+                    defined_by=subject_id,
+                )
+            except OperationScopeError as exc:
+                raise AgentActionError(str(exc)) from exc
+            return {
+                "operation": defined.operation,
+                "scopes": list(defined.scopes),
+                "defined_by": defined.defined_by,
+            }
+
         if surface == "branch":
             if action == "list_versions":
                 return _list_branch_versions(subject_id)
@@ -405,6 +456,7 @@ def _execute(
 __all__ = [
     "AGENT_ACTIONS",
     "BRANCH_ACTIONS",
+    "OPERATION_SCOPE_ACTIONS",
     "CONNECTION_ACTIONS",
     "CHAT_SURFACE_ACTIONS",
     "AUTOMATION_ACTIONS",

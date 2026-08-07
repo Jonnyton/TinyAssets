@@ -123,6 +123,41 @@ def list_branch_versions() -> str:
 
 
 @mcp.tool()
+def list_operation_scopes() -> str:
+    """The kinds of work my automations may do, and what each may spend.
+
+    These are not fixed by the platform. My founder — or I, on their behalf —
+    define them. Read this before declaring an automation's operations so I know
+    what already exists rather than inventing a near-duplicate.
+    """
+    return _platform_action("operation_scope", "list")
+
+
+@mcp.tool()
+def define_operation_scope(operation: str, scopes: str) -> str:
+    """Define a NEW kind of automation work and what it may spend.
+
+    This is how my founder gets a capability we did not ship. If they want an
+    automation that reads knowledge nightly, I define an operation for it and
+    declare exactly the scopes that work needs — nothing broader.
+
+    Not everything can be delegated: only scopes a founder already holds. Asking
+    for one outside that set is refused by name, and I should relay the refusal
+    rather than quietly narrowing the request.
+
+    Args:
+        operation: A lowercase name, e.g. `nightly_digest`.
+        scopes: Comma-separated scopes this work may spend, e.g.
+            `tinyassets.knowledge, tinyassets.memory`.
+    """
+    return _platform_action(
+        "operation_scope", "define",
+        operation=operation,
+        scopes=[s.strip() for s in scopes.split(",") if s.strip()],
+    )
+
+
+@mcp.tool()
 def run_branch(branch_def_id: str, inputs_json: str = "",
                run_name: str = "") -> str:
     """Actually RUN one of my branches now — this is how work gets done.
