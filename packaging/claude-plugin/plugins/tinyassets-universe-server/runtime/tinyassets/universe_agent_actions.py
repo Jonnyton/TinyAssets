@@ -69,7 +69,7 @@ CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 #: `branch_version_id`, and without a way to LIST them the agent can only be
 #: handed them by its founder — observed live 2026-08-07: it refused to invent
 #: them (correctly) and simply could not proceed. Read-only.
-BRANCH_ACTIONS = frozenset({"list_versions", "run", "build"})
+BRANCH_ACTIONS = frozenset({"list_versions", "run", "build", "read"})
 
 #: Defining what a kind of automation work may spend. Bounded by
 #: `DELEGABLE_SCOPES` at define time, so a self-declaration can only re-express
@@ -458,6 +458,22 @@ def _execute(
         if surface == "branch":
             if action == "list_versions":
                 return _list_branch_versions(subject_id)
+            if action == "read":
+                # Learn the SHAPE by example. Every round of this build has hit
+                # the same wall: the agent will not invent a structure it cannot
+                # inspect, and it is right not to. It listed branches, could not
+                # see inside one, and stopped.
+                from tinyassets.universe_server import read_graph
+
+                raw = read_graph(
+                    target="branch",
+                    graph_id=universe_id,
+                    branch_id=str((payload or {}).get("branch_def_id") or ""),
+                )
+                try:
+                    return json.loads(raw)
+                except (TypeError, ValueError):
+                    return {"result": str(raw)[:4000]}
             if action == "build":
                 # Composing the WORK itself. Without this the agent can wrap a
                 # branch in an automation but cannot create one, so "any kind of

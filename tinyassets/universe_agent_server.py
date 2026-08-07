@@ -112,6 +112,20 @@ def list_automations() -> str:
 
 
 @mcp.tool()
+def read_branch(branch_def_id: str) -> str:
+    """Look inside an existing branch — its nodes, edges and inputs.
+
+    This is how I learn the SHAPE before composing my own with `build_branch`.
+    I read one that already works and follow its structure rather than guessing
+    at a schema.
+
+    Args:
+        branch_def_id: From `list_branch_versions` (the part before the `@`).
+    """
+    return _platform_action("branch", "read", branch_def_id=branch_def_id)
+
+
+@mcp.tool()
 def build_branch(spec_json: str) -> str:
     """Compose a NEW branch — the actual work an automation will run.
 
@@ -120,7 +134,8 @@ def build_branch(spec_json: str) -> str:
     rather than telling them it is impossible.
 
     A branch is nodes and edges: what to fetch, what to think about, what to
-    write. `read_graph target=branch` on an existing one shows the shape.
+    write. Call `read_branch` on one that already works FIRST and follow its
+    structure — I do not have to guess at the schema.
 
     Args:
         spec_json: The branch specification as JSON — its name, nodes and edges.
