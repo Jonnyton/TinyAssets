@@ -439,7 +439,7 @@ automation — a crypto wallet trading prediction markets, a scraper that drafts
 posts in your niche, CRM tasks. The repo-spec one is just an example.
 
 **Today only the repo-spec one is possible.** `api/cloud_automations.py` create
-路 is hardcoded: `_derive_phone_work_definition` (named for phone input, but not
+is hardcoded: `_derive_phone_work_definition` (named for phone input, but not
 generic) requires `repository`, `accepted_spec_ref` and `branch_version_id`, and
 the result is always constructed as `RepositorySpecWorkDefinition.from_dict(...)`.
 There is no type switch and no second definition class.
