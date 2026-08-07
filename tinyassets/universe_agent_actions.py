@@ -229,23 +229,58 @@ def _list_branch_versions(subject_id: str) -> dict[str, Any]:
     return {"branch_versions": versions, "count": len(versions)}
 
 
-#: OAuth scopes granted to a turn, per action. Deliberately per-action and NOT a
-#: blanket list: capabilities normally come from the founder's OAuth grant to the
-#: connector, and this turn has no such grant. What it has instead is a
-#: server-minted token proving founder ownership of this universe — a stronger
-#: proof than a bearer scope, but one that must be converted into exactly the
-#: scopes the requested action needs and nothing more.
+#: What a declared automation OPERATION is allowed to spend.
 #:
-#: Running a branch is a COSTLY action (it spends the founder's compute and can
-#: open a pull request), which is why it is listed explicitly rather than
-#: inherited. Anything not named here gets no capabilities at all.
-_ACTION_CAPABILITIES: dict[tuple[str, str], tuple[str, ...]] = {
-    ("branch", "run"): ("tinyassets.extensions.costly",),
+#: This is a translation table, NOT a policy one. The policy lives where the
+#: user put it: `ProviderWorkBinding.allowed_operations`, declared when they (or
+#: their agent) created the automation, and already enforced at
+#: `storage/provider_work_authority.py:927` and `api/cloud_automations.py:103`.
+#:
+#: An earlier version of this mapped (surface, action) -> scope directly, which
+#: made the platform decide what every automation may do. That is the wrong
+#: shape: different automations do different work and must carry different
+#: capabilities, chosen by whoever built them. Host correction 2026-08-07.
+_OPERATION_SCOPES: dict[str, tuple[str, ...]] = {
+    # Delivering a repository spec means running the branch that writes the
+    # change and opens the pull request — costly by definition.
+    "repository_spec_delivery": ("tinyassets.extensions.costly",),
 }
 
+#: Actions whose cost must be covered by a declared operation. Anything absent
+#: needs no capability at all, so reads stay free.
+_ACTIONS_REQUIRING_DECLARED_OPERATION = frozenset({("branch", "run")})
 
-def _capabilities_for(surface: str, action: str) -> tuple[str, ...]:
-    return _ACTION_CAPABILITIES.get((surface, action), ())
+
+def _capabilities_for(
+    surface: str, action: str, *, universe_id: str, subject_id: str
+) -> tuple[str, ...]:
+    """Scopes this turn may use, derived from what the OWNER declared.
+
+    Returns nothing unless the action needs a capability AND the subject holds a
+    provider binding on this universe whose `allowed_operations` cover it. So an
+    automation built for one kind of work cannot borrow another kind's authority,
+    and a universe with no binding can run nothing — which is the same answer the
+    ordinary API would give.
+    """
+    if (surface, action) not in _ACTIONS_REQUIRING_DECLARED_OPERATION:
+        return ()
+    try:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.provider_work_authority import (
+            SQLiteProviderWorkAuthorityStore,
+        )
+
+        bindings = SQLiteProviderWorkAuthorityStore(_base_path()).list_bindings(
+            owner_user_id=subject_id, universe_id=universe_id, active_only=True
+        )
+    except Exception:  # noqa: BLE001 - no binding readable means no capability
+        logger.warning("universe agent: could not read declared operations")
+        return ()
+    granted: set[str] = set()
+    for binding in bindings:
+        for operation in getattr(binding, "allowed_operations", ()) or ():
+            granted.update(_OPERATION_SCOPES.get(operation, ()))
+    return tuple(sorted(granted))
 
 
 def _execute(
@@ -263,7 +298,11 @@ def _execute(
 
     identity = Identity(
         user_id=subject_id, username=subject_id,
-        capabilities=list(_capabilities_for(surface, action)),
+        capabilities=list(
+            _capabilities_for(
+                surface, action, universe_id=universe_id, subject_id=subject_id
+            )
+        ),
     )
     reset = middleware._current_identity.set(identity)
     try:

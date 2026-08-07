@@ -317,16 +317,54 @@ def test_capabilities_are_granted_per_action_not_blanket(monkeypatch):
     assert permissions.current_actor_id() == "anonymous"
 
 
-def test_running_a_branch_gets_the_costly_scope(monkeypatch):
-    """The ACCEPT direction: without it, run_branch is refused as unscoped."""
+def _run_with_declared_operations(monkeypatch, operations):
+    """Run a branch with a stubbed provider binding declaring *operations*."""
     from tinyassets.auth import middleware
 
+    class _Binding:
+        allowed_operations = tuple(operations or ())
+
+    class _Store:
+        def __init__(self, *a, **k):
+            pass
+
+        def list_bindings(self, **kwargs):
+            return [_Binding()] if operations is not None else []
+
+    monkeypatch.setattr(
+        "tinyassets.storage.provider_work_authority."
+        "SQLiteProviderWorkAuthorityStore", _Store,
+    )
     seen = {}
     monkeypatch.setattr(
         "tinyassets.universe_server.run_graph",
-        lambda **k: seen.update(caps=list(middleware.current_identity().capabilities)) or "{}",
+        lambda **k: seen.update(
+            caps=list(middleware.current_identity().capabilities)
+        ) or "{}",
     )
     token = mint_turn_token(universe_id="u-a", subject_id="user_1")
     execute_action(token=token, surface="branch", action="run",
                    payload={"branch_def_id": "abc"})
-    assert "tinyassets.extensions.costly" in seen["caps"]
+    return seen["caps"]
+
+
+def test_a_declared_operation_confers_its_scope(monkeypatch):
+    """The ACCEPT direction — the owner declared it, so the run may spend it."""
+    caps = _run_with_declared_operations(monkeypatch, ["repository_spec_delivery"])
+    assert "tinyassets.extensions.costly" in caps
+
+
+def test_an_automation_cannot_borrow_another_kind_of_authority(monkeypatch):
+    """Different automations do different work and carry different capabilities.
+
+    A binding declared for some other operation must NOT confer the costly
+    scope — otherwise the platform, not the owner, decides what every automation
+    may spend. Host correction 2026-08-07.
+    """
+    caps = _run_with_declared_operations(monkeypatch, ["some_other_operation"])
+    assert caps == []
+
+
+def test_no_declared_binding_confers_nothing(monkeypatch):
+    caps = _run_with_declared_operations(monkeypatch, None)
+    assert caps == []
