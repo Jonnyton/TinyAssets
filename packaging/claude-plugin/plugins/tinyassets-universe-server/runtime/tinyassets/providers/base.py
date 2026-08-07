@@ -81,6 +81,25 @@ class ModelConfig:
     floor that closes shell-escape / host-access even if a settings file would
     grant them."""
 
+    mcp_config_path: str = ""
+    """Path to an MCP config file granting this turn a scoped tool server.
+
+    When set, subprocess providers pass ``--mcp-config <path> --strict-mcp-config``
+    — and the strict flag is what makes this safe: it ignores EVERY other MCP
+    configuration, so the turn's MCP surface is exactly this file. Verified live
+    2026-08-07 in the production daemon container, both directions: the named
+    server's tool was callable, and a competing project-tier ``.mcp.json`` in the
+    pinned cwd did not load.
+
+    Empty = no MCP server at all, which is the correct state for any turn that
+    has not proven the caller owns the universe. The grant IS the authority
+    decision; there is no downstream check to fall back on.
+
+    Pairing requirement: MCP tools arrive DEFERRED, and ``ToolSearch`` is the only
+    thing that loads their schemas. A turn that sets this must NOT deny
+    ``ToolSearch`` or the server is silently invisible — the turn reports "no such
+    tool" and looks like a broken server rather than a policy decision."""
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderResponse:

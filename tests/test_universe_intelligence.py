@@ -335,8 +335,23 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
     # BOTH the reply turn and the learning-extraction turn run sandboxed.
     assert len(configs) >= 2
     assert all(c is not None and c.sandbox_workspace for c in configs)
-    assert all("Bash" in (c.disallowed_tools or ()) for c in configs)
-    assert all(c.allowed_tools == ("WebFetch",) for c in configs)
+    # Shell and filesystem stay denied on EVERY turn, granted or not. This is
+    # the 2026-07-03 host leak and it is not negotiable by tier.
+    for config in configs:
+        denied = config.disallowed_tools or ()
+        for tool in ("Bash", "Monitor", "Read", "Write", "Edit", "Glob", "Grep"):
+            assert tool in denied, tool
+
+    # The two turns are deliberately NOT symmetric any more. The founder's reply
+    # turn may hold the scoped tool server — that is the whole point of it; the
+    # learning-extraction turn must never, because it exists only to guess
+    # structure out of a transcript, and a guess with hands is an action nobody
+    # chose. (Live 2026-08-07: it guessed a BUILD request was a self-description
+    # and overwrote body.md.)
+    reply_turn, extraction_turn = configs[0], configs[1]
+    assert extraction_turn.mcp_config_path == ""
+    assert extraction_turn.allowed_tools == ("WebFetch",)
+    assert "WebFetch" in (reply_turn.allowed_tools or ())
 
 
 def test_generic_identity_detector():

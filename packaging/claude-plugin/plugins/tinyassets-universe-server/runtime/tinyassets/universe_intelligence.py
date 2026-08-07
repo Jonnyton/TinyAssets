@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import sys
 from pathlib import Path
 
 from tinyassets.api import interlocutor
@@ -94,7 +96,60 @@ _ENGINE_DISALLOWED_TOOLS = (
 )
 
 
-def _sandboxed_config(ctx: UniverseContext) -> ModelConfig:
+#: The scoped tool server's name in the generated MCP config. Its tools arrive
+#: as ``mcp__<name>__<tool>``.
+_ENGINE_TOOL_SERVER = "tinyassets-universe"
+
+#: Tools a turn that OWNS the universe may use, on top of the read-only web.
+#: ``ToolSearch`` is mandatory here, not optional: MCP tools arrive deferred and
+#: it is the only thing that loads their schemas. Verified live 2026-08-07 —
+#: with ``ToolSearch`` denied the granted server is INVISIBLE and the turn
+#: reports "no tool by that name exists", which reads like a broken server
+#: rather than the policy decision it actually is.
+_GRANTED_EXTRA_ALLOWED = ("ToolSearch", f"mcp__{_ENGINE_TOOL_SERVER}__*")
+
+#: Denies dropped when a turn is granted a tool server. ``mcp__*`` is replaced
+#: by ``--strict-mcp-config``, which is a POSITIVE grant rather than a deny list
+#: that has to stay ahead of every tool the CLI adds — and which has already
+#: rotted (7 entries match no known tool as of 2026-08-07).
+_GRANTED_DENY_EXCEPTIONS = frozenset({"mcp__*", "ToolSearch"})
+
+
+def _write_turn_tool_grant(universe_dir: Path) -> str:
+    """Write this turn's MCP config and return its path.
+
+    Deliberately OUTSIDE the universe workspace. Inside, the agent's own file
+    tools could read it — and worse, rewrite it — so a turn's grant would become
+    something the granted party edits. The grant must be authored by the daemon
+    and unreachable from the sandbox.
+    """
+    import json
+    import tempfile
+
+    config = {
+        "mcpServers": {
+            _ENGINE_TOOL_SERVER: {
+                "command": sys.executable,
+                "args": ["-m", "tinyassets.universe_agent_server"],
+                "env": {
+                    "TINYASSETS_AGENT_UNIVERSE_DIR": str(universe_dir),
+                    # The server resolves data-dir-scoped state the same way the
+                    # daemon does; without this an inherited value could point a
+                    # turn at another deployment's data.
+                    "TINYASSETS_DATA_DIR": os.environ.get("TINYASSETS_DATA_DIR", ""),
+                },
+            }
+        }
+    }
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".mcp.json", delete=False, encoding="utf-8"
+    )
+    with handle as fh:
+        json.dump(config, fh)
+    return handle.name
+
+
+def _sandboxed_config(ctx: UniverseContext, *, grant_tools: bool = False) -> ModelConfig:
     """Build the isolated ModelConfig for a universe-intelligence turn.
 
     Preserves the universe's configured timeout while pinning the subprocess to
@@ -105,11 +160,27 @@ def _sandboxed_config(ctx: UniverseContext) -> ModelConfig:
         timeout = int(getattr(ctx.config, "timeout", 300) or 300)
     except (TypeError, ValueError):
         timeout = 300
+    if not grant_tools:
+        return ModelConfig(
+            timeout=timeout,
+            sandbox_workspace=True,
+            allowed_tools=_ENGINE_ALLOWED_TOOLS,
+            disallowed_tools=_ENGINE_DISALLOWED_TOOLS,
+        )
+    # A turn proven to own this universe gets hands: its own workspace, in-turn,
+    # decided by it. The grant IS the authority decision — there is no
+    # downstream check to fall back on, which is why it is made here from the
+    # tier and never from anything the model said.
     return ModelConfig(
         timeout=timeout,
         sandbox_workspace=True,
-        allowed_tools=_ENGINE_ALLOWED_TOOLS,
-        disallowed_tools=_ENGINE_DISALLOWED_TOOLS,
+        allowed_tools=tuple(_ENGINE_ALLOWED_TOOLS) + _GRANTED_EXTRA_ALLOWED,
+        disallowed_tools=tuple(
+            tool
+            for tool in _ENGINE_DISALLOWED_TOOLS
+            if tool not in _GRANTED_DENY_EXCEPTIONS
+        ),
+        mcp_config_path=_write_turn_tool_grant(ctx.universe_dir),
     )
 
 
@@ -340,6 +411,8 @@ def extract_learning(
         system=_LEARNING_SYSTEM,
         role="writer",
         universe_context=ctx,
+        # NEVER granted tools. This pass exists only to guess structure out of a
+        # transcript; handing it hands would let a guess become an action.
         config=_sandboxed_config(ctx),
     )
     return _parse_learning_json(raw)
@@ -533,7 +606,12 @@ def converse(
         system=system,
         role="writer",
         universe_context=ctx,
-        config=_sandboxed_config(ctx),
+        # The grant IS the authority decision, made here from the resolved tier
+        # and from nothing the model said. A non-founder turn is handed no tool
+        # server at all, so it cannot even attempt a write.
+        config=_sandboxed_config(
+            ctx, grant_tools=(bound_tier == interlocutor.FOUNDER)
+        ),
     )
     # Only a FOUNDER teaches the universe.
     #

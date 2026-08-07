@@ -33,8 +33,12 @@ Findings become failing tests, not documents.
 
 ## 2. The universe MCP server
 
-- [ ] 2.1 `tinyassets/universe_agent_tools.py`: a stdio MCP server bound to ONE
-      universe at construction. No tool takes a universe id.
+- [x] 2.1 **DONE** — `tinyassets/universe_agent_server.py`, a stdio MCP server
+      exposing `workspace_list/read/write/delete`. Bound via
+      `TINYASSETS_AGENT_UNIVERSE_DIR`, written by the daemon into the config's
+      `env` block; no tool takes a universe id. Refuses to START unbound rather
+      than answering "refused" to every call, which would read as policy rather
+      than misconfiguration.
 - [x] 2.2 **DONE** — `tinyassets/universe_agent_tools.py`: `UniverseWorkspace`
       + `list_files`/`read_file`/`write_file`/`delete_file`, containment via
       `Path.resolve()` + `is_relative_to` (never a string prefix). Atomic
@@ -66,12 +70,21 @@ Findings become failing tests, not documents.
 
 ## 3. Wire it into the turn
 
-- [ ] 3.1 `_sandboxed_config` / `_sandbox_cli_args` gain the MCP config path and
-      `--strict-mcp-config` when the turn is granted tools.
-- [ ] 3.2 Tier decides the grant: FOUNDER gets the server, everything else gets
-      none. Enforced where the config is built, before the subprocess starts.
-- [ ] 3.3 Mutation-probe 3.2: force a non-founder tier and assert the turn is
-      launched with NO `--mcp-config`. Deleting the check must turn this red.
+- [x] 3.1 **DONE** — `ModelConfig.mcp_config_path`; `_sandbox_cli_args` emits
+      `--mcp-config <path> --strict-mcp-config`. The two flags are one decision:
+      `--mcp-config` without the strict flag re-opens ambient MCP, which is the
+      2026-07-03 hole, so a test asserts they are inseparable.
+- [x] 3.2 **DONE** — `converse` passes
+      `grant_tools=(bound_tier == interlocutor.FOUNDER)`. The per-turn grant
+      file is written OUTSIDE the workspace, or the agent's own file tools could
+      rewrite its own grant.
+- [x] 3.3 **DONE** — 3 mutations, each red in the right direction: grant-everyone
+      reds the non-founder test, never-grant reds the founder test, dropping
+      `--strict-mcp-config` reds the pairing test.
+      **Caught a real bug**: the grant was first wired into `extract_learning`
+      (line 414) instead of `converse` (line 609) — a single-occurrence replace
+      hit the wrong provider call. Without the decision-point test that ships as
+      "tools for the guesser, none for the conversation".
 - [ ] 3.4 The turn's system prompt tells it what it can now do. It has hands; it
       must know.
 

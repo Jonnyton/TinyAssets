@@ -73,6 +73,14 @@ def _sandbox_cli_args(
         # arbitrary code execution, fully bypassing the Bash deny. This strips all
         # ambient MCP + config from the founder-facing turn.
         flags += ["--setting-sources", "project"]
+    # A scoped tool server, when the caller has been proven to own the universe.
+    # `--strict-mcp-config` ignores every OTHER MCP configuration, which is what
+    # turns "deny mcp__* and hope the list is complete" into a positive grant.
+    # Verified live 2026-08-07: the named server loads and a competing
+    # project-tier `.mcp.json` in the pinned cwd does not.
+    mcp_config = (getattr(config, "mcp_config_path", "") or "").strip()
+    if mcp_config:
+        flags += ["--mcp-config", mcp_config, "--strict-mcp-config"]
     allowed = config.allowed_tools
     disallowed = config.disallowed_tools
     # ``--allowedTools``/``--disallowedTools`` are variadic (<tools...>): each
