@@ -133,6 +133,25 @@ BUILD is not a description of what I AM.** "Build me an agent that browses the
 web" is a project, and it belongs in my notes or wiki — it is not my `body.md`.
 I only change my identity files when my founder is genuinely telling me about
 myself. When it is ambiguous, I ask instead of guessing.
+
+# What I can build
+
+I can also act on the platform itself, on my founder's behalf:
+
+- `list_automations`, `create_automation`, `control_automation` — the long-running
+  work this universe does. Including the patch automation, which is how changes
+  get made to my own repository: I drive it, it opens the change. That is how I
+  change myself.
+- `list_agents`, `create_agent` — I can build other agents. Their shape is
+  whatever I write into their instructions and lay out in their files: an
+  OpenClaw-style harness, a Hermes-style one, something borrowed from Claude
+  Code or Codex, or a mix. There is no fixed menu and I am not limited to
+  copying one — I can take what fits from several, and I can adopt parts of
+  them into myself.
+
+When my founder asks for something I can actually do, I do it and report what
+happened. When a tool refuses, I say what it said rather than narrating a
+success — a made-up outcome is worse than a plain "that failed".
 """
 
 #: Tools a turn that OWNS the universe may use, on top of the read-only web.
@@ -150,7 +169,28 @@ _GRANTED_EXTRA_ALLOWED = ("ToolSearch", f"mcp__{_ENGINE_TOOL_SERVER}__*")
 _GRANTED_DENY_EXCEPTIONS = frozenset({"mcp__*", "ToolSearch"})
 
 
-def _write_turn_tool_grant(universe_dir: Path) -> str:
+def _turn_action_token(universe_dir: Path, subject_id: str) -> str:
+    """This turn's platform-action token, or "" if it cannot be minted.
+
+    Fails SOFT on purpose: no subject, or no ingress key configured, means the
+    universe keeps its file tools and loses only the platform ones. A universe
+    that cannot reach the platform should still be able to write its own notes
+    rather than losing its hands entirely.
+    """
+    if not subject_id:
+        return ""
+    try:
+        from tinyassets.universe_agent_actions import mint_turn_token
+
+        return mint_turn_token(
+            universe_id=Path(universe_dir).name, subject_id=subject_id
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("universe agent: no platform-action token this turn")
+        return ""
+
+
+def _write_turn_tool_grant(universe_dir: Path, *, subject_id: str = "") -> str:
     """Write this turn's MCP config and return its path.
 
     Deliberately OUTSIDE the universe workspace. Inside, the agent's own file
@@ -179,6 +219,13 @@ def _write_turn_tool_grant(universe_dir: Path) -> str:
                 "args": ["-m", "tinyassets.universe_agent_server"],
                 "env": {
                     "TINYASSETS_AGENT_UNIVERSE_DIR": str(universe_dir),
+                    # Platform-action authority for THIS turn only. Absent when
+                    # the founder's subject could not be resolved — the file
+                    # tools still work, so a universe can always keep its own
+                    # notes even when it cannot act on the platform.
+                    "TINYASSETS_AGENT_ACTION_TOKEN": _turn_action_token(
+                        universe_dir, subject_id
+                    ),
                     # The server resolves data-dir-scoped state the same way the
                     # daemon does; without this an inherited value could point a
                     # turn at another deployment's data.
@@ -196,7 +243,9 @@ def _write_turn_tool_grant(universe_dir: Path) -> str:
     return handle.name
 
 
-def _sandboxed_config(ctx: UniverseContext, *, grant_tools: bool = False) -> ModelConfig:
+def _sandboxed_config(
+    ctx: UniverseContext, *, grant_tools: bool = False, subject_id: str = ""
+) -> ModelConfig:
     """Build the isolated ModelConfig for a universe-intelligence turn.
 
     Preserves the universe's configured timeout while pinning the subprocess to
@@ -227,7 +276,9 @@ def _sandboxed_config(ctx: UniverseContext, *, grant_tools: bool = False) -> Mod
             for tool in _ENGINE_DISALLOWED_TOOLS
             if tool not in _GRANTED_DENY_EXCEPTIONS
         ),
-        mcp_config_path=_write_turn_tool_grant(ctx.universe_dir),
+        mcp_config_path=_write_turn_tool_grant(
+            ctx.universe_dir, subject_id=subject_id
+        ),
     )
 
 
@@ -646,6 +697,11 @@ def converse(
     )
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
     granted = bound_tier == interlocutor.FOUNDER
+    # Platform actions run AS a subject, so they need one that the server
+    # derived — the sealed founder grant. A tier alone says "the owner is
+    # speaking" without saying who, which is enough to write this universe's
+    # own files but not enough to act on the platform as anybody.
+    grant_subject = str(getattr(founder_grant, "subject_id", "") or "")
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid
     )
@@ -663,7 +719,9 @@ def converse(
         # The grant IS the authority decision, made here from the resolved tier
         # and from nothing the model said. A non-founder turn is handed no tool
         # server at all, so it cannot even attempt a write.
-        config=_sandboxed_config(ctx, grant_tools=granted),
+        config=_sandboxed_config(
+            ctx, grant_tools=granted, subject_id=grant_subject
+        ),
     )
     # Only a FOUNDER teaches the universe.
     #

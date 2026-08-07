@@ -360,6 +360,53 @@ def _resolve_socket_identity(universe_id: str, connection_id: str) -> dict[str, 
     }
 
 
+def handle_agent_action_request(
+    *,
+    body: bytes,
+    now: float | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Run one platform action a universe agent asked for.
+
+    Authenticated by the TURN TOKEN in the body, deliberately NOT by the ingress
+    HMAC key. The agent's tool server must not hold that key: it authorises
+    "deliver an event as any sender" across every universe, and a server bound
+    to one universe holding all-universe authority defeats the binding. The
+    token names one universe, one subject, and expires.
+
+    The daemon then binds that subject and calls the ordinary API, which runs
+    its own ownership check. The token proves WHO is asking; it never proves the
+    answer is yes.
+    """
+    from tinyassets.universe_agent_actions import AgentActionError, execute_action
+
+    if len(body) > MAX_BODY_BYTES:
+        return 413, {"error": "request too large"}
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return 400, {"error": "invalid request"}
+    if not isinstance(parsed, dict):
+        return 400, {"error": "invalid request"}
+
+    try:
+        result = execute_action(
+            token=str(parsed.get("token") or ""),
+            surface=str(parsed.get("surface") or ""),
+            action=str(parsed.get("action") or ""),
+            payload=parsed.get("payload"),
+            now=now,
+        )
+    except AgentActionError as exc:
+        # The message is written for the model on the other end, so it is
+        # actionable ("unsupported automation action: foo") without describing
+        # anything about other universes.
+        return 403, {"error": str(exc)}
+    except Exception:  # noqa: BLE001
+        logger.exception("agent action failed")
+        return 500, {"error": "action failed"}
+    return 200, {"result": result}
+
+
 def create_app_ingress_app():
     """A Starlette app serving POST ``/app-events`` and nothing else.
 
@@ -382,9 +429,15 @@ def create_app_ingress_app():
         )
         return JSONResponse(payload, status_code=status)
 
+    async def _agent_actions(request):
+        body = await request.body()
+        status, payload = handle_agent_action_request(body=body)
+        return JSONResponse(payload, status_code=status)
+
     return Starlette(
         routes=[
             Route("/app-events", _app_events, methods=["POST"]),
             Route("/app-credentials", _app_credentials, methods=["POST"]),
+            Route("/agent-actions", _agent_actions, methods=["POST"]),
         ]
     )

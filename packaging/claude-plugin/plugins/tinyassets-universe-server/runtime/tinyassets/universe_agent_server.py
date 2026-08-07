@@ -39,6 +39,15 @@ from tinyassets.universe_agent_tools import (
 #: Written by the daemon into the `env` block of the generated MCP config.
 UNIVERSE_DIR_ENV = "TINYASSETS_AGENT_UNIVERSE_DIR"
 
+#: This turn's platform-action token. Names one universe, one subject, expires.
+#: Absent = the file tools still work and the platform tools refuse — a universe
+#: whose founder could not be resolved can still keep its own notes.
+ACTION_TOKEN_ENV = "TINYASSETS_AGENT_ACTION_TOKEN"
+
+#: Where the daemon serves the action route. Container-network only.
+ACTION_URL_ENV = "TINYASSETS_AGENT_ACTION_URL"
+DEFAULT_ACTION_URL = "http://daemon:8002/agent-actions"
+
 mcp = FastMCP("tinyassets-universe")
 
 
@@ -53,6 +62,118 @@ def _workspace() -> UniverseWorkspace:
     if not configured:
         raise AgentToolError("this tool server is not bound to a workspace")
     return UniverseWorkspace.for_dir(configured)
+
+
+def _platform_action(surface: str, action: str, **payload: object) -> str:
+    """Ask the daemon to run one platform action under this turn's identity.
+
+    This server holds no authority of its own — only a token naming one
+    universe and one subject. The daemon binds that subject and calls the
+    ordinary API, which still runs its own ownership check.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    token = os.environ.get(ACTION_TOKEN_ENV, "").strip()
+    if not token:
+        return (
+            "refused: this turn has no platform-action authority — I can still "
+            "read and write my own files"
+        )
+    url = (os.environ.get(ACTION_URL_ENV) or DEFAULT_ACTION_URL).strip()
+    # `universe_id` is deliberately NOT sent. The daemon takes it from the
+    # token, so nothing I say can aim an action at another universe.
+    body = _json.dumps(
+        {"token": token, "surface": surface, "action": action, "payload": payload}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
+            parsed = _json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = _json.loads(exc.read().decode("utf-8")).get("error", "")
+        except Exception:  # noqa: BLE001
+            detail = ""
+        return f"refused: {detail or exc.code}"
+    except Exception:  # noqa: BLE001
+        return "refused: the platform did not answer"
+    return _json.dumps(parsed.get("result", parsed), indent=2)[:6000]
+
+
+@mcp.tool()
+def list_automations() -> str:
+    """List the automations running on this universe."""
+    return _platform_action("automation", "list")
+
+
+@mcp.tool()
+def create_automation(name: str, description: str = "") -> str:
+    """Create a new automation on this universe.
+
+    Args:
+        name: Short name for the automation.
+        description: What it is for.
+    """
+    return _platform_action(
+        "automation", "create", payload={"name": name, "description": description}
+    )
+
+
+@mcp.tool()
+def control_automation(automation_id: str, action: str) -> str:
+    """Pause, resume or rebind one of this universe's automations.
+
+    Args:
+        automation_id: The automation to control.
+        action: One of `pause`, `resume`, `rebind`.
+    """
+    return _platform_action(
+        (
+            "automation"
+        ),
+        action,
+        automation_id=automation_id,
+    )
+
+
+@mcp.tool()
+def list_agents() -> str:
+    """List the custom agents available to this universe."""
+    return _platform_action("agent", "list_agents")
+
+
+@mcp.tool()
+def create_agent(name: str, description: str, instructions: str,
+                 tags: str = "") -> str:
+    """Publish a new custom agent — any shape you like.
+
+    A harness shape (OpenClaw, Hermes, Claude Code, Codex) is just what you put
+    in `instructions` plus the files you lay out for it. There is no fixed menu.
+
+    Args:
+        name: The agent's name.
+        description: One line on what it is for.
+        instructions: The agent's own operating instructions — its harness.
+        tags: Optional comma-separated tags.
+    """
+    return _platform_action(
+        "agent",
+        "publish_agent",
+        payload={
+            "schema_version": 1,
+            "name": name,
+            "description": description,
+            "tags": [t.strip() for t in tags.split(",") if t.strip()] or ["custom"],
+            "components": {
+                "identity": {"kind": "soul", "config": {"instructions": instructions}}
+            },
+        },
+    )
 
 
 @mcp.tool()
