@@ -2522,6 +2522,14 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
 #: (`visibility.DEFAULT_CREATE_VISIBILITY`).
 CANON_DEFAULT_VISIBILITY = "private"
 
+#: Every frontmatter key that can answer "may this page's content be served?".
+#:
+#: Must stay in step with `visibility._PAGE_VISIBILITY_KEYS`, which is the reader
+#: side of the same question. Duplicated rather than imported because
+#: `visibility` imports from here; a key that exists there but not here would be
+#: one the writer leaves in place and the reader then honours.
+_VISIBILITY_FRONTMATTER_KEYS = ("visibility", "content_visibility")
+
 
 def _stamp_page_visibility(content: str, visibility: str) -> str:
     """Force a page's declared visibility, overriding whatever the body said.
@@ -2532,32 +2540,44 @@ def _stamp_page_visibility(content: str, visibility: str) -> str:
     whole defect this closes. `content_visibility` is dropped for the same
     reason — leaving a second key that also answers this question means a future
     reader could consult the one the model set.
+
+    **This edits the frontmatter as TEXT and never re-renders it**, which is not
+    a style choice. An earlier version round-tripped through
+    :func:`_parse_frontmatter`, and that parser is lossy on YAML block scalars:
+    for ``summary: |`` it records the value as the literal ``"|"`` and skips the
+    indented continuations, so re-rendering silently DELETED them. The parser
+    being lossy was harmless while canon was written through unchanged — this
+    function is what turned a lossy read into a lossy write. Found by
+    cross-family review 2026-08-06.
+
+    Everything outside the visibility keys is therefore preserved byte for byte,
+    including block scalars, unknown keys, and the body's leading blank lines.
     """
-    meta, body = _parse_frontmatter(content)
-    meta.pop("content_visibility", None)
-    meta.pop("visibility", None)
+    match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
+    if match is None:
+        # No frontmatter (the common shape for learned canon) — give it one and
+        # leave the body byte-for-byte alone.
+        return f"---\nvisibility: {visibility}\n---\n{content}"
 
-    lines: list[str] = []
-    for key, value in meta.items():
-        text = str(value)
-        if "\n" in text:
-            # Re-render as an indented block, the shape `_parse_frontmatter`
-            # reads back. Flattening to `key: first line\nsecond line` both
-            # LOSES the tail and promotes it to top level — and a continuation
-            # line reading `visibility: public` would then become a real key.
-            # That turns the function meant to close an injection into one.
-            lines.append(f"{key}:")
-            lines.extend(f"  {part}" for part in text.split("\n"))
-        else:
-            lines.append(f"{key}: {text}")
+    kept: list[str] = []
+    dropping = False
+    for line in match.group(1).split("\n"):
+        top_level = bool(line) and not line[0].isspace()
+        if top_level:
+            key = line.split(":", 1)[0].strip() if ":" in line else ""
+            dropping = key in _VISIBILITY_FRONTMATTER_KEYS
+            if dropping:
+                continue
+        elif dropping:
+            continue  # a continuation line belonging to the key we dropped
+        kept.append(line)
 
-    # Stamped LAST on purpose. `_parse_frontmatter` assigns into a dict as it
+    # Appended LAST on purpose. `_parse_frontmatter` assigns into a dict as it
     # scans, so on a duplicate key the last occurrence wins. Emitting ours last
     # means no earlier line — however it got there — can outrank it.
-    lines.append(f"visibility: {visibility}")
+    kept.append(f"visibility: {visibility}")
 
-    rendered = "\n".join(lines)
-    return f"---\n{rendered}\n---\n{body.lstrip(chr(10))}"
+    return "---\n" + "\n".join(kept) + "\n---\n" + content[match.end():]
 
 
 def write_universe_canon(

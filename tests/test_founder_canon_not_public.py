@@ -186,6 +186,86 @@ def test_frontmatter_cannot_smuggle_a_permissive_visibility():
     assert visibility.page_content_permitted(meta, "u-not-mine") is False
 
 
+@pytest.mark.parametrize(
+    "header",
+    ["summary: |", "summary: >", "summary: |-", "summary: |+", "summary: >-"],
+    ids=["literal", "folded", "literal-strip", "literal-keep", "folded-strip"],
+)
+def test_yaml_block_scalars_survive_stamping(header):
+    """Standard YAML block scalars, which my first regression test missed.
+
+    `_parse_frontmatter` records `summary: |` as the literal string "|" and skips
+    the indented continuations, so an implementation that re-renders from the
+    parsed dict DELETES the content. The parser being lossy is pre-existing and
+    was harmless while canon was written through unchanged; stamping is what
+    turned a lossy read into a lossy write. Caught by cross-family review.
+    """
+    original = (
+        f"---\ntitle: Note\n{header}\n  first line\n  second line\n---\n"
+        "body text"
+    )
+
+    stamped = wiki._stamp_page_visibility(original, wiki.CANON_DEFAULT_VISIBILITY)
+
+    assert "first line" in stamped, f"block scalar content lost with {header!r}"
+    assert "second line" in stamped, f"block scalar tail lost with {header!r}"
+    assert header in stamped, "the block scalar header itself was rewritten"
+    assert _meta_of(stamped)["visibility"] == "private"
+
+
+def test_the_body_is_preserved_byte_for_byte():
+    """Leading blank lines are part of the document, not noise to trim."""
+    body = "\n\n  indented opening\n\ntrailing paragraph\n"
+    original = f"---\ntitle: Note\n---\n{body}"
+
+    stamped = wiki._stamp_page_visibility(original, wiki.CANON_DEFAULT_VISIBILITY)
+
+    assert stamped.endswith(body), "the markdown body was altered by stamping"
+
+
+def test_unknown_frontmatter_keys_are_preserved_verbatim():
+    """Stamping must not be a filter on frontmatter it does not understand."""
+    original = (
+        "---\ntitle: Note\nweird_key: {nested: value}\nlist_key:\n  - one\n  - two\n---\n"
+        "body"
+    )
+
+    stamped = wiki._stamp_page_visibility(original, wiki.CANON_DEFAULT_VISIBILITY)
+
+    assert "weird_key: {nested: value}" in stamped
+    assert "  - one" in stamped
+    assert "  - two" in stamped
+
+
+def test_dropping_a_visibility_key_takes_its_continuation_lines_with_it():
+    """Otherwise the removed key leaves orphaned indented fragments behind."""
+    original = (
+        "---\ntitle: Note\nvisibility:\n  public\ntags: a\n---\nbody"
+    )
+
+    stamped = wiki._stamp_page_visibility(original, wiki.CANON_DEFAULT_VISIBILITY)
+    meta = _meta_of(stamped)
+
+    assert "  public" not in stamped, (
+        "the dropped key's continuation line was left orphaned in the frontmatter"
+    )
+    assert meta["title"] == "Note"
+    assert meta["tags"] == "a"
+    assert meta["visibility"] == "private"
+
+
+def test_the_writer_and_reader_agree_on_which_keys_declare_visibility():
+    """A key the reader honours but the writer leaves in place is a bypass.
+
+    The list is duplicated (`visibility` imports from `wiki`, so the writer
+    cannot import the reader's copy). Duplication without this assertion is how
+    a key gets added on one side only.
+    """
+    assert set(wiki._VISIBILITY_FRONTMATTER_KEYS) == set(
+        visibility._PAGE_VISIBILITY_KEYS
+    ), "writer and reader disagree about which frontmatter keys grant content"
+
+
 def test_a_granted_reader_still_sees_it(monkeypatch):
     """The founder must lose nothing. Conversing stays frictionless.
 
