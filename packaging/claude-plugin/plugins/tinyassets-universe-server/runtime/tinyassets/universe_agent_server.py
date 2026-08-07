@@ -236,9 +236,19 @@ def connect_agent_to_chat(agent_binding_id: str, workspace_id: str,
 
 
 @mcp.tool()
-def describe_chat_surface() -> str:
-    """Show which chat workspaces and channels currently route to me or my agents."""
-    return _platform_action("chat_surface", "describe")
+def describe_chat_surface(workspace_id: str) -> str:
+    """Show which chat channels currently route to me or to my agents.
+
+    Check this BEFORE binding: it is how you learn the channel ids, and binding
+    workspace-wide when the founder asked for one channel takes over every
+    channel they have.
+
+    Args:
+        workspace_id: The chat workspace to describe.
+    """
+    return _platform_action(
+        "chat_surface", "describe", workspace_id=workspace_id
+    )
 
 
 @mcp.tool()

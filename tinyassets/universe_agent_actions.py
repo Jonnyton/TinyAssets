@@ -194,7 +194,16 @@ def _execute(
 
             fields = payload or {}
             if action == "describe":
-                return chat.describe(universe_id=universe_id)
+                # `workspace_id` is REQUIRED, not optional — omitting it raised
+                # TypeError, which the tool surfaced to the model as a bare
+                # "refused". The agent then correctly reported that it could not
+                # learn the channel id and bound workspace-wide instead, so a
+                # missing kwarg quietly became a broader binding than the
+                # founder asked for. Found live 2026-08-07.
+                return chat.describe(
+                    universe_id=universe_id,
+                    workspace_id=str((payload or {}).get("workspace_id") or ""),
+                )
             handler = chat.bind_channel if action == "bind_channel" else chat.unbind_channel
             return handler(
                 universe_id=universe_id,
