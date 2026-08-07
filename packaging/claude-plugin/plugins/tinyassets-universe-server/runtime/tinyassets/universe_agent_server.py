@@ -123,6 +123,34 @@ def list_branch_versions() -> str:
 
 
 @mcp.tool()
+def run_branch(branch_def_id: str, inputs_json: str = "",
+               run_name: str = "") -> str:
+    """Actually RUN one of my branches now — this is how work gets done.
+
+    A newly created automation waits for a cloud worker and reports
+    `next_action: run_branch_version`, which is not an operation the automation
+    surface accepts. This is that operation: it runs the branch on my founder's
+    own compute rather than waiting for infrastructure that may never arrive.
+
+    For a repository branch this is what opens the pull request — so this is the
+    step where I actually change my own repo.
+
+    Args:
+        branch_def_id: The branch to run — the part of a `branch_version_id`
+            BEFORE the `@`. From `list_branch_versions`.
+        inputs_json: JSON object of run inputs. A branch declares `input_keys`
+            and a strict node FAILS TO COMPILE if one is missing — e.g.
+            `input_keys ['topic'] that are not present`. Read that error and
+            supply the named keys.
+        run_name: Optional label for the run.
+    """
+    return _platform_action(
+        "branch", "run", branch_def_id=branch_def_id,
+        inputs_json=inputs_json, run_name=run_name,
+    )
+
+
+@mcp.tool()
 def create_automation(repository: str, accepted_spec_ref: str,
                       branch_version_id: str, accepted_spec_content: str,
                       cadence_seconds: int = 3600) -> str:

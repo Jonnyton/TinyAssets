@@ -292,3 +292,41 @@ def test_an_unknown_branch_action_is_refused():
     token = mint_turn_token(universe_id="u-a", subject_id="user_me")
     with pytest.raises(AgentActionError, match="unsupported branch action"):
         execute_action(token=token, surface="branch", action="delete_version")
+
+
+def test_capabilities_are_granted_per_action_not_blanket(monkeypatch):
+    """A turn gets exactly the scopes its action needs, and nothing more.
+
+    Capabilities normally come from the founder's OAuth grant; this turn has
+    none, so every scope here is one we chose to confer. A blanket list would
+    silently widen as new actions are added.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.auth import middleware
+
+    seen = {}
+
+    def _capture(**kwargs):
+        seen[kwargs.get("action")] = list(middleware.current_identity().capabilities)
+        return {}
+
+    monkeypatch.setattr("tinyassets.api.cloud_automations.cloud_automations", _capture)
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    execute_action(token=token, surface="automation", action="list")
+    assert seen["list"] == [], "a read action was handed capabilities"
+    assert permissions.current_actor_id() == "anonymous"
+
+
+def test_running_a_branch_gets_the_costly_scope(monkeypatch):
+    """The ACCEPT direction: without it, run_branch is refused as unscoped."""
+    from tinyassets.auth import middleware
+
+    seen = {}
+    monkeypatch.setattr(
+        "tinyassets.universe_server.run_graph",
+        lambda **k: seen.update(caps=list(middleware.current_identity().capabilities)) or "{}",
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    execute_action(token=token, surface="branch", action="run",
+                   payload={"branch_def_id": "abc"})
+    assert "tinyassets.extensions.costly" in seen["caps"]

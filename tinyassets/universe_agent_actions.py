@@ -69,7 +69,7 @@ CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 #: `branch_version_id`, and without a way to LIST them the agent can only be
 #: handed them by its founder — observed live 2026-08-07: it refused to invent
 #: them (correctly) and simply could not proceed. Read-only.
-BRANCH_ACTIONS = frozenset({"list_versions"})
+BRANCH_ACTIONS = frozenset({"list_versions", "run"})
 
 #: Outbound connections — GitHub above all. An automation cannot be created
 #: until requester-owned compute is enrolled AND a destination is authorized;
@@ -229,6 +229,25 @@ def _list_branch_versions(subject_id: str) -> dict[str, Any]:
     return {"branch_versions": versions, "count": len(versions)}
 
 
+#: OAuth scopes granted to a turn, per action. Deliberately per-action and NOT a
+#: blanket list: capabilities normally come from the founder's OAuth grant to the
+#: connector, and this turn has no such grant. What it has instead is a
+#: server-minted token proving founder ownership of this universe — a stronger
+#: proof than a bearer scope, but one that must be converted into exactly the
+#: scopes the requested action needs and nothing more.
+#:
+#: Running a branch is a COSTLY action (it spends the founder's compute and can
+#: open a pull request), which is why it is listed explicitly rather than
+#: inherited. Anything not named here gets no capabilities at all.
+_ACTION_CAPABILITIES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("branch", "run"): ("tinyassets.extensions.costly",),
+}
+
+
+def _capabilities_for(surface: str, action: str) -> tuple[str, ...]:
+    return _ACTION_CAPABILITIES.get((surface, action), ())
+
+
 def _execute(
     *, surface: str, action: str, universe_id: str, subject_id: str, payload: Any
 ) -> dict[str, Any]:
@@ -242,7 +261,10 @@ def _execute(
     from tinyassets.auth import middleware
     from tinyassets.auth.provider import Identity
 
-    identity = Identity(user_id=subject_id, username=subject_id)
+    identity = Identity(
+        user_id=subject_id, username=subject_id,
+        capabilities=list(_capabilities_for(surface, action)),
+    )
     reset = middleware._current_identity.set(identity)
     try:
         if surface == "automation":
@@ -265,7 +287,33 @@ def _execute(
                 payload=fields.get("payload"),
             )
         if surface == "branch":
-            return _list_branch_versions(subject_id)
+            if action == "list_versions":
+                return _list_branch_versions(subject_id)
+            # `run`. A freshly created automation sits at
+            # `blocker: awaiting_cloud_worker` with `next_action:
+            # run_branch_version` — an operation the automation surface does NOT
+            # accept, which is the `next_action`-names-a-fiction defect
+            # `owner-operable-automation` records. The real verb is `run_graph`,
+            # and it runs on the REQUESTER's own compute, which is the model the
+            # platform is supposed to use anyway.
+            from tinyassets.universe_server import run_graph
+
+            raw = run_graph(
+                branch_def_id=str((payload or {}).get("branch_def_id") or ""),
+                graph_id=universe_id,
+                run_name=str((payload or {}).get("run_name") or ""),
+                # Branches declare `input_keys`; a node with
+                # `strict_input_isolation` fails the COMPILE when a declared key
+                # is missing, e.g. "prompt references declared input_keys
+                # ['topic'] that are not present". Found live 2026-08-07 — the
+                # run reached the executor and died there, which reads as a
+                # broken branch rather than a missing argument.
+                inputs_json=str((payload or {}).get("inputs_json") or ""),
+            )
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError):
+                return {"result": str(raw)[:2000]}
 
         if surface == "connection":
             from tinyassets.api.cloud_connections import cloud_connections
