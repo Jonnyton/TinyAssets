@@ -172,22 +172,37 @@ def create_automation(repository: str, accepted_spec_ref: str,
 @mcp.tool()
 def control_automation(automation_id: str, action: str,
                        expected_revision: int) -> str:
-    """Pause, resume or rebind one of this universe's automations.
+    """Pause, resume or rebind one of my automations.
 
-    `expected_revision` is required, not optional: without it the call returns
-    an empty envelope and changes NOTHING, which reads exactly like success.
-    Get the current revision from `list_automations` first.
+    `expected_revision` is required: without it the call changes NOTHING while
+    still returning a result. Read the current `revision` from
+    `list_automations` first.
+
+    A refusal here is INFORMATION, not something to retry. `activation_not_current`
+    means the automation was never activated — pausing it is meaningless, and
+    retrying cannot help. This tool appends the live state so I can say what is
+    actually true instead of trying again.
 
     Args:
         automation_id: The automation to control.
         action: One of `pause`, `resume`, `rebind`.
         expected_revision: The automation's current `revision`.
     """
-    return _platform_action(
-        "automation",
-        action,
-        automation_id=automation_id,
-        expected_revision=expected_revision,
+    result = _platform_action(
+        "automation", action,
+        automation_id=automation_id, expected_revision=expected_revision,
+    )
+    if "conflict" not in result and "refused" not in result:
+        return result
+    # A bare error code sent the agent into a 12-call retry loop live on
+    # 2026-08-07. Attach the state that explains it, so the next move is to
+    # report rather than repeat.
+    detail = _platform_action("automation", "get", automation_id=automation_id)
+    return (
+        result
+        + "\n\nThis did not change anything, and retrying will not help. "
+        + "Current state of that automation:\n"
+        + detail
     )
 
 
