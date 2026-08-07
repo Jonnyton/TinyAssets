@@ -333,3 +333,28 @@ agent's project folder (what the instruction file is called, memory/skills
 layout, conventions). Browse/code/schedule are BASELINE for every agent. The
 universe dir IS the harness, and its layout is currently hardcoded to our OKF
 startup-agent shape for every user.
+
+## 2026-08-07 — HOST ACTION: the DM surface is dead, and DMs are how users actually talk
+
+Host: "if they were intending to talk to it directly and work with it alone for
+a while they wouldn't bother writing the @name over and over, they would just
+message direct." The DM tab shows Slack's own refusal: **"Slack couldn't send
+this message"** — the message never left the client.
+
+Our side is READY, nothing to build:
+- `slack_socket_mode.CONVERSATIONAL_EVENT_TYPES = {"app_mention", "message"}`
+  already accepts DMs (a DM arrives as event type `message`).
+- Workspace-scope channel binding already routes any channel in `T0BN5LK57FT`.
+
+Evidence it has never worked: the agent has forwarded **7 `app_mention` events
+and 0 of anything else, ever** (`docker logs tinyassets-slack-agent`).
+
+Two toggles at api.slack.com/apps → Demo App (`A0BN1Q98MTQ`), host-only:
+1. **App Home → Messages Tab** → enable "Allow users to send Slash commands and
+   messages from the messages tab". Without it Slack rejects the send outright.
+2. **Event Subscriptions → Subscribe to bot events** → add **`message.im`**. The
+   bot holds the `im:history` SCOPE, but a scope is not a subscription — without
+   this the DM is accepted and then never delivered to us.
+
+Until both are set, every test has to be an `@mention` in a channel, which is
+not how anyone works with their own agent.
