@@ -391,3 +391,37 @@ workspace route independently with no schema change.
 
 Until 1 and 2 exist, "create an agent I can talk to" can only mean re-pointing
 the one bot. Say that plainly rather than implying a second presence exists.
+
+## 2026-08-07 — Self-modification chain: exactly where it stops, and why
+
+The agent can now REACH every automation control that exists (`list`, `get`,
+`create`, `pause`, `resume`, `rebind`, `bind_provider`, plus a `connection`
+surface). Walked the whole prerequisite chain live through the same action path
+the agent uses. Three distinct outcomes, only one of which is agent-side:
+
+1. `automation.bind_provider` -> **`provider_binding_setup_required`:
+   "requester-owned provider enrollment is unavailable"** (PermissionError).
+   This is a PLATFORM gap, not an agent gap — enrolling the founder's own
+   compute is not implemented. See openspec changes
+   `activate-requester-owned-cloud-compute-binding` and
+   `activate-fingerprint-bound-provider-enrollment`. Until it lands, NO
+   automation can be created by anyone, agent or human.
+2. `connection.list` -> **works**, returns `{connections: [], count: 0}`.
+3. `connection.connect` -> validates correctly and stops at
+   **"WorkOS user identity is invalid"**.
+
+(3) is the important one, and it is our own doing. The founder app-principal
+mapping points at `u-tiny-operator`, a SYNTHETIC actor created by hand on
+2026-08-07 to prove recognition. The connection flow needs a real
+WorkOS-authenticated subject. So the token's `subject_id` is honest about who it
+names — it just names somebody who does not exist in WorkOS.
+
+**Consequence for the next round:** re-provision the founder mapping against the
+host's real WorkOS subject, not a synthetic operator. Recognition, soul writes,
+and agent creation all work with the synthetic one because they authorise
+against the universe ACL; anything reaching an EXTERNAL identity provider does
+not. That split is worth remembering — a synthetic actor passes every
+local check and fails at the first federated one.
+
+The GitHub connection is the self-modification path: authorize the destination,
+then an automation opens the PR. Nothing gives the engine git or shell.
