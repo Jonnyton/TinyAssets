@@ -12,6 +12,8 @@ See docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
 
 from __future__ import annotations
 
+import importlib.util
+import logging
 from types import SimpleNamespace
 
 import fantasy_daemon.__main__ as dm
@@ -200,10 +202,31 @@ def test_cloud_worker_defaults_to_fantasy_spawn_when_flag_off(
     }]
 
 
+def _pretend_workflow_is_installed(monkeypatch) -> None:
+    """Make `find_spec("workflow")` succeed, whatever this machine has.
+
+    `_daemon_module_for_universe` returns "workflow" only when the module is
+    importable, and falls back to `fantasy_daemon` otherwise (deliberately —
+    see its docstring; a crash-loop is worse than the legacy route). Without
+    pinning that, a test of the ROUTING decision silently becomes a test of
+    whether the runner happens to have `workflow` installed: green wherever it
+    is, red on CI where it is not.
+    """
+    real_find_spec = importlib.util.find_spec
+
+    def _find_spec(name, *args, **kwargs):
+        if name == "workflow":
+            return object()
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
+
+
 def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
     monkeypatch, tmp_path,
 ):
     monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
+    _pretend_workflow_is_installed(monkeypatch)
     monkeypatch.setattr(
         "tinyassets.api.universe._universe_loop_dispatch",
         lambda udir: ("branch-123", {"has_soul": True}),
@@ -233,6 +256,44 @@ def test_cloud_worker_routes_declared_soul_loop_to_workflow_module(
         "module": "workflow",
         "extra_args": ["--provider", "codex"],
     }]
+
+
+def test_cloud_worker_falls_back_when_the_workflow_module_is_absent(
+    monkeypatch, tmp_path, caplog,
+):
+    """The fallback that keeps a worker serving — previously untested.
+
+    It exists because of a real outage: on 2026-08-05 all four workers
+    crash-looped on `No module named workflow`, so `subprocess_alive` was never
+    true, `compatible_worker_count` stayed 0, and admissible slices sat
+    unclaimed for >18h. A crash-loop produces no work AND no capacity, so the
+    router falls back to the legacy module and says loudly why.
+
+    Nothing covered it, which is also how the sibling test above drifted into
+    depending on the runner's installed packages: with no test pinning either
+    side of the branch, "workflow is installed" was never a stated condition.
+    """
+    monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setattr(
+        "tinyassets.api.universe._universe_loop_dispatch",
+        lambda udir: ("branch-123", {"has_soul": True}),
+    )
+    real_find_spec = importlib.util.find_spec
+
+    def _absent(name, *args, **kwargs):
+        if name == "workflow":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _absent)
+
+    with caplog.at_level(logging.ERROR):
+        module = cw._daemon_module_for_universe(tmp_path)
+
+    assert module == "fantasy_daemon"
+    assert "NOT INSTALLED" in caplog.text, (
+        "the fallback must be loud — a silent one is how the outage lasted 18h"
+    )
 
 
 def test_cloud_worker_keeps_legacy_module_for_soulless_or_legacy_loop(
