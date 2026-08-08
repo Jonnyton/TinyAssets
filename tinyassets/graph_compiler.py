@@ -1422,6 +1422,8 @@ def _provider_tool_grants(tools_allowed: Any) -> tuple[str, ...]:
 
 
 _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
+    "posts.engagement": ("posts", "engagement"),
+    "post_engagement": ("posts", "engagement"),
     "goals.leaderboard": ("goals", "leaderboard"),
     "goal_leaderboard": ("goals", "leaderboard"),
     "quality_leaderboard": ("goals", "leaderboard"),
@@ -1798,6 +1800,17 @@ def _build_node_mcp_invoker(
                 node, invocation_depth, shared_enqueue_budget, kwargs,
                 base_path=base_path, context=enqueue_context,
             )
+        elif tool_name == "posts":
+            # Engagement of this universe's own published posts — read-only,
+            # the feedback signal an evaluator/optimizer branch tunes against.
+            if base_path is None:
+                raise CompilerError(
+                    f"Node '{node.node_id}' requested posts.engagement but the "
+                    "run has no universe context to read receipts from."
+                )
+            from tinyassets.x_engagement import read_engagement
+
+            raw = json.dumps(read_engagement(Path(base_path), **kwargs))
         else:  # pragma: no cover - mapping owns the dispatch domains.
             raise CompilerError(
                 f"Node '{node.node_id}' requested unsupported MCP tool "

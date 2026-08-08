@@ -36,6 +36,7 @@ import base64
 import hmac
 import json
 import logging
+import re
 import time
 from hashlib import sha256
 from typing import Any
@@ -96,7 +97,8 @@ APPROVAL_ACTIONS = frozenset({"list", "grant", "deny", "ask"})
 #: live 2026-08-08 the agent started a daily automation in the same turn that
 #: built it, with no consent ask, while a single run_now would have asked.
 _ACTIONS_REQUIRING_APPROVAL = frozenset(
-    {("branch", "run"), ("scheduled_work", "run_now"), ("scheduled_work", "resume")}
+    {("branch", "run"), ("scheduled_work", "run_now"), ("scheduled_work", "resume"),
+     ("effector", "grant")}
 )
 
 #: Automations of ANY kind — schedule + branch + inputs + declared operations.
@@ -118,6 +120,20 @@ SCHEDULED_WORK_ACTIONS = frozenset(
 #: platform. The agent never touches git — it authorizes a destination and asks
 #: the platform to run the automation.
 CONNECTION_ACTIONS = frozenset({"list", "connect", "reconcile"})
+
+#: Real-world posting destinations the founder has authorized. `grant` is the
+#: consent record the post effector's gate reads (`effector_consents`) — it is
+#: approval-gated, so it exists only downstream of the founder's own yes.
+#: `revoke` narrows and needs no approval; narrowing is always allowed.
+EFFECTOR_ACTIONS = frozenset({"list", "grant", "revoke"})
+
+#: Sinks a founder can authorize from conversation. Deliberately small:
+#: github_pr consent has its own operator flow and is NOT conversationally
+#: grantable until that path is unified.
+_GRANTABLE_SINKS = frozenset({"twitter_post"})
+
+#: Reading back how published posts performed — the feedback half of posting.
+POSTS_ACTIONS = frozenset({"engagement"})
 
 
 class AgentActionError(PermissionError):
@@ -227,6 +243,22 @@ def execute_action(
     elif kind == "scheduled_work":
         if normalized not in SCHEDULED_WORK_ACTIONS:
             raise AgentActionError(f"unsupported automation action: {normalized}")
+    elif kind == "effector":
+        if normalized not in EFFECTOR_ACTIONS:
+            raise AgentActionError(f"unsupported effector action: {normalized}")
+        # An ungrantable sink is refused HERE, before the consent gate — an
+        # action the founder cannot take at all must not be queued for a
+        # consent that would never make it legal.
+        if normalized in {"grant", "revoke"}:
+            requested_sink = str((payload or {}).get("sink") or "").strip().lower()
+            if requested_sink not in _GRANTABLE_SINKS:
+                raise AgentActionError(
+                    f"unknown posting sink {requested_sink!r}; conversationally "
+                    f"grantable sinks: {sorted(_GRANTABLE_SINKS)}"
+                )
+    elif kind == "posts":
+        if normalized not in POSTS_ACTIONS:
+            raise AgentActionError(f"unsupported posts action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
     # "Are you sure" — checked AFTER authority, because an action the founder
@@ -245,6 +277,7 @@ def execute_action(
                 payload.get("work_id")
                 or payload.get("branch_def_id")
                 or payload.get("name")
+                or payload.get("destination")
                 or ""
             ).strip()
             # Carry the INPUTS too, not just what was asked. A turn cannot see
@@ -528,6 +561,24 @@ def _approval_key(surface: str, action: str, payload: Any) -> str:
     target = str(
         fields.get("branch_def_id") or fields.get("work_id") or ""
     ).strip().lower()
+    if not target:
+        # Consent grants are keyed by WHERE they authorize posting: yes to
+        # "post to my X" must not also be yes to some other sink/destination.
+        # The destination is normalized to the bare lowercase handle so the
+        # ask-time key and the retry-time key match regardless of which form
+        # (@handle, bare, or profile URL) each turn happened to pass — and so
+        # the key stays inside the approval store's `[a-z0-9.:_-]` charset.
+        sink = str(fields.get("sink") or "").strip().lower()
+        destination = str(fields.get("destination") or "").strip()
+        if sink == "twitter_post" and destination:
+            from tinyassets.effectors.twitter_post import _normalize_handle
+
+            destination = _normalize_handle(destination).lstrip("@")
+        if sink and destination:
+            # Belt: the approval store's key charset is [a-z0-9.:_-]; any
+            # residual character becomes "_" rather than an ApprovalError.
+            safe = re.sub(r"[^a-z0-9._-]", "_", destination.lower())
+            target = f"{sink}:{safe}"
     base = f"{surface}.{action}"
     return f"{base}:{target}" if target else base
 
@@ -882,6 +933,65 @@ def _execute(
             except (TypeError, ValueError):
                 return {"result": str(raw)[:2000]}
 
+        if surface == "effector":
+            from tinyassets.api.helpers import _universe_dir
+            from tinyassets.storage.effector_consents import (
+                grant_consent,
+                list_consents,
+                revoke_consent,
+            )
+
+            if action == "list":
+                return {
+                    "authorized_destinations": list_consents(
+                        _universe_dir(universe_id)
+                    )
+                }
+            sink = str((payload or {}).get("sink") or "").strip().lower()
+            destination = str((payload or {}).get("destination") or "").strip()
+            if sink not in _GRANTABLE_SINKS:
+                raise AgentActionError(
+                    f"unknown posting sink {sink!r}; conversationally "
+                    f"grantable sinks: {sorted(_GRANTABLE_SINKS)}"
+                )
+            if sink == "twitter_post":
+                from tinyassets.effectors.twitter_post import _normalize_handle
+
+                # Canonical @handle form. The post packet's `destination`
+                # must use the SAME form — consent matching is exact.
+                destination = _normalize_handle(destination) if destination else ""
+            if not destination:
+                raise AgentActionError(
+                    "destination is required (the @handle being authorized)"
+                )
+            if action == "grant":
+                granted = grant_consent(
+                    _universe_dir(universe_id),
+                    sink=sink,
+                    destination=destination,
+                    granted_by=subject_id,
+                )
+                granted["note"] = (
+                    "posting to this destination is now authorized; the post "
+                    "packet's `destination` must be exactly "
+                    f"{destination!r} for the consent to match"
+                )
+                return granted
+            revoked = revoke_consent(
+                _universe_dir(universe_id), sink=sink, destination=destination
+            )
+            return {"sink": sink, "destination": destination, "revoked": revoked}
+
+        if surface == "posts":
+            from tinyassets.api.helpers import _universe_dir
+            from tinyassets.x_engagement import read_engagement
+
+            try:
+                limit = int((payload or {}).get("limit") or 10)
+            except (TypeError, ValueError):
+                limit = 10
+            return read_engagement(_universe_dir(universe_id), limit=limit)
+
         if surface == "connection":
             from tinyassets.api.cloud_connections import cloud_connections
 
@@ -940,6 +1050,8 @@ __all__ = [
     "CONNECTION_ACTIONS",
     "CHAT_SURFACE_ACTIONS",
     "AUTOMATION_ACTIONS",
+    "EFFECTOR_ACTIONS",
+    "POSTS_ACTIONS",
     "AgentActionError",
     "DEFAULT_TTL_SECONDS",
     "execute_action",

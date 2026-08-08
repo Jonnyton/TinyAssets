@@ -245,6 +245,20 @@ def build_branch(spec_json: str) -> str:
     automation supplies at run time; a node fails to compile if a declared key
     is missing, so keep them consistent with the automation's `inputs_json`.
 
+    REAL-WORLD POSTING (X): a node can publish by declaring
+    `"effects": ["twitter_post"]` and writing, to one of its `output_keys`, a
+    JSON packet exactly of this shape:
+
+        {"sink": "twitter_post",
+         "destination": "@thehandle",
+         "payload": {"text": "the post text"}}
+
+    The `destination` must be the SAME @handle my founder authorized via
+    `authorize_posting` — the match is exact, and an unauthorized destination
+    means the run records a dry-run refusal instead of posting. Give web
+    research nodes `"tools_allowed": ["web_search"]`; that is honored as a
+    real provider grant at run time.
+
     Args:
         spec_json: The branch specification as JSON — its name, nodes and edges.
     """
@@ -347,6 +361,72 @@ def request_approval(action_key: str, what_it_will_do: str) -> str:
         "approval", "ask",
         action_key=action_key, detail=what_it_will_do,
     )
+
+
+@mcp.tool()
+def authorize_posting(destination: str, sink: str = "twitter_post") -> str:
+    """Record my founder's consent for posting to a real-world destination.
+
+    Posting to X is publishing in their name — it needs their explicit yes,
+    exactly like starting an automation. The flow: ask them plainly
+    ("may I post to @handle when you approve a draft?"), call
+    `request_approval` with key `effector.grant:twitter_post:<handle>` in the
+    same turn (handle WITHOUT the @, lowercase — e.g.
+    `effector.grant:twitter_post:kwisatzh4derach`), and call THIS only after
+    their yes arrives.
+
+    The consent this records is what the post effector's gate checks at
+    publish time. Post packets must use exactly the destination recorded
+    here — the match is character-exact.
+
+    Args:
+        destination: The @handle being authorized (e.g. `@kwisatzh4derach`).
+        sink: The posting sink; only `twitter_post` is grantable today.
+    """
+    return _platform_action(
+        "effector", "grant", sink=sink, destination=destination,
+    )
+
+
+@mcp.tool()
+def list_posting_authorizations() -> str:
+    """Where my founder has authorized me to post, and where they revoked."""
+    return _platform_action("effector", "list")
+
+
+@mcp.tool()
+def revoke_posting(destination: str, sink: str = "twitter_post") -> str:
+    """Withdraw posting consent for a destination — effective immediately.
+
+    Narrowing needs no approval; when my founder says stop, it stops.
+
+    Args:
+        destination: The @handle to stop posting to.
+        sink: The posting sink; default `twitter_post`.
+    """
+    return _platform_action(
+        "effector", "revoke", sink=sink, destination=destination,
+    )
+
+
+@mcp.tool()
+def read_post_engagement(limit: int = 10) -> str:
+    """How my recent real posts performed: likes, replies, reposts, views.
+
+    The feedback half of posting. Reads the receipts of what I actually
+    published and asks X for each post's current metrics — the signal to
+    tune tone, topics, and timing against. Branch nodes can read the same
+    data with `invoke_mcp_action("posts.engagement")` (declare it in
+    `tools_allowed`), which is how a drafting branch learns from its own
+    history mid-run.
+
+    Empty until something has really been posted; an honest error when the
+    X credentials are not configured.
+
+    Args:
+        limit: How many recent posts to fetch (max 25).
+    """
+    return _platform_action("posts", "engagement", limit=limit)
 
 
 @mcp.tool()
