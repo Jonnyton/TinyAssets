@@ -155,3 +155,38 @@ def test_malformed_replacement_inputs_are_refused(store, bad):
         store.update_inputs(universe_id="u-a", work_id=item.work_id,
                             inputs_json=bad, expected_revision=item.revision)
     assert json.loads(store.get(universe_id="u-a", work_id=item.work_id).inputs_json)
+
+
+def test_a_table_created_before_deliver_to_is_migrated(tmp_path):
+    """CREATE TABLE IF NOT EXISTS does not alter an existing table.
+
+    Adding a column to _SCHEMA passes fresh installs and every test while
+    breaking production on INSERT with "no column named X". That is exactly what
+    silently killed six build_automation attempts on 2026-08-07.
+    """
+    import sqlite3
+
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage import db_path
+
+    initialize_author_server(str(tmp_path))
+    # Build the OLD shape by hand: everything except deliver_to.
+    conn = sqlite3.connect(db_path(tmp_path))
+    conn.executescript(
+        "CREATE TABLE scheduled_work (work_id TEXT PRIMARY KEY,"
+        " universe_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,"
+        " branch_def_id TEXT NOT NULL, inputs_json TEXT NOT NULL,"
+        " cadence_seconds INTEGER NOT NULL, declared_operations_json TEXT NOT NULL,"
+        " state TEXT NOT NULL, revision INTEGER NOT NULL, owner_id TEXT NOT NULL,"
+        " created_at REAL NOT NULL, updated_at REAL NOT NULL,"
+        " last_run_at REAL, last_run_id TEXT, UNIQUE (universe_id, name))"
+    )
+    conn.commit()
+    conn.close()
+
+    store = ScheduledWorkStore(tmp_path)  # must migrate, not explode
+    created = store.create(
+        universe_id="u-a", name="after_migration", kind="probe",
+        branch_def_id="abc", owner_id="user_1", deliver_to="D123",
+    )
+    assert created.deliver_to == "D123"

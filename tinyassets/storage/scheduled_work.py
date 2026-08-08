@@ -50,6 +50,7 @@ Nothing here grants anything on its own.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -58,6 +59,8 @@ from pathlib import Path
 
 from tinyassets.ids import new_ulid
 from tinyassets.storage import db_path
+
+logger = logging.getLogger(__name__)
 
 _LABEL = re.compile(r"[a-z][a-z0-9_]{2,63}\Z")
 _STATES = ("active", "paused")
@@ -130,6 +133,30 @@ class ScheduledWorkStore:
         self.base_path = Path(base_path)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add columns this file gained after a deployment created the table.
+
+        `CREATE TABLE IF NOT EXISTS` does NOT alter an existing table, so adding
+        a field to _SCHEMA silently breaks every deployment that already has the
+        table: fresh installs and tests pass, production raises
+        "no column named X" on INSERT.
+
+        That is exactly what happened with `deliver_to` on 2026-08-07 — six
+        build_automation attempts produced nothing, and the failure looked like
+        the agent misbehaving rather than a missing migration. Found by a
+        mutation probe, not by reading.
+        """
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(scheduled_work)")}
+        for column, ddl in (
+            ("deliver_to", "ALTER TABLE scheduled_work ADD COLUMN"
+                           " deliver_to TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in existing:
+                conn.execute(ddl)
+                logger.info("scheduled_work: added missing column %s", column)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(db_path(self.base_path))
