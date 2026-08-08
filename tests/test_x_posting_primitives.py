@@ -179,7 +179,7 @@ def test_metrics_are_joined_onto_receipts(base, monkeypatch):
     _finalize_post_receipt(base / "u-a", post_id="222", run_id="rB")
     monkeypatch.setattr(
         x_engagement, "_fetch_metrics",
-        lambda ids, *, handle, destination: {
+        lambda ids, *, handle, destination, universe_dir=None: {
             "data": [
                 {"id": "111", "text": "hello", "created_at": "2026-08-08",
                  "public_metrics": {"like_count": 4, "reply_count": 1}},
@@ -214,6 +214,69 @@ def test_branch_nodes_can_name_the_engagement_read():
 
     assert _NODE_MCP_ACTION_ALIASES["posts.engagement"] == ("posts", "engagement")
     assert _NODE_MCP_ACTION_ALIASES["post_engagement"] == ("posts", "engagement")
+
+
+# -- vault-first credentials --------------------------------------------------
+
+def _vault_record(**over):
+    record = {
+        "credential_type": "social", "service": "twitter",
+        "destination": "@myhandle",
+        "api_key": "k", "api_secret": "s",
+        "access_token": "t", "access_token_secret": "ts",
+    }
+    record.update(over)
+    return record
+
+
+def test_deposited_twitter_credentials_resolve_for_their_exact_destination(tmp_path):
+    from tinyassets.credential_vault import (
+        resolve_twitter_credentials,
+        write_credential_vault,
+    )
+
+    write_credential_vault(tmp_path, [_vault_record()])
+    assert resolve_twitter_credentials(tmp_path, "@myhandle") == {
+        "api_key": "k", "api_secret": "s",
+        "access_token": "t", "access_token_secret": "ts",
+    }
+    # Exact destination discipline — a deposit for one account never serves
+    # a post aimed at another.
+    assert resolve_twitter_credentials(tmp_path, "@other") is None
+
+
+def test_partial_vault_record_resolves_to_none_not_a_partial(tmp_path):
+    """Three-quarters of a credential signs nothing — refuse, don't guess."""
+    from tinyassets.credential_vault import (
+        resolve_twitter_credentials,
+        write_credential_vault,
+    )
+
+    write_credential_vault(tmp_path, [_vault_record(access_token_secret="")])
+    assert resolve_twitter_credentials(tmp_path, "@myhandle") is None
+
+
+def test_effector_prefers_the_vault_over_env(tmp_path, monkeypatch):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.effectors.twitter_post import _resolve_credentials
+
+    monkeypatch.setenv("TWITTER_API_KEY", "envk")
+    monkeypatch.setenv("TWITTER_API_SECRET", "envs")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "envt")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN_SECRET", "envts")
+    write_credential_vault(tmp_path, [_vault_record()])
+    resolved = _resolve_credentials(
+        handle="@myhandle", destination="@myhandle", universe_dir=tmp_path
+    )
+    assert resolved is not None
+    assert resolved.source == "vault"
+    assert resolved.api_key == "k"
+    # No vault record for this destination -> the env fallback still works.
+    env_resolved = _resolve_credentials(
+        handle="@other", destination="@other", universe_dir=tmp_path
+    )
+    assert env_resolved is not None
+    assert env_resolved.source == "default"
 
 
 # -- outward chat bindings need consent --------------------------------------

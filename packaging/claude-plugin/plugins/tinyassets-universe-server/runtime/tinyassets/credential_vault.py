@@ -465,6 +465,44 @@ def resolve_slack_token(
     return ""
 
 
+def resolve_twitter_credentials(
+    universe_dir: str | Path | None,
+    destination: str,
+) -> dict[str, str] | None:
+    """Return the four X/Twitter user-context values for one destination.
+
+    The record must be a ``social`` credential for service ``twitter`` (alias
+    ``x``) whose ``destination`` is the exact @handle being posted to — the
+    same exact-match discipline the consent gate uses, so a vault deposit for
+    one account can never serve a post aimed at another.
+
+    Returns ``{"api_key", "api_secret", "access_token", "access_token_secret"}``
+    or ``None`` when no record has all four. Partial records are None, not a
+    partial dict — three-quarters of a credential signs nothing.
+    """
+    if universe_dir is None:
+        return None
+    wanted = destination.strip()
+    if not wanted:
+        return None
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "social":
+            continue
+        if _service(record) not in ("twitter", "x"):
+            continue
+        if str(record.get("destination") or "").strip() != wanted:
+            continue
+        values = {
+            key: str(record.get(key) or "").strip()
+            for key in (
+                "api_key", "api_secret", "access_token", "access_token_secret",
+            )
+        }
+        if all(values.values()):
+            return values
+    return None
+
+
 def resolve_slack_app_token(
     universe_dir: str | Path | None,
     connection_id: str,

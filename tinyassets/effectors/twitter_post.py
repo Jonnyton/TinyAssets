@@ -187,14 +187,35 @@ def _credential_prefixes(*, handle: str, destination: str) -> list[tuple[str, st
     return unique
 
 
-def _resolve_credentials(*, handle: str, destination: str) -> TwitterCredentials | None:
-    """Resolve per-handle credentials, falling back to default Twitter env.
+def _resolve_credentials(
+    *, handle: str, destination: str,
+    universe_dir: str | Path | None = None,
+) -> TwitterCredentials | None:
+    """Resolve per-handle credentials: the universe VAULT first, then env.
 
-    Supported forms:
+    Vault first because the vault record is scoped to this universe AND this
+    exact destination — the founder deposited it for precisely this use. The
+    env forms remain as the PR-122 capability-map fallback:
     - ``TWITTER_<HANDLE>_API_KEY`` etc. for per-handle accounts.
     - ``TWITTER_<DESTINATION>_API_KEY`` etc. for destination aliases.
     - ``TWITTER_API_KEY`` etc. for the first/default account.
     """
+    if universe_dir is not None:
+        try:
+            from tinyassets.credential_vault import resolve_twitter_credentials
+
+            deposited = resolve_twitter_credentials(universe_dir, destination)
+        except Exception:  # noqa: BLE001 - a broken vault must not kill the env path
+            logger.exception("twitter vault lookup failed; trying env")
+            deposited = None
+        if deposited is not None:
+            return TwitterCredentials(
+                api_key=deposited["api_key"],
+                api_secret=deposited["api_secret"],
+                access_token=deposited["access_token"],
+                access_token_secret=deposited["access_token_secret"],
+                source="vault",
+            )
     for label, prefix in _credential_prefixes(handle=handle, destination=destination):
         api_key = os.environ.get(f"{prefix}API_KEY", "").strip()
         api_secret = os.environ.get(f"{prefix}API_SECRET", "").strip()
@@ -602,7 +623,9 @@ def run_twitter_post_effector(
         )
         return evidence
 
-    credentials = _resolve_credentials(handle=handle, destination=destination)
+    credentials = _resolve_credentials(
+        handle=handle, destination=destination, universe_dir=universe_dir
+    )
     if credentials is None:
         evidence = _would_post_evidence(
             reason="missing_credentials",
@@ -614,9 +637,11 @@ def run_twitter_post_effector(
             idempotency_hint=idempotency_hint,
         )
         evidence["hint"] = (
-            "Set TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, "
-            "and TWITTER_ACCESS_TOKEN_SECRET for the default handle, or the "
-            "same names prefixed with TWITTER_<HANDLE>_ for per-handle routing."
+            "Deposit the four X user-context values into this universe's "
+            "credential vault (scripts/deposit_x_credentials.py), or set "
+            "TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN and "
+            "TWITTER_ACCESS_TOKEN_SECRET in the daemon environment "
+            "(TWITTER_<HANDLE>_ prefix for per-handle routing)."
         )
         return evidence
 

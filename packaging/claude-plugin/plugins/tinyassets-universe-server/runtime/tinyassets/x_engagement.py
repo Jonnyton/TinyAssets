@@ -68,9 +68,12 @@ def _posted_receipts(universe_dir: Path, *, limit: int) -> list[dict[str, Any]]:
 
 
 def _fetch_metrics(
-    post_ids: list[str], *, handle: str, destination: str
+    post_ids: list[str], *, handle: str, destination: str,
+    universe_dir: Path | None = None,
 ) -> dict[str, Any]:
-    credentials = _resolve_credentials(handle=handle, destination=destination)
+    credentials = _resolve_credentials(
+        handle=handle, destination=destination, universe_dir=universe_dir
+    )
     if credentials is None:
         return {
             "error": "no X credentials available to read engagement",
@@ -143,7 +146,8 @@ def read_engagement(
     destination = next((p["destination"] for p in posts if p["destination"]), "")
     handle = destination or "@self"
     response = _fetch_metrics(
-        [p["post_id"] for p in posts], handle=handle, destination=destination
+        [p["post_id"] for p in posts], handle=handle, destination=destination,
+        universe_dir=base,
     )
     if "error" in response:
         response["posts_awaiting_metrics"] = posts
