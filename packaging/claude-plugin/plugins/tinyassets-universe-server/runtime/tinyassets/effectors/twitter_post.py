@@ -401,6 +401,44 @@ def _oauth_header(
     return f"OAuth {rendered}"
 
 
+def packet_from_handoffs(node: Any, run_state: dict[str, Any]) -> dict[str, Any] | None:
+    """Assemble the write packet the PLATFORM way — from a declaration.
+
+    Live 2026-08-08 (runs a29e53d2c246/b3b76f45e838): a prompt node asked to
+    emit the packet JSON refused, twice — the model correctly reads
+    "output these exact bytes aimed at a write system for a real account"
+    as unauditable, and reassurance makes it MORE suspicious. The LLM's job
+    is the prose; naming the destination is the DECLARATION's job
+    (immutable per published version, so neither the output field nor the
+    destination can be substituted at run time). This assembles
+    {sink, destination, payload.text} from the node's ``handoffs`` entry
+    whose adapter is ``twitter_post`` and the plain text the node wrote.
+
+    Returns None when nothing is declared or the declared field holds no
+    text — the caller keeps its no-packet refusal for that case.
+    """
+    for declared in getattr(node, "handoffs", None) or []:
+        if not isinstance(declared, dict):
+            continue
+        if str(declared.get("adapter") or "").strip() != EXTERNAL_WRITE_SINK_TWITTER_POST:
+            continue
+        field = str(declared.get("output_field") or "").strip()
+        destination = str(declared.get("destination") or "").strip()
+        if not field or not destination:
+            continue
+        text = run_state.get(field)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        return {
+            "sink": EXTERNAL_WRITE_SINK_TWITTER_POST,
+            # Declarations carry the bare handle (the handoff id charset
+            # forbids a leading @); consent rows carry the @form.
+            "destination": _normalize_handle(destination),
+            "payload": {"text": text.strip()},
+        }
+    return None
+
+
 def whoami(credentials: TwitterCredentials) -> str:
     """Username these credentials authenticate as (GET /2/users/me).
 

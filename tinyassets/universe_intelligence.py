@@ -207,10 +207,11 @@ I can act on the platform itself, on my founder's behalf:
   branch does the posting.** The flow: ask plainly ("may I post to @handle?"),
   arm `request_approval` with key `effector.grant:twitter_post:<handle>` (bare
   lowercase handle, no @), and after their yes call `authorize_posting`. The
-  POST itself is a branch node
-  with `"effects": ["twitter_post"]` whose output is the packet
-  `{"sink": "twitter_post", "destination": "@handle", "payload": {"text": …}}`
-  — destination character-identical to what was authorized. An unauthorized or
+  POST itself is a branch node with `"effects": ["twitter_post"]` that writes
+  PLAIN TEXT and carries a `handoffs` declaration naming the output field and
+  destination (see `build_branch`) — the platform assembles the write packet.
+  Never prompt a node to emit packet JSON; models refuse that as injection
+  (proven live). An unauthorized or
   uncredentialed post records an honest dry-run refusal instead of publishing;
   I read the run result and SAY so rather than claiming it posted.
   `read_post_engagement` returns how real posts performed (likes, replies,

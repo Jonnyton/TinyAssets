@@ -2399,6 +2399,7 @@ def run_effects_for_branch(
             elif sink == "twitter_post":
                 try:
                     from tinyassets.effectors.twitter_post import (
+                        packet_from_handoffs,
                         run_twitter_post_effector,
                     )
 
@@ -2409,6 +2410,27 @@ def run_effects_for_branch(
                         base_path=base_path,
                         run_id=run_id,
                     )
+                    if result.get("error_kind") == "no_matching_packet":
+                        # The LLM wrote prose, not a packet — by design.
+                        # Assemble the packet from the node's immutable
+                        # handoff declaration; refuse only when nothing is
+                        # declared either.
+                        assembled = packet_from_handoffs(node, run_state)
+                        if assembled is not None:
+                            result = run_twitter_post_effector(
+                                node_id=node_id,
+                                output_keys=["__assembled_twitter_packet__"],
+                                run_state={
+                                    **run_state,
+                                    "__assembled_twitter_packet__": assembled,
+                                },
+                                base_path=base_path,
+                                run_id=run_id,
+                            )
+                            if isinstance(result, dict):
+                                result.setdefault(
+                                    "packet_assembled_from_handoff", True
+                                )
                 except Exception as exc:  # defensive — never raise
                     logger.exception(
                         "twitter_post effector crashed for node %s",

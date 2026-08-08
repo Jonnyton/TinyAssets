@@ -279,6 +279,74 @@ def test_effector_prefers_the_vault_over_env(tmp_path, monkeypatch):
     assert env_resolved.source == "default"
 
 
+# -- platform-assembled packets ----------------------------------------------
+
+class _Node:
+    def __init__(self, handoffs):
+        self.node_id = "publish"
+        self.output_keys = ["post_text"]
+        self.effects = ["twitter_post"]
+        self.handoffs = handoffs
+
+
+_DECLARATION = {
+    "output_field": "post_text", "adapter": "twitter_post",
+    "adapter_action": "post", "destination": "myhandle",
+    "effect_class": "external_write", "outcome_kind": "published_post",
+}
+
+
+def test_packet_is_assembled_from_the_declaration_not_the_llm():
+    """The LLM writes prose; the immutable declaration names the destination.
+    Live 2026-08-08: prompting a node to emit packet JSON was refused twice —
+    the model reads byte-exact write payloads as injection."""
+    from tinyassets.effectors.twitter_post import packet_from_handoffs
+
+    packet = packet_from_handoffs(
+        _Node([_DECLARATION]), {"post_text": "shipped the slack agent"}
+    )
+    assert packet == {
+        "sink": "twitter_post",
+        "destination": "@myhandle",
+        "payload": {"text": "shipped the slack agent"},
+    }
+
+
+def test_no_declaration_or_no_text_assembles_nothing():
+    from tinyassets.effectors.twitter_post import packet_from_handoffs
+
+    assert packet_from_handoffs(_Node([]), {"post_text": "x"}) is None
+    assert packet_from_handoffs(_Node([_DECLARATION]), {"post_text": ""}) is None
+    other = dict(_DECLARATION, adapter="github_pr")
+    assert packet_from_handoffs(_Node([other]), {"post_text": "x"}) is None
+
+
+def test_dispatcher_falls_back_to_handoff_assembly(base):
+    """End to end through run_effects_for_branch: a node whose output is
+    plain prose still reaches the effector via the declaration — and stops
+    at the credential gate as dry-run, not at no_matching_packet."""
+    from tinyassets.effectors.github_pr import run_effects_for_branch
+    from tinyassets.storage.effector_consents import grant_consent
+
+    grant_consent(base / "u-a", sink="twitter_post", destination="@myhandle",
+                  granted_by="user_1")
+
+    class _Branch:
+        node_defs = [_Node([_DECLARATION])]
+
+    results = run_effects_for_branch(
+        branch=_Branch(),
+        run_state={"post_text": "shipped the slack agent"},
+        base_path=base / "u-a",
+        run_id="r_assembly",
+    )
+    evidence = results["publish"]["twitter_post"]
+    assert evidence.get("error_kind") != "no_matching_packet"
+    assert evidence.get("reason") == "missing_credentials"
+    assert evidence.get("packet_assembled_from_handoff") is True
+    assert evidence["would_post"]["text"] == "shipped the slack agent"
+
+
 # -- conversational deposit ---------------------------------------------------
 
 _DEPOSIT = {

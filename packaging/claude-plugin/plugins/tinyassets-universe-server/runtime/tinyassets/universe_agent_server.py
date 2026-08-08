@@ -245,19 +245,27 @@ def build_branch(spec_json: str) -> str:
     automation supplies at run time; a node fails to compile if a declared key
     is missing, so keep them consistent with the automation's `inputs_json`.
 
-    REAL-WORLD POSTING (X): a node can publish by declaring
-    `"effects": ["twitter_post"]` and writing, to one of its `output_keys`, a
-    JSON packet exactly of this shape:
+    REAL-WORLD POSTING (X): the publishing node writes PLAIN TEXT (just the
+    post), and DECLARES where it goes — the platform assembles the write
+    packet from the declaration. Do NOT ask a node's prompt to emit a packet
+    or exact JSON aimed at posting: the model refuses that as an injection
+    pattern (live 2026-08-08, twice). The shape that works:
 
-        {"sink": "twitter_post",
-         "destination": "@thehandle",
-         "payload": {"text": "the post text"}}
+        {"node_id": "publish", "output_keys": ["post_text"],
+         "effects": ["twitter_post"],
+         "handoffs": [{"output_field": "post_text",
+                        "adapter": "twitter_post",
+                        "adapter_action": "post",
+                        "destination": "thehandle",
+                        "effect_class": "external_write",
+                        "outcome_kind": "published_post"}],
+         "prompt_template": "Write the final post text for: {draft}"}
 
-    The `destination` must be the SAME @handle my founder authorized via
-    `authorize_posting` — the match is exact, and an unauthorized destination
-    means the run records a dry-run refusal instead of posting. Give web
-    research nodes `"tools_allowed": ["web_search"]`; that is honored as a
-    real provider grant at run time.
+    `destination` is the bare handle (no @) and must normalize to the SAME
+    @handle my founder authorized via `authorize_posting` — an unauthorized
+    destination means the run records a dry-run refusal instead of posting.
+    Give web research nodes `"tools_allowed": ["web_search"]`; that is
+    honored as a real provider grant at run time.
 
     Args:
         spec_json: The branch specification as JSON — its name, nodes and edges.
