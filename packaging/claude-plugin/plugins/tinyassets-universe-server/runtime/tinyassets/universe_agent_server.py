@@ -126,6 +126,35 @@ def read_branch(branch_def_id: str) -> str:
 
 
 @mcp.tool()
+def list_branch_templates() -> str:
+    """Working starting points I can remix instead of composing from nothing.
+
+    Five shapes that cover most work: `sequential` (do this, then that),
+    `routing` (classify first, handle by kind), `parallel` (several angles, then
+    synthesise), `orchestrator_worker` (plan, execute, assemble),
+    `evaluator_optimizer` (draft, critique, revise).
+
+    Check here BEFORE building from scratch — starting from a working shape and
+    changing it is faster and less error-prone than inventing one.
+    """
+    return _platform_action("branch", "templates")
+
+
+@mcp.tool()
+def get_branch_template(template: str) -> str:
+    """The full spec for one starting point, ready to edit and build.
+
+    I take this, change the prompts and names to fit what my founder actually
+    asked for, and pass it to `build_branch`. It is a starting point, not a
+    finished answer — the prompts are deliberately generic.
+
+    Args:
+        template: One of the names from `list_branch_templates`.
+    """
+    return _platform_action("branch", "template", template=template)
+
+
+@mcp.tool()
 def build_branch(spec_json: str) -> str:
     """Compose a NEW branch — the actual work an automation will run.
 

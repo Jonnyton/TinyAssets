@@ -69,7 +69,9 @@ CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 #: `branch_version_id`, and without a way to LIST them the agent can only be
 #: handed them by its founder — observed live 2026-08-07: it refused to invent
 #: them (correctly) and simply could not proceed. Read-only.
-BRANCH_ACTIONS = frozenset({"list_versions", "run", "build", "read"})
+BRANCH_ACTIONS = frozenset(
+    {"list_versions", "run", "build", "read", "templates", "template"}
+)
 
 #: Defining what a kind of automation work may spend. Bounded by
 #: `DELEGABLE_SCOPES` at define time, so a self-declaration can only re-express
@@ -530,6 +532,19 @@ def _execute(
         if surface == "branch":
             if action == "list_versions":
                 return _list_branch_versions(subject_id)
+            if action == "templates":
+                from tinyassets.branch_templates import list_templates
+
+                return {"templates": list_templates()}
+            if action == "template":
+                from tinyassets.branch_templates import template_spec
+
+                try:
+                    return {"spec": template_spec(str((payload or {}).get("template") or ""))}
+                except KeyError as exc:
+                    raise AgentActionError(
+                        f"no such template: {exc.args[0]!r}"
+                    ) from exc
             if action == "read":
                 # Learn the SHAPE by example. Every round of this build has hit
                 # the same wall: the agent will not invent a structure it cannot
