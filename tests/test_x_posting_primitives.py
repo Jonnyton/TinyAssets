@@ -214,3 +214,35 @@ def test_branch_nodes_can_name_the_engagement_read():
 
     assert _NODE_MCP_ACTION_ALIASES["posts.engagement"] == ("posts", "engagement")
     assert _NODE_MCP_ACTION_ALIASES["post_engagement"] == ("posts", "engagement")
+
+
+# -- outward chat bindings need consent --------------------------------------
+
+def test_making_an_agent_live_in_chat_requires_the_founders_yes(base):
+    """Live 2026-08-08: an agent was connected WORKSPACE-WIDE off a misread
+    terse message, with no ask. Outward visibility is consent-gated now."""
+    with pytest.raises(AgentActionError, match="go-ahead"):
+        execute_action(
+            token=_token(), surface="chat_surface", action="bind_channel",
+            payload={"agent_binding_id": "b1", "workspace_id": "T0TEST"},
+        )
+    listed = execute_action(token=_token(), surface="approval", action="list",
+                            payload={})
+    assert [p["action_key"] for p in listed["pending"]] == [
+        "chat_surface.bind_channel:t0test:workspace_wide"
+    ]
+
+
+def test_binding_consent_is_keyed_to_the_scope():
+    """Yes to one channel must not be yes to the whole workspace."""
+    from tinyassets.universe_agent_actions import _approval_key
+
+    one_channel = _approval_key(
+        "chat_surface", "bind_channel",
+        {"workspace_id": "T0TEST", "channel_id": "C42"},
+    )
+    whole_workspace = _approval_key(
+        "chat_surface", "bind_channel", {"workspace_id": "T0TEST"},
+    )
+    assert one_channel != whole_workspace
+    assert "workspace_wide" in whole_workspace

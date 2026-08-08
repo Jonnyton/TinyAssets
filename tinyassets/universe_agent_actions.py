@@ -98,7 +98,11 @@ APPROVAL_ACTIONS = frozenset({"list", "grant", "deny", "ask"})
 #: built it, with no consent ask, while a single run_now would have asked.
 _ACTIONS_REQUIRING_APPROVAL = frozenset(
     {("branch", "run"), ("scheduled_work", "run_now"), ("scheduled_work", "resume"),
-     ("effector", "grant")}
+     ("effector", "grant"),
+     # Routing a chat scope to an agent makes it LIVE for other people —
+     # live 2026-08-08 an agent was connected workspace-wide off a misread
+     # terse message, with no ask. Outward visibility needs the founder's yes.
+     ("chat_surface", "bind_channel")}
 )
 
 #: Automations of ANY kind — schedule + branch + inputs + declared operations.
@@ -278,6 +282,7 @@ def execute_action(
                 or payload.get("branch_def_id")
                 or payload.get("name")
                 or payload.get("destination")
+                or payload.get("workspace_id")
                 or ""
             ).strip()
             # Carry the INPUTS too, not just what was asked. A turn cannot see
@@ -579,6 +584,14 @@ def _approval_key(surface: str, action: str, payload: Any) -> str:
             # residual character becomes "_" rather than an ApprovalError.
             safe = re.sub(r"[^a-z0-9._-]", "_", destination.lower())
             target = f"{sink}:{safe}"
+    if not target:
+        # Chat bindings are keyed by WHERE they go live: yes to one channel
+        # must not be yes to the whole workspace.
+        workspace = str(fields.get("workspace_id") or "").strip().lower()
+        if workspace:
+            channel = str(fields.get("channel_id") or "").strip().lower()
+            scope = channel or "workspace_wide"
+            target = re.sub(r"[^a-z0-9._:-]", "_", f"{workspace}:{scope}")
     base = f"{surface}.{action}"
     return f"{base}:{target}" if target else base
 

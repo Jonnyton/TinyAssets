@@ -354,8 +354,12 @@ def request_approval(action_key: str, what_it_will_do: str) -> str:
 
     Args:
         action_key: `surface.action:target` for the action I am asking about.
-        what_it_will_do: One plain line on what it does and what it spends —
-            a later turn reads this back to know what was asked.
+        what_it_will_do: One plain line on what it does and what it spends,
+            INCLUDING every input value already given (the topic, the brief,
+            the inputs_json) — a later turn has ONLY this text to reconstruct
+            what was asked. "run learned_drafter" told the next turn nothing;
+            it had to ask the founder to repeat a topic they had already
+            typed (live 2026-08-08).
     """
     return _platform_action(
         "approval", "ask",
@@ -840,6 +844,12 @@ def connect_agent_to_chat(agent_binding_id: str, workspace_id: str,
     Routes a chat scope to that agent. An empty `channel_id` binds the whole
     workspace; a specific one binds just that channel, and the most specific
     binding wins. Same operation either way.
+
+    This makes the agent LIVE for other people, so it needs my founder's
+    explicit yes — ask, arm `request_approval`
+    (`chat_surface.bind_channel:<workspace>:<channel or workspace_wide>`),
+    and call this after their yes. Workspace-wide especially: that takes
+    over every channel they have.
 
     Args:
         agent_binding_id: From `activate_agent`.
