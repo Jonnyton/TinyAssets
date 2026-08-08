@@ -269,6 +269,31 @@ THREAD_ENV = "TINYASSETS_AGENT_THREAD_TS"
 
 
 @mcp.tool()
+def finish(summary: str, complete: bool = True) -> str:
+    """Declare the job done — call this LAST, always.
+
+    My turn is a loop, and without an explicit end "it stopped talking" and "it
+    finished the job" look identical from the outside. This makes the difference
+    observable: I say what I completed, or say plainly that I could not.
+
+    Set `complete=False` when I am stopping WITHOUT having done what was asked,
+    and say why in the summary. That is an honest outcome; pretending otherwise
+    is not.
+
+    Args:
+        summary: What I actually did, naming real ids — or what blocked me.
+        complete: False if the job is not done.
+    """
+    state = "complete" if complete else "incomplete"
+    return _platform_action(
+        "progress", "note",
+        note=("done — " if complete else "stopping — ") + summary[:400],
+        channel_id=os.environ.get(CHANNEL_ENV, ""),
+        thread_ts=os.environ.get(THREAD_ENV, ""),
+    ) + f" [{state}]"
+
+
+@mcp.tool()
 def list_pending_approvals() -> str:
     """Things I asked my founder about that are still waiting on an answer."""
     return _platform_action("approval", "list")
@@ -467,6 +492,25 @@ def define_operation_scope(operation: str, scopes: str) -> str:
         operation=operation,
         scopes=[s.strip() for s in scopes.split(",") if s.strip()],
     )
+
+
+@mcp.tool()
+def read_run(run_id: str) -> str:
+    """Read what a run actually produced — its status and its output text.
+
+    Running is not delivering. `run_branch` hands back a run id and the work
+    happens in the background, so without this I can start my founder's weekly
+    update and then have nothing to show them but an id. That is exactly what
+    happened on 2026-08-08: "the run is live, your approval is recorded, and the
+    branch fired — I just can't reach back into the executor to grab the text."
+
+    Runs are not instant. If the status still says queued or running, I wait a
+    little and read again rather than reporting an empty result as a failure.
+
+    Args:
+        run_id: From `run_branch` or `run_automation_now`.
+    """
+    return _platform_action("branch", "read_run", run_id=run_id)
 
 
 @mcp.tool()
@@ -791,3 +835,27 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def tool_names() -> tuple[str, ...]:
+    """Every tool this server registers — the one source of truth for grants.
+
+    The daemon grants tools by explicit name (its ``activeTools`` narrowing), and
+    a hand-maintained copy of this list rots silently: a name that matches
+    nothing grants nothing, so the tool simply vanishes from the agent with no
+    error anywhere. That is not hypothetical — a first draft of the grant list
+    invented ``workspace_read_file`` for ``workspace_read`` and would have taken
+    the agent's file tools away entirely.
+
+    Reads FastMCP's registry directly and refuses to return an empty tuple, so a
+    library change surfaces as a loud failure instead of a silently unarmed
+    agent. ``test_tool_names_matches_registry`` pins it to the public async API.
+    """
+    registry = getattr(mcp, "_tool_manager", None)
+    names = tuple(sorted(getattr(registry, "_tools", {}) or ()))
+    if not names:
+        raise RuntimeError(
+            "universe agent server registered no tools — FastMCP's registry "
+            "moved; grants would silently be empty"
+        )
+    return names

@@ -52,7 +52,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                     "node_id": "draft",
                     "display_name": "Draft",
                     "input_keys": ["findings"],
-                    "output_keys": ["draft"],
+                    "output_keys": ["draft_text"],
                     "prompt_template": (
                         "Write a short, plain piece from these findings:\n"
                         "{findings}"
@@ -169,7 +169,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                     "node_id": "plan",
                     "display_name": "Plan",
                     "input_keys": ["goal"],
-                    "output_keys": ["plan"],
+                    "output_keys": ["plan_steps"],
                     "prompt_template": (
                         "Break this goal into the smallest set of concrete "
                         "steps that would actually achieve it:\n{goal}"
@@ -178,9 +178,11 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                 {
                     "node_id": "execute",
                     "display_name": "Execute",
-                    "input_keys": ["plan"],
+                    "input_keys": ["plan_steps"],
                     "output_keys": ["work"],
-                    "prompt_template": "Carry out each step and show the result:\n{plan}",
+                    "prompt_template": (
+                        "Carry out each step and show the result:\n{plan_steps}"
+                    ),
                 },
                 {
                     "node_id": "assemble",
@@ -211,27 +213,27 @@ TEMPLATES: dict[str, dict[str, Any]] = {
                     "node_id": "draft",
                     "display_name": "Draft",
                     "input_keys": ["brief"],
-                    "output_keys": ["draft"],
+                    "output_keys": ["draft_text"],
                     "prompt_template": "Produce a first version from:\n{brief}",
                 },
                 {
                     "node_id": "critique",
                     "display_name": "Critique",
-                    "input_keys": ["draft", "brief"],
-                    "output_keys": ["critique"],
+                    "input_keys": ["draft_text", "brief"],
+                    "output_keys": ["critique_notes"],
                     "prompt_template": (
                         "Judge this against the brief. Name concrete faults, "
-                        "not encouragement.\n\nBrief:\n{brief}\n\nDraft:\n{draft}"
+                        "not encouragement.\n\nBrief:\n{brief}\n\nDraft:\n{draft_text}"
                     ),
                 },
                 {
                     "node_id": "revise",
                     "display_name": "Revise",
-                    "input_keys": ["draft", "critique"],
+                    "input_keys": ["draft_text", "critique_notes"],
                     "output_keys": ["final"],
                     "prompt_template": (
                         "Revise the draft to answer every fault named.\n\n"
-                        "Draft:\n{draft}\n\nFaults:\n{critique}"
+                        "Draft:\n{draft_text}\n\nFaults:\n{critique_notes}"
                     ),
                 },
             ],

@@ -187,6 +187,14 @@ I can act on the platform itself, on my founder's behalf:
   yes in their own words, then `record_approval` and retry. I never record a yes
   they did not give — the entire point of that gate is that a human agreed. One
   yes covers one run unless they say not to ask again.
+- **Their answer arrives in their NEXT message, not this one.** When I ask for a
+  go-ahead I stop and let them reply; I do not have the means to record consent
+  in the same turn I first asked for it, and that is deliberate — otherwise I
+  would be both asking and answering. So I end my turn with the question. I
+  never tell them to expect a permission prompt, to approve a tool, or to grant
+  me anything: no such prompt exists on their side. That is my plumbing, and
+  describing it to them is both confusing and untrue. I just ask, plainly, and
+  wait.
 - Authorizing a GitHub destination is how changes get made to my OWN repository:
   I authorize it, an automation opens the change, and that is how I change
   myself. I never touch git directly.
@@ -202,6 +210,12 @@ I can act on the platform itself, on my founder's behalf:
 When my founder asks for something I can actually do, I do it and report what
 happened. When a tool refuses, I say what it said rather than narrating a
 success — a made-up outcome is worse than a plain "that failed".
+
+**I call `finish` last, every time.** My turn is a loop, and without an explicit
+end "it stopped talking" and "it did the job" look identical from outside. I say
+what I completed and name the real ids — or set `complete=False` and say plainly
+what blocked me. Stopping without finishing is an honest outcome; pretending to
+have finished is not.
 
 **I finish the job before I answer.** My turn is not one tool call — it is a
 loop, and it ends when the thing my founder asked for EXISTS, not when I have
@@ -234,7 +248,110 @@ otherwise report it plainly. Repeating an identical call is never the move.
 #: with ``ToolSearch`` denied the granted server is INVISIBLE and the turn
 #: reports "no tool by that name exists", which reads like a broken server
 #: rather than the policy decision it actually is.
-_GRANTED_EXTRA_ALLOWED = ("ToolSearch", f"mcp__{_ENGINE_TOOL_SERVER}__*")
+_GRANTED_EXTRA_ALLOWED = ("ToolSearch",)
+
+#: Tools withheld unless the turn's state actually warrants them — our
+#: equivalent of the AI SDK's ``activeTools``, decided per turn the way
+#: ``prepareStep`` does.
+#:
+#: Only ONE tool belongs here, and not for tidiness. ``record_approval`` writes
+#: the founder's yes. A costly action refuses, hands the agent the very
+#: ``action_key`` that would unblock it, and until now nothing but a docstring
+#: stopped the agent granting that key to itself in the same turn and carrying
+#: on — the consent gate asking and answering itself.
+#:
+#: A pending request that predates the turn is different: the founder is
+#: replying to something asked earlier, which is exactly when recording their
+#: answer is legitimate. So the tool exists only when a pending ask ALREADY did.
+#:
+#: Narrowing the rest by state would be wrong here: a turn CREATES the
+#: automations and agents it then operates on, so a tool absent at turn start is
+#: routinely needed by the end of it.
+_TOOL_REQUIRES_PENDING_APPROVAL = "record_approval"
+
+
+def _engine_tool_names() -> tuple[str, ...]:
+    """Ask the server what it registers, rather than keeping a copy that rots."""
+    from tinyassets.universe_agent_server import tool_names
+
+    return tool_names()
+
+
+def _pending_approvals(universe_id: str) -> list:
+    """Costly actions already waiting on the founder, from earlier turns.
+
+    Uses the SAME resolver the action layer writes through. The store lives at
+    the data root keyed by universe, not inside the universe directory —
+    deriving the path independently pointed this at an empty database, so a real
+    pending approval read as none. Live 2026-08-08.
+
+    Fails CLOSED (empty): an unreadable store withholds the grant tool. Delaying
+    a run is recoverable; letting the agent grant its own approval is not.
+    """
+    try:
+        from tinyassets.storage.action_approvals import ActionApprovalStore
+        from tinyassets.universe_agent_actions import _base_path_for_scopes
+
+        store = ActionApprovalStore(_base_path_for_scopes())
+        return list(store.pending_for(universe_id=universe_id))
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "universe agent: approval store unreadable; withholding grant tool"
+        )
+        return []
+
+
+def _has_pending_approval(universe_id: str) -> bool:
+    return bool(_pending_approvals(universe_id))
+
+
+def _pending_approval_brief(universe_id: str) -> str:
+    """Tell the turn what it already asked the founder — or it cannot hear "yes".
+
+    A turn has no memory of previous ones. The consent gate therefore asked a
+    question in one turn and, in the next, met a bare "go ahead - yes, run it"
+    with "I'm coming into this conversation fresh and I don't have context for
+    what you're approving" — the founder answering a question the agent could no
+    longer see. Observed live 2026-08-08, twice.
+
+    The pending record is the missing memory, so it goes in the prompt.
+    """
+    pending = _pending_approvals(universe_id)
+    if not pending:
+        return ""
+    lines = "\n".join(
+        f"- `{item.action_key}` — {item.detail or item.action_key}"
+        for item in pending
+    )
+    return (
+        "\n\n## Waiting on my founder's answer\n\n"
+        "I already asked about these and have not recorded a reply:\n\n"
+        f"{lines}\n\n"
+        'So a bare "yes", "go ahead" or "do it" in this message is almost '
+        "certainly about the item above — I act on it rather than asking what "
+        "they meant, which would be asking them to repeat themselves. I record "
+        "the answer with `record_approval` using that exact key, then carry out "
+        'what was approved. A clear "no" is recorded too.\n\n'
+        "Where a line above shows `with inputs {…}`, those are the values I "
+        "already planned to run with — my founder supplied them in a message I "
+        "can no longer see. I reuse them exactly rather than asking again for "
+        "something they have already given me.\n"
+    )
+
+
+def _active_tools(universe_id: str) -> tuple[str, ...]:
+    """The tool names this turn may reach."""
+    withheld = (
+        ()
+        if _has_pending_approval(universe_id)
+        else (_TOOL_REQUIRES_PENDING_APPROVAL,)
+    )
+    return tuple(
+        f"mcp__{_ENGINE_TOOL_SERVER}__{name}"
+        for name in _engine_tool_names()
+        if name not in withheld
+    )
+
 
 #: Denies dropped when a turn is granted a tool server. ``mcp__*`` is replaced
 #: by ``--strict-mcp-config``, which is a POSITIVE grant rather than a deny list
@@ -352,7 +469,11 @@ def _sandboxed_config(
     return ModelConfig(
         timeout=timeout,
         sandbox_workspace=True,
-        allowed_tools=tuple(_ENGINE_ALLOWED_TOOLS) + _GRANTED_EXTRA_ALLOWED,
+        allowed_tools=(
+            tuple(_ENGINE_ALLOWED_TOOLS)
+            + _GRANTED_EXTRA_ALLOWED
+            + _active_tools(Path(ctx.universe_dir).name)
+        ),
         disallowed_tools=tuple(
             tool
             for tool in _ENGINE_DISALLOWED_TOOLS
@@ -793,6 +914,7 @@ def converse(
     # proposal was written about.
     if granted:
         system += _HANDS_PROMPT
+        system += _pending_approval_brief(uid)
     reply = call_provider(
         founder_message,
         system=system,

@@ -70,7 +70,7 @@ CHAT_SURFACE_ACTIONS = frozenset({"describe", "bind_channel", "unbind_channel"})
 #: handed them by its founder — observed live 2026-08-07: it refused to invent
 #: them (correctly) and simply could not proceed. Read-only.
 BRANCH_ACTIONS = frozenset(
-    {"list_versions", "run", "build", "read", "templates", "template"}
+    {"list_versions", "run", "build", "read", "templates", "template", "read_run"}
 )
 
 #: Defining what a kind of automation work may spend. Bounded by
@@ -233,9 +233,25 @@ def execute_action(
         approvals = ActionApprovalStore(_base_path_for_scopes())
         key = _approval_key(kind, normalized, payload)
         if not approvals.consume_if_granted(universe_id=universe_id, action_key=key):
+            # The detail is what a LATER turn reads back to understand what it
+            # asked: "scheduled_work.run_now" alone told the next turn nothing,
+            # so a founder's "yes" arrived with no referent. Name the target.
+            target = str(
+                payload.get("work_id")
+                or payload.get("branch_def_id")
+                or payload.get("name")
+                or ""
+            ).strip()
+            # Carry the INPUTS too, not just what was asked. A turn cannot see
+            # the message that supplied them, so a founder who gave a brief and
+            # then said "yes" was asked for the brief a second time — the run
+            # blocked on a value they had already provided. Live 2026-08-08.
+            planned = str(payload.get("inputs_json") or "").strip()
+            detail = f"{kind}.{normalized} on {target}" if target else f"{kind}.{normalized}"
+            if planned:
+                detail = f"{detail} with inputs {planned}"
             approvals.request(
-                universe_id=universe_id, action_key=key,
-                detail=f"{kind}.{normalized}",
+                universe_id=universe_id, action_key=key, detail=detail,
             )
             raise AgentActionError(
                 f"needs my founder's go-ahead first ({key}). This spends their "
@@ -388,6 +404,113 @@ def _scheduled_work(
             universe_id=universe_id, work_id=item.work_id, run_id=run_id
         )
     return result
+
+
+def _missing_run_inputs(universe_id: str, branch_def_id: str, inputs_json: str) -> list[str]:
+    """Inputs the entry node needs that this run was not given.
+
+    Firing a branch with no values is currently accepted, queued, and then fails
+    inside the executor with "Node 'draft' ... references declared input_keys
+    ['brief'] that are not present in state". The founder sees a run id and then
+    nothing; the agent sees an empty result and cannot say why. Live 2026-08-08.
+
+    The entry node is the only one whose inputs must come from outside — every
+    other node reads what upstream nodes wrote. So that is what we check.
+
+    Returns [] on any uncertainty. A guess about the branch shape must never
+    block a run the platform would otherwise accept; this exists to replace a
+    confusing failure with a clear one, not to add a new way to be refused.
+    """
+    try:
+        from tinyassets.universe_server import read_graph
+
+        raw = read_graph(
+            target="branch", graph_id=universe_id, branch_id=branch_def_id
+        )
+        branch = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(branch, dict):
+        return []
+
+    entry = str(branch.get("entry_point") or "")
+    nodes = branch.get("nodes") or branch.get("node_defs") or []
+    if not entry or not isinstance(nodes, list):
+        return []
+    entry_node = next(
+        (
+            n
+            for n in nodes
+            if isinstance(n, dict) and str(n.get("node_id") or "") == entry
+        ),
+        None,
+    )
+    if entry_node is None:
+        return []
+
+    try:
+        supplied = json.loads(inputs_json or "{}")
+    except (TypeError, ValueError):
+        supplied = {}
+    if not isinstance(supplied, dict):
+        supplied = {}
+    return [
+        str(key)
+        for key in (entry_node.get("input_keys") or ())
+        if str(key) and str(key) not in supplied
+    ]
+
+
+def _with_derived_state_schema(spec_json: str) -> str:
+    """Give a branch spec a state schema when its author did not write one.
+
+    The compiler builds each run's state from ``state_schema``. A spec that
+    declares only nodes and edges therefore compiles cleanly and then fails at
+    execution — "Node 'draft' prompt references declared input_keys ['brief']
+    that are not present in state" — because the inputs had nowhere to land.
+
+    Every branch built through this surface had ``state_schema_json: []``, so no
+    automation carrying inputs could ever run. Live 2026-08-08: the founder
+    approved a run that failed for exactly this, and the same shape had already
+    failed for a different branch and been read as an unrelated error.
+
+    Requiring authors to declare it would be the wrong fix. Someone describing
+    "draft, critique, revise" is telling us the field names twice already, in
+    ``input_keys`` and ``output_keys``; the schema is derivable, so we derive it.
+    An explicit ``state_schema`` is always left alone — this fills a gap, it does
+    not overrule an author.
+
+    Malformed or unexpected input is returned untouched, so this can only ever
+    add a schema, never change what a valid spec meant.
+    """
+    try:
+        spec = json.loads(spec_json)
+    except (TypeError, ValueError):
+        return spec_json
+    if not isinstance(spec, dict) or spec.get("state_schema"):
+        return spec_json
+    nodes = spec.get("nodes")
+    if not isinstance(nodes, list):
+        return spec_json
+
+    fields: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        for group in ("input_keys", "output_keys"):
+            for key in node.get(group) or ():
+                name = str(key).strip()
+                if name and name not in fields:
+                    fields.append(name)
+    if not fields:
+        return spec_json
+
+    # `str` for every field: the compiler treats the schema as advisory and maps
+    # unknown types to Any, and these carry prompt text between nodes.
+    spec["state_schema"] = [
+        {"name": name, "type": "str", "description": ""} for name in fields
+    ]
+    return json.dumps(spec)
 
 
 def _approval_key(surface: str, action: str, payload: Any) -> str:
@@ -637,6 +760,41 @@ def _execute(
                     return json.loads(raw)
                 except (TypeError, ValueError):
                     return {"result": str(raw)[:4000]}
+            if action == "read_run":
+                # Running is not delivering. Without this the agent fires a run,
+                # gets a run id, and has no way to reach the text it produced —
+                # so the founder is handed an id instead of their weekly update.
+                # It said so itself: "I do not have a read_graph tool to poll the
+                # completed result" (live 2026-08-08).
+                from tinyassets.universe_server import read_graph
+
+                run_id = str((payload or {}).get("run_id") or "")
+                raw = read_graph(
+                    target="run", graph_id=universe_id, run_id=run_id
+                )
+                try:
+                    result = json.loads(raw)
+                except (TypeError, ValueError):
+                    result = {"result": str(raw)[:6000]}
+                if not isinstance(result, dict):
+                    result = {"result": result}
+
+                # The read above returns a HUMAN summary — node statuses and a
+                # mermaid diagram — and none of the text the run produced. The
+                # founder asked for their weekly update, not a picture of the
+                # graph that wrote it, so attach the produced state itself.
+                try:
+                    from tinyassets.runs import get_run
+
+                    record = get_run(_base_path_for_scopes(), run_id) or {}
+                    produced = record.get("output")
+                    if isinstance(produced, dict) and produced:
+                        result["output"] = produced
+                except Exception:  # noqa: BLE001
+                    # The summary alone is still worth returning; losing the
+                    # text is a worse outcome than losing nothing.
+                    logger.warning("could not attach produced state for run %s", run_id)
+                return result
             if action == "build":
                 # Composing the WORK itself. Without this the agent can wrap a
                 # branch in an automation but cannot create one, so "any kind of
@@ -649,7 +807,9 @@ def _execute(
                     target="branch",
                     operation="create",
                     graph_id=universe_id,
-                    payload_json=str((payload or {}).get("spec_json") or "{}"),
+                    payload_json=_with_derived_state_schema(
+                        str((payload or {}).get("spec_json") or "{}")
+                    ),
                 )
                 try:
                     return json.loads(raw)
@@ -664,6 +824,25 @@ def _execute(
             # platform is supposed to use anyway.
             from tinyassets.universe_server import run_graph
 
+            # Refuse a run that cannot possibly work, HERE, where the message
+            # reaches the agent and it can fix the call. Without this the run is
+            # accepted, queued, and dies in the executor: the founder gets a run
+            # id and silence, and the agent reports an empty result it cannot
+            # explain. Live 2026-08-08, twice.
+            missing = _missing_run_inputs(
+                universe_id,
+                str((payload or {}).get("branch_def_id") or ""),
+                str((payload or {}).get("inputs_json") or ""),
+            )
+            if missing:
+                raise AgentActionError(
+                    "this branch needs values I did not supply: "
+                    + ", ".join(sorted(missing))
+                    + ". I pass them as inputs_json — for example "
+                    + json.dumps({key: "…" for key in sorted(missing)})
+                    + " — using my founder's real content where I have it, and "
+                    "asking them for it where I do not."
+                )
             raw = run_graph(
                 branch_def_id=str((payload or {}).get("branch_def_id") or ""),
                 graph_id=universe_id,
