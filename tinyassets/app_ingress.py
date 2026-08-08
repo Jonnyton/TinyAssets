@@ -178,6 +178,14 @@ def deliver_app_event(
     except Exception:  # noqa: BLE001
         logger.info("app ingress: could not post the working acknowledgement")
 
+    # The turn's tool server posts progress into THIS conversation. Set on the
+    # environment because the grant config is written from it; a turn with no
+    # conversation simply gets empty values and reports nothing.
+    import os as _os
+
+    _os.environ["TINYASSETS_AGENT_CHANNEL_ID"] = channel_id or ""
+    _os.environ["TINYASSETS_AGENT_THREAD_TS"] = thread_ts or ""
+
     reply = converse(
         routed.universe_id,
         prompt,

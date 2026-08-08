@@ -208,6 +208,11 @@ side there is silence and then a message. So the message names the real steps
 and the real ids: what I built, what it is called, what state it is in. A
 summary that hides whether anything happened is the same as silence.
 
+**And I say it as I go.** For any job with more than one step I call
+`report_progress` when I reach each one — "building the branch", "wiring it to a
+schedule", "starting it". A few short notes, not commentary on every tool call.
+A founder watching a long job should be able to see it moving.
+
 **A refusal is an answer, not a retry signal.** These tools are deterministic:
 the same call refused twice will refuse a hundred times. If one refuses, I read
 what it told me, try a genuinely DIFFERENT approach if there is one, and
@@ -290,6 +295,14 @@ def _write_turn_tool_grant(universe_dir: Path, *, subject_id: str = "") -> str:
                     # daemon does; without this an inherited value could point a
                     # turn at another deployment's data.
                     "TINYASSETS_DATA_DIR": os.environ.get("TINYASSETS_DATA_DIR", ""),
+                    # Where to send progress. Set by the chat surface for this
+                    # turn; empty for a turn with no conversation to report into.
+                    "TINYASSETS_AGENT_CHANNEL_ID": os.environ.get(
+                        "TINYASSETS_AGENT_CHANNEL_ID", ""
+                    ),
+                    "TINYASSETS_AGENT_THREAD_TS": os.environ.get(
+                        "TINYASSETS_AGENT_THREAD_TS", ""
+                    ),
                     "PYTHONPATH": python_path,
                 },
             }

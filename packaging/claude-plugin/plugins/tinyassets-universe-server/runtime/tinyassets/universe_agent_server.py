@@ -177,6 +177,34 @@ def list_branch_versions() -> str:
     return _platform_action("branch", "list_versions")
 
 
+#: Where this turn is happening, so progress can reach the founder mid-work.
+CHANNEL_ENV = "TINYASSETS_AGENT_CHANNEL_ID"
+THREAD_ENV = "TINYASSETS_AGENT_THREAD_TS"
+
+
+@mcp.tool()
+def report_progress(note: str) -> str:
+    """Tell my founder what I am doing, WHILE I do it.
+
+    They cannot see my tool calls. From their side a long turn is silence, and
+    silence is indistinguishable from broken. So when a job has several steps —
+    building a branch, then an automation, then starting it — I say each one as
+    I reach it rather than explaining afterwards.
+
+    Short and plain: "building the branch", "wiring it to a schedule",
+    "starting it". Not a running commentary on every tool call.
+
+    Args:
+        note: One short line about what I am doing right now.
+    """
+    return _platform_action(
+        "progress", "note",
+        note=note,
+        channel_id=os.environ.get(CHANNEL_ENV, ""),
+        thread_ts=os.environ.get(THREAD_ENV, ""),
+    )
+
+
 @mcp.tool()
 def list_my_automations() -> str:
     """Every automation I have built, of any kind."""

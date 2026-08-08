@@ -76,6 +76,13 @@ BRANCH_ACTIONS = frozenset({"list_versions", "run", "build", "read"})
 #: authority the founder already has.
 OPERATION_SCOPE_ACTIONS = frozenset({"list", "define"})
 
+#: Telling the founder what is happening WHILE it happens. The AI SDK streams
+#: tool parts through `input-streaming -> input-available -> output-available`
+#: so a user watches the agent work; ours was minutes of silence then a wall of
+#: text. This is the same idea on a chat surface: short transient notes, sent as
+#: the work happens rather than summarised after it.
+PROGRESS_ACTIONS = frozenset({"note"})
+
 #: Automations of ANY kind — schedule + branch + inputs + declared operations.
 #: The repo-spec surface builds exactly one shape; this one builds whatever the
 #: user composed a branch for. See `storage/scheduled_work.py`.
@@ -192,6 +199,9 @@ def execute_action(
     elif kind == "branch":
         if normalized not in BRANCH_ACTIONS:
             raise AgentActionError(f"unsupported branch action: {normalized}")
+    elif kind == "progress":
+        if normalized not in PROGRESS_ACTIONS:
+            raise AgentActionError(f"unsupported progress action: {normalized}")
     elif kind == "operation_scope":
         if normalized not in OPERATION_SCOPE_ACTIONS:
             raise AgentActionError(f"unsupported operation-scope action: {normalized}")
@@ -459,6 +469,28 @@ def _execute(
                 expected_revision=expected_revision,
                 payload=fields.get("payload"),
             )
+        if surface == "progress":
+            # No capability required and nothing durable written: this posts a
+            # short note to a channel the universe is ALREADY bound to, which it
+            # can reach anyway by replying. Deliberately not a general "post
+            # anywhere" verb — the destination is the conversation in hand.
+            from tinyassets.api.helpers import _universe_dir
+            from tinyassets.app_reply_authority import ReplyDestination
+            from tinyassets.effectors.slack_transport import build_slack_transport
+
+            note = str((payload or {}).get("note") or "").strip()[:500]
+            channel = str((payload or {}).get("channel_id") or "").strip()
+            if not note or not channel:
+                raise AgentActionError("progress needs a note and a channel")
+            build_slack_transport(_universe_dir(universe_id))(
+                ReplyDestination(
+                    provider="slack", connection_id="slack-main", address=channel
+                ),
+                f"_{note}_",
+                thread_ts=str((payload or {}).get("thread_ts") or ""),
+            )
+            return {"posted": True}
+
         if surface == "scheduled_work":
             return _scheduled_work(action, universe_id, subject_id, payload or {})
 
@@ -610,6 +642,7 @@ __all__ = [
     "AGENT_ACTIONS",
     "BRANCH_ACTIONS",
     "OPERATION_SCOPE_ACTIONS",
+    "PROGRESS_ACTIONS",
     "SCHEDULED_WORK_ACTIONS",
     "CONNECTION_ACTIONS",
     "CHAT_SURFACE_ACTIONS",
