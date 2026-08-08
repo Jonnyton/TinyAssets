@@ -83,16 +83,54 @@ async def _inline(fn, *args, **kwargs):
     return fn(*args, **kwargs)
 
 
-def _handlers(rec, resolve=None):
+def _handlers(rec, resolve=None, load_history=None):
     return build_handlers(
         resolve=resolve or (lambda _e: BINDING),
         post=rec.post,
         converse=rec.converse,
+        # Hermetic by default: no real Slack history fetch in unit tests.
+        load_history=load_history if load_history is not None else (lambda *a, **k: []),
         to_thread=_inline,
     )
 
 
 # --- the security property ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_turn_receives_loaded_conversation_history():
+    """The transport loads the recent thread and hands it to the turn as
+    memory — so a follow-up like "try again" has the prior request to act on
+    (live 2026-08-08 it did not)."""
+    rec = _Recorder()
+    loaded = [
+        {"speaker": "founder", "text": "post the shipped update"},
+        {"speaker": "universe", "text": "402, credits depleted"},
+    ]
+    handle, _ = _handlers(rec, load_history=lambda _e, _b: loaded)
+
+    await handle(event("<@U08BOT0001> try again"))
+
+    call = rec.converse_calls[0]
+    assert call["conversation_history"] == loaded
+
+
+@pytest.mark.asyncio
+async def test_a_history_load_failure_still_answers_the_turn():
+    """Memory is a bonus, never a blocker: if the thread fetch throws, the
+    turn still runs (with empty history) instead of dropping the message."""
+    rec = _Recorder()
+
+    def boom(_e, _b):
+        raise RuntimeError("slack history 500")
+
+    handle, _ = _handlers(rec, load_history=boom)
+
+    await handle(event())
+
+    assert len(rec.converse_calls) == 1
+    assert rec.converse_calls[0]["conversation_history"] == []
+    assert rec.posts, "the reply still went out"
 
 
 @pytest.mark.asyncio

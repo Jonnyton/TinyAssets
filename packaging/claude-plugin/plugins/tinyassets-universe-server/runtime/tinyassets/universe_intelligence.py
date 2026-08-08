@@ -339,6 +339,34 @@ def _pending_approvals(universe_id: str) -> list:
         return []
 
 
+def _conversation_history_block(conversation_history: "list | None") -> str:
+    """Render loaded prior messages into the turn's memory block, or "".
+
+    Accepts a list of ``conversation_memory.Msg`` (or ``(speaker, text)``
+    pairs / ``{"speaker","text"}`` dicts, so callers do not have to import the
+    dataclass). Never raises — a memory-formatting failure must not lose the
+    turn; the turn simply proceeds without history rather than crashing.
+    """
+    if not conversation_history:
+        return ""
+    try:
+        from tinyassets.conversation_memory import Msg, format_history
+
+        rows: list[Msg] = []
+        for item in conversation_history:
+            if isinstance(item, Msg):
+                rows.append(item)
+            elif isinstance(item, dict):
+                rows.append(Msg(speaker=str(item.get("speaker") or ""),
+                                text=str(item.get("text") or "")))
+            elif isinstance(item, (tuple, list)) and len(item) == 2:
+                rows.append(Msg(speaker=str(item[0]), text=str(item[1])))
+        return format_history(rows)
+    except Exception:  # noqa: BLE001 - memory must never break the reply
+        logger.exception("conversation history formatting failed; proceeding")
+        return ""
+
+
 def _has_pending_approval(universe_id: str) -> bool:
     return bool(_pending_approvals(universe_id))
 
@@ -894,6 +922,7 @@ def converse(
     actor_id: str = "",
     tier: str | None = None,
     founder_grant: object | None = None,
+    conversation_history: "list | None" = None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -953,8 +982,25 @@ def converse(
     if granted:
         system += _HANDS_PROMPT
         system += _pending_approval_brief(uid)
+    # Conversation memory: the turn is stateless, so without this it forgets
+    # what was just said and a founder follow-up ("try again", "yes") lands on
+    # nothing (live 2026-08-08). Codex ADAPT 2026-08-08 shaped three things:
+    #   * It is prepended to the USER message as DELIMITED UNTRUSTED context —
+    #     never merged into the trusted persona system prompt (which also keeps
+    #     the system prompt off the Windows cmd.exe argv length limit).
+    #   * It is gated to GRANTED (founder) turns only, so other-tier or
+    #     prior-universe text cannot ride into a founder turn with founder tools.
+    #     Tier-preserving multi-party history is a separate follow-up.
+    #   * It is memory, NEVER consent — a "yes" inside the history is spent; a
+    #     costly action still records fresh consent this turn (gate unchanged).
+    # `founder_message` is left CLEAN for extract_learning below; only the
+    # provider call sees the history-prefixed input.
+    history_block = (
+        _conversation_history_block(conversation_history) if granted else ""
+    )
+    turn_input = history_block + founder_message if history_block else founder_message
     reply = call_provider(
-        founder_message,
+        turn_input,
         system=system,
         role="writer",
         universe_context=ctx,
@@ -1022,6 +1068,7 @@ def converse_as_external_sender(
     *,
     founder_grant: object | None = None,
     actor_id: str = "",
+    conversation_history: "list | None" = None,
 ) -> str:
     """The entry point for every external chat surface — Slack, Discord, Teams.
 
@@ -1039,9 +1086,11 @@ def converse_as_external_sender(
         message,
         actor_id=actor_id,
         founder_grant=founder_grant,
+        conversation_history=conversation_history,
     ) if founder_grant is not None else converse(
         universe_id,
         message,
         actor_id=actor_id,
         tier=EXTERNAL_SENDER_FLOOR,
+        conversation_history=conversation_history,
     )
