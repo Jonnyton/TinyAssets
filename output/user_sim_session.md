@@ -473,3 +473,67 @@ no repeat ask. E1 now covers resume (recurring spend gated).
 
 Round 7 in flight: stop_automation as a user (weekly_update) + "what can you
 do" discoverability (A4).
+
+## [2026-08-08 21:2x-22:0x PT] X-POSTING GOAL - walk, build, deploy
+
+Round 8 (attempt as user): asked for an X automation - project updates in my
+voice, niche watching, learns from engagement. Agent built the RIGHT shapes
+with what existed: x_ai_watcher (6h, sequential) + x_ship_post (on-demand,
+evaluator_optimizer with a performance_notes input), both PAUSED, notes to
+wiki/x-automations.md - and named its blockers precisely: (1) no X API
+creds, (2) watcher is LLM-knowledge not live web (it did not know
+tools_allowed is honored now), (3) no engagement read for the learning
+loop, (4) wants voice examples.
+
+CODE (commit ea762659, deployed 2026-08-08 ~21:55 PT, 5/5 md5, canary
+green): effector surface (grant approval-gated -> effector_consents, the
+SAME store twitter_post checks; revoke ungated; unknown sinks refused
+before the gate; @handle canonicalization + key-safe approval keys) +
+x_engagement.py (receipts -> X public_metrics; honest empty/missing-creds/
+vanished-post shapes) + node action posts.engagement + agent tools
+(authorize_posting / list_posting_authorizations / revoke_posting /
+read_post_engagement) + packet contract in build_branch docstring + posting
+flow in the agent prompt. 83 tests green, lint clean, mirror rebuilt.
+
+Round 9 in flight (test as user): gave posting permission in words +asked
+for live-web watcher + the learning story. Expect: armed consent ask ->
+my yes -> authorize_posting recorded; watcher rebuilt with
+tools_allowed=[web_search]; engagement explained (honest no-creds state).
+Still host-action: TWITTER_* env keys (X developer portal).
+
+## [2026-08-08 22:0x-23:0x PT] X-POSTING GOAL - live proofs, one incident, three more fixes
+
+Round 10 (consent walked end-to-end): armed pending
+effector.grant:twitter_post:kwisatzh4derach -> typed yes -> approval
+recorded -> authorize_posting succeeded. SERVER-VERIFIED:
+(twitter_post, @kwisatzh4derach, user_01KWGB2NV5PV4PWHT5RYKJPB8X, None) in
+/data/u-tiny/.effector_consents.db - the exact store the post effector
+gates on.
+
+Round 11 (live watcher): x-ai-watcher-live (57c046067cb0,
+tools_allowed=[web_search]) ran (547fb4933d204690); executor delivered 5
+findings DATED Aug 5-7 WITH SOURCE LINKS (Cloudflare Kitesurf, Cloudflare
+OS...). The "niche events we might want to post about" half is proven.
+
+Round 12 INCIDENT: my terse "topic: ... run it." (answering the agent's own
+question) was misread by the stateless next turn as a build request ->
+agent published+activated "Tiny" and connected it WORKSPACE-WIDE, no
+consent ask. Rollback turn was honest and exposed a second gap: NO
+disconnect tool existed (unbind_channel had no agent tool).
+FIXES (commits eb9f56c7 + 1e68d5ba, deployed, canary green):
+(chat_surface, bind_channel) now approval-gated with scope-exact keys
+(channel vs workspace_wide); disconnect_agent_from_chat added (ungated -
+narrowing); prompt teaches "a terse message after my own armed ask is
+almost always the ANSWER - check list_pending_approvals first" and armed
+asks must carry every given input.
+
+Round 13 (learned drafter): "checking pending approvals" reflex fired
+(new prompt live); run e7027bd01474475c completed - in-node
+posts.engagement read returned the honest empty state ("No post history
+yet - drafting cold") and produced a clean on-voice draft. Disconnect
+attempt refused: pre-existing ambiguous_agent_binding on T0BN5LK57FT -
+filed as P2 (needs binding-id-targeted unbind).
+
+STILL HOST-ACTION: TWITTER_* creds (X developer portal, OAuth1.0a user
+context) into the daemon env, vault-first. Until then: posting + metrics
+refuse honestly; the parked first draft awaits keys + founder ok.
