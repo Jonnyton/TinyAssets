@@ -198,11 +198,18 @@ def deliver_app_event(
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.effectors.slack_agent_turn import load_thread_history
 
+        # Load the DM/channel TIMELINE, not the current message's thread.
+        # The universe threads its replies UNDER each founder message, so the
+        # founder's prior messages are top-level — `conversations.history` has
+        # them, while `conversations.replies` on the current thread returns only
+        # this message plus the "on it" ack (live probe: 2 msgs, no memory).
+        # Passing thread_ts="" forces the timeline. (Genuine multi-party
+        # channel-thread memory is a later refinement; founder DM is the case.)
         history = load_thread_history(
             universe_dir=_universe_dir(routed.universe_id),
             connection_id=DEFAULT_SLACK_CONNECTION,
             channel=channel_id,
-            thread_ts=thread_ts,
+            thread_ts="",
             exclude_text=prompt,
         )
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
