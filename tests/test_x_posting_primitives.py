@@ -292,8 +292,54 @@ class _Node:
 _DECLARATION = {
     "output_field": "post_text", "adapter": "twitter_post",
     "adapter_action": "post", "destination": "myhandle",
-    "effect_class": "external_write", "outcome_kind": "published_post",
+    "effect_class": "irreversible", "outcome_kind": "published_post",
 }
+
+
+def test_branch_build_carries_handoffs_through_the_funnel(base):
+    """Found live: the create funnel dropped `handoffs` silently, so the
+    dispatcher had no declaration to assemble from. The build must store it
+    and reject a malformed one with an actionable message."""
+    import json as _json
+
+    good = execute_action(token=_token(), surface="branch", action="build",
+                          payload={"spec_json": _json.dumps({
+                              "name": "handoff_carry_check",
+                              "description": "d",
+                              "entry_point": "publish",
+                              "nodes": [{
+                                  "node_id": "publish",
+                                  "display_name": "P",
+                                  "output_keys": ["post_text"],
+                                  "effects": ["twitter_post"],
+                                  "handoffs": [dict(_DECLARATION)],
+                                  "prompt_template": "Write a line.",
+                              }],
+                              "edges": [{"from": "publish", "to": "END"}],
+                          })})
+    branch_id = good.get("branch_def_id") or good.get("id")
+    assert branch_id, good
+    read = execute_action(token=_token(), surface="branch", action="read",
+                          payload={"branch_def_id": branch_id})
+    nodes = read.get("nodes") or read.get("node_defs") or []
+    stored = next(n for n in nodes if n.get("node_id") == "publish")
+    assert stored.get("handoffs"), "the funnel dropped the declaration again"
+
+    bad = execute_action(token=_token(), surface="branch", action="build",
+                         payload={"spec_json": _json.dumps({
+                             "name": "handoff_bad_check",
+                             "description": "d",
+                             "entry_point": "publish",
+                             "nodes": [{
+                                 "node_id": "publish",
+                                 "display_name": "P",
+                                 "output_keys": ["post_text"],
+                                 "handoffs": [{"output_field": "post_text"}],
+                                 "prompt_template": "Write a line.",
+                             }],
+                             "edges": [{"from": "publish", "to": "END"}],
+                         })})
+    assert "handoffs invalid" in str(bad)
 
 
 def test_packet_is_assembled_from_the_declaration_not_the_llm():

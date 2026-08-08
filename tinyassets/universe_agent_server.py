@@ -257,7 +257,7 @@ def build_branch(spec_json: str) -> str:
                         "adapter": "twitter_post",
                         "adapter_action": "post",
                         "destination": "thehandle",
-                        "effect_class": "external_write",
+                        "effect_class": "irreversible",
                         "outcome_kind": "published_post"}],
          "prompt_template": "Write the final post text for: {draft}"}
 

@@ -1836,6 +1836,28 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
         )
+    # Handoff declarations ride the node too — without this the create
+    # funnel silently DROPPED them (found live 2026-08-08: a branch built
+    # with a twitter_post handoff stored the node bare, so the dispatcher
+    # had no declaration to assemble the write packet from). Validated at
+    # build time so a typo'd declaration is an actionable rejection here,
+    # not a silent "this version declares no external effects" later.
+    handoffs_raw = raw.get("handoffs", [])
+    if handoffs_raw is None:
+        handoffs_arg: list[dict[str, Any]] = []
+    elif isinstance(handoffs_raw, list):
+        try:
+            from tinyassets.handoffs.models import parse_declaration
+
+            for entry in handoffs_raw:
+                parse_declaration(entry, node_id=nid)
+        except Exception as exc:  # noqa: BLE001 - message reaches the builder
+            return f"node '{nid}' handoffs invalid: {exc}"
+        handoffs_arg = [dict(entry) for entry in handoffs_raw]
+    else:
+        return (
+            f"node '{nid}' handoffs must be a JSON array of declaration objects"
+        )
     # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
     # recorded approval hash matches the *effective* source_code being stored.
     # This is the authoring-time half of the provenance gate; the compiler
@@ -1885,6 +1907,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
             effects=effects_arg,
+            handoffs=handoffs_arg,
         )
     except ValueError as exc:
         return str(exc)
@@ -3638,7 +3661,8 @@ rejected by the server; in an existing branch patch, pass `node_ref` /
 ## New-workflow authoring
 
 Create a Branch through `write_graph target="branch" operation="create"
-payload_json=...` with the complete spec below in `payload_json`. To remix, use operation `remix` and
+payload_json=...` with the complete spec below in `payload_json`. To remix,
+use operation `remix` and
 include a published `fork_from` version in the same spec. After validation,
 freeze it through operation `publish`; cloud automation binds only immutable
 published versions. Standalone node registration remains unavailable.
