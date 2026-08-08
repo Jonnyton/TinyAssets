@@ -85,6 +85,15 @@ OPERATION_SCOPE_ACTIONS = frozenset({"list", "define"})
 #: the work happens rather than summarised after it.
 PROGRESS_ACTIONS = frozenset({"note"})
 
+#: "Are you sure", as opposed to "are you allowed". Every other gate answers the
+#: second; none answered the first, while the agent could spend the founder's
+#: compute and open pull requests against their repository.
+APPROVAL_ACTIONS = frozenset({"list", "grant", "deny"})
+
+#: Actions that must be approved before they run. Costly or outward-facing:
+#: running a branch spends the founder's own compute and can open a PR.
+_ACTIONS_REQUIRING_APPROVAL = frozenset({("branch", "run"), ("scheduled_work", "run_now")})
+
 #: Automations of ANY kind — schedule + branch + inputs + declared operations.
 #: The repo-spec surface builds exactly one shape; this one builds whatever the
 #: user composed a branch for. See `storage/scheduled_work.py`.
@@ -201,6 +210,9 @@ def execute_action(
     elif kind == "branch":
         if normalized not in BRANCH_ACTIONS:
             raise AgentActionError(f"unsupported branch action: {normalized}")
+    elif kind == "approval":
+        if normalized not in APPROVAL_ACTIONS:
+            raise AgentActionError(f"unsupported approval action: {normalized}")
     elif kind == "progress":
         if normalized not in PROGRESS_ACTIONS:
             raise AgentActionError(f"unsupported progress action: {normalized}")
@@ -212,6 +224,26 @@ def execute_action(
             raise AgentActionError(f"unsupported automation action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
+    # "Are you sure" — checked AFTER authority, because an action the founder
+    # cannot take at all should be refused for that reason, not queued for a
+    # consent that would never make it legal.
+    if (kind, normalized) in _ACTIONS_REQUIRING_APPROVAL:
+        from tinyassets.storage.action_approvals import ActionApprovalStore
+
+        approvals = ActionApprovalStore(_base_path_for_scopes())
+        key = _approval_key(kind, normalized, payload)
+        if not approvals.consume_if_granted(universe_id=universe_id, action_key=key):
+            approvals.request(
+                universe_id=universe_id, action_key=key,
+                detail=f"{kind}.{normalized}",
+            )
+            raise AgentActionError(
+                f"needs my founder's go-ahead first ({key}). This spends their "
+                "own compute and can change things outside TinyAssets, so ask "
+                "them plainly what it will do and wait for a yes — then grant "
+                "the approval and retry."
+            )
+
     return _execute(
         surface=kind,
         action=normalized,
@@ -358,6 +390,20 @@ def _scheduled_work(
     return result
 
 
+def _approval_key(surface: str, action: str, payload: Any) -> str:
+    """Identify WHAT is being approved, not just that something is.
+
+    Includes the target, so "yes, run the niche watcher" is not silently also
+    "yes, run the thing that opens pull requests against my repo".
+    """
+    fields = payload or {}
+    target = str(
+        fields.get("branch_def_id") or fields.get("work_id") or ""
+    ).strip().lower()
+    base = f"{surface}.{action}"
+    return f"{base}:{target}" if target else base
+
+
 def _base_path_for_scopes():
     from tinyassets.api.helpers import _base_path
 
@@ -471,6 +517,36 @@ def _execute(
                 expected_revision=expected_revision,
                 payload=fields.get("payload"),
             )
+        if surface == "approval":
+            from tinyassets.storage.action_approvals import (
+                ActionApprovalStore,
+                ApprovalError,
+            )
+
+            approvals = ActionApprovalStore(_base_path_for_scopes())
+            try:
+                if action == "list":
+                    return {
+                        "pending": [
+                            {"action_key": a.action_key, "detail": a.detail}
+                            for a in approvals.pending_for(universe_id=universe_id)
+                        ]
+                    }
+                decided = approvals.decide(
+                    universe_id=universe_id,
+                    action_key=str((payload or {}).get("action_key") or ""),
+                    granted=action == "grant",
+                    decided_by=subject_id,
+                    standing=bool((payload or {}).get("standing")),
+                )
+            except ApprovalError as exc:
+                raise AgentActionError(str(exc)) from exc
+            return {
+                "action_key": decided.action_key,
+                "state": decided.state,
+                "standing": decided.standing,
+            }
+
         if surface == "progress":
             # No capability required and nothing durable written: this posts a
             # short note to a channel the universe is ALREADY bound to, which it
@@ -657,6 +733,7 @@ __all__ = [
     "AGENT_ACTIONS",
     "BRANCH_ACTIONS",
     "OPERATION_SCOPE_ACTIONS",
+    "APPROVAL_ACTIONS",
     "PROGRESS_ACTIONS",
     "SCHEDULED_WORK_ACTIONS",
     "CONNECTION_ACTIONS",

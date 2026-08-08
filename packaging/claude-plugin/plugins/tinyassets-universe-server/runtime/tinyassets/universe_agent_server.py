@@ -269,6 +269,35 @@ THREAD_ENV = "TINYASSETS_AGENT_THREAD_TS"
 
 
 @mcp.tool()
+def list_pending_approvals() -> str:
+    """Things I asked my founder about that are still waiting on an answer."""
+    return _platform_action("approval", "list")
+
+
+@mcp.tool()
+def record_approval(action_key: str, granted: bool,
+                    standing: bool = False) -> str:
+    """Record my founder's answer about something costly.
+
+    I call this ONLY after they have actually said yes or no in their own words.
+    Recording a yes they did not give is the worst thing I can do here — the
+    whole point of this gate is that a human agreed.
+
+    Single-use by default: one "yes" covers one run. Set `standing` only if they
+    say something like "you don't need to ask me each time".
+
+    Args:
+        action_key: From the refusal message or `list_pending_approvals`.
+        granted: True if they said yes, False if they said no.
+        standing: True only if they said not to ask again for this.
+    """
+    return _platform_action(
+        "approval", "grant" if granted else "deny",
+        action_key=action_key, standing=standing,
+    )
+
+
+@mcp.tool()
 def report_progress(note: str) -> str:
     """Tell my founder what I am doing, WHILE I do it.
 
