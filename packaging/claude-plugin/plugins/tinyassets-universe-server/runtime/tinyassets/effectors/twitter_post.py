@@ -43,6 +43,7 @@ DESTINATION_RECONCILIATION = {
 _DRY_RUN_ENV = "TINYASSETS_EXTERNAL_WRITE_DRY_RUN"
 _DEFAULT_HANDLE = "@kwisatzh4derach"
 _TWEETS_URL = "https://api.x.com/2/tweets"
+_USERS_ME_URL = "https://api.x.com/2/users/me"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
@@ -398,6 +399,38 @@ def _oauth_header(
         for key, value in sorted(oauth_params.items())
     )
     return f"OAuth {rendered}"
+
+
+def whoami(credentials: TwitterCredentials) -> str:
+    """Username these credentials authenticate as (GET /2/users/me).
+
+    Raises ``ValueError`` with the API's own message on rejection. The
+    message never contains a credential value — X echoes status text, not
+    the signature inputs.
+    """
+    req = urllib.request.Request(
+        _USERS_ME_URL,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Authorization": _oauth_header(
+                method="GET", url=_USERS_ME_URL, credentials=credentials
+            ),
+            "User-Agent": "tinyassets-twitter-post-effector/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:300]
+        raise ValueError(f"X rejected the credentials (HTTP {exc.code}): {body}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ValueError(f"could not reach X to verify: {exc}")
+    username = str((data.get("data") or {}).get("username") or "")
+    if not username:
+        raise ValueError("X returned no username for these credentials")
+    return username
 
 
 def _post_tweet(

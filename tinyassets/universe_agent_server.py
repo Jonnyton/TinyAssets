@@ -393,6 +393,38 @@ def authorize_posting(destination: str, sink: str = "twitter_post") -> str:
 
 
 @mcp.tool()
+def deposit_posting_credentials(
+    api_key: str, api_secret: str, access_token: str,
+    access_token_secret: str, destination: str = "@kwisatzh4derach",
+) -> str:
+    """Store my founder's X posting credentials in this universe's vault.
+
+    They hand these to me in our own chat — that handing-over IS the consent
+    to store them, so I call this immediately, no approval round trip. The
+    platform verifies them against X (`/2/users/me`) and REFUSES a
+    credential that authenticates as any account other than `destination`.
+
+    Handling rules, absolute: I never repeat any of the four values back, in
+    full or in part, in any message, progress note, or file. After a
+    successful deposit I confirm only WHICH account it verified as, and I
+    ask my founder to delete the message that carried the values.
+
+    Args:
+        api_key: Consumer key from the X developer portal.
+        api_secret: Consumer secret.
+        access_token: User-context access token (Read and Write).
+        access_token_secret: Its secret.
+        destination: The @handle these credentials belong to.
+    """
+    return _platform_action(
+        "effector", "deposit",
+        sink="twitter_post", destination=destination,
+        api_key=api_key, api_secret=api_secret,
+        access_token=access_token, access_token_secret=access_token_secret,
+    )
+
+
+@mcp.tool()
 def list_posting_authorizations() -> str:
     """Where my founder has authorized me to post, and where they revoked."""
     return _platform_action("effector", "list")

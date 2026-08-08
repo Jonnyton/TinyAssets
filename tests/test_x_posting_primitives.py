@@ -279,6 +279,67 @@ def test_effector_prefers_the_vault_over_env(tmp_path, monkeypatch):
     assert env_resolved.source == "default"
 
 
+# -- conversational deposit ---------------------------------------------------
+
+_DEPOSIT = {
+    "sink": "twitter_post", "destination": "@myhandle",
+    "api_key": "k", "api_secret": "s",
+    "access_token": "t", "access_token_secret": "ts",
+}
+
+
+def test_deposit_verifies_identity_and_stores_in_the_vault(base, monkeypatch):
+    from tinyassets.credential_vault import resolve_twitter_credentials
+
+    monkeypatch.setattr(
+        "tinyassets.effectors.twitter_post.whoami", lambda c: "MyHandle"
+    )
+    result = execute_action(token=_token(), surface="effector",
+                            action="deposit", payload=dict(_DEPOSIT))
+    assert result["deposited_for"] == "@myhandle"
+    assert result["authenticates_as"] == "@MyHandle"
+    # No secret value may appear anywhere in the reply the agent sees.
+    blob = str(result)
+    for value in ("'k'", "'s'", "'t'", "'ts'"):
+        assert value not in blob
+    assert resolve_twitter_credentials(base / "u-a", "@myhandle") is not None
+
+
+def test_deposit_refuses_a_credential_for_a_different_account(base, monkeypatch):
+    """Consent and authority name ONE account; a credential that signs as
+    another must never be stored under that destination."""
+    from tinyassets.credential_vault import resolve_twitter_credentials
+
+    monkeypatch.setattr(
+        "tinyassets.effectors.twitter_post.whoami", lambda c: "someoneelse"
+    )
+    with pytest.raises(AgentActionError, match="authenticate as @someoneelse"):
+        execute_action(token=_token(), surface="effector",
+                       action="deposit", payload=dict(_DEPOSIT))
+    assert resolve_twitter_credentials(base / "u-a", "@myhandle") is None
+
+
+def test_deposit_requires_all_four_values(base):
+    partial = dict(_DEPOSIT)
+    partial["access_token_secret"] = ""
+    with pytest.raises(AgentActionError, match="missing"):
+        execute_action(token=_token(), surface="effector",
+                       action="deposit", payload=partial)
+
+
+def test_deposit_rejection_never_echoes_the_values(base, monkeypatch):
+    def _reject(_creds):
+        raise ValueError("X rejected the credentials (HTTP 401): unauthorized")
+
+    monkeypatch.setattr("tinyassets.effectors.twitter_post.whoami", _reject)
+    with pytest.raises(AgentActionError) as excinfo:
+        execute_action(token=_token(), surface="effector",
+                       action="deposit", payload=dict(_DEPOSIT))
+    message = str(excinfo.value)
+    for value in ("'k'", "'s'", "'t'", "'ts'"):
+        assert value not in message
+
+
 # -- outward chat bindings need consent --------------------------------------
 
 def test_making_an_agent_live_in_chat_requires_the_founders_yes(base):

@@ -129,7 +129,11 @@ CONNECTION_ACTIONS = frozenset({"list", "connect", "reconcile"})
 #: consent record the post effector's gate reads (`effector_consents`) — it is
 #: approval-gated, so it exists only downstream of the founder's own yes.
 #: `revoke` narrows and needs no approval; narrowing is always allowed.
-EFFECTOR_ACTIONS = frozenset({"list", "grant", "revoke"})
+#: `deposit` stores the founder's own posting credentials in THEIR universe's
+#: vault — handing them over in their own DM IS the consent, so it is not
+#: approval-gated, but it is identity-verified: a credential that
+#: authenticates as a different account than the destination is refused.
+EFFECTOR_ACTIONS = frozenset({"list", "grant", "revoke", "deposit"})
 
 #: Sinks a founder can authorize from conversation. Deliberately small:
 #: github_pr consent has its own operator flow and is NOT conversationally
@@ -253,7 +257,7 @@ def execute_action(
         # An ungrantable sink is refused HERE, before the consent gate — an
         # action the founder cannot take at all must not be queued for a
         # consent that would never make it legal.
-        if normalized in {"grant", "revoke"}:
+        if normalized in {"grant", "revoke", "deposit"}:
             requested_sink = str((payload or {}).get("sink") or "").strip().lower()
             if requested_sink not in _GRANTABLE_SINKS:
                 raise AgentActionError(
@@ -977,6 +981,71 @@ def _execute(
                 raise AgentActionError(
                     "destination is required (the @handle being authorized)"
                 )
+            if action == "deposit":
+                from tinyassets.credential_vault import (
+                    load_credential_vault,
+                    resolve_twitter_credentials,
+                    write_credential_vault,
+                )
+                from tinyassets.effectors.twitter_post import (
+                    TwitterCredentials,
+                    whoami,
+                )
+
+                fields = {
+                    key: str((payload or {}).get(key) or "").strip()
+                    for key in ("api_key", "api_secret", "access_token",
+                                "access_token_secret")
+                }
+                missing = [key for key, value in fields.items() if not value]
+                if missing:
+                    raise AgentActionError(
+                        f"deposit needs all four values; missing: {missing}"
+                    )
+                try:
+                    username = whoami(TwitterCredentials(
+                        **fields, source="deposit"
+                    ))
+                except ValueError as exc:
+                    raise AgentActionError(
+                        f"credential verification failed: {exc}"
+                    ) from exc
+                if username.lower() != destination.lstrip("@").lower():
+                    raise AgentActionError(
+                        f"these credentials authenticate as @{username}, not "
+                        f"{destination} — refusing to store a credential for "
+                        "an account other than the one being authorized"
+                    )
+                universe_dir = _universe_dir(universe_id)
+                kept = [
+                    r for r in load_credential_vault(universe_dir)
+                    if not (
+                        r.get("credential_type") == "social"
+                        and str(r.get("service") or r.get("provider") or "")
+                        .strip().lower() in ("twitter", "x")
+                        and str(r.get("destination") or "").strip() == destination
+                    )
+                ]
+                write_credential_vault(universe_dir, [*kept, {
+                    "credential_type": "social",
+                    "service": "twitter",
+                    "destination": destination,
+                    **fields,
+                }])
+                if resolve_twitter_credentials(universe_dir, destination) is None:
+                    raise AgentActionError(
+                        "stored the record but could not resolve it back — "
+                        "vault and resolver disagree; nothing will post"
+                    )
+                return {
+                    "deposited_for": destination,
+                    "authenticates_as": f"@{username}",
+                    "note": (
+                        "verified and stored in this universe's vault; the "
+                        "message that carried the values should be deleted "
+                        "from the chat"
+                    ),
+                }
             if action == "grant":
                 granted = grant_consent(
                     _universe_dir(universe_id),
