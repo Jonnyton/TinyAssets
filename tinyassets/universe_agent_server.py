@@ -866,6 +866,27 @@ def connect_agent_to_chat(agent_binding_id: str, workspace_id: str,
 
 
 @mcp.tool()
+def disconnect_agent_from_chat(workspace_id: str, channel_id: str = "") -> str:
+    """Take an agent OFF a chat scope — the undo for `connect_agent_to_chat`.
+
+    Narrowing needs no approval: when my founder says disconnect, it
+    disconnects. An empty `channel_id` removes the workspace-wide binding.
+    Live 2026-08-08 I had no way to undo my own workspace-wide connect and
+    had to tell my founder to fix it platform-side — never again.
+
+    Args:
+        workspace_id: The chat workspace id.
+        channel_id: Optional channel; empty removes the workspace-wide binding.
+    """
+    return _platform_action(
+        "chat_surface",
+        "unbind_channel",
+        workspace_id=workspace_id,
+        channel_id=channel_id,
+    )
+
+
+@mcp.tool()
 def describe_chat_surface(workspace_id: str) -> str:
     """Show which chat channels currently route to me or to my agents.
 
