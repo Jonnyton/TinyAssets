@@ -537,3 +537,32 @@ filed as P2 (needs binding-id-targeted unbind).
 STILL HOST-ACTION: TWITTER_* creds (X developer portal, OAuth1.0a user
 context) into the daemon env, vault-first. Until then: posting + metrics
 refuse honestly; the parked first draft awaits keys + founder ok.
+
+## [2026-08-08 late] TWITTER AUTOMATION - credential hunt + deposit path + chain probe
+
+Hunted every reachable location for past-attempt keys (host said they may
+exist): GH secrets (full list - none), droplet daemon/container/compose env
+(none), /opt + /root + bash_history (none), workflow-voice universe dir +
+vault (none - only PROGRAM.md/work_targets.json), local Windows env User+
+Machine (none), local .env files (unrelated projects only), 1Password CLI
+(not installed). The workflow-voice wiki page confirms a bearer token WAS
+used for search once - in a since-recreated container env. Keys exist only
+in the X developer portal.
+
+BUILT (commit pending push, deployed, 4/4 md5, canary green):
+resolve_twitter_credentials (vault, exact-destination, partial=None) +
+vault-first _resolve_credentials in the effector + engagement reader +
+deposit_x_credentials.py (founder-run: getpass, /2/users/me verification
+refusing wrong-account creds, ssh->stdin-only receiver into the container
+vault; secrets never touch argv/transcripts/repo) + receiver staged at
+/app/x_deposit_receiver.py.
+
+CHAIN PROBE (run_twitter_post_effector, base=/data/u-tiny, dest
+@kwisatzh4derach): dry_run reason=missing_credentials - consent PASSED,
+authority passed, packet+idempotency passed. The deposit is the ONLY gate.
+
+WAITING ON HOST: (1) reopen Chrome (extension disconnected) so I can drive
+the developer portal + the Slack build/test rounds; (2) paste the 4 values
+into the deposit script. Then: wire the posting node via Slack as the user,
+real post with in-channel founder ok, verify post_url + receipt, then
+read_post_engagement live.
