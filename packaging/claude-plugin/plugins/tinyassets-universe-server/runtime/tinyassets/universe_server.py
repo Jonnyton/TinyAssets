@@ -2814,6 +2814,13 @@ def main(
         from tinyassets.app_ingress_http import serve_in_background
 
         serve_in_background()
+        # Scheduled automations: fire due ones and deliver finished runs.
+        # Without this thread, cadence_seconds and deliver_to are stored
+        # fields nothing reads — an automation "runs daily" only on paper
+        # (live finding 2026-08-08, run 25b32388ab12425a).
+        from tinyassets.scheduled_work_executor import start_default_executor
+
+        start_default_executor()
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
         return

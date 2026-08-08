@@ -402,3 +402,58 @@ def test_consent_is_keyed_to_the_thing_being_approved(monkeypatch):
     risky = _approval_key("branch", "run", {"branch_def_id": "repo999"})
     assert safe != risky
     assert "safe123" in safe
+
+
+def test_ask_arms_the_gate_so_a_later_yes_lands(tmp_path, monkeypatch):
+    """The AI SDK's `approval-requested` state, ours: a prose "want me to
+    start it?" arms a pending in the SAME turn, so the founder's next yes has
+    a referent — instead of attempt -> refusal -> ask AGAIN (live 2026-08-08:
+    "could you say 'yes, run it' one more time")."""
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.action_approvals import ActionApprovalStore
+
+    initialize_author_server(str(tmp_path))
+    monkeypatch.setattr(
+        "tinyassets.universe_agent_actions._base_path_for_scopes",
+        lambda: tmp_path,
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    result = execute_action(
+        token=token, surface="approval", action="ask",
+        payload={"action_key": "scheduled_work.resume:work_01x",
+                 "detail": "start the daily briefing (spends daily)"},
+    )
+    assert result["pending"] == "scheduled_work.resume:work_01x"
+    pending = ActionApprovalStore(tmp_path).pending_for(universe_id="u-a")
+    assert [a.action_key for a in pending] == ["scheduled_work.resume:work_01x"]
+    # And asking grants NOTHING.
+    assert not ActionApprovalStore(tmp_path).consume_if_granted(
+        universe_id="u-a", action_key="scheduled_work.resume:work_01x"
+    )
+
+
+def test_starting_an_automation_requires_consent(tmp_path, monkeypatch):
+    """Resume commits to recurring spend on every tick — it must ask like a
+    run does. Live 2026-08-08 a daily automation was started in the same turn
+    that built it, with no consent ask, while a single run_now would have
+    asked."""
+    from tinyassets.daemon_server import initialize_author_server
+
+    initialize_author_server(str(tmp_path))
+    monkeypatch.setattr(
+        "tinyassets.universe_agent_actions._base_path_for_scopes",
+        lambda: tmp_path,
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    with pytest.raises(AgentActionError, match="go-ahead"):
+        execute_action(
+            token=token, surface="scheduled_work", action="resume",
+            payload={"work_id": "work_01x", "expected_revision": 1},
+        )
+    # The refusal itself armed the gate, naming the target.
+    listed = execute_action(
+        token=token, surface="approval", action="list", payload={}
+    )
+    assert [p["action_key"] for p in listed["pending"]] == [
+        "scheduled_work.resume:work_01x"
+    ]

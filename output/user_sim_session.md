@@ -327,3 +327,118 @@ was observed; the rendered action-resolution failure makes ChatGPT's connector
 registration/attachment seam the next repair boundary without establishing
 whether an accepted bearer reached validation. It is not
 authenticated-continuity acceptance evidence.
+
+## [2026-08-08 ~13:05 PT] SLACK USER-PATH-MAP WALK — Round 1 (B1 progress + C1 template + F1 automation)
+
+Driver: Claude Code, browser (Chrome, founder Slack login), DM D0BMPBUBBSB
+(u-tiny / "Demo App"), workspace T0BN5LK57FT. Prod hotfix hash-verified
+(5/5 files match claude/slack-socket-mode) before driving.
+Map: docs/audits/2026-08-08-agent-user-path-map.md.
+
+Typed as user: "morning! set me up a daily automation: each morning give me 2
+bullets on what's new in AI agent platforms, delivered right here. use one of
+your starter patterns if that helps. tell me what you're doing as you go - i
+want to see the steps, not just the final answer."
+
+Watching for: progress notes DURING the turn (B1), template use (C1),
+automation created paused + told so (F1), finish state (B2), consent ask if
+anything costly fires (E1).
+
+RESULT Round 1 (sent 20:20 PT, final reply 20:22 PT — ~2 min turn):
+- 20:20 instant "on it…" ack; 20:20 mid-turn note: "Chat surface lookup was
+  ambiguous — I'll deliver to your DM with me directly…"
+- 20:21 finish note: "done — Built branch ai_agent_platform_daily (id:
+  648eec466166) using the sequential starter template — gather → draft → END.
+  Wrapped it in automation ai_agent_news_daily (id:
+  work_01kzfp7tj2t14xr0kwsd8neyby), daily cadence (86400s), delivering to
+  Jonathan's Slack DM. Started — state is now active."
+- 20:22 final: what's running + HONEST limitation (gather = LLM inference, not
+  live web) + offered upgrade (add web search) + "first briefing arrives
+  tomorrow morning."
+VERDICTS: C1 PROVEN (template instantiated from a plain user ask). F1 PROVEN
+(real ids, cadence, deliver_to this DM). B2 PROVEN. B1 OBSERVED for a short
+turn (2 mid-turn notes; long-job walk still pending).
+FINDING (E1 gap): agent called start_automation in the SAME turn — no consent
+ask — despite build_automation's created-PAUSED contract. Run-once asks
+(proven 2026-08-07); run-daily-forever did not. Consent model inconsistent for
+recurring spend. Candidate primitive fix: costly-gate start_automation +
+run_automation_now like run_branch.
+NEXT: took the offered upgrade — walks C4 (iterate an existing branch); also
+probes whether a branch node can get real web access (possible MISSING
+primitive).
+
+## [2026-08-08 20:24-20:27 PT] Round 2 (C4 iterate + B1 long-job progress + consent correction)
+
+Typed as user: "yes - upgrade it to use real web search... also: you started
+the daily one without asking me... for anything that spends on a schedule i
+want the final start it? question to be mine..."
+
+RESULT (6 replies, ~3 min): live step-notes streamed DURING the work:
+"Reading operation scopes to find the web search one" / "Defining web_search
+operation scope" / "Building upgraded branch with web_search on the gather
+node" / "Building new automation (paused) with the upgraded branch". Then
+finish note + final: old ai_agent_news_daily PAUSED (pulled down), new
+ai_agent_news_daily_v2 (work_01kzfpfc9216d7r8bwv85wdj6g) built PAUSED, gather
+node has web_search in tools_allowed, declared operations
+llm_inference/web_search/chat_post, closes with "Want me to start it?"
+It restated the corrected rule: "Any automation on a schedule gets built and
+left paused; want me to start it? is always the last line."
+
+VERDICTS: C4 PROVEN. B1 PROVEN (4 step-notes mid-turn on a real job).
+F2 stop-path PROVEN (paused the old one). F5 OBSERVED (scope defined +
+declared ops). A3 accepted in-turn; durable recall needs a LATER conversation.
+E1 consent ask now pending MY yes — walks record_approval next turn.
+OPEN PROBE: does web_search in tools_allowed actually reach the web at run
+time, or is it declared-but-unhonored? Next: yes + run-now, judge freshness.
+
+## [2026-08-08 20:27-20:37 PT] Round 3 (E1 turn-boundary consent seam surfaced)
+
+Typed as user: "yes, start it. and run it once right now so i can see today's
+bullets..." (my yes arrived WITH the request).
+
+RESULT (2 replies, honest stop): "Hmm - the approval recorder hit a
+permissions snag on my end. Jonathan, could you say yes, run it one more time
+so the system can pick it up fresh. That's the only gate between here and
+your bullets."
+
+DIAGNOSIS (verified against design, not a crash): the pending approval record
+is created ONLY by a refusal inside the turn, and record_approval unlocks only
+for pendings that PREDATE the turn (defect-3 fix from 2026-08-07). The prior
+turn asked "Want me to start it?" in PROSE without arming the gate, so the
+user pays an extra round trip for a yes already given. Agent honest, but
+self-misdiagnosed a designed gate as "a permissions snag."
+
+PRIMITIVE CANDIDATE (SDK approval-requested state, audit #7 open question):
+a request_approval tool - the agent ARMS the consent gate in the same turn it
+asks the prose question; next-turn yes maps to the pre-existing pending.
+Keeps the no-self-approval invariant intact; removes the double-ask.
+
+Replied "yes, run it" (turn 4): expect record_approval + start + run-now +
+delivery; web_search-honored-at-runtime probe still open.
+
+## [2026-08-08 20:37-20:55 PT] Round 4 (E1 completes; run executes; TWO dead primitives found)
+
+"yes, run it" (armed pending) -> approval recorded, automation triggered, run
+25b32388ab12425a queued to background executor. Turn honest and complete.
+
+SERVER-VERIFIED RESULTS (checkpoints DB + Slack API history):
+1. tools_allowed NOT honored at run time: gather node LLM ran without
+   WebSearch -- its own output: "Web search requires a permission grant I
+   don't currently have in this environment." Draft node honestly refused to
+   fabricate bullets from the error text. Run "completed" with a meta-question
+   as its briefing.
+2. NO delivery: deliver_to=slack:T0BN5LK57FT:U0BMXFK83UK is stored and unread;
+   0 messages posted to the DM after the run finished. User still sees "It's
+   running!" forever.
+3. NO scheduler exists: nothing outside store/agent-actions/tool-defs
+   references scheduled_work. cadence_seconds is a number nobody reads. The
+   agent's "first briefing arrives tomorrow morning" is a false promise.
+
+ENABLING PRIMITIVES TO CODE (Task 3):
+A. Map node tools_allowed (web_search/web_fetch vocabulary) -> provider
+   allowed_tools at node execution, gated by the automation's
+   declared_operations. Capabilities are user-declared; the runner must honor
+   the declaration.
+B. Scheduled-work executor loop in the daemon: run due active automations AND
+   post finished-run output (run-now included) to deliver_to.
+C. request_approval tool so a prose "start it?" arms the consent gate.

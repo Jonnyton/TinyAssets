@@ -1002,6 +1002,7 @@ def _build_prompt_template_node(
     # fast+cheap) + the node's own timeout. Built once per node. ModelConfig is
     # imported lazily so graph_compiler keeps no hard provider import.
     _node_reasoning_effort = (getattr(node, "reasoning_effort", "") or "").strip()
+    _node_tool_grants = _provider_tool_grants(getattr(node, "tools_allowed", None))
     try:
         from tinyassets.providers.base import ModelConfig as _ModelConfig
         _node_cfg: Any = _ModelConfig(
@@ -1009,6 +1010,13 @@ def _build_prompt_template_node(
             # a provider timeout of 0 (int(0.5)==0 → instant provider timeout).
             timeout=max(1, int(timeout_s)),
             reasoning_effort=_node_reasoning_effort,
+            # A user-declared node capability must be HONORED at execution, not
+            # just stored: a gather node with web_search in tools_allowed ran
+            # live 2026-08-08 and reported "Web search requires a permission
+            # grant I don't currently have in this environment" — the
+            # declaration existed at every layer and nothing granted it.
+            # None (no declared web capability) preserves the provider default.
+            allowed_tools=_node_tool_grants or None,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
         _node_cfg = None
@@ -1385,6 +1393,32 @@ def _validate_source_code(node: NodeDefinition) -> None:
                 f"Node '{node.node_id}' source_code contains disallowed "
                 f"pattern: '{pattern}'"
             )
+
+
+#: User-declared node capability -> provider tool pre-authorized for that
+#: node's LLM turn (``claude -p --allowedTools``). This is a translation
+#: table, not policy: the declaration is the user's, made on their own node
+#: (capabilities are user-declared). Only read-only, provider-mediated
+#: capabilities belong here. ``web_fetch`` is deliberately ABSENT until node
+#: turns have an SSRF guard — WebSearch returns search results, WebFetch
+#: would fetch arbitrary URLs including internal ones.
+_CAPABILITY_TOOL_GRANTS: dict[str, str] = {
+    "web_search": "WebSearch",
+}
+
+
+def _provider_tool_grants(tools_allowed: Any) -> tuple[str, ...]:
+    """Provider tools this node's declared capabilities translate to.
+
+    Unknown entries pass through silently — ``tools_allowed`` also carries MCP
+    action names (``goals.leaderboard``) consumed by ``_invoke_mcp_action``'s
+    allowlist, which are not provider tools and must not break here.
+    """
+    return tuple(
+        _CAPABILITY_TOOL_GRANTS[str(entry).strip().lower()]
+        for entry in (tools_allowed or ())
+        if str(entry).strip().lower() in _CAPABILITY_TOOL_GRANTS
+    )
 
 
 _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {

@@ -88,11 +88,16 @@ PROGRESS_ACTIONS = frozenset({"note"})
 #: "Are you sure", as opposed to "are you allowed". Every other gate answers the
 #: second; none answered the first, while the agent could spend the founder's
 #: compute and open pull requests against their repository.
-APPROVAL_ACTIONS = frozenset({"list", "grant", "deny"})
+APPROVAL_ACTIONS = frozenset({"list", "grant", "deny", "ask"})
 
 #: Actions that must be approved before they run. Costly or outward-facing:
-#: running a branch spends the founder's own compute and can open a PR.
-_ACTIONS_REQUIRING_APPROVAL = frozenset({("branch", "run"), ("scheduled_work", "run_now")})
+#: running a branch spends the founder's own compute and can open a PR, and
+#: RESUMING an automation commits to recurring spend on every cadence tick —
+#: live 2026-08-08 the agent started a daily automation in the same turn that
+#: built it, with no consent ask, while a single run_now would have asked.
+_ACTIONS_REQUIRING_APPROVAL = frozenset(
+    {("branch", "run"), ("scheduled_work", "run_now"), ("scheduled_work", "resume")}
+)
 
 #: Automations of ANY kind — schedule + branch + inputs + declared operations.
 #: The repo-spec surface builds exactly one shape; this one builds whatever the
@@ -654,6 +659,23 @@ def _execute(
                             {"action_key": a.action_key, "detail": a.detail}
                             for a in approvals.pending_for(universe_id=universe_id)
                         ]
+                    }
+                if action == "ask":
+                    # Arm the consent gate at ASK time. Before this, a pending
+                    # was created only by a refusal INSIDE a turn, so a prose
+                    # "want me to start it?" left nothing for the founder's yes
+                    # to land on — the next turn had to attempt the action,
+                    # get refused, and ask AGAIN (live 2026-08-08: "could you
+                    # say 'yes, run it' one more time"). The AI SDK names this
+                    # state `approval-requested`; this is ours.
+                    requested = approvals.request(
+                        universe_id=universe_id,
+                        action_key=str((payload or {}).get("action_key") or ""),
+                        detail=str((payload or {}).get("detail") or ""),
+                    )
+                    return {
+                        "pending": requested.action_key,
+                        "detail": requested.detail,
                     }
                 decided = approvals.decide(
                     universe_id=universe_id,

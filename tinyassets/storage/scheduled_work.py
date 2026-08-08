@@ -87,6 +87,9 @@ class ScheduledWork:
     revision: int
     owner_id: str
     deliver_to: str = ""
+    last_run_at: float | None = None
+    last_run_id: str = ""
+    delivered_run_id: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -153,6 +156,8 @@ class ScheduledWorkStore:
         for column, ddl in (
             ("deliver_to", "ALTER TABLE scheduled_work ADD COLUMN"
                            " deliver_to TEXT NOT NULL DEFAULT ''"),
+            ("delivered_run_id", "ALTER TABLE scheduled_work ADD COLUMN"
+                                 " delivered_run_id TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in existing:
                 conn.execute(ddl)
@@ -334,6 +339,50 @@ class ScheduledWorkStore:
                 (time.time(), run_id, universe_id, work_id),
             )
 
+    def list_due(self, *, now: float | None = None) -> list[ScheduledWork]:
+        """Active automations whose cadence has elapsed, across ALL universes.
+
+        An automation that has never run is due the moment it is active: the
+        founder pressed start, so "first run now, then every cadence" is what
+        they asked for — not "wait one silent cadence before doing anything".
+        """
+        stamp = now if now is not None else time.time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_work WHERE state = 'active'"
+                " AND (last_run_at IS NULL"
+                "      OR last_run_at + cadence_seconds <= ?)"
+                " ORDER BY universe_id, name",
+                (stamp,),
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def list_undelivered(self) -> list[ScheduledWork]:
+        """Automations whose latest run has not been delivered yet.
+
+        Includes paused ones on purpose: pausing an automation after a run was
+        fired must not swallow the result the founder already paid for.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_work"
+                " WHERE last_run_id IS NOT NULL AND last_run_id != ''"
+                " AND last_run_id != delivered_run_id"
+                " ORDER BY universe_id, name",
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def record_delivery(
+        self, *, universe_id: str, work_id: str, run_id: str
+    ) -> None:
+        """Mark this run's result as delivered so it is never posted twice."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE scheduled_work SET delivered_run_id = ?"
+                " WHERE universe_id = ? AND work_id = ?",
+                (run_id, universe_id, work_id),
+            )
+
     @staticmethod
     def _row(row: sqlite3.Row) -> ScheduledWork:
         try:
@@ -348,6 +397,12 @@ class ScheduledWorkStore:
             declared_operations=operations, state=row["state"],
             revision=row["revision"], owner_id=row["owner_id"],
             deliver_to=(row["deliver_to"] if "deliver_to" in row.keys() else ""),
+            last_run_at=row["last_run_at"] if "last_run_at" in row.keys() else None,
+            last_run_id=(row["last_run_id"] or "") if "last_run_id" in row.keys() else "",
+            delivered_run_id=(
+                (row["delivered_run_id"] or "")
+                if "delivered_run_id" in row.keys() else ""
+            ),
         )
 
 

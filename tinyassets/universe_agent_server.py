@@ -323,6 +323,33 @@ def record_approval(action_key: str, granted: bool,
 
 
 @mcp.tool()
+def request_approval(action_key: str, what_it_will_do: str) -> str:
+    """Arm the consent gate for something I am ABOUT to ask my founder.
+
+    I call this in the same turn I ask a consent question in prose, so their
+    next "yes" has a real pending to land on. Without it, their yes arrives
+    and I have to attempt the action, get refused, and make them say yes a
+    second time — which is rude.
+
+    The key names WHAT is approved: `surface.action:target`, e.g.
+    `scheduled_work.resume:work_01…` for starting an automation, or
+    `branch.run:648eec…` for running a branch. Use the same ids I would pass
+    to the action itself.
+
+    This does not grant anything — only my founder's answer does that.
+
+    Args:
+        action_key: `surface.action:target` for the action I am asking about.
+        what_it_will_do: One plain line on what it does and what it spends —
+            a later turn reads this back to know what was asked.
+    """
+    return _platform_action(
+        "approval", "ask",
+        action_key=action_key, detail=what_it_will_do,
+    )
+
+
+@mcp.tool()
 def report_progress(note: str) -> str:
     """Tell my founder what I am doing, WHILE I do it.
 
@@ -421,6 +448,11 @@ def update_automation_inputs(work_id: str, inputs_json: str,
 @mcp.tool()
 def start_automation(work_id: str, expected_revision: int) -> str:
     """Start one of my automations running on its schedule.
+
+    Starting commits my founder to recurring spend on every cadence tick, so
+    it needs their go-ahead like a run does. When I am about to ask "want me
+    to start it?", I `request_approval` with key
+    `scheduled_work.resume:<work_id>` first — then their yes unblocks this.
 
     Args:
         work_id: From `list_my_automations`.
