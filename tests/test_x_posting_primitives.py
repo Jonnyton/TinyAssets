@@ -497,6 +497,34 @@ def test_deposit_accepts_a_pasted_blob(base, monkeypatch):
     }
 
 
+# -- 402 billing is actionable, not a raw HTTP dump ---------------------------
+
+def test_402_credits_depleted_is_an_actionable_error(monkeypatch):
+    """Live 2026-08-08: the full pipeline reached X and got 402 (auth worked;
+    the account just had no credits). An unattended automation's failure
+    delivery must say 'top up', not dump the raw HTTP body."""
+    import urllib.error
+    from io import BytesIO
+
+    from tinyassets.effectors import twitter_post
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            twitter_post._TWEETS_URL, 402, "Payment Required", {},
+            BytesIO(b'{"detail":"credits depleted"}'),
+        )
+
+    monkeypatch.setattr(twitter_post.urllib.request, "urlopen", fake_urlopen)
+    creds = twitter_post.TwitterCredentials("k", "s", "t", "ts", "test")
+    result = twitter_post._post_tweet(
+        text="hi", reply_to_tweet_id="", quote_tweet_id="", credentials=creds
+    )
+    assert result["error_kind"] == "x_api_credits_depleted"
+    assert result["http_status"] == 402
+    assert "pay-per-use" in result["error"]
+    assert "credits depleted" not in result["error"]  # not the raw body
+
+
 # -- conversational deposit ---------------------------------------------------
 
 _DEPOSIT = {

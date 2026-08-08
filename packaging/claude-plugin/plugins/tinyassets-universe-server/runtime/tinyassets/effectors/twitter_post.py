@@ -562,6 +562,24 @@ def _post_tweet(
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")[:500]
+        # 402 is billing, not a bug: X went pay-per-use (no free tier) in
+        # Feb 2026, so a zero-balance account returns "credits depleted".
+        # A scheduled automation's failure-delivery would otherwise hand the
+        # founder a raw HTTP body; give the actionable version. Live 2026-08-08
+        # the full pipeline reached X and got exactly this (auth succeeded —
+        # 402, not 401/403 — the account just had no credits).
+        if exc.code == 402:
+            return {
+                "error": (
+                    "X rejected the post: the account's X API balance is "
+                    "depleted. X posting is pay-per-use (~$0.015/post, $0.20 "
+                    "if it has a link) with no free tier — add credits or a "
+                    "payment method in the X developer portal, then retry. "
+                    "Everything else (auth, consent, content) is fine."
+                ),
+                "error_kind": "x_api_credits_depleted",
+                "http_status": 402,
+            }
         return {
             "error": f"X API HTTP {exc.code}: {body_text}",
             "error_kind": "x_api_http_error",
