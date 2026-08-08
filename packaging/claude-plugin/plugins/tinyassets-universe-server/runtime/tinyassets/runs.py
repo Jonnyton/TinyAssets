@@ -2653,7 +2653,7 @@ def _invoke_graph(
     external_write_evidence = _run_external_write_effectors(
         branch,
         output,
-        base_path=base_path,
+        base_path=_effector_universe_dir(base_path, run_id),
         run_id=run_id,
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
     )
@@ -2728,6 +2728,33 @@ def _quarantine_branch_authored_external_write_keys(
                 system_key,
                 quarantine_key,
             )
+
+
+def _effector_universe_dir(base_path: str | Path, run_id: str) -> str | Path:
+    """Resolve the per-universe dir the external-write gates read from.
+
+    Runs execute from the DATA ROOT (``/data``), but consent, credentials,
+    receipts and idempotency all live per-universe (``/data/u-tiny``). Passing
+    the run's raw base_path to the effectors made every gate miss — a real
+    post landed at ``missing_consent`` even though consent was recorded, and
+    would never have found deposited credentials (found live 2026-08-08, run
+    0585fa569e4c). The run's actor names the universe (``universe:<id>``); when
+    it resolves to an existing subdir under base_path, that is the effector's
+    base. Anything unexpected falls back to base_path unchanged, so no other
+    run shape regresses.
+    """
+    try:
+        run = get_run(base_path, run_id) or {}
+        actor = str(run.get("actor") or "")
+        if actor.startswith("universe:"):
+            universe_id = actor.split(":", 1)[1].strip()
+            candidate = (Path(base_path) / universe_id).resolve()
+            root = Path(base_path).resolve()
+            if candidate.is_dir() and candidate.is_relative_to(root):
+                return candidate
+    except Exception:  # noqa: BLE001 - resolution must never break completion
+        logger.exception("could not resolve effector universe dir for %s", run_id)
+    return base_path
 
 
 def _run_external_write_effectors(
@@ -3650,7 +3677,7 @@ def _invoke_graph_resume(
     external_write_evidence = _run_external_write_effectors(
         branch,
         output,
-        base_path=base_path,
+        base_path=_effector_universe_dir(base_path, run_id),
         run_id=run_id,
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
     )

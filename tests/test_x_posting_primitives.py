@@ -10,6 +10,8 @@ signal, honest in every no-data shape.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tinyassets.universe_agent_actions import (
@@ -391,6 +393,23 @@ def test_dispatcher_falls_back_to_handoff_assembly(base):
     assert evidence.get("reason") == "missing_credentials"
     assert evidence.get("packet_assembled_from_handoff") is True
     assert evidence["would_post"]["text"] == "shipped the slack agent"
+
+
+def test_run_completion_reads_gates_from_the_universe_dir_not_data_root(base):
+    """Runs execute from the data root but consent/credentials live per
+    universe. The completion dispatch must resolve the universe dir from the
+    run's actor, or every gate misses (found live, run 0585fa569e4c)."""
+    from tinyassets.runs import _effector_universe_dir, create_run
+
+    # A run owned by universe u-a, executing from the data root `base`.
+    univ_run = create_run(base, branch_def_id="b", thread_id="t",
+                          inputs={}, actor="universe:u-a")
+    resolved = _effector_universe_dir(base, univ_run)
+    assert Path(resolved) == (base / "u-a").resolve()
+    # A run whose actor is not a universe falls back to base_path unchanged.
+    plain_run = create_run(base, branch_def_id="b", thread_id="t2",
+                           inputs={}, actor="host")
+    assert Path(_effector_universe_dir(base, plain_run)) == Path(base)
 
 
 def test_package_wrapper_preserves_handoffs_to_the_dispatch(base):
