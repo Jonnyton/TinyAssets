@@ -83,15 +83,38 @@ proven · `MISSING` = no primitive exists yet.
 |---|---|---|---|---|
 | H1 | Ask their agent to create + activate ANOTHER custom agent and wire it to a chat surface | dynamicTool/MCP composition | BUILT? | `create_agent`/`activate_agent`/`connect_agent_to_chat`; V1 demo row monitors the whole-core route |
 
-## Walk order (this session)
+## Walk results (2026-08-08 session — see `output/user_sim_session.md`)
 
-1. **B1** progress visibility during a real multi-step job — the audit's #1.
-2. **F1→F2→F4** automation lifecycle: build from C1 template remix, start,
-   run-now, observe an unasked scheduled delivery, stop.
-3. **E2/E3** deny + standing consent (E1's siblings — cheap while in-channel).
-4. **C4** iterate an existing branch by asking.
-5. **A4** discoverability; **G4** workspace; **D2** missing-inputs refusal.
-6. Note-only: E4 (buttons, own lane), G3 (cloud drain lanes), H1 (V1 demo row).
+**Flipped to PROVEN by live walks:** B1 (4 step-notes during a real job),
+C1 (sequential starter instantiated from a plain ask), C4 (v2 branch with
+web_search added by asking), F1 (automation built with real ids), F2 (start
+via consent; stop; run-now), plus re-proofs of B2/C3/D1/E1.
 
-Results log: `output/user_sim_session.md`. Failures → enabling primitive →
-re-walk the same path live before flipping its status.
+**Three MISSING primitives found, coded, deployed, and re-proven live**
+(commit `3515d7b5`, prod hotfix 2026-08-08):
+
+1. **Node `tools_allowed` was never honored at run time** — the live gather
+   node reported "Web search requires a permission grant…" while
+   `web_search` was declared at every layer. Fixed: graph_compiler maps
+   `web_search` → provider `--allowedTools WebSearch` (web_fetch withheld
+   until an SSRF guard exists). Re-proof: delivered bullets dated the same
+   week (Cloudflare Agents Week Aug 3–7) — impossible without live search.
+2. **No scheduled-work executor existed** — `cadence_seconds` and
+   `deliver_to` were stored fields no process read; runs completed into the
+   checkpoint DB and were never delivered ("It's running!" forever). Fixed:
+   `scheduled_work_executor` sweeps every 30s — fires due automations,
+   delivers finished runs (run-now included) exactly once, delivers FAILED
+   runs as failure notices, backs broken automations off to their cadence.
+   Re-proof: two stranded results delivered unasked within the first sweeps;
+   the fresh run's output arrived in the DM without being asked for.
+3. **The consent gate could not be armed by a prose ask** — the founder's
+   yes forced attempt → refusal → ask again. Fixed: `request_approval` tool
+   + approval `ask` action (the SDK's `approval-requested` state); and
+   `resume` is now consent-gated like a run (recurring spend). Re-proof:
+   "Gate is armed… just say yes" → one yes → run, no repeat ask.
+
+**Still unwalked:** E2 deny, E3 standing consent, A3 later-conversation
+recall, D2 missing-inputs refusal as a user, F3 input edit, F4 unasked
+*scheduled-tick* delivery (next natural tick ~03:37 UTC), G1/G2/G4.
+**Out of this lane:** E4 buttons (STATUS row), G3 cloud (drain lanes),
+H1 agents-building-agents (V1 demo row).

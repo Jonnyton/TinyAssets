@@ -442,3 +442,34 @@ A. Map node tools_allowed (web_search/web_fetch vocabulary) -> provider
 B. Scheduled-work executor loop in the daemon: run due active automations AND
    post finished-run output (run-now included) to deliver_to.
 C. request_approval tool so a prose "start it?" arms the consent gate.
+
+## [2026-08-08 20:56-21:07 PT] Rounds 5-7: primitives deployed and PROVEN live as a user
+
+Deployed commit 3515d7b5 (7 files, docker cp route, backups kept, daemon
+restarted healthy, loopback canary exit 0, 5/5+2 md5 verified).
+
+Within the executor's first sweeps, UNASKED, the DM received:
+1. the stranded 25b32388ab12425a backlog ("*ai_agent_news_daily_v2*:
+   findings/briefing") - delivery of run-now results works;
+2. "*weekly_update* run 383b6bd1652741d6 FAILED: CompilerError: Node draft...
+   input_keys [brief] not present" - a SECOND stranded automation fired on
+   its elapsed cadence and its failure was delivered AS a failure. Fail-loud
+   delivery works.
+
+Round 6 (the decisive walk): "run the news briefing once more so i can check
+the web search actually works this time."
+- Agent: "Gate is armed. Ready to fire - just say yes..." (request_approval
+  arming its prose ask - Primitive C live, no double-ask).
+- Typed "yes" -> approval recorded -> run 20:05 -> 20:05:48 the DM received
+  *ai_agent_news_daily_v2* findings DATED THIS WEEK: "Cloudflare - Agents
+  Week 2026 (Aug 3-7)... Cloudflare Wallets... Browser Run...", "Microsoft -
+  Project Perception (public preview Aug 3)". Impossible without live
+  WebSearch (model cutoff Jan 2026). Primitive A live. Delivered without
+  being asked. Primitive B live.
+
+VERDICTS: tools_allowed honored (A) PROVEN; scheduler+delivery (B) PROVEN
+both success and failure shapes; consent armed-at-ask (C) PROVEN, one yes,
+no repeat ask. E1 now covers resume (recurring spend gated).
+
+Round 7 in flight: stop_automation as a user (weekly_update) + "what can you
+do" discoverability (A4).
