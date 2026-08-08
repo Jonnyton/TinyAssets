@@ -50,6 +50,17 @@ DEFAULT_ACTION_URL = "http://daemon:8002/agent-actions"
 
 mcp = FastMCP("tinyassets-universe")
 
+#: Runaway guard. The AI SDK defaults `stopWhen: isStepCount(20)` for exactly
+#: this reason; we had NO bound on a turn's tool calls. A turn that has made this
+#: many platform calls is looping, not working — observed 2026-08-07: 12
+#: build_automation calls in one turn, every one of them failing on a schema
+#: fault, with nothing to stop it.
+#:
+#: Deliberately generous, and it refuses rather than crashing, so a turn that
+#: hits it can still explain itself to the founder.
+MAX_PLATFORM_CALLS_PER_TURN = 40
+_calls_this_turn = 0
+
 
 def _workspace() -> UniverseWorkspace:
     """Resolve the bound workspace, or fail loudly.
@@ -74,6 +85,15 @@ def _platform_action(surface: str, action: str, **payload: object) -> str:
     import json as _json
     import urllib.error
     import urllib.request
+
+    global _calls_this_turn
+    _calls_this_turn += 1
+    if _calls_this_turn > MAX_PLATFORM_CALLS_PER_TURN:
+        return (
+            f"refused: this turn has made {MAX_PLATFORM_CALLS_PER_TURN} platform "
+            "calls, which means it is looping rather than progressing. Stop and "
+            "tell my founder what is actually blocking, naming the last error."
+        )
 
     token = os.environ.get(ACTION_TOKEN_ENV, "").strip()
     if not token:
@@ -123,6 +143,42 @@ def read_branch(branch_def_id: str) -> str:
         branch_def_id: From `list_branch_versions` (the part before the `@`).
     """
     return _platform_action("branch", "read", branch_def_id=branch_def_id)
+
+
+def _with_repair_guidance(raw: str) -> str:
+    """Turn a validator rejection into a CORRECTION.
+
+    The branch validator already returns a `proposed_fix` per error — it told me
+    exactly what to change both times I got the spec wrong (missing
+    `entry_point`, then `source`/`target` instead of `from`/`to`). Nothing
+    consumed it, so a rejection read as a dead end.
+
+    This is the AI SDK's `repairToolCall` idea with the hard part already done:
+    the fix is known, it just has to reach the model where it cannot be missed.
+    """
+    import json as _json
+
+    try:
+        parsed = _json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(parsed, dict) or parsed.get("status") != "rejected":
+        return raw
+    fixes = [
+        str(item.get("proposed_fix") or "").strip()
+        for item in (parsed.get("suggestions") or [])
+        if str(item.get("proposed_fix") or "").strip()
+    ]
+    if not fixes:
+        return raw
+    newline = chr(10)
+    lines = newline.join("  - " + fix for fix in fixes)
+    banner = "THIS IS FIXABLE - apply these and build again:"
+    tail = (
+        "Do not report this as a failure to my founder; correct the spec and "
+        "retry. Only say it failed if the SAME fix has already been applied."
+    )
+    return newline.join([raw, "", banner, lines, tail])
 
 
 @mcp.tool()
@@ -192,7 +248,8 @@ def build_branch(spec_json: str) -> str:
     Args:
         spec_json: The branch specification as JSON — its name, nodes and edges.
     """
-    return _platform_action("branch", "build", spec_json=spec_json)
+    raw = _platform_action("branch", "build", spec_json=spec_json)
+    return _with_repair_guidance(raw)
 
 
 @mcp.tool()
