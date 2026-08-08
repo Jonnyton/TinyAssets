@@ -989,6 +989,7 @@ def _execute(
                 )
                 from tinyassets.effectors.twitter_post import (
                     TwitterCredentials,
+                    classify_credential_values,
                     whoami,
                 )
 
@@ -997,6 +998,19 @@ def _execute(
                     for key in ("api_key", "api_secret", "access_token",
                                 "access_token_secret")
                 }
+                pasted = (payload or {}).get("values")
+                if isinstance(pasted, str):
+                    pasted = [
+                        part for part in re.split(r"[\s,;]+", pasted) if part
+                    ]
+                if not all(fields.values()) and pasted:
+                    # Labels drift and the portal shows OAuth 2.0 values
+                    # beside the ones that post — sort by shape instead of
+                    # making the founder match our field names.
+                    try:
+                        fields = classify_credential_values(list(pasted))
+                    except ValueError as exc:
+                        raise AgentActionError(str(exc)) from exc
                 missing = [key for key, value in fields.items() if not value]
                 if missing:
                     raise AgentActionError(

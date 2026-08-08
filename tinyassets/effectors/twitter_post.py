@@ -401,6 +401,64 @@ def _oauth_header(
     return f"OAuth {rendered}"
 
 
+#: A user-context access token is ``<numeric user id>-<token>`` — the one X
+#: credential with an unmistakable shape, which anchors the whole sort.
+_ACCESS_TOKEN_SHAPE = re.compile(r"\A\d{5,25}-[A-Za-z0-9]{20,}\Z")
+#: App-only bearer tokens begin with a long run of A's and cannot post.
+_BEARER_SHAPE = re.compile(r"\AA{8,}")
+
+
+def classify_credential_values(values: list[str]) -> dict[str, str]:
+    """Sort four pasted X values into their roles BY SHAPE, not by label.
+
+    The X portal's names have drifted (``API Key`` / ``API Key Secret`` /
+    ``Consumer Key`` / ``Consumer Secret``) and it shows OAuth 2.0 ``Client
+    ID`` / ``Client Secret`` beside the OAuth 1.0a values we need, so asking
+    a founder to match our field names to their screen is a trap. The four
+    values are self-identifying: the access token carries a numeric-id
+    prefix, and the remaining three are distinct fixed lengths (secret 50 >
+    token secret 45 > key 25).
+
+    Raises ``ValueError`` naming the problem — a bearer token or an OAuth 2.0
+    pair is a specific, correctable mistake and deserves to be said out loud.
+    """
+    cleaned = [str(v).strip() for v in values if str(v).strip()]
+    if len(cleaned) != 4:
+        raise ValueError(f"need exactly 4 values, got {len(cleaned)}")
+    for value in cleaned:
+        if _BEARER_SHAPE.match(value):
+            raise ValueError(
+                "one of these is the Bearer Token (app-only). It cannot post "
+                "— send the OAuth 1.0a set instead: API Key, API Key Secret, "
+                "Access Token, Access Token Secret."
+            )
+    tokens = [v for v in cleaned if _ACCESS_TOKEN_SHAPE.match(v)]
+    if len(tokens) != 1:
+        raise ValueError(
+            "could not find exactly one Access Token (it looks like "
+            "`1234567890-AbCd…`, with your numeric user id before the dash). "
+            "Check you sent the Access Token and Secret pair, not the OAuth "
+            "2.0 Client ID and Client Secret."
+        )
+    access_token = tokens[0]
+    rest = sorted(
+        (v for v in cleaned if v is not access_token), key=len, reverse=True
+    )
+    api_secret, access_token_secret, api_key = rest
+    if not (len(api_secret) > len(api_key) and len(access_token_secret) > len(api_key)):
+        raise ValueError(
+            "these three values are not the expected API Key (~25 chars), "
+            "API Key Secret (~50) and Access Token Secret (~45) — please "
+            "re-copy them from Keys and tokens."
+        )
+    return {
+        "api_key": api_key,
+        "api_secret": api_secret,
+        "access_token": access_token,
+        "access_token_secret": access_token_secret,
+    }
+
+
 def packet_from_handoffs(node: Any, run_state: dict[str, Any]) -> dict[str, Any] | None:
     """Assemble the write packet the PLATFORM way — from a declaration.
 

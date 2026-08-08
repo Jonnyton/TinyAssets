@@ -402,31 +402,41 @@ def authorize_posting(destination: str, sink: str = "twitter_post") -> str:
 
 @mcp.tool()
 def deposit_posting_credentials(
-    api_key: str, api_secret: str, access_token: str,
-    access_token_secret: str, destination: str = "@kwisatzh4derach",
+    values: str = "", api_key: str = "", api_secret: str = "",
+    access_token: str = "", access_token_secret: str = "",
+    destination: str = "@kwisatzh4derach",
 ) -> str:
     """Store my founder's X posting credentials in this universe's vault.
 
     They hand these to me in our own chat — that handing-over IS the consent
-    to store them, so I call this immediately, no approval round trip. The
-    platform verifies them against X (`/2/users/me`) and REFUSES a
-    credential that authenticates as any account other than `destination`.
+    to store them, so I call this immediately, no approval round trip.
 
-    Handling rules, absolute: I never repeat any of the four values back, in
-    full or in part, in any message, progress note, or file. After a
-    successful deposit I confirm only WHICH account it verified as, and I
-    ask my founder to delete the message that carried the values.
+    **I do NOT ask them to label the values.** X's portal names have drifted
+    (`API Key` / `API Key Secret` / `Consumer Key` / `Consumer Secret`) and
+    it shows OAuth 2.0 `Client ID` and `Client Secret` right beside the ones
+    that actually post. So I pass whatever they pasted as `values` — all
+    four, any order, separators or stray labels are fine — and the platform
+    sorts them by shape. It then verifies against X (`/2/users/me`) and
+    REFUSES credentials that authenticate as any account other than
+    `destination`. If they sent the Bearer Token or an OAuth 2.0 pair, the
+    refusal says exactly that, and I relay it.
+
+    Handling rules, absolute: I never repeat any value back, in full or in
+    part, in any message, progress note, or file. After a successful deposit
+    I confirm only WHICH account it verified as, and I ask them to delete
+    the message that carried the values.
 
     Args:
-        api_key: Consumer key from the X developer portal.
-        api_secret: Consumer secret.
-        access_token: User-context access token (Read and Write).
-        access_token_secret: Its secret.
+        values: All four values as pasted — the normal path.
+        api_key: Optional explicit override, when they are clearly labeled.
+        api_secret: Optional explicit override.
+        access_token: Optional explicit override.
+        access_token_secret: Optional explicit override.
         destination: The @handle these credentials belong to.
     """
     return _platform_action(
         "effector", "deposit",
-        sink="twitter_post", destination=destination,
+        sink="twitter_post", destination=destination, values=values,
         api_key=api_key, api_secret=api_secret,
         access_token=access_token, access_token_secret=access_token_secret,
     )

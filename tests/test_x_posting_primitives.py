@@ -393,6 +393,66 @@ def test_dispatcher_falls_back_to_handoff_assembly(base):
     assert evidence["would_post"]["text"] == "shipped the slack agent"
 
 
+# -- label-free classification ------------------------------------------------
+
+_KEY = "K" * 25
+_SECRET = "S" * 50
+_TOKEN = "1234567890123456789-" + ("T" * 30)
+_TOKEN_SECRET = "X" * 45
+
+
+def test_values_are_sorted_by_shape_in_any_order():
+    """X renamed these fields and shows OAuth 2.0 values beside them, so the
+    founder must never have to match labels."""
+    from tinyassets.effectors.twitter_post import classify_credential_values
+
+    expected = {
+        "api_key": _KEY, "api_secret": _SECRET,
+        "access_token": _TOKEN, "access_token_secret": _TOKEN_SECRET,
+    }
+    for order in (
+        [_KEY, _SECRET, _TOKEN, _TOKEN_SECRET],
+        [_TOKEN_SECRET, _TOKEN, _SECRET, _KEY],
+        [_SECRET, _TOKEN_SECRET, _KEY, _TOKEN],
+    ):
+        assert classify_credential_values(order) == expected
+
+
+def test_a_bearer_token_is_named_as_the_mistake_it_is():
+    from tinyassets.effectors.twitter_post import classify_credential_values
+
+    with pytest.raises(ValueError, match="Bearer Token"):
+        classify_credential_values(["A" * 110, _KEY, _SECRET, _TOKEN_SECRET])
+
+
+def test_missing_access_token_says_what_to_look_for():
+    """The OAuth 2.0 Client ID/Secret pair lands here — no id-prefixed token."""
+    from tinyassets.effectors.twitter_post import classify_credential_values
+
+    with pytest.raises(ValueError, match="Access Token"):
+        classify_credential_values([_KEY, _SECRET, _TOKEN_SECRET, "Z" * 40])
+
+
+def test_deposit_accepts_a_pasted_blob(base, monkeypatch):
+    from tinyassets.credential_vault import resolve_twitter_credentials
+
+    monkeypatch.setattr(
+        "tinyassets.effectors.twitter_post.whoami", lambda c: "myhandle"
+    )
+    result = execute_action(token=_token(), surface="effector",
+                            action="deposit", payload={
+                                "sink": "twitter_post",
+                                "destination": "@myhandle",
+                                "values": f"{_SECRET}\n{_TOKEN}\n{_KEY}\n{_TOKEN_SECRET}",
+                            })
+    assert result["deposited_for"] == "@myhandle"
+    stored = resolve_twitter_credentials(base / "u-a", "@myhandle")
+    assert stored == {
+        "api_key": _KEY, "api_secret": _SECRET,
+        "access_token": _TOKEN, "access_token_secret": _TOKEN_SECRET,
+    }
+
+
 # -- conversational deposit ---------------------------------------------------
 
 _DEPOSIT = {

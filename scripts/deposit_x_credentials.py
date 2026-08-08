@@ -31,6 +31,7 @@ from tinyassets.effectors.twitter_post import (  # noqa: E402
     TwitterCredentials,
     _normalize_handle,
     _oauth_header,
+    classify_credential_values,
 )
 
 USERS_ME = "https://api.x.com/2/users/me"
@@ -75,19 +76,19 @@ def main() -> int:
     args = parser.parse_args()
     destination = _normalize_handle(args.destination)
 
-    print(f"Depositing X credentials for {destination}. Paste each value")
-    print("(input is hidden; nothing is stored on this machine):")
-    credentials = TwitterCredentials(
-        api_key=getpass.getpass("  API Key (consumer key): ").strip(),
-        api_secret=getpass.getpass("  API Secret: ").strip(),
-        access_token=getpass.getpass("  Access Token: ").strip(),
-        access_token_secret=getpass.getpass("  Access Token Secret: ").strip(),
-        source="deposit",
-    )
-    if not all([credentials.api_key, credentials.api_secret,
-                credentials.access_token, credentials.access_token_secret]):
-        print("FAIL: all four values are required")
+    print(f"Depositing X credentials for {destination}.")
+    print("Paste the four OAuth 1.0a values one per line, IN ANY ORDER —")
+    print("labels do not matter, they are sorted by shape. NOT the Bearer")
+    print("Token and NOT the OAuth 2.0 Client ID/Secret. Input is hidden.")
+    pasted = [
+        getpass.getpass(f"  value {n}: ").strip() for n in range(1, 5)
+    ]
+    try:
+        sorted_values = classify_credential_values(pasted)
+    except ValueError as exc:
+        print(f"FAIL: {exc}")
         return 1
+    credentials = TwitterCredentials(**sorted_values, source="deposit")
 
     print("Verifying with X (/2/users/me)...")
     username = _whoami(credentials)
