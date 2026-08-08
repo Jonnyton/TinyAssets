@@ -1746,9 +1746,16 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     raw = resolved  # resolved may be the same dict, or a merged copy
 
     nid = (raw.get("node_id") or "").strip()
-    display = (raw.get("display_name") or "").strip()
-    if not nid or not display:
-        return "node spec missing node_id or display_name"
+    # `display_name` is a human label, so an author who did not write one gets
+    # the node id rather than a rejection. Requiring it was costly out of all
+    # proportion: the node was dropped, which then produced "Branch must have at
+    # least one node" and "Entry point 'draft' is not a defined node" — three
+    # errors, none naming the actual problem, for a spec whose only fault was a
+    # missing caption. Observed 2026-08-08 while checking that build failures
+    # give the author something actionable.
+    display = (raw.get("display_name") or "").strip() or nid
+    if not nid:
+        return "node spec missing node_id"
 
     source_code = raw.get("source_code") or ""
     prompt_template = raw.get("prompt_template") or ""

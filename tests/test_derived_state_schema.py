@@ -151,3 +151,44 @@ def test_read_run_is_an_allowed_branch_action():
     from tinyassets.universe_agent_actions import BRANCH_ACTIONS
 
     assert "read_run" in BRANCH_ACTIONS
+
+
+def test_a_node_without_a_caption_is_still_a_node(tmp_path, monkeypatch):
+    """Omitting `display_name` must not delete the node.
+
+    It was required, so a spec missing that one human label had its node
+    dropped and came back with three errors — "missing node_id or
+    display_name", "Branch must have at least one node", and "Entry point is
+    not a defined node" — none of which named the real fault.
+    """
+    from tinyassets.api.branches import _apply_node_spec
+
+    class _Branch:
+        def __init__(self):
+            self.node_defs = []
+            self.graph_nodes = []
+
+    branch = _Branch()
+    err = _apply_node_spec(
+        branch,
+        {
+            "node_id": "draft",
+            "input_keys": ["brief"],
+            "output_keys": ["draft_text"],
+            "prompt_template": "Write from {brief}",
+        },
+    )
+    assert err == "", f"a captionless node was rejected: {err}"
+    assert branch.node_defs, "the node was dropped instead of defaulted"
+    assert branch.node_defs[0].display_name == "draft", "caption defaults to the id"
+
+
+def test_a_node_without_an_id_is_still_refused():
+    """The id is identity, not a caption — that one must stay required."""
+    from tinyassets.api.branches import _apply_node_spec
+
+    class _Branch:
+        node_defs: list = []
+        graph_nodes: list = []
+
+    assert "node_id" in _apply_node_spec(_Branch(), {"display_name": "Draft"})
