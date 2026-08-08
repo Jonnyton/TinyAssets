@@ -131,17 +131,26 @@ def _destination(binding: SlackBinding, event: Mapping[str, Any]) -> ReplyDestin
 HISTORY_LIMIT = 15
 
 
-def _default_load_history(
-    event: Mapping[str, Any], binding: SlackBinding, *, limit: int = HISTORY_LIMIT
+def load_thread_history(
+    *,
+    universe_dir: "Path",
+    connection_id: str,
+    channel: str,
+    thread_ts: str = "",
+    exclude_ts: str = "",
+    exclude_text: str = "",
+    limit: int = HISTORY_LIMIT,
 ) -> list[dict[str, str]]:
-    """Load the recent thread/DM as ``[{"speaker","text"}]`` for turn memory.
+    """Load a conversation as ``[{"speaker","text"}]`` for turn memory.
 
-    Reads the conversation this event belongs to (a thread via
+    Shared by both Slack paths (in-process ``build_handlers`` and the live
+    daemon ``app_ingress`` forward). Reads the thread via
     ``conversations.replies`` when threaded, else the channel/DM via
-    ``conversations.history``) with the connection's bot token, and labels each
-    message founder-vs-universe (a bot message carries ``bot_id``). The CURRENT
-    message is excluded — it is already the turn's prompt. Read-only; never
-    raises to the caller (returns [] on any trouble) since memory is a bonus.
+    ``conversations.history``, with the connection's bot token, and labels each
+    message founder-vs-universe (a bot message carries ``bot_id``/``app_id``).
+    The CURRENT message is excluded (by ts, or failing that by matching text) —
+    it is already the turn's prompt. Read-only; never raises (returns [] on any
+    trouble) because memory is a bonus, never a blocker.
     """
     import json
     import urllib.parse
@@ -149,14 +158,13 @@ def _default_load_history(
 
     from tinyassets.credential_vault import resolve_slack_token
 
-    channel = str(event.get("channel") or "").strip()
+    channel = (channel or "").strip()
     if not channel:
         return []
-    token = resolve_slack_token(binding.universe_dir, binding.connection_id)
+    token = resolve_slack_token(universe_dir, connection_id)
     if not token:
         return []
-    thread_ts = str(event.get("thread_ts") or "").strip()
-    current_ts = str(event.get("ts") or "").strip()
+    thread_ts = (thread_ts or "").strip()
     if thread_ts:
         method, params = "conversations.replies", {
             "channel": channel, "ts": thread_ts, "limit": limit + 1,
@@ -180,18 +188,38 @@ def _default_load_history(
         return []
     # conversations.history returns newest-first; replies returns oldest-first.
     ordered = raw if thread_ts else list(reversed(raw))
+    exclude_ts = (exclude_ts or "").strip()
+    exclude_text = _MENTION.sub("", (exclude_text or "")).strip()
     out: list[dict[str, str]] = []
     for m in ordered:
         if not isinstance(m, dict):
             continue
-        if current_ts and str(m.get("ts") or "") == current_ts:
+        if exclude_ts and str(m.get("ts") or "") == exclude_ts:
             continue  # the message being answered is the prompt, not memory
         text = _MENTION.sub("", str(m.get("text") or "")).strip()
         if not text:
             continue
         speaker = "universe" if (m.get("bot_id") or m.get("app_id")) else "founder"
         out.append({"speaker": speaker, "text": text})
+    # Fallback de-dup: if the current message has no ts to match on, drop the
+    # newest identical-text founder line so the prompt is not shown twice.
+    if not exclude_ts and exclude_text and out and out[-1]["text"] == exclude_text:
+        out.pop()
     return out[-limit:]
+
+
+def _default_load_history(
+    event: Mapping[str, Any], binding: SlackBinding, *, limit: int = HISTORY_LIMIT
+) -> list[dict[str, str]]:
+    """In-process path: pull the fields off the event + binding and load."""
+    return load_thread_history(
+        universe_dir=binding.universe_dir,
+        connection_id=binding.connection_id,
+        channel=str(event.get("channel") or ""),
+        thread_ts=str(event.get("thread_ts") or ""),
+        exclude_ts=str(event.get("ts") or ""),
+        limit=limit,
+    )
 
 
 def build_handlers(

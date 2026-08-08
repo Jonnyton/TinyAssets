@@ -186,11 +186,34 @@ def deliver_app_event(
     _os.environ["TINYASSETS_AGENT_CHANNEL_ID"] = channel_id or ""
     _os.environ["TINYASSETS_AGENT_THREAD_TS"] = thread_ts or ""
 
+    # Conversation memory (live path). The turn is stateless, so without the
+    # recent thread a follow-up like "try again" has nothing to act on (live
+    # 2026-08-08). This is the DAEMON-side load — the ingress forward is what
+    # prod actually runs, not the in-process build_handlers path. Best-effort:
+    # the bot token is server-side here, and a fetch failure just means no
+    # memory this turn, never a lost answer. The current message is excluded by
+    # text (the ingress payload carries no message ts).
+    history: list = []
+    try:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.effectors.slack_agent_turn import load_thread_history
+
+        history = load_thread_history(
+            universe_dir=_universe_dir(routed.universe_id),
+            connection_id=DEFAULT_SLACK_CONNECTION,
+            channel=channel_id,
+            thread_ts=thread_ts,
+            exclude_text=prompt,
+        )
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        logger.warning("app ingress: history load failed, proceeding blind")
+
     reply = converse(
         routed.universe_id,
         prompt,
         actor_id=_actor_id(workspace_id, external_sender_id),
         founder_grant=grant,
+        conversation_history=history,
     )
     if not isinstance(reply, str) or not reply.strip():
         raise ValueError("the universe returned an empty reply")

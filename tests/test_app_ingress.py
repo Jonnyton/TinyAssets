@@ -86,13 +86,15 @@ def _bind(base, universe_id: str, agent_binding_id: str, channel_id: str = "") -
 def _deliver(**overrides):
     calls: dict = {"converse": [], "post": []}
 
-    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None):
+    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None,
+                  conversation_history=None):
         calls["converse"].append(
             {
                 "universe_id": universe_id,
                 "prompt": prompt,
                 "actor_id": actor_id,
                 "founder_grant": founder_grant,
+                "conversation_history": conversation_history,
             }
         )
         return "the universe answers"
@@ -146,7 +148,8 @@ def test_the_founder_hears_something_before_the_turn(base):
 
     order: list = []
 
-    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None):
+    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None,
+                  conversation_history=None):
         order.append("converse")
         return "the universe answers"
 
