@@ -393,6 +393,31 @@ def test_dispatcher_falls_back_to_handoff_assembly(base):
     assert evidence["would_post"]["text"] == "shipped the slack agent"
 
 
+def test_package_wrapper_preserves_handoffs_to_the_dispatch(base):
+    """The package-level run_effects_for_branch rebuilds each node as a
+    SimpleNamespace before dispatch; it MUST carry handoffs or every real
+    post assembles nothing (found live 2026-08-08, run f8009a189b38 — the
+    wrapper is the path production actually takes, not github_pr's directly)."""
+    from tinyassets.effectors import run_effects_for_branch
+    from tinyassets.storage.effector_consents import grant_consent
+
+    grant_consent(base / "u-a", sink="twitter_post", destination="@myhandle",
+                  granted_by="user_1")
+
+    class _Branch:
+        node_defs = [_Node([_DECLARATION])]
+
+    results = run_effects_for_branch(
+        branch=_Branch(),
+        run_state={"post_text": "shipped the slack agent"},
+        base_path=base / "u-a",
+        run_id="r_wrapper",
+    )
+    evidence = results["publish"]["twitter_post"]
+    assert evidence.get("packet_assembled_from_handoff") is True
+    assert evidence.get("reason") == "missing_credentials"
+
+
 # -- label-free classification ------------------------------------------------
 
 _KEY = "K" * 25

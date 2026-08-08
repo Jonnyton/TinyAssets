@@ -79,6 +79,12 @@ def _branch_without_github_merge(branch):
                 node_id=getattr(node, "node_id", ""),
                 output_keys=list(getattr(node, "output_keys", None) or []),
                 effects=kept,
+                # Carry handoffs: the twitter_post dispatch assembles its
+                # write packet from the node's declaration, and this
+                # SimpleNamespace view is what actually reaches it. Dropping
+                # it made every real post fall back to no_matching_packet
+                # (found live 2026-08-08, run f8009a189b38).
+                handoffs=list(getattr(node, "handoffs", None) or []),
             )
         )
     return SimpleNamespace(node_defs=filtered_nodes)
