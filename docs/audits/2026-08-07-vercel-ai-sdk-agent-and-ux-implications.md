@@ -6,6 +6,21 @@ ai-sdk-core/tools-and-tool-calling, ai-sdk-ui/chatbot-tool-usage,
 ai-sdk-ui/streaming-data. Fetched 2026-08-07.
 **Initial provider:** claude-code. **Requires opposite-provider review:** Codex.
 
+## Correction (2026-08-08): the foundational gap this review missed
+
+This audit mapped the SDK's *features* (loop control, typed errors, tool-state
+UX, approval states, workflow patterns) and missed its *substrate*: an SDK agent
+runs over a **`messages` array that accumulates across the loop** — conversation
+state IS the model; `generateText`/`streamText`/`ToolLoopAgent` are built around
+it. TinyAssets' universe turn is **stateless by construction** (fresh `claude -p`,
+persona system prompt + current message only), which is a first-order divergence
+from the exact thing being compared — and it was not written down. Live on
+2026-08-08 it bit hard: a costly post 402'd, the founder said "try again", and
+the turn had no memory of what to retry (the only cross-turn carrier is the
+consumed-on-use pending-approval band-aid). See module 0 below and memory
+[[agent-needs-cross-turn-memory]]. Process lesson: map the substrate (state,
+memory) BEFORE the features bolted onto it.
+
 ## Executive judgment
 
 The SDK is the same problem we are solving, one layer down: a provider-agnostic
@@ -20,6 +35,27 @@ entire session reading MCP logs to know what the agent did, and the founder has
 no equivalent. For a phone-first product that is the product.
 
 ## Module-by-module
+
+### 0. The agent runs over a CONVERSATION — memory is the substrate (added 2026-08-08)
+
+Every SDK entry point (`generateText`, `streamText`, `ToolLoopAgent`) takes a
+`messages` array and appends to it every step: user turn, assistant turn, tool
+calls, tool results all accumulate, and the next model call sees the whole
+history. The loop is stateful *by construction* — memory of the conversation is
+not a feature, it is the thing the agent runs on.
+
+**TinyAssets:** the universe turn is stateless. Each `converse`/Slack-agent turn
+shells to a fresh `claude -p` with the persona system prompt + the current
+message only; prior turns are invisible. The consent-across-turns band-aid
+(`action_approvals` pending record injected into the prompt) is the ONLY bridge,
+and it is deleted the moment it is acted on — so a failed costly run leaves
+nothing to retry (live 2026-08-08).
+
+**Adopt — this is foundational, above the visibility gap.** Feed bounded recent
+conversation history into the turn (both the Slack-agent and `converse` paths),
+so the agent actually remembers what was said. Consent stays a separate gate.
+Detail + fix direction: memory [[agent-needs-cross-turn-memory]].
+
 
 ### 1. The agent loop — `ToolLoopAgent`, `stopWhen`
 
@@ -165,6 +201,10 @@ when a tool's contract matters.
 
 ## What to do, in order
 
+0. **Give the turn conversation memory** (added 2026-08-08 — the foundational
+   miss). Feed bounded recent history into the universe turn, both paths. Without
+   it there is no agent, only a series of amnesiac one-shots; it is the cause of
+   the "try again" failure and the reason the consent band-aid had to exist.
 1. **Stream progress to Slack.** One message posted immediately, updated as
    steps complete. Biggest UX win available and it needs no new authority model.
 2. **`done`-tool completion signal.** Replaces the prompt hack; makes "did it
