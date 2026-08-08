@@ -335,6 +335,12 @@ def _run_with_declared_operations(monkeypatch, operations):
         "tinyassets.storage.provider_work_authority."
         "SQLiteProviderWorkAuthorityStore", _Store,
     )
+    # Consent is a separate gate and fires FIRST. These tests are about the
+    # capability derivation, so grant it and let them get that far.
+    monkeypatch.setattr(
+        "tinyassets.storage.action_approvals.ActionApprovalStore."
+        "consume_if_granted", lambda self, **kwargs: True,
+    )
     seen = {}
     monkeypatch.setattr(
         "tinyassets.universe_server.run_graph",
@@ -368,3 +374,31 @@ def test_an_automation_cannot_borrow_another_kind_of_authority(monkeypatch):
 def test_no_declared_binding_confers_nothing(monkeypatch):
     caps = _run_with_declared_operations(monkeypatch, None)
     assert caps == []
+
+
+def test_a_costly_action_needs_consent_before_authority_matters(monkeypatch):
+    """"Are you allowed" and "are you sure" are different questions.
+
+    Running a branch spends the founder's own compute and can open a pull
+    request. Nothing asked before this existed.
+    """
+    called = []
+    monkeypatch.setattr(
+        "tinyassets.universe_server.run_graph",
+        lambda **k: called.append(k) or "{}",
+    )
+    token = mint_turn_token(universe_id="u-a", subject_id="user_1")
+    with pytest.raises(AgentActionError, match="go-ahead"):
+        execute_action(token=token, surface="branch", action="run",
+                       payload={"branch_def_id": "abc"})
+    assert called == [], "it ran without asking"
+
+
+def test_consent_is_keyed_to_the_thing_being_approved(monkeypatch):
+    """Yes to one branch must not be yes to a different one."""
+    from tinyassets.universe_agent_actions import _approval_key
+
+    safe = _approval_key("branch", "run", {"branch_def_id": "safe123"})
+    risky = _approval_key("branch", "run", {"branch_def_id": "repo999"})
+    assert safe != risky
+    assert "safe123" in safe
