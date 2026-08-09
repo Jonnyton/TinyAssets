@@ -282,20 +282,23 @@ def execute_action(
     # cannot take at all should be refused for that reason, not queued for a
     # consent that would never make it legal.
     if (kind, normalized) in _ACTIONS_REQUIRING_APPROVAL:
-        from pathlib import Path
-
         from tinyassets import autonomy_policy
 
         base = _base_path_for_scopes()
         # LEARNED AUTONOMY. Consent is not a fixed list — it is a per-universe
         # policy keyed by the action's CLASS (its surface + its real-world
         # effects). A TRUSTED class runs autonomously (the proactive default for
-        # internal work + self-patching); an ASK class still needs a fresh yes.
-        # Effects that cannot be determined never auto-trust — fail safe (ask).
+        # a run on the universe's OWN machine — self-patch draft PRs, internal
+        # work); an ASK class still needs a fresh yes. FAIL SAFE: effects that
+        # cannot be determined, or any effect outside the SAFE allowlist, never
+        # auto-trust. The policy store is at the data root, outside the agent's
+        # writable workspace, so the agent cannot self-promote.
         effects = _effects_for_gate(kind, universe_id, payload, base)
         cls = autonomy_policy.action_class(kind, normalized, effects or [])
-        udir = Path(base) / universe_id
-        trusted = effects is not None and autonomy_policy.is_trusted(udir, cls)
+        trusted = (
+            effects is not None
+            and autonomy_policy.is_trusted(base, universe_id, cls)
+        )
         if not trusted:
             from tinyassets.storage.action_approvals import ActionApprovalStore
 
@@ -643,13 +646,11 @@ def _handle_trust(action, universe_id, payload):
     never quietly trust itself into an autonomous high-stakes action; after that
     one yes, the class is autonomous going forward.
     """
-    from pathlib import Path
-
     from tinyassets import autonomy_policy
 
-    udir = Path(_base_path_for_scopes()) / universe_id
+    base = _base_path_for_scopes()
     if action == "list":
-        return {"policy": autonomy_policy.list_policy(udir)}
+        return {"policy": autonomy_policy.list_policy(base, universe_id)}
     fields = payload or {}
     cls = str(fields.get("action_class") or "").strip()
     decision = str(fields.get("decision") or "").strip().lower()
@@ -659,7 +660,8 @@ def _handle_trust(action, universe_id, payload):
         )
     promoting = (
         decision == autonomy_policy.DECISION_TRUST
-        and autonomy_policy.decision_for(udir, cls) != autonomy_policy.DECISION_TRUST
+        and autonomy_policy.decision_for(base, universe_id, cls)
+        != autonomy_policy.DECISION_TRUST
     )
     if promoting:
         from tinyassets.storage.action_approvals import ActionApprovalStore
@@ -677,7 +679,7 @@ def _handle_trust(action, universe_id, payload):
                 "this kind of action, wait for a yes, then grant it and retry — "
                 "after that this class is autonomous."
             )
-    autonomy_policy.set_trust(udir, cls, decision, learned_from="founder")
+    autonomy_policy.set_trust(base, universe_id, cls, decision, learned_from="founder")
     return {"action_class": cls, "decision": decision, "learned": True}
 
 
@@ -709,13 +711,21 @@ def _effects_for_gate(kind, universe_id, payload, base):
         from tinyassets.daemon_server import get_branch_definition
 
         brd = get_branch_definition(base, branch_def_id=bid)
-        nodes = brd.get("node_defs") or brd.get("node_defs_json") or []
+        nodes = brd.get("node_defs")
+        if nodes is None:
+            nodes = brd.get("node_defs_json")
         if isinstance(nodes, str):
             nodes = _json.loads(nodes)
+        # Fail closed: if the definition is missing or malformed (not a list of
+        # node dicts), we do NOT know the effects — return None so the caller
+        # asks rather than defaulting to "no effects" (which would trust it).
+        if not isinstance(nodes, list):
+            return None
         effects: list[str] = []
         for n in nodes:
-            if isinstance(n, dict):
-                effects.extend(str(e) for e in (n.get("effects") or []))
+            if not isinstance(n, dict):
+                return None
+            effects.extend(str(e) for e in (n.get("effects") or []))
         return effects
     except Exception:  # noqa: BLE001 - undetermined effects → caller asks (safe)
         return None
