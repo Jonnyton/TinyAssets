@@ -267,45 +267,73 @@ def execute_action(
     elif kind == "posts":
         if normalized not in POSTS_ACTIONS:
             raise AgentActionError(f"unsupported posts action: {normalized}")
+    elif kind == "trust":
+        if normalized not in {"set", "list"}:
+            raise AgentActionError(f"unsupported trust action: {normalized}")
     else:
         raise AgentActionError(f"unsupported surface: {kind}")
+    # Learning surface: record/read what the founder trusts me to do without
+    # asking. Handled before the consent gate — teaching trust is not itself one
+    # of the gated ACTIONS, but PROMOTING a currently-ask class to trusted needs
+    # the founder's yes once (inside _handle_trust) so I can never self-trust.
+    if kind == "trust":
+        return _handle_trust(normalized, universe_id, payload)
     # "Are you sure" — checked AFTER authority, because an action the founder
     # cannot take at all should be refused for that reason, not queued for a
     # consent that would never make it legal.
     if (kind, normalized) in _ACTIONS_REQUIRING_APPROVAL:
-        from tinyassets.storage.action_approvals import ActionApprovalStore
+        from pathlib import Path
 
-        approvals = ActionApprovalStore(_base_path_for_scopes())
-        key = _approval_key(kind, normalized, payload)
-        if not approvals.consume_if_granted(universe_id=universe_id, action_key=key):
-            # The detail is what a LATER turn reads back to understand what it
-            # asked: "scheduled_work.run_now" alone told the next turn nothing,
-            # so a founder's "yes" arrived with no referent. Name the target.
-            target = str(
-                payload.get("work_id")
-                or payload.get("branch_def_id")
-                or payload.get("name")
-                or payload.get("destination")
-                or payload.get("workspace_id")
-                or ""
-            ).strip()
-            # Carry the INPUTS too, not just what was asked. A turn cannot see
-            # the message that supplied them, so a founder who gave a brief and
-            # then said "yes" was asked for the brief a second time — the run
-            # blocked on a value they had already provided. Live 2026-08-08.
-            planned = str(payload.get("inputs_json") or "").strip()
-            detail = f"{kind}.{normalized} on {target}" if target else f"{kind}.{normalized}"
-            if planned:
-                detail = f"{detail} with inputs {planned}"
-            approvals.request(
-                universe_id=universe_id, action_key=key, detail=detail,
-            )
-            raise AgentActionError(
-                f"needs my founder's go-ahead first ({key}). This spends their "
-                "own compute and can change things outside TinyAssets, so ask "
-                "them plainly what it will do and wait for a yes — then grant "
-                "the approval and retry."
-            )
+        from tinyassets import autonomy_policy
+
+        base = _base_path_for_scopes()
+        # LEARNED AUTONOMY. Consent is not a fixed list — it is a per-universe
+        # policy keyed by the action's CLASS (its surface + its real-world
+        # effects). A TRUSTED class runs autonomously (the proactive default for
+        # internal work + self-patching); an ASK class still needs a fresh yes.
+        # Effects that cannot be determined never auto-trust — fail safe (ask).
+        effects = _effects_for_gate(kind, universe_id, payload, base)
+        cls = autonomy_policy.action_class(kind, normalized, effects or [])
+        udir = Path(base) / universe_id
+        trusted = effects is not None and autonomy_policy.is_trusted(udir, cls)
+        if not trusted:
+            from tinyassets.storage.action_approvals import ActionApprovalStore
+
+            approvals = ActionApprovalStore(base)
+            key = _approval_key(kind, normalized, payload)
+            if not approvals.consume_if_granted(
+                universe_id=universe_id, action_key=key
+            ):
+                # The detail is what a LATER turn reads back to understand what
+                # it asked: name the target and carry the inputs so a founder's
+                # "yes" is not asked for a value they already gave (live
+                # 2026-08-08).
+                target = str(
+                    payload.get("work_id")
+                    or payload.get("branch_def_id")
+                    or payload.get("name")
+                    or payload.get("destination")
+                    or payload.get("workspace_id")
+                    or ""
+                ).strip()
+                planned = str(payload.get("inputs_json") or "").strip()
+                detail = (
+                    f"{kind}.{normalized} on {target}"
+                    if target else f"{kind}.{normalized}"
+                )
+                if planned:
+                    detail = f"{detail} with inputs {planned}"
+                approvals.request(
+                    universe_id=universe_id, action_key=key, detail=detail,
+                )
+                raise AgentActionError(
+                    f"needs my founder's go-ahead first ({key}; class "
+                    f"'{cls}'). This one is ask-first — tell them plainly what it "
+                    "will do and wait for a yes, then grant the approval and "
+                    "retry. If they want me to stop asking for this KIND of "
+                    "action, I record it with surface='trust' so the class "
+                    "becomes autonomous going forward."
+                )
 
     return _execute(
         surface=kind,
@@ -604,6 +632,93 @@ def _base_path_for_scopes():
     from tinyassets.api.helpers import _base_path
 
     return _base_path()
+
+
+def _handle_trust(action, universe_id, payload):
+    """The LEARNED-trust surface: read the policy, or teach a trust rule.
+
+    ``list`` returns the effective policy. ``set`` records a rule. Demoting a
+    class to ASK is always allowed. PROMOTING a currently-ask class to TRUST
+    needs the founder's yes once (via the same approval gate) — so the agent can
+    never quietly trust itself into an autonomous high-stakes action; after that
+    one yes, the class is autonomous going forward.
+    """
+    from pathlib import Path
+
+    from tinyassets import autonomy_policy
+
+    udir = Path(_base_path_for_scopes()) / universe_id
+    if action == "list":
+        return {"policy": autonomy_policy.list_policy(udir)}
+    fields = payload or {}
+    cls = str(fields.get("action_class") or "").strip()
+    decision = str(fields.get("decision") or "").strip().lower()
+    if not cls or decision not in (autonomy_policy.DECISION_TRUST, autonomy_policy.DECISION_ASK):
+        raise AgentActionError(
+            "trust.set needs action_class and decision=trust|ask"
+        )
+    promoting = (
+        decision == autonomy_policy.DECISION_TRUST
+        and autonomy_policy.decision_for(udir, cls) != autonomy_policy.DECISION_TRUST
+    )
+    if promoting:
+        from tinyassets.storage.action_approvals import ActionApprovalStore
+
+        approvals = ActionApprovalStore(_base_path_for_scopes())
+        key = f"trust.promote:{re.sub(r'[^a-z0-9._-]', '_', cls.lower())}"
+        if not approvals.consume_if_granted(universe_id=universe_id, action_key=key):
+            approvals.request(
+                universe_id=universe_id, action_key=key,
+                detail=f"trust action-class '{cls}' so I stop asking for it",
+            )
+            raise AgentActionError(
+                f"trusting '{cls}' to run without asking needs my founder's yes "
+                f"once ({key}). Ask them plainly whether I should stop asking for "
+                "this kind of action, wait for a yes, then grant it and retry — "
+                "after that this class is autonomous."
+            )
+    autonomy_policy.set_trust(udir, cls, decision, learned_from="founder")
+    return {"action_class": cls, "decision": decision, "learned": True}
+
+
+def _effects_for_gate(kind, universe_id, payload, base):
+    """The real-world effect sinks the to-be-run branch declares, for autonomy
+    classing. Returns ``[]`` for actions with no branch (effector/chat — their
+    class is by name), a list of effect sinks for a branch/automation run, or
+    ``None`` when it cannot be determined — the caller treats None as "ask"
+    (fail safe: never auto-trust a run whose effects we could not read)."""
+    kind = (kind or "").strip().lower()
+    if kind in ("effector", "chat_surface"):
+        return []
+    try:
+        import json as _json
+
+        fields = payload or {}
+        bid = str(fields.get("branch_def_id") or "").strip()
+        if not bid and kind == "scheduled_work":
+            from tinyassets.storage.scheduled_work import ScheduledWorkStore
+
+            wid = str(fields.get("work_id") or "").strip()
+            work = (
+                ScheduledWorkStore(base).get(universe_id=universe_id, work_id=wid)
+                if wid else None
+            )
+            bid = str(getattr(work, "branch_def_id", "") or "")
+        if not bid:
+            return None
+        from tinyassets.daemon_server import get_branch_definition
+
+        brd = get_branch_definition(base, branch_def_id=bid)
+        nodes = brd.get("node_defs") or brd.get("node_defs_json") or []
+        if isinstance(nodes, str):
+            nodes = _json.loads(nodes)
+        effects: list[str] = []
+        for n in nodes:
+            if isinstance(n, dict):
+                effects.extend(str(e) for e in (n.get("effects") or []))
+        return effects
+    except Exception:  # noqa: BLE001 - undetermined effects → caller asks (safe)
+        return None
 
 
 def _capabilities_for(

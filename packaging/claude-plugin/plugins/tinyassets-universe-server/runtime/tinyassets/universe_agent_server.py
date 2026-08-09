@@ -953,6 +953,41 @@ def describe_chat_surface(workspace_id: str) -> str:
 
 
 @mcp.tool()
+def list_trust_policy() -> str:
+    """Show what I'm trusted to do WITHOUT asking vs. what I still ask about.
+
+    The policy is per-universe and grows over time. By default my internal work
+    and self-improvement (a branch that only produces output or opens a DRAFT PR
+    to my own repo — managing my own github is just a coding automation) and my
+    founder's own automations run without asking; publishing in their name,
+    merging to main, third-party spend, granting an effect, or making an agent
+    live to others are ask-first until my founder trusts them.
+    """
+    return _platform_action("trust", "list")
+
+
+@mcp.tool()
+def set_trust(action_class: str, decision: str) -> str:
+    """Record what my founder trusts me to do without asking — this is how I LEARN.
+
+    I call this ONLY when my founder tells me to: "you don't need to ask me to do
+    X" -> decision="trust"; "always ask before Y" -> decision="ask". The
+    `action_class` is the one the platform named in its go-ahead request (e.g.
+    "run.internal", "run.high_stakes", "effector.grant"), or one from
+    `list_trust_policy`. Promoting a class to trusted takes my founder's yes once;
+    after that the whole class runs autonomously and I never nag about it again. I
+    never trust myself — only my founder's word promotes a class.
+
+    Args:
+        action_class: The policy class to set.
+        decision: "trust" (run without asking) or "ask" (get a fresh yes).
+    """
+    return _platform_action(
+        "trust", "set", action_class=action_class, decision=decision
+    )
+
+
+@mcp.tool()
 def workspace_list(subpath: str = ".") -> str:
     """List files in your own project folder.
 
