@@ -229,15 +229,44 @@ def deliver_app_event(
     # this turn) and BEFORE running (so the NEXT turn sees it).
     conversation_store.record_turn(conv_dir, session_id, "founder", prompt)
 
-    reply = converse(
-        routed.universe_id,
-        prompt,
-        actor_id=_actor_id(workspace_id, external_sender_id),
-        founder_grant=grant,
-        conversation_history=history,
-    )
+    # A persistent conversational agent must NEVER go dark. Before this, a turn
+    # that failed (commonly the universe's own writer model hitting its rate
+    # limit) raised into silence — the founder was left staring at "on it…" for
+    # minutes (live 2026-08-09, "I need to know if you're still there"). The
+    # daemon holds the bot token, so it can be honest instead: post a short
+    # notice and record it, keeping the conversation continuous. The founder's
+    # message is already stored, so the next turn still has it.
+    try:
+        reply = converse(
+            routed.universe_id,
+            prompt,
+            actor_id=_actor_id(workspace_id, external_sender_id),
+            founder_grant=grant,
+            conversation_history=history,
+        )
+    except Exception as exc:  # noqa: BLE001 - honesty beats silence
+        logger.warning("app ingress: turn failed, posting honest notice: %s", exc)
+        notice = _failure_notice(exc)
+        conversation_store.record_turn(conv_dir, session_id, "universe", notice)
+        receipt = _post(
+            routed=routed, channel_id=channel_id, body=notice,
+            thread_ts=thread_ts, transport=transport,
+        )
+        return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
     if not isinstance(reply, str) or not reply.strip():
-        raise ValueError("the universe returned an empty reply")
+        # Empty is still a fault — but a fault the founder should HEAR, not a
+        # silent success and not a raise into silence.
+        notice = (
+            "I came back empty on that one and didn't want to leave you hanging "
+            "— mind saying it again? (I've kept your message.)"
+        )
+        conversation_store.record_turn(conv_dir, session_id, "universe", notice)
+        receipt = _post(
+            routed=routed, channel_id=channel_id, body=notice,
+            thread_ts=thread_ts, transport=transport,
+        )
+        return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
     # Record the universe's reply so it is memory for the next turn.
     conversation_store.record_turn(conv_dir, session_id, "universe", reply)
@@ -250,6 +279,28 @@ def deliver_app_event(
         transport=transport,
     )
     return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
+
+def _failure_notice(exc: BaseException) -> str:
+    """An honest, first-person notice for a turn that could not produce a reply.
+
+    Capacity (the universe's own writer model at its rate limit) is the common
+    case and gets its own wording — the universe runs on its founder's LLM
+    subscription, so "at capacity" is the true story, not a platform fault.
+    """
+    name = type(exc).__name__
+    text = str(exc).lower()
+    if "exhausted" in name.lower() or "exhausted" in text or "rate limit" in text:
+        return (
+            "I'm at my model's capacity right now (my writer hit its rate "
+            "limit), so I couldn't finish that turn — I didn't want to leave you "
+            "on 'on it…' in silence. I've kept your message; give it a minute and "
+            "say the word (or 'try again') and I'll pick it right back up."
+        )
+    return (
+        "I hit an error finishing that turn and didn't want to go quiet on you. "
+        "Your message is saved — try me again in a moment."
+    )
 
 
 def _actor_id(workspace_id: str, external_sender_id: str) -> str:

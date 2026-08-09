@@ -387,12 +387,36 @@ def test_a_recognised_founder_is_not_logged_as_unmapped(base, monkeypatch, caplo
     assert not [r for r in caplog.records if "no founder mapping" in r.getMessage()]
 
 
-def test_an_empty_reply_is_a_fault_not_a_silent_success(base):
+def test_an_empty_reply_tells_the_founder_instead_of_going_silent(base):
+    # An empty reply is still a fault — but the founder must HEAR it, not be left
+    # on "on it…". (Was: raise into silence; a persistent agent never goes dark.)
     binding = _make_universe(base, "u-ingress-a")
     _bind(base, "u-ingress-a", binding)
 
-    with pytest.raises(ValueError):
-        _deliver(converse=lambda *a, **k: "   ")
+    result, calls = _deliver(converse=lambda *a, **k: "   ")
+    assert result.handled is True
+    # The last post is an honest notice, not silence and not a fake success.
+    last = calls["post"][-1]["body"].lower()
+    assert "empty" in last or "again" in last
+
+
+def test_a_failed_turn_posts_an_honest_notice_not_silence(base):
+    # The live 2026-08-09 outage: the writer model hit its rate limit, the turn
+    # raised, and the founder got only "on it…" for minutes. Now the daemon says
+    # so honestly (it holds the token) and stays handled.
+    binding = _make_universe(base, "u-ingress-a")
+    _bind(base, "u-ingress-a", binding)
+
+    def _boom(*a, **k):
+        from tinyassets.exceptions import AllProvidersExhaustedError
+
+        raise AllProvidersExhaustedError("All providers exhausted for role=writer")
+
+    result, calls = _deliver(converse=_boom)
+    assert result.handled is True
+    body = calls["post"][-1]["body"].lower()
+    # Names the real cause (capacity / rate limit) rather than vanishing.
+    assert "capacity" in body or "rate limit" in body
 
 
 def test_memory_persists_across_turns(base):
