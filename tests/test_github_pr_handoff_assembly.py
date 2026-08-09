@@ -85,6 +85,18 @@ def test_github_assembly_needs_a_declaration_content_and_a_path():
     assert packet_from_handoffs(_GHNode([nopath]), {"changelog_content": "x"}) is None
 
 
+def test_ambiguous_multiple_github_handoffs_are_refused():
+    # Codex 2026-08-09: two github_pull_request declarations must NOT collapse to
+    # the first — a wrong-repo write is worse than no write. Refuse (None).
+    from tinyassets.effectors.github_pr import packet_from_handoffs
+
+    second = dict(_GH_DECLARATION, destination="someone/else")
+    got = packet_from_handoffs(
+        _GHNode([_GH_DECLARATION, second]), {"changelog_content": "x"}
+    )
+    assert got is None
+
+
 def test_draft_defaults_true_when_params_omit_it():
     from tinyassets.effectors.github_pr import packet_from_handoffs
 

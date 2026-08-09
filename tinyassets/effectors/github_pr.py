@@ -2311,46 +2311,61 @@ def packet_from_handoffs(
     text the node wrote. Returns None when nothing is declared, the declared
     output field holds no text, or no file path is named — the caller keeps its
     no-packet refusal for that case.
+
+    REFUSES ambiguity (Codex 2026-08-09): if a node declares more than one
+    github_pull_request handoff, this returns None rather than guessing which
+    repo/content to route — a wrong-repo write is worse than no write.
     """
-    for declared in getattr(node, "handoffs", None) or []:
-        if not isinstance(declared, dict):
-            continue
-        action = str(declared.get("adapter_action") or "").strip()
-        adapter = str(declared.get("adapter") or "").strip()
-        if EXTERNAL_WRITE_SINK_GITHUB_PR not in (action, adapter):
-            continue
-        field = str(declared.get("output_field") or "").strip()
-        destination = str(declared.get("destination") or "").strip()
-        if not field or not destination:
-            continue
-        content = run_state.get(field)
-        if not isinstance(content, str) or not content.strip():
-            continue
-        params = declared.get("params")
-        params = params if isinstance(params, dict) else {}
-        file_path = str(params.get("file_path") or "").strip()
-        if not file_path:
-            continue
-        head_branch = str(params.get("head_branch") or "").strip()
-        base_branch = str(params.get("base_branch") or "main").strip() or "main"
-        title = (
-            str(params.get("title") or "").strip()
-            or f"Automated change: {file_path}"
+    matches = [
+        d
+        for d in (getattr(node, "handoffs", None) or [])
+        if isinstance(d, dict)
+        and EXTERNAL_WRITE_SINK_GITHUB_PR
+        in (
+            str(d.get("adapter_action") or "").strip(),
+            str(d.get("adapter") or "").strip(),
         )
-        payload: dict[str, Any] = {
-            "changes_json": {file_path: content},
-            "base_branch": base_branch,
-            "title": title,
-            "draft": bool(params.get("draft", True)),
-        }
-        if head_branch:
-            payload["head_branch"] = head_branch
-        return {
-            "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
-            "destination": destination,
-            "payload": payload,
-        }
-    return None
+    ]
+    if len(matches) != 1:
+        if len(matches) > 1:
+            logger.warning(
+                "node declares %d github_pull_request handoffs; refusing to "
+                "guess which repo/content to route — declare exactly one",
+                len(matches),
+            )
+        return None
+    declared = matches[0]
+    field = str(declared.get("output_field") or "").strip()
+    destination = str(declared.get("destination") or "").strip()
+    if not field or not destination:
+        return None
+    content = run_state.get(field)
+    if not isinstance(content, str) or not content.strip():
+        return None
+    params = declared.get("params")
+    params = params if isinstance(params, dict) else {}
+    file_path = str(params.get("file_path") or "").strip()
+    if not file_path:
+        return None
+    head_branch = str(params.get("head_branch") or "").strip()
+    base_branch = str(params.get("base_branch") or "main").strip() or "main"
+    title = (
+        str(params.get("title") or "").strip()
+        or f"Automated change: {file_path}"
+    )
+    payload: dict[str, Any] = {
+        "changes_json": {file_path: content},
+        "base_branch": base_branch,
+        "title": title,
+        "draft": bool(params.get("draft", True)),
+    }
+    if head_branch:
+        payload["head_branch"] = head_branch
+    return {
+        "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
+        "destination": destination,
+        "payload": payload,
+    }
 
 
 def run_effects_for_branch(
