@@ -53,7 +53,9 @@ def test_converse_founder_relays_intelligence_reply(monkeypatch):
     monkeypatch.setattr(
         ui,
         "converse",
-        lambda uid, msg, *, actor_id="", tier=None: f"I hear you: {msg}",
+        lambda uid, msg, *, actor_id="", tier=None, conversation_history=None: (
+            f"I hear you: {msg}"
+        ),
     )
 
     out = json.loads(us.converse(message="hello", graph_id="u-x"))

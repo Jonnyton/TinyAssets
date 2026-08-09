@@ -393,3 +393,35 @@ def test_an_empty_reply_is_a_fault_not_a_silent_success(base):
 
     with pytest.raises(ValueError):
         _deliver(converse=lambda *a, **k: "   ")
+
+
+def test_memory_persists_across_turns(base):
+    """The durable store makes a stateless turn remember the last one.
+
+    This is the whole point: u-tiny forgot everything between turns because the
+    turn is a fresh `claude -p`. Turn 1 is recorded; turn 2 gets turn 1 fed back
+    as PRIOR conversation, without the current message being double-shown.
+    """
+    binding = _make_universe(base, "u-ingress-mem")
+    _bind(base, "u-ingress-mem", binding)
+
+    # Turn 1: nothing to remember yet (cold store, no Slack token to backfill),
+    # but the turn is recorded for next time.
+    _, calls1 = _deliver(
+        text="<@U0BOT> my favorite topic is tide pools",
+        event_id="Ev-mem-1",
+    )
+    first_history = calls1["converse"][0]["conversation_history"] or []
+    assert all("tide pools" not in m.text for m in first_history)
+
+    # Turn 2: the durable store feeds turn 1 back in as prior context.
+    _, calls2 = _deliver(
+        text="<@U0BOT> what did I say my favorite topic was?",
+        event_id="Ev-mem-2",
+    )
+    history = calls2["converse"][0]["conversation_history"]
+    texts = [m.text for m in history]
+    assert "my favorite topic is tide pools" in texts  # founder's earlier turn
+    assert "the universe answers" in texts  # the universe's own earlier reply
+    # The current turn's own prompt is not shown inside its own memory block.
+    assert "what did I say my favorite topic was?" not in texts

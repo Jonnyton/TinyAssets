@@ -1497,14 +1497,33 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "auth_scope_required": True,
         })
 
+    from tinyassets import conversation_store
+
+    # Conversation memory for the chatbot/MCP surface. Before the durable store
+    # this path had NO memory at all (only the Slack ingress path got the
+    # 2026-08-08 hotfix), so a founder talking to their universe through Claude.ai
+    # / ChatGPT was amnesiac every turn. The session is scoped to BOTH the
+    # universe and the acting founder (`converse:<uid>:<actor>`), so even though
+    # this handle is founder-only today, one universe's history can never bleed
+    # across actors. Best-effort: the store never raises (single boundary), so
+    # these calls are not re-wrapped. History is PRIOR turns only; the current
+    # message stays clean for the turn + extract_learning.
+    from tinyassets.api.helpers import _universe_dir
     from tinyassets.universe_intelligence import converse as _converse_impl
+
+    actor = current_actor_id()
+    session_id = f"converse:{uid}:{actor}"
+    conv_dir = _universe_dir(uid)
+    history = conversation_store.load_recent(conv_dir, session_id)
+    conversation_store.record_turn(conv_dir, session_id, "founder", message)
 
     try:
         reply = _converse_impl(
             uid,
             message,
-            actor_id=current_actor_id(),
+            actor_id=actor,
             tier=turn.interlocutor.tier,
+            conversation_history=history,
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
@@ -1519,6 +1538,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
         return json.dumps({
             "error": f"Your universe couldn't be reached right now: {exc}",
         })
+    conversation_store.record_turn(conv_dir, session_id, "universe", reply)
     return json.dumps({"reply": reply, "universe_id": uid})
 
 
