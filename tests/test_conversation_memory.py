@@ -74,6 +74,51 @@ def test_blank_messages_are_skipped():
     assert block.count("real") == 1
 
 
+# -- continuity: WHO, WHEN, and one ongoing conversation ----------------------
+
+def test_messages_are_tagged_with_when_they_were_sent():
+    now = 1_000_000.0
+    block = format_history(
+        [
+            Msg(speaker="founder", text="earlier ask", ts=now - 3 * 3600),
+            Msg(speaker="founder", text="a moment ago", ts=now - 30),
+        ],
+        now=now,
+    )
+    # Relative "when" tags let the turn reason about how long ago things happened.
+    assert "3h ago" in block
+    assert "just now" in block
+
+
+def test_header_anchors_the_current_time():
+    block = format_history(
+        [Msg(speaker="founder", text="hi", ts=1_000_000.0)], now=1_000_000.0
+    )
+    assert "current time" in block.lower()
+
+
+def test_interlocutor_is_named_so_the_turn_knows_who():
+    block = format_history(
+        [Msg(speaker="founder", text="hi")], interlocutor="Jonathan"
+    )
+    assert "Jonathan" in block
+
+
+def test_it_reads_as_one_continuous_conversation():
+    block = format_history([Msg(speaker="founder", text="hi")])
+    low = block.lower()
+    assert "continuous" in low or "conversation so far" in low
+    # Security fence preserved.
+    assert "NOT consent" in block
+
+
+def test_no_timestamp_still_renders_without_a_when_tag():
+    # ts=None (e.g. an old backfill) must not crash or print a bogus time.
+    block = format_history([Msg(speaker="founder", text="untimed")], now=1_000_000.0)
+    assert "untimed" in block
+    assert "[]" not in block
+
+
 # -- the turn actually receives the memory ------------------------------------
 
 def test_converse_injects_history_into_the_turn_system_prompt(tmp_path, monkeypatch):
@@ -139,7 +184,7 @@ def test_converse_without_history_omits_the_memory_block(tmp_path, monkeypatch):
     monkeypatch.setattr(ui, "call_provider", fake_call_provider)
 
     ui.converse("u-test", "hi")
-    assert "RECENT CONVERSATION" not in captured["prompt"]
+    assert "CONVERSATION SO FAR" not in captured["prompt"]
     assert captured["prompt"] == "hi"
 
 

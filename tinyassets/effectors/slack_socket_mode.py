@@ -313,16 +313,28 @@ def is_conversational(event: Mapping[str, Any]) -> bool:
 
 
 def reply_thread_ts(event: Mapping[str, Any]) -> str:
-    """The thread to answer in, or "" for a top-level message.
+    """The thread to answer in, or "" for a top-level (flat) reply.
 
-    Prefers the thread the question was asked in; falls back to the message's
-    own ``ts`` so a reply opens a thread rather than flattening the channel.
+    A DM is a 1:1 stream and must read as ONE continuous conversation, not a new
+    thread per message — the founder called the per-message threading out as "not
+    the same conversation thread of replies... it should feel like one." So:
+
+    * If the message was posted INTO an existing thread, answer in that thread
+      (respect where the person is talking).
+    * A DM (Slack channel id starts with ``D``) answers FLAT — top-level — so the
+      exchange is one running conversation.
+    * In a shared channel, open a thread off the message so a reply does not
+      flatten everyone else's channel (the original behaviour, kept).
     """
-    for key in ("thread_ts", "ts"):
-        value = event.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    ts = str(event.get("ts") or "").strip()
+    thread_ts = str(event.get("thread_ts") or "").strip()
+    # Posted into an existing thread (a real parent, not this message itself).
+    if thread_ts and thread_ts != ts:
+        return thread_ts
+    channel = str(event.get("channel") or "")
+    if channel.startswith("D"):
+        return ""  # DM: flat, one continuous conversation
+    return ts  # shared channel: open a thread off this message
 
 
 class Opener(Protocol):

@@ -339,17 +339,32 @@ def _pending_approvals(universe_id: str) -> list:
         return []
 
 
-def _conversation_history_block(conversation_history: "list | None") -> str:
+def _coerce_ts(value: object) -> "float | None":
+    """A Slack/epoch ts (str or number) as float seconds, or None."""
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def _conversation_history_block(
+    conversation_history: "list | None", *, interlocutor: str = "your founder"
+) -> str:
     """Render loaded prior messages into the turn's memory block, or "".
 
-    Accepts a list of ``conversation_memory.Msg`` (or ``(speaker, text)``
-    pairs / ``{"speaker","text"}`` dicts, so callers do not have to import the
-    dataclass). Never raises — a memory-formatting failure must not lose the
-    turn; the turn simply proceeds without history rather than crashing.
+    Accepts a list of ``conversation_memory.Msg`` (or ``(speaker, text[, ts])``
+    tuples / ``{"speaker","text","ts"}`` dicts, so callers do not have to import
+    the dataclass). Stamps the block with the CURRENT time so the turn can reason
+    about how long ago each message was sent, and names ``interlocutor`` so it
+    knows who it is talking to. Never raises — a memory-formatting failure must
+    not lose the turn; it simply proceeds without history.
     """
     if not conversation_history:
         return ""
     try:
+        import time
+
         from tinyassets.conversation_memory import Msg, format_history
 
         rows: list[Msg] = []
@@ -357,11 +372,18 @@ def _conversation_history_block(conversation_history: "list | None") -> str:
             if isinstance(item, Msg):
                 rows.append(item)
             elif isinstance(item, dict):
-                rows.append(Msg(speaker=str(item.get("speaker") or ""),
-                                text=str(item.get("text") or "")))
-            elif isinstance(item, (tuple, list)) and len(item) == 2:
-                rows.append(Msg(speaker=str(item[0]), text=str(item[1])))
-        return format_history(rows)
+                rows.append(Msg(
+                    speaker=str(item.get("speaker") or ""),
+                    text=str(item.get("text") or ""),
+                    ts=_coerce_ts(item.get("ts")),
+                ))
+            elif isinstance(item, (tuple, list)) and len(item) >= 2:
+                rows.append(Msg(
+                    speaker=str(item[0]),
+                    text=str(item[1]),
+                    ts=_coerce_ts(item[2]) if len(item) >= 3 else None,
+                ))
+        return format_history(rows, now=time.time(), interlocutor=interlocutor)
     except Exception:  # noqa: BLE001 - memory must never break the reply
         logger.exception("conversation history formatting failed; proceeding")
         return ""

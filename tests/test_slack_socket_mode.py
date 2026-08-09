@@ -304,6 +304,30 @@ def test_reply_thread_is_empty_when_slack_sends_neither():
     assert reply_thread_ts({}) == ""
 
 
+def test_a_dm_replies_flat_so_it_is_one_conversation():
+    # A DM (channel id starts with "D") must NOT open a thread per message — the
+    # founder called that out as "not the same conversation... it should feel
+    # like one." A top-level DM message gets a flat, top-level reply.
+    event = {"ts": "1700000000.000100", "channel": "D0BMPBUBBSB"}
+    assert reply_thread_ts(event) == ""
+
+
+def test_a_dm_still_respects_an_existing_thread():
+    # If the person deliberately posted into a thread, answer there even in a DM.
+    event = {
+        "ts": "1700000000.000100",
+        "thread_ts": "1700000000.000050",
+        "channel": "D0BMPBUBBSB",
+    }
+    assert reply_thread_ts(event) == "1700000000.000050"
+
+
+def test_a_shared_channel_still_opens_a_thread():
+    # In a shared channel, threading avoids flattening everyone else's channel.
+    event = {"ts": "1700000000.000100", "channel": "C0SHARED01"}
+    assert reply_thread_ts(event) == "1700000000.000100"
+
+
 # --- the pump ----------------------------------------------------------------
 
 

@@ -193,7 +193,7 @@ def load_recent(
         conn = _connect(db_path)
         try:
             rows = conn.execute(
-                "SELECT speaker, content FROM conversation_turns "
+                "SELECT speaker, content, ts FROM conversation_turns "
                 "WHERE session_id = ? ORDER BY turn_no DESC LIMIT ?",
                 (session_id, max(1, int(limit))),
             ).fetchall()
@@ -202,8 +202,12 @@ def load_recent(
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
         logger.warning("conversation_store: load failed", exc_info=True)
         return []
-    # DESC from SQL → reverse to oldest-first for the formatter.
-    return [Msg(speaker=str(sp or ""), text=str(ct or "")) for sp, ct in reversed(rows)]
+    # DESC from SQL → reverse to oldest-first for the formatter. Carry ts so the
+    # turn knows WHEN each message was sent (SDK createdAt metadata).
+    return [
+        Msg(speaker=str(sp or ""), text=str(ct or ""), ts=(float(t) if t else None))
+        for sp, ct, t in reversed(rows)
+    ]
 
 
 def is_backfilled(universe_dir: "str | Path", session_id: str) -> bool:
@@ -253,14 +257,24 @@ def backfill_once(
     """
     if not session_id:
         return 0
+    when = time.time()
+
+    def _ts(m: dict) -> float:
+        # Preserve the message's real send time so backfilled history carries
+        # accurate "when"; fall back to now only if the loader gave none.
+        try:
+            v = float(m.get("ts") or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        return v if v > 0 else when
+
     rows = [
-        (str(m.get("speaker") or ""), str(m.get("text") or ""))
+        (str(m.get("speaker") or ""), str(m.get("text") or ""), _ts(m))
         for m in (messages or [])
         if isinstance(m, dict) and str(m.get("text") or "").strip()
     ]
     db_path = _db_path(universe_dir)
     lock = _lock_for(db_path)
-    when = time.time()
     for attempt in range(6):
         try:
             with lock:
@@ -283,12 +297,12 @@ def backfill_once(
                             (session_id,),
                         ).fetchone()[0]
                     )
-                    for i, (speaker, content) in enumerate(rows, start=1):
+                    for i, (speaker, content, ts_val) in enumerate(rows, start=1):
                         conn.execute(
                             "INSERT INTO conversation_turns "
                             "(session_id, turn_no, speaker, content, ts) "
                             "VALUES (?, ?, ?, ?, ?)",
-                            (session_id, base + i, speaker, content, when),
+                            (session_id, base + i, speaker, content, ts_val),
                         )
                     conn.commit()
                     return len(rows)

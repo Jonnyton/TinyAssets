@@ -200,7 +200,7 @@ def load_thread_history(
         if not text:
             continue
         speaker = "universe" if (m.get("bot_id") or m.get("app_id")) else "founder"
-        out.append({"speaker": speaker, "text": text})
+        out.append({"speaker": speaker, "text": text, "ts": str(m.get("ts") or "")})
     # Fallback de-dup: if the current message has no ts to match on, drop the
     # newest identical-text founder line so the prompt is not shown twice.
     if not exclude_ts and exclude_text and out and out[-1]["text"] == exclude_text:
