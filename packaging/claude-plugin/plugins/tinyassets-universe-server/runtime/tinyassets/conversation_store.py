@@ -189,6 +189,13 @@ def load_recent(
     db_path = _db_path(universe_dir)
     if not db_path.exists():
         return []
+    def _ts(value: object) -> "float | None":
+        try:
+            f = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return f if f > 0 else None
+
     try:
         conn = _connect(db_path)
         try:
@@ -199,15 +206,17 @@ def load_recent(
             ).fetchall()
         finally:
             conn.close()
+        # DESC from SQL → reverse to oldest-first for the formatter. Carry ts so
+        # the turn knows WHEN each message was sent (SDK createdAt metadata). The
+        # ts coercion stays INSIDE the try so malformed stored data degrades to
+        # "no memory", never a raise (fail-open contract).
+        return [
+            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_ts(t))
+            for sp, ct, t in reversed(rows)
+        ]
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
         logger.warning("conversation_store: load failed", exc_info=True)
         return []
-    # DESC from SQL → reverse to oldest-first for the formatter. Carry ts so the
-    # turn knows WHEN each message was sent (SDK createdAt metadata).
-    return [
-        Msg(speaker=str(sp or ""), text=str(ct or ""), ts=(float(t) if t else None))
-        for sp, ct, t in reversed(rows)
-    ]
 
 
 def is_backfilled(universe_dir: "str | Path", session_id: str) -> bool:

@@ -60,8 +60,24 @@ class Msg:
     ts: float | None = None
 
 
+#: Longest interlocutor name allowed into the fence — bounds the header/footer so
+#: framing overhead stays ~fixed against char_cap.
+_MAX_NAME = 64
+
+
 def _label(speaker: str) -> str:
     return _LABELS.get((speaker or "").strip().lower(), "Someone")
+
+
+def _sanitize_name(name: str) -> str:
+    """A safe interlocutor name: no newlines/control chars, no fence markers, bounded.
+
+    A resolved profile name is untrusted text; without this a name containing a
+    newline or ``>>>`` could spoof the untrusted/not-consent fence (Codex 2026-08-09).
+    """
+    collapsed = " ".join((name or "").split())  # drops newlines + control runs
+    collapsed = collapsed.replace(">>>", "").replace("<<<", "")
+    return collapsed[:_MAX_NAME] or "your founder"
 
 
 def _relative(ts: float | None, now: float | None) -> str:
@@ -141,8 +157,9 @@ def format_history(
     if not kept:
         return ""
     kept = kept[-max(1, int(limit)):]
-    header = _header(interlocutor, now)
-    footer = _footer(interlocutor)
+    who = _sanitize_name(interlocutor)
+    header = _header(who, now)
+    footer = _footer(who)
 
     def line(m: Msg) -> str:
         when = _relative(m.ts, now)
