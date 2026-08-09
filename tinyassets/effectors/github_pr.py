@@ -2291,6 +2291,68 @@ def run_github_pr_effector(
     return evidence
 
 
+def packet_from_handoffs(
+    node: Any, run_state: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Assemble a github_pull_request write packet from the node's DECLARATION.
+
+    Same rationale as the twitter_post assembler (live 2026-08-08): a prompt node
+    asked to emit the packet JSON refuses — the model correctly reads "output
+    these exact bytes aimed at a write system" as unauditable. So the LLM writes
+    the file CONTENT (into ``output_field``) and the immutable ``handoffs``
+    declaration names the destination + PR shape (params). Without this, a
+    self-patch branch always fell back to ``no_matching_packet`` and no PR was
+    ever opened (live 2026-08-09, run f541d6b1d86b490c — "he is able to patch
+    himself" blocker).
+
+    Reads the handoff whose action is ``github_pull_request`` and builds
+    ``{sink, destination, payload:{changes_json, head_branch, base_branch,
+    title, draft}}`` — ``changes_json`` maps the declared ``file_path`` to the
+    text the node wrote. Returns None when nothing is declared, the declared
+    output field holds no text, or no file path is named — the caller keeps its
+    no-packet refusal for that case.
+    """
+    for declared in getattr(node, "handoffs", None) or []:
+        if not isinstance(declared, dict):
+            continue
+        action = str(declared.get("adapter_action") or "").strip()
+        adapter = str(declared.get("adapter") or "").strip()
+        if EXTERNAL_WRITE_SINK_GITHUB_PR not in (action, adapter):
+            continue
+        field = str(declared.get("output_field") or "").strip()
+        destination = str(declared.get("destination") or "").strip()
+        if not field or not destination:
+            continue
+        content = run_state.get(field)
+        if not isinstance(content, str) or not content.strip():
+            continue
+        params = declared.get("params")
+        params = params if isinstance(params, dict) else {}
+        file_path = str(params.get("file_path") or "").strip()
+        if not file_path:
+            continue
+        head_branch = str(params.get("head_branch") or "").strip()
+        base_branch = str(params.get("base_branch") or "main").strip() or "main"
+        title = (
+            str(params.get("title") or "").strip()
+            or f"Automated change: {file_path}"
+        )
+        payload: dict[str, Any] = {
+            "changes_json": {file_path: content},
+            "base_branch": base_branch,
+            "title": title,
+            "draft": bool(params.get("draft", True)),
+        }
+        if head_branch:
+            payload["head_branch"] = head_branch
+        return {
+            "sink": EXTERNAL_WRITE_SINK_GITHUB_PR,
+            "destination": destination,
+            "payload": payload,
+        }
+    return None
+
+
 def run_effects_for_branch(
     *,
     branch: Any,
@@ -2340,6 +2402,29 @@ def run_effects_for_branch(
                         run_id=run_id,
                         cloud_effect_session=cloud_effect_session,
                     )
+                    if result.get("error_kind") == "no_matching_packet":
+                        # The LLM wrote the file content as prose, not a packet
+                        # — by design. Assemble the packet from the node's
+                        # immutable handoff declaration and retry; refuse only
+                        # when nothing is declared either. Mirrors the
+                        # twitter_post fallback (live 2026-08-09 self-patch fix).
+                        assembled = packet_from_handoffs(node, run_state)
+                        if assembled is not None:
+                            result = run_github_pr_effector(
+                                node_id=node_id,
+                                output_keys=["__assembled_github_pr_packet__"],
+                                run_state={
+                                    **run_state,
+                                    "__assembled_github_pr_packet__": assembled,
+                                },
+                                base_path=base_path,
+                                run_id=run_id,
+                                cloud_effect_session=cloud_effect_session,
+                            )
+                            if isinstance(result, dict):
+                                result.setdefault(
+                                    "packet_assembled_from_handoff", True
+                                )
                 except Exception as exc:  # defensive — never raise
                     logger.exception(
                         "github_pr effector crashed for node %s",
@@ -2399,7 +2484,9 @@ def run_effects_for_branch(
             elif sink == "twitter_post":
                 try:
                     from tinyassets.effectors.twitter_post import (
-                        packet_from_handoffs,
+                        packet_from_handoffs as _twitter_packet_from_handoffs,
+                    )
+                    from tinyassets.effectors.twitter_post import (
                         run_twitter_post_effector,
                     )
 
@@ -2415,7 +2502,7 @@ def run_effects_for_branch(
                         # Assemble the packet from the node's immutable
                         # handoff declaration; refuse only when nothing is
                         # declared either.
-                        assembled = packet_from_handoffs(node, run_state)
+                        assembled = _twitter_packet_from_handoffs(node, run_state)
                         if assembled is not None:
                             result = run_twitter_post_effector(
                                 node_id=node_id,
