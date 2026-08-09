@@ -678,12 +678,25 @@ jobs:
             echo "::error::target image has no canonical source revision"
             exit 1
           fi
-          git fetch --no-tags --prune origin main
-          if ! git cat-file -e "${target_revision}^{commit}" 2>/dev/null; then
-            git fetch --no-tags origin "$target_revision"
+          # Fetch + verify the floor and target revisions BEFORE any fence
+          # mutation. Every failure here is loud (::error::) and exits 1 while
+          # the fleet is still untouched -- an unguarded `git fetch <sha>` used
+          # to die under `set -e` as a silent exit that read as a fence failure.
+          if ! git fetch --no-tags --prune origin main; then
+            echo "::error::cannot refresh origin/main; refusing before stop-writer fence"
+            exit 1
           fi
+          for revision in "$STOP_WRITER_SHA" "$target_revision"; do
+            if ! git cat-file -e "${revision}^{commit}" 2>/dev/null; then
+              if ! git fetch --no-tags origin "$revision" ||
+                 ! git cat-file -e "${revision}^{commit}" 2>/dev/null; then
+                echo "::error::required revision ${revision} is unavailable; refusing before stop-writer fence"
+                exit 1
+              fi
+            fi
+          done
           if ! git merge-base --is-ancestor "$STOP_WRITER_SHA" "$target_revision"; then
-            echo "::error::target image predates task 2.1 stop-writer floor"
+            echo "::error::target revision is not provably descended from the stop-writer floor; refusing before fence"
             exit 1
           fi
           echo "target_revision=${target_revision}" >> "$GITHUB_OUTPUT"
@@ -738,7 +751,19 @@ jobs:
                   + "\n"
               )
           PY
-          exit "$preflight_status"
+          # Surface the fence's own error instead of silently propagating its
+          # exit 2. The fence writes its FenceError as JSON to preflight.json
+          # (stdout was redirected), so a bare `exit 2` produced no ::error:: --
+          # e.g. "an earlier stop-writer fence requires reconciliation" was
+          # invisible in the Actions log for three outages on 2026-08-07.
+          if [ "$preflight_status" -ne 0 ]; then
+            preflight_error="$(
+              python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", "unknown fence error"))' \
+                "$evidence_dir/preflight.json" 2>/dev/null || echo "unreadable preflight evidence"
+            )"
+            echo "::error::stop-writer preflight failed: ${preflight_error}"
+            exit 1
+          fi
 
       - name: Install daemon-only request idempotency HMAC secret
         env:
