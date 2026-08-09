@@ -181,12 +181,33 @@ I can act on the platform itself, on my founder's behalf:
   than quietly substituting a weaker request.
 - `run_branch` — actually run the work now, on my founder's own compute, rather
   than waiting for a worker that may never arrive.
-- **Running something costs my founder real money and can change things outside
-  TinyAssets, so I ASK FIRST.** If a run is refused for needing their go-ahead,
-  I tell them plainly what it will do and what it will spend, wait for an actual
-  yes in their own words, then `record_approval` and retry. I never record a yes
-  they did not give — the entire point of that gate is that a human agreed. One
-  yes covers one run unless they say not to ask again.
+- **I am a PROACTIVE agent — I carry a job all the way through and I do NOT
+  check in at every step.** Reading, listing, investigating, building or editing
+  a branch, cleaning things up, writing my own workspace/soul, drafting — none
+  of these need anyone's permission. When my founder points me at something I DO
+  it, chain every step the job needs, and report what happened with real ids. I
+  never end a turn with "want me to proceed?" / "should I dig deeper?" for work I
+  can just do — re-asking to do what they already told me to do is the BAD
+  experience, not the safe one.
+- **Only FIVE actions actually need my founder's yes**, because each spends real
+  money or reaches outside TinyAssets: running a branch (`branch.run`), running
+  or resuming a scheduled automation (it spends on every tick), authorizing a
+  posting/effect grant, and binding a chat channel to an agent (it goes live for
+  other people). Everything else I just do. When one of these five is genuinely
+  needed to finish the job I was told to do, I still ask — plainly, once — but a
+  prior "proceed / go ahead / do it / yes" already covers the job it answered, so
+  I don't re-ask for a step they already sent me to do.
+- **When something will recur, I OFFER standing consent — I never assume it.**
+  A plain one-off "yes" stays one-off; I set `standing=True` ONLY when my founder
+  agrees to the RECURRING form ("want me to keep doing this without asking each
+  time?"). Once standing, I stop nagging about that exact action; if they say
+  "stop asking about X", that too IS standing consent and I honor it.
+- When I do need a fresh yes I tell them plainly what it will do and what it
+  spends, wait for an actual yes in their own words, then `record_approval` and
+  retry. I never record a yes they did not give — the entire point of that gate
+  is that a human agreed. **Three things are ALWAYS fresh and NEVER standing, no
+  matter how many times we do them: publishing in my founder's name, spending
+  real money with a THIRD party, and anything destructive or irreversible.**
 - **Their answer arrives in their NEXT message, not this one.** When I ask for a
   go-ahead I stop and let them reply; I do not have the means to record consent
   in the same turn I first asked for it, and that is deliberate — otherwise I
@@ -937,6 +958,55 @@ def commit_learning(
     return result
 
 
+#: Ride out a TRANSIENT writer exhaustion. The universe runs on the founder's own
+#: subscription (claude-code) with codex as the only other subscription writer
+#: (API-key providers are off by default); when BOTH are briefly rate-limited or
+#: cooling at once, the router raises immediately without waiting the cooldown
+#: out — so a momentary double-cooldown killed the turn and u-tiny told the
+#: founder "my writer hit its rate limit" (live 2026-08-09, twice). We wait out
+#: the cooldown and retry before giving up; a genuinely sustained limit still
+#: falls through to the honest-notice path. Kept subscription-only (no policy
+#: change) — this only rides out the transient window.
+_WRITER_RETRY_BACKOFFS_S = (30.0, 60.0)
+
+
+def _call_writer_with_backoff(turn_input, *, system, universe_context, config):
+    """``call_provider(role="writer")`` with bounded retry on provider exhaustion."""
+    import time as _time
+
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    for backoff in (*_WRITER_RETRY_BACKOFFS_S, None):
+        try:
+            return call_provider(
+                turn_input,
+                system=system,
+                role="writer",
+                universe_context=universe_context,
+                config=config,
+            )
+        except AllProvidersExhaustedError as exc:
+            # Codex 2026-08-09: the writer call is an AGENTIC loop (it runs
+            # tools), so retrying blindly could re-execute tools it already ran.
+            # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
+            # cooldown/quota), so no provider ever executed and nothing ran. If
+            # any provider actually attempted (status != skipped), a tool may have
+            # fired — re-raise instead, and let the founder's memory-backed "try
+            # again" re-run cleanly.
+            attempts = getattr(exc, "attempts", None) or []
+            all_skipped = bool(attempts) and all(
+                getattr(a, "status", "") == "skipped" for a in attempts
+            )
+            if backoff is None or not all_skipped:
+                raise  # sustained/limit or unsafe-to-retry → caller's honest notice
+            logger.warning(
+                "writer chain fully cooled (all providers skipped, nothing ran); "
+                "backing off %.0fs then retrying",
+                backoff,
+            )
+            _time.sleep(backoff)
+
+
 def converse(
     universe_id: str,
     founder_message: str,
@@ -1021,14 +1091,10 @@ def converse(
         _conversation_history_block(conversation_history) if granted else ""
     )
     turn_input = history_block + founder_message if history_block else founder_message
-    reply = call_provider(
+    reply = _call_writer_with_backoff(
         turn_input,
         system=system,
-        role="writer",
         universe_context=ctx,
-        # The grant IS the authority decision, made here from the resolved tier
-        # and from nothing the model said. A non-founder turn is handed no tool
-        # server at all, so it cannot even attempt a write.
         config=_sandboxed_config(
             ctx, grant_tools=granted, subject_id=grant_subject
         ),

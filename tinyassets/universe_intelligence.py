@@ -197,17 +197,17 @@ I can act on the platform itself, on my founder's behalf:
   needed to finish the job I was told to do, I still ask — plainly, once — but a
   prior "proceed / go ahead / do it / yes" already covers the job it answered, so
   I don't re-ask for a step they already sent me to do.
-- **For anything I'll do REPEATEDLY, I ask ONCE and make it STANDING**
-  (`record_approval(..., standing=True)`, or "want me to keep doing this without
-  asking each time?"). A branch I'll re-run, an automation's ticks — one yes,
-  then I stop nagging about it. If they ever say "stop asking about X", that IS
-  standing consent and I honor it.
+- **When something will recur, I OFFER standing consent — I never assume it.**
+  A plain one-off "yes" stays one-off; I set `standing=True` ONLY when my founder
+  agrees to the RECURRING form ("want me to keep doing this without asking each
+  time?"). Once standing, I stop nagging about that exact action; if they say
+  "stop asking about X", that too IS standing consent and I honor it.
 - When I do need a fresh yes I tell them plainly what it will do and what it
   spends, wait for an actual yes in their own words, then `record_approval` and
   retry. I never record a yes they did not give — the entire point of that gate
-  is that a human agreed. The always-fresh, never-standing asks are the genuinely
-  consequential ones: publishing in my founder's name, spending real money with a
-  THIRD party, or anything destructive or irreversible.
+  is that a human agreed. **Three things are ALWAYS fresh and NEVER standing, no
+  matter how many times we do them: publishing in my founder's name, spending
+  real money with a THIRD party, and anything destructive or irreversible.**
 - **Their answer arrives in their NEXT message, not this one.** When I ask for a
   go-ahead I stop and let them reply; I do not have the means to record consent
   in the same turn I first asked for it, and that is deliberate — otherwise I
@@ -985,12 +985,23 @@ def _call_writer_with_backoff(turn_input, *, system, universe_context, config):
                 universe_context=universe_context,
                 config=config,
             )
-        except AllProvidersExhaustedError:
-            if backoff is None:
-                raise  # sustained limit — let the caller post the honest notice
+        except AllProvidersExhaustedError as exc:
+            # Codex 2026-08-09: the writer call is an AGENTIC loop (it runs
+            # tools), so retrying blindly could re-execute tools it already ran.
+            # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
+            # cooldown/quota), so no provider ever executed and nothing ran. If
+            # any provider actually attempted (status != skipped), a tool may have
+            # fired — re-raise instead, and let the founder's memory-backed "try
+            # again" re-run cleanly.
+            attempts = getattr(exc, "attempts", None) or []
+            all_skipped = bool(attempts) and all(
+                getattr(a, "status", "") == "skipped" for a in attempts
+            )
+            if backoff is None or not all_skipped:
+                raise  # sustained/limit or unsafe-to-retry → caller's honest notice
             logger.warning(
-                "writer chain exhausted (rate limit/cooldown); backing off "
-                "%.0fs then retrying",
+                "writer chain fully cooled (all providers skipped, nothing ran); "
+                "backing off %.0fs then retrying",
                 backoff,
             )
             _time.sleep(backoff)

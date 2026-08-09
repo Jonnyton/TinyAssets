@@ -456,10 +456,22 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
 
 # -- writer rate-limit backoff (live 2026-08-09: u-tiny hit its writer limit) --
 
-def test_writer_backoff_retries_then_succeeds(monkeypatch):
-    """A TRANSIENT double-cooldown must not kill the turn — retry rides it out."""
-    import tinyassets.universe_intelligence as ui
+def _exhausted(*statuses):
+    """AllProvidersExhaustedError carrying attempts with the given statuses."""
+    from types import SimpleNamespace
+
     from tinyassets.exceptions import AllProvidersExhaustedError
+
+    return AllProvidersExhaustedError(
+        "chain drained",
+        attempts=[SimpleNamespace(status=s) for s in statuses],
+    )
+
+
+def test_writer_backoff_retries_when_all_providers_were_skipped(monkeypatch):
+    """A TRANSIENT double-cooldown (all providers SKIPPED, nothing ran) is the
+    provably-safe case to retry — it rides the cooldown out."""
+    import tinyassets.universe_intelligence as ui
 
     calls = {"n": 0}
 
@@ -467,7 +479,7 @@ def test_writer_backoff_retries_then_succeeds(monkeypatch):
               config=None):
         calls["n"] += 1
         if calls["n"] < 2:
-            raise AllProvidersExhaustedError("all providers cooling")
+            raise _exhausted("skipped", "skipped")
         return "recovered"
 
     monkeypatch.setattr(ui, "call_provider", flaky)
@@ -478,19 +490,47 @@ def test_writer_backoff_retries_then_succeeds(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_writer_backoff_gives_up_on_sustained_limit(monkeypatch):
-    """A SUSTAINED limit still surfaces (caller posts the honest notice)."""
+def test_writer_backoff_does_NOT_retry_if_a_provider_actually_ran(monkeypatch):
+    """Codex 2026-08-09: if a provider attempted (status != skipped) a tool may
+    have fired — retrying could duplicate it, so re-raise immediately."""
     import pytest
 
     import tinyassets.universe_intelligence as ui
     from tinyassets.exceptions import AllProvidersExhaustedError
 
+    calls = {"n": 0}
+
+    def ran_then_failed(turn_input, system="", *, role="writer",
+                        universe_context=None, config=None):
+        calls["n"] += 1
+        raise _exhausted("failed", "skipped")  # one provider executed
+
+    monkeypatch.setattr(ui, "call_provider", ran_then_failed)
+    monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
+    with pytest.raises(AllProvidersExhaustedError):
+        ui._call_writer_with_backoff("hi", system="s", universe_context=None,
+                                     config=None)
+    assert calls["n"] == 1  # no retry — exactly one attempt
+
+
+def test_writer_backoff_gives_up_on_sustained_cooldown(monkeypatch):
+    """All-skipped but never recovers → surfaces after the bounded retries so the
+    caller posts the honest notice."""
+    import pytest
+
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    calls = {"n": 0}
+
     def always(turn_input, system="", *, role="writer", universe_context=None,
                config=None):
-        raise AllProvidersExhaustedError("sustained rate limit")
+        calls["n"] += 1
+        raise _exhausted("skipped", "skipped")
 
     monkeypatch.setattr(ui, "call_provider", always)
     monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
     with pytest.raises(AllProvidersExhaustedError):
         ui._call_writer_with_backoff("hi", system="s", universe_context=None,
                                      config=None)
+    assert calls["n"] == 3  # 2 backoffs + final attempt, then give up
