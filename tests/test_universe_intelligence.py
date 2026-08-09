@@ -452,3 +452,45 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
 
     assert _fm(udir / "founder.md", "status") == "learned"
     assert "Alex" in (udir / "founder.md").read_text(encoding="utf-8")
+
+
+# -- writer rate-limit backoff (live 2026-08-09: u-tiny hit its writer limit) --
+
+def test_writer_backoff_retries_then_succeeds(monkeypatch):
+    """A TRANSIENT double-cooldown must not kill the turn — retry rides it out."""
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    calls = {"n": 0}
+
+    def flaky(turn_input, system="", *, role="writer", universe_context=None,
+              config=None):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise AllProvidersExhaustedError("all providers cooling")
+        return "recovered"
+
+    monkeypatch.setattr(ui, "call_provider", flaky)
+    monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
+    out = ui._call_writer_with_backoff("hi", system="s", universe_context=None,
+                                       config=None)
+    assert out == "recovered"
+    assert calls["n"] == 2
+
+
+def test_writer_backoff_gives_up_on_sustained_limit(monkeypatch):
+    """A SUSTAINED limit still surfaces (caller posts the honest notice)."""
+    import pytest
+
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    def always(turn_input, system="", *, role="writer", universe_context=None,
+               config=None):
+        raise AllProvidersExhaustedError("sustained rate limit")
+
+    monkeypatch.setattr(ui, "call_provider", always)
+    monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
+    with pytest.raises(AllProvidersExhaustedError):
+        ui._call_writer_with_backoff("hi", system="s", universe_context=None,
+                                     config=None)
