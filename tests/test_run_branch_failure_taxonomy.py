@@ -139,6 +139,15 @@ class TestRunBranchTaxonomyIntegration:
             patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
             patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
             patch("tinyassets.api.runs._ensure_runs_recovery"),
+            # Slice: _action_run_branch now binds the run's universe context to
+            # provider_call. These tests exercise error taxonomy only (branch
+            # execution is mocked), so neutralize the binding — requester-owned
+            # binding is covered by tests/test_requester_owned_provider_execution.py.
+            patch("tinyassets.api.runs._request_universe", return_value="b1"),
+            patch(
+                "tinyassets.api.runs._bind_run_provider_call",
+                side_effect=lambda provider_call, universe_id: provider_call,
+            ),
             patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
             patch("tinyassets.runs.execute_branch_async", side_effect=raise_exc),
         ):
@@ -300,6 +309,15 @@ class TestAsyncRunOutcomeEnrichment:
             patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
             patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
             patch("tinyassets.api.runs._ensure_runs_recovery"),
+            # Slice: _action_run_branch now binds the run's universe context to
+            # provider_call. These tests exercise error taxonomy only (branch
+            # execution is mocked), so neutralize the binding — requester-owned
+            # binding is covered by tests/test_requester_owned_provider_execution.py.
+            patch("tinyassets.api.runs._request_universe", return_value="b1"),
+            patch(
+                "tinyassets.api.runs._bind_run_provider_call",
+                side_effect=lambda provider_call, universe_id: provider_call,
+            ),
             patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
             patch("tinyassets.runs.execute_branch_async", return_value=outcome),
         ):
@@ -531,6 +549,15 @@ class TestActionableByOnAsyncOutcomePath:
             patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
             patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
             patch("tinyassets.api.runs._ensure_runs_recovery"),
+            # Slice: _action_run_branch now binds the run's universe context to
+            # provider_call. These tests exercise error taxonomy only (branch
+            # execution is mocked), so neutralize the binding — requester-owned
+            # binding is covered by tests/test_requester_owned_provider_execution.py.
+            patch("tinyassets.api.runs._request_universe", return_value="b1"),
+            patch(
+                "tinyassets.api.runs._bind_run_provider_call",
+                side_effect=lambda provider_call, universe_id: provider_call,
+            ),
             patch("tinyassets.branches.BranchDefinition.validate", return_value=[]),
             patch("tinyassets.runs.execute_branch_async", return_value=outcome),
         ):

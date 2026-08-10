@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
+    ProviderAuthorityHeldError,
     ProviderError,
     ProviderTimeoutError,
     ProviderUnavailableError,
@@ -46,6 +47,11 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
 
 logger = logging.getLogger(__name__)
+
+_CONNECT_PROVIDER_MESSAGE = (
+    "Connect your provider before running this universe. TinyAssets will not "
+    "borrow platform credentials or start a metered trial."
+)
 
 
 def _provider_invocation_carrier(
@@ -82,6 +88,52 @@ def _resolve_universe_config(
         return runtime.universe_config
     except Exception:
         return None
+
+
+def _effective_universe_provider_ceiling(
+    universe_context: UniverseContext | None,
+    resolved_config: "UniverseConfig | None",
+    *,
+    carrier_armed: bool,
+) -> list[str] | None:
+    """Return the requester's provider ceiling, or legacy/platform ``None``.
+
+    A server-minted invocation carrier is already pinned to one provider and
+    remains subject to any explicit assignment allowlist. An unarmed explicit
+    universe context is requester work: legacy ``allowed_providers=None`` may
+    use only providers the universe itself selected, never the process-global
+    fallback chain. Missing/empty selection holds before provider access.
+    """
+    if carrier_armed or universe_context is None:
+        return (
+            resolved_config.allowed_providers
+            if resolved_config is not None
+            else None
+        )
+    # An unarmed explicit context is requester authority. Its config must be
+    # carried on the request; ``resolved_config`` may be the ambient runtime
+    # fallback and therefore cannot establish requester authority here.
+    requester_config = universe_context.config
+    if requester_config is None:
+        raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    if requester_config.allowed_providers is not None:
+        ceiling = [
+            str(provider).strip()
+            for provider in requester_config.allowed_providers
+            if str(provider).strip()
+        ]
+    else:
+        ceiling = list(dict.fromkeys(
+            provider
+            for provider in (
+                str(requester_config.preferred_writer or "").strip(),
+                str(requester_config.preferred_judge or "").strip(),
+            )
+            if provider
+        ))
+    if not ceiling:
+        raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    return ceiling
 
 
 def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
@@ -364,7 +416,11 @@ class ProviderRouter:
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
         # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = self._current_allowlist(resolved_config)
+        allowlist = _effective_universe_provider_ceiling(
+            universe_context,
+            resolved_config,
+            carrier_armed=invocation_carrier is not None,
+        )
         if allowlist is not None:
             filtered = self._apply_allowlist(chain, allowlist)
             if not filtered:
@@ -722,7 +778,11 @@ class ProviderRouter:
         # rather than attempt and leak. If everything filters out the
         # method falls through to the role-based ``call()`` below, which
         # applies the same allowlist and hard-fails.
-        allowlist = self._current_allowlist(resolved_config)
+        allowlist = _effective_universe_provider_ceiling(
+            universe_context,
+            resolved_config,
+            carrier_armed=False,
+        )
         if allowlist is not None:
             filtered_order = self._apply_allowlist(attempt_order, allowlist)
             if attempt_order and not filtered_order:
@@ -951,7 +1011,11 @@ class ProviderRouter:
         # Q6.3 — filter judge ensemble by per-universe allowlist (privacy
         # primitive). Empty filter => empty list, matching the existing
         # "no judges available" contract at L484-486.
-        allowlist = self._current_allowlist(resolved_config)
+        allowlist = _effective_universe_provider_ceiling(
+            universe_context,
+            resolved_config,
+            carrier_armed=False,
+        )
         ensemble = self._apply_allowlist(list(_JUDGE_PROVIDERS), allowlist)
         if allowlist is not None and not ensemble:
             logger.warning(

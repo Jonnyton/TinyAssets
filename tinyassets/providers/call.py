@@ -24,6 +24,7 @@ an empty string).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 from tenacity import (
@@ -84,6 +85,66 @@ def get_provider_router() -> "Optional[ProviderRouter]":
 def get_last_provider() -> str:
     """Provider name used by the most recent call_provider() — live, not a snapshot."""
     return _last_provider
+
+
+@dataclass(frozen=True, slots=True)
+class UniverseBoundProviderCall:
+    """Callable that carries one exact universe context across graph workers."""
+
+    provider_call: Any
+    universe_context: Any
+
+    def __call__(self, prompt: str, system: str = "", **kwargs: Any) -> str:
+        supplied = kwargs.pop("universe_context", None)
+        if supplied is not None and supplied is not self.universe_context:
+            raise PermissionError("provider call cannot substitute universe context")
+        return self.provider_call(
+            prompt,
+            system,
+            universe_context=self.universe_context,
+            **kwargs,
+        )
+
+    def call_with_policy_sync(
+        self,
+        role: str,
+        prompt: str,
+        system: str,
+        policy: dict | None,
+        config: Any = None,
+        difficulty: str = "",
+        *,
+        universe_context: Any = None,
+    ) -> tuple[str, str, dict]:
+        supplied = universe_context
+        if supplied is not None and supplied is not self.universe_context:
+            raise PermissionError("provider policy cannot substitute universe context")
+        if _real_router is None:
+            from tinyassets.exceptions import AllProvidersExhaustedError
+
+            raise AllProvidersExhaustedError("No provider router is available.")
+        global _last_provider
+        result = _real_router.call_with_policy_sync(
+            role,
+            prompt,
+            system,
+            policy,
+            config,
+            difficulty,
+            universe_context=self.universe_context,
+        )
+        _last_provider = result[1]
+        return result
+
+
+def bind_universe_provider_call(
+    provider_call: Any,
+    universe_context: Any,
+) -> UniverseBoundProviderCall:
+    """Bind an explicit universe context to direct and policy graph calls."""
+    if universe_context is None:
+        raise ValueError("universe_context is required")
+    return UniverseBoundProviderCall(provider_call, universe_context)
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +329,10 @@ def call_provider(
                 role, prompt, system, config, universe_context, operation,
             )
         except Exception as e:
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+
+            if isinstance(e, ProviderAuthorityHeldError):
+                raise
             provider_error = e
             logger.error(
                 "All providers exhausted for role=%s after retries: %s", role, e,

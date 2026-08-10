@@ -37,12 +37,15 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import TYPE_CHECKING, Annotated, Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
 from tinyassets.branches import BranchDefinition, GraphNodeRef, NodeDefinition
 from tinyassets.exceptions import AllProvidersExhaustedError
+
+if TYPE_CHECKING:
+    from tinyassets.providers.base import UniverseContext
 
 logger = logging.getLogger(__name__)
 
@@ -223,29 +226,41 @@ def _call_policy_router_with_retry(
     system: str,
     policy: dict[str, Any],
     config: Any = None,
+    universe_context: "UniverseContext | None" = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
     # Only forward config when set AND the router's call_with_policy_sync
     # actually accepts it — protects 4-arg routers/stubs (backward-compat),
     # mirroring the injected provider_call bridge guard.
     pass_config = config is not None
-    if pass_config:
+    pass_context = universe_context is not None
+    if pass_config or pass_context:
         try:
             import inspect as _inspect
             _params = _inspect.signature(router.call_with_policy_sync).parameters
+            accepts_kwargs = any(
+                p.kind == p.VAR_KEYWORD for p in _params.values()
+            )
             pass_config = ("config" in _params) or any(
                 p.kind == p.VAR_KEYWORD for p in _params.values()
             )
+            pass_context = "universe_context" in _params or accepts_kwargs
         except (ValueError, TypeError):
             pass_config = False
+            pass_context = False
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
         try:
+            kwargs: dict[str, Any] = {}
+            if pass_context:
+                kwargs["universe_context"] = universe_context
             if pass_config:
                 return router.call_with_policy_sync(
-                    role, prompt, system, policy, config,
+                    role, prompt, system, policy, config, **kwargs,
                 )
-            return router.call_with_policy_sync(role, prompt, system, policy)
+            return router.call_with_policy_sync(
+                role, prompt, system, policy, **kwargs,
+            )
         except AllProvidersExhaustedError:
             if attempt_index == attempts - 1:
                 raise
@@ -965,6 +980,7 @@ def _build_prompt_template_node(
     state_schema: list[dict[str, Any]] | None = None,
     llm_policy: dict[str, Any] | None = None,
     concurrency_tracker: ConcurrencyTracker | None = None,
+    universe_context: "UniverseContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that fills the prompt template and calls an
     LLM. Output is stored under the node's first ``output_keys`` entry
@@ -1033,9 +1049,12 @@ def _build_prompt_template_node(
     )
 
     def _bridge(_p: str, _s: str) -> str:
+        kwargs: dict[str, Any] = {"role": role}
         if _bridge_takes_config and _node_cfg is not None:
-            return provider_call(_p, _s, role=role, config=_node_cfg)
-        return provider_call(_p, _s, role=role)
+            kwargs["config"] = _node_cfg
+        if universe_context is not None:
+            kwargs["universe_context"] = universe_context
+        return provider_call(_p, _s, **kwargs)
 
     # Lazy import so graph_compiler doesn't hard-depend on providers at import
     # time. Aliased so the except-clauses below can reference it by name without
@@ -1210,6 +1229,7 @@ def _build_prompt_template_node(
                                 system="",
                                 policy=effective_policy,
                                 config=_node_cfg,
+                                universe_context=universe_context,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -2608,6 +2628,7 @@ def _build_node(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     enqueue_budget: "NodeEnqueueBudget | None" = None,
+    universe_context: "UniverseContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2644,6 +2665,7 @@ def _build_node(
             node, provider_call=provider_call, event_sink=event_sink,
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
+            universe_context=universe_context,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:
@@ -2792,6 +2814,7 @@ def compile_branch(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    universe_context: "UniverseContext | None" = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2913,6 +2936,7 @@ def compile_branch(
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
             enqueue_budget=enqueue_budget,
+            universe_context=universe_context,
         )
         fn = _guard_single_writer_merge_outputs(
             fn,
