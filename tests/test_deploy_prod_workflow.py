@@ -2515,3 +2515,112 @@ def test_active_universe_repoint_is_explicit_input_only_and_validated():
     run = step.get("run", "") or ""
     assert "invalid universe id" in run
     assert "^[A-Za-z0-9._-]{1,128}$" in run
+
+
+def test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup():
+    """Level 2 auto-rollback: reverse a proved-but-uncommitted quiesce.
+
+    The 2026-08-07 zero-container outages happened when the stop-writer fence
+    quiesced (stopped + runtime-masked the daemon and racers) and the deploy
+    then FAILED before the new image committed. The legacy "restore restart
+    racers when safe" cleanup could not help because its restore-if-safe path
+    needs an already-RUNNING exact-five fleet to observe — but the fleet was
+    down and masked. The Level 2 block runs ONLY in that precise
+    image-not-committed case and lets the fence reverse its own recorded
+    quiesce via `restore-quiesced` (compose-up on the unchanged image).
+    """
+    wf = _load()
+    cleanup = _stop_writer_step(
+        wf, "Transitional task 2.1 restore restart racers when safe"
+    )
+    # (c) Only acts in the image-not-committed safe case: the block is gated on
+    # the deploy step's image_mutation_started output being not-"true".
+    assert (
+        cleanup.get("env", {}).get("IMAGE_MUTATION_STARTED")
+        == "${{ steps.deploy.outputs.image_mutation_started }}"
+    )
+    script = str(cleanup.get("run", ""))
+    assert 'if [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then' in script
+    assert "restore-quiesced --image-ref" in script
+    # Recovery is compose-up on the unchanged image, NEVER `docker start <id>`.
+    assert "docker start" not in script
+
+    # Transition order inside the cleanup step: prove the old fleet's ancestry
+    # is descended from the stop-writer floor BEFORE invoking restore-quiesced,
+    # and only declare cleanup_restored=true AFTER restore-quiesced returns.
+    assert script.index('if [ "${IMAGE_MUTATION_STARTED}" != "true" ]') < script.index(
+        "restore-quiesced --image-ref"
+    )
+    assert script.index("git merge-base --is-ancestor") < script.index(
+        "restore-quiesced --image-ref"
+    )
+    assert script.index("restore-quiesced --image-ref") < script.index(
+        "cleanup_restored=true"
+    )
+
+    # (b) Fails LOUD to manual recovery, never a silent restored: an eligible
+    # durable identity that cannot prove restoration is a hard fence failure,
+    # not a fall-through. A non-eligible/not-applicable result (status 3) is the
+    # ONLY path that falls back to today's observe/restore-or-fence behavior.
+    assert "fence_unsafe_and_fail" in script
+    assert 'quiesced_identity_status" -ne 3' in script
+    assert 'quiesced_proof_status" -ne 3' in script
+
+
+def test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid():
+    """(d) The Level 2 path must not disturb the release-state receipt tuple.
+
+    restore-quiesced runs in the always() stop-writer-cleanup step and feeds
+    the same cleanup_restored / cleanup_mutation_started outputs the terminal
+    receipt already consumes. The separate rollback step's
+    image_mutation_not_started tuple must remain intact.
+    """
+    text = _text()
+    rollback_slice = text[
+        text.index("id: rollback") : text.index("id: stop-writer-cleanup")
+    ]
+    for token in (
+        "rollback_attempted=false",
+        "rollback_result=not_attempted",
+        "rollback_canary_status=not_run",
+        "rollback_reason=image_mutation_not_started",
+    ):
+        assert token in rollback_slice, token
+
+    # The successful Level 2 recovery marks a host mutation and a full restore,
+    # exactly the two outputs the terminal receipt reads.
+    cleanup_slice = text[
+        text.index("id: stop-writer-cleanup") : text.index(
+            "- name: Publish release-state receipt"
+        )
+    ]
+    assert "cleanup_mutation_started=true" in cleanup_slice
+    assert "cleanup_restored=true" in cleanup_slice
+    # The evidence the workflow validates must assert the exact restored shape.
+    assert '"quiesced_before_image_commit"' in cleanup_slice
+    assert 'evidence.get("phase") == "not_applicable"' in cleanup_slice
+    assert 'evidence.get("masked_units_after") == []' in cleanup_slice
+
+    # The terminal receipt still consumes the cleanup outputs unchanged.
+    terminal = _step_with_run_token(wf=_load(), token="terminal_receipt_result=")
+    assert (
+        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_RESTORED")
+        == "${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}"
+    )
+
+
+def test_level2_quiesced_restore_is_bounded_and_isolated_to_current_run():
+    """The recovery ssh must be time-bounded and scoped to the current run."""
+    cleanup = _stop_writer_step(
+        _load(), "Transitional task 2.1 restore restart racers when safe"
+    )
+    script = str(cleanup.get("run", ""))
+    # systemd-run bounds the recovery so a hung restore cannot wedge the runner.
+    assert "systemd-run --quiet --collect --wait --pipe" in script
+    assert "--property RuntimeMaxSec=720" in script
+    assert "--property TimeoutStartSec=720" in script
+    # Identity is read from the CURRENT-run durable fence only.
+    assert "current_run_matches" in script
+    assert "current_run_previous_image_ref" in script
+    assert "current_run_previous_revision" in script
+    assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script

@@ -1895,6 +1895,8 @@ jobs:
       - name: Transitional task 2.1 restore restart racers when safe
         id: stop-writer-cleanup
         if: always()
+        env:
+          IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
         run: |
           set -euo pipefail
           echo "cleanup_restored=false" >> "$GITHUB_OUTPUT"
@@ -1960,6 +1962,172 @@ jobs:
           then
             echo "No active task 2.1 fence needs restoration."
             exit 0
+          fi
+
+          # Level 2: preflight may have removed the compose fleet and runtime-
+          # masked its only creator before the Deploy new image step began. In
+          # that precise no-image-mutation case, observe cannot bootstrap the
+          # fleet it needs to prove. Read the previous identity only from the
+          # current-run durable fence, prove its source revision is descended
+          # from the filing-only floor, then let the fence state machine reverse
+          # its own recorded quiesce. A non-applicable result falls through to
+          # today's observe/restore-or-fence behavior without host mutation.
+          if [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then
+            set +e
+            python - "$evidence_dir/fence-status.json" \
+                > "$evidence_dir/quiesced-restore-identity.txt" <<'PY'
+          import json
+          import re
+          import sys
+
+          canonical = re.compile(
+              r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+              r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+              r"@sha256:[0-9a-f]{64}$"
+          )
+          status = json.load(open(sys.argv[1], encoding="utf-8"))
+          phase = status.get("state_phase")
+          image_ref = status.get("current_run_previous_image_ref", "")
+          revision = status.get("current_run_previous_revision", "")
+          eligible = (
+              status.get("current_run_matches") is True
+              and phase in {"preflight_proved", "restoring_quiesced"}
+              and isinstance(image_ref, str)
+              and canonical.fullmatch(image_ref)
+              and isinstance(revision, str)
+              and re.fullmatch(r"[0-9a-f]{40}", revision)
+          )
+          if not eligible:
+              raise SystemExit(3)
+          print(image_ref)
+          print(revision)
+          PY
+            quiesced_identity_status=$?
+            set -e
+            if [ "$quiesced_identity_status" -eq 0 ]; then
+              readarray -t quiesced_identity \
+                < "$evidence_dir/quiesced-restore-identity.txt"
+              previous_image="${quiesced_identity[0]}"
+              previous_revision="${quiesced_identity[1]}"
+              if ! git fetch --no-tags --prune origin main; then
+                fence_unsafe_and_fail \
+                  "quiesced old-fleet ancestry history is unavailable"
+              fi
+              if ! git cat-file -e "${previous_revision}^{commit}" 2>/dev/null; then
+                if ! git fetch --no-tags origin "$previous_revision"; then
+                  fence_unsafe_and_fail \
+                    "quiesced old-fleet revision cannot be verified"
+                fi
+              fi
+              if ! git merge-base --is-ancestor \
+                  "$STOP_WRITER_SHA" "$previous_revision"; then
+                fence_unsafe_and_fail \
+                  "quiesced old fleet predates stop-writer floor"
+              fi
+
+              echo "cleanup_mutation_started=true" >> "$GITHUB_OUTPUT"
+              set +e
+              restore_unit="tinyassets-quiesced-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=720 --property TimeoutStartSec=720 --unit '${restore_unit}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py restore-quiesced --image-ref '${previous_image}' --revision '${previous_revision}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
+                  > "$evidence_dir/restore-quiesced.json"
+              quiesced_restore_status=$?
+              set -e
+              if [ "$quiesced_restore_status" -ne 0 ]; then
+                fence_unsafe_and_fail \
+                  "quiesced old-fleet recovery could not be proved"
+              fi
+
+              set +e
+              python - "$evidence_dir/restore-quiesced.json" \
+                  "$GITHUB_OUTPUT" "$previous_image" "$previous_revision" <<'PY'
+          import json
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          if evidence.get("phase") == "not_applicable":
+              raise SystemExit(3)
+          expected_units = evidence.get("expected_restored_unit_states", {})
+          restored_units = evidence.get("restored_unit_states", {})
+          expected_policies = evidence.get("expected_restart_policies", {})
+          restored_policies = evidence.get("restart_policy_restore_proof", {})
+          observation = evidence.get("observation", {})
+          containers = observation.get("containers", {})
+          compose_provenance = evidence.get("compose_provenance", {})
+          health = evidence.get("loopback_health", {})
+          previous_image = sys.argv[3]
+          previous_revision = sys.argv[4]
+          expected_services = {
+              "tinyassets-daemon": "daemon",
+              "tinyassets-worker": "worker",
+              "tinyassets-worker-codex-2": "worker-codex-2",
+              "tinyassets-worker-claude-1": "worker-claude-1",
+              "tinyassets-worker-claude-2": "worker-claude-2",
+          }
+          exact_fleet = (
+              isinstance(containers, dict)
+              and set(containers) == set(expected_services)
+              and all(
+                  isinstance(row, dict)
+                  and row.get("running") is True
+                  and row.get("image_ref") == previous_image
+                  and row.get("revision") == previous_revision
+                  and bool(row.get("id"))
+                  for row in containers.values()
+              )
+              and len({row.get("image_ref") for row in containers.values()}) == 1
+          )
+          proven = (
+              evidence.get("phase") == "restored"
+              and evidence.get("safe") is True
+              and evidence.get("cleanup_restored") is True
+              and evidence.get("recovery_kind")
+                  == "quiesced_before_image_commit"
+              and evidence.get("previous_image_ref") == previous_image
+              and evidence.get("previous_revision") == previous_revision
+              and evidence.get("masked_units_after") == []
+              and bool(expected_units)
+              and restored_units == expected_units
+              and restored_units.get("tinyassets-daemon.service", {}).get(
+                  "active"
+              ) == "active"
+              and bool(expected_policies)
+              and restored_policies == expected_policies
+              and observation.get("volume_container_names")
+                  == sorted(containers)
+              and not observation.get("queue_risk")
+              and not observation.get("stray_writer_processes")
+              and exact_fleet
+              and set(compose_provenance) == set(containers)
+              and all(
+                  proof.get("id") == containers[name].get("id")
+                  and proof.get("project") == "tinyassets"
+                  and proof.get("service") == expected_services[name]
+                  for name, proof in compose_provenance.items()
+              )
+              and health.get("http_status") == "200"
+              and health.get("url") == "http://127.0.0.1:8001/mcp"
+          )
+          if not proven:
+              raise SystemExit("quiesced restore evidence is not exact")
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write("cleanup_restored=true\n")
+          PY
+              quiesced_proof_status=$?
+              set -e
+              if [ "$quiesced_proof_status" -eq 0 ]; then
+                echo "Recovered the exact previous fleet from the durable quiesce."
+                exit 0
+              fi
+              if [ "$quiesced_proof_status" -ne 3 ]; then
+                fence_unsafe_and_fail \
+                  "quiesced old-fleet restoration evidence is not exact"
+              fi
+            elif [ "$quiesced_identity_status" -ne 3 ]; then
+              fence_unsafe_and_fail \
+                "quiesced old-fleet durable identity is unreadable"
+            fi
           fi
 
           set +e
