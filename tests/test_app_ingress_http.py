@@ -34,7 +34,7 @@ BODY = {
 
 class _Result:
     handled = True
-    provider_receipt_ref = "1700000000.000100"
+    provider_receipt_ref = "slack:C0WIRE00001:1700000000.000100"
 
 
 def _spy():
@@ -64,7 +64,10 @@ def test_a_correctly_signed_request_is_delivered():
     )
 
     assert status == 200
-    assert payload == {"handled": True, "provider_receipt_ref": "1700000000.000100"}
+    assert payload == {
+        "handled": True,
+        "provider_receipt_ref": "slack:C0WIRE00001:1700000000.000100",
+    }
     assert calls[0]["external_sender_id"] == "U0WIRE00001"
 
 

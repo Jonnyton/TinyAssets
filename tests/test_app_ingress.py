@@ -101,7 +101,7 @@ def _deliver(**overrides):
         calls["post"].append(
             {"destination": destination, "body": body, "thread_ts": thread_ts}
         )
-        return _Receipt("1700000000.000100")
+        return _Receipt(f"slack:{destination.address}:1700000000.000200")
 
     kwargs = {
         "provider": "slack",
@@ -187,7 +187,7 @@ def test_the_receipt_carries_no_reply_text_and_no_authority(base):
     assert not hasattr(result, "founder_grant")
     assert not hasattr(result, "universe_id")
     assert not hasattr(result, "universe_dir")
-    assert result.provider_receipt_ref == "1700000000.000100"
+    assert result.provider_receipt_ref == f"slack:{CHANNEL}:1700000000.000200"
 
 
 def test_an_empty_prompt_costs_no_provider_call(base):
@@ -318,19 +318,47 @@ def test_a_failed_turn_posts_an_honest_notice_not_silence(base):
     assert "capacity" in body or "rate limit" in body
 
 
-def test_memory_persists_across_turns(base):
+#: A 1:1 DM channel id (Slack DM ids start with "D"). Durable memory is only
+#: enabled here — the fail-closed multi-principal guard.
+_DM = "D0INGRESSDM"
+
+
+def _grant_founder(monkeypatch):
+    """Make the ingress recognize the sender as the founder (a non-None grant)."""
+    monkeypatch.setattr(
+        "tinyassets.founder_grant.FounderRecognizer.recognize",
+        lambda self, event, **kwargs: object(),
+        raising=True,
+    )
+
+
+def test_memory_persists_across_turns(base, monkeypatch):
     """The durable store makes a stateless turn remember the last one.
 
     This is the whole point: u-tiny forgot everything between turns because the
     turn is a fresh `claude -p`. Turn 1 is recorded; turn 2 gets turn 1 fed back
-    as PRIOR conversation, without the current message being double-shown.
+    as PRIOR conversation, without the current message being double-shown. Runs
+    only in a founder-authorized 1:1 DM (the fail-closed guard).
     """
     binding = _make_universe(base, "u-ingress-mem")
     _bind(base, "u-ingress-mem", binding)
+    _grant_founder(monkeypatch)
 
-    # Turn 1: nothing to remember yet (cold store, no Slack token to backfill),
-    # but the turn is recorded for next time.
+    import tinyassets.effectors.slack_agent_turn as sat
+
+    live = [
+        {
+            "speaker": "founder",
+            "text": "my favorite topic is tide pools",
+            "ts": "1700000000.000100",
+        }
+    ]
+    monkeypatch.setattr(sat, "load_thread_history", lambda **_kwargs: list(live))
+
+    # Turn 1: the live timeline supplies the current founder message id, but the
+    # current message is excluded from its own prior-history block.
     _, calls1 = _deliver(
+        channel_id=_DM,
         text="<@U0BOT> my favorite topic is tide pools",
         event_id="Ev-mem-1",
     )
@@ -338,7 +366,21 @@ def test_memory_persists_across_turns(base):
     assert all("tide pools" not in m.text for m in first_history)
 
     # Turn 2: the durable store feeds turn 1 back in as prior context.
+    live[:] = [
+        *live,
+        {
+            "speaker": "universe",
+            "text": "the universe answers",
+            "ts": "1700000000.000200",
+        },
+        {
+            "speaker": "founder",
+            "text": "what did I say my favorite topic was?",
+            "ts": "1700000000.000300",
+        },
+    ]
     _, calls2 = _deliver(
+        channel_id=_DM,
         text="<@U0BOT> what did I say my favorite topic was?",
         event_id="Ev-mem-2",
     )
@@ -346,8 +388,41 @@ def test_memory_persists_across_turns(base):
     texts = [m.text for m in history]
     assert "my favorite topic is tide pools" in texts  # founder's earlier turn
     assert "the universe answers" in texts  # the universe's own earlier reply
+    assert texts.count("the universe answers") == 1
     # The current turn's own prompt is not shown inside its own memory block.
     assert "what did I say my favorite topic was?" not in texts
+
+
+def test_current_founder_turn_uses_the_live_timeline_ts(base, monkeypatch):
+    """Ingress derives the current message id daemon-side, without agent fields."""
+    binding = _make_universe(base, "u-ingress-founder-id")
+    _bind(base, "u-ingress-founder-id", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    founder_ts = "1700000000.000111"
+    calls = []
+
+    def _timeline(**kwargs):
+        calls.append(kwargs)
+        return [{"speaker": "founder", "text": "hello", "ts": founder_ts}]
+
+    monkeypatch.setattr(sat, "load_thread_history", _timeline)
+    _, delivered = _deliver(
+        channel_id=_DM,
+        text="<@U0BOT> hello",
+        event_id="Ev-founder-id-1",
+    )
+
+    conv_dir = _universe_dir("u-ingress-founder-id")
+    identities = cs._recent_identities(conv_dir, f"slack:{_DM}", limit=10)
+    founders = [row for row in identities if row[0] == "founder"]
+    assert founders == [("founder", "hello", founder_ts)]
+    assert delivered["converse"][0]["conversation_history"] == []
+    assert calls and not calls[0].get("exclude_text")
 
 
 def test_a_dropped_record_is_re_synced_from_the_live_timeline(base, monkeypatch):
@@ -360,29 +435,229 @@ def test_a_dropped_record_is_re_synced_from_the_live_timeline(base, monkeypatch)
     """
     binding = _make_universe(base, "u-ingress-drift")
     _bind(base, "u-ingress-drift", binding)
+    _grant_founder(monkeypatch)
 
     import tinyassets.conversation_store as cs
     import tinyassets.effectors.slack_agent_turn as sat
     from tinyassets.api.helpers import _universe_dir
 
     conv_dir = _universe_dir("u-ingress-drift")
-    session = f"slack:{CHANNEL}"
+    session = f"slack:{_DM}"
     # Store already backfilled (marker set) but then MISSED recording a later
     # reply — the exact silent-drift regression.
-    cs.backfill_once(conv_dir, session, [{"speaker": "founder", "text": "start the plan"}])
-    cs.record_turn(conv_dir, session, "universe", "starting now")
+    cs.backfill_once(
+        conv_dir,
+        session,
+        [{"speaker": "founder", "text": "start the plan", "ts": "1.0"}],
+    )
+    cs.record_turn(
+        conv_dir, session, "universe", "starting now", ts=2.0, ext_id="2.0"
+    )
 
     # The live Slack timeline is AHEAD: it also holds the turns the store missed.
     live = [
-        {"speaker": "founder", "text": "start the plan"},
-        {"speaker": "universe", "text": "starting now"},
-        {"speaker": "founder", "text": "any update?"},        # store MISSED this
-        {"speaker": "universe", "text": "shipped part one"},  # store MISSED this
+        {"speaker": "founder", "text": "start the plan", "ts": "1.0"},
+        {"speaker": "universe", "text": "starting now", "ts": "2.0"},
+        {"speaker": "founder", "text": "any update?", "ts": "3.0"},
+        {"speaker": "universe", "text": "shipped part one", "ts": "4.0"},
     ]
     monkeypatch.setattr(sat, "load_thread_history", lambda **k: live)
 
-    _, calls = _deliver(text="<@U0BOT> what did you ship?", event_id="Ev-drift-1")
+    _, calls = _deliver(
+        channel_id=_DM, text="<@U0BOT> what did you ship?", event_id="Ev-drift-1"
+    )
     history = calls["converse"][0]["conversation_history"]
     texts = [m.text for m in history]
     assert "any update?" in texts
     assert "shipped part one" in texts  # the missed tail is reconciled in
+
+
+def test_memory_is_off_in_a_shared_channel(base, monkeypatch):
+    """Fail-closed multi-principal guard (Codex REJECT 2026-08-09): even a
+    recognized founder gets NO durable memory outside a 1:1 DM. A shared channel
+    is multi-principal and the session is channel-keyed, so loading its history
+    could inject another person's words into a founder turn.
+
+    Mutation-check: drop the `startswith("D")` half of `memory_on` and the seeded
+    shared-channel history rides into the turn — this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-share")
+    _bind(base, "u-ingress-share", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-share")
+    shared = "C0SHAREDXX"
+    # Seed a store for this channel so an empty history can ONLY be the guard.
+    cs.record_turn(conv_dir, f"slack:{shared}", "founder", "prior shared secret")
+
+    _, calls = _deliver(channel_id=shared, text="<@U0BOT> hi", event_id="Ev-share-1")
+    history = calls["converse"][0]["conversation_history"] or []
+    assert history == []  # nothing loaded or injected in a shared channel
+
+
+def test_the_reply_is_recorded_only_after_it_is_posted(base, monkeypatch):
+    """POST-THEN-RECORD (Codex REJECT 2026-08-09): history must never claim a
+    reply the founder never received. If delivery fails, the universe reply is
+    NOT in the store (the founder's own message, recorded before converse, is).
+
+    Mutation-check: record the reply BEFORE `_post` and this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-por")
+    _bind(base, "u-ingress-por", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-por")
+    session = f"slack:{_DM}"
+    monkeypatch.setattr(
+        sat,
+        "load_thread_history",
+        lambda **_kwargs: [
+            {"speaker": "founder", "text": "hello there", "ts": "1700000000.000100"}
+        ],
+    )
+
+    def _post_boom(destination, body, *, thread_ts=""):
+        raise RuntimeError("slack post 500")
+
+    with pytest.raises(RuntimeError):
+        _deliver(
+            channel_id=_DM, transport=_post_boom,
+            text="<@U0BOT> hello there", event_id="Ev-por-1",
+        )
+
+    stored = [m.text for m in cs.load_recent(conv_dir, session)]
+    assert "the universe answers" not in stored  # undelivered reply not recorded
+    assert "hello there" in stored  # the founder's message WAS recorded pre-converse
+
+
+def test_a_reply_record_failure_after_post_never_escapes(base, monkeypatch):
+    """Once Slack accepted the reply, memory bookkeeping cannot fail delivery."""
+    binding = _make_universe(base, "u-ingress-post-safe")
+    _bind(base, "u-ingress-post-safe", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("path coercion exploded")
+
+    monkeypatch.setattr(cs, "record_turn", _boom)
+    result, calls = _deliver(
+        channel_id=_DM,
+        text="<@U0BOT> hello",
+        event_id="Ev-post-safe-1",
+    )
+
+    assert result.handled is True
+    assert result.provider_receipt_ref == f"slack:{_DM}:1700000000.000200"
+    assert calls["post"][-1]["body"] == "the universe answers"
+
+
+def test_memory_load_never_raises_into_the_turn(base, monkeypatch):
+    """Best-effort: if the memory load path blows up (vault error, store bug), the
+    turn still answers — memory degrades to empty, never drops the reply.
+
+    Mutation-check: remove the try/except around the memory block and this raises.
+    """
+    binding = _make_universe(base, "u-ingress-safe")
+    _bind(base, "u-ingress-safe", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+
+    def _boom(*a, **k):
+        raise RuntimeError("vault down")
+
+    monkeypatch.setattr(cs, "load_recent", _boom)
+
+    result, calls = _deliver(channel_id=_DM, text="<@U0BOT> hi", event_id="Ev-safe-1")
+    assert result.handled is True
+    assert calls["post"][-1]["body"] == "the universe answers"
+    assert calls["converse"][0]["conversation_history"] == []
+
+
+def test_composite_transport_receipt_does_not_duplicate_the_reply(base, monkeypatch):
+    """FIX2 (Codex 2026-08-10): the REAL Slack transport returns a COMPOSITE
+    receipt ``slack:<channel>:<ts>``, but sync_tail dedups on the RAW ts from the
+    live timeline. Storing the composite as ext_id meant the reply never matched
+    on re-sync and was re-recorded as a duplicate every turn. The reply must be
+    stored under its RAW ts and survive a re-sync without duplicating.
+
+    Note: this uses a transport with the PROD receipt shape — the round-2 test
+    double returned a raw ts, which is exactly why this bug slipped through.
+
+    Mutation-check: drop the rsplit normalization in ``_record_universe`` (store
+    the composite) and the re-sync below re-appends the reply — this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-fix2")
+    _bind(base, "u-ingress-fix2", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-fix2")
+    session = f"slack:{_DM}"
+    reply_ts = "1700000000.000200"
+
+    def _composite_transport(destination, body, *, thread_ts=""):
+        # Exactly what tinyassets/effectors/slack_transport.py returns.
+        return _Receipt(f"slack:{_DM}:{reply_ts}")
+
+    # Turn 1: the reply is recorded from the COMPOSITE receipt.
+    _deliver(
+        channel_id=_DM, transport=_composite_transport,
+        text="<@U0BOT> hello", event_id="Ev-fix2-1",
+    )
+    ids = {ext for _sp, _tx, ext in cs._recent_identities(conv_dir, session, limit=50)}
+    assert reply_ts in ids, "reply must be stored under its RAW ts"
+    assert f"slack:{_DM}:{reply_ts}" not in ids, "composite must never become an ext_id"
+
+    # Turn 2: the live timeline reports the reply at its RAW ts; sync_tail must
+    # recognize it and NOT re-append.
+    live = [
+        {"speaker": "founder", "text": "hello", "ts": "1700000000.000100"},
+        {"speaker": "universe", "text": "the universe answers", "ts": reply_ts},
+    ]
+    monkeypatch.setattr(sat, "load_thread_history", lambda **k: live)
+    _deliver(
+        channel_id=_DM, transport=_composite_transport,
+        text="<@U0BOT> still there?", event_id="Ev-fix2-2",
+    )
+    replies = [
+        m.text for m in cs.load_recent(conv_dir, session, limit=100)
+        if m.text == "the universe answers"
+    ]
+    assert replies == ["the universe answers"], f"reply duplicated {len(replies)}x"
+
+
+def test_a_non_founder_dm_gets_no_founder_history(base, monkeypatch):
+    """FIX5 (Codex 2026-08-10): the guard is BOTH halves — 1:1 DM AND a founder
+    grant. A DM sender the recognizer does NOT grant must get NO durable memory,
+    or one visitor's DM could read the founder's history.
+
+    Mutation-check: drop the ``grant is not None`` half of ``memory_on`` and the
+    seeded history rides into the ungranted DM turn — this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-nofdr")
+    _bind(base, "u-ingress-nofdr", binding)
+    # NOTE: deliberately do NOT grant founder — recognize returns None by default.
+
+    import tinyassets.conversation_store as cs
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-nofdr")
+    # Seed the DM session so an empty history can ONLY be the guard, not emptiness.
+    cs.record_turn(conv_dir, f"slack:{_DM}", "founder", "prior founder-only secret")
+
+    _, calls = _deliver(channel_id=_DM, text="<@U0BOT> hi", event_id="Ev-nofdr-1")
+    history = calls["converse"][0]["conversation_history"] or []
+    assert history == [], "an ungranted DM must load no history"

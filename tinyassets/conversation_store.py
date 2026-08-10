@@ -51,9 +51,11 @@ it integrates; until then it stays deliberately lightweight.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 from tinyassets.conversation_memory import DEFAULT_LIMIT, Msg
@@ -71,6 +73,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     speaker    TEXT    NOT NULL,
     content    TEXT    NOT NULL,
     ts         REAL    NOT NULL,
+    ext_id     TEXT    NOT NULL DEFAULT '',
     UNIQUE(session_id, turn_no)
 );
 CREATE INDEX IF NOT EXISTS ix_turns_session
@@ -108,6 +111,31 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    # Migrate a pre-ext_id table (older DB that predates the stable-id column).
+    # Idempotent: a DB that already has the column raises "duplicate column name",
+    # which we swallow QUIETLY. Any OTHER OperationalError (a locked/corrupt DB)
+    # must be VISIBLE — swallowing it silently would disable ext_id reconciliation
+    # forever with no diagnostic (Codex 2026-08-10). `ext_id` is the raw Slack
+    # message ts — the STABLE identity sync_tail dedups on.
+    try:
+        conn.execute("ALTER TABLE conversation_turns ADD COLUMN ext_id TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            logger.warning("conversation_store: ext_id migration failed: %s", exc)
+    # Stable-id uniqueness — the DB-level guarantee that no ext_id is ever stored
+    # twice per session, so a re-synced/raced timeline cannot duplicate a turn
+    # regardless of the dedup logic above it (Codex FIX2/NEW1 2026-08-10). PARTIAL
+    # so the many id-less ('') rows (live-recorded founder turns) never collide.
+    # Tolerated if a pre-existing DB already holds a dup: log, don't break the store.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_turns_extid "
+            "ON conversation_turns(session_id, ext_id) WHERE ext_id != ''"
+        )
+    except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+        logger.warning(
+            "conversation_store: ext_id uniqueness index not created: %s", exc
+        )
     return conn
 
 
@@ -118,25 +146,54 @@ def record_turn(
     text: str,
     *,
     ts: float | None = None,
+    ext_id: str = "",
 ) -> int:
     """Append one turn; return its per-session ``turn_no`` (0 if not recorded).
 
     Blank text is a no-op (returns 0). Best-effort: any storage failure logs and
-    returns 0 rather than raising, so a memory hiccup never breaks the reply.
+    returns 0 rather than raising, so a memory hiccup never breaks the reply. A
+    malformed ``ts`` degrades to "now" rather than raising (a bad ts must never
+    cost the turn). ``ext_id`` is a stable external identity (the Slack message
+    ts) used for dedup; "" when unknown.
     """
     if not isinstance(text, str) or not text.strip():
         return 0
     if not session_id:
         return 0
-    when = time.time() if ts is None else float(ts)
-    db_path = _db_path(universe_dir)
-    lock = _lock_for(db_path)
+    # Setup can raise too (a custom ext_id with a raising __str__, a bad-type
+    # universe_dir in _db_path), and this runs OUTSIDE the retry try below, so
+    # guard it — record_turn's contract is NEVER to raise into the turn
+    # (Codex 2026-08-10).
+    try:
+        when = _when(ts)
+        ext_id = str(ext_id or "")
+        db_path = _db_path(universe_dir)
+        lock = _lock_for(db_path)
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        logger.warning("conversation_store: record setup failed", exc_info=True)
+        return 0
     for attempt in range(6):
         try:
             with lock:
                 conn = _connect(db_path)
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    # Stable-id idempotency: if this ext_id is already stored for
+                    # the session, it's a re-sync / concurrent-sync repeat, NOT a
+                    # new turn. BEGIN IMMEDIATE serialises writers (in- AND cross-
+                    # process), so this check + insert is atomic — closing the
+                    # read-before-write window that let two syncs both persist the
+                    # same reply (Codex FIX2/NEW1 2026-08-10). Return 0 QUIETLY:
+                    # nothing was appended, but nothing was dropped either.
+                    if ext_id:
+                        dup = conn.execute(
+                            "SELECT 1 FROM conversation_turns "
+                            "WHERE session_id = ? AND ext_id = ? LIMIT 1",
+                            (session_id, ext_id),
+                        ).fetchone()
+                        if dup is not None:
+                            conn.commit()
+                            return 0
                     row = conn.execute(
                         "SELECT COALESCE(MAX(turn_no), 0) + 1 "
                         "FROM conversation_turns WHERE session_id = ?",
@@ -145,9 +202,9 @@ def record_turn(
                     turn_no = int(row[0])
                     conn.execute(
                         "INSERT INTO conversation_turns "
-                        "(session_id, turn_no, speaker, content, ts) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (session_id, turn_no, str(speaker or ""), text, when),
+                        "(session_id, turn_no, speaker, content, ts, ext_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (session_id, turn_no, str(speaker or ""), text, when, ext_id),
                     )
                     conn.commit()
                     return turn_no
@@ -163,7 +220,13 @@ def record_turn(
             # test) is permanent — fail fast rather than burning the retry budget.
             logger.warning("conversation_store: record failed: %s", exc)
             return 0
-        except sqlite3.IntegrityError:  # cross-process turn_no race → retry
+        except sqlite3.IntegrityError as exc:  # turn_no race → retry; ext_id → stored
+            # The partial UNIQUE(session_id, ext_id) index is the cross-process
+            # backstop to the in-transaction check above: if it fires, the turn is
+            # already stored — return 0 QUIETLY, never burn retries or warn (Codex
+            # FIX2/NEW1 2026-08-10). Only a turn_no collision is a real race.
+            if "ext_id" in str(exc).lower():
+                return 0
             if attempt < 5:
                 time.sleep(0.02 * (attempt + 1))
                 continue
@@ -206,29 +269,27 @@ def load_recent(
     db_path = _db_path(universe_dir)
     if not db_path.exists():
         return []
-    def _ts(value: object) -> "float | None":
-        try:
-            f = float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return None
-        return f if f > 0 else None
-
     try:
         conn = _connect(db_path)
         try:
             rows = conn.execute(
                 "SELECT speaker, content, ts FROM conversation_turns "
-                "WHERE session_id = ? ORDER BY turn_no DESC LIMIT ?",
+                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
                 (session_id, max(1, int(limit))),
             ).fetchall()
         finally:
             conn.close()
+        # Order by the real Slack ts (CHRONOLOGY), turn_no only as a tiebreaker.
+        # sync_tail can back-fill a missed MIDDLE turn, which gets turn_no=max+1
+        # (appended last); ordering by turn_no alone would then render it out of
+        # order (stored 1,3 + synced 2 -> "1,3,2"). Ordering by ts renders 1,2,3
+        # (Codex 2026-08-10). Every row has a positive ts (_when falls back to now).
         # DESC from SQL → reverse to oldest-first for the formatter. Carry ts so
         # the turn knows WHEN each message was sent (SDK createdAt metadata). The
         # ts coercion stays INSIDE the try so malformed stored data degrades to
         # "no memory", never a raise (fail-open contract).
         return [
-            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_ts(t))
+            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_coerce_ts(t))
             for sp, ct, t in reversed(rows)
         ]
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
@@ -267,50 +328,101 @@ def sync_tail(
       prompt (the loader does this).
     * Bounded: only reconciles against the recent window (``limit``), never the
       whole history.
-    * Anchored, so it can never DUPLICATE: it finds the newest live message the
-      store already knows and appends only what follows it. If the live window
-      shares nothing with the store (a full roll-past, or a cold store), it does
-      nothing — appending a whole window blind would duplicate, and the cold
-      case is ``backfill_once``'s job, not this one.
-    * Best-effort: never raises. Returns the number of turns appended (0 if the
-      store is already current, empty, no overlap, or on any error).
+    * De-duped by the stable Slack ``ts``. A legacy id-less row may match by
+      ``(speaker, text)``, but each stored row is consumed at most once.
+    * Reconciled oldest-first. A failed append stops the pass immediately, so a
+      later success cannot become an anchor that permanently strands the gap.
+      A window with no overlap does nothing; cold import is ``backfill_once``'s
+      job.
+    * Best-effort: NEVER raises (the whole body is guarded) and never
+      double-counts — ``appended`` only advances when ``record_turn`` actually
+      persisted (returned a turn_no), so a dropped write is not logged as a sync.
     """
+    try:
+        return _sync_tail_impl(universe_dir, session_id, live_messages, limit=limit)
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        logger.warning("conversation_store: sync_tail failed", exc_info=True)
+        return 0
+
+
+def _sync_tail_impl(
+    universe_dir: "str | Path",
+    session_id: str,
+    live_messages: "list[dict]",
+    *,
+    limit: int,
+) -> int:
     if not session_id:
         return 0
     rows = [
-        (str(m.get("speaker") or ""), str(m.get("text") or "").strip(), m.get("ts"))
+        (str(m.get("speaker") or ""), str(m.get("text") or "").strip(), str(m.get("ts") or ""))
         for m in (live_messages or [])
         if isinstance(m, dict) and str(m.get("text") or "").strip()
     ]
     if not rows:
         return 0
-    try:
-        stored = load_recent(
-            universe_dir, session_id, limit=max(int(limit), len(rows) + 5)
-        )
-    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
-        return 0
+    stored = _recent_identities(
+        universe_dir, session_id, limit=max(int(limit), len(rows) + 5)
+    )
     if not stored:
         # Cold store: that is backfill_once's job. Appending a whole live window
         # here would both duplicate what backfill imports and race it.
         return 0
-    stored_texts = {m.text.strip() for m in stored if m.text and m.text.strip()}
-    # Anchor: scan the live window newest→oldest for the first message the store
-    # already holds. Everything AFTER it is the missing tail. No anchor at all
-    # means no safe reconciliation point — leave it to normal recording.
-    split = None
-    for i in range(len(rows) - 1, -1, -1):
-        if rows[i][1] in stored_texts:
-            split = i + 1
-            break
-    if split is None:
+    stored_ids = {ext for _sp, _tx, ext in stored if ext}
+    # Text fallback exists only for pre-stable-id rows. A Counter makes the
+    # fallback a one-for-one legacy migration seam rather than a text set that
+    # shadows every later message with the same words.
+    legacy_pairs = Counter(
+        (speaker, text)
+        for speaker, text, ext in stored
+        if text and not ext
+    )
+    # The newest stored STABLE id (a Slack ts). A legacy id-less row can only
+    # stand in for an OLD live message (<= this); a live row NEWER than every
+    # stored id is genuinely new and must never be swallowed by a stale text
+    # match whose original has rolled out of the window (Codex FIX2 2026-08-10).
+    _id_ts = [t for t in (_coerce_ts(e) for e in stored_ids) if t is not None]
+    newest_id_ts = max(_id_ts) if _id_ts else None
+
+    def _known(speaker: str, text: str, ext: str) -> bool:
+        # Exact stable-id match first; consume one legacy id-less row only when
+        # necessary. New daemon-side founder and universe writes both have ids.
+        if ext and ext in stored_ids:
+            return True
+        pair = (speaker, text)
+        if legacy_pairs[pair]:
+            live_ts = _coerce_ts(ext)
+            # Only when this live row is not newer than the newest stored id
+            # (or there are no id rows yet — the pure-legacy transition start).
+            if newest_id_ts is None or (live_ts is not None and live_ts <= newest_id_ts):
+                legacy_pairs[pair] -= 1
+                return True
+        return False
+
+    # Require some overlap so sync_tail never races cold backfill. Once overlap
+    # exists, walk the entire window oldest-first; this also repairs a gap that
+    # appears before a later already-stored row.
+    if not any(
+        (ext and ext in stored_ids) or legacy_pairs[(speaker, text)]
+        for speaker, text, ext in rows
+    ):
         return 0
     appended = 0
-    for speaker, text, ts in rows[split:]:
-        if text in stored_texts:
-            continue  # belt-and-suspenders against a repeated phrase at the seam
-        record_turn(universe_dir, session_id, speaker, text, ts=_coerce_ts(ts))
-        stored_texts.add(text)
+    for speaker, text, ext in rows:
+        if _known(speaker, text, ext):
+            continue  # already stored (id or text) — never duplicate
+        if not ext:
+            # Slack timeline rows always carry ts. Without one there is no safe
+            # durable identity, so do not store or advance beyond this gap.
+            break
+        turn_no = record_turn(
+            universe_dir, session_id, speaker, text, ts=_coerce_ts(ext), ext_id=ext
+        )
+        if not turn_no:
+            # Do not count or advance beyond an unpersisted gap. The next turn
+            # starts from the same row and retries it before any later message.
+            break
+        stored_ids.add(ext)
         appended += 1
     if appended:
         logger.info(
@@ -321,13 +433,70 @@ def sync_tail(
     return appended
 
 
+def _recent_identities(
+    universe_dir: "str | Path", session_id: str, *, limit: int
+) -> "list[tuple[str, str, str]]":
+    """Recent stored turns as ``(speaker, text, ext_id)`` for sync_tail dedup.
+
+    Separate from :func:`load_recent` because that returns render-ready ``Msg``
+    objects with no ``ext_id``. Empty on any trouble (fail-open).
+    """
+    if not session_id:
+        return []
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return []
+    try:
+        conn = _connect(db_path)
+        try:
+            fetched = conn.execute(
+                "SELECT speaker, content, ext_id FROM conversation_turns "
+                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
+                (session_id, max(1, int(limit))),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        # Fail-open, but NOT silent: an empty identity set disables sync_tail
+        # reconciliation, so a persistently locked/failed read would let the store
+        # drift behind the live thread forever with no diagnostic (Codex NEW2
+        # 2026-08-10). Make it visible.
+        logger.warning(
+            "conversation_store: identity read failed for session %s "
+            "(sync reconciliation degraded this turn)",
+            session_id,
+            exc_info=True,
+        )
+        return []
+    return [
+        (str(sp or ""), str(ct or "").strip(), str(ext or ""))
+        for sp, ct, ext in fetched
+    ]
+
+
 def _coerce_ts(value: object) -> "float | None":
-    """A Slack/epoch ts (str or number) as float seconds, or None."""
+    """A Slack/epoch ts (str or number) as float seconds, or None.
+
+    Catches EVERY conversion failure, not just TypeError/ValueError: e.g.
+    ``float(10**10000)`` raises OverflowError, and a ts must NEVER cost the turn
+    (Codex FIX1 2026-08-10). NaN/inf are rejected too (``f > 0`` is False for
+    both), so a poisoned ts degrades to "now" upstream rather than storing junk.
+    """
     try:
         f = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 - a bad ts must never raise into the turn
         return None
-    return f if f > 0 else None
+    # Finite AND positive. `float("inf") > 0` is True, so without isfinite an
+    # "inf" ts would be STORED and — now that load_recent orders by ts — sort
+    # above every real turn, crowding valid history out of the bounded window
+    # (Codex 2026-08-10). NaN is already rejected (`nan > 0` is False).
+    return f if (math.isfinite(f) and f > 0) else None
+
+
+def _when(ts: object) -> float:
+    """A valid epoch-seconds "when" for storage — never raises, falls back to now."""
+    coerced = _coerce_ts(ts)
+    return coerced if coerced is not None else time.time()
 
 
 def is_backfilled(universe_dir: "str | Path", session_id: str) -> bool:
@@ -389,7 +558,12 @@ def backfill_once(
         return v if v > 0 else when
 
     rows = [
-        (str(m.get("speaker") or ""), str(m.get("text") or ""), _ts(m))
+        (
+            str(m.get("speaker") or ""),
+            str(m.get("text") or ""),
+            _ts(m),
+            str(m.get("ts") or ""),  # ext_id: the stable Slack message id
+        )
         for m in (messages or [])
         if isinstance(m, dict) and str(m.get("text") or "").strip()
     ]
@@ -417,12 +591,12 @@ def backfill_once(
                             (session_id,),
                         ).fetchone()[0]
                     )
-                    for i, (speaker, content, ts_val) in enumerate(rows, start=1):
+                    for i, (speaker, content, ts_val, ext) in enumerate(rows, start=1):
                         conn.execute(
                             "INSERT INTO conversation_turns "
-                            "(session_id, turn_no, speaker, content, ts) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (session_id, base + i, speaker, content, ts_val),
+                            "(session_id, turn_no, speaker, content, ts, ext_id) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (session_id, base + i, speaker, content, ts_val, ext),
                         )
                     conn.commit()
                     return len(rows)
