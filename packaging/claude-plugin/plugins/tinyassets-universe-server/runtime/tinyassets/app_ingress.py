@@ -190,19 +190,36 @@ def deliver_app_event(
         # the reply. (The store + loader are individually never-raise too; this is
         # defense in depth.)
         try:
+            current_ext_id = ""
+
             def _live_timeline() -> list:
+                nonlocal current_ext_id
                 # Flat-DM timeline (thread_ts=""): with flat replies both sides
-                # sit top-level, so this recovers the full recent conversation;
-                # the current message is excluded by text.
+                # sit top-level. Fetch the current message too: its Slack ts is
+                # the stable founder-turn identity that ingress does not carry.
                 from tinyassets.effectors.slack_agent_turn import load_thread_history
 
-                return load_thread_history(
+                timeline = load_thread_history(
                     universe_dir=conv_dir,
                     connection_id=DEFAULT_SLACK_CONNECTION,
                     channel=channel_id,
                     thread_ts="",
-                    exclude_text=prompt,
                 )
+                # The current event is the newest founder row matching the
+                # normalized prompt. Remove exactly that row from prior history
+                # and retain its ts for durable recording below.
+                for index in range(len(timeline) - 1, -1, -1):
+                    row = timeline[index]
+                    if (
+                        isinstance(row, dict)
+                        and str(row.get("speaker") or "") == "founder"
+                        and str(row.get("text") or "").strip() == prompt
+                    ):
+                        candidate = str(row.get("ts") or "").strip()
+                        if candidate:
+                            current_ext_id = candidate
+                            return timeline[:index] + timeline[index + 1 :]
+                return timeline
 
             if not conversation_store.is_backfilled(conv_dir, session_id):
                 conversation_store.backfill_once(
@@ -217,8 +234,18 @@ def deliver_app_event(
                 )
             history = conversation_store.load_recent(conv_dir, session_id)
             # Record the founder's turn AFTER loading history (not double-shown)
-            # and BEFORE running (so the NEXT turn has it even if this one fails).
-            conversation_store.record_turn(conv_dir, session_id, "founder", prompt)
+            # and BEFORE running. If Slack history is temporarily unavailable,
+            # leave it unstored; the next timeline sync will import it with its
+            # real ts rather than creating another fragile id-less row.
+            if current_ext_id:
+                conversation_store.record_turn(
+                    conv_dir,
+                    session_id,
+                    "founder",
+                    prompt,
+                    ts=current_ext_id,
+                    ext_id=current_ext_id,
+                )
         except Exception:  # noqa: BLE001 - memory must never break the turn
             logger.warning("app ingress: memory load failed, proceeding blind")
             history = []
@@ -233,12 +260,15 @@ def deliver_app_event(
         # matched on re-sync and was re-recorded as a duplicate every time (Codex
         # FIX2 2026-08-10). Normalise to the raw ts so the write- and read-side
         # ids are identical.
-        if memory_on:
-            raw_ts = receipt_ref.rsplit(":", 1)[-1] if receipt_ref else ""
-            conversation_store.record_turn(
-                conv_dir, session_id, "universe", body,
-                ts=raw_ts, ext_id=raw_ts,
-            )
+        try:
+            if memory_on:
+                raw_ts = receipt_ref.rsplit(":", 1)[-1] if receipt_ref else ""
+                conversation_store.record_turn(
+                    conv_dir, session_id, "universe", body,
+                    ts=raw_ts, ext_id=raw_ts,
+                )
+        except Exception:  # noqa: BLE001 - Slack already accepted the reply
+            logger.warning("app ingress: delivered reply memory record failed")
 
     # A persistent conversational agent must NEVER go dark. A turn that fails
     # (commonly the universe's own writer at its rate limit) used to raise into

@@ -214,14 +214,18 @@ def test_load_resyncs_a_tail_the_store_missed(tmp_path):
     """
     session = "slack:C1"
     # The store has the older turns but MISSED the two most recent.
-    cs.record_turn(tmp_path, session, "founder", "what's our plan?")
-    cs.record_turn(tmp_path, session, "universe", "ship the memory fix")
+    cs.record_turn(
+        tmp_path, session, "founder", "what's our plan?", ts=1.0, ext_id="1.0"
+    )
+    cs.record_turn(
+        tmp_path, session, "universe", "ship the memory fix", ts=2.0, ext_id="2.0"
+    )
     # The live Slack timeline is ahead by two turns.
     live = [
-        {"speaker": "founder", "text": "what's our plan?"},
-        {"speaker": "universe", "text": "ship the memory fix"},
-        {"speaker": "founder", "text": "did the deploy go out?"},    # missed
-        {"speaker": "universe", "text": "yes, sha abc123 is live"},  # missed
+        {"speaker": "founder", "text": "what's our plan?", "ts": "1.0"},
+        {"speaker": "universe", "text": "ship the memory fix", "ts": "2.0"},
+        {"speaker": "founder", "text": "did the deploy go out?", "ts": "3.0"},
+        {"speaker": "universe", "text": "yes, sha abc123 is live", "ts": "4.0"},
     ]
     appended = cs.sync_tail(tmp_path, session, live)
     assert appended == 2
@@ -267,12 +271,12 @@ def test_sync_tail_never_duplicates_a_repeated_phrase_at_the_seam(tmp_path):
     # "yes" appears in both stored tail and the missing tail; sync_tail must not
     # re-append the already-stored one.
     session = "slack:C1"
-    cs.record_turn(tmp_path, session, "founder", "go ahead?")
-    cs.record_turn(tmp_path, session, "founder", "yes")
+    cs.record_turn(tmp_path, session, "founder", "go ahead?", ts=1.0, ext_id="1.0")
+    cs.record_turn(tmp_path, session, "founder", "yes", ts=2.0, ext_id="2.0")
     live = [
-        {"speaker": "founder", "text": "go ahead?"},
-        {"speaker": "founder", "text": "yes"},
-        {"speaker": "universe", "text": "done"},  # the only genuinely new one
+        {"speaker": "founder", "text": "go ahead?", "ts": "1.0"},
+        {"speaker": "founder", "text": "yes", "ts": "2.0"},
+        {"speaker": "universe", "text": "done", "ts": "3.0"},
     ]
     assert cs.sync_tail(tmp_path, session, live) == 1
     assert [m.text for m in cs.load_recent(tmp_path, session)] == [
@@ -314,6 +318,21 @@ def test_sync_tail_dedups_by_stable_id_keeps_a_repeated_message(tmp_path):
     assert [m.text for m in cs.load_recent(tmp_path, session)] == ["ping", "ping"]
 
 
+def test_sync_tail_consumes_each_legacy_text_match_once(tmp_path):
+    """One id-less legacy row may explain one live row, never every later repeat."""
+    session = "slack:C1"
+    cs.record_turn(tmp_path, session, "founder", "yes")  # legacy: no ext_id
+    live = [
+        {"speaker": "founder", "text": "yes", "ts": "100.0001"},
+        {"speaker": "founder", "text": "yes", "ts": "100.0002"},
+    ]
+
+    assert cs.sync_tail(tmp_path, session, live) == 1
+    identities = cs._recent_identities(tmp_path, session, limit=10)
+    assert identities.count(("founder", "yes", "")) == 1
+    assert ("founder", "yes", "100.0002") in identities
+
+
 def test_sync_tail_never_re_appends_the_same_id(tmp_path):
     # The same Slack message (same id) is never appended twice, even across calls.
     session = "slack:C1"
@@ -327,17 +346,33 @@ def test_sync_tail_never_re_appends_the_same_id(tmp_path):
     assert [m.text for m in cs.load_recent(tmp_path, session)] == ["a", "b"]
 
 
-def test_sync_tail_does_not_count_a_failed_write(tmp_path, monkeypatch):
-    # A dropped record_turn (returns 0) must NOT be counted as a resync — logging
-    # a phantom resync hides the very drift this guards against.
+def test_sync_tail_stops_at_a_failed_write_and_retries_the_gap(tmp_path, monkeypatch):
+    """A failed A must stop B becoming an anchor that strands A forever."""
     session = "slack:C1"
     cs.record_turn(tmp_path, session, "founder", "anchor", ts=1.0, ext_id="1.0")
     live = [
         {"speaker": "founder", "text": "anchor", "ts": "1.0"},
-        {"speaker": "universe", "text": "new one", "ts": "2.0"},
+        {"speaker": "founder", "text": "gap A", "ts": "2.0"},
+        {"speaker": "universe", "text": "tail B", "ts": "3.0"},
     ]
-    monkeypatch.setattr(cs, "record_turn", lambda *a, **k: 0)  # every write "drops"
+    real_record = cs.record_turn
+
+    def fail_a(*args, **kwargs):
+        if args[3] == "gap A":
+            return 0
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(cs, "record_turn", fail_a)
     assert cs.sync_tail(tmp_path, session, live) == 0
+    assert [m.text for m in cs.load_recent(tmp_path, session)] == ["anchor"]
+
+    monkeypatch.setattr(cs, "record_turn", real_record)
+    assert cs.sync_tail(tmp_path, session, live) == 2
+    assert [m.text for m in cs.load_recent(tmp_path, session)] == [
+        "anchor",
+        "gap A",
+        "tail B",
+    ]
 
 
 def test_coerce_ts_survives_overflow_and_junk():
@@ -362,9 +397,37 @@ def test_record_turn_is_idempotent_on_ext_id(tmp_path):
     assert [m.text for m in cs.load_recent(tmp_path, session)] == ["reply"]
 
 
+def test_connect_tolerates_duplicate_legacy_ext_ids(tmp_path):
+    """A dirty pre-index DB must remain usable even when index creation fails."""
+    db_path = tmp_path / cs._DB_NAME
+    conn = cs._connect(db_path)
+    conn.execute("DROP INDEX ix_turns_extid")
+    conn.executemany(
+        "INSERT INTO conversation_turns "
+        "(session_id, turn_no, speaker, content, ts, ext_id) "
+        "VALUES (?, ?, 'founder', 'legacy', 1.0, 'same-ts')",
+        [("slack:C1", 1), ("slack:C1", 2)],
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = cs._connect(db_path)
+    try:
+        assert reopened.execute("SELECT COUNT(*) FROM conversation_turns").fetchone()[0] == 2
+        indexes = {
+            row[0]
+            for row in reopened.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert "ix_turns_extid" not in indexes
+    finally:
+        reopened.close()
+
+
 def test_id_less_turns_are_not_deduped_by_id(tmp_path):
-    # Two genuinely distinct id-less turns (founder live-records carry no ext_id)
-    # must both be stored — ext_id idempotency applies ONLY to id-bearing turns.
+    # Legacy/non-Slack callers may still have genuinely distinct id-less turns;
+    # ext_id idempotency applies only to id-bearing turns.
     session = "slack:C1"
     cs.record_turn(tmp_path, session, "founder", "same words")
     cs.record_turn(tmp_path, session, "founder", "same words")

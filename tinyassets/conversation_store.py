@@ -54,6 +54,7 @@ import logging
 import sqlite3
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 from tinyassets.conversation_memory import DEFAULT_LIMIT, Msg
@@ -130,7 +131,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_turns_extid "
             "ON conversation_turns(session_id, ext_id) WHERE ext_id != ''"
         )
-    except sqlite3.OperationalError as exc:
+    except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
         logger.warning(
             "conversation_store: ext_id uniqueness index not created: %s", exc
         )
@@ -322,16 +323,12 @@ def sync_tail(
       prompt (the loader does this).
     * Bounded: only reconciles against the recent window (``limit``), never the
       whole history.
-    * De-duped by a STABLE Slack identity (the message ``ts``), NOT by a text
-      set — so a repeated phrase like "yes" is never lost and can never
-      mis-anchor. A live message is "known" when its ``ts`` matches a stored
-      ``ext_id`` (exact), OR — for turns recorded live without their Slack ts
-      (the founder turn) — when its ``(speaker, text)`` matches a stored turn.
-    * Anchored, so it can never DUPLICATE: it finds the newest live message the
-      store already knows and appends only what follows it. If the live window
-      shares nothing with the store (a full roll-past, or a cold store), it does
-      nothing — appending a whole window blind would duplicate, and the cold
-      case is ``backfill_once``'s job, not this one.
+    * De-duped by the stable Slack ``ts``. A legacy id-less row may match by
+      ``(speaker, text)``, but each stored row is consumed at most once.
+    * Reconciled oldest-first. A failed append stops the pass immediately, so a
+      later success cannot become an anchor that permanently strands the gap.
+      A window with no overlap does nothing; cold import is ``backfill_once``'s
+      job.
     * Best-effort: NEVER raises (the whole body is guarded) and never
       double-counts — ``appended`` only advances when ``record_turn`` actually
       persisted (returned a turn_no), so a dropped write is not logged as a sync.
@@ -367,49 +364,50 @@ def _sync_tail_impl(
         # here would both duplicate what backfill imports and race it.
         return 0
     stored_ids = {ext for _sp, _tx, ext in stored if ext}
-    # Text fallback is ONLY for stored rows that carry no stable id — the turns
-    # recorded live without their Slack ts (the founder turn). Including id-having
-    # rows here would let text shadow the id and drop a legitimately repeated
-    # message that has a NEW id, so those dedup by id alone.
-    stored_pairs = {(sp, tx) for sp, tx, ext in stored if tx and not ext}
+    # Text fallback exists only for pre-stable-id rows. A Counter makes the
+    # fallback a one-for-one legacy migration seam rather than a text set that
+    # shadows every later message with the same words.
+    legacy_pairs = Counter(
+        (speaker, text)
+        for speaker, text, ext in stored
+        if text and not ext
+    )
 
     def _known(speaker: str, text: str, ext: str) -> bool:
-        # Exact stable-id match first (the universe reply + backfilled/synced
-        # turns carry the real Slack ts); fall back to (speaker, text) only for
-        # id-less stored turns (the live-recorded founder turn).
+        # Exact stable-id match first; consume one legacy id-less row only when
+        # necessary. New daemon-side founder and universe writes both have ids.
         if ext and ext in stored_ids:
             return True
-        return (speaker, text) in stored_pairs
+        pair = (speaker, text)
+        if legacy_pairs[pair]:
+            legacy_pairs[pair] -= 1
+            return True
+        return False
 
-    # Anchor: scan the live window newest→oldest for the first message the store
-    # already knows. Everything AFTER it is the missing tail. No anchor at all
-    # means no safe reconciliation point — leave it to normal recording.
-    split = None
-    for i in range(len(rows) - 1, -1, -1):
-        speaker, text, ext = rows[i]
-        if _known(speaker, text, ext):
-            split = i + 1
-            break
-    if split is None:
+    # Require some overlap so sync_tail never races cold backfill. Once overlap
+    # exists, walk the entire window oldest-first; this also repairs a gap that
+    # appears before a later already-stored row.
+    if not any(
+        (ext and ext in stored_ids) or legacy_pairs[(speaker, text)]
+        for speaker, text, ext in rows
+    ):
         return 0
     appended = 0
-    for speaker, text, ext in rows[split:]:
+    for speaker, text, ext in rows:
         if _known(speaker, text, ext):
             continue  # already stored (id or text) — never duplicate
+        if not ext:
+            # Slack timeline rows always carry ts. Without one there is no safe
+            # durable identity, so do not store or advance beyond this gap.
+            break
         turn_no = record_turn(
             universe_dir, session_id, speaker, text, ts=_coerce_ts(ext), ext_id=ext
         )
         if not turn_no:
-            # The write did not persist. Do NOT count it (would log a phantom
-            # resync) and do NOT mark it known (so a retry can still catch it).
-            continue
-        if ext:
-            stored_ids.add(ext)
-        else:
-            # Only id-less rows join the text-dedup set. Adding an id-bearing row's
-            # text here would let it shadow a later legitimately-repeated message
-            # that carries a DIFFERENT id, dropping it (Codex FIX2 2026-08-10).
-            stored_pairs.add((speaker, text))
+            # Do not count or advance beyond an unpersisted gap. The next turn
+            # starts from the same row and retries it before any later message.
+            break
+        stored_ids.add(ext)
         appended += 1
     if appended:
         logger.info(

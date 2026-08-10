@@ -101,7 +101,7 @@ def _deliver(**overrides):
         calls["post"].append(
             {"destination": destination, "body": body, "thread_ts": thread_ts}
         )
-        return _Receipt("1700000000.000100")
+        return _Receipt(f"slack:{destination.address}:1700000000.000200")
 
     kwargs = {
         "provider": "slack",
@@ -187,7 +187,7 @@ def test_the_receipt_carries_no_reply_text_and_no_authority(base):
     assert not hasattr(result, "founder_grant")
     assert not hasattr(result, "universe_id")
     assert not hasattr(result, "universe_dir")
-    assert result.provider_receipt_ref == "1700000000.000100"
+    assert result.provider_receipt_ref == f"slack:{CHANNEL}:1700000000.000200"
 
 
 def test_an_empty_prompt_costs_no_provider_call(base):
@@ -344,8 +344,19 @@ def test_memory_persists_across_turns(base, monkeypatch):
     _bind(base, "u-ingress-mem", binding)
     _grant_founder(monkeypatch)
 
-    # Turn 1: nothing to remember yet (cold store, no Slack token to backfill),
-    # but the turn is recorded for next time.
+    import tinyassets.effectors.slack_agent_turn as sat
+
+    live = [
+        {
+            "speaker": "founder",
+            "text": "my favorite topic is tide pools",
+            "ts": "1700000000.000100",
+        }
+    ]
+    monkeypatch.setattr(sat, "load_thread_history", lambda **_kwargs: list(live))
+
+    # Turn 1: the live timeline supplies the current founder message id, but the
+    # current message is excluded from its own prior-history block.
     _, calls1 = _deliver(
         channel_id=_DM,
         text="<@U0BOT> my favorite topic is tide pools",
@@ -355,6 +366,19 @@ def test_memory_persists_across_turns(base, monkeypatch):
     assert all("tide pools" not in m.text for m in first_history)
 
     # Turn 2: the durable store feeds turn 1 back in as prior context.
+    live[:] = [
+        *live,
+        {
+            "speaker": "universe",
+            "text": "the universe answers",
+            "ts": "1700000000.000200",
+        },
+        {
+            "speaker": "founder",
+            "text": "what did I say my favorite topic was?",
+            "ts": "1700000000.000300",
+        },
+    ]
     _, calls2 = _deliver(
         channel_id=_DM,
         text="<@U0BOT> what did I say my favorite topic was?",
@@ -364,8 +388,41 @@ def test_memory_persists_across_turns(base, monkeypatch):
     texts = [m.text for m in history]
     assert "my favorite topic is tide pools" in texts  # founder's earlier turn
     assert "the universe answers" in texts  # the universe's own earlier reply
+    assert texts.count("the universe answers") == 1
     # The current turn's own prompt is not shown inside its own memory block.
     assert "what did I say my favorite topic was?" not in texts
+
+
+def test_current_founder_turn_uses_the_live_timeline_ts(base, monkeypatch):
+    """Ingress derives the current message id daemon-side, without agent fields."""
+    binding = _make_universe(base, "u-ingress-founder-id")
+    _bind(base, "u-ingress-founder-id", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    founder_ts = "1700000000.000111"
+    calls = []
+
+    def _timeline(**kwargs):
+        calls.append(kwargs)
+        return [{"speaker": "founder", "text": "hello", "ts": founder_ts}]
+
+    monkeypatch.setattr(sat, "load_thread_history", _timeline)
+    _, delivered = _deliver(
+        channel_id=_DM,
+        text="<@U0BOT> hello",
+        event_id="Ev-founder-id-1",
+    )
+
+    conv_dir = _universe_dir("u-ingress-founder-id")
+    identities = cs._recent_identities(conv_dir, f"slack:{_DM}", limit=10)
+    founders = [row for row in identities if row[0] == "founder"]
+    assert founders == [("founder", "hello", founder_ts)]
+    assert delivered["converse"][0]["conversation_history"] == []
+    assert calls and not calls[0].get("exclude_text")
 
 
 def test_a_dropped_record_is_re_synced_from_the_live_timeline(base, monkeypatch):
@@ -388,15 +445,21 @@ def test_a_dropped_record_is_re_synced_from_the_live_timeline(base, monkeypatch)
     session = f"slack:{_DM}"
     # Store already backfilled (marker set) but then MISSED recording a later
     # reply — the exact silent-drift regression.
-    cs.backfill_once(conv_dir, session, [{"speaker": "founder", "text": "start the plan"}])
-    cs.record_turn(conv_dir, session, "universe", "starting now")
+    cs.backfill_once(
+        conv_dir,
+        session,
+        [{"speaker": "founder", "text": "start the plan", "ts": "1.0"}],
+    )
+    cs.record_turn(
+        conv_dir, session, "universe", "starting now", ts=2.0, ext_id="2.0"
+    )
 
     # The live Slack timeline is AHEAD: it also holds the turns the store missed.
     live = [
-        {"speaker": "founder", "text": "start the plan"},
-        {"speaker": "universe", "text": "starting now"},
-        {"speaker": "founder", "text": "any update?"},        # store MISSED this
-        {"speaker": "universe", "text": "shipped part one"},  # store MISSED this
+        {"speaker": "founder", "text": "start the plan", "ts": "1.0"},
+        {"speaker": "universe", "text": "starting now", "ts": "2.0"},
+        {"speaker": "founder", "text": "any update?", "ts": "3.0"},
+        {"speaker": "universe", "text": "shipped part one", "ts": "4.0"},
     ]
     monkeypatch.setattr(sat, "load_thread_history", lambda **k: live)
 
@@ -447,10 +510,18 @@ def test_the_reply_is_recorded_only_after_it_is_posted(base, monkeypatch):
     _grant_founder(monkeypatch)
 
     import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
     from tinyassets.api.helpers import _universe_dir
 
     conv_dir = _universe_dir("u-ingress-por")
     session = f"slack:{_DM}"
+    monkeypatch.setattr(
+        sat,
+        "load_thread_history",
+        lambda **_kwargs: [
+            {"speaker": "founder", "text": "hello there", "ts": "1700000000.000100"}
+        ],
+    )
 
     def _post_boom(destination, body, *, thread_ts=""):
         raise RuntimeError("slack post 500")
@@ -464,6 +535,29 @@ def test_the_reply_is_recorded_only_after_it_is_posted(base, monkeypatch):
     stored = [m.text for m in cs.load_recent(conv_dir, session)]
     assert "the universe answers" not in stored  # undelivered reply not recorded
     assert "hello there" in stored  # the founder's message WAS recorded pre-converse
+
+
+def test_a_reply_record_failure_after_post_never_escapes(base, monkeypatch):
+    """Once Slack accepted the reply, memory bookkeeping cannot fail delivery."""
+    binding = _make_universe(base, "u-ingress-post-safe")
+    _bind(base, "u-ingress-post-safe", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("path coercion exploded")
+
+    monkeypatch.setattr(cs, "record_turn", _boom)
+    result, calls = _deliver(
+        channel_id=_DM,
+        text="<@U0BOT> hello",
+        event_id="Ev-post-safe-1",
+    )
+
+    assert result.handled is True
+    assert result.provider_receipt_ref == f"slack:{_DM}:1700000000.000200"
+    assert calls["post"][-1]["body"] == "the universe answers"
 
 
 def test_memory_load_never_raises_into_the_turn(base, monkeypatch):
