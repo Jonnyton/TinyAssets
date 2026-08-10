@@ -650,6 +650,39 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "rotation running-fleet boundary and exact correction image proved before quiescence"
 
+      - name: Prove candidate image loads before quiescence
+        id: candidate-sanity
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          # Outage-window guard. Prove the NEW image's code actually LOADS before
+          # the stop-writer fence quiesces the live fleet. A broken build (bad
+          # digest, missing module, import error — e.g. the `No module named …`
+          # class) is caught here while the fleet is still fully untouched, so it
+          # can NEVER leave prod with zero containers. The check runs in an
+          # ephemeral, memory-capped, network-less, VOLUME-LESS container: no prod
+          # data volume, no ports, --rm — so it cannot read/write prod state, bind
+          # a prod port, OOM the live fleet, or linger as an extra volume consumer
+          # that would later trip the fence's exact-fleet checks.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo docker pull '${NEW_IMAGE}' >/dev/null"
+          # Capture the container's exit code DIRECTLY. A masking pipe (e.g.
+          # `docker run … | tail`) would set $? to the pipe tail's status and the
+          # gate would silently never fire — verified 2026-08-09.
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none --entrypoint python '${NEW_IMAGE}' -c 'import tinyassets.universe_server'"
+          sanity_status=$?
+          set -e
+          if [ "$sanity_status" -ne 0 ]; then
+            echo "::error::candidate image failed to load (rc=${sanity_status}); refusing to quiesce the live fleet"
+            exit 1
+          fi
+          echo "candidate image loads cleanly; safe to proceed to the stop-writer fence"
+
       # TRANSITIONAL retire-cheat-loop task 2.1 fence. Remove the helper and
       # these orchestration steps after task 2.5's locked migration.
       - name: Transitional task 2.1 stop-writer preflight
