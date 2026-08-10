@@ -274,11 +274,16 @@ def load_recent(
         try:
             rows = conn.execute(
                 "SELECT speaker, content, ts FROM conversation_turns "
-                "WHERE session_id = ? ORDER BY turn_no DESC LIMIT ?",
+                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
                 (session_id, max(1, int(limit))),
             ).fetchall()
         finally:
             conn.close()
+        # Order by the real Slack ts (CHRONOLOGY), turn_no only as a tiebreaker.
+        # sync_tail can back-fill a missed MIDDLE turn, which gets turn_no=max+1
+        # (appended last); ordering by turn_no alone would then render it out of
+        # order (stored 1,3 + synced 2 -> "1,3,2"). Ordering by ts renders 1,2,3
+        # (Codex 2026-08-10). Every row has a positive ts (_when falls back to now).
         # DESC from SQL → reverse to oldest-first for the formatter. Carry ts so
         # the turn knows WHEN each message was sent (SDK createdAt metadata). The
         # ts coercion stays INSIDE the try so malformed stored data degrades to
@@ -436,7 +441,7 @@ def _recent_identities(
         try:
             fetched = conn.execute(
                 "SELECT speaker, content, ext_id FROM conversation_turns "
-                "WHERE session_id = ? ORDER BY turn_no DESC LIMIT ?",
+                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
                 (session_id, max(1, int(limit))),
             ).fetchall()
         finally:

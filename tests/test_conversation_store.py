@@ -461,3 +461,26 @@ def test_concurrent_sync_stores_a_reply_once(tmp_path):
     replies = [m.text for m in cs.load_recent(tmp_path, session, limit=100)
                if m.text == "the reply"]
     assert replies == ["the reply"], f"reply stored {len(replies)} times, want 1"
+
+
+def test_load_recent_renders_a_backfilled_middle_turn_in_ts_order(tmp_path):
+    """A middle turn the store missed and later re-synced must render in its real
+    CHRONOLOGICAL position, not last. sync_tail gives a back-filled row
+    turn_no=max+1 (appended last); ordering by turn_no alone would render a
+    stored 1,3 + synced 2 as "1,3,2". load_recent orders by ts (Codex 2026-08-10).
+
+    Mutation-check: revert load_recent's ORDER BY to `turn_no DESC` and the order
+    below becomes m1, reply, m2 — this goes red.
+    """
+    session = "slack:C1"
+    # Store has turns 1 and 3 (the middle one, ts=2.0, was missed).
+    cs.record_turn(tmp_path, session, "founder", "m1", ts=1.0, ext_id="1.0")
+    cs.record_turn(tmp_path, session, "universe", "reply", ts=3.0, ext_id="3.0")
+    live = [
+        {"speaker": "founder", "text": "m1", "ts": "1.0"},      # known (id)
+        {"speaker": "founder", "text": "m2", "ts": "2.0"},      # MISSED middle turn
+        {"speaker": "universe", "text": "reply", "ts": "3.0"},  # known (id)
+    ]
+    assert cs.sync_tail(tmp_path, session, live) == 1  # m2 back-filled
+    # Rendered oldest-first by CHRONOLOGY, not by insertion order.
+    assert [m.text for m in cs.load_recent(tmp_path, session)] == ["m1", "m2", "reply"]
