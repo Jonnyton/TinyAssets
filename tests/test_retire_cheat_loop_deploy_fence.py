@@ -322,6 +322,7 @@ def test_volume_consumer_inventory_includes_stopped_containers():
             *,
             check: bool = True,
             input_text: str | None = None,
+            timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
         ) -> str:
             del check, input_text
             self.args = list(args)
@@ -573,6 +574,7 @@ class LifecycleHost:
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         del check, input_text
         command = tuple(args)
@@ -1899,6 +1901,7 @@ def test_prepare_replays_partial_recovery_removal_after_durable_intent(
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal injected
         command = tuple(args)
@@ -1964,6 +1967,7 @@ def test_prepare_refuses_off_volume_name_substitution_before_replay_removal(
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal interrupted
         command = tuple(args)
@@ -2643,6 +2647,7 @@ def test_unsafe_cleanup_stops_exact_ids_and_rejects_name_substitution(
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal stop_call
         command = tuple(args)
@@ -3037,6 +3042,7 @@ def test_container_pid_ownership_rejects_malformed_or_partial_output(
             *,
             check: bool = True,
             input_text: str | None = None,
+            timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
         ) -> str:
             del args, check, input_text
             return docker_output
@@ -3052,6 +3058,7 @@ def test_container_pid_ownership_treats_lookup_failure_as_zero_trust():
             *,
             check: bool = True,
             input_text: str | None = None,
+            timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
         ) -> str:
             del args, check, input_text
             raise FenceError("private docker failure detail")
@@ -3067,6 +3074,7 @@ def test_container_pid_ownership_accepts_complete_well_formed_output():
             *,
             check: bool = True,
             input_text: str | None = None,
+            timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
         ) -> str:
             del args, check, input_text
             return "PID\n123\n456"
@@ -4415,6 +4423,7 @@ def test_partial_target_removal_replays_after_interrupted_subset(
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal interrupted
         command = tuple(args)
@@ -4601,6 +4610,7 @@ def test_stopped_full_fleet_removal_replays_exact_remaining_subset(
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal interrupted
         command = tuple(args)
@@ -4664,6 +4674,7 @@ def test_stopped_full_fleet_replay_refuses_off_volume_name_substitution_before_r
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal interrupted
         command = tuple(args)
@@ -4725,6 +4736,7 @@ def test_recover_unsafe_replays_interrupted_full_stopped_fleet_removal(
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
         nonlocal interrupted
         command = tuple(args)
@@ -6632,3 +6644,53 @@ def test_boot_reconciler_refences_interrupted_quiesced_restore():
     source = inspect.getsource(fence.reconcile_recovery_on_boot)
     assert 'phase == "restoring_quiesced"' in source
     assert "return quiesce_unsafe(" in source
+
+
+def test_writer_unit_stop_uses_a_budget_above_the_unit_stop_timeout(monkeypatch):
+    """The daemon's ExecStop (`docker compose down`, systemd TimeoutStopSec=60s) can
+    take the full ~60s, which exceeds the 45s default host budget. If the fence stops
+    it with the default, the stop trips `host command timed out after 45s: systemctl
+    stop`, the fence downs the fleet mid-quiesce, and the no-image-mutation rollback
+    is skipped — a production outage (live 2026-08-10, deploy run 31430209381).
+
+    Mutation-check: drop `timeout_seconds=WRITER_UNIT_STOP_TIMEOUT_SECONDS` from the
+    stop call and the daemon is stopped with the 45s default — this goes red.
+    """
+    calls: list[tuple[list[str], int]] = []
+
+    class RecordingHost:
+        def unit_present(self, _unit: str) -> bool:
+            return True
+
+        def run(
+            self,
+            args: Any,
+            *,
+            check: bool = True,
+            input_text: str | None = None,
+            timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
+        ) -> str:
+            del check, input_text
+            calls.append((list(args), timeout_seconds))
+            return ""
+
+    monkeypatch.setattr(fence, "_apply_boot_fence", lambda *a, **k: None)
+    monkeypatch.setattr(fence, "_wait_units_quiesced", lambda *a, **k: None)
+
+    fence._stop_and_mask_writer_units(RecordingHost())
+
+    stop_calls = [(args, t) for args, t in calls if args[:2] == ["systemctl", "stop"]]
+    daemon_budgets = [t for args, t in stop_calls if fence.DAEMON_SERVICE in args]
+    racer_budgets = [t for args, t in stop_calls if fence.DAEMON_SERVICE not in args]
+
+    # The daemon gets the long budget; the racers KEEP the fast default so a hung
+    # racer can't consume 120s each and cumulatively blow the 300s preflight budget.
+    assert daemon_budgets, "the daemon writer unit was never stopped"
+    assert all(t == fence.WRITER_UNIT_STOP_TIMEOUT_SECONDS for t in daemon_budgets)
+    assert racer_budgets, "the racer units were never stopped"
+    assert all(t == fence.HOST_COMMAND_TIMEOUT_SECONDS for t in racer_budgets)
+
+    # The budget must MEANINGFULLY exceed the daemon unit's TimeoutStopSec (60s) and
+    # stay under the workflow's outer `systemd-run RuntimeMaxSec` (300s) — a value of
+    # 46 would beat the 45s default yet still be too small (Codex 2026-08-10).
+    assert 60 < fence.WRITER_UNIT_STOP_TIMEOUT_SECONDS < 300
