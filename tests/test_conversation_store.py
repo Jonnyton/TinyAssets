@@ -381,9 +381,36 @@ def test_coerce_ts_survives_overflow_and_junk():
     # bad ts degrades to "now" rather than storing junk (Codex FIX1 2026-08-10).
     assert cs._coerce_ts(10**10000) is None       # OverflowError swallowed
     assert cs._coerce_ts("nan") is None           # NaN rejected (not > 0)
-    assert cs._coerce_ts("inf") is not None or cs._coerce_ts("inf") is None  # never raises
+    assert cs._coerce_ts("inf") is None           # +inf rejected (would sort above all)
+    assert cs._coerce_ts("-inf") is None          # -inf rejected (not > 0)
+    assert cs._coerce_ts(float("inf")) is None    # non-string inf too
     assert cs._coerce_ts(object()) is None        # TypeError still handled
     assert cs._coerce_ts("1786.5") == 1786.5      # a real Slack ts still parses
+
+
+def test_an_infinite_ts_is_never_stored_as_infinity(tmp_path):
+    """An 'inf' ts must never be persisted: now that load_recent orders by ts, an
+    infinite ts would sort above every real turn and evict valid history from the
+    bounded window. _coerce_ts rejects it, so _when falls back to a finite "now"
+    (Codex 2026-08-10).
+
+    Mutation-check: drop `math.isfinite` from _coerce_ts and the stored ts is inf
+    — this goes red.
+    """
+    import math as _math
+    import sqlite3 as _sqlite3
+
+    session = "slack:C1"
+    cs.record_turn(tmp_path, session, "founder", "poison", ts=float("inf"), ext_id="inf")
+    db = tmp_path / cs._DB_NAME
+    conn = _sqlite3.connect(str(db))
+    try:
+        stored_ts = conn.execute(
+            "SELECT ts FROM conversation_turns WHERE content = 'poison'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert _math.isfinite(stored_ts), f"an inf ts must degrade to finite, got {stored_ts}"
 
 
 def test_record_turn_is_idempotent_on_ext_id(tmp_path):
@@ -484,3 +511,24 @@ def test_load_recent_renders_a_backfilled_middle_turn_in_ts_order(tmp_path):
     assert cs.sync_tail(tmp_path, session, live) == 1  # m2 back-filled
     # Rendered oldest-first by CHRONOLOGY, not by insertion order.
     assert [m.text for m in cs.load_recent(tmp_path, session)] == ["m1", "m2", "reply"]
+
+
+def test_a_new_message_is_not_swallowed_by_a_stale_legacy_text_match(tmp_path):
+    """FIX2 ts-guard (Codex 2026-08-10): a legacy id-less row may only stand in for
+    an OLD live message. A genuinely NEW message (ts newer than every stored id)
+    must be appended even if its words repeat a legacy row whose original has
+    rolled out of the window.
+
+    Mutation-check: remove the `live_ts <= newest_id_ts` guard and the new "yes"
+    is consumed by the stale legacy "yes" and dropped — this goes red.
+    """
+    session = "slack:C1"
+    cs.record_turn(tmp_path, session, "founder", "yes")               # legacy id-less
+    cs.record_turn(tmp_path, session, "founder", "hello", ts=100.0, ext_id="100.0")
+    live = [
+        {"speaker": "founder", "text": "hello", "ts": "100.0"},  # known by id (anchor)
+        {"speaker": "founder", "text": "yes", "ts": "200.0"},    # NEW, ts > newest id
+    ]
+    assert cs.sync_tail(tmp_path, session, live) == 1  # the new "yes" is appended
+    yeses = [m for m in cs.load_recent(tmp_path, session, limit=50) if m.text == "yes"]
+    assert len(yeses) == 2, f"the new distinct 'yes' was dropped: {len(yeses)}"

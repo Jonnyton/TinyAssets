@@ -51,6 +51,7 @@ it integrates; until then it stays deliberately lightweight.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -159,12 +160,18 @@ def record_turn(
         return 0
     if not session_id:
         return 0
-    # Coerce defensively: `float("not-a-ts")` raises, and this runs OUTSIDE the
-    # retry try below, so a bad ts would escape as a ValueError and drop the turn.
-    when = _when(ts)
-    ext_id = str(ext_id or "")
-    db_path = _db_path(universe_dir)
-    lock = _lock_for(db_path)
+    # Setup can raise too (a custom ext_id with a raising __str__, a bad-type
+    # universe_dir in _db_path), and this runs OUTSIDE the retry try below, so
+    # guard it — record_turn's contract is NEVER to raise into the turn
+    # (Codex 2026-08-10).
+    try:
+        when = _when(ts)
+        ext_id = str(ext_id or "")
+        db_path = _db_path(universe_dir)
+        lock = _lock_for(db_path)
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        logger.warning("conversation_store: record setup failed", exc_info=True)
+        return 0
     for attempt in range(6):
         try:
             with lock:
@@ -262,13 +269,6 @@ def load_recent(
     db_path = _db_path(universe_dir)
     if not db_path.exists():
         return []
-    def _ts(value: object) -> "float | None":
-        try:
-            f = float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return None
-        return f if f > 0 else None
-
     try:
         conn = _connect(db_path)
         try:
@@ -289,7 +289,7 @@ def load_recent(
         # ts coercion stays INSIDE the try so malformed stored data degrades to
         # "no memory", never a raise (fail-open contract).
         return [
-            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_ts(t))
+            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_coerce_ts(t))
             for sp, ct, t in reversed(rows)
         ]
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
@@ -377,6 +377,12 @@ def _sync_tail_impl(
         for speaker, text, ext in stored
         if text and not ext
     )
+    # The newest stored STABLE id (a Slack ts). A legacy id-less row can only
+    # stand in for an OLD live message (<= this); a live row NEWER than every
+    # stored id is genuinely new and must never be swallowed by a stale text
+    # match whose original has rolled out of the window (Codex FIX2 2026-08-10).
+    _id_ts = [t for t in (_coerce_ts(e) for e in stored_ids) if t is not None]
+    newest_id_ts = max(_id_ts) if _id_ts else None
 
     def _known(speaker: str, text: str, ext: str) -> bool:
         # Exact stable-id match first; consume one legacy id-less row only when
@@ -385,8 +391,12 @@ def _sync_tail_impl(
             return True
         pair = (speaker, text)
         if legacy_pairs[pair]:
-            legacy_pairs[pair] -= 1
-            return True
+            live_ts = _coerce_ts(ext)
+            # Only when this live row is not newer than the newest stored id
+            # (or there are no id rows yet — the pure-legacy transition start).
+            if newest_id_ts is None or (live_ts is not None and live_ts <= newest_id_ts):
+                legacy_pairs[pair] -= 1
+                return True
         return False
 
     # Require some overlap so sync_tail never races cold backfill. Once overlap
@@ -476,7 +486,11 @@ def _coerce_ts(value: object) -> "float | None":
         f = float(value)  # type: ignore[arg-type]
     except Exception:  # noqa: BLE001 - a bad ts must never raise into the turn
         return None
-    return f if f > 0 else None
+    # Finite AND positive. `float("inf") > 0` is True, so without isfinite an
+    # "inf" ts would be STORED and — now that load_recent orders by ts — sort
+    # above every real turn, crowding valid history out of the bounded window
+    # (Codex 2026-08-10). NaN is already rejected (`nan > 0` is False).
+    return f if (math.isfinite(f) and f > 0) else None
 
 
 def _when(ts: object) -> float:
