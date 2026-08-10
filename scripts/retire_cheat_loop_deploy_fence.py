@@ -101,6 +101,15 @@ DEFAULT_STATE_PATH = Path(
 )
 DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 HOST_COMMAND_TIMEOUT_SECONDS = 45
+# Stopping the daemon writer unit runs `ExecStop=docker compose down --timeout 30`
+# under a systemd `TimeoutStopSec=60s`, so a legitimate quiesce can take the full
+# ~60s (SIGTERM grace across the fleet, then SIGKILL) — LONGER than the 45s default
+# host budget. Live 2026-08-10 (deploy run 31430209381, sha 91729b9b): the stop
+# tripped `host command timed out after 45s: systemctl stop`, the fence downed the
+# fleet mid-quiesce, and the no-image-mutation rollback was skipped, leaving prod
+# with zero daemon containers. The stop budget MUST exceed the unit's TimeoutStopSec
+# with margin (and stays well under the workflow's 300s systemd-run RuntimeMaxSec).
+WRITER_UNIT_STOP_TIMEOUT_SECONDS = 120
 LOCK_TIMEOUT_SECONDS = 60
 # 120s was shorter than the daemon service's real startup. Live 2026-08-05,
 # twice (runs 31057866767 and 31058104613): finalize failed with
@@ -945,7 +954,13 @@ def _stop_and_mask_writer_units(
     if not boot_fence_applied:
         _apply_boot_fence(host, present_racers)
     for unit in (*present_racers, DAEMON_SERVICE):
-        host.run(["systemctl", "stop", unit])
+        # The daemon's ExecStop (docker compose down) can take the unit's full
+        # TimeoutStopSec (~60s), which exceeds the 45s default host budget and
+        # would trip the fence mid-quiesce (Codex-reviewed fix, 2026-08-10).
+        host.run(
+            ["systemctl", "stop", unit],
+            timeout_seconds=WRITER_UNIT_STOP_TIMEOUT_SECONDS,
+        )
     if present_racers:
         host.run(["systemctl", "mask", "--runtime", *present_racers])
     host.run(["systemctl", "mask", "--runtime", DAEMON_SERVICE])
