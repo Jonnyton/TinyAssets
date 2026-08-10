@@ -51,6 +51,28 @@ logger = logging.getLogger("universe_server.runs")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
+def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
+    """Bind branch execution to the selected universe's provider config."""
+    uid = (universe_id or "").strip()
+    from tinyassets.config import load_universe_config
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.call import bind_universe_provider_call
+
+    if not uid:
+        # A legacy/unowned run has no requester authority. Keep it explicit so
+        # the router raises ProviderAuthorityHeldError instead of consulting
+        # the process-global provider selection.
+        return bind_universe_provider_call(provider_call, UniverseContext())
+    universe_dir = _universe_dir(uid)
+    return bind_universe_provider_call(
+        provider_call,
+        UniverseContext(
+            universe_dir=universe_dir,
+            config=load_universe_config(universe_dir),
+        ),
+    )
+
+
 def _current_actor_grants() -> tuple[str, ...]:
     raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
     return tuple(part for part in raw.replace(",", " ").split() if part)
@@ -651,6 +673,10 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         from tinyassets.providers.call import (
             call_provider as provider_call,
         )
+        provider_call = _bind_run_provider_call(
+            provider_call,
+            _request_universe(kwargs.get("universe_id") or ""),
+        )
     except ImportError:
         provider_call = None
 
@@ -1242,6 +1268,10 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         from tinyassets.providers.call import (
             call_provider as provider_call,
         )
+        provider_call = _bind_run_provider_call(
+            provider_call,
+            _run_universe_id(_resume_record or {}),
+        )
     except ImportError:
         provider_call = None
 
@@ -1702,6 +1732,10 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     try:
         from tinyassets.providers.call import (
             call_provider as provider_call,
+        )
+        provider_call = _bind_run_provider_call(
+            provider_call,
+            _request_universe(kwargs.get("universe_id") or ""),
         )
     except ImportError:
         provider_call = None

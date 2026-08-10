@@ -139,6 +139,13 @@ def test_host_local_daemon_keeps_its_own_auth(host_auth):
 
     MUTATION: apply the universe empty-base environment without a universe
     binding -> RED, because the host daemon would lose its own credentials.
+
+    Keystone slice 1 (requester-owned execution) deliberately does NOT strip
+    this no-universe path: the founder fail-closed guarantee covers USER
+    universes (which carry a universe_dir and hit the router-level ceiling),
+    and host-local no-universe fail-close is deferred to the
+    TINYASSETS_PROVIDER_AUTHORITY_V2-gated successor (constrain-set-engine
+    Decision 5). So this asserts host-env RETENTION, not the strip.
     """
     env = subprocess_env_for_provider("claude-code", universe_dir=None)
 

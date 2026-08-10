@@ -36,8 +36,10 @@ class UniverseConfig:
     allowed_providers: list[str] | None = None
     """Per-universe provider allowlist (Q6.3 privacy primitive).
 
-    None = no allowlist; the full fallback chain is preserved
-    (backwards-compatible default). A list = strict allowlist; the
+    None = no stored allowlist. Legacy/contextless routing preserves the full
+    fallback chain, while an explicit requester-universe call derives a strict
+    ceiling from that universe's selected writer/judge so it cannot borrow the
+    process-global chain. A list = strict allowlist; the
     router filters every fallback chain (writer/judge/extract) and the
     judge ensemble down to providers whose name appears here. If the
     filter empties a chain, the call hard-fails with

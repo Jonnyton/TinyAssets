@@ -28,6 +28,10 @@ class ProviderUnavailableError(ProviderError):
     """
 
 
+class ProviderAuthorityHeldError(ProviderError):
+    """Provider execution has no requester- or platform-owned authority."""
+
+
 class AllProvidersExhaustedError(ProviderError):
     """Every provider in the fallback chain failed or is in cooldown.
 
