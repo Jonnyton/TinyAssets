@@ -37,10 +37,11 @@ Contract
 
 Not the custody store
 ---------------------
-:mod:`tinyassets.conversation_custody` is a separate concern: user-controlled
-privacy/export/delete behind one-use Ed25519-signed per-operation grants. Using
-it for every-turn working memory would mean minting + consuming a signed grant
-per turn — the wrong tool. Authorization for the turn is the founder gate on the
+The user-controlled privacy/export/delete custody store (behind one-use
+Ed25519-signed per-operation grants) is a SEPARATE concern, and this module is
+deliberately NOT a consumer of it. Using that store for every-turn working
+memory would mean minting + consuming a signed grant per turn — the wrong tool.
+Authorization for the turn is the founder gate on the
 caller (``converse`` is founder-only; history injection is founder-gated), and
 per-universe DB isolation inherits the universe dir's filesystem boundary. If a
 future authenticated app-conversation authority owner ships, this store is where

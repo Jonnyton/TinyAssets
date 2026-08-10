@@ -241,7 +241,8 @@ async def test_a_real_frame_becomes_a_real_answer(universe, monkeypatch):
     _deposit(universe)
     posted = []
 
-    def _fake_converse(universe_id, message, *, actor_id="", founder_grant=None):
+    def _fake_converse(universe_id, message, *, actor_id="", founder_grant=None,
+                       conversation_history=None):
         who = "founder" if founder_grant is not None else "not-founder"
         return f"[{universe_id}|{who}|{actor_id}] you asked: {message}"
 
