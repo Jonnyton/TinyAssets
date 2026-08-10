@@ -43,6 +43,8 @@ from tinyassets.providers.quota import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tinyassets.config import UniverseConfig
 
 logger = logging.getLogger(__name__)
@@ -321,6 +323,27 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+
+        # Engine-source resolution hook (slice 3a). A universe that chose
+        # `self_hosted_endpoint` runs its calls ONLY on the user-provided
+        # endpoint -- never the platform fallback chain, never a platform
+        # credential. Placed BEFORE chain selection and kept minimal + additive
+        # (a single early branch + helper) so it does not entangle with the
+        # fallback/allowlist/auth-health logic that
+        # `constrain-set-engine-provider-authority` owns. Fail-closed: an unset
+        # or unreachable endpoint raises AllProvidersExhaustedError; it NEVER
+        # widens to claude-code/codex/free/ollama. Other engine sources
+        # (byo_api_key / market_rented / host_daemon / unset) fall through
+        # unchanged.
+        if (
+            resolved_config is not None
+            and getattr(resolved_config, "engine_source", "")
+            == "self_hosted_endpoint"
+        ):
+            return await self._call_self_hosted(
+                resolved_config, prompt, system, cfg, universe_dir,
+            )
+
         if invocation_carrier is not None:
             if invocation_carrier.max_tokens < 1:
                 raise PermissionError("armed provider invocation has no positive token budget")
@@ -613,6 +636,49 @@ class ProviderRouter:
         )
 
     # ------------------------------------------------------------------
+    # Engine-source runtime: user-provided self-hosted endpoint (slice 3a)
+    # ------------------------------------------------------------------
+
+    async def _call_self_hosted(
+        self,
+        config: "UniverseConfig",
+        prompt: str,
+        system: str,
+        cfg: ModelConfig,
+        universe_dir: Path | None,
+    ) -> ProviderResponse:
+        """Route a call to the universe's own OpenAI-compatible endpoint.
+
+        Fail-closed: an unset ``engine_endpoint`` or a failing endpoint call
+        raises :class:`AllProvidersExhaustedError`. This path NEVER falls back
+        to platform providers -- a ``self_hosted_endpoint`` universe runs only
+        on user-provided compute (founder invariant).
+        """
+        endpoint = (getattr(config, "engine_endpoint", "") or "").strip()
+        if not endpoint:
+            raise AllProvidersExhaustedError(
+                "Universe engine_source=self_hosted_endpoint but "
+                "engine_endpoint is unset. The self-hosted runtime fails "
+                "closed rather than falling back to a platform provider -- set "
+                "the universe's engine_endpoint (universe action=set_engine)."
+            )
+
+        from tinyassets.providers.self_hosted_provider import SelfHostedProvider
+
+        provider = SelfHostedProvider(endpoint)
+        try:
+            return await provider.complete(
+                prompt, system, cfg, universe_dir=universe_dir,
+            )
+        except ProviderError as exc:
+            # Fail closed: never widen to platform providers on failure.
+            raise AllProvidersExhaustedError(
+                f"Self-hosted engine at {endpoint!r} failed and the "
+                "self-hosted runtime fails closed (no platform fallback): "
+                f"{type(exc).__name__}: {str(exc)[:200]}"
+            ) from exc
+
+    # ------------------------------------------------------------------
     # Policy-aware routing (per-node llm_policy override)
     # ------------------------------------------------------------------
 
@@ -680,6 +746,19 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+
+        # Engine-source hook (slice 3a): a self_hosted_endpoint universe runs on
+        # its own endpoint even under an explicit llm_policy -- never widen to
+        # the platform chain. Mirrors the branch in `call()`; fails closed.
+        if (
+            resolved_config is not None
+            and getattr(resolved_config, "engine_source", "")
+            == "self_hosted_endpoint"
+        ):
+            resp = await self._call_self_hosted(
+                resolved_config, prompt, system, cfg, universe_dir,
+            )
+            return resp.text, resp.provider, self._call_meta(resp, attempts=1)
 
         if not policy:
             resp = await self.call(
@@ -947,6 +1026,28 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+
+        # Engine-source hook (slice 3a): a self_hosted_endpoint universe judges
+        # ONLY on its own endpoint -- the platform judge fan-out would leak to
+        # codex/gemini/groq/grok/ollama. Return a single self-hosted judge
+        # response, or [] on failure (the ensemble's never-raise contract);
+        # either way it never widens to a platform provider (fail closed).
+        if (
+            resolved_config is not None
+            and getattr(resolved_config, "engine_source", "")
+            == "self_hosted_endpoint"
+        ):
+            try:
+                resp = await self._call_self_hosted(
+                    resolved_config, prompt, system, cfg, universe_dir,
+                )
+                return [resp]
+            except AllProvidersExhaustedError:
+                logger.warning(
+                    "Self-hosted judge endpoint failed; returning no judges "
+                    "(fail closed, no platform fan-out)."
+                )
+                return []
 
         # Q6.3 — filter judge ensemble by per-universe allowlist (privacy
         # primitive). Empty filter => empty list, matching the existing
