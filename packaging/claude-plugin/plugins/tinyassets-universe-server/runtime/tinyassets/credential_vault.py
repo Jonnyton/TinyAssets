@@ -8,9 +8,13 @@ secret values only to daemon-side effectors/providers that need them.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
+import secrets
+import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -308,7 +312,7 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     return _records_from_payload(payload)
 
 
-def write_credential_vault(
+def _write_credential_vault_unlocked(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
 ) -> dict[str, Any]:
@@ -382,6 +386,298 @@ def write_credential_vault(
         "collapsed_credential_count": collapsed_credential_count,
         "dropped_credential_slots": dropped_credential_slots,
     }
+
+
+def write_credential_vault(
+    universe_dir: str | Path,
+    credentials: list[dict[str, Any]] | dict[str, Any],
+) -> dict[str, Any]:
+    """Write while excluding assignment readers and other custody writers."""
+
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    with provider_assignment_admission().exclusive(universe_dir):
+        return _write_credential_vault_unlocked(universe_dir, credentials)
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCredentialCustodyReference:
+    """Secret-free credential identity issued by the vault custody owner."""
+
+    reference_id: str
+    owner_user_id: str
+    universe_id: str
+    service: str
+    generation: int
+    reference_digest: str
+    _record_digest: str = field(repr=False)
+
+
+def _canonical_digest(value: object) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _contained_path(universe_dir: Path, raw: object) -> Path | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    root = universe_dir.resolve(strict=True)
+    candidate = Path(raw.strip())
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    lexical = Path(os.path.abspath(candidate))
+    try:
+        relative = lexical.relative_to(root)
+    except ValueError:
+        return None
+    current = root
+    for part in relative.parts:
+        current = current / part
+        is_junction = getattr(current, "is_junction", None)
+        if current.exists() and (
+            current.is_symlink()
+            or (callable(is_junction) and is_junction())
+            or (
+                os.name == "nt"
+                and os.path.normcase(os.path.realpath(current))
+                != os.path.normcase(os.path.abspath(current))
+            )
+        ):
+            return None
+    resolved = lexical.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _usable_subscription_record(
+    universe_dir: Path,
+    service: str,
+) -> dict[str, Any]:
+    vault_path = credential_vault_path(universe_dir)
+    if vault_path.is_symlink() or not vault_path.is_file():
+        raise PermissionError("exactly one usable subscription credential is required")
+    records = _llm_records(universe_dir, service)
+    if len(records) != 1:
+        raise PermissionError("exactly one usable subscription credential is required")
+    record = records[0]
+    path_fields = (
+        ("codex_home", "home", "auth_home", "path", "auth_json_path")
+        if service == "codex"
+        else ("claude_config_dir", "config_dir", "path", "claude_home", "home", "auth_home")
+    )
+    resolved_paths = [
+        _contained_path(universe_dir, record.get(key))
+        for key in path_fields
+        if isinstance(record.get(key), str) and str(record.get(key)).strip()
+    ]
+    if any(path is None for path in resolved_paths):
+        raise PermissionError("exactly one usable subscription credential is required")
+    if service == "codex":
+        encoded = record.get("auth_json_b64")
+        if isinstance(encoded, str) and encoded.strip():
+            _decode_codex_auth_json(encoded)
+            return record
+        home = _codex_home_from_record(record, universe_dir)
+        if home is None:
+            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+        contained_home = _contained_path(universe_dir, str(home))
+        if contained_home is None or not (contained_home / "auth.json").is_file():
+            raise PermissionError("exactly one usable subscription credential is required")
+        return record
+    if service == "claude":
+        if _secret_value(record, "oauth_token", "claude_code_oauth_token"):
+            return record
+        config_dir = _claude_config_dir_from_record(record, universe_dir)
+        contained_dir = (
+            _contained_path(universe_dir, str(config_dir))
+            if config_dir is not None
+            else None
+        )
+        if contained_dir is None or not contained_dir.is_dir():
+            raise PermissionError("exactly one usable subscription credential is required")
+        return record
+    raise PermissionError("exactly one usable subscription credential is required")
+
+
+def _custody_reference_digest(
+    *,
+    reference_id: str,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+    generation: int,
+    record_digest: str,
+) -> str:
+    return _canonical_digest({
+        "generation": generation,
+        "owner_user_id": owner_user_id,
+        "record_digest": record_digest,
+        "reference_id": reference_id,
+        "schema_version": 1,
+        "service": service,
+        "universe_id": universe_id,
+    })
+
+
+def adopt_llm_subscription_custody(
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+) -> LLMCredentialCustodyReference:
+    """Adopt or rotate one current vault record under an existing transaction."""
+
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("LLM custody adoption requires an active SQLite transaction")
+    owner = owner_user_id.strip()
+    uid = universe_id.strip()
+    canonical_service = service.strip().lower()
+    if not owner or not uid or canonical_service not in {"claude", "codex"}:
+        raise ValueError("LLM custody root is invalid")
+    universe = Path(universe_dir)
+    record = _usable_subscription_record(universe, canonical_service)
+    record_digest = _canonical_digest(record)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_custody (
+            reference_id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL,
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            record_digest TEXT NOT NULL,
+            reference_digest TEXT NOT NULL,
+            UNIQUE (owner_user_id, universe_id, service)
+        )
+        """
+    )
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner, uid, canonical_service),
+    ).fetchone()
+    if row is None:
+        reference_id = f"llm_credential_{secrets.token_hex(16)}"
+        generation = 1
+    else:
+        reference_id = str(row[0])
+        if str(row[2]) == record_digest:
+            return LLMCredentialCustodyReference(
+                reference_id=reference_id,
+                owner_user_id=owner,
+                universe_id=uid,
+                service=canonical_service,
+                generation=int(row[1]),
+                reference_digest=str(row[3]),
+                _record_digest=record_digest,
+            )
+        generation = int(row[1]) + 1
+    reference_digest = _custody_reference_digest(
+        reference_id=reference_id,
+        owner_user_id=owner,
+        universe_id=uid,
+        service=canonical_service,
+        generation=generation,
+        record_digest=record_digest,
+    )
+    conn.execute(
+        """
+        INSERT INTO llm_credential_custody (
+            reference_id, owner_user_id, universe_id, service, generation,
+            record_digest, reference_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_user_id, universe_id, service) DO UPDATE SET
+            generation = excluded.generation,
+            record_digest = excluded.record_digest,
+            reference_digest = excluded.reference_digest
+        """,
+        (
+            reference_id,
+            owner,
+            uid,
+            canonical_service,
+            generation,
+            record_digest,
+            reference_digest,
+        ),
+    )
+    return LLMCredentialCustodyReference(
+        reference_id=reference_id,
+        owner_user_id=owner,
+        universe_id=uid,
+        service=canonical_service,
+        generation=generation,
+        reference_digest=reference_digest,
+        _record_digest=record_digest,
+    )
+
+
+def current_llm_subscription_custody(
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+) -> LLMCredentialCustodyReference | None:
+    """Reload and verify the current opaque reference without adopting state."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_custody (
+            reference_id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL,
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            record_digest TEXT NOT NULL,
+            reference_digest TEXT NOT NULL,
+            UNIQUE (owner_user_id, universe_id, service)
+        )
+        """
+    )
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner_user_id.strip(), universe_id.strip(), service.strip().lower()),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        record = _usable_subscription_record(Path(universe_dir), service.strip().lower())
+    except (PermissionError, ValueError, OSError):
+        return None
+    record_digest = _canonical_digest(record)
+    expected = _custody_reference_digest(
+        reference_id=str(row[0]),
+        owner_user_id=owner_user_id.strip(),
+        universe_id=universe_id.strip(),
+        service=service.strip().lower(),
+        generation=int(row[1]),
+        record_digest=record_digest,
+    )
+    if record_digest != str(row[2]) or expected != str(row[3]):
+        return None
+    return LLMCredentialCustodyReference(
+        reference_id=str(row[0]),
+        owner_user_id=owner_user_id.strip(),
+        universe_id=universe_id.strip(),
+        service=service.strip().lower(),
+        generation=int(row[1]),
+        reference_digest=str(row[3]),
+        _record_digest=record_digest,
+    )
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:

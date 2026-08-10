@@ -241,9 +241,16 @@ def custom_agents(
             "get_binding",
             "create_binding",
             "update_binding",
+            "bind_serving_provider",
+            "set_serving",
         }:
             uid = _binding_universe(universe_id)
-            write = normalized in {"create_binding", "update_binding"}
+            write = normalized in {
+                "create_binding",
+                "update_binding",
+                "bind_serving_provider",
+                "set_serving",
+            }
             denial = _binding_access(uid, write=write)
             if denial is not None:
                 return denial
@@ -270,6 +277,57 @@ def custom_agents(
                     "resource": "agent_binding",
                 }
             document = _payload(payload)
+            if normalized in {"bind_serving_provider", "set_serving"}:
+                from tinyassets.api.helpers import _universe_dir
+                from tinyassets.provider_serving_binding import (
+                    bind_serving_provider,
+                    set_serving,
+                )
+
+                expected_fields = (
+                    {"provider"}
+                    if normalized == "bind_serving_provider"
+                    else {"enabled"}
+                )
+                if set(document) != expected_fields:
+                    raise AgentValidationError(
+                        f"{normalized} payload must contain exactly "
+                        f"{sorted(expected_fields)}"
+                    )
+                if normalized == "bind_serving_provider":
+                    provider = document["provider"]
+                    if not isinstance(provider, str):
+                        raise AgentValidationError("provider must be a string")
+                    try:
+                        return bind_serving_provider(
+                            base_path=base,
+                            universe_dir=_universe_dir(uid),
+                            owner_user_id=actor,
+                            universe_id=uid,
+                            agent_binding_id=binding_id,
+                            expected_revision=expected_revision,
+                            provider=provider,
+                        )
+                    except (PermissionError, ValueError, LookupError) as exc:
+                        return {
+                            "error": "provider_authority_denied",
+                            "detail": str(exc),
+                        }
+                enabled = document["enabled"]
+                if not isinstance(enabled, bool):
+                    raise AgentValidationError("enabled must be a boolean")
+                try:
+                    return set_serving(
+                        base_path=base,
+                        universe_dir=_universe_dir(uid),
+                        owner_user_id=actor,
+                        universe_id=uid,
+                        agent_binding_id=binding_id,
+                        expected_revision=expected_revision,
+                        enabled=enabled,
+                    )
+                except (PermissionError, ValueError, LookupError) as exc:
+                    return {"error": "provider_authority_denied", "detail": str(exc)}
             if normalized == "create_binding":
                 binding = create_binding(
                     base,
@@ -306,6 +364,8 @@ def custom_agents(
                 "get_binding",
                 "create_binding",
                 "update_binding",
+                "bind_serving_provider",
+                "set_serving",
             ],
         }
     except AgentConflictError as exc:

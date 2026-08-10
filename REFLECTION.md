@@ -1526,3 +1526,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** run the independent reviewer earlier with
   a smaller exact-head brief; repeated peer CLI timeouts should not be allowed
   to delay hosted verification or be mistaken for an approval.
+
+## 2026-08-10 - Requester-owned serving authority
+
+- **What surprised me:** a path can resolve inside the universe and still be
+  unsafe custody input when a symlink or Windows junction remains retargetable.
+- **Pattern worth capturing:** authorize spend from one exact chain—current
+  request lease, serving agent revision, requester-local assignment, active
+  `ProviderWorkBinding`, and generation-bound custody—and hold the admission
+  fence through the provider launch.
+- **What I would do differently:** start the first RED suite with both lexical
+  and resolved path containment, plus registry-lifetime assertions for every
+  ephemeral capability.

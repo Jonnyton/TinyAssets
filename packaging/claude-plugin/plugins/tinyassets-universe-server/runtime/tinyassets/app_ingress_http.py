@@ -35,9 +35,21 @@ import json
 import logging
 import os
 import time
+from contextvars import ContextVar
 from typing import Any, Callable, Mapping
 
 logger = logging.getLogger(__name__)
+
+_authenticated_app_transport: ContextVar[bool] = ContextVar(
+    "tinyassets_authenticated_app_transport",
+    default=False,
+)
+
+
+def authenticated_app_transport() -> bool:
+    """Whether the current delivery crossed the signed ingress boundary."""
+
+    return _authenticated_app_transport.get()
 
 #: Shared secret, canonical single-line standard base64 of >=32 random bytes —
 #: the same encoding the other daemon secrets use. Held by the daemon and the
@@ -190,7 +202,11 @@ def handle_request(
     if deliver is None:
         from tinyassets.app_ingress import deliver_app_event as deliver
 
-    result = deliver(**fields)
+    transport_token = _authenticated_app_transport.set(True)
+    try:
+        result = deliver(**fields)
+    finally:
+        _authenticated_app_transport.reset(transport_token)
     return 200, {
         "handled": bool(getattr(result, "handled", False)),
         "provider_receipt_ref": str(getattr(result, "provider_receipt_ref", "")),

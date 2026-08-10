@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from tinyassets.auth.middleware import ProviderRequestCarrier
     from tinyassets.config import UniverseConfig
+    from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,8 @@ class UniverseContext:
     universe_dir: Path | None = None
     config: "UniverseConfig | None" = None
     provider_invocation: "ProviderInvocationCarrier | None" = None
+    provider_request: "ProviderRequestCarrier | None" = None
+    served_provider: "ServedProviderAuthority | None" = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -67,6 +67,74 @@ def test_no_universes_configured_exits_nonzero(monkeypatch):
     assert worker.main([]) == 1
 
 
+def test_server_serving_state_enrolls_and_withdraws_a_universe(tmp_path, monkeypatch):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    udir = tmp_path / "u-dynamic"
+    udir.mkdir()
+    write_credential_vault(
+        udir,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "e30=",
+        }],
+    )
+    definition = publish_definition(
+        tmp_path,
+        author_id="owner-dynamic",
+        payload={
+            "schema_version": 1,
+            "name": "dynamic",
+            "description": "test",
+            "tags": ["test"],
+            "components": {"identity": {"kind": "soul", "config": {}}},
+        },
+    )
+    agent = create_binding(
+        tmp_path,
+        universe_id="u-dynamic",
+        definition_id=definition["agent_definition_id"],
+        created_by="owner-dynamic",
+        payload={"schema_version": 1, "name": "dynamic", "role": "writer"},
+    )
+    connected = bind_serving_provider(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-dynamic",
+        universe_id="u-dynamic",
+        agent_binding_id=agent["agent_binding_id"],
+        expected_revision=1,
+        provider="codex",
+    )
+    assert worker.dynamic_serving_universes() == []
+
+    set_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-dynamic",
+        universe_id="u-dynamic",
+        agent_binding_id=agent["agent_binding_id"],
+        expected_revision=connected["agent_binding"]["revision"],
+        enabled=True,
+    )
+    assert worker.dynamic_serving_universes() == ["u-dynamic"]
+
+    set_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-dynamic",
+        universe_id="u-dynamic",
+        agent_binding_id=agent["agent_binding_id"],
+        expected_revision=connected["agent_binding"]["revision"],
+        enabled=False,
+    )
+    assert worker.dynamic_serving_universes() == []
+
+
 def test_credentials_are_never_read_from_the_environment(universe, monkeypatch):
     """One container serves several universes. If it took tokens from its own
     env, every universe would share one identity — the ambient-credential
@@ -192,3 +260,41 @@ async def test_an_unexpected_failure_is_logged_not_swallowed(monkeypatch, caplog
     assert rc == 0, "the process still exits cleanly"
     assert "failed unexpectedly" in caplog.text
     assert "PermissionError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconciler_adds_and_cancels_dynamic_serving_without_restart(monkeypatch):
+    stop = asyncio.Event()
+    states = [[], ["u-dynamic"], []]
+    calls = 0
+    started: list[str] = []
+    cancelled: list[str] = []
+
+    def _source():
+        nonlocal calls
+        state = states[min(calls, len(states) - 1)]
+        calls += 1
+        if calls >= 3:
+            stop.set()
+        return state
+
+    async def _serve(uid, _connection):
+        started.append(uid)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(uid)
+
+    monkeypatch.setattr(worker, "serve_universe", _serve)
+    rc = await worker.serve_reconciling(
+        [],
+        "slack-main",
+        enrollment_source=_source,
+        poll_interval_s=0.001,
+        stopping=stop,
+        install_signal_handlers=False,
+    )
+
+    assert rc == 0
+    assert started == ["u-dynamic"]
+    assert cancelled == ["u-dynamic"]

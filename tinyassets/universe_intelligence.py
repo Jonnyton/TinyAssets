@@ -341,6 +341,7 @@ def extract_learning(
         role="writer",
         universe_context=ctx,
         config=_sandboxed_config(ctx),
+        operation="converse",
     )
     return _parse_learning_json(raw)
 
@@ -551,6 +552,7 @@ def _call_writer_with_backoff(turn_input, *, system, universe_context, config):
                 role="writer",
                 universe_context=universe_context,
                 config=config,
+                operation="converse",
             )
         except AllProvidersExhaustedError as exc:
             # Codex 2026-08-09: the writer call is an AGENTIC loop (it runs
@@ -582,6 +584,8 @@ def converse(
     tier: str | None = None,
     founder_grant: object | None = None,
     conversation_history: "list | None" = None,
+    agent_binding_id: str = "",
+    binding_revision: int = 0,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -624,7 +628,47 @@ def converse(
     bound_tier = (
         interlocutor.resolve_interlocutor_tier(uid).tier if tier is None else tier
     )
-    ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
+    from tinyassets.auth.middleware import (
+        mint_provider_request_carrier,
+        provider_request_capability,
+    )
+
+    capability = provider_request_capability()
+    request_carrier = None
+    if capability is not None:
+        from tinyassets.custom_agents import get_binding
+        from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+
+        if agent_binding_id:
+            selected = get_binding(
+                udir.parent,
+                universe_id=uid,
+                binding_id=agent_binding_id,
+            )
+            if (
+                selected is None
+                or selected["status"] != "serving"
+                or selected["created_by"] != capability.principal_id
+                or int(selected["revision"]) != binding_revision
+            ):
+                raise PermissionError("connect your provider")
+        else:
+            selected = resolve_serving_agent_binding(
+                udir.parent,
+                universe_id=uid,
+                owner_user_id=capability.principal_id,
+            )
+        request_carrier = mint_provider_request_carrier(
+            universe_id=uid,
+            agent_binding_id=selected["agent_binding_id"],
+            binding_revision=int(selected["revision"]),
+            operation="converse",
+        )
+    ctx = UniverseContext(
+        universe_dir=udir,
+        config=load_universe_config(udir),
+        provider_request=request_carrier,
+    )
     granted = bound_tier == interlocutor.FOUNDER
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid
@@ -710,6 +754,8 @@ def converse_as_external_sender(
     founder_grant: object | None = None,
     actor_id: str = "",
     conversation_history: "list | None" = None,
+    agent_binding_id: str = "",
+    binding_revision: int = 0,
 ) -> str:
     """The entry point for every external chat surface — Slack, Discord, Teams.
 
@@ -728,10 +774,14 @@ def converse_as_external_sender(
         actor_id=actor_id,
         founder_grant=founder_grant,
         conversation_history=conversation_history,
+        agent_binding_id=agent_binding_id,
+        binding_revision=binding_revision,
     ) if founder_grant is not None else converse(
         universe_id,
         message,
         actor_id=actor_id,
         tier=EXTERNAL_SENDER_FLOOR,
         conversation_history=conversation_history,
+        agent_binding_id=agent_binding_id,
+        binding_revision=binding_revision,
     )

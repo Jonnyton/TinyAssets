@@ -54,12 +54,21 @@ class UniverseConfig:
     and ``.claude/agent-memory/navigator/q63_section4_dispositions.md``
     for the design rationale."""
 
+    engine_assignment_state: str = "unassigned"
+    """Server-owned assignment lifecycle: unassigned/pending/ready/failed."""
+
+    engine_assignment_generation: int = 0
+    """Monotonic requester-local assignment generation (zero when unassigned)."""
+
+    provider_authority_bindings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Secret-free provider-to-binding projection; never request authority."""
+
     # Engine source (how this universe's intelligence is powered) — set by
     # `universe action=set_engine`. The founder chooses at onboard.
     engine_source: str = "byo_api_key"
     """How this universe sources its engine: ``byo_api_key`` (default; a BYO API
-    key in the vault) / ``self_hosted_endpoint`` / ``market_rented`` /
-    ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
+    key in the vault) / ``requester_local`` / ``self_hosted_endpoint`` /
+    ``market_rented`` / ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
     persist the founder's choice (deeper market-matching / endpoint-routing
     runtime is post-M1 hardening)."""
 
@@ -221,6 +230,78 @@ def write_universe_config_fields(
             )
     data.update(fields)
 
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
+        os.replace(tmp_path, config_file)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def write_provider_assignment_projection(
+    universe_path: str | Path,
+    *,
+    state: str,
+    generation: int,
+    provider: str = "",
+    binding: dict[str, Any] | None = None,
+) -> None:
+    """Strictly publish the non-authorizing requester-local config projection.
+
+    Unlike the legacy merge helper, an unreadable existing config is a hard
+    failure: assignment must never erase unrelated keys by falling back to an
+    empty document.
+    """
+
+    import os
+    import tempfile
+
+    import yaml
+
+    normalized_state = state.strip()
+    if normalized_state not in {"unassigned", "pending", "ready", "failed"}:
+        raise ValueError("provider assignment state is invalid")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        raise ValueError("provider assignment generation is invalid")
+    selected = provider.strip()
+    if normalized_state == "ready":
+        if generation < 1 or selected not in {"claude-code", "codex"}:
+            raise ValueError("ready assignment requires one canonical provider")
+        if not isinstance(binding, dict) or not binding.get("binding_id"):
+            raise ValueError("ready assignment requires a binding projection")
+        allowed = [selected]
+        bindings = {selected: dict(binding)}
+        preferred = selected
+        engine_source = "requester_local"
+    else:
+        allowed = []
+        bindings = {}
+        preferred = ""
+        engine_source = "requester_local" if generation else "unassigned"
+
+    config_file = Path(universe_path) / "config.yaml"
+    data: dict[str, Any] = {}
+    if config_file.exists():
+        loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("existing config.yaml must be a mapping")
+        data = loaded
+    data.update({
+        "allowed_providers": allowed,
+        "engine_assignment_generation": generation,
+        "engine_assignment_state": normalized_state,
+        "engine_source": engine_source,
+        "preferred_writer": preferred,
+        "provider_authority_bindings": bindings,
+    })
     config_file.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"

@@ -155,7 +155,8 @@ def deliver_app_event(
         routed=routed,
     )
 
-    if converse is None:
+    real_converse = converse is None
+    if real_converse:
         from tinyassets.universe_intelligence import (
             converse_as_external_sender as converse,
         )
@@ -275,13 +276,45 @@ def deliver_app_event(
     # silence; the daemon holds the bot token, so it posts an honest notice and
     # records it AFTER delivery, keeping the conversation continuous.
     try:
-        reply = converse(
-            routed.universe_id,
-            prompt,
-            actor_id=_actor_id(workspace_id, external_sender_id),
-            founder_grant=grant,
-            conversation_history=history,
-        )
+        if real_converse:
+            from tinyassets.app_ingress_http import authenticated_app_transport
+            from tinyassets.auth.middleware import (
+                claim_provider_request,
+                reserve_provider_request,
+                revoke_provider_request,
+            )
+
+            if grant is None or not authenticated_app_transport():
+                raise PermissionError("connect your provider")
+            reserve = reserve_provider_request(
+                principal_id=grant.subject_id,
+                session_id=f"slack:{workspace_id}:{channel_id}",
+                request_id=event_id,
+                tool_name="slack_event",
+                mechanism="tinyassets.authenticated-app-event.v1",
+                issuer="tinyassets.app_ingress_http",
+            )
+            capability = claim_provider_request(reserve, tool_name="slack_event")
+            try:
+                reply = converse(
+                    routed.universe_id,
+                    prompt,
+                    actor_id=_actor_id(workspace_id, external_sender_id),
+                    founder_grant=grant,
+                    conversation_history=history,
+                    agent_binding_id=routed.agent_binding_id,
+                    binding_revision=routed.binding_revision,
+                )
+            finally:
+                revoke_provider_request(capability)
+        else:
+            reply = converse(
+                routed.universe_id,
+                prompt,
+                actor_id=_actor_id(workspace_id, external_sender_id),
+                founder_grant=grant,
+                conversation_history=history,
+            )
     except Exception as exc:  # noqa: BLE001 - honesty beats silence
         logger.warning("app ingress: turn failed, posting honest notice: %s", exc)
         notice = _failure_notice(exc)
