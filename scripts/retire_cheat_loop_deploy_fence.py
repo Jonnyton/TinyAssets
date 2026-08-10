@@ -954,13 +954,17 @@ def _stop_and_mask_writer_units(
     if not boot_fence_applied:
         _apply_boot_fence(host, present_racers)
     for unit in (*present_racers, DAEMON_SERVICE):
-        # The daemon's ExecStop (docker compose down) can take the unit's full
-        # TimeoutStopSec (~60s), which exceeds the 45s default host budget and
-        # would trip the fence mid-quiesce (Codex-reviewed fix, 2026-08-10).
-        host.run(
-            ["systemctl", "stop", unit],
-            timeout_seconds=WRITER_UNIT_STOP_TIMEOUT_SECONDS,
+        # ONLY the daemon's ExecStop (docker compose down, TimeoutStopSec=60s) is
+        # slow enough to need more than the 45s default; the racer timers stop
+        # fast. Giving racers the long budget would let a hung racer consume 120s
+        # EACH and cumulatively blow the workflow's 300s preflight budget, killing
+        # the fence mid-quiesce (Codex 2026-08-10). So the long budget is daemon-only.
+        stop_budget = (
+            WRITER_UNIT_STOP_TIMEOUT_SECONDS
+            if unit == DAEMON_SERVICE
+            else HOST_COMMAND_TIMEOUT_SECONDS
         )
+        host.run(["systemctl", "stop", unit], timeout_seconds=stop_budget)
     if present_racers:
         host.run(["systemctl", "mask", "--runtime", *present_racers])
     host.run(["systemctl", "mask", "--runtime", DAEMON_SERVICE])

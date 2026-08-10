@@ -6679,11 +6679,18 @@ def test_writer_unit_stop_uses_a_budget_above_the_unit_stop_timeout(monkeypatch)
 
     fence._stop_and_mask_writer_units(RecordingHost())
 
-    daemon_stop_budgets = [
-        t
-        for args, t in calls
-        if args[:2] == ["systemctl", "stop"] and fence.DAEMON_SERVICE in args
-    ]
-    assert daemon_stop_budgets, "the daemon writer unit was never stopped"
-    assert fence.WRITER_UNIT_STOP_TIMEOUT_SECONDS > fence.HOST_COMMAND_TIMEOUT_SECONDS
-    assert all(t >= fence.WRITER_UNIT_STOP_TIMEOUT_SECONDS for t in daemon_stop_budgets)
+    stop_calls = [(args, t) for args, t in calls if args[:2] == ["systemctl", "stop"]]
+    daemon_budgets = [t for args, t in stop_calls if fence.DAEMON_SERVICE in args]
+    racer_budgets = [t for args, t in stop_calls if fence.DAEMON_SERVICE not in args]
+
+    # The daemon gets the long budget; the racers KEEP the fast default so a hung
+    # racer can't consume 120s each and cumulatively blow the 300s preflight budget.
+    assert daemon_budgets, "the daemon writer unit was never stopped"
+    assert all(t == fence.WRITER_UNIT_STOP_TIMEOUT_SECONDS for t in daemon_budgets)
+    assert racer_budgets, "the racer units were never stopped"
+    assert all(t == fence.HOST_COMMAND_TIMEOUT_SECONDS for t in racer_budgets)
+
+    # The budget must MEANINGFULLY exceed the daemon unit's TimeoutStopSec (60s) and
+    # stay under the workflow's outer `systemd-run RuntimeMaxSec` (300s) — a value of
+    # 46 would beat the 45s default yet still be too small (Codex 2026-08-10).
+    assert 60 < fence.WRITER_UNIT_STOP_TIMEOUT_SECONDS < 300
