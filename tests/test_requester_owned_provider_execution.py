@@ -357,9 +357,21 @@ def _patch_run_branch_dependencies(monkeypatch, branch: Any) -> None:
 
 
 def test_run_branch_binds_requested_universe_context(tmp_path, monkeypatch):
-    """MUTATION: pass raw call_provider from run_branch -> context is None."""
+    """MUTATION: pass raw call_provider from run_branch -> no bound context.
+
+    Observe the binding by inspecting the ``UniverseContext`` bound onto the
+    ``provider_call`` handed to branch execution, rather than invoking the
+    wrapped inner call. The inner-call observation is unreliable under the
+    suite-wide ``force_mock=True`` (a wrapped real ``call_provider`` returns a
+    mock string without recording), and a sibling suite that reloads
+    ``tinyassets.providers.call`` in-place leaves the parent-package attribute
+    pointing at a stale module object, so monkeypatching ``call_provider`` on
+    the module handle no longer reaches ``_action_run_branch``'s local import.
+    Inspecting the bound context proves the requester-owned binding directly and
+    is immune to both. Mutation: drop the binding and ``provider_call`` is a raw
+    context-free callable with no ``universe_context`` -> this fails.
+    """
     from tinyassets.api import runs as api_runs
-    from tinyassets.providers import call as call_module
 
     universe = tmp_path / "user-u"
     universe.mkdir()
@@ -367,27 +379,16 @@ def test_run_branch_binds_requested_universe_context(tmp_path, monkeypatch):
         "preferred_writer: codex\n", encoding="utf-8",
     )
     branch = SimpleNamespace(version=1, validate=lambda: [])
-    seen: list[UniverseContext | None] = []
-
-    def fake_call_provider(
-        _prompt: str,
-        _system: str = "",
-        *,
-        universe_context: UniverseContext | None = None,
-        **_kwargs: Any,
-    ) -> str:
-        seen.append(universe_context)
-        return "ok"
+    captured: dict[str, Any] = {}
 
     def fake_execute(*_args: Any, provider_call=None, **_kwargs: Any):
-        provider_call("prompt")
+        captured["provider_call"] = provider_call
         return SimpleNamespace(run_id="r1", status="queued", output={}, error="")
 
     monkeypatch.setattr(api_runs, "_ensure_runs_recovery", lambda: None)
     monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(api_runs, "_universe_dir", lambda _uid: universe)
     monkeypatch.setattr(api_runs, "_request_universe", lambda uid="": uid or "user-u")
-    monkeypatch.setattr(call_module, "call_provider", fake_call_provider)
     monkeypatch.setattr("tinyassets.runs.execute_branch_async", fake_execute)
     _patch_run_branch_dependencies(monkeypatch, branch)
 
@@ -397,10 +398,13 @@ def test_run_branch_binds_requested_universe_context(tmp_path, monkeypatch):
     }))
 
     assert payload["status"] == "queued"
-    assert len(seen) == 1
-    assert seen[0] is not None
-    assert seen[0].universe_dir == universe
-    assert seen[0].config.preferred_writer == "codex"
+    bound = captured["provider_call"]
+    assert hasattr(bound, "universe_context"), (
+        "run_branch must bind the run's UniverseContext to provider_call, "
+        "not hand execution a raw context-free call"
+    )
+    assert bound.universe_context.universe_dir == universe
+    assert bound.universe_context.config.preferred_writer == "codex"
 
 
 @pytest.mark.parametrize("action", ["version", "resume"])
@@ -409,36 +413,34 @@ def test_branch_version_and_resume_bind_run_universe_context(
     tmp_path,
     monkeypatch,
 ):
-    """MUTATION: either legacy raw-call handoff records a None context."""
+    """MUTATION: either legacy raw-call handoff hands execution no bound context.
+
+    Same observation strategy as
+    :func:`test_run_branch_binds_requested_universe_context`: inspect the
+    ``UniverseContext`` bound onto the ``provider_call`` passed to execution
+    rather than invoking the wrapped inner (unreliable under suite-wide
+    ``force_mock`` + a sibling suite's in-place reload of
+    ``tinyassets.providers.call``). Mutation: drop the binding on either the
+    version or resume path and ``provider_call`` is a raw context-free callable
+    with no ``universe_context`` -> this fails.
+    """
     from tinyassets.api import runs as api_runs
-    from tinyassets.providers import call as call_module
 
     universe = tmp_path / "user-u"
     universe.mkdir()
     (universe / "config.yaml").write_text(
         "preferred_writer: codex\n", encoding="utf-8",
     )
-    seen: list[UniverseContext | None] = []
-
-    def fake_call_provider(
-        _prompt: str,
-        _system: str = "",
-        *,
-        universe_context: UniverseContext | None = None,
-        **_kwargs: Any,
-    ) -> str:
-        seen.append(universe_context)
-        return "ok"
+    captured: dict[str, Any] = {}
 
     def fake_execute(*_args: Any, provider_call=None, **_kwargs: Any):
-        provider_call("prompt")
+        captured["provider_call"] = provider_call
         return SimpleNamespace(run_id="r1", status="queued", output={}, error="")
 
     monkeypatch.setattr(api_runs, "_ensure_runs_recovery", lambda: None)
     monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(api_runs, "_universe_dir", lambda _uid: universe)
     monkeypatch.setattr(api_runs, "_request_universe", lambda uid="": uid or "user-u")
-    monkeypatch.setattr(call_module, "call_provider", fake_call_provider)
     if action == "version":
         monkeypatch.setattr(
             "tinyassets.runs.execute_branch_version_async", fake_execute,
@@ -457,7 +459,10 @@ def test_branch_version_and_resume_bind_run_universe_context(
         payload = json.loads(api_runs._action_resume_run({"run_id": "r1"}))
 
     assert payload["status"] == "queued"
-    assert len(seen) == 1
-    assert seen[0] is not None
-    assert seen[0].universe_dir == universe
-    assert seen[0].config.preferred_writer == "codex"
+    bound = captured["provider_call"]
+    assert hasattr(bound, "universe_context"), (
+        "run must bind the run's UniverseContext to provider_call, "
+        "not hand execution a raw context-free call"
+    )
+    assert bound.universe_context.universe_dir == universe
+    assert bound.universe_context.config.preferred_writer == "codex"
