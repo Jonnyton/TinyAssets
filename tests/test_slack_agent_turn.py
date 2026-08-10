@@ -101,22 +101,57 @@ def _handlers(rec, resolve=None, load_history=None):
 _DM = "D08DM000001"
 
 
+#: A binding the platform recognised as the founder (a non-None sealed grant).
+_FOUNDER_BINDING = SlackBinding(
+    universe_id="u-01test",
+    universe_dir=Path("/tmp/u-01test"),
+    connection_id="conn-1",
+    actor_id="slack:T0BN5LK57FT:U07HUM0001",
+    founder_grant=object(),
+)
+
+
 @pytest.mark.asyncio
 async def test_the_turn_receives_loaded_conversation_history():
     """The transport loads the recent thread and hands it to the turn as
     memory — so a follow-up like "try again" has the prior request to act on
-    (live 2026-08-08 it did not). Only in a 1:1 DM (the guard)."""
+    (live 2026-08-08 it did not). Only in a founder-authorized 1:1 DM (the
+    two-part guard: DM channel AND a founder grant, Codex FIX5 2026-08-10)."""
     rec = _Recorder()
     loaded = [
         {"speaker": "founder", "text": "post the shipped update"},
         {"speaker": "universe", "text": "402, credits depleted"},
     ]
-    handle, _ = _handlers(rec, load_history=lambda _e, _b: loaded)
+    handle, _ = _handlers(
+        rec, resolve=lambda _e: _FOUNDER_BINDING, load_history=lambda _e, _b: loaded
+    )
 
     await handle(event("<@U08BOT0001> try again", channel=_DM))
 
     call = rec.converse_calls[0]
     assert call["conversation_history"] == loaded
+
+
+@pytest.mark.asyncio
+async def test_an_ungranted_dm_loads_no_history():
+    """FIX5 (Codex 2026-08-10): the guard is BOTH halves. A DM whose sender the
+    platform did NOT recognise as the founder (grant is None) must get NO history,
+    or one visitor's DM could be handed the founder's remembered conversation.
+
+    Mutation-check: drop the `founder_grant is not None` half of the guard and the
+    loaded history rides into this ungranted DM turn — this goes red.
+    """
+    rec = _Recorder()
+    leaked = [{"speaker": "founder", "text": "the founder's private plan"}]
+    # BINDING has founder_grant=None (default) — an ungranted sender.
+    handle, _ = _handlers(
+        rec, resolve=lambda _e: BINDING, load_history=lambda _e, _b: leaked
+    )
+
+    await handle(event("<@U08BOT0001> what were we planning?", channel=_DM))
+
+    call = rec.converse_calls[0]
+    assert call["conversation_history"] in ([], None)
 
 
 @pytest.mark.asyncio

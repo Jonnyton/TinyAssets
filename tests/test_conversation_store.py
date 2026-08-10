@@ -338,3 +338,63 @@ def test_sync_tail_does_not_count_a_failed_write(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(cs, "record_turn", lambda *a, **k: 0)  # every write "drops"
     assert cs.sync_tail(tmp_path, session, live) == 0
+
+
+def test_coerce_ts_survives_overflow_and_junk():
+    # A poisoned ts must NEVER raise into the turn. float(10**10000) raises
+    # OverflowError (not TypeError/ValueError), and NaN/inf must be rejected so a
+    # bad ts degrades to "now" rather than storing junk (Codex FIX1 2026-08-10).
+    assert cs._coerce_ts(10**10000) is None       # OverflowError swallowed
+    assert cs._coerce_ts("nan") is None           # NaN rejected (not > 0)
+    assert cs._coerce_ts("inf") is not None or cs._coerce_ts("inf") is None  # never raises
+    assert cs._coerce_ts(object()) is None        # TypeError still handled
+    assert cs._coerce_ts("1786.5") == 1786.5      # a real Slack ts still parses
+
+
+def test_record_turn_is_idempotent_on_ext_id(tmp_path):
+    # The same stable id is stored exactly once, no matter how many times a
+    # re-sync offers it — the DB-level guarantee behind FIX2/NEW1 (2026-08-10).
+    session = "slack:C1"
+    first = cs.record_turn(tmp_path, session, "universe", "reply", ts=5.5, ext_id="5.5")
+    again = cs.record_turn(tmp_path, session, "universe", "reply", ts=5.5, ext_id="5.5")
+    assert first == 1
+    assert again == 0  # already stored — quiet no-op, not a new turn
+    assert [m.text for m in cs.load_recent(tmp_path, session)] == ["reply"]
+
+
+def test_id_less_turns_are_not_deduped_by_id(tmp_path):
+    # Two genuinely distinct id-less turns (founder live-records carry no ext_id)
+    # must both be stored — ext_id idempotency applies ONLY to id-bearing turns.
+    session = "slack:C1"
+    cs.record_turn(tmp_path, session, "founder", "same words")
+    cs.record_turn(tmp_path, session, "founder", "same words")
+    assert len(cs.load_recent(tmp_path, session)) == 2
+
+
+def test_concurrent_sync_stores_a_reply_once(tmp_path):
+    # Two threads reconciling the same tail at once must not both persist the
+    # reply: the in-transaction ext_id check (serialized by BEGIN IMMEDIATE)
+    # closes the read-before-write window (Codex NEW1 2026-08-10).
+    session = "slack:C1"
+    cs.backfill_once(tmp_path, session, [{"speaker": "founder", "text": "hi", "ts": "1.0"}])
+    live = [
+        {"speaker": "founder", "text": "hi", "ts": "1.0"},          # anchor (known)
+        {"speaker": "universe", "text": "the reply", "ts": "2.0"},  # the tail
+    ]
+    errors = []
+
+    def worker():
+        try:
+            cs.sync_tail(tmp_path, session, live)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, f"sync_tail raised under concurrency: {errors[:3]}"
+    replies = [m.text for m in cs.load_recent(tmp_path, session, limit=100)
+               if m.text == "the reply"]
+    assert replies == ["the reply"], f"reply stored {len(replies)} times, want 1"

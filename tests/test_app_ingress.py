@@ -487,3 +487,83 @@ def test_memory_load_never_raises_into_the_turn(base, monkeypatch):
     assert result.handled is True
     assert calls["post"][-1]["body"] == "the universe answers"
     assert calls["converse"][0]["conversation_history"] == []
+
+
+def test_composite_transport_receipt_does_not_duplicate_the_reply(base, monkeypatch):
+    """FIX2 (Codex 2026-08-10): the REAL Slack transport returns a COMPOSITE
+    receipt ``slack:<channel>:<ts>``, but sync_tail dedups on the RAW ts from the
+    live timeline. Storing the composite as ext_id meant the reply never matched
+    on re-sync and was re-recorded as a duplicate every turn. The reply must be
+    stored under its RAW ts and survive a re-sync without duplicating.
+
+    Note: this uses a transport with the PROD receipt shape — the round-2 test
+    double returned a raw ts, which is exactly why this bug slipped through.
+
+    Mutation-check: drop the rsplit normalization in ``_record_universe`` (store
+    the composite) and the re-sync below re-appends the reply — this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-fix2")
+    _bind(base, "u-ingress-fix2", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-fix2")
+    session = f"slack:{_DM}"
+    reply_ts = "1700000000.000200"
+
+    def _composite_transport(destination, body, *, thread_ts=""):
+        # Exactly what tinyassets/effectors/slack_transport.py returns.
+        return _Receipt(f"slack:{_DM}:{reply_ts}")
+
+    # Turn 1: the reply is recorded from the COMPOSITE receipt.
+    _deliver(
+        channel_id=_DM, transport=_composite_transport,
+        text="<@U0BOT> hello", event_id="Ev-fix2-1",
+    )
+    ids = {ext for _sp, _tx, ext in cs._recent_identities(conv_dir, session, limit=50)}
+    assert reply_ts in ids, "reply must be stored under its RAW ts"
+    assert f"slack:{_DM}:{reply_ts}" not in ids, "composite must never become an ext_id"
+
+    # Turn 2: the live timeline reports the reply at its RAW ts; sync_tail must
+    # recognize it and NOT re-append.
+    live = [
+        {"speaker": "founder", "text": "hello", "ts": "1700000000.000100"},
+        {"speaker": "universe", "text": "the universe answers", "ts": reply_ts},
+    ]
+    monkeypatch.setattr(sat, "load_thread_history", lambda **k: live)
+    _deliver(
+        channel_id=_DM, transport=_composite_transport,
+        text="<@U0BOT> still there?", event_id="Ev-fix2-2",
+    )
+    replies = [
+        m.text for m in cs.load_recent(conv_dir, session, limit=100)
+        if m.text == "the universe answers"
+    ]
+    assert replies == ["the universe answers"], f"reply duplicated {len(replies)}x"
+
+
+def test_a_non_founder_dm_gets_no_founder_history(base, monkeypatch):
+    """FIX5 (Codex 2026-08-10): the guard is BOTH halves — 1:1 DM AND a founder
+    grant. A DM sender the recognizer does NOT grant must get NO durable memory,
+    or one visitor's DM could read the founder's history.
+
+    Mutation-check: drop the ``grant is not None`` half of ``memory_on`` and the
+    seeded history rides into the ungranted DM turn — this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-nofdr")
+    _bind(base, "u-ingress-nofdr", binding)
+    # NOTE: deliberately do NOT grant founder — recognize returns None by default.
+
+    import tinyassets.conversation_store as cs
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-nofdr")
+    # Seed the DM session so an empty history can ONLY be the guard, not emptiness.
+    cs.record_turn(conv_dir, f"slack:{_DM}", "founder", "prior founder-only secret")
+
+    _, calls = _deliver(channel_id=_DM, text="<@U0BOT> hi", event_id="Ev-nofdr-1")
+    history = calls["converse"][0]["conversation_history"] or []
+    assert history == [], "an ungranted DM must load no history"

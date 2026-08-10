@@ -110,13 +110,30 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
     # Migrate a pre-ext_id table (older DB that predates the stable-id column).
-    # Idempotent: a DB that already has the column raises OperationalError, which
-    # we swallow. `ext_id` is the raw Slack message ts — the STABLE identity
-    # sync_tail dedups on, so a re-fetched timeline can't duplicate stored turns.
+    # Idempotent: a DB that already has the column raises "duplicate column name",
+    # which we swallow QUIETLY. Any OTHER OperationalError (a locked/corrupt DB)
+    # must be VISIBLE — swallowing it silently would disable ext_id reconciliation
+    # forever with no diagnostic (Codex 2026-08-10). `ext_id` is the raw Slack
+    # message ts — the STABLE identity sync_tail dedups on.
     try:
         conn.execute("ALTER TABLE conversation_turns ADD COLUMN ext_id TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            logger.warning("conversation_store: ext_id migration failed: %s", exc)
+    # Stable-id uniqueness — the DB-level guarantee that no ext_id is ever stored
+    # twice per session, so a re-synced/raced timeline cannot duplicate a turn
+    # regardless of the dedup logic above it (Codex FIX2/NEW1 2026-08-10). PARTIAL
+    # so the many id-less ('') rows (live-recorded founder turns) never collide.
+    # Tolerated if a pre-existing DB already holds a dup: log, don't break the store.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_turns_extid "
+            "ON conversation_turns(session_id, ext_id) WHERE ext_id != ''"
+        )
+    except sqlite3.OperationalError as exc:
+        logger.warning(
+            "conversation_store: ext_id uniqueness index not created: %s", exc
+        )
     return conn
 
 
@@ -153,6 +170,22 @@ def record_turn(
                 conn = _connect(db_path)
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    # Stable-id idempotency: if this ext_id is already stored for
+                    # the session, it's a re-sync / concurrent-sync repeat, NOT a
+                    # new turn. BEGIN IMMEDIATE serialises writers (in- AND cross-
+                    # process), so this check + insert is atomic — closing the
+                    # read-before-write window that let two syncs both persist the
+                    # same reply (Codex FIX2/NEW1 2026-08-10). Return 0 QUIETLY:
+                    # nothing was appended, but nothing was dropped either.
+                    if ext_id:
+                        dup = conn.execute(
+                            "SELECT 1 FROM conversation_turns "
+                            "WHERE session_id = ? AND ext_id = ? LIMIT 1",
+                            (session_id, ext_id),
+                        ).fetchone()
+                        if dup is not None:
+                            conn.commit()
+                            return 0
                     row = conn.execute(
                         "SELECT COALESCE(MAX(turn_no), 0) + 1 "
                         "FROM conversation_turns WHERE session_id = ?",
@@ -179,7 +212,13 @@ def record_turn(
             # test) is permanent — fail fast rather than burning the retry budget.
             logger.warning("conversation_store: record failed: %s", exc)
             return 0
-        except sqlite3.IntegrityError:  # cross-process turn_no race → retry
+        except sqlite3.IntegrityError as exc:  # turn_no race → retry; ext_id → stored
+            # The partial UNIQUE(session_id, ext_id) index is the cross-process
+            # backstop to the in-transaction check above: if it fires, the turn is
+            # already stored — return 0 QUIETLY, never burn retries or warn (Codex
+            # FIX2/NEW1 2026-08-10). Only a turn_no collision is a real race.
+            if "ext_id" in str(exc).lower():
+                return 0
             if attempt < 5:
                 time.sleep(0.02 * (attempt + 1))
                 continue
@@ -366,7 +405,11 @@ def _sync_tail_impl(
             continue
         if ext:
             stored_ids.add(ext)
-        stored_pairs.add((speaker, text))
+        else:
+            # Only id-less rows join the text-dedup set. Adding an id-bearing row's
+            # text here would let it shadow a later legitimately-repeated message
+            # that carries a DIFFERENT id, dropping it (Codex FIX2 2026-08-10).
+            stored_pairs.add((speaker, text))
         appended += 1
     if appended:
         logger.info(
@@ -401,6 +444,16 @@ def _recent_identities(
         finally:
             conn.close()
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        # Fail-open, but NOT silent: an empty identity set disables sync_tail
+        # reconciliation, so a persistently locked/failed read would let the store
+        # drift behind the live thread forever with no diagnostic (Codex NEW2
+        # 2026-08-10). Make it visible.
+        logger.warning(
+            "conversation_store: identity read failed for session %s "
+            "(sync reconciliation degraded this turn)",
+            session_id,
+            exc_info=True,
+        )
         return []
     return [
         (str(sp or ""), str(ct or "").strip(), str(ext or ""))
@@ -409,10 +462,16 @@ def _recent_identities(
 
 
 def _coerce_ts(value: object) -> "float | None":
-    """A Slack/epoch ts (str or number) as float seconds, or None."""
+    """A Slack/epoch ts (str or number) as float seconds, or None.
+
+    Catches EVERY conversion failure, not just TypeError/ValueError: e.g.
+    ``float(10**10000)`` raises OverflowError, and a ts must NEVER cost the turn
+    (Codex FIX1 2026-08-10). NaN/inf are rejected too (``f > 0`` is False for
+    both), so a poisoned ts degrades to "now" upstream rather than storing junk.
+    """
     try:
         f = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 - a bad ts must never raise into the turn
         return None
     return f if f > 0 else None
 

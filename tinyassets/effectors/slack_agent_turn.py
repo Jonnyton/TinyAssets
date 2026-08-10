@@ -307,7 +307,11 @@ def build_handlers(
         # another's turn. `converse` independently gates injection to founder
         # turns; this is the channel half of that guard.
         channel = str(event.get("channel") or "")
-        if channel.startswith("D"):
+        # Fail-closed on BOTH halves: a 1:1 DM AND a recognised founder grant. The
+        # DM check alone let an unauthenticated / non-founder DM sender receive the
+        # founder's history (Codex FIX5 2026-08-10); this now matches the daemon
+        # app_ingress guard (grant is not None AND channel startswith "D").
+        if channel.startswith("D") and binding.founder_grant is not None:
             try:
                 history = await to_thread(_load_history, event, binding)
             except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker

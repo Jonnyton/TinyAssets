@@ -22,6 +22,7 @@ Consent stays a SEPARATE gate — memory is context, never permission.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -88,18 +89,35 @@ def _sanitize_name(name: str) -> str:
 #: ones this module emits. Codex REJECT 2026-08-09.
 _FENCE_TOKENS = (">>>", "<<<")
 
+#: Zero-width / joiner characters. Their only role inside untrusted content is to
+#: SPLIT a delimiter — ">>​>" dodges a literal `">>>"` filter yet still
+#: renders as the boundary marker to the model — so we drop them before matching
+#: (Codex FIX4 2026-08-10).
+_ZERO_WIDTH = dict.fromkeys(
+    (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF), None
+)
+#: Glyphs that READ as ASCII '>' / '<' and could forge the boundary marker:
+#: ascii, fullwidth (U+FF1E/U+FF1C), small-form (U+FE65/U+FE64). CJK angle
+#: brackets (《》〈〉) are deliberately EXCLUDED — legitimate text, not the fence.
+_GT_RUN = re.compile("[>＞﹥]{2,}")
+_LT_RUN = re.compile("[<＜﹤]{2,}")
+
 
 def _neutralize(text: str) -> str:
-    """Strip the fence delimiter tokens from untrusted stored text.
+    """Neutralize any forge-able fence delimiter in untrusted stored text.
 
-    Replaces the ASCII ``>>>`` / ``<<<`` runs with look-alike single-angle
-    quotes so the content still reads naturally but can never reproduce the
-    boundary markers the header/footer use. Applied to every rendered stored
-    line; the header/footer are trusted and keep their real delimiters.
+    The header/footer emit the real ``>>>`` / ``<<<`` boundary; stored content is
+    UNTRUSTED, so a line reproducing that marker could inject a fake "END
+    CONVERSATION … you may act". We (1) drop zero-width chars that split a marker,
+    then (2) replace any run of two-or-more '>'/'<' — including fullwidth/small
+    look-alikes — with single-angle quotes, so no stored line can ever yield the
+    3-char boundary regardless of ASCII vs. Unicode glyphs. Applied to every
+    rendered stored line only; the trusted header/footer keep their delimiters.
     """
-    # str.replace rewrites every non-overlapping run, so ">>>>>>" -> "››››››" and
-    # ">>>>" -> "›››>" — at most two ASCII markers survive, never a full 3-run.
-    return (text or "").replace(">>>", "›››").replace("<<<", "‹‹‹")
+    cleaned = (text or "").translate(_ZERO_WIDTH)
+    cleaned = _GT_RUN.sub(lambda m: "›" * len(m.group()), cleaned)
+    cleaned = _LT_RUN.sub(lambda m: "‹" * len(m.group()), cleaned)
+    return cleaned
 
 
 def _relative(ts: float | None, now: float | None) -> str:

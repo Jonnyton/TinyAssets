@@ -224,13 +224,20 @@ def deliver_app_event(
             history = []
 
     def _record_universe(body: str, receipt_ref: str) -> None:
-        # POST-THEN-RECORD: only called AFTER _post returns, with the delivery
-        # receipt (the Slack message ts) as the stable id, so the store can never
+        # POST-THEN-RECORD: only called AFTER _post returns, so the store can never
         # claim a reply the founder never received. record_turn is never-raise.
+        #
+        # The transport returns a COMPOSITE receipt `slack:<channel>:<ts>` (see
+        # slack_transport), but sync_tail dedups against the RAW Slack ts from the
+        # live timeline. Storing the composite as ext_id meant the reply never
+        # matched on re-sync and was re-recorded as a duplicate every time (Codex
+        # FIX2 2026-08-10). Normalise to the raw ts so the write- and read-side
+        # ids are identical.
         if memory_on:
+            raw_ts = receipt_ref.rsplit(":", 1)[-1] if receipt_ref else ""
             conversation_store.record_turn(
                 conv_dir, session_id, "universe", body,
-                ts=receipt_ref, ext_id=receipt_ref,
+                ts=raw_ts, ext_id=raw_ts,
             )
 
     # A persistent conversational agent must NEVER go dark. A turn that fails
