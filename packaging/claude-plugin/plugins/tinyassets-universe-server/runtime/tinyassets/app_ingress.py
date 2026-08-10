@@ -160,14 +160,101 @@ def deliver_app_event(
             converse_as_external_sender as converse,
         )
 
-    reply = converse(
-        routed.universe_id,
-        prompt,
-        actor_id=_actor_id(workspace_id, external_sender_id),
-        founder_grant=grant,
-    )
+    # Conversation memory (live daemon path). The turn is stateless, so without
+    # the recent thread a follow-up like "try again" has nothing to act on (live
+    # 2026-08-08). The durable, session-anchored store is the source of truth; on
+    # a COLD store we import the Slack timeline ONCE so live threads are not blank
+    # right after deploy, then the store owns the memory (durable, surface-
+    # agnostic). This is the DAEMON-side path — the ingress forward is what prod
+    # actually runs, not the in-process build_handlers path. Best-effort
+    # throughout: a memory failure degrades to no memory this turn, never a lost
+    # answer.
+    from tinyassets import conversation_store
+    from tinyassets.api.helpers import _universe_dir
+
+    # Multi-party note: `slack:<channel>` keys the whole channel. In a founder DM
+    # (the live case) every message is the founder's, so this is safe. Genuine
+    # multi-party channel history is the documented tier-preserving follow-up —
+    # history injection is founder-gated downstream regardless.
+    session_id = f"slack:{channel_id}"
+    conv_dir = _universe_dir(routed.universe_id)
+
+    def _live_timeline() -> list:
+        # The DM/channel TIMELINE (thread_ts="") holds prior top-level messages;
+        # with flat-DM replies (see reply_thread_ts) BOTH sides are top-level, so
+        # this recovers the full recent conversation. The current message is
+        # excluded by text. Read-only; never raises.
+        from tinyassets.effectors.slack_agent_turn import load_thread_history
+
+        return load_thread_history(
+            universe_dir=conv_dir,
+            connection_id=DEFAULT_SLACK_CONNECTION,
+            channel=channel_id,
+            thread_ts="",
+            exclude_text=prompt,
+        )
+
+    if not conversation_store.is_backfilled(conv_dir, session_id):
+        # Cold store: import this session's Slack timeline ONCE, atomically.
+        # `backfill_once` is idempotent + all-or-nothing, so concurrent cold turns
+        # cannot double-import and a crash stays retryable.
+        conversation_store.backfill_once(conv_dir, session_id, _live_timeline())
+    else:
+        # HARDENING: `backfill_once` runs exactly once, so if any later
+        # `record_turn` was ever dropped the store silently drifts BEHIND the live
+        # thread and never re-syncs — the exact class of regression that froze
+        # u-tiny's memory. Reconcile the tail from the live timeline before
+        # building the history block so a missed record can never cost recent
+        # context. Bounded + best-effort; `sync_tail` never raises and only
+        # appends the missing trailing turns (it can never duplicate).
+        conversation_store.sync_tail(conv_dir, session_id, _live_timeline())
+
+    history = conversation_store.load_recent(conv_dir, session_id)
+
+    # Record the founder's turn AFTER loading history (so it is not double-shown
+    # this turn) and BEFORE running (so the NEXT turn sees it).
+    conversation_store.record_turn(conv_dir, session_id, "founder", prompt)
+
+    # A persistent conversational agent must NEVER go dark. Before this, a turn
+    # that failed (commonly the universe's own writer model hitting its rate
+    # limit) raised into silence. The daemon holds the bot token, so it can be
+    # honest instead: post a short notice and record it, keeping the conversation
+    # continuous. The founder's message is already stored, so the next turn still
+    # has it.
+    try:
+        reply = converse(
+            routed.universe_id,
+            prompt,
+            actor_id=_actor_id(workspace_id, external_sender_id),
+            founder_grant=grant,
+            conversation_history=history,
+        )
+    except Exception as exc:  # noqa: BLE001 - honesty beats silence
+        logger.warning("app ingress: turn failed, posting honest notice: %s", exc)
+        notice = _failure_notice(exc)
+        conversation_store.record_turn(conv_dir, session_id, "universe", notice)
+        receipt = _post(
+            routed=routed, channel_id=channel_id, body=notice,
+            thread_ts=thread_ts, transport=transport,
+        )
+        return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
     if not isinstance(reply, str) or not reply.strip():
-        raise ValueError("the universe returned an empty reply")
+        # Empty is still a fault — but a fault the founder should HEAR, not a
+        # silent success and not a raise into silence.
+        notice = (
+            "I came back empty on that one and didn't want to leave you hanging "
+            "— mind saying it again? (I've kept your message.)"
+        )
+        conversation_store.record_turn(conv_dir, session_id, "universe", notice)
+        receipt = _post(
+            routed=routed, channel_id=channel_id, body=notice,
+            thread_ts=thread_ts, transport=transport,
+        )
+        return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
+    # Record the universe's reply so it is memory for the next turn.
+    conversation_store.record_turn(conv_dir, session_id, "universe", reply)
 
     receipt = _post(
         routed=routed,
@@ -177,6 +264,28 @@ def deliver_app_event(
         transport=transport,
     )
     return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
+
+def _failure_notice(exc: BaseException) -> str:
+    """An honest, first-person notice for a turn that could not produce a reply.
+
+    Capacity (the universe's own writer model at its rate limit) is the common
+    case and gets its own wording — the universe runs on its founder's LLM
+    subscription, so "at capacity" is the true story, not a platform fault.
+    """
+    name = type(exc).__name__
+    text = str(exc).lower()
+    if "exhausted" in name.lower() or "exhausted" in text or "rate limit" in text:
+        return (
+            "I'm at my model's capacity right now (my writer hit its rate "
+            "limit), so I couldn't finish that turn — I didn't want to leave you "
+            "on silence. I've kept your message; give it a minute and "
+            "say the word (or 'try again') and I'll pick it right back up."
+        )
+    return (
+        "I hit an error finishing that turn and didn't want to go quiet on you. "
+        "Your message is saved — try me again in a moment."
+    )
 
 
 def _actor_id(workspace_id: str, external_sender_id: str) -> str:
