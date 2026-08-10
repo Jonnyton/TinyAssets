@@ -114,6 +114,8 @@ LOCK_TIMEOUT_SECONDS = 60
 # cold start. This is the same shape as the recovery canary that probed 0.7s
 # after container start.
 UNIT_RESTORE_TIMEOUT_SECONDS = 420
+QUIESCED_RESTORE_PROOF_TIMEOUT_SECONDS = 60
+LOOPBACK_HEALTH_TIMEOUT_SECONDS = 90
 AUTHORITATIVE_UNIT_ACTIVE_STATES = frozenset(
     {
         "active",
@@ -2058,12 +2060,13 @@ def fence_status(
             state = _load_state(state_path)
         except FenceError as exc:
             state_error = str(exc)
+    current_run_matches = bool(state and state.get("run_id") == run_id)
     return {
         "owner": TASK_OWNER,
         "state_exists": state_path.is_file(),
         "state_phase": state.get("phase") if state else None,
         "state_run_id": state.get("run_id") if state else None,
-        "current_run_matches": bool(state and state.get("run_id") == run_id),
+        "current_run_matches": current_run_matches,
         "current_run_cutover_started": bool(
             state
             and state.get("run_id") == run_id
@@ -2071,6 +2074,12 @@ def fence_status(
         ),
         "state_error": state_error,
         "masked_units": _masked_units(host),
+        "current_run_previous_image_ref": (
+            state.get("previous_image_ref", "") if current_run_matches else ""
+        ),
+        "current_run_previous_revision": (
+            state.get("previous_revision", "") if current_run_matches else ""
+        ),
     }
 
 
@@ -2475,6 +2484,618 @@ def restore_if_safe(
         }
     )
     return evidence
+
+
+def _quiesced_restore_not_applicable(reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "owner": TASK_OWNER,
+        "phase": "not_applicable",
+        "safe": False,
+        "cleanup_restored": False,
+        "mutation_started": False,
+        "reason": reason,
+    }
+
+
+def _recorded_quiesced_restore_intent(
+    state: Mapping[str, Any],
+) -> tuple[tuple[str, ...], dict[str, dict[str, str]], dict[str, str]]:
+    """Validate the complete pre-quiesce posture before recovery mutates it."""
+
+    progress = state.get("fence_progress")
+    if not isinstance(progress, Mapping) or not (
+        progress.get("restart_policy_proved") is True
+        and progress.get("boot_activators_disabled") is True
+    ):
+        raise FenceError("quiesced restore lacks a completed write-ahead fence")
+
+    raw_racers = state.get("present_restart_racer_units")
+    if not isinstance(raw_racers, (list, tuple)):
+        raise FenceError("quiesced restore racer inventory is invalid")
+    saved_racers = tuple(str(unit) for unit in raw_racers)
+    if (
+        len(set(saved_racers)) != len(saved_racers)
+        or any(unit not in RESTART_RACER_UNITS for unit in saved_racers)
+    ):
+        raise FenceError("quiesced restore racer inventory is invalid")
+
+    raw_racer_state = state.get("restart_racer_state")
+    if not isinstance(raw_racer_state, Mapping) or set(raw_racer_state) != set(
+        saved_racers
+    ):
+        raise FenceError("quiesced restore racer state is incomplete")
+    racer_state: dict[str, dict[str, str]] = {}
+    for unit in saved_racers:
+        raw = raw_racer_state.get(unit)
+        if not isinstance(raw, Mapping):
+            raise FenceError(f"saved unit state is invalid: {unit}")
+        saved = {"active": raw.get("active"), "enabled": raw.get("enabled")}
+        if (
+            saved["active"] not in {"active", "inactive", "failed"}
+            or saved["enabled"] not in AUTHORITATIVE_UNIT_ENABLED_STATES
+            or saved["enabled"] in {"masked", "masked-runtime"}
+        ):
+            raise FenceError(f"saved unit state is invalid: {unit}")
+        racer_state[unit] = saved
+
+    raw_daemon_state = state.get("daemon_service_state")
+    if not isinstance(raw_daemon_state, Mapping):
+        raise FenceError("saved daemon unit state is invalid")
+    daemon_state = {
+        "active": raw_daemon_state.get("active"),
+        "enabled": raw_daemon_state.get("enabled"),
+    }
+    if (
+        daemon_state["active"] not in {"active", "inactive", "failed"}
+        or daemon_state["enabled"]
+        not in {"enabled", "enabled-runtime", "disabled"}
+    ):
+        raise FenceError("saved daemon unit state is invalid")
+
+    raw_policies = state.get("old_restart_policies")
+    if not isinstance(raw_policies, Mapping) or set(raw_policies) != set(
+        EXPECTED_CONTAINERS
+    ):
+        raise FenceError("quiesced restore restart policies are incomplete")
+    policies = {str(name): str(policy) for name, policy in raw_policies.items()}
+    raw_sidecar_policies = state.get("sidecar_restart_policies") or {}
+    if not isinstance(raw_sidecar_policies, Mapping):
+        raise FenceError("quiesced restore sidecar policies are invalid")
+    sidecar_policies = {
+        str(name): str(policy) for name, policy in raw_sidecar_policies.items()
+    }
+    if set(sidecar_policies) - {name for name, _service in CANONICAL_SIDECARS}:
+        raise FenceError("quiesced restore sidecar policies are invalid")
+    policies.update(sidecar_policies)
+    if any(
+        policy not in {"no", "always", "unless-stopped", "on-failure"}
+        for policy in policies.values()
+    ):
+        raise FenceError("quiesced restore restart policy is invalid")
+    if state.get("extra_volume_consumers"):
+        raise FenceError("quiesced restore recorded an extra volume consumer")
+    return saved_racers, racer_state, policies
+
+
+def _restore_recorded_restart_policies(
+    host: Host,
+    policies: Mapping[str, str],
+    *,
+    require_all: bool,
+) -> dict[str, str]:
+    """Restore policies by canonical name; absent compose-down IDs are deferred."""
+
+    proof: dict[str, str] = {}
+    for name, policy in policies.items():
+        if _named_container_absent_exact(host, name):
+            if require_all:
+                raise FenceError(f"restored container is missing: {name}")
+            continue
+        info = host.container_info(name)
+        identity = str(info.get("Id", ""))
+        if not identity:
+            raise FenceError(f"container identity is unavailable: {name}")
+        host.run(["docker", "update", f"--restart={policy}", identity])
+        actual = host.container_restart_policy(identity)
+        if actual != policy:
+            raise FenceError(
+                f"restart policy restoration did not persist: "
+                f"{name}={actual}, expected={policy}"
+            )
+        proof[name] = actual
+    return proof
+
+
+def _prove_quiesced_restore_observation(
+    observation: Mapping[str, Any],
+    state: Mapping[str, Any],
+    *,
+    image_ref: str,
+    revision: str,
+) -> bool:
+    containers = observation.get("containers")
+    if not isinstance(containers, Mapping) or set(containers) != set(
+        EXPECTED_CONTAINERS
+    ):
+        return False
+    if set(observation.get("volume_container_names", [])) != set(
+        EXPECTED_CONTAINERS
+    ):
+        return False
+    if observation.get("queue_risk") or observation.get("stray_writer_processes"):
+        return False
+    if observation.get("receipt_snapshot") != state.get("receipt_snapshot"):
+        return False
+    identities = {
+        (row.get("image_ref"), row.get("revision"))
+        for row in containers.values()
+        if isinstance(row, Mapping)
+    }
+    if identities != {(image_ref, revision)}:
+        return False
+    return all(
+        isinstance(row, Mapping)
+        and row.get("running") is True
+        and bool(row.get("id"))
+        for row in containers.values()
+    )
+
+
+def _quiesced_restore_compose_provenance(
+    host: Host,
+    observation: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
+    services = dict(zip(EXPECTED_CONTAINERS, RECOVERY_SERVICES, strict=True))
+    containers = observation.get("containers", {})
+    proof: dict[str, dict[str, str]] = {}
+    for name, service in services.items():
+        info = host.container_info(name)
+        identity = str(info.get("Id", ""))
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if (
+            identity != containers.get(name, {}).get("id")
+            or labels.get("com.docker.compose.project")
+            != CANONICAL_COMPOSE_PROJECT
+            or labels.get("com.docker.compose.service") != service
+        ):
+            raise FenceError(f"restored compose provenance is invalid: {name}")
+        proof[name] = {
+            "id": identity,
+            "project": CANONICAL_COMPOSE_PROJECT,
+            "service": service,
+        }
+    return proof
+
+
+def _wait_quiesced_restore_observation(
+    host: Host,
+    state: Mapping[str, Any],
+    *,
+    image_ref: str,
+    revision: str,
+    timeout_seconds: float = QUIESCED_RESTORE_PROOF_TIMEOUT_SECONDS,
+    delay_seconds: float = 2.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_error = ""
+    last_observation: dict[str, Any] = {}
+    while True:
+        try:
+            last_observation = observe_fleet(
+                host,
+                expected_image_ref=image_ref,
+            )
+            if _prove_quiesced_restore_observation(
+                last_observation,
+                state,
+                image_ref=image_ref,
+                revision=revision,
+            ):
+                return last_observation
+            last_error = "fleet identity, safety, or receipt proof disagrees"
+        except FenceError as exc:
+            last_error = str(exc)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay_seconds, remaining))
+    raise FenceError(
+        "quiesced fleet recovery proof did not converge: "
+        f"{last_error}; diagnostic={json.dumps(last_observation, sort_keys=True)}"
+    )
+
+
+def _wait_loopback_mcp_health(
+    host: Host,
+    *,
+    timeout_seconds: float = LOOPBACK_HEALTH_TIMEOUT_SECONDS,
+    delay_seconds: float = 3.0,
+) -> dict[str, Any]:
+    url = "http://127.0.0.1:8001/mcp"
+    payload = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "quiesced-restore-canary",
+                    "version": "1",
+                },
+            },
+        },
+        separators=(",", ":"),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    attempts = 0
+    last_status = "000"
+    while True:
+        attempts += 1
+        last_status = host.run(
+            [
+                "curl",
+                "--silent",
+                "--show-error",
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code}",
+                "--connect-timeout",
+                "2",
+                "--max-time",
+                "5",
+                "--request",
+                "POST",
+                "--header",
+                "Content-Type: application/json",
+                "--header",
+                "Accept: application/json, text/event-stream",
+                "--data",
+                payload,
+                url,
+            ],
+            check=False,
+            timeout_seconds=10,
+        )
+        if last_status == "200":
+            return {
+                "url": url,
+                "http_status": last_status,
+                "attempts": attempts,
+                "timeout_seconds": timeout_seconds,
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay_seconds, remaining))
+    raise FenceError(
+        "restored daemon never served MCP on loopback: "
+        f"attempts={attempts}, last_http_status={last_status!r}"
+    )
+
+
+def _quiesced_restore_evidence(
+    *,
+    image_ref: str,
+    revision: str,
+    masked_before: Sequence[str],
+    expected_states: Mapping[str, Mapping[str, str]],
+    actual_states: Mapping[str, Mapping[str, str]],
+    expected_policies: Mapping[str, str],
+    policy_proof: Mapping[str, str],
+    observation: Mapping[str, Any],
+    compose_provenance: Mapping[str, Mapping[str, str]],
+    health: Mapping[str, Any],
+    idempotent: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "owner": TASK_OWNER,
+        "phase": "restored",
+        "safe": True,
+        "cleanup_restored": True,
+        "mutation_started": not idempotent,
+        "recovery_kind": "quiesced_before_image_commit",
+        "previous_image_ref": image_ref,
+        "previous_revision": revision,
+        "masked_units_before": list(masked_before),
+        "masked_units_after": [],
+        "expected_restored_unit_states": {
+            unit: dict(unit_state) for unit, unit_state in expected_states.items()
+        },
+        "restored_unit_states": {
+            unit: dict(unit_state) for unit, unit_state in actual_states.items()
+        },
+        "expected_restart_policies": dict(expected_policies),
+        "restart_policy_restore_proof": dict(policy_proof),
+        "observation": dict(observation),
+        "compose_provenance": {
+            name: dict(proof) for name, proof in compose_provenance.items()
+        },
+        "loopback_health": dict(health),
+        "idempotent_reproof": idempotent,
+    }
+
+
+def restore_quiesced(
+    host: Host,
+    *,
+    image_ref: str,
+    revision: str,
+    run_id: str,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Restore only a proved current-run quiesce whose image never committed."""
+
+    _require_run_id(run_id)
+    if not state_path.is_file():
+        return _quiesced_restore_not_applicable("durable fence state is absent")
+    state = _load_state(state_path)
+    if state.get("run_id") != run_id:
+        return _quiesced_restore_not_applicable("durable fence belongs to another run")
+
+    phase = str(state.get("phase", ""))
+    restore_marker = state.get("quiesced_restore")
+    idempotent_reproof = phase == "restored" and isinstance(
+        restore_marker, Mapping
+    ) and restore_marker.get("recovery_kind") == "quiesced_before_image_commit"
+    if phase not in {"preflight_proved", "restoring_quiesced"} and not (
+        idempotent_reproof
+    ):
+        return _quiesced_restore_not_applicable(
+            "durable fence is not a proved pre-image-commit quiesce"
+        )
+
+    previous_image_ref = str(state.get("previous_image_ref", ""))
+    previous_revision = str(state.get("previous_revision", ""))
+    configured_image_ref = _configured_image()
+    if (
+        not CANONICAL_IMAGE_RE.fullmatch(image_ref)
+        or not REVISION_RE.fullmatch(revision)
+        or image_ref != previous_image_ref
+        or revision != previous_revision
+        or configured_image_ref != previous_image_ref
+    ):
+        return _quiesced_restore_not_applicable(
+            "configured, recorded, and floor-proved previous identities disagree"
+        )
+
+    saved_racers, racer_state, policies = _recorded_quiesced_restore_intent(state)
+    saved_units = (*saved_racers, DAEMON_SERVICE)
+    if any(not host.unit_present(unit) for unit in saved_units):
+        raise FenceError("quiesced restore saved unit is missing")
+    expected_states = {
+        **racer_state,
+        DAEMON_SERVICE: _daemon_restore_expectation(
+            state.get("daemon_service_state", {}),
+            establish_active=True,
+        ),
+    }
+
+    if idempotent_reproof:
+        masks_after = _masked_units(host)
+        if masks_after:
+            raise FenceError(f"idempotent restored proof found masks: {masks_after}")
+        actual_states = _wait_units_restored(
+            host,
+            expected_states,
+            timeout_seconds=5,
+        )
+        policy_proof = {
+            name: host.container_restart_policy(
+                str(host.container_info(name).get("Id", ""))
+            )
+            for name in policies
+        }
+        if policy_proof != policies:
+            raise FenceError("idempotent restored restart policies disagree")
+        observation = _wait_quiesced_restore_observation(
+            host,
+            state,
+            image_ref=image_ref,
+            revision=revision,
+            timeout_seconds=5,
+            delay_seconds=1,
+        )
+        health = _wait_loopback_mcp_health(
+            host,
+            timeout_seconds=10,
+            delay_seconds=1,
+        )
+        compose_provenance = _quiesced_restore_compose_provenance(
+            host,
+            observation,
+        )
+        return _quiesced_restore_evidence(
+            image_ref=image_ref,
+            revision=revision,
+            masked_before=(),
+            expected_states=expected_states,
+            actual_states=actual_states,
+            expected_policies=policies,
+            policy_proof=policy_proof,
+            observation=observation,
+            compose_provenance=compose_provenance,
+            health=health,
+            idempotent=True,
+        )
+
+    masks_before = _masked_units(host)
+    expected_mask_set = set(saved_units)
+    if set(masks_before) - expected_mask_set:
+        raise FenceError("quiesced restore found an unrecorded masked unit")
+    if phase == "preflight_proved" and set(masks_before) != expected_mask_set:
+        raise FenceError("proved quiesce does not retain its exact runtime masks")
+
+    volume_dir = Path(str(state.get("volume_mountpoint", ""))).resolve()
+    receipt_path = Path(str(state.get("receipt_host_path", ""))).resolve()
+    if volume_dir not in receipt_path.parents or not volume_dir.is_dir():
+        raise FenceError("quiesced restore volume provenance is invalid")
+    volume_names = set(host.volume_container_names())
+    if not volume_names <= set(EXPECTED_CONTAINERS):
+        raise FenceError("quiesced restore found an extra production-volume consumer")
+    old_ids = state.get("old_container_ids")
+    if not isinstance(old_ids, Mapping) or set(old_ids) != set(EXPECTED_CONTAINERS):
+        raise FenceError("quiesced restore old container identities are incomplete")
+    for name in EXPECTED_CONTAINERS:
+        if _named_container_absent_exact(host, name):
+            continue
+        info = host.container_info(name)
+        identity = str(info.get("Id", ""))
+        if phase == "preflight_proved" and identity != str(old_ids.get(name, "")):
+            raise FenceError(f"quiesced container identity was substituted: {name}")
+        if phase == "preflight_proved" and info.get("State", {}).get("Running"):
+            raise FenceError(f"quiesced container unexpectedly runs: {name}")
+        if (
+            phase == "preflight_proved"
+            and host.container_restart_policy(identity) != "no"
+        ):
+            raise FenceError(f"quiesced container restart fence drifted: {name}")
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        expected_service = dict(
+            zip(EXPECTED_CONTAINERS, RECOVERY_SERVICES, strict=True)
+        )[name]
+        if (
+            labels.get("com.docker.compose.project") != CANONICAL_COMPOSE_PROJECT
+            or labels.get("com.docker.compose.service") != expected_service
+        ):
+            raise FenceError(f"quiesced compose provenance is invalid: {name}")
+        if phase == "restoring_quiesced":
+            actual_image_ref, actual_revision = host.image_identity(
+                str(info.get("Image", "")),
+                image_ref.partition("@")[0],
+            )
+            if (actual_image_ref, actual_revision) != (image_ref, revision):
+                raise FenceError(f"partial restored image is invalid: {name}")
+
+    sidecar_handoff = state.get("sidecar_handoff") or {}
+    recorded_sidecar_ids = (
+        sidecar_handoff.get("container_ids", {})
+        if isinstance(sidecar_handoff, Mapping)
+        else {}
+    )
+    sidecar_services = dict(CANONICAL_SIDECARS)
+    for name in set(policies) & set(sidecar_services):
+        if _named_container_absent_exact(host, name):
+            continue
+        info = host.container_info(name)
+        identity = str(info.get("Id", ""))
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if (
+            labels.get("com.docker.compose.project") != CANONICAL_COMPOSE_PROJECT
+            or labels.get("com.docker.compose.service") != sidecar_services[name]
+        ):
+            raise FenceError(f"quiesced sidecar provenance is invalid: {name}")
+        if phase == "preflight_proved" and identity != str(
+            recorded_sidecar_ids.get(name, "")
+        ):
+            raise FenceError(f"quiesced sidecar identity was substituted: {name}")
+        _assert_sidecar_nonwriter(name, info, volume_dir)
+
+    if inventory_queue_risk(volume_dir):
+        raise FenceError("queue risk appeared before quiesced restore")
+    if _stray_writer_processes(receipt_path, set(), volume_dir):
+        raise FenceError("stray writer process appeared before quiesced restore")
+    if receipt_snapshot(receipt_path) != state.get("receipt_snapshot"):
+        raise FenceError("receipt snapshot changed before quiesced restore")
+
+    if phase == "preflight_proved":
+        state["phase"] = "restoring_quiesced"
+        state["quiesced_restore"] = {
+            "recovery_kind": "quiesced_before_image_commit",
+            "previous_image_ref": image_ref,
+            "previous_revision": revision,
+            "started_epoch": time.time(),
+        }
+        _atomic_json(state_path, state)
+
+    prestart_policy_proof = _restore_recorded_restart_policies(
+        host,
+        policies,
+        require_all=False,
+    )
+    host.run(["systemctl", "unmask", "--runtime", *saved_units])
+    for unit in (*saved_racers, DAEMON_SERVICE):
+        prior = expected_states[unit]
+        if prior.get("enabled") == "enabled":
+            host.run(["systemctl", "enable", unit])
+        elif prior.get("enabled") == "enabled-runtime":
+            host.run(["systemctl", "enable", "--runtime", unit])
+
+    host.run(
+        ["systemctl", "start", DAEMON_SERVICE],
+        timeout_seconds=UNIT_RESTORE_TIMEOUT_SECONDS,
+    )
+    observation = _wait_quiesced_restore_observation(
+        host,
+        state,
+        image_ref=image_ref,
+        revision=revision,
+    )
+    _quiesced_restore_compose_provenance(host, observation)
+    policy_proof = _restore_recorded_restart_policies(
+        host,
+        policies,
+        require_all=True,
+    )
+    for unit in saved_racers:
+        if racer_state[unit].get("active") == "active":
+            host.run(["systemctl", "start", unit])
+
+    actual_states = _wait_units_restored(
+        host,
+        expected_states,
+        timeout_seconds=QUIESCED_RESTORE_PROOF_TIMEOUT_SECONDS,
+    )
+    health = _wait_loopback_mcp_health(host)
+    masks_after = _masked_units(host)
+    if masks_after:
+        raise FenceError(f"quiesced restore left runtime masks: {masks_after}")
+    if policy_proof != policies:
+        raise FenceError("quiesced restore restart policy proof is incomplete")
+    observation = _wait_quiesced_restore_observation(
+        host,
+        state,
+        image_ref=image_ref,
+        revision=revision,
+        timeout_seconds=5,
+        delay_seconds=1,
+    )
+    compose_provenance = _quiesced_restore_compose_provenance(
+        host,
+        observation,
+    )
+
+    state["phase"] = "restored"
+    state["daemon_service_state"] = expected_states[DAEMON_SERVICE]
+    state["restart_policy_restore_proof"] = policy_proof
+    state["quiesced_restore"].update(
+        {
+            "completed_epoch": time.time(),
+            "prestart_restart_policy_restore_proof": prestart_policy_proof,
+            "expected_restored_unit_states": expected_states,
+            "restored_unit_states": actual_states,
+            "masked_units_after": [],
+            "loopback_health": health,
+        }
+    )
+    _atomic_json(state_path, state)
+    return _quiesced_restore_evidence(
+        image_ref=image_ref,
+        revision=revision,
+        masked_before=masks_before,
+        expected_states=expected_states,
+        actual_states=actual_states,
+        expected_policies=policies,
+        policy_proof=policy_proof,
+        observation=observation,
+        compose_provenance=compose_provenance,
+        health=health,
+        idempotent=False,
+    )
 
 
 def _validate_unsafe_recovery_source(
@@ -4212,6 +4833,14 @@ def reconcile_recovery_on_boot(
             "safe": phase == "restored",
             "writers_fenced": phase == "unsafe_fenced",
         }
+    if phase == "restoring_quiesced":
+        run_id = str(state.get("run_id", ""))
+        _require_state_run(state, run_id)
+        return quiesce_unsafe(
+            host,
+            run_id=run_id,
+            state_path=state_path,
+        )
     source_run_id = str(state.get("source_run_id", ""))
     run_id = str(state.get("recovery_run_id") or state.get("run_id") or "")
     _require_recovery_owner(
@@ -4306,7 +4935,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--lock-path", type=Path, default=DEFAULT_LOCK_PATH)
     parser.add_argument("--evidence")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("preflight", "prove", "post-canary", "restore-if-safe"):
+    for name in (
+        "preflight",
+        "prove",
+        "post-canary",
+        "restore-if-safe",
+        "restore-quiesced",
+    ):
         command = subparsers.add_parser(name)
         command.add_argument("--image-ref", required=True)
         command.add_argument("--revision", required=True)
@@ -4393,6 +5028,14 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
         )
     if args.command == "restore-if-safe":
         return restore_if_safe(
+            host,
+            image_ref=args.image_ref,
+            revision=args.revision,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "restore-quiesced":
+        return restore_quiesced(
             host,
             image_ref=args.image_ref,
             revision=args.revision,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import sqlite3
 import threading
@@ -6568,3 +6569,66 @@ def test_retirement_removes_the_stopped_container_not_just_the_record(tmp_path):
 
     # The container itself must be gone, not merely unrecorded.
     assert "tinyassets-leftover" not in host.containers
+
+
+def test_restore_quiesced_mutation_order_and_no_docker_start():
+    """Level 2 auto-rollback safe ordering (transition-order proof).
+
+    restore_quiesced reverses a proved-but-uncommitted quiesce. Its host
+    mutations must be strictly ordered so a crash at any point stays
+    recoverable and it never declares `restored` before proving the fleet:
+      validate recorded intent -> durably mark `restoring_quiesced`
+      -> unmask -> systemctl start (compose-up, NEVER `docker start <old-id>`)
+      -> prove loopback MCP health -> durably mark `restored`.
+    """
+    source = inspect.getsource(fence.restore_quiesced)
+
+    pos_intent = source.index("_recorded_quiesced_restore_intent(state)")
+    pos_restoring = source.index('state["phase"] = "restoring_quiesced"')
+    pos_unmask = source.index('"unmask", "--runtime"')
+    pos_start = source.index('"start", DAEMON_SERVICE')
+    pos_health = source.index("_wait_loopback_mcp_health(host)")
+    pos_restored = source.index('state["phase"] = "restored"')
+
+    assert (
+        pos_intent
+        < pos_restoring
+        < pos_unmask
+        < pos_start
+        < pos_health
+        < pos_restored
+    ), (pos_intent, pos_restoring, pos_unmask, pos_start, pos_health, pos_restored)
+
+    # Recovery is compose-up on the UNCHANGED image via the daemon unit; the
+    # removed old containers are never resurrected by id.
+    assert 'docker", "start' not in source
+    assert 'docker", "restart' not in source
+
+
+def test_restore_quiesced_only_acts_when_image_never_committed():
+    """Safe-case gate: the configured image must still equal the recorded
+    previous image — i.e. the new image never committed. Any disagreement is a
+    no-op, never a host mutation."""
+    source = inspect.getsource(fence.restore_quiesced)
+    assert "configured_image_ref = _configured_image()" in source
+    assert "configured_image_ref != previous_image_ref" in source
+    assert "_quiesced_restore_not_applicable" in source
+    # The proved-quiesce phases it will reverse, and nothing else.
+    assert 'phase not in {"preflight_proved", "restoring_quiesced"}' in source
+
+
+def test_restore_quiesced_registered_in_cli_and_dispatch():
+    parser_src = inspect.getsource(fence._parser)
+    execute_src = inspect.getsource(fence._execute)
+    assert '"restore-quiesced"' in parser_src
+    assert 'args.command == "restore-quiesced"' in execute_src
+    assert "return restore_quiesced(" in execute_src
+
+
+def test_boot_reconciler_refences_interrupted_quiesced_restore():
+    """A crash mid-restore leaves phase `restoring_quiesced`; on reboot the
+    reconciler must re-fence (quiesce) rather than leave a half-restored fleet
+    running with an unproven posture."""
+    source = inspect.getsource(fence.reconcile_recovery_on_boot)
+    assert 'phase == "restoring_quiesced"' in source
+    assert "return quiesce_unsafe(" in source
