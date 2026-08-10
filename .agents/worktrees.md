@@ -2490,3 +2490,14 @@ Notes:
 - Review gate: strict OpenSpec, focused security/concurrency tests, exact-head independent review, and hosted checks.
 - Publish/cleanup: one dark adapter prerequisite PR; live credentials and production Slack transport remain host/cloud-owned.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-app-outbound-adapter-20260804/_PURPOSE.md`.
+
+## 2026-08-10 - Build BYO-LLM connect flow slice 1
+
+- Provider: `codex-byo-llm-slice1`.
+- Branch: `claude/byo-llm-slice1`.
+- Lane state: Active; P0/security exception for branch-isolated overlap with the cloud-drain activation lane.
+- Worktree: `C:/Users/Jonathan/Projects/wf-byo-llm-slice1`.
+- Purpose: mint and wire requester-owned serving authority, fail closed at the provider sink, and dynamically enroll serving Slack workers.
+- Review gate: mutation proof, full relevant tests, mirror parity, exact-head dual-family review, isolated canary, then production-SHA proof.
+- Publish/cleanup: no merge, deploy, canary mutation, u-tiny mutation, or live Slack effect from this build lane.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-byo-llm-slice1/_PURPOSE.md`.
