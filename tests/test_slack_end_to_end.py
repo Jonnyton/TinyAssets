@@ -211,7 +211,8 @@ async def test_the_documented_socket_lifecycle_end_to_end(tmp_path, monkeypatch)
 
         turns: list[str] = []
 
-        def _converse(universe_id, message, *, actor_id="", founder_grant=None):
+        def _converse(universe_id, message, *, actor_id="", founder_grant=None,
+                      conversation_history=None):
             who = "founder" if founder_grant is not None else "not-founder"
             turns.append(f"{universe_id}|{who}|{actor_id}|{message}")
             return f"answering: {message}"

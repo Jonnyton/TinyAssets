@@ -475,6 +475,105 @@ def commit_learning(
     return result
 
 
+def _coerce_ts(value: object) -> "float | None":
+    """A Slack/epoch ts (str or number) as float seconds, or None."""
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def _conversation_history_block(
+    conversation_history: "list | None", *, interlocutor: str = "your founder"
+) -> str:
+    """Render loaded prior messages into the turn's memory block, or "".
+
+    Accepts a list of ``conversation_memory.Msg`` (or ``(speaker, text[, ts])``
+    tuples / ``{"speaker","text","ts"}`` dicts, so callers do not have to import
+    the dataclass). Stamps the block with the CURRENT time so the turn can reason
+    about how long ago each message was sent, and names ``interlocutor`` so it
+    knows who it is talking to. Never raises — a memory-formatting failure must
+    not lose the turn; it simply proceeds without history.
+    """
+    if not conversation_history:
+        return ""
+    try:
+        import time
+
+        from tinyassets.conversation_memory import Msg, format_history
+
+        rows: list[Msg] = []
+        for item in conversation_history:
+            if isinstance(item, Msg):
+                rows.append(item)
+            elif isinstance(item, dict):
+                rows.append(Msg(
+                    speaker=str(item.get("speaker") or ""),
+                    text=str(item.get("text") or ""),
+                    ts=_coerce_ts(item.get("ts")),
+                ))
+            elif isinstance(item, (tuple, list)) and len(item) >= 2:
+                rows.append(Msg(
+                    speaker=str(item[0]),
+                    text=str(item[1]),
+                    ts=_coerce_ts(item[2]) if len(item) >= 3 else None,
+                ))
+        return format_history(rows, now=time.time(), interlocutor=interlocutor)
+    except Exception:  # noqa: BLE001 - memory must never break the reply
+        logger.exception("conversation history formatting failed; proceeding")
+        return ""
+
+
+#: Ride out a TRANSIENT writer exhaustion. The universe runs on the founder's own
+#: subscription (claude-code) with codex as the only other subscription writer
+#: (API-key providers are off by default); when BOTH are briefly rate-limited or
+#: cooling at once, the router raises immediately without waiting the cooldown
+#: out — so a momentary double-cooldown killed the turn and u-tiny told the
+#: founder "my writer hit its rate limit" (live 2026-08-09, twice). We wait out
+#: the cooldown and retry before giving up; a genuinely sustained limit still
+#: falls through to the honest-notice path. Kept subscription-only (no policy
+#: change) — this only rides out the transient window.
+_WRITER_RETRY_BACKOFFS_S = (30.0, 60.0)
+
+
+def _call_writer_with_backoff(turn_input, *, system, universe_context, config):
+    """``call_provider(role="writer")`` with bounded retry on provider exhaustion."""
+    import time as _time
+
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    for backoff in (*_WRITER_RETRY_BACKOFFS_S, None):
+        try:
+            return call_provider(
+                turn_input,
+                system=system,
+                role="writer",
+                universe_context=universe_context,
+                config=config,
+            )
+        except AllProvidersExhaustedError as exc:
+            # Codex 2026-08-09: the writer call is an AGENTIC loop (it runs
+            # tools), so retrying blindly could re-execute tools it already ran.
+            # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
+            # cooldown/quota), so no provider ever executed and nothing ran. If
+            # any provider actually attempted (status != skipped), a tool may have
+            # fired — re-raise instead, and let the founder's memory-backed "try
+            # again" re-run cleanly.
+            attempts = getattr(exc, "attempts", None) or []
+            all_skipped = bool(attempts) and all(
+                getattr(a, "status", "") == "skipped" for a in attempts
+            )
+            if backoff is None or not all_skipped:
+                raise  # sustained/limit or unsafe-to-retry → caller's honest notice
+            logger.warning(
+                "writer chain fully cooled (all providers skipped, nothing ran); "
+                "backing off %.0fs then retrying",
+                backoff,
+            )
+            _time.sleep(backoff)
+
+
 def converse(
     universe_id: str,
     founder_message: str,
@@ -482,6 +581,7 @@ def converse(
     actor_id: str = "",
     tier: str | None = None,
     founder_grant: object | None = None,
+    conversation_history: "list | None" = None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -525,13 +625,30 @@ def converse(
         interlocutor.resolve_interlocutor_tier(uid).tier if tier is None else tier
     )
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
+    granted = bound_tier == interlocutor.FOUNDER
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid
     )
-    reply = call_provider(
-        founder_message,
+    # Conversation memory: the turn is stateless, so without this it forgets what
+    # was just said and a founder follow-up ("try again", "yes") lands on nothing
+    # (live 2026-08-08). Codex ADAPT 2026-08-08 shaped three things:
+    #   * It is prepended to the USER message as DELIMITED UNTRUSTED context —
+    #     never merged into the trusted persona system prompt (which also keeps
+    #     the system prompt off the Windows cmd.exe argv length limit).
+    #   * It is gated to GRANTED (founder) turns only, so other-tier or
+    #     prior-universe text cannot ride into a founder turn.
+    #     Tier-preserving multi-party history is a separate follow-up.
+    #   * It is memory, NEVER consent — a "yes" inside the history is spent; a
+    #     costly action still records fresh consent this turn (gate unchanged).
+    # `founder_message` is left CLEAN for extract_learning below; only the
+    # provider call sees the history-prefixed input.
+    history_block = (
+        _conversation_history_block(conversation_history) if granted else ""
+    )
+    turn_input = history_block + founder_message if history_block else founder_message
+    reply = _call_writer_with_backoff(
+        turn_input,
         system=system,
-        role="writer",
         universe_context=ctx,
         config=_sandboxed_config(ctx),
     )
@@ -592,6 +709,7 @@ def converse_as_external_sender(
     *,
     founder_grant: object | None = None,
     actor_id: str = "",
+    conversation_history: "list | None" = None,
 ) -> str:
     """The entry point for every external chat surface — Slack, Discord, Teams.
 
@@ -609,9 +727,11 @@ def converse_as_external_sender(
         message,
         actor_id=actor_id,
         founder_grant=founder_grant,
+        conversation_history=conversation_history,
     ) if founder_grant is not None else converse(
         universe_id,
         message,
         actor_id=actor_id,
         tier=EXTERNAL_SENDER_FLOOR,
+        conversation_history=conversation_history,
     )

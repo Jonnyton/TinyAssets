@@ -126,11 +126,109 @@ def _destination(binding: SlackBinding, event: Mapping[str, Any]) -> ReplyDestin
     )
 
 
+#: How many recent thread messages to feed the turn as memory. Matches
+#: conversation_memory.DEFAULT_LIMIT intent; the formatter re-bounds anyway.
+HISTORY_LIMIT = 15
+
+
+def load_thread_history(
+    *,
+    universe_dir: "Path",
+    connection_id: str,
+    channel: str,
+    thread_ts: str = "",
+    exclude_ts: str = "",
+    exclude_text: str = "",
+    limit: int = HISTORY_LIMIT,
+) -> list[dict[str, str]]:
+    """Load a conversation as ``[{"speaker","text","ts"}]`` for turn memory.
+
+    Shared by both Slack paths (in-process ``build_handlers`` and the live
+    daemon ``app_ingress`` forward) and by the durable store's cold-start
+    backfill / drift re-sync. Reads the thread via ``conversations.replies``
+    when threaded, else the channel/DM via ``conversations.history``, with the
+    connection's bot token, and labels each message founder-vs-universe (a bot
+    message carries ``bot_id``/``app_id``). The CURRENT message is excluded (by
+    ts, or failing that by matching text) — it is already the turn's prompt.
+    Read-only; never raises (returns [] on any trouble) because memory is a
+    bonus, never a blocker.
+    """
+    import json
+    import urllib.parse
+    import urllib.request
+
+    from tinyassets.credential_vault import resolve_slack_token
+
+    channel = (channel or "").strip()
+    if not channel:
+        return []
+    token = resolve_slack_token(universe_dir, connection_id)
+    if not token:
+        return []
+    thread_ts = (thread_ts or "").strip()
+    if thread_ts:
+        method, params = "conversations.replies", {
+            "channel": channel, "ts": thread_ts, "limit": limit + 1,
+        }
+    else:
+        method, params = "conversations.history", {
+            "channel": channel, "limit": limit + 1,
+        }
+    url = f"https://slack.com/api/{method}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(  # noqa: S310 - fixed https Slack endpoint
+        url, headers={"Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - caller treats [] as "no memory"
+        logger.warning("slack history fetch failed for %s", channel)
+        return []
+    raw = data.get("messages") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    # conversations.history returns newest-first; replies returns oldest-first.
+    ordered = raw if thread_ts else list(reversed(raw))
+    exclude_ts = (exclude_ts or "").strip()
+    exclude_text = _MENTION.sub("", (exclude_text or "")).strip()
+    out: list[dict[str, str]] = []
+    for m in ordered:
+        if not isinstance(m, dict):
+            continue
+        if exclude_ts and str(m.get("ts") or "") == exclude_ts:
+            continue  # the message being answered is the prompt, not memory
+        text = _MENTION.sub("", str(m.get("text") or "")).strip()
+        if not text:
+            continue
+        speaker = "universe" if (m.get("bot_id") or m.get("app_id")) else "founder"
+        out.append({"speaker": speaker, "text": text, "ts": str(m.get("ts") or "")})
+    # Fallback de-dup: if the current message has no ts to match on, drop the
+    # newest identical-text founder line so the prompt is not shown twice.
+    if not exclude_ts and exclude_text and out and out[-1]["text"] == exclude_text:
+        out.pop()
+    return out[-limit:]
+
+
+def _default_load_history(
+    event: Mapping[str, Any], binding: SlackBinding, *, limit: int = HISTORY_LIMIT
+) -> list[dict[str, str]]:
+    """In-process path: pull the fields off the event + binding and load."""
+    return load_thread_history(
+        universe_dir=binding.universe_dir,
+        connection_id=binding.connection_id,
+        channel=str(event.get("channel") or ""),
+        thread_ts=str(event.get("thread_ts") or ""),
+        exclude_ts=str(event.get("ts") or ""),
+        limit=limit,
+    )
+
+
 def build_handlers(
     *,
     resolve: Resolver,
     post: Poster,
     converse: Callable[..., str] | None = None,
+    load_history: Callable[..., list] | None = None,
     to_thread: Callable[..., Any] = asyncio.to_thread,
 ):
     """Build the ``(handle, on_failure)`` pair the pump takes.
@@ -138,6 +236,12 @@ def build_handlers(
     ``converse`` is injected so tests never reach a provider; the default is
     the real universe turn, imported lazily so importing this module does not
     drag in the engine.
+
+    ``load_history`` gives the turn its MEMORY: the universe turn is stateless,
+    so without the recent thread it forgets what was just said and a follow-up
+    like "try again" lands on nothing (live 2026-08-08). The default loads the
+    recent thread from Slack; injectable so tests never hit the API. A load
+    failure is swallowed — no memory is worse than losing the turn.
     """
 
     if converse is None:
@@ -146,6 +250,8 @@ def build_handlers(
         )
     else:
         _converse = converse
+
+    _load_history = load_history if load_history is not None else _default_load_history
 
     async def handle(event: Mapping[str, Any]) -> None:
         binding = resolve(event)
@@ -162,12 +268,21 @@ def build_handlers(
             return
 
         destination = _destination(binding, event)
+        # Load the recent thread so the turn remembers the conversation. Best
+        # effort: a fetch failure means this turn runs without memory, which is
+        # the pre-2026-08-08 behaviour — strictly better than dropping the turn.
+        try:
+            history = await to_thread(_load_history, event, binding)
+        except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+            logger.warning("slack turn: history load failed, proceeding blind")
+            history = []
         reply = await to_thread(
             _converse,
             binding.universe_id,
             prompt,
             actor_id=binding.actor_id,
             founder_grant=binding.founder_grant,
+            conversation_history=history,
         )
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("the universe returned an empty reply")

@@ -84,13 +84,15 @@ def _bind(base, universe_id: str, agent_binding_id: str, channel_id: str = "") -
 def _deliver(**overrides):
     calls: dict = {"converse": [], "post": []}
 
-    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None):
+    def _converse(universe_id, prompt, *, actor_id="", founder_grant=None,
+                  conversation_history=None):
         calls["converse"].append(
             {
                 "universe_id": universe_id,
                 "prompt": prompt,
                 "actor_id": actor_id,
                 "founder_grant": founder_grant,
+                "conversation_history": conversation_history,
             }
         )
         return "the universe answers"
@@ -284,9 +286,103 @@ def test_recognition_failure_degrades_instead_of_killing_the_turn(base, monkeypa
     assert calls["converse"][0]["founder_grant"] is None
 
 
-def test_an_empty_reply_is_a_fault_not_a_silent_success(base):
+def test_an_empty_reply_tells_the_founder_instead_of_going_silent(base):
+    # An empty reply is still a fault — but the founder must HEAR it, not be left
+    # in silence. (Was: raise into silence; a persistent agent never goes dark.)
     binding = _make_universe(base, "u-ingress-a")
     _bind(base, "u-ingress-a", binding)
 
-    with pytest.raises(ValueError):
-        _deliver(converse=lambda *a, **k: "   ")
+    result, calls = _deliver(converse=lambda *a, **k: "   ")
+    assert result.handled is True
+    # The last post is an honest notice, not silence and not a fake success.
+    last = calls["post"][-1]["body"].lower()
+    assert "empty" in last or "again" in last
+
+
+def test_a_failed_turn_posts_an_honest_notice_not_silence(base):
+    # The live 2026-08-09 outage: the writer model hit its rate limit, the turn
+    # raised, and the founder got only silence for minutes. Now the daemon says
+    # so honestly (it holds the token) and stays handled.
+    binding = _make_universe(base, "u-ingress-a")
+    _bind(base, "u-ingress-a", binding)
+
+    def _boom(*a, **k):
+        from tinyassets.exceptions import AllProvidersExhaustedError
+
+        raise AllProvidersExhaustedError("All providers exhausted for role=writer")
+
+    result, calls = _deliver(converse=_boom)
+    assert result.handled is True
+    body = calls["post"][-1]["body"].lower()
+    # Names the real cause (capacity / rate limit) rather than vanishing.
+    assert "capacity" in body or "rate limit" in body
+
+
+def test_memory_persists_across_turns(base):
+    """The durable store makes a stateless turn remember the last one.
+
+    This is the whole point: u-tiny forgot everything between turns because the
+    turn is a fresh `claude -p`. Turn 1 is recorded; turn 2 gets turn 1 fed back
+    as PRIOR conversation, without the current message being double-shown.
+    """
+    binding = _make_universe(base, "u-ingress-mem")
+    _bind(base, "u-ingress-mem", binding)
+
+    # Turn 1: nothing to remember yet (cold store, no Slack token to backfill),
+    # but the turn is recorded for next time.
+    _, calls1 = _deliver(
+        text="<@U0BOT> my favorite topic is tide pools",
+        event_id="Ev-mem-1",
+    )
+    first_history = calls1["converse"][0]["conversation_history"] or []
+    assert all("tide pools" not in m.text for m in first_history)
+
+    # Turn 2: the durable store feeds turn 1 back in as prior context.
+    _, calls2 = _deliver(
+        text="<@U0BOT> what did I say my favorite topic was?",
+        event_id="Ev-mem-2",
+    )
+    history = calls2["converse"][0]["conversation_history"]
+    texts = [m.text for m in history]
+    assert "my favorite topic is tide pools" in texts  # founder's earlier turn
+    assert "the universe answers" in texts  # the universe's own earlier reply
+    # The current turn's own prompt is not shown inside its own memory block.
+    assert "what did I say my favorite topic was?" not in texts
+
+
+def test_a_dropped_record_is_re_synced_from_the_live_timeline(base, monkeypatch):
+    """HARDENING: `backfill_once` runs exactly once, so a dropped `record_turn`
+    leaves the store BEHIND the live thread forever. The load path reconciles the
+    tail from the live timeline so recent context is never lost.
+
+    Mutation-check: remove the `sync_tail` call in `deliver_app_event` and the
+    missed universe reply never reaches the next turn — this test goes red.
+    """
+    binding = _make_universe(base, "u-ingress-drift")
+    _bind(base, "u-ingress-drift", binding)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-drift")
+    session = f"slack:{CHANNEL}"
+    # Store already backfilled (marker set) but then MISSED recording a later
+    # reply — the exact silent-drift regression.
+    cs.backfill_once(conv_dir, session, [{"speaker": "founder", "text": "start the plan"}])
+    cs.record_turn(conv_dir, session, "universe", "starting now")
+
+    # The live Slack timeline is AHEAD: it also holds the turns the store missed.
+    live = [
+        {"speaker": "founder", "text": "start the plan"},
+        {"speaker": "universe", "text": "starting now"},
+        {"speaker": "founder", "text": "any update?"},        # store MISSED this
+        {"speaker": "universe", "text": "shipped part one"},  # store MISSED this
+    ]
+    monkeypatch.setattr(sat, "load_thread_history", lambda **k: live)
+
+    _, calls = _deliver(text="<@U0BOT> what did you ship?", event_id="Ev-drift-1")
+    history = calls["converse"][0]["conversation_history"]
+    texts = [m.text for m in history]
+    assert "any update?" in texts
+    assert "shipped part one" in texts  # the missed tail is reconciled in
