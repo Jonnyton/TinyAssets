@@ -166,61 +166,77 @@ def deliver_app_event(
     # a COLD store we import the Slack timeline ONCE so live threads are not blank
     # right after deploy, then the store owns the memory (durable, surface-
     # agnostic). This is the DAEMON-side path — the ingress forward is what prod
-    # actually runs, not the in-process build_handlers path. Best-effort
-    # throughout: a memory failure degrades to no memory this turn, never a lost
-    # answer.
+    # actually runs, not the in-process build_handlers path.
     from tinyassets import conversation_store
     from tinyassets.api.helpers import _universe_dir
 
-    # Multi-party note: `slack:<channel>` keys the whole channel. In a founder DM
-    # (the live case) every message is the founder's, so this is safe. Genuine
-    # multi-party channel history is the documented tier-preserving follow-up —
-    # history injection is founder-gated downstream regardless.
-    session_id = f"slack:{channel_id}"
     conv_dir = _universe_dir(routed.universe_id)
+    session_id = f"slack:{channel_id}"
 
-    def _live_timeline() -> list:
-        # The DM/channel TIMELINE (thread_ts="") holds prior top-level messages;
-        # with flat-DM replies (see reply_thread_ts) BOTH sides are top-level, so
-        # this recovers the full recent conversation. The current message is
-        # excluded by text. Read-only; never raises.
-        from tinyassets.effectors.slack_agent_turn import load_thread_history
+    # Fail-closed multi-principal guard (interim, Codex REJECT 2026-08-09): the
+    # session is channel-keyed and the backfill labels every human "founder", so
+    # durable memory is only safe in a founder-authorized 1:1 DM (Slack DM channel
+    # ids start with "D"). In a shared / multi-principal channel we neither LOAD
+    # nor RECORD — until per-message actor identity exists, one principal's words
+    # must never enter the store or ride into another's turn. `converse`
+    # independently gates INJECTION to founder turns; this is the store half.
+    memory_on = (grant is not None) and str(channel_id).startswith("D")
 
-        return load_thread_history(
-            universe_dir=conv_dir,
-            connection_id=DEFAULT_SLACK_CONNECTION,
-            channel=channel_id,
-            thread_ts="",
-            exclude_text=prompt,
-        )
+    history: list = []
+    if memory_on:
+        # Best-effort, single boundary: the ENTIRE load/backfill/sync path —
+        # credential resolution and the live-timeline fetch included — is guarded
+        # here so ANY failure degrades to "no memory this turn" and NEVER drops
+        # the reply. (The store + loader are individually never-raise too; this is
+        # defense in depth.)
+        try:
+            def _live_timeline() -> list:
+                # Flat-DM timeline (thread_ts=""): with flat replies both sides
+                # sit top-level, so this recovers the full recent conversation;
+                # the current message is excluded by text.
+                from tinyassets.effectors.slack_agent_turn import load_thread_history
 
-    if not conversation_store.is_backfilled(conv_dir, session_id):
-        # Cold store: import this session's Slack timeline ONCE, atomically.
-        # `backfill_once` is idempotent + all-or-nothing, so concurrent cold turns
-        # cannot double-import and a crash stays retryable.
-        conversation_store.backfill_once(conv_dir, session_id, _live_timeline())
-    else:
-        # HARDENING: `backfill_once` runs exactly once, so if any later
-        # `record_turn` was ever dropped the store silently drifts BEHIND the live
-        # thread and never re-syncs — the exact class of regression that froze
-        # u-tiny's memory. Reconcile the tail from the live timeline before
-        # building the history block so a missed record can never cost recent
-        # context. Bounded + best-effort; `sync_tail` never raises and only
-        # appends the missing trailing turns (it can never duplicate).
-        conversation_store.sync_tail(conv_dir, session_id, _live_timeline())
+                return load_thread_history(
+                    universe_dir=conv_dir,
+                    connection_id=DEFAULT_SLACK_CONNECTION,
+                    channel=channel_id,
+                    thread_ts="",
+                    exclude_text=prompt,
+                )
 
-    history = conversation_store.load_recent(conv_dir, session_id)
+            if not conversation_store.is_backfilled(conv_dir, session_id):
+                conversation_store.backfill_once(
+                    conv_dir, session_id, _live_timeline()
+                )
+            else:
+                # HARDENING: backfill_once runs exactly once, so a later dropped
+                # record_turn drifts the store BEHIND the live thread forever.
+                # Reconcile the tail (bounded, id-deduped, never duplicates).
+                conversation_store.sync_tail(
+                    conv_dir, session_id, _live_timeline()
+                )
+            history = conversation_store.load_recent(conv_dir, session_id)
+            # Record the founder's turn AFTER loading history (not double-shown)
+            # and BEFORE running (so the NEXT turn has it even if this one fails).
+            conversation_store.record_turn(conv_dir, session_id, "founder", prompt)
+        except Exception:  # noqa: BLE001 - memory must never break the turn
+            logger.warning("app ingress: memory load failed, proceeding blind")
+            history = []
 
-    # Record the founder's turn AFTER loading history (so it is not double-shown
-    # this turn) and BEFORE running (so the NEXT turn sees it).
-    conversation_store.record_turn(conv_dir, session_id, "founder", prompt)
+    def _record_universe(body: str, receipt_ref: str) -> None:
+        # POST-THEN-RECORD: only called AFTER _post returns, with the delivery
+        # receipt (the Slack message ts) as the stable id, so the store can never
+        # claim a reply the founder never received. record_turn is never-raise.
+        if memory_on:
+            conversation_store.record_turn(
+                conv_dir, session_id, "universe", body,
+                ts=receipt_ref, ext_id=receipt_ref,
+            )
 
-    # A persistent conversational agent must NEVER go dark. Before this, a turn
-    # that failed (commonly the universe's own writer model hitting its rate
-    # limit) raised into silence. The daemon holds the bot token, so it can be
-    # honest instead: post a short notice and record it, keeping the conversation
-    # continuous. The founder's message is already stored, so the next turn still
-    # has it.
+    # A persistent conversational agent must NEVER go dark. A turn that fails
+    # (commonly the universe's own writer at its rate limit) used to raise into
+    # silence; the daemon holds the bot token, so it posts an honest notice and
+    # records it AFTER delivery, keeping the conversation continuous.
     try:
         reply = converse(
             routed.universe_id,
@@ -232,11 +248,11 @@ def deliver_app_event(
     except Exception as exc:  # noqa: BLE001 - honesty beats silence
         logger.warning("app ingress: turn failed, posting honest notice: %s", exc)
         notice = _failure_notice(exc)
-        conversation_store.record_turn(conv_dir, session_id, "universe", notice)
         receipt = _post(
             routed=routed, channel_id=channel_id, body=notice,
             thread_ts=thread_ts, transport=transport,
         )
+        _record_universe(notice, receipt)
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
     if not isinstance(reply, str) or not reply.strip():
@@ -246,15 +262,12 @@ def deliver_app_event(
             "I came back empty on that one and didn't want to leave you hanging "
             "— mind saying it again? (I've kept your message.)"
         )
-        conversation_store.record_turn(conv_dir, session_id, "universe", notice)
         receipt = _post(
             routed=routed, channel_id=channel_id, body=notice,
             thread_ts=thread_ts, transport=transport,
         )
+        _record_universe(notice, receipt)
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
-
-    # Record the universe's reply so it is memory for the next turn.
-    conversation_store.record_turn(conv_dir, session_id, "universe", reply)
 
     receipt = _post(
         routed=routed,
@@ -263,6 +276,8 @@ def deliver_app_event(
         thread_ts=thread_ts,
         transport=transport,
     )
+    # Record the universe's reply ONLY after it was delivered.
+    _record_universe(reply, receipt)
     return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
 

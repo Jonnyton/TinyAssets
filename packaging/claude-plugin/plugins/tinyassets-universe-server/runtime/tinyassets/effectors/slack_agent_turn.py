@@ -150,9 +150,35 @@ def load_thread_history(
     connection's bot token, and labels each message founder-vs-universe (a bot
     message carries ``bot_id``/``app_id``). The CURRENT message is excluded (by
     ts, or failing that by matching text) — it is already the turn's prompt.
-    Read-only; never raises (returns [] on any trouble) because memory is a
-    bonus, never a blocker.
+    Read-only; NEVER raises (the ENTIRE body — credential resolution and the
+    network fetch included — is guarded, returns [] on any trouble) because
+    memory is a bonus, never a blocker.
     """
+    try:
+        return _load_thread_history_impl(
+            universe_dir=universe_dir,
+            connection_id=connection_id,
+            channel=channel,
+            thread_ts=thread_ts,
+            exclude_ts=exclude_ts,
+            exclude_text=exclude_text,
+            limit=limit,
+        )
+    except Exception:  # noqa: BLE001 - caller treats [] as "no memory this turn"
+        logger.warning("slack history load failed; proceeding without memory")
+        return []
+
+
+def _load_thread_history_impl(
+    *,
+    universe_dir: "Path",
+    connection_id: str,
+    channel: str,
+    thread_ts: str,
+    exclude_ts: str,
+    exclude_text: str,
+    limit: int,
+) -> list[dict[str, str]]:
     import json
     import urllib.parse
     import urllib.request
@@ -178,12 +204,8 @@ def load_thread_history(
     req = urllib.request.Request(  # noqa: S310 - fixed https Slack endpoint
         url, headers={"Authorization": f"Bearer {token}"}
     )
-    try:
-        with urllib.request.urlopen(req, timeout=15.0) as resp:  # noqa: S310
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001 - caller treats [] as "no memory"
-        logger.warning("slack history fetch failed for %s", channel)
-        return []
+    with urllib.request.urlopen(req, timeout=15.0) as resp:  # noqa: S310
+        data = json.loads(resp.read().decode("utf-8"))
     raw = data.get("messages") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         return []
@@ -202,10 +224,15 @@ def load_thread_history(
             continue
         speaker = "universe" if (m.get("bot_id") or m.get("app_id")) else "founder"
         out.append({"speaker": speaker, "text": text, "ts": str(m.get("ts") or "")})
-    # Fallback de-dup: if the current message has no ts to match on, drop the
-    # newest identical-text founder line so the prompt is not shown twice.
-    if not exclude_ts and exclude_text and out and out[-1]["text"] == exclude_text:
-        out.pop()
+    # Fallback current-message exclusion when we have no ts to match on: drop the
+    # NEWEST founder line whose text is the prompt, wherever it sits (a bot line
+    # can arrive after it, so checking only the final line is not enough). Only
+    # one line is dropped, so a genuinely repeated earlier message survives.
+    if not exclude_ts and exclude_text:
+        for i in range(len(out) - 1, -1, -1):
+            if out[i]["speaker"] == "founder" and out[i]["text"] == exclude_text:
+                out.pop(i)
+                break
     return out[-limit:]
 
 
@@ -271,10 +298,22 @@ def build_handlers(
         # Load the recent thread so the turn remembers the conversation. Best
         # effort: a fetch failure means this turn runs without memory, which is
         # the pre-2026-08-08 behaviour — strictly better than dropping the turn.
-        try:
-            history = await to_thread(_load_history, event, binding)
-        except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
-            logger.warning("slack turn: history load failed, proceeding blind")
+        #
+        # Fail-closed multi-principal guard (interim, Codex REJECT 2026-08-09):
+        # backfill labels every human "founder" and the session is channel-keyed,
+        # so history is only safe in a 1:1 DM (channel id starts "D"). In a shared
+        # / multi-principal channel we skip history entirely until per-message
+        # actor identity exists, so one person's words can never ride into
+        # another's turn. `converse` independently gates injection to founder
+        # turns; this is the channel half of that guard.
+        channel = str(event.get("channel") or "")
+        if channel.startswith("D"):
+            try:
+                history = await to_thread(_load_history, event, binding)
+            except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+                logger.warning("slack turn: history load failed, proceeding blind")
+                history = []
+        else:
             history = []
         reply = await to_thread(
             _converse,

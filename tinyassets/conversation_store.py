@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     speaker    TEXT    NOT NULL,
     content    TEXT    NOT NULL,
     ts         REAL    NOT NULL,
+    ext_id     TEXT    NOT NULL DEFAULT '',
     UNIQUE(session_id, turn_no)
 );
 CREATE INDEX IF NOT EXISTS ix_turns_session
@@ -108,6 +109,14 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    # Migrate a pre-ext_id table (older DB that predates the stable-id column).
+    # Idempotent: a DB that already has the column raises OperationalError, which
+    # we swallow. `ext_id` is the raw Slack message ts — the STABLE identity
+    # sync_tail dedups on, so a re-fetched timeline can't duplicate stored turns.
+    try:
+        conn.execute("ALTER TABLE conversation_turns ADD COLUMN ext_id TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -118,17 +127,24 @@ def record_turn(
     text: str,
     *,
     ts: float | None = None,
+    ext_id: str = "",
 ) -> int:
     """Append one turn; return its per-session ``turn_no`` (0 if not recorded).
 
     Blank text is a no-op (returns 0). Best-effort: any storage failure logs and
-    returns 0 rather than raising, so a memory hiccup never breaks the reply.
+    returns 0 rather than raising, so a memory hiccup never breaks the reply. A
+    malformed ``ts`` degrades to "now" rather than raising (a bad ts must never
+    cost the turn). ``ext_id`` is a stable external identity (the Slack message
+    ts) used for dedup; "" when unknown.
     """
     if not isinstance(text, str) or not text.strip():
         return 0
     if not session_id:
         return 0
-    when = time.time() if ts is None else float(ts)
+    # Coerce defensively: `float("not-a-ts")` raises, and this runs OUTSIDE the
+    # retry try below, so a bad ts would escape as a ValueError and drop the turn.
+    when = _when(ts)
+    ext_id = str(ext_id or "")
     db_path = _db_path(universe_dir)
     lock = _lock_for(db_path)
     for attempt in range(6):
@@ -145,9 +161,9 @@ def record_turn(
                     turn_no = int(row[0])
                     conn.execute(
                         "INSERT INTO conversation_turns "
-                        "(session_id, turn_no, speaker, content, ts) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (session_id, turn_no, str(speaker or ""), text, when),
+                        "(session_id, turn_no, speaker, content, ts, ext_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (session_id, turn_no, str(speaker or ""), text, when, ext_id),
                     )
                     conn.commit()
                     return turn_no
@@ -267,50 +283,90 @@ def sync_tail(
       prompt (the loader does this).
     * Bounded: only reconciles against the recent window (``limit``), never the
       whole history.
+    * De-duped by a STABLE Slack identity (the message ``ts``), NOT by a text
+      set — so a repeated phrase like "yes" is never lost and can never
+      mis-anchor. A live message is "known" when its ``ts`` matches a stored
+      ``ext_id`` (exact), OR — for turns recorded live without their Slack ts
+      (the founder turn) — when its ``(speaker, text)`` matches a stored turn.
     * Anchored, so it can never DUPLICATE: it finds the newest live message the
       store already knows and appends only what follows it. If the live window
       shares nothing with the store (a full roll-past, or a cold store), it does
       nothing — appending a whole window blind would duplicate, and the cold
       case is ``backfill_once``'s job, not this one.
-    * Best-effort: never raises. Returns the number of turns appended (0 if the
-      store is already current, empty, no overlap, or on any error).
+    * Best-effort: NEVER raises (the whole body is guarded) and never
+      double-counts — ``appended`` only advances when ``record_turn`` actually
+      persisted (returned a turn_no), so a dropped write is not logged as a sync.
     """
+    try:
+        return _sync_tail_impl(universe_dir, session_id, live_messages, limit=limit)
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        logger.warning("conversation_store: sync_tail failed", exc_info=True)
+        return 0
+
+
+def _sync_tail_impl(
+    universe_dir: "str | Path",
+    session_id: str,
+    live_messages: "list[dict]",
+    *,
+    limit: int,
+) -> int:
     if not session_id:
         return 0
     rows = [
-        (str(m.get("speaker") or ""), str(m.get("text") or "").strip(), m.get("ts"))
+        (str(m.get("speaker") or ""), str(m.get("text") or "").strip(), str(m.get("ts") or ""))
         for m in (live_messages or [])
         if isinstance(m, dict) and str(m.get("text") or "").strip()
     ]
     if not rows:
         return 0
-    try:
-        stored = load_recent(
-            universe_dir, session_id, limit=max(int(limit), len(rows) + 5)
-        )
-    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
-        return 0
+    stored = _recent_identities(
+        universe_dir, session_id, limit=max(int(limit), len(rows) + 5)
+    )
     if not stored:
         # Cold store: that is backfill_once's job. Appending a whole live window
         # here would both duplicate what backfill imports and race it.
         return 0
-    stored_texts = {m.text.strip() for m in stored if m.text and m.text.strip()}
+    stored_ids = {ext for _sp, _tx, ext in stored if ext}
+    # Text fallback is ONLY for stored rows that carry no stable id — the turns
+    # recorded live without their Slack ts (the founder turn). Including id-having
+    # rows here would let text shadow the id and drop a legitimately repeated
+    # message that has a NEW id, so those dedup by id alone.
+    stored_pairs = {(sp, tx) for sp, tx, ext in stored if tx and not ext}
+
+    def _known(speaker: str, text: str, ext: str) -> bool:
+        # Exact stable-id match first (the universe reply + backfilled/synced
+        # turns carry the real Slack ts); fall back to (speaker, text) only for
+        # id-less stored turns (the live-recorded founder turn).
+        if ext and ext in stored_ids:
+            return True
+        return (speaker, text) in stored_pairs
+
     # Anchor: scan the live window newest→oldest for the first message the store
-    # already holds. Everything AFTER it is the missing tail. No anchor at all
+    # already knows. Everything AFTER it is the missing tail. No anchor at all
     # means no safe reconciliation point — leave it to normal recording.
     split = None
     for i in range(len(rows) - 1, -1, -1):
-        if rows[i][1] in stored_texts:
+        speaker, text, ext = rows[i]
+        if _known(speaker, text, ext):
             split = i + 1
             break
     if split is None:
         return 0
     appended = 0
-    for speaker, text, ts in rows[split:]:
-        if text in stored_texts:
-            continue  # belt-and-suspenders against a repeated phrase at the seam
-        record_turn(universe_dir, session_id, speaker, text, ts=_coerce_ts(ts))
-        stored_texts.add(text)
+    for speaker, text, ext in rows[split:]:
+        if _known(speaker, text, ext):
+            continue  # already stored (id or text) — never duplicate
+        turn_no = record_turn(
+            universe_dir, session_id, speaker, text, ts=_coerce_ts(ext), ext_id=ext
+        )
+        if not turn_no:
+            # The write did not persist. Do NOT count it (would log a phantom
+            # resync) and do NOT mark it known (so a retry can still catch it).
+            continue
+        if ext:
+            stored_ids.add(ext)
+        stored_pairs.add((speaker, text))
         appended += 1
     if appended:
         logger.info(
@@ -321,6 +377,37 @@ def sync_tail(
     return appended
 
 
+def _recent_identities(
+    universe_dir: "str | Path", session_id: str, *, limit: int
+) -> "list[tuple[str, str, str]]":
+    """Recent stored turns as ``(speaker, text, ext_id)`` for sync_tail dedup.
+
+    Separate from :func:`load_recent` because that returns render-ready ``Msg``
+    objects with no ``ext_id``. Empty on any trouble (fail-open).
+    """
+    if not session_id:
+        return []
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return []
+    try:
+        conn = _connect(db_path)
+        try:
+            fetched = conn.execute(
+                "SELECT speaker, content, ext_id FROM conversation_turns "
+                "WHERE session_id = ? ORDER BY turn_no DESC LIMIT ?",
+                (session_id, max(1, int(limit))),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        return []
+    return [
+        (str(sp or ""), str(ct or "").strip(), str(ext or ""))
+        for sp, ct, ext in fetched
+    ]
+
+
 def _coerce_ts(value: object) -> "float | None":
     """A Slack/epoch ts (str or number) as float seconds, or None."""
     try:
@@ -328,6 +415,12 @@ def _coerce_ts(value: object) -> "float | None":
     except (TypeError, ValueError):
         return None
     return f if f > 0 else None
+
+
+def _when(ts: object) -> float:
+    """A valid epoch-seconds "when" for storage — never raises, falls back to now."""
+    coerced = _coerce_ts(ts)
+    return coerced if coerced is not None else time.time()
 
 
 def is_backfilled(universe_dir: "str | Path", session_id: str) -> bool:
@@ -389,7 +482,12 @@ def backfill_once(
         return v if v > 0 else when
 
     rows = [
-        (str(m.get("speaker") or ""), str(m.get("text") or ""), _ts(m))
+        (
+            str(m.get("speaker") or ""),
+            str(m.get("text") or ""),
+            _ts(m),
+            str(m.get("ts") or ""),  # ext_id: the stable Slack message id
+        )
         for m in (messages or [])
         if isinstance(m, dict) and str(m.get("text") or "").strip()
     ]
@@ -417,12 +515,12 @@ def backfill_once(
                             (session_id,),
                         ).fetchone()[0]
                     )
-                    for i, (speaker, content, ts_val) in enumerate(rows, start=1):
+                    for i, (speaker, content, ts_val, ext) in enumerate(rows, start=1):
                         conn.execute(
                             "INSERT INTO conversation_turns "
-                            "(session_id, turn_no, speaker, content, ts) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (session_id, base + i, speaker, content, ts_val),
+                            "(session_id, turn_no, speaker, content, ts, ext_id) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (session_id, base + i, speaker, content, ts_val, ext),
                         )
                     conn.commit()
                     return len(rows)

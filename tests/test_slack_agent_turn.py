@@ -97,11 +97,15 @@ def _handlers(rec, resolve=None, load_history=None):
 # --- the security property ---------------------------------------------------
 
 
+#: A 1:1 DM channel id (Slack DM ids start with "D"). History only loads here.
+_DM = "D08DM000001"
+
+
 @pytest.mark.asyncio
 async def test_the_turn_receives_loaded_conversation_history():
     """The transport loads the recent thread and hands it to the turn as
     memory — so a follow-up like "try again" has the prior request to act on
-    (live 2026-08-08 it did not)."""
+    (live 2026-08-08 it did not). Only in a 1:1 DM (the guard)."""
     rec = _Recorder()
     loaded = [
         {"speaker": "founder", "text": "post the shipped update"},
@@ -109,7 +113,7 @@ async def test_the_turn_receives_loaded_conversation_history():
     ]
     handle, _ = _handlers(rec, load_history=lambda _e, _b: loaded)
 
-    await handle(event("<@U08BOT0001> try again"))
+    await handle(event("<@U08BOT0001> try again", channel=_DM))
 
     call = rec.converse_calls[0]
     assert call["conversation_history"] == loaded
@@ -126,11 +130,37 @@ async def test_a_history_load_failure_still_answers_the_turn():
 
     handle, _ = _handlers(rec, load_history=boom)
 
-    await handle(event())
+    await handle(event(channel=_DM))
 
     assert len(rec.converse_calls) == 1
     assert rec.converse_calls[0]["conversation_history"] == []
     assert rec.posts, "the reply still went out"
+
+
+@pytest.mark.asyncio
+async def test_history_is_not_loaded_or_injected_in_a_shared_channel():
+    """Fail-closed multi-principal guard (Codex REJECT 2026-08-09): outside a 1:1
+    DM, no history is loaded or injected — the session is channel-keyed and
+    backfill labels every human "founder", so a shared channel could leak one
+    person's words into another's turn.
+
+    Mutation-check: drop the `channel.startswith("D")` guard in build_handlers and
+    the loader is invoked + the shared-channel history rides into the turn.
+    """
+    rec = _Recorder()
+    loaded_calls: list = []
+
+    def _spy_load(_e, _b):
+        loaded_calls.append(True)
+        return [{"speaker": "founder", "text": "someone else's message"}]
+
+    handle, _ = _handlers(rec, load_history=_spy_load)
+
+    # A shared channel (id starts "C"), not a DM.
+    await handle(event("<@U08BOT0001> hi", channel="C0SHARED01"))
+
+    assert loaded_calls == [], "the loader must not run in a shared channel"
+    assert rec.converse_calls[0]["conversation_history"] == []
 
 
 @pytest.mark.asyncio

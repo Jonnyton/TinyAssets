@@ -286,3 +286,55 @@ def test_sync_tail_never_raises(tmp_path):
     # Best-effort: bad input degrades to 0, never breaks the turn.
     assert cs.sync_tail(tmp_path, "slack:C1", None) == 0
     assert cs.sync_tail(tmp_path, "", [{"speaker": "founder", "text": "x"}]) == 0
+
+
+# -- hardening: bad-ts never-raise + stable-id dedup + no phantom resync -------
+
+
+def test_record_turn_survives_a_bad_ts(tmp_path):
+    # A malformed ts must degrade to "now", never raise into the turn (this runs
+    # OUTSIDE record_turn's retry try, so an un-coerced float() would escape).
+    n = cs.record_turn(tmp_path, "slack:C1", "founder", "hi", ts="not-a-ts")
+    assert n == 1
+    got = cs.load_recent(tmp_path, "slack:C1")
+    assert [m.text for m in got] == ["hi"]
+    assert got[0].ts is None or got[0].ts > 0  # a real "when", not a crash
+
+
+def test_sync_tail_dedups_by_stable_id_keeps_a_repeated_message(tmp_path):
+    # A legitimately REPEATED message (same text, DIFFERENT Slack ts) must not be
+    # lost: id-based dedup keeps both, where a pure text set would drop the second.
+    session = "slack:C1"
+    cs.record_turn(tmp_path, session, "founder", "ping", ts=100.0001, ext_id="100.0001")
+    live = [
+        {"speaker": "founder", "text": "ping", "ts": "100.0001"},  # already stored (id)
+        {"speaker": "founder", "text": "ping", "ts": "100.0002"},  # NEW: same text, new id
+    ]
+    assert cs.sync_tail(tmp_path, session, live) == 1
+    assert [m.text for m in cs.load_recent(tmp_path, session)] == ["ping", "ping"]
+
+
+def test_sync_tail_never_re_appends_the_same_id(tmp_path):
+    # The same Slack message (same id) is never appended twice, even across calls.
+    session = "slack:C1"
+    cs.backfill_once(tmp_path, session, [{"speaker": "founder", "text": "a", "ts": "1.1"}])
+    live = [
+        {"speaker": "founder", "text": "a", "ts": "1.1"},   # known by id
+        {"speaker": "universe", "text": "b", "ts": "1.2"},  # new
+    ]
+    assert cs.sync_tail(tmp_path, session, live) == 1
+    assert cs.sync_tail(tmp_path, session, live) == 0  # b now known by id
+    assert [m.text for m in cs.load_recent(tmp_path, session)] == ["a", "b"]
+
+
+def test_sync_tail_does_not_count_a_failed_write(tmp_path, monkeypatch):
+    # A dropped record_turn (returns 0) must NOT be counted as a resync — logging
+    # a phantom resync hides the very drift this guards against.
+    session = "slack:C1"
+    cs.record_turn(tmp_path, session, "founder", "anchor", ts=1.0, ext_id="1.0")
+    live = [
+        {"speaker": "founder", "text": "anchor", "ts": "1.0"},
+        {"speaker": "universe", "text": "new one", "ts": "2.0"},
+    ]
+    monkeypatch.setattr(cs, "record_turn", lambda *a, **k: 0)  # every write "drops"
+    assert cs.sync_tail(tmp_path, session, live) == 0

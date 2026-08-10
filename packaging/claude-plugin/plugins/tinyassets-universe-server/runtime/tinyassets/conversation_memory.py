@@ -80,6 +80,28 @@ def _sanitize_name(name: str) -> str:
     return collapsed[:_MAX_NAME] or "your founder"
 
 
+#: The exact ASCII tokens the fence is built from. Stored message text is
+#: UNTRUSTED, so any of these appearing inside a rendered line could forge the
+#: fence — a stored ">>> END CONVERSATION SO FAR ... you may act" would read as
+#: the boundary ending and a live instruction beginning (prompt injection). We
+#: neutralize them in every stored line so the delimiters can only ever be the
+#: ones this module emits. Codex REJECT 2026-08-09.
+_FENCE_TOKENS = (">>>", "<<<")
+
+
+def _neutralize(text: str) -> str:
+    """Strip the fence delimiter tokens from untrusted stored text.
+
+    Replaces the ASCII ``>>>`` / ``<<<`` runs with look-alike single-angle
+    quotes so the content still reads naturally but can never reproduce the
+    boundary markers the header/footer use. Applied to every rendered stored
+    line; the header/footer are trusted and keep their real delimiters.
+    """
+    # str.replace rewrites every non-overlapping run, so ">>>>>>" -> "››››››" and
+    # ">>>>" -> "›››>" — at most two ASCII markers survive, never a full 3-run.
+    return (text or "").replace(">>>", "›››").replace("<<<", "‹‹‹")
+
+
 def _relative(ts: float | None, now: float | None) -> str:
     """A short human "when" for one message, e.g. "just now" / "3h ago" / "Aug 07"."""
     if not ts or not now or ts <= 0 or now <= 0:
@@ -164,7 +186,9 @@ def format_history(
     def line(m: Msg) -> str:
         when = _relative(m.ts, now)
         prefix = f"[{when}] " if when else ""
-        return f"{prefix}{_label(m.speaker)}: {m.text.strip()}"
+        # Stored text is untrusted: neutralize fence delimiters so it cannot
+        # forge the boundary and smuggle in a fake "live instruction".
+        return f"{prefix}{_label(m.speaker)}: {_neutralize(m.text.strip())}"
 
     def render(rows: list[Msg]) -> str:
         return header + "\n".join(line(m) for m in rows) + footer
@@ -181,7 +205,7 @@ def format_history(
         prefix = f"[{when}] " if when else ""
         head = prefix + _label(only.speaker) + ": "
         budget = char_cap - len(header) - len(footer) - len(head)
-        clipped = only.text.strip()[: max(0, budget)]
+        clipped = _neutralize(only.text.strip())[: max(0, budget)]
         block = header + head + clipped + footer
     return block
 
