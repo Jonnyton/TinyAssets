@@ -21,6 +21,10 @@ from pathlib import Path
 
 from tinyassets.storage import db_path
 
+_WINDOWS_LOCK_RETRY_ATTEMPTS = 100
+_WINDOWS_LOCK_RETRY_SECONDS = 0.01
+_SERVED_REQUEST_MAX_INVOCATIONS = 2
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderAssignment:
@@ -45,6 +49,7 @@ class ServedProviderAuthority:
 
     provider: str
     max_invocations: int
+    request_max_invocations: int
     max_tokens: int
     max_cost_microunits: int
     owner_user_id: str
@@ -58,6 +63,7 @@ class ServedProviderAuthority:
     credential_reference_generation: int
     credential_reference_digest: str
     credential_service: str
+    credential_snapshot_dir: Path = field(repr=False, compare=False)
     request_capability: object = field(repr=False, compare=False)
 
 
@@ -316,6 +322,43 @@ class _AdmissionState:
         self.reader_threads: set[int] = set()
 
 
+def _acquire_windows_file_lock(
+    handle: object,
+    *,
+    locking=None,
+    sleep=time.sleep,
+    max_attempts: int = _WINDOWS_LOCK_RETRY_ATTEMPTS,
+) -> None:
+    """Acquire the Windows byte lock with a bounded fail-closed retry."""
+
+    if (
+        isinstance(max_attempts, bool)
+        or not isinstance(max_attempts, int)
+        or max_attempts < 1
+    ):
+        raise ValueError("max_attempts must be a positive integer")
+    if locking is None:
+        import msvcrt
+
+        locking = msvcrt.locking
+        nonblocking_mode = msvcrt.LK_NBLCK
+    else:
+        nonblocking_mode = 1
+    last_error: OSError | None = None
+    for attempt in range(max_attempts):
+        try:
+            handle.seek(0)
+            locking(handle.fileno(), nonblocking_mode, 1)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < max_attempts:
+                sleep(_WINDOWS_LOCK_RETRY_SECONDS)
+    raise TimeoutError(
+        "provider assignment admission lock remained unavailable"
+    ) from last_error
+
+
 class ProviderAssignmentAdmission:
     """Cross-process shared-reader/exclusive-writer admission by universe path."""
 
@@ -349,13 +392,7 @@ class ProviderAssignmentAdmission:
                 if handle.tell() == 0:
                     handle.write(b"\0")
                     handle.flush()
-                while True:
-                    try:
-                        handle.seek(0)
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                        break
-                    except OSError:
-                        time.sleep(0.01)
+                _acquire_windows_file_lock(handle)
                 try:
                     yield
                 finally:
@@ -623,7 +660,11 @@ def authorize_served_provider_call(
     """Fence selection + request + binding + custody immediately before launch."""
 
     from tinyassets.auth.middleware import validate_provider_request_carrier
-    from tinyassets.credential_vault import current_llm_subscription_custody
+    from tinyassets.credential_vault import (
+        cleanup_llm_credential_snapshot,
+        current_llm_subscription_custody,
+        snapshot_llm_subscription_credential,
+    )
     from tinyassets.custom_agents import get_binding
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.storage.provider_work_authority import (
@@ -644,6 +685,7 @@ def authorize_served_provider_call(
 
     with provider_assignment_admission().shared(universe):
         authority: ServedProviderAuthority | None = None
+        credential_snapshot = None
         try:
             capability = validate_provider_request_carrier(
                 request_carrier,
@@ -746,9 +788,14 @@ def authorize_served_provider_call(
                 )
                 if not all(exact_custody):
                     raise PermissionError("credential custody is not current")
+                credential_snapshot = snapshot_llm_subscription_credential(
+                    universe_dir=universe,
+                    custody=custody,
+                )
                 authority = ServedProviderAuthority(
                     provider=assignment.provider,
                     max_invocations=provider_binding.max_invocations,
+                    request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
                     max_tokens=provider_binding.max_tokens,
                     max_cost_microunits=provider_binding.max_cost_microunits,
                     owner_user_id=capability.principal_id,
@@ -759,9 +806,10 @@ def authorize_served_provider_call(
                     binding_generation=provider_binding.generation,
                     binding_digest=provider_binding.binding_digest,
                     credential_reference_id=custody.reference_id,
-                    credential_reference_generation=custody.generation,
-                    credential_reference_digest=custody.reference_digest,
+                    credential_reference_generation=credential_snapshot.generation,
+                    credential_reference_digest=credential_snapshot.reference_digest,
                     credential_service=service,
+                    credential_snapshot_dir=credential_snapshot.directory,
                     request_capability=capability,
                 )
                 conn.rollback()
@@ -775,6 +823,8 @@ def authorize_served_provider_call(
             if authority is not None:
                 raise
             raise ProviderAuthorityHeldError(held) from exc
+        finally:
+            cleanup_llm_credential_snapshot(credential_snapshot)
 
 
 __all__ = [

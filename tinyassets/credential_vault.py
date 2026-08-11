@@ -13,8 +13,10 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -484,6 +486,16 @@ class LLMCredentialCustodyReference:
     _record_digest: str = field(repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class LLMCredentialSnapshot:
+    """One launch's sealed credential copy and snapshot-derived custody facts."""
+
+    directory: Path = field(repr=False)
+    service: str
+    generation: int
+    reference_digest: str
+
+
 def _canonical_digest(value: object) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -517,39 +529,44 @@ def _read_credential_material(path: Path) -> bytes:
     return material
 
 
+def _subscription_material(
+    universe_dir: Path,
+    service: str,
+    record: dict[str, Any],
+) -> bytes:
+    if service == "codex":
+        encoded = record.get("auth_json_b64")
+        if isinstance(encoded, str) and encoded.strip():
+            return _decode_codex_auth_json(encoded)
+        home = _codex_home_from_record(record, universe_dir)
+        if home is None:
+            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+        auth_file = _contained_path(universe_dir, str(home / "auth.json"))
+        if auth_file is None:
+            raise PermissionError("exactly one usable subscription credential is required")
+        return _read_credential_material(auth_file)
+    if service == "claude":
+        token = _secret_value(record, "oauth_token", "claude_code_oauth_token")
+        if token:
+            return token.encode("utf-8")
+        config_dir = _claude_config_dir_from_record(record, universe_dir)
+        credential_file = (
+            _contained_path(universe_dir, str(config_dir / ".credentials.json"))
+            if config_dir is not None
+            else None
+        )
+        if credential_file is None:
+            raise PermissionError("exactly one usable subscription credential is required")
+        return _read_credential_material(credential_file)
+    raise PermissionError("exactly one usable subscription credential is required")
+
+
 def _subscription_material_digest(
     universe_dir: Path,
     service: str,
     record: dict[str, Any],
 ) -> str:
-    if service == "codex":
-        encoded = record.get("auth_json_b64")
-        if isinstance(encoded, str) and encoded.strip():
-            material = _decode_codex_auth_json(encoded)
-        else:
-            home = _codex_home_from_record(record, universe_dir)
-            if home is None:
-                home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
-            auth_file = _contained_path(universe_dir, str(home / "auth.json"))
-            if auth_file is None:
-                raise PermissionError("exactly one usable subscription credential is required")
-            material = _read_credential_material(auth_file)
-    elif service == "claude":
-        token = _secret_value(record, "oauth_token", "claude_code_oauth_token")
-        if token:
-            material = token.encode("utf-8")
-        else:
-            config_dir = _claude_config_dir_from_record(record, universe_dir)
-            credential_file = (
-                _contained_path(universe_dir, str(config_dir / ".credentials.json"))
-                if config_dir is not None
-                else None
-            )
-            if credential_file is None:
-                raise PermissionError("exactly one usable subscription credential is required")
-            material = _read_credential_material(credential_file)
-    else:
-        raise PermissionError("exactly one usable subscription credential is required")
+    material = _subscription_material(universe_dir, service, record)
     return "sha256:" + hashlib.sha256(material).hexdigest()
 
 
@@ -846,6 +863,105 @@ def current_llm_subscription_custody(
         reference_digest=str(row[3]),
         _record_digest=record_digest,
     )
+
+
+def cleanup_llm_credential_snapshot(snapshot: LLMCredentialSnapshot | None) -> None:
+    """Best-effort removal for a per-launch credential snapshot; never raise."""
+
+    if snapshot is None:
+        return
+    try:
+        if snapshot.directory.exists():
+            for path in sorted(snapshot.directory.rglob("*"), reverse=True):
+                try:
+                    path.chmod(0o700 if path.is_dir() else 0o600)
+                except OSError:
+                    pass
+            try:
+                snapshot.directory.chmod(0o700)
+            except OSError:
+                pass
+            shutil.rmtree(snapshot.directory)
+    except Exception:  # noqa: BLE001 - cleanup must never mask launch outcome
+        pass
+
+
+def snapshot_llm_subscription_credential(
+    *,
+    universe_dir: str | Path,
+    custody: LLMCredentialCustodyReference,
+) -> LLMCredentialSnapshot:
+    """Copy current credential bytes into one immutable launch directory."""
+
+    universe = Path(universe_dir).resolve(strict=True)
+    if custody.universe_id != universe.name or custody.service != "codex":
+        raise PermissionError("credential snapshot root is not current")
+    record = _usable_subscription_record(universe, custody.service)
+    material = _subscription_material(universe, custody.service, record)
+    material_digest = "sha256:" + hashlib.sha256(material).hexdigest()
+    snapshot_record_digest = _canonical_digest({
+        "material_digest": material_digest,
+        "record": record,
+    })
+    snapshot_reference_digest = _custody_reference_digest(
+        reference_id=custody.reference_id,
+        owner_user_id=custody.owner_user_id,
+        universe_id=custody.universe_id,
+        service=custody.service,
+        generation=custody.generation,
+        record_digest=snapshot_record_digest,
+    )
+    if (
+        snapshot_record_digest != custody._record_digest
+        or snapshot_reference_digest != custody.reference_digest
+    ):
+        raise PermissionError("credential changed before launch snapshot")
+
+    snapshot_root = universe / ".runtime" / "provider-launch-credentials"
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    _chmod_best_effort(snapshot_root, 0o700)
+    directory = Path(tempfile.mkdtemp(prefix="codex-", dir=snapshot_root))
+    snapshot = LLMCredentialSnapshot(
+        directory=directory,
+        service=custody.service,
+        generation=custody.generation,
+        reference_digest=snapshot_reference_digest,
+    )
+    try:
+        auth_file = directory / "auth.json"
+        auth_file.write_bytes(material)
+        _chmod_best_effort(auth_file, 0o400)
+        config_file = directory / "config.toml"
+        config_file.write_text(
+            'cli_auth_credentials_store = "file"\n',
+            encoding="utf-8",
+        )
+        _chmod_best_effort(config_file, 0o400)
+        lock_file = directory / ".lock"
+        lock_file.write_bytes(b"")
+        _chmod_best_effort(lock_file, 0o400)
+        copied_material = _read_credential_material(auth_file)
+        copied_record_digest = _canonical_digest({
+            "material_digest": (
+                "sha256:" + hashlib.sha256(copied_material).hexdigest()
+            ),
+            "record": record,
+        })
+        copied_reference_digest = _custody_reference_digest(
+            reference_id=custody.reference_id,
+            owner_user_id=custody.owner_user_id,
+            universe_id=custody.universe_id,
+            service=custody.service,
+            generation=custody.generation,
+            record_digest=copied_record_digest,
+        )
+        if copied_reference_digest != custody.reference_digest:
+            raise PermissionError("credential snapshot custody digest disagrees")
+        _chmod_best_effort(directory, 0o500)
+        return snapshot
+    except BaseException:
+        cleanup_llm_credential_snapshot(snapshot)
+        raise
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:

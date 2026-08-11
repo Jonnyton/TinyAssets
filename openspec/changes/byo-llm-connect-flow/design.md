@@ -286,7 +286,12 @@ For the canonical MCP `converse` path:
    operation `converse`; role `writer`; exact assignment generation/digest and
    `allowed_providers` membership; non-expired budgets; and current credential
    custody.
-5. The router uses only the binding's provider. Preference, fallback chains,
+5. The sink copies current credential bytes into a unique per-launch directory,
+   derives the custody generation/digest from those copied bytes, and gives the
+   adapter only that snapshot. Direct source-path rotation cannot change the
+   in-flight launch; the next admission revalidates the source. Cleanup is
+   best-effort on every result/error path.
+6. The router uses only the binding's provider. Preference, fallback chains,
    environment pins, process-global config, auth-health fallback, and another
    universe's binding cannot add a destination. The executor materializes only
    that universe's matching vault auth after all checks.
@@ -516,9 +521,10 @@ instead of claiming organic clean use.
   for Slice 1; a generic collaborator-spend policy is separate.
 - **Vault presence mistaken for ownership** -> Require a server-owned opaque
   custody record and generation; never infer ownership from path or JSON fields.
-- **TOCTOU across vault/config/SQLite** -> Use assignment admission, journaled
-  quarantine, exact generation/digest checks, and a launch reader held through
-  provider start.
+- **TOCTOU across vault/config/SQLite** -> Use assignment admission for
+  cooperative writes, journaled quarantine, exact generation/digest checks,
+  and per-launch credential snapshots whose custody is derived from copied
+  bytes; direct path writes cannot alter an admitted launch.
 - **Ambient host credential leak** -> An armed served turn always carries an
   explicit universe and exact provider; no-universe/contextless resolution,
   host `CODEX_HOME`, Claude token, pin, and fallback chains are ineligible.
@@ -534,8 +540,9 @@ instead of claiming organic clean use.
   reconciliation is required for the generic Slack claim; an existing u-tiny
   env entry is diagnostic evidence only.
 - **Long-lived subscription spend is unbounded** -> Durable binding ceilings
-  are server policy; every request capability narrows invocation/token/cost and
-  expiry, with per-request accounting and immediate revocation checks.
+  are high-water server policy; every request capability has its own smaller
+  invocation limit for reply/learning calls, plus token/cost and expiry
+  narrowing, accounting, and immediate revocation checks.
 - **Secret disclosure through errors/digests** -> Return only opaque IDs and
   redacted classifications; do not log vault records, paths, subprocess env,
   provider stderr, or raw secret-derived exception text.

@@ -73,3 +73,33 @@ def test_shared_launch_fence_blocks_writer_in_another_process(tmp_path):
     assert events.get(timeout=5) == "entered"
     process.join(timeout=5)
     assert process.exitcode == 0
+
+
+def test_windows_file_lock_retry_is_bounded_and_fails_closed():
+    from tinyassets.provider_assignment import _acquire_windows_file_lock
+
+    attempts = 0
+
+    class _Handle:
+        @staticmethod
+        def seek(_offset):
+            return 0
+
+        @staticmethod
+        def fileno():
+            return 17
+
+    def _always_contended(_fileno, _mode, _count):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("contended")
+
+    with pytest.raises(TimeoutError, match="admission lock"):
+        _acquire_windows_file_lock(
+            _Handle(),
+            locking=_always_contended,
+            sleep=lambda _seconds: None,
+            max_attempts=3,
+        )
+
+    assert attempts == 3

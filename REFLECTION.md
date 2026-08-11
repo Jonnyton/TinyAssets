@@ -1549,3 +1549,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** run the ambient-authority and real-adapter
   probes before expanding happy-path coverage, then run the broad graph callers
   as soon as universe routing becomes fail-closed.
+
+## 2026-08-10 - BYO-LLM slice 1 adversarial fix round 2
+
+- **What surprised me:** a cross-process fence and a current digest still left
+  the launched process reading mutable bytes through a writable bind; the lock
+  described cooperation, not custody.
+- **Pattern worth capturing:** derive launch authority from copied bytes, expose
+  only that per-launch snapshot read-only, and keep request-call budgets
+  separate from durable binding high-water accounting.
+- **What I would do differently:** make the first real-adapter test spawn an
+  on-disk wrapper target and inspect the exact mount graph; mocking subprocess
+  creation allowed both a missing `/opt` tree and a vacuous bypass assertion.

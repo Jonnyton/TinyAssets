@@ -45,7 +45,7 @@ _PROVIDER_SERVICE = {
 }
 _SERVING_OPERATIONS = ("converse",)
 _SERVING_ROLES = ("writer",)
-_MAX_INVOCATIONS = 2
+_MAX_BINDING_INVOCATIONS = 10_000
 _MAX_TOKENS = 32_768
 _MAX_COST_MICROUNITS = 10_000_000
 _BINDING_TTL = timedelta(days=30)
@@ -320,7 +320,7 @@ def bind_serving_provider(
                     allowed_roles=_SERVING_ROLES,
                     assignment_generation=generation,
                     assignment_digest=pending.assignment_digest,
-                    max_invocations=_MAX_INVOCATIONS,
+                    max_invocations=_MAX_BINDING_INVOCATIONS,
                     max_tokens=_MAX_TOKENS,
                     max_cost_microunits=_MAX_COST_MICROUNITS,
                     expires_at=_expiry(datetime.now(timezone.utc)),

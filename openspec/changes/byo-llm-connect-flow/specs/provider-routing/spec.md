@@ -41,9 +41,16 @@ server authority for that operation exists.
 
 #### Scenario: Credential rotates after request selection
 
-- **WHEN** the vault custody record changes after the agent was selected but
-  before the sink validates it
+- **WHEN** the vault custody record changes before the sink snapshots it
 - **THEN** the call holds and the provider receives zero calls
+
+#### Scenario: Credential rotates after snapshot admission
+
+- **WHEN** another process replaces path-backed credential material after the
+  sink derived custody from copied snapshot bytes
+- **THEN** the in-flight provider reads only that sealed snapshot through a
+  read-only sandbox mount
+- **AND** the next admission revalidates the source and cannot reuse stale custody
 
 ### Requirement: Provider request authority originates at the current message
 
@@ -73,19 +80,21 @@ class with its exact app-ingress mechanism and routed agent revision.
 
 ### Requirement: Assignment readers and writers are requester-local fenced
 
-Provider launch SHALL hold a cross-process shared canonical-universe admission fence from
-fresh validation through provider completion. Assignment publication,
-credential-vault replacement, provider-reference changes, and serving-state
-changes SHALL use the exclusive side of the same non-reentrant fence. A writer
-SHALL wait for active served calls, and reverse or reentrant acquisition SHALL
-fail loudly.
+The requester-local admission fence SHALL serialize cooperative assignment
+publication, credential-vault replacement, provider-reference changes, and
+serving-state changes for the canonical universe. Credential safety SHALL
+NOT depend on direct filesystem writers taking that advisory fence. At each
+served admission the sink SHALL copy exact credential material into a unique
+launch directory, derive and compare custody generation/digest from the copied
+bytes, and launch only from that snapshot. Snapshot cleanup SHALL be
+best-effort and SHALL NOT mask the provider result or error.
 
-#### Scenario: Credential writer races a served launch
+#### Scenario: Non-cooperating credential writer races a served launch
 
-- **WHEN** a credential or assignment writer requests the exclusive fence
-  while a served call holds the shared fence
-- **THEN** the writer waits until the call releases it
-- **AND** no call observes a mixed assignment/custody generation
+- **WHEN** a child process replaces the source credential without taking the
+  admission fence while an admitted provider is running
+- **THEN** the running process cannot observe the replacement through its sealed snapshot
+- **AND** a later admission observes the changed source generation and fails closed
 
 ### Requirement: Served-call budgets are durable launch authority
 
@@ -93,6 +102,10 @@ Immediately before provider launch, the router SHALL atomically revalidate the
 assignment and credential generation and reserve invocation, token, and cost
 budget in the authority database. Concurrent reservations, completed usage,
 and indeterminate failures SHALL count against the exact binding generation.
+Each admitted request capability SHALL independently limit provider calls to a
+small reply/learning budget; the durable binding-generation invocation ceiling
+SHALL be a high-water anti-runaway bound spanning multiple normal requests, not
+the per-request limit.
 After completion, actual adapter usage SHALL be recorded; an over-ceiling result
 SHALL be withheld and future calls SHALL remain held.
 
@@ -102,13 +115,22 @@ SHALL be withheld and future calls SHALL remain held.
 - **THEN** the result is withheld and the reservation is marked exceeded
 - **AND** no later call can reuse the consumed budget
 
+#### Scenario: Two founder turns use one binding
+
+- **WHEN** two consecutive admitted requests each make a reply and learning call
+- **THEN** all four calls fit their independent request budgets without a rebind
+- **AND** the durable binding high-water still rejects calls beyond its ceiling
+
 ### Requirement: Bindable Codex serving runs in an OS sandbox
 
 A served Codex adapter call SHALL execute under an external OS sandbox that
 read-only mounts the selected universe, exposes only its contained Codex auth
-home, disables Codex shell execution and user/project rules, and emits
-machine-readable usage accounting. If the sandbox or accounting output is
-unavailable, the adapter SHALL fail closed before returning a reply.
+snapshot, follows any installed wrapper to the real executable tree and mounts
+that tree read-only, disables Codex shell execution and user/project rules, and
+emits machine-readable usage accounting. The credential snapshot subtree SHALL
+be hidden from the workspace mount. If the sandbox, executable-tree mount, or
+accounting output is unavailable, the adapter SHALL fail closed before
+returning a reply.
 
 #### Scenario: Sandboxed Codex turn completes
 

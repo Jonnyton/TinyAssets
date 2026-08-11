@@ -440,6 +440,10 @@ class ProviderRouter:
                 or cfg.max_tokens > served_authority.max_tokens
             ):
                 raise PermissionError("provider call exceeds served token ceiling")
+            cfg = replace(
+                cfg,
+                credential_snapshot_dir=served_authority.credential_snapshot_dir,
+            )
             chain = [served_authority.provider]
         elif invocation_carrier is not None:
             if invocation_carrier.max_tokens < 1:
@@ -635,7 +639,7 @@ class ProviderRouter:
                     try:
                         consume_provider_request_invocation(
                             served_authority.request_capability,
-                            limit=served_authority.max_invocations,
+                            limit=served_authority.request_max_invocations,
                         )
                     except PermissionError as exc:
                         raise ProviderAuthorityHeldError(

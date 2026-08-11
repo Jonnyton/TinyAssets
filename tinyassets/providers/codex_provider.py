@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -50,6 +51,85 @@ def _resolve_codex_cmd() -> tuple[list[str], bool]:
     if codex_path:
         return [codex_path], False
     return ["codex"], False
+
+
+_CODEX_BIN_ASSIGNMENT = re.compile(
+    r"(?m)^\s*CODEX_BIN\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|(\S+))\s*$"
+)
+
+
+def _resolved_codex_executable(base_cmd: list[str]) -> tuple[Path, Path]:
+    """Return the invoked wrapper and the real executable it delegates to."""
+
+    if not base_cmd:
+        raise ProviderError("codex served sandbox cannot resolve an empty command")
+    wrapper = Path(base_cmd[0]).expanduser()
+    if not wrapper.is_absolute():
+        located = shutil.which(str(wrapper))
+        if not located:
+            raise ProviderError("codex served sandbox cannot resolve the executable")
+        wrapper = Path(located)
+    try:
+        wrapper = Path(os.path.abspath(wrapper))
+        resolved = wrapper.resolve(strict=True)
+    except OSError as exc:
+        raise ProviderError(
+            "codex served sandbox cannot resolve the executable"
+        ) from exc
+    real_executable = resolved
+    if wrapper == resolved:
+        try:
+            with wrapper.open("rb") as stream:
+                wrapper_text = stream.read(65_536).decode("utf-8", errors="strict")
+        except (OSError, UnicodeError):
+            wrapper_text = ""
+        if "CODEX_BIN" in wrapper_text:
+            match = _CODEX_BIN_ASSIGNMENT.search(wrapper_text)
+            if match is None:
+                raise ProviderError(
+                    "codex served sandbox cannot resolve the wrapper's real binary"
+                )
+            try:
+                raw_real_executable = next(
+                    value for value in match.groups() if value is not None
+                )
+                real_path = Path(raw_real_executable)
+                if not real_path.is_absolute():
+                    raise OSError("wrapper target is not absolute")
+                real_executable = real_path.resolve(strict=True)
+            except OSError as exc:
+                raise ProviderError(
+                    "codex served sandbox cannot resolve the wrapper's real binary"
+                ) from exc
+    if not real_executable.is_file():
+        raise ProviderError("codex served sandbox resolved binary is not a file")
+    return wrapper, real_executable
+
+
+def _codex_binary_tree(real_executable: Path) -> Path:
+    for ancestor in real_executable.parents:
+        if ancestor.name == "node_modules":
+            tree = ancestor.parent
+            break
+    else:
+        tree = real_executable.parent
+    if not tree.is_dir():
+        raise ProviderError("codex served sandbox cannot mount the resolved binary tree")
+    return tree
+
+
+def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
+    wrapper, real_executable = _resolved_codex_executable(base_cmd)
+    candidates = [_codex_binary_tree(real_executable)]
+    covered_roots = tuple(Path(path) for path in ("/usr", "/bin", "/lib", "/lib64"))
+    if not any(wrapper.is_relative_to(root) for root in covered_roots):
+        candidates.append(wrapper.parent)
+    mounts: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=True)
+        if resolved not in mounts:
+            mounts.append(resolved)
+    return tuple(mounts)
 
 
 _VALID_CODEX_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
@@ -119,7 +199,11 @@ class CodexProvider(BaseProvider):
         effort_args = _reasoning_effort_args(
             getattr(config, "reasoning_effort", "")
         )
-        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        proc_env = subprocess_env_for_provider(
+            self.name,
+            universe_dir=universe_dir,
+            credential_snapshot_dir=config.credential_snapshot_dir,
+        )
         machine_accounting = bool(config.sandbox_workspace)
         if config.sandbox_workspace:
             if universe_dir is None or use_shell or not sandbox_status.get("bwrap_available"):
@@ -137,8 +221,9 @@ class CodexProvider(BaseProvider):
                 raise ProviderError(
                     "codex served turns require an available OS sandbox and universe auth"
                 )
+            binary_mounts = _codex_sandbox_mounts(base_cmd)
             sandbox_args = [
-                "--dangerously-bypass-approvals-and-sandbox",
+                "--full-auto",
                 "--ignore-user-config",
                 "--ignore-rules",
                 "--disable",
@@ -178,7 +263,9 @@ class CodexProvider(BaseProvider):
                 "--ro-bind",
                 str(universe_root),
                 "/workspace",
-                "--bind",
+                "--tmpfs",
+                "/workspace/.runtime/provider-launch-credentials",
+                "--ro-bind",
                 str(codex_home),
                 "/codex-home",
                 "--setenv",
@@ -200,7 +287,15 @@ class CodexProvider(BaseProvider):
             ):
                 if Path(system_path).exists() or system_path == "/usr":
                     bwrap_cmd.extend(("--ro-bind", system_path, system_path))
-            cmd_with_cwd = [*bwrap_cmd, *inner_cmd]
+            for binary_mount in binary_mounts:
+                if binary_mount == Path("/usr"):
+                    continue
+                if binary_mount.parent == Path("/opt"):
+                    bwrap_cmd.extend(("--dir", "/opt"))
+                bwrap_cmd.extend(
+                    ("--ro-bind", str(binary_mount), str(binary_mount))
+                )
+            cmd_with_cwd = [*bwrap_cmd, "--", *inner_cmd]
             proc_env["CODEX_HOME"] = "/codex-home"
             proc_env["HOME"] = "/tmp"
         else:

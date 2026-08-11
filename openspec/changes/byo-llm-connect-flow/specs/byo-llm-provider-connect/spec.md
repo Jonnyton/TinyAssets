@@ -34,6 +34,15 @@ credential material, credential identifiers, generations, or ownership.
   principal, or its path-backed credential bytes change after adoption
 - **THEN** the operation or served call holds before provider access
 
+#### Scenario: Path-backed credential rotates during an admitted launch
+
+- **WHEN** admission has copied and validated the current credential bytes into
+  a per-launch snapshot and another process replaces the source `auth.json`
+- **THEN** the admitted launch continues only from its immutable snapshot
+- **AND** the next admission rejects the stale custody generation until the
+  rotated credential is adopted and rebound
+- **AND** every launch snapshot is removed best-effort after success or failure
+
 ### Requirement: Serving-provider bind is one atomic server-derived operation
 
 `write_graph target=agent_binding operation=bind_serving_provider` SHALL accept
