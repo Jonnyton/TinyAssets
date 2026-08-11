@@ -1,19 +1,11 @@
-"""Provider router -- fallback chains across six providers.
-
-Hard invariant: every call has a fallback chain that terminates at
-``ollama-local``.  The system NEVER stops due to provider
-unavailability unless local models are also down.
-"""
+"""Exact-authority provider routing with no platform fallback."""
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
 import logging
-import os
-from collections.abc import Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -24,16 +16,13 @@ from tinyassets.exceptions import (
 )
 from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import (
-    DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
     ModelConfig,
     ProviderResponse,
     UniverseContext,
-    api_key_providers_enabled,
 )
 from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
-    build_chain_state,
     classify_unavailable,
 )
 from tinyassets.providers.quota import (
@@ -43,15 +32,13 @@ from tinyassets.providers.quota import (
     QuotaTracker,
 )
 
-if TYPE_CHECKING:
-    from tinyassets.config import UniverseConfig
-
 logger = logging.getLogger(__name__)
 
 _CONNECT_PROVIDER_MESSAGE = (
     "Connect your provider before running this universe. TinyAssets will not "
     "borrow platform credentials or start a metered trial."
 )
+_SYNC_CALL_MAX_WORKERS = 8
 
 
 def _provider_invocation_carrier(
@@ -67,83 +54,19 @@ def _provider_invocation_carrier(
         raise PermissionError("armed provider invocation requires an operation")
     if type(carrier) is not ProviderInvocationCarrier:
         raise PermissionError("provider invocation carrier is not server-owned")
-    carrier.validate_for_call(role=role, operation=operation)
+    invocation_operation = (
+        carrier.operation
+        if universe_context is not None
+        and universe_context.assigned_credential is not None
+        else operation
+    )
+    carrier.validate_for_call(role=role, operation=invocation_operation)
     return carrier
 
-def _resolve_universe_config(
-    universe_context: UniverseContext | None,
-) -> "UniverseConfig | None":
-    """Resolve the effective UniverseConfig for a call.
 
-    An explicit ``universe_context.config`` wins; otherwise fall back to the
-    process-global ``runtime.universe_config`` (preserving today's
-    single-universe-daemon behavior). Returns ``None`` only when neither is
-    available.
-    """
-    if universe_context is not None and universe_context.config is not None:
-        return universe_context.config
+def _default_config(context: UniverseContext | None = None) -> ModelConfig:
     try:
-        from tinyassets import runtime_singletons as runtime
-
-        return runtime.universe_config
-    except Exception:
-        return None
-
-
-def _effective_universe_provider_ceiling(
-    universe_context: UniverseContext | None,
-    resolved_config: "UniverseConfig | None",
-    *,
-    carrier_armed: bool,
-) -> list[str] | None:
-    """Return the requester's provider ceiling, or legacy/platform ``None``.
-
-    A server-minted invocation carrier is already pinned to one provider and
-    remains subject to any explicit assignment allowlist. An unarmed explicit
-    universe context is requester work: legacy ``allowed_providers=None`` may
-    use only providers the universe itself selected, never the process-global
-    fallback chain. Missing/empty selection holds before provider access.
-    """
-    if carrier_armed or universe_context is None:
-        return (
-            resolved_config.allowed_providers
-            if resolved_config is not None
-            else None
-        )
-    # An unarmed explicit context is requester authority. Its config must be
-    # carried on the request; ``resolved_config`` may be the ambient runtime
-    # fallback and therefore cannot establish requester authority here.
-    requester_config = universe_context.config
-    if requester_config is None:
-        raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
-    if requester_config.allowed_providers is not None:
-        ceiling = [
-            str(provider).strip()
-            for provider in requester_config.allowed_providers
-            if str(provider).strip()
-        ]
-    else:
-        ceiling = list(dict.fromkeys(
-            provider
-            for provider in (
-                str(requester_config.preferred_writer or "").strip(),
-                str(requester_config.preferred_judge or "").strip(),
-            )
-            if provider
-        ))
-    if not ceiling:
-        raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
-    return ceiling
-
-
-def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
-    """Build default ModelConfig from the resolved universe config if available.
-
-    ``resolved`` is the config produced by :func:`_resolve_universe_config`.
-    When omitted, falls back to the process-global ``runtime.universe_config``
-    so bare callers keep today's behavior.
-    """
-    try:
+        resolved = context.config if context is not None else None
         if resolved is None:
             from tinyassets import runtime_singletons as runtime
 
@@ -156,194 +79,30 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
     except Exception:
         return ModelConfig()
 
-# Fallback chains per role (spec Section 8.3).
-FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "judge": ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "extract": ["codex", "gemini-free", "groq-free", "ollama-local"],
-    "embed": ["ollama-local"],
-}
-
-# Judge providers to fan out to in parallel.  Every available provider
-# gets one call; results are collected and aggregated.  No chains,
-# no fallbacks — just "call everyone, return all responses."
-_JUDGE_PROVIDERS: list[str] = [
-    "codex", "gemini-free", "groq-free", "grok-free", "ollama-local",
-]
-
-
-_LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama-local"})
-_API_KEY_PROVIDERS: frozenset[str] = frozenset(
-    {"gemini-free", "groq-free", "grok-free"}
-)
-
-# BUG-029 Part B: number of consecutive empty-prose responses from a local
-# provider (when chain-drained) before raising AllProvidersExhaustedError.
-_CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
-
-# Sync graph nodes call async provider routing through this bounded pool.
-# Keep it above 1 so an unrelated slow provider call does not serialize all
-# other sync callers behind one shared worker.
-_SYNC_CALL_MAX_WORKERS: int = 8
-
 
 class ProviderRouter:
-    """Routes LLM calls across providers with fallback and quota tracking.
+    """Launch exactly the provider named by server-resolved authority."""
 
-    Parameters
-    ----------
-    providers : dict[str, BaseProvider]
-        Map from provider name to provider instance.  Only providers
-        present in this dict are reachable.
-    quota : QuotaTracker | None
-        Shared quota tracker.  A default is created if not supplied.
-    chain_drain_empty_threshold : int
-        Consecutive empty-prose responses from a local provider (when all
-        API providers are in cooldown) before raising
-        AllProvidersExhaustedError.  Default: 2.
-    auth_health : Callable[[str], dict[str, str]] | None
-        Subscription-login probe (``tinyassets.providers.base.
-        subscription_auth_health``) injected by the daemon. When supplied,
-        a provider whose login is definitively ``not_logged_in`` is dropped
-        from fallback chains (a pinned writer fails loud instead). Default
-        ``None`` disables the gate, so script/test routers that register
-        fake providers are unaffected (2026-06-25 loop-wedge follow-up).
-    """
+    _thread_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_SYNC_CALL_MAX_WORKERS,
+        thread_name_prefix="tinyassets-provider-sync",
+    )
 
     def __init__(
         self,
         providers: dict[str, BaseProvider] | None = None,
         quota: QuotaTracker | None = None,
-        chain_drain_empty_threshold: int = _CHAIN_DRAIN_EMPTY_THRESHOLD,
-        auth_health: Callable[[str], dict[str, str]] | None = None,
+        **_retired_options: object,
     ) -> None:
-        self._providers: dict[str, BaseProvider] = providers or {}
+        self._providers = providers or {}
         self._quota = quota or QuotaTracker()
-        self._chain_drain_empty_threshold = chain_drain_empty_threshold
-        self._auth_health = auth_health
-        # {provider_name: consecutive_empty_count} — reset on non-empty response.
-        self._consecutive_empty: dict[str, int] = {}
-
-    # ------------------------------------------------------------------
-    # Registration helpers
-    # ------------------------------------------------------------------
 
     def register(self, provider: BaseProvider) -> None:
-        """Add or replace a provider in the registry."""
         self._providers[provider.name] = provider
 
     @property
     def available_providers(self) -> list[str]:
         return list(self._providers)
-
-    def effective_chain(
-        self,
-        chain: list[str],
-    ) -> tuple[list[str], list[ProviderAttemptDiagnostic]]:
-        """Return registered providers from *chain* plus explicit exclusions.
-
-        ``FALLBACK_CHAINS`` records preference order, but runtime routing must
-        only advertise and iterate providers that were actually registered at
-        startup. Missing CLI-backed providers, such as ``claude-code`` in the
-        cloud image, are reported as exclusions rather than silent phantom
-        entries at the front of the live chain.
-        """
-        effective: list[str] = []
-        excluded: list[ProviderAttemptDiagnostic] = []
-        for provider_name in chain:
-            if provider_name in self._providers:
-                effective.append(provider_name)
-                continue
-            excluded.append(ProviderAttemptDiagnostic(
-                provider=provider_name,
-                status="skipped",
-                skip_class="not_in_registry",
-                detail="provider name not registered with daemon",
-            ))
-        return effective, excluded
-
-    # ------------------------------------------------------------------
-    # Core routing
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _apply_preference(chain: list[str], preferred: str) -> list[str]:
-        """Reorder *chain* so *preferred* comes first (if present)."""
-        if not preferred or preferred not in chain:
-            return chain
-        return [preferred] + [p for p in chain if p != preferred]
-
-    @staticmethod
-    def _current_allowlist(
-        resolved: "UniverseConfig | None" = None,
-    ) -> list[str] | None:
-        """Read the resolved universe's `allowed_providers` allowlist, or None.
-
-        Q6.3 enforcement primitive — see UniverseConfig.allowed_providers.
-        ``resolved`` is the config produced by :func:`_resolve_universe_config`
-        (explicit ``universe_context`` wins); when omitted, falls back to the
-        process-global ``runtime.universe_config``. Returns None when no universe
-        config is bound or the field is unset (full fallback chain preserved,
-        backwards-compatible).
-        """
-        try:
-            if resolved is None:
-                from tinyassets import runtime_singletons as runtime
-
-                resolved = runtime.universe_config
-            return resolved.allowed_providers
-        except Exception:
-            return None
-
-    @staticmethod
-    def _apply_allowlist(
-        chain: list[str], allowlist: list[str] | None,
-    ) -> list[str]:
-        """Filter *chain* down to providers in *allowlist*.
-
-        ``allowlist=None`` is a no-op (returns chain unchanged). An empty list
-        filters everything out — the caller is responsible for hard-failing
-        with ``AllProvidersExhaustedError`` so the policy block is visible.
-        """
-        if allowlist is None:
-            return chain
-        return [p for p in chain if p in allowlist]
-
-    @staticmethod
-    def _apply_api_key_provider_policy(chain: list[str]) -> list[str]:
-        """Drop API-key-backed providers unless the host opted into them."""
-        if api_key_providers_enabled():
-            return chain
-        return [p for p in chain if p not in _API_KEY_PROVIDERS]
-
-    def _apply_auth_health_policy(self, chain: list[str]) -> list[str]:
-        """Drop subscription-backed providers whose login is definitively dead.
-
-        Mirrors the worker-level self-quarantine (2026-06-25 loop-wedge): a
-        provider with missing subscription credentials fails every call, so
-        skipping it routes straight to a healthy provider instead of burning
-        an attempt and a misleading cooldown.
-
-        No-op when no auth-health probe was injected (the default), so
-        script/test routers that register fake providers are unaffected.
-
-        Conservative — only a definitive ``not_logged_in`` drops a provider.
-        ``unknown`` (api-key / local providers the probe cannot assess) and
-        ``ok`` are always kept, and a probe that raises is treated as "keep",
-        so a probe false-negative can never strand a healthy provider.
-        """
-        if self._auth_health is None:
-            return chain
-        alive: list[str] = []
-        for provider_name in chain:
-            try:
-                status = self._auth_health(provider_name).get("status")
-            except Exception:
-                logger.debug("auth-health probe failed for %s; keeping", provider_name)
-                status = None
-            if status != "not_logged_in":
-                alive.append(provider_name)
-        return alive
 
     async def call(
         self,
@@ -355,12 +114,13 @@ class ProviderRouter:
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
-        """Route a call, fencing founder-facing served turns before launch."""
+        """Resolve request authority, then launch one exact provider."""
 
         if (
             universe_context is not None
             and universe_context.provider_invocation is None
             and universe_context.assigned_credential is None
+            and universe_context.served_provider is None
         ):
             from tinyassets.provider_assignment import authorize_served_provider_call
 
@@ -378,19 +138,18 @@ class ProviderRouter:
                 role=role,
                 operation=operation,
             ) as authority:
-                authorized_context = replace(
-                    universe_context,
-                    served_provider=authority,
-                )
-                return await self._call_routed(
+                return await self._call_authorized(
                     role,
                     prompt,
                     system,
                     config,
                     operation=operation,
-                    universe_context=authorized_context,
+                    universe_context=replace(
+                        universe_context,
+                        served_provider=authority,
+                    ),
                 )
-        return await self._call_routed(
+        return await self._call_authorized(
             role,
             prompt,
             system,
@@ -399,463 +158,185 @@ class ProviderRouter:
             universe_context=universe_context,
         )
 
-    async def _call_routed(
+    async def _call_authorized(
         self,
         role: str,
         prompt: str,
         system: str,
-        config: ModelConfig | None = None,
+        config: ModelConfig | None,
         *,
-        operation: str | None = None,
-        universe_context: UniverseContext | None = None,
+        operation: str | None,
+        universe_context: UniverseContext | None,
     ) -> ProviderResponse:
-        """Route a single call through the fallback chain for *role*.
-
-        Returns a :class:`ProviderResponse` on success.  For judge role,
-        returns a degraded sentinel when all providers are exhausted.
-        For other roles, raises :class:`AllProvidersExhaustedError`.
-
-        ``universe_context``, when supplied, resolves this call's engine
-        preference + allowlist + vault-backed auth from an EXPLICIT argument
-        instead of the process globals — the multi-universe seam.
-        """
-        invocation_carrier = _provider_invocation_carrier(
+        invocation = _provider_invocation_carrier(
             universe_context,
             role=role,
             operation=operation,
         )
-        served_authority = universe_context.served_provider if universe_context else None
-        assigned_credential = (
-            universe_context.assigned_credential if universe_context else None
-        )
-        resolved_config = _resolve_universe_config(universe_context)
+        assigned = universe_context.assigned_credential if universe_context else None
+        served = universe_context.served_provider if universe_context else None
         universe_dir = universe_context.universe_dir if universe_context else None
-        cfg = config or _default_config(resolved_config)
-        if assigned_credential is not None:
-            if universe_dir is None or universe_dir.name != assigned_credential.universe_id:
+        cfg = config or _default_config(universe_context)
+
+        if assigned is not None:
+            if universe_dir is None or universe_dir.name != assigned.universe_id:
                 raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+            if (
+                operation not in assigned.allowed_operations
+                or role not in assigned.allowed_roles
+            ):
+                raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+            provider_name = assigned.provider
             cfg = replace(
                 cfg,
-                credential_snapshot_dir=assigned_credential.credential_snapshot_dir,
+                credential_snapshot_dir=assigned.credential_snapshot_dir,
             )
-            chain = [assigned_credential.provider]
-        elif served_authority is not None:
+        elif served is not None:
             if operation != "converse" or role != "writer":
                 raise PermissionError("served provider authority is converse/writer only")
-            if served_authority.max_tokens < 1:
-                raise PermissionError("served provider authority has no token budget")
-            if served_authority.max_cost_microunits < 1:
-                raise PermissionError("served provider authority has no cost budget")
+            if served.max_tokens < 1 or served.max_cost_microunits < 1:
+                raise PermissionError("served provider authority has no positive budget")
             if cfg.max_tokens is None:
-                cfg = replace(cfg, max_tokens=served_authority.max_tokens)
+                cfg = replace(cfg, max_tokens=served.max_tokens)
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
                 or cfg.max_tokens < 0
-                or cfg.max_tokens > served_authority.max_tokens
+                or cfg.max_tokens > served.max_tokens
             ):
                 raise PermissionError("provider call exceeds served token ceiling")
-            cfg = replace(
-                cfg,
-                credential_snapshot_dir=served_authority.credential_snapshot_dir,
-            )
-            chain = [served_authority.provider]
-        elif invocation_carrier is not None:
-            if invocation_carrier.max_tokens < 1:
-                raise PermissionError("armed provider invocation has no positive token budget")
-            if invocation_carrier.max_cost_microunits < 1:
-                raise PermissionError("armed provider invocation has no positive cost budget")
+            provider_name = served.provider
+            cfg = replace(cfg, credential_snapshot_dir=served.credential_snapshot_dir)
+        elif invocation is not None:
+            if invocation.max_tokens < 1 or invocation.max_cost_microunits < 1:
+                raise PermissionError("armed provider invocation has no positive budget")
             if cfg.max_tokens is None:
-                cfg = replace(cfg, max_tokens=invocation_carrier.max_tokens)
+                cfg = replace(cfg, max_tokens=invocation.max_tokens)
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
                 or cfg.max_tokens < 0
-                or cfg.max_tokens > invocation_carrier.max_tokens
+                or cfg.max_tokens > invocation.max_tokens
             ):
                 raise PermissionError("provider call exceeds armed token ceiling")
-            chain = [invocation_carrier.provider]
+            provider_name = invocation.provider
         else:
-            chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
+            raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
 
-        # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
-        # single provider for this call. No fallback — if the pinned
-        # provider fails, the call fails loudly (hard rule #8).
-        pin_writer = os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
-        is_pinned_writer = role == "writer" and bool(pin_writer)
-        if assigned_credential is not None:
-            is_pinned_writer = False
-        elif served_authority is not None:
-            if is_pinned_writer and pin_writer != served_authority.provider:
-                raise PermissionError("writer pin conflicts with served provider")
-        elif invocation_carrier is not None:
-            if is_pinned_writer and pin_writer != invocation_carrier.provider:
-                raise PermissionError("writer pin conflicts with armed provider")
-        elif is_pinned_writer:
-            chain = [pin_writer]
-        else:
-            # Apply per-universe provider preference from the resolved config.
-            try:
-                ucfg = resolved_config
-                if ucfg is not None:
-                    if role == "writer" and ucfg.preferred_writer:
-                        chain = self._apply_preference(chain, ucfg.preferred_writer)
-                    elif role == "judge" and ucfg.preferred_judge:
-                        chain = self._apply_preference(chain, ucfg.preferred_judge)
-            except Exception:
-                pass
-
-        # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
-        # narrowed chain to [pin_writer] above; the filter then enforces
-        # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = (
-            [assigned_credential.provider]
-            if assigned_credential is not None
-            else [served_authority.provider]
-            if served_authority is not None
-            else _effective_universe_provider_ceiling(
-                universe_context,
-                resolved_config,
-                carrier_armed=invocation_carrier is not None,
-            )
-        )
-        if allowlist is not None:
-            filtered = self._apply_allowlist(chain, allowlist)
-            if not filtered:
-                if is_pinned_writer:
-                    logger.warning(
-                        "Q6.3 allowlist empties chain: pinned writer %r is not "
-                        "in allowed_providers=%s; hard-failing.",
-                        pin_writer, allowlist,
-                    )
-                    raise AllProvidersExhaustedError(
-                        f"Pinned writer {pin_writer!r} is not in the universe's "
-                        f"allowed_providers={allowlist!r}. Either add the "
-                        f"provider to the allowlist or clear TINYASSETS_PIN_WRITER."
-                    )
-                logger.warning(
-                    "Q6.3 allowlist empties chain for role=%s: chain=%s "
-                    "filtered against allowed_providers=%s; hard-failing.",
-                    role, chain, allowlist,
-                )
-                raise AllProvidersExhaustedError(
-                    f"All providers for role={role!r} are blocked by the "
-                    f"universe's allowed_providers={allowlist!r}. Daemon will "
-                    f"not silently fall back to a disallowed provider."
-                )
-            chain = filtered
-
-        auth_filtered = self._apply_api_key_provider_policy(chain)
-        if not auth_filtered:
-            if is_pinned_writer:
-                raise AllProvidersExhaustedError(
-                    f"Pinned writer provider {pin_writer!r} is API-key-backed "
-                    "and disabled by default. Set "
-                    "TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 only for an intentional "
-                    "API-key daemon, or pin a subscription-backed provider."
-                )
-            raise AllProvidersExhaustedError(
-                f"All providers for role={role!r} are API-key-backed and "
-                "disabled by default. TinyAssets daemons are subscription-only "
-                "unless TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 is set."
-            )
-        if auth_filtered != chain:
-            logger.info(
-                "Ignoring API-key providers by default for role=%s: removed=%s",
-                role,
-                [p for p in chain if p not in auth_filtered],
-            )
-            chain = auth_filtered
-
-        # 2026-06-25 loop-wedge: a pinned writer with dead subscription login
-        # must fail loud (hard rule #8), not silently route to a different
-        # provider. (chain == [pin_writer] here; an empty filter means dead.)
-        if is_pinned_writer and not self._apply_auth_health_policy(chain):
-            raise AllProvidersExhaustedError(
-                f"Pinned writer provider {pin_writer!r} has no subscription "
-                "login (auth probe: not_logged_in). Re-seed its credentials, "
-                "or clear TINYASSETS_PIN_WRITER to use the fallback chain."
-            )
-
-        # FEAT-006 / BUG-025: collect per-provider skip/failure diagnostics so
-        # the final AllProvidersExhaustedError can carry structured detail.
-        # For normal fallback routing, remove unregistered providers before
-        # iteration so the live chain does not advertise phantom first entries.
+        provider = self._providers.get(provider_name)
         attempts: list[ProviderAttemptDiagnostic] = []
-        if (
-            invocation_carrier is None
-            and served_authority is None
-            and not is_pinned_writer
-        ):
-            effective_chain, excluded = self.effective_chain(chain)
-            if excluded:
-                logger.info(
-                    "Excluding unregistered providers from effective role=%s "
-                    "chain: %s",
-                    role,
-                    [attempt.provider for attempt in excluded],
-                )
-                attempts.extend(excluded)
-            chain = effective_chain
+        if provider is None:
+            attempts.append(ProviderAttemptDiagnostic(
+                provider=provider_name,
+                status="skipped",
+                skip_class="not_in_registry",
+                detail="assigned provider is not registered with daemon",
+            ))
+            raise self._exhausted(provider_name, attempts)
+        if not self._quota.available(provider_name):
+            attempts.append(ProviderAttemptDiagnostic(
+                provider=provider_name,
+                status="skipped",
+                skip_class="quota_or_cooldown",
+                detail="assigned provider is rate-limited or cooling down",
+                cooldown_remaining_s=(
+                    self._quota.cooldown_remaining(provider_name) or None
+                ),
+            ))
+            raise self._exhausted(provider_name, attempts)
 
-            # 2026-06-25 loop-wedge: drop registered providers whose
-            # subscription login is definitively dead so fallback routes
-            # straight to a healthy provider. No-op without an injected probe.
-            auth_alive = self._apply_auth_health_policy(chain)
-            dead_auth = [p for p in chain if p not in auth_alive]
-            if dead_auth:
-                logger.warning(
-                    "Skipping providers with dead subscription login for "
-                    "role=%s: %s",
-                    role,
-                    dead_auth,
-                )
-                attempts.extend(
-                    ProviderAttemptDiagnostic(
-                        provider=p,
-                        status="skipped",
-                        skip_class="auth_invalid",
-                        detail="no subscription login (auth probe: not_logged_in)",
-                    )
-                    for p in dead_auth
-                )
-                chain = auth_alive
+        reservation = None
+        try:
+            if served is not None:
+                from tinyassets.auth.middleware import consume_provider_request_invocation
+                from tinyassets.provider_assignment import reserve_served_provider_budget
 
-        for provider_name in chain:
-            provider = self._providers.get(provider_name)
-            if provider is None:
-                logger.info("Provider %s not in registry, skipping", provider_name)
-                attempts.append(ProviderAttemptDiagnostic(
-                    provider=provider_name, status="skipped",
-                    skip_class="not_in_registry",
-                    detail="provider name not registered with daemon",
-                ))
-                continue
-            if not self._quota.available(provider_name):
-                logger.info("Skipping %s (quota/cooldown)", provider_name)
-                cd = self._quota.cooldown_remaining(provider_name)
-                attempts.append(ProviderAttemptDiagnostic(
-                    provider=provider_name, status="skipped",
-                    skip_class="quota_or_cooldown",
-                    detail="quota or cooldown gate",
-                    cooldown_remaining_s=cd if cd > 0 else None,
-                ))
-                continue
-
-            logger.info("Trying provider %s for role=%s", provider_name, role)
-            try:
-                budget_reservation = None
-                if served_authority is not None:
-                    from tinyassets.auth.middleware import (
-                        consume_provider_request_invocation,
-                    )
-                    from tinyassets.provider_assignment import (
-                        abandon_served_provider_budget,
-                        finalize_served_provider_budget,
-                        reserve_served_provider_budget,
-                    )
-
-                    try:
-                        consume_provider_request_invocation(
-                            served_authority.request_capability,
-                            limit=served_authority.request_max_invocations,
-                        )
-                    except PermissionError as exc:
-                        raise ProviderAuthorityHeldError(
-                            _CONNECT_PROVIDER_MESSAGE
-                        ) from exc
-                    estimated_input_tokens = max(
-                        1,
-                        len(
-                            (f"{system}\n\n{prompt}" if system else prompt).encode(
-                                "utf-8"
-                            )
-                        ),
-                    )
-                    budget_reservation = reserve_served_provider_budget(
-                        universe_dir.parent,
-                        universe_dir=universe_dir,
-                        authority=served_authority,
-                        requested_output_tokens=cfg.max_tokens,
-                        estimated_input_tokens=estimated_input_tokens,
-                    )
-                    cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 try:
-                    resp = await provider.complete(
-                        prompt, system, cfg, universe_dir=universe_dir,
+                    consume_provider_request_invocation(
+                        served.request_capability,
+                        limit=served.request_max_invocations,
                     )
-                except BaseException:
-                    if budget_reservation is not None:
-                        abandon_served_provider_budget(
-                            universe_dir.parent,
-                            budget_reservation,
-                        )
-                    raise
-                if budget_reservation is not None:
-                    finalize_served_provider_budget(
-                        universe_dir.parent,
-                        authority=served_authority,
-                        reservation=budget_reservation,
-                        input_tokens=resp.input_tokens,
-                        output_tokens=resp.output_tokens,
-                        cost_microunits=resp.cost_microunits,
-                        fallback_output=resp.text,
-                    )
-                self._quota.record_success(provider_name)
-            except ProviderAuthorityHeldError:
-                raise
-            except ProviderUnavailableError as exc:
+                except PermissionError as exc:
+                    raise ProviderAuthorityHeldError(
+                        _CONNECT_PROVIDER_MESSAGE
+                    ) from exc
+                estimated_input_tokens = max(
+                    1,
+                    len((f"{system}\n\n{prompt}" if system else prompt).encode()),
+                )
+                reservation = reserve_served_provider_budget(
+                    universe_dir.parent,
+                    universe_dir=universe_dir,
+                    authority=served,
+                    requested_output_tokens=cfg.max_tokens,
+                    estimated_input_tokens=estimated_input_tokens,
+                )
+                cfg = replace(cfg, max_tokens=reservation.output_tokens)
+            response = await provider.complete(
+                prompt,
+                system,
+                cfg,
+                universe_dir=universe_dir,
+            )
+            if reservation is not None:
+                from tinyassets.provider_assignment import finalize_served_provider_budget
+
+                finalize_served_provider_budget(
+                    universe_dir.parent,
+                    authority=served,
+                    reservation=reservation,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    cost_microunits=response.cost_microunits,
+                    fallback_output=response.text,
+                )
+            self._quota.record_success(provider_name)
+            return response
+        except ProviderAuthorityHeldError:
+            raise
+        except BaseException as exc:
+            if reservation is not None:
+                from tinyassets.provider_assignment import abandon_served_provider_budget
+
+                abandon_served_provider_budget(universe_dir.parent, reservation)
+            if isinstance(exc, ProviderUnavailableError):
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
-                logger.warning(
-                    "Provider %s unavailable, cooldown %ds",
-                    provider_name, COOLDOWN_UNAVAILABLE,
-                )
-                attempts.append(ProviderAttemptDiagnostic(
-                    provider=provider_name, status="failed",
-                    skip_class=classify_unavailable(exc),
-                    detail=str(exc)[:200],
-                ))
-                continue
-            except ProviderTimeoutError as exc:
+                skip_class = classify_unavailable(exc)
+            elif isinstance(exc, ProviderTimeoutError):
                 self._quota.cooldown(provider_name, COOLDOWN_TIMEOUT)
-                logger.warning(
-                    "Provider %s timed out, cooldown %ds",
-                    provider_name, COOLDOWN_TIMEOUT,
-                )
-                attempts.append(ProviderAttemptDiagnostic(
-                    provider=provider_name, status="failed",
-                    skip_class="timed_out",
-                    detail=str(exc)[:200],
-                ))
-                continue
-            except ProviderError as exc:
+                skip_class = "timed_out"
+            elif isinstance(exc, ProviderError):
                 self._quota.cooldown(provider_name, COOLDOWN_OTHER)
-                logger.warning(
-                    "Provider %s error, cooldown %ds: %s",
-                    provider_name, COOLDOWN_OTHER, exc,
-                )
-                attempts.append(ProviderAttemptDiagnostic(
-                    provider=provider_name, status="failed",
-                    skip_class="provider_error",
-                    detail=str(exc)[:200],
-                ))
-                continue
-            except Exception as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
-                logger.exception("Unexpected error from %s", provider_name)
-                attempts.append(ProviderAttemptDiagnostic(
-                    provider=provider_name, status="failed",
-                    skip_class="unknown",
-                    detail=f"{type(exc).__name__}: {str(exc)[:160]}",
-                ))
-                continue
-
-            # Successful call — apply BUG-029 Part B: track consecutive empty
-            # responses from local providers when chain-drained.
-            is_local = provider_name in _LOCAL_PROVIDERS
-            response_empty = not (resp.text or "").strip()
-            if is_local and response_empty:
-                count = self._consecutive_empty.get(provider_name, 0) + 1
-                self._consecutive_empty[provider_name] = count
-                drained = self._quota.all_api_providers_in_cooldown(
-                    chain, local_providers=_LOCAL_PROVIDERS
-                )
-                if drained and count >= self._chain_drain_empty_threshold:
-                    logger.warning(
-                        "CHAIN_DRAINED + %s empty x%d: raising "
-                        "AllProvidersExhaustedError to force backoff (BUG-029)",
-                        provider_name, count,
-                    )
-                    raise AllProvidersExhaustedError(
-                        f"Chain drained (all API providers in cooldown) and "
-                        f"{provider_name!r} returned empty prose {count} consecutive "
-                        f"time(s). Daemon should back off rather than commit empty output."
-                    )
+                skip_class = "provider_error"
             else:
-                self._consecutive_empty.pop(provider_name, None)
-            return resp
-
-        # All providers exhausted.
-        if assigned_credential is not None:
-            raise AllProvidersExhaustedError(
-                f"Assigned provider {assigned_credential.provider!r} exhausted; "
-                "workflow authority forbids fallback widening.",
-                attempts=attempts,
-            )
-        if served_authority is not None:
-            raise AllProvidersExhaustedError(
-                f"Served provider {served_authority.provider!r} exhausted; "
-                "universe authority forbids fallback widening.",
-                attempts=attempts,
-            )
-        if invocation_carrier is not None:
-            raise AllProvidersExhaustedError(
-                f"Armed provider {invocation_carrier.provider!r} exhausted; "
-                "provider authority forbids fallback widening.",
-                attempts=attempts,
-            )
-        if is_pinned_writer:
-            # Hard pin must fail loudly rather than silently falling through
-            # to a different provider (hard rule #8).
-            raise AllProvidersExhaustedError(
-                f"Pinned writer provider {pin_writer!r} exhausted. "
-                "TINYASSETS_PIN_WRITER disables fallback — clear the env var "
-                "to re-enable the default chain."
-            )
-
-        # Chain-drain detection (BUG-029 Part A): when all API providers are
-        # in cooldown and the chain fell through to local-only, emit a
-        # structured warning so operators can diagnose the condition without
-        # reading router logs line-by-line.
-        if self._quota.all_api_providers_in_cooldown(chain):
-            remaining = self._quota.cooldown_remaining_dict(chain)
-            logger.warning(
-                "CHAIN_DRAINED: all API providers in cooldown; routing "
-                "exclusively to local (ollama-local) for up to %ds. "
-                "Per-provider cooldown: %s",
-                max(remaining.values(), default=0),
-                {k: v for k, v in remaining.items() if v > 0},
-            )
-
-        if role == "judge":
-            logger.warning("All judge providers exhausted -- returning degraded response")
-            return DEGRADED_JUDGE_RESPONSE
-
-        # FEAT-006: attach structured diagnostics so get_run.error_detail
-        # can show *why* each provider was skipped without parsing logs.
-        chain_state = build_chain_state(
-            role=role,
-            chain=chain,
-            attempts=attempts,
-            api_key_providers_enabled=api_key_providers_enabled(),
-            pinned_writer=pin_writer if is_pinned_writer else None,
-            allowlist=allowlist,
-        )
-        raise AllProvidersExhaustedError(
-            f"All providers exhausted for role={role}. "
-            "Daemon should retry with backoff.",
-            attempts=attempts,
-            chain_state=chain_state,
-        )
-
-    # ------------------------------------------------------------------
-    # Policy-aware routing (per-node llm_policy override)
-    # ------------------------------------------------------------------
+                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
+                skip_class = "unknown"
+            attempts.append(ProviderAttemptDiagnostic(
+                provider=provider_name,
+                status="failed",
+                skip_class=skip_class,
+                detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+            ))
+            raise self._exhausted(provider_name, attempts) from exc
 
     @staticmethod
-    def _call_meta(resp, attempts: int) -> dict:
-        """Telemetry for one routed call: model identity, latency, attempts.
+    def _exhausted(
+        provider_name: str,
+        attempts: list[ProviderAttemptDiagnostic],
+    ) -> AllProvidersExhaustedError:
+        return AllProvidersExhaustedError(
+            f"Assigned provider {provider_name!r} exhausted; workflow authority "
+            "forbids fallback widening.",
+            attempts=attempts,
+        )
 
-        Persisted onto run receipts (runs.provider_used/model columns and the
-        per-run ``provider_calls`` event) so receipts can answer "which model
-        produced this, how long did it take, after how many tries" — spec
-        §11.3 model-stamp requirement.
-        """
+    @staticmethod
+    def _call_meta(response: ProviderResponse, attempts: int) -> dict[str, object]:
         return {
-            "model": getattr(resp, "model", "") or "",
-            "family": getattr(resp, "family", "") or "",
-            "latency_ms": getattr(resp, "latency_ms", None),
-            "degraded": bool(getattr(resp, "degraded", False)),
+            "model": response.model or "",
+            "family": response.family or "",
+            "latency_ms": response.latency_ms,
+            "degraded": response.degraded,
             "attempts": attempts,
         }
 
@@ -870,174 +351,29 @@ class ProviderRouter:
         *,
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
-    ) -> tuple[str, str, dict]:
-        """Route a call honouring an explicit llm_policy dict.
+    ) -> tuple[str, str, dict[str, object]]:
+        """Apply only non-routing model policy, then use exact authority."""
 
-        Returns ``(response_text, provider_name_used, call_meta)`` where
-        ``call_meta`` is :meth:`_call_meta` telemetry for the winning call.
-
-        Policy resolution order:
-        1. ``preferred`` provider — try first.
-        2. ``fallback_chain`` entries — tried in order after preferred fails;
-           each entry may declare a ``trigger`` that maps to an exception class:
-           "unavailable", "rate_limited", "cost_exceeded", "empty_response".
-           An entry with no trigger fires after any failure.
-        3. ``difficulty_override`` — checked before attempting preferred; if
-           ``difficulty`` matches ``if_difficulty``, the override provider is
-           prepended to the attempt order.
-        4. If policy is None or all policy-derived providers exhaust, falls
-           through to the standard role-based ``call()`` method.
-
-        When ``call()`` is reached it returns a ``ProviderResponse``; this
-        method extracts ``.text`` and returns (text, provider_name, meta). For
-        the policy path we track the name explicitly.
-        """
-        if universe_context is not None:
-            response = await self.call(
-                role,
-                prompt,
-                system,
-                config,
-                operation=operation,
-                universe_context=universe_context,
-            )
-            return response.text, response.provider, self._call_meta(response, attempts=1)
-
-        resolved_config = _resolve_universe_config(universe_context)
-        universe_dir = universe_context.universe_dir if universe_context else None
-        cfg = config or _default_config(resolved_config)
-
-        if not policy:
-            resp = await self.call(
-                role, prompt, system, cfg, universe_context=universe_context,
-            )
-            return resp.text, resp.provider, self._call_meta(resp, attempts=1)
-
-        # Build ordered attempt list from policy
-        attempt_order: list[str] = []
-
-        # difficulty_override check
-        if difficulty:
-            for override in policy.get("difficulty_override", []):
-                if isinstance(override, dict) and override.get("if_difficulty") == difficulty:
-                    use = override.get("use", {})
-                    p = use.get("provider", "") if isinstance(use, dict) else ""
-                    if p:
-                        attempt_order.append(p)
-                        break
-
-        # preferred provider next
-        preferred = policy.get("preferred", {})
-        if isinstance(preferred, dict):
-            prov = preferred.get("provider", "")
-            if prov and prov not in attempt_order:
-                attempt_order.append(prov)
-
-        # fallback_chain entries — all get added; trigger filtering happens below
-        fallback_chain = policy.get("fallback_chain", [])
-        if isinstance(fallback_chain, list):
-            for entry in fallback_chain:
-                if not isinstance(entry, dict):
-                    continue
-                p = entry.get("provider", "")
-                if p and p not in attempt_order:
-                    attempt_order.append(p)
-
-        # Q6.3 — filter policy attempt order by per-universe allowlist.
-        # If the universe disallows a provider the policy named, skip it
-        # rather than attempt and leak. If everything filters out the
-        # method falls through to the role-based ``call()`` below, which
-        # applies the same allowlist and hard-fails.
-        allowlist = _effective_universe_provider_ceiling(
-            universe_context,
-            resolved_config,
-            carrier_armed=False,
-        )
-        if allowlist is not None:
-            filtered_order = self._apply_allowlist(attempt_order, allowlist)
-            if attempt_order and not filtered_order:
-                logger.warning(
-                    "Q6.3 allowlist removes all policy providers (%s) for "
-                    "role=%s; falling through to role chain.",
-                    attempt_order, role,
-                )
-            attempt_order = filtered_order
-
-        auth_filtered_order = self._apply_api_key_provider_policy(attempt_order)
-        if attempt_order and not auth_filtered_order:
-            logger.warning(
-                "Provider auth policy removes all API-key policy providers "
-                "(%s) for role=%s; falling through to role chain.",
-                attempt_order, role,
-            )
-        attempt_order = auth_filtered_order
-
-        # 2026-06-25 loop-wedge: drop dead-login subscription providers; if
-        # that empties the policy order the method falls through to the role
-        # chain below, which re-applies the gate and hard-fails as needed.
-        auth_alive_order = self._apply_auth_health_policy(attempt_order)
-        if attempt_order and not auth_alive_order:
-            logger.warning(
-                "All policy providers have dead subscription login (%s) for "
-                "role=%s; falling through to role chain.",
-                attempt_order, role,
-            )
-        attempt_order = auth_alive_order
-
-        # Try policy-derived providers
-        tried = 0
-        for provider_name in attempt_order:
-            provider = self._providers.get(provider_name)
-            if provider is None:
-                logger.info(
-                    "Policy provider %s not in registry, skipping", provider_name,
-                )
-                continue
-            if not self._quota.available(provider_name):
-                logger.info("Skipping policy provider %s (cooldown)", provider_name)
-                continue
-
-            logger.info(
-                "Trying policy provider %s for role=%s", provider_name, role,
-            )
-            tried += 1
-            try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
-                self._quota.record_success(provider_name)
-                return resp.text, provider_name, self._call_meta(resp, attempts=tried)
-            except ProviderUnavailableError:
-                self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
-                logger.warning(
-                    "Policy provider %s unavailable, cooldown %ds",
-                    provider_name, COOLDOWN_UNAVAILABLE,
-                )
-            except ProviderTimeoutError:
-                self._quota.cooldown(provider_name, COOLDOWN_TIMEOUT)
-                logger.warning(
-                    "Policy provider %s timed out, cooldown %ds",
-                    provider_name, COOLDOWN_TIMEOUT,
-                )
-            except ProviderError as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
-                logger.warning(
-                    "Policy provider %s error, cooldown %ds: %s",
-                    provider_name, COOLDOWN_OTHER, exc,
-                )
-            except Exception:
-                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
-                logger.exception("Unexpected error from policy provider %s", provider_name)
-
-        # All policy providers exhausted — fall through to role-based chain
-        logger.info(
-            "Policy providers exhausted for role=%s; falling through to role chain",
+        del difficulty
+        cfg = config or _default_config(universe_context)
+        if policy:
+            temperature = policy.get("temperature")
+            max_tokens = policy.get("max_tokens")
+            if isinstance(temperature, (int, float)) and not isinstance(
+                temperature, bool
+            ):
+                cfg = replace(cfg, temperature=float(temperature))
+            if isinstance(max_tokens, int) and not isinstance(max_tokens, bool):
+                cfg = replace(cfg, max_tokens=max_tokens)
+        response = await self.call(
             role,
+            prompt,
+            system,
+            cfg,
+            operation=operation,
+            universe_context=universe_context,
         )
-        resp = await self.call(
-            role, prompt, system, cfg, universe_context=universe_context,
-        )
-        return resp.text, resp.provider, self._call_meta(resp, attempts=tried + 1)
+        return response.text, response.provider, self._call_meta(response, 1)
 
     def call_with_policy_sync(
         self,
@@ -1050,47 +386,22 @@ class ProviderRouter:
         *,
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
-    ) -> tuple[str, str, dict]:
-        """Synchronous wrapper for :meth:`call_with_policy`."""
-        cfg = config or _default_config(_resolve_universe_config(universe_context))
-        sync_timeout = cfg.timeout + 30
+    ) -> tuple[str, str, dict[str, object]]:
+        cfg = config or _default_config(universe_context)
 
-        # Capture universe_context in the closure so it survives the hop into
-        # the ThreadPoolExecutor worker thread (no ContextVar — a ContextVar
-        # set here would NOT propagate to the pool's worker thread).
-        def _run() -> tuple[str, str, dict]:
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(
-                    self.call_with_policy(
-                        role, prompt, system, policy, cfg, difficulty,
-                        operation=operation,
-                        universe_context=universe_context,
-                    )
-                )
-            finally:
-                loop.close()
+        def _run():
+            return asyncio.run(self.call_with_policy(
+                role,
+                prompt,
+                system,
+                policy,
+                cfg,
+                difficulty,
+                operation=operation,
+                universe_context=universe_context,
+            ))
 
-        future = self._thread_pool.submit(_run)
-        try:
-            return future.result(timeout=sync_timeout)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                "call_with_policy_sync timed out after %ds for role=%s",
-                sync_timeout, role,
-            )
-            raise ProviderTimeoutError(
-                f"call_with_policy_sync exceeded {sync_timeout}s for role={role}"
-            )
-
-    # ------------------------------------------------------------------
-    # Synchronous wrapper (for use from sync graph nodes)
-    # ------------------------------------------------------------------
-
-    _thread_pool = concurrent.futures.ThreadPoolExecutor(
-        max_workers=_SYNC_CALL_MAX_WORKERS,
-        thread_name_prefix="tinyassets-provider-sync",
-    )
+        return self._wait(_run, cfg.timeout + 30, role)
 
     def call_sync(
         self,
@@ -1102,50 +413,28 @@ class ProviderRouter:
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
-        """Synchronous version of :meth:`call` for use from sync code.
+        cfg = config or _default_config(universe_context)
 
-        Runs the async ``call`` in a dedicated thread with its own event
-        loop, avoiding the "loop already running" problem that blocks
-        ``loop.run_until_complete`` inside LangGraph nodes.
+        def _run():
+            return asyncio.run(self.call(
+                role,
+                prompt,
+                system,
+                cfg,
+                operation=operation,
+                universe_context=universe_context,
+            ))
 
-        ``universe_context`` is captured in the submitted closure so it survives
-        the hop into the ThreadPoolExecutor worker thread — a ContextVar set in
-        the caller's thread would NOT propagate into the pool worker, so the
-        per-universe routing state is threaded EXPLICITLY, not via ContextVar.
-        """
-        cfg = config or _default_config(_resolve_universe_config(universe_context))
-        # Allow the subprocess timeout to fire first (+30s margin for
-        # async overhead, fallback attempts, etc.)
-        sync_timeout = cfg.timeout + 30
+        return self._wait(_run, cfg.timeout + 30, role)
 
-        def _run() -> ProviderResponse:
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(
-                    self.call(
-                        role, prompt, system, cfg,
-                        operation=operation,
-                        universe_context=universe_context,
-                    )
-                )
-            finally:
-                loop.close()
-
-        future = self._thread_pool.submit(_run)
+    def _wait(self, callback, timeout: int, role: str):
+        future = self._thread_pool.submit(callback)
         try:
-            return future.result(timeout=sync_timeout)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                "call_sync timed out after %ds for role=%s",
-                sync_timeout, role,
-            )
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
             raise ProviderTimeoutError(
-                f"call_sync exceeded {sync_timeout}s hard timeout for role={role}"
-            )
-
-    # ------------------------------------------------------------------
-    # Judge ensemble (model family diversity)
-    # ------------------------------------------------------------------
+                f"provider call exceeded {timeout}s for role={role}"
+            ) from exc
 
     async def call_judge_ensemble(
         self,
@@ -1156,104 +445,16 @@ class ProviderRouter:
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> list[ProviderResponse]:
-        """Fan out to ALL available judge providers in parallel.
+        """A workflow may model fan-out; the platform launches one credential."""
 
-        Calls every registered, non-cooldown provider once.  Never
-        calls the same provider twice.  Returns 1-N responses
-        depending on how many providers are healthy.
-        """
-        if universe_context is not None and universe_context.provider_invocation is not None:
-            return [
-                await self.call(
-                    "judge",
-                    prompt,
-                    system,
-                    config,
-                    operation=operation,
-                    universe_context=universe_context,
-                )
-            ]
+        return [await self.call(
+            "judge",
+            prompt,
+            system,
+            config,
+            operation=operation,
+            universe_context=universe_context,
+        )]
 
-        resolved_config = _resolve_universe_config(universe_context)
-        universe_dir = universe_context.universe_dir if universe_context else None
-        cfg = config or _default_config(resolved_config)
 
-        # Q6.3 — filter judge ensemble by per-universe allowlist (privacy
-        # primitive). Empty filter => empty list, matching the existing
-        # "no judges available" contract at L484-486.
-        allowlist = _effective_universe_provider_ceiling(
-            universe_context,
-            resolved_config,
-            carrier_armed=False,
-        )
-        ensemble = self._apply_allowlist(list(_JUDGE_PROVIDERS), allowlist)
-        if allowlist is not None and not ensemble:
-            logger.warning(
-                "Q6.3 allowlist empties judge ensemble: allowed_providers=%s "
-                "intersected with %s yields no judges.",
-                allowlist, _JUDGE_PROVIDERS,
-            )
-        auth_ensemble = self._apply_api_key_provider_policy(ensemble)
-        if ensemble and not auth_ensemble:
-            logger.warning(
-                "Provider auth policy removes all API-key judge providers "
-                "(%s); no judges available without "
-                "TINYASSETS_ALLOW_API_KEY_PROVIDERS=1.",
-                ensemble,
-            )
-        ensemble = auth_ensemble
-
-        # 2026-06-25 loop-wedge: drop judge providers with dead subscription
-        # login (codex is the only subscription judge; the rest probe unknown
-        # and are kept). Empty ensemble returns [] per the contract below.
-        auth_alive_ensemble = self._apply_auth_health_policy(ensemble)
-        if ensemble and not auth_alive_ensemble:
-            logger.warning(
-                "All judge providers have dead subscription login (%s); no "
-                "judges available until credentials are re-seeded.",
-                ensemble,
-            )
-        ensemble = auth_alive_ensemble
-
-        # Find all available judge providers
-        available: list[tuple[str, BaseProvider]] = []
-        for name in ensemble:
-            provider = self._providers.get(name)
-            if provider is None:
-                continue
-            if not self._quota.available(name):
-                logger.debug("Judge provider %s in cooldown, skipping", name)
-                continue
-            available.append((name, provider))
-
-        if not available:
-            logger.warning("No judge providers available")
-            return []
-
-        # Fan out in parallel
-        async def _call_one(
-            name: str, provider: BaseProvider,
-        ) -> ProviderResponse | None:
-            try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
-                self._quota.record_success(name)
-                return resp
-            except ProviderUnavailableError:
-                self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
-            except ProviderTimeoutError:
-                self._quota.cooldown(name, COOLDOWN_TIMEOUT)
-            except Exception:
-                self._quota.cooldown(name, COOLDOWN_OTHER)
-            return None
-
-        tasks = [_call_one(name, prov) for name, prov in available]
-        raw_results = await asyncio.gather(*tasks)
-
-        results = [r for r in raw_results if r is not None]
-        logger.info(
-            "Judge ensemble: %d/%d providers responded",
-            len(results), len(available),
-        )
-        return results
+__all__ = ["ProviderRouter"]

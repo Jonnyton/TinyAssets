@@ -1778,21 +1778,20 @@ def test_no_hardcoded_date_literals_in_this_module() -> None:
     )
 
 
-def test_worker_pump_converges_a_requested_activation_end_to_end(
+def test_daemon_pump_converges_activation_on_assigned_credential(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """The production entry point must activate a prepared automation.
+    """The daemon activates work only through its universe assignment."""
 
-    `test_owner_can_prepare_cloud_activation_from_chatbot_payload` proves the
-    chain works when each step is driven by hand. The cloud worker does not call
-    those steps by hand — it calls `_pump_cloud_automation_triggers`, which does
-    its own daemon selection and runtime registration first. Live 2026-08-05
-    every automation stayed at `activation.state=stopped`, epoch 0, with
-    `runtime_instance_count: 0`, so something in that prelude never completed.
-    """
-    from tinyassets import cloud_worker as cw
+    from types import SimpleNamespace
+
+    from fantasy_daemon import __main__ as daemon_main
     from tinyassets.api import cloud_automations, permissions
+    from tinyassets.daemon_registry import (
+        ensure_daemon_runtime,
+        set_worker_queue_descriptor,
+    )
     from tinyassets.storage.automation_activations import AutomationActivationStore
 
     definition = _seed_setup_authority(tmp_path)
@@ -1800,25 +1799,6 @@ def test_worker_pump_converges_a_requested_activation_end_to_end(
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
     monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
-    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
-    # `_pump_cloud_automation_triggers` WRITES these into os.environ, so any
-    # sibling test that pumped earlier leaks a stale worker/runtime identity in
-    # and the activation is refused with executor_audience_unavailable.
-    for leaked in (
-        "TINYASSETS_AUTOMATION_OWNER_USER_ID",
-        "TINYASSETS_WORKER_ID",
-        "TINYASSETS_RUNTIME_INSTANCE_ID",
-    ):
-        monkeypatch.delenv(leaked, raising=False)
-
-    # CI containers hold no provider subscription, and
-    # `_register_worker_runtime` returns None when
-    # `_subscription_auth_available` is False — so without this the test is
-    # really asserting "does this machine have a Claude/Codex login", which is
-    # why it passed on a dev box and failed on Linux CI. Routing is what is
-    # under test here, not credential presence.
-    monkeypatch.setattr(cw, "_subscription_auth_available", lambda _provider: True)
-
     created = cloud_automations.cloud_automations(
         action="create",
         universe_id="universe_alice",
@@ -1833,68 +1813,71 @@ def test_worker_pump_converges_a_requested_activation_end_to_end(
             },
         },
     )
-    assert created["status"] == "activation_requested"
     automation_id = created["automation"]["automation_id"]
     before = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
     assert before is not None and before.state.value == "stopped"
 
-    # Stage-by-stage so a failure names the exact broken link. The pump
-    # swallows every error into logger.exception and returns 0, so asserting
-    # only on the end state cannot say WHY — and this test passes on Windows
-    # while failing on Linux, which is the platform production runs.
-    from tinyassets.daemon_registry import list_daemons, select_project_loop_daemon
-
-    all_daemons = list_daemons(tmp_path)
-    daemon = select_project_loop_daemon(
+    runtime = ensure_daemon_runtime(
         tmp_path,
+        daemon_id=created["daemon_id"],
         universe_id="universe_alice",
-        owner_user_id="acct_alice",
-    )
-    assert daemon is not None, (
-        "select_project_loop_daemon returned None — the pump would `continue` "
-        f"here. daemons present: {[(d.get('daemon_id'), d.get('has_soul'), d.get('owner_user_id'), (d.get('metadata') or {}).get('universe_id'), (d.get('metadata') or {}).get('project_loop_default')) for d in all_daemons]}"
-    )
-
-    runtime_id = cw._register_worker_runtime(
-        tmp_path / "universe_alice",
-        "codex",
-        owner_user_id="acct_alice",
-        worker_id="worker_cloud_1",
-    )
-    assert runtime_id, (
-        "_register_worker_runtime returned falsy — the pump would `continue` "
-        f"here. daemon={daemon.get('daemon_id')}"
-    )
-
-    appended = cw._pump_cloud_automation_triggers(
-        tmp_path / "universe_alice",
         provider_name="codex",
-        physical_worker_id="worker_cloud_1",
+        model_name="codex",
+        created_by="acct_alice",
+        worker_id="worker-a",
+    )
+    set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=runtime["runtime_instance_id"],
+        descriptor={
+            "queue_protocol_version": 2,
+            "capabilities": ["operator_request_v1"],
+            "worker_id": "worker-a",
+            "runtime_instance_id": runtime["runtime_instance_id"],
+            "boot_id": "boot-assigned-a",
+            "build_sha": "a" * 40,
+            "config_hash": "sha256:" + "b" * 64,
+            "universe_id": "universe_alice",
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=5)
+            ).isoformat(),
+        },
+        expected_worker_id="worker-a",
+    )
+    selected = []
+    monkeypatch.setattr(
+        "tinyassets.assigned_credential_execution.ensure_assigned_daemon_claim_context",
+        lambda base, universe, *, daemon_id: (
+            selected.append((base, universe, daemon_id))
+            or SimpleNamespace(
+                daemon_id=daemon_id,
+                    runtime_instance_id=runtime["runtime_instance_id"],
+                    worker_id="worker-a",
+            )
+        ),
+    )
+
+    appended = daemon_main._pump_assigned_cloud_automation(
+        tmp_path / "universe_alice",
+        created["daemon_id"],
     )
 
     after = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
-    assert appended == 1, (
-        "daemon selection and runtime registration both succeeded, so the "
-        "failure is inside activate_one_requested_cloud_automation; activation "
-        f"stayed {after.state.value if after else 'missing'}"
-    )
+    assert appended == 1
+    assert after is not None and after.state.value == "active"
+    assert selected == [
+        (tmp_path, tmp_path / "universe_alice", created["daemon_id"])
+    ]
 
 
-def test_worker_services_an_automation_outside_its_resolved_universe(
+def test_daemon_pump_holds_when_no_assigned_credential(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """An owner's automation must not depend on which universe the worker picked.
+    """Missing requester-owned authority must not create an executor."""
 
-    `_resolve_universe_path` returns ONE universe per worker process. Production
-    proved the consequence on 2026-08-05: its own deploy diagnostic reported
-    `active_marker=<unset>` and `resolved_universe=/data/concordance`, while the
-    owner's automations sat in `/data/u-01kxm1vszd8hwp7em418asq8h9` — never
-    pumped, never activated, zero terminal receipts, for five hours.
-
-    Here the worker resolves a DIFFERENT universe than the one holding the work.
-    """
-    from tinyassets import cloud_worker as cw
+    from fantasy_daemon import __main__ as daemon_main
+    from tinyassets.assigned_credential_execution import NoRequesterOwnedExecutor
     from tinyassets.api import cloud_automations, permissions
     from tinyassets.storage.automation_activations import AutomationActivationStore
 
@@ -1903,26 +1886,6 @@ def test_worker_services_an_automation_outside_its_resolved_universe(
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "acct_alice")
     monkeypatch.setattr(permissions, "universe_access_allows", lambda _uid, write: True)
-    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
-    # `_pump_cloud_automation_triggers` WRITES these into os.environ, so a
-    # sibling test that pumped earlier leaks a stale worker/runtime identity in
-    # and the activation is refused with executor_audience_unavailable. Pin them
-    # so this test is hermetic regardless of order.
-    for leaked in (
-        "TINYASSETS_AUTOMATION_OWNER_USER_ID",
-        "TINYASSETS_WORKER_ID",
-        "TINYASSETS_RUNTIME_INSTANCE_ID",
-    ):
-        monkeypatch.delenv(leaked, raising=False)
-
-    # CI containers hold no provider subscription, and
-    # `_register_worker_runtime` returns None when
-    # `_subscription_auth_available` is False — so without this the test is
-    # really asserting "does this machine have a Claude/Codex login", which is
-    # why it passed on a dev box and failed on Linux CI. Routing is what is
-    # under test here, not credential presence.
-    monkeypatch.setattr(cw, "_subscription_auth_available", lambda _provider: True)
-
     created = cloud_automations.cloud_automations(
         action="create",
         universe_id="universe_alice",
@@ -1937,32 +1900,23 @@ def test_worker_services_an_automation_outside_its_resolved_universe(
             },
         },
     )
-    assert created["status"] == "activation_requested"
-    automation_id = created["automation"]["automation_id"]
 
-    # The worker resolved some OTHER universe, exactly as production did.
-    resolved_elsewhere = tmp_path / "concordance"
-    resolved_elsewhere.mkdir(parents=True, exist_ok=True)
+    def unavailable(*_args, **_kwargs):
+        raise NoRequesterOwnedExecutor()
 
-    # 1. Routing: the owner's universe must be in the pump set even though the
-    #    worker resolved a different one. Pure function, no process harness.
-    targets = cw._automation_universes(resolved_elsewhere)
-    assert resolved_elsewhere == targets[0], "resolved universe must stay first"
-    assert (tmp_path / "universe_alice") in targets, (
-        "a universe holding a desired-active automation was not in the pump set; "
-        f"targets={[t.name for t in targets]}"
+    monkeypatch.setattr(
+        "tinyassets.assigned_credential_execution.ensure_assigned_daemon_claim_context",
+        unavailable,
     )
-
-    # 2. Servicing: pumping that target converges the activation.
-    for target in targets:
-        cw._pump_cloud_automation_triggers(
-            target,
-            provider_name="codex",
-            physical_worker_id="worker_cloud_1",
+    assert (
+        daemon_main._pump_assigned_cloud_automation(
+            tmp_path / "universe_alice",
+            created["daemon_id"],
         )
-
-    after = AutomationActivationStore(tmp_path).get("universe_alice", automation_id)
-    assert after is not None and after.state.value == "active", (
-        "an automation in a universe the worker did not resolve was never "
-        f"serviced; activation is {after.state.value if after else 'missing'}"
+        == 0
     )
+    activation = AutomationActivationStore(tmp_path).get(
+        "universe_alice",
+        created["automation"]["automation_id"],
+    )
+    assert activation is not None and activation.state.value == "stopped"

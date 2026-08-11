@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from tinyassets import idle_cycle
 from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
 
 # Suppress langchain-core Pydantic V1 deprecation warning on Python 3.14+
@@ -94,12 +93,12 @@ def _first_trace(output: dict[str, Any]) -> dict[str, Any]:
 
 def _build_provider_router() -> ProviderRouter:
     """Instantiate a ProviderRouter with all available providers."""
-    from tinyassets.providers.base import subscription_auth_health
+    # Provider registration is not authority; each run supplies a binding.
 
     # Inject the subscription-login probe so the router skips dead-auth
     # providers in fallback (and fails a dead pinned writer loud) instead of
     # burning failed attempts — 2026-06-25 loop-wedge follow-up.
-    router = ProviderRouter(auth_health=subscription_auth_health)
+    router = ProviderRouter()
 
     # Subprocess providers — skip registration when the binary is absent
     # (cloud hosts). Constructors never raise; binary probe happens here
@@ -202,7 +201,6 @@ def _dispatcher_startup(universe_path: Path) -> None:
         from tinyassets.branch_tasks import (
             garbage_collect,
             reclaim_expired_leases,
-            reclaim_predecessor_tasks,
         )
 
         # Redeploy-churn recovery: a SIGKILLed predecessor of THIS worker_id
@@ -213,9 +211,6 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
         # A runtime identity is optional, but when present it is unique to this
         # daemon process. There is no shared cloud-worker default identity.
-        worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
-        if worker_id:
-            reclaim_predecessor_tasks(universe_path, worker_id=worker_id)
         # reclaim_leaseless=True: startup is the one safe place to also reset
         # running rows that carry no lease (pre-lease-era / corrupt orphans),
         # which the lease-only sweep skips and would otherwise strand forever
@@ -397,6 +392,63 @@ def _run_branch_task_producers_if_enabled(universe_path: Path) -> int:
         return 0
 
 
+def _pump_assigned_cloud_automation(
+    universe_path: Path,
+    daemon_id: str,
+) -> int:
+    """Materialize one due automation through this universe's assignment."""
+
+    try:
+        from tinyassets.assigned_credential_execution import (
+            NoRequesterOwnedExecutor,
+            ensure_assigned_daemon_claim_context,
+        )
+        from tinyassets.background_branch_authority import (
+            BackgroundBranchExecutorAudience,
+            BackgroundBranchExecutorClass,
+        )
+        from tinyassets.cloud_automation_runtime import (
+            activate_one_requested_cloud_automation,
+            produce_one_due_cloud_automation_slice,
+            reconcile_one_terminal_cloud_automation,
+        )
+
+        base = universe_path.parent
+        context = ensure_assigned_daemon_claim_context(
+            base,
+            universe_path,
+            daemon_id=daemon_id,
+        )
+        reconcile_one_terminal_cloud_automation(
+            base,
+            universe_id=universe_path.name,
+        )
+        audience = BackgroundBranchExecutorAudience(
+            executor_class=BackgroundBranchExecutorClass.CLOUD,
+            daemon_id=context.daemon_id,
+            runtime_id=context.runtime_instance_id,
+            worker_id=context.worker_id,
+        )
+        activated = activate_one_requested_cloud_automation(
+            base,
+            universe_id=universe_path.name,
+            audience=audience,
+        )
+        if activated is not None:
+            return 1
+        produced = produce_one_due_cloud_automation_slice(
+            base,
+            universe_id=universe_path.name,
+            audience=audience,
+        )
+        return int(produced is not None)
+    except NoRequesterOwnedExecutor:
+        return 0
+    except Exception:  # noqa: BLE001
+        logger.exception("assigned credential automation pump failed")
+        return 0
+
+
 def _try_dispatcher_pick(
     universe_path: Path,
     daemon_id: str,
@@ -455,23 +507,24 @@ def _try_dispatcher_pick(
         cfg = load_dispatcher_config(universe_path)
         epoch2_adapter = None
         epoch2_context = None
-        worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
-        runtime_instance_id = os.environ.get(
-            "TINYASSETS_RUNTIME_INSTANCE_ID",
-            "",
-        ).strip()
-        if EPOCH2_QUEUE_CONSUMER_READY is True and worker_id and runtime_instance_id:
+        worker_id = ""
+        if EPOCH2_QUEUE_CONSUMER_READY is True:
             from tinyassets.storage import data_dir
 
             canonical_root = data_dir().resolve(strict=False)
             resolved_universe = universe_path.resolve(strict=False)
             if resolved_universe.parent == canonical_root:
-                candidate_adapter = Epoch2BranchTaskAdapter(canonical_root)
-                candidate_context = candidate_adapter.worker_claim_context(
-                    worker_id=worker_id,
-                    runtime_instance_id=runtime_instance_id,
-                    universe_id=resolved_universe.name,
+                from tinyassets.assigned_credential_execution import (
+                    ensure_assigned_daemon_claim_context,
                 )
+
+                candidate_adapter = Epoch2BranchTaskAdapter(canonical_root)
+                candidate_context = ensure_assigned_daemon_claim_context(
+                    canonical_root,
+                    resolved_universe,
+                    daemon_id=daemon_id,
+                )
+                worker_id = candidate_context.worker_id
                 if candidate_context is not None and candidate_context.daemon_id == daemon_id:
                     epoch2_adapter = candidate_adapter
                     epoch2_context = candidate_context
@@ -1534,7 +1587,26 @@ def _try_execute_claimed_branch_task(
                 universe_path,
                 provider_call,
             ) as assigned_provider_call:
-                execution_kwargs["provider_call"] = assigned_provider_call
+                from tinyassets.cloud_automation_continuation import (
+                    prepare_claimed_cloud_provider_call,
+                )
+
+                try:
+                    automation_provider_call = prepare_claimed_cloud_provider_call(
+                        base_path,
+                        claimed_task=claimed_task,
+                        daemon_id=daemon_id,
+                        provider_call=assigned_provider_call,
+                    )
+                except (PermissionError, ValueError) as exc:
+                    return (
+                        False,
+                        "assigned_automation_authority_unavailable",
+                        {"authority_error": str(exc)},
+                    )
+                execution_kwargs["provider_call"] = (
+                    automation_provider_call or assigned_provider_call
+                )
                 if is_epoch2:
                     execution_kwargs["_queue_branch_task_id"] = str(
                         claimed_task.branch_task_id
@@ -2323,6 +2395,7 @@ class DaemonController:
                 loop_daemon_context.get("source", ""),
                 loop_daemon_context.get("has_soul", False),
             )
+            _pump_assigned_cloud_automation(output_dir, daemon_id)
             claimed_task, claimed_inputs = _try_dispatcher_pick(
                 output_dir,
                 daemon_id,
@@ -2452,18 +2525,6 @@ class DaemonController:
             # own stamps never block, so solo tray/droplet cadence is
             # unchanged. The winning slot holds an OS lock for the cycle's
             # lifetime; _cleanup releases it (process death also releases).
-            if claimed_task is None and idle_cycle.single_flight_enabled():
-                slot = idle_cycle.try_acquire_idle_cycle_slot(output_dir)
-                if not slot.acquired:
-                    logger.info(
-                        "idle cycle skipped (single-flight): %s",
-                        slot.reason,
-                    )
-                    self._cleanup()
-                    return
-                self._idle_cycle_slot = slot
-                logger.info("idle cycle slot: %s", slot.reason)
-
             # No-claim slot: nothing pending to drain this cycle. For a
             # soul-declared universe, run its declared loop branch (the driver)
             # via execute_branch instead of the fantasy cycle. Reached only
@@ -3133,11 +3194,6 @@ class DaemonController:
         # Release the idle-cycle single-flight run lock (held for the
         # cycle's lifetime so long cycles exclude other workers; process
         # death would release it too — this handles in-process reuse).
-        slot = getattr(self, "_idle_cycle_slot", None)
-        if slot is not None:
-            self._idle_cycle_slot = None
-            slot.release()
-
         # Final status/progress write so external tools see idle state
         try:
             self._write_status_file()

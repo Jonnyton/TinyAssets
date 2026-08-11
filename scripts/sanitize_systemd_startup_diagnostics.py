@@ -31,10 +31,7 @@ _CANONICAL_CONTAINER_NAMES = (
     "tinyassets-daemon",
     "tinyassets-tunnel",
     "tinyassets-logs",
-    "tinyassets-worker",
-    "tinyassets-worker-codex-2",
-    "tinyassets-worker-claude-1",
-    "tinyassets-worker-claude-2",
+    "tinyassets-slack-agent",
 )
 _CONFLICT_NAME_PATTERN = re.compile(
     r'The container name "([^"\r\n]+)" is already in use by container'

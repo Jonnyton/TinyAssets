@@ -325,16 +325,8 @@ jobs:
         continue-on-error: true
         run: |
           echo "::warning::provider_exhaustion — halting worker + pausing universe"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_PROVIDER'
-          set -euo pipefail
-          docker stop tinyassets-worker 2>&1 || true
-          for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/; do
-            [ -d "$udir" ] && touch "$udir.pause" && echo "paused $udir"
-          done
-          ls -la /var/lib/docker/volumes/tinyassets-data/_data/*/.pause 2>&1
-          REPAIR_PROVIDER
+          echo "affected workflows remain held on their assigned credential"
+          echo "no provider fallback or fleet mutation is permitted"
 
       # Priority=2 page regardless of auto-repair gate — host needs to
       # know even in WARN-only mode so they can act manually. Matches

@@ -12,3 +12,5 @@ services:
     restart: "no"
   logs:
     restart: "no"
+  slack-agent:
+    restart: "no"

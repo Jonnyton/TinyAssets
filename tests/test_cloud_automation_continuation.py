@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import rfc8785
@@ -43,7 +44,7 @@ from tinyassets.cloud_automation_continuation import (
     PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
-    prepare_claimed_cloud_provider_call,
+    prepare_claimed_cloud_provider_call as _prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
 )
 from tinyassets.cloud_automation_control import (
@@ -105,6 +106,38 @@ REQUEST_ID = f"req_{'1' * 32}"
 ADMISSION_ID = f"adm_{'2' * 32}"
 BRANCH_TASK_ID = f"bt2_{'3' * 32}"
 EVENT_ID = f"evt_{'4' * 32}"
+
+
+def prepare_claimed_cloud_provider_call(
+    base_path: str | Path,
+    *,
+    claimed_task,
+    daemon_id: str,
+    provider_call,
+    clock=None,
+):
+    """Exercise continuation authority beneath an explicit assigned credential."""
+
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.call import bind_universe_provider_call
+
+    bound = provider_call
+    if getattr(bound, "universe_context", None) is None:
+        bound = bind_universe_provider_call(
+            provider_call,
+            UniverseContext(
+                universe_dir=Path(base_path) / "universe_alice",
+                assigned_credential=SimpleNamespace(provider="codex"),
+            ),
+            operation="run_graph",
+        )
+    return _prepare_claimed_cloud_provider_call(
+        base_path,
+        claimed_task=claimed_task,
+        daemon_id=daemon_id,
+        provider_call=bound,
+        clock=clock,
+    )
 
 
 def _definition(
@@ -885,7 +918,7 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
                 "operation": kwargs["operation"],
                 "provider": carrier.validate_for_call(
                     role=role,
-                    operation=kwargs["operation"],
+                    operation=carrier.operation,
                 ),
             }
         )
@@ -910,7 +943,7 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
         "third",
         "fourth",
     ]
-    assert all(call["operation"] == "repository_spec_delivery" for call in calls)
+    assert all(call["operation"] == "run_graph" for call in calls)
     assert all(call["provider"] == "codex" for call in calls)
     with pytest.raises(PermissionError, match="provider invocation"):
         authorized_call("over budget", "system")
@@ -1182,7 +1215,7 @@ def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
-        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        carrier.validate_for_call(role=role, operation=carrier.operation)
         return "authorized"
 
     authorized_call = prepare_claimed_cloud_provider_call(
@@ -1247,7 +1280,7 @@ def test_claimed_cloud_task_explicitly_renews_expired_provider_claim(
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
-        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        carrier.validate_for_call(role=role, operation=carrier.operation)
         return "authorized"
 
     authorized_call = prepare_claimed_cloud_provider_call(
@@ -1319,7 +1352,7 @@ def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
         budgets.append((carrier.max_tokens, carrier.max_cost_microunits))
-        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        carrier.validate_for_call(role=role, operation=carrier.operation)
         return "authorized"
 
     authorized_call = prepare_claimed_cloud_provider_call(
@@ -1356,7 +1389,7 @@ def test_restarted_cloud_session_preserves_durable_budget_ordinal(
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
         budgets.append((carrier.max_tokens, carrier.max_cost_microunits))
-        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        carrier.validate_for_call(role=role, operation=carrier.operation)
         return "authorized"
 
     first_session = prepare_claimed_cloud_provider_call(
@@ -1568,7 +1601,7 @@ def test_claimed_cloud_task_governs_policy_provider_call(
                 "config": kwargs["config"],
                 "provider": carrier.validate_for_call(
                     role=role,
-                    operation=kwargs["operation"],
+                    operation=carrier.operation,
                 ),
             }
         )
@@ -1623,7 +1656,7 @@ def test_claimed_cloud_task_accepts_only_binding_declared_roles(
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
-        carrier.validate_for_call(role=role, operation=kwargs["operation"])
+        carrier.validate_for_call(role=role, operation=carrier.operation)
         received.append(role)
         return role
 
@@ -1712,7 +1745,7 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
         carrier = kwargs["universe_context"].provider_invocation
-        invoked.append(carrier.validate_for_call(role=role, operation=kwargs["operation"]))
+        invoked.append(carrier.validate_for_call(role=role, operation=carrier.operation))
         return f"governed: {prompt}"
 
     session = prepare_claimed_cloud_provider_call(

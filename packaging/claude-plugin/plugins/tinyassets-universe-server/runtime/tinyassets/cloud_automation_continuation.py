@@ -2414,8 +2414,7 @@ class _ClaimedCloudProviderSession:
         role: str = _ROLE,
         **kwargs: Any,
     ) -> str:
-        from tinyassets.config import load_universe_config
-        from tinyassets.providers.base import UniverseContext
+        from dataclasses import replace
 
         if role not in self._receipt.allowed_roles:
             raise PermissionError("cloud provider role is outside prepared authority")
@@ -2468,18 +2467,25 @@ class _ClaimedCloudProviderSession:
             except Exception:
                 conn.rollback()
                 raise
-        universe_dir = self._base_path / self._continuation.universe_id
-        universe_config = load_universe_config(universe_dir)
+        bound_context = getattr(self._provider_call, "universe_context", None)
+        raw_provider_call = getattr(self._provider_call, "provider_call", None)
+        bound_operation = getattr(self._provider_call, "operation", None)
+        if (
+            bound_context is None
+            or bound_context.assigned_credential is None
+            or raw_provider_call is None
+            or bound_operation != "run_graph"
+        ):
+            raise PermissionError("automation requires assigned credential authority")
         call_kwargs = dict(kwargs)
         call_kwargs.update(
-            operation=self._OPERATION,
-            universe_context=UniverseContext(
-                universe_dir=universe_dir,
-                config=universe_config,
+            operation=bound_operation,
+            universe_context=replace(
+                bound_context,
                 provider_invocation=carrier,
             ),
         )
-        return self._provider_call(
+        return raw_provider_call(
             prompt,
             system,
             role=role,
@@ -2579,6 +2585,14 @@ def prepare_claimed_cloud_provider_call(
     provider_binding = provider_store.get(continuation.provider_binding_id)
     if provider_binding is None:
         raise PermissionError("cloud provider binding is unavailable")
+    assigned_context = getattr(provider_call, "universe_context", None)
+    assigned = (
+        assigned_context.assigned_credential
+        if assigned_context is not None
+        else None
+    )
+    if assigned is None or provider_binding.provider != assigned.provider:
+        raise PermissionError("automation provider differs from assigned credential")
     from tinyassets.daemon_registry import runtime_matches_worker_provider
 
     if not runtime_matches_worker_provider(

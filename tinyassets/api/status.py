@@ -32,7 +32,6 @@ from tinyassets.api.helpers import (
     _default_universe,
     _universe_dir,
 )
-from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
 _STATUS_SCHEMA_VERSION = 2
 
@@ -418,38 +417,28 @@ def _compute_auto_ship_health(
 # credential (the 2026-06-25 loop-wedge root cause — a worker whose claude-code
 # auth was missing claimed tasks and failed every one for ~3 weeks undetected)
 # is visible in get_status instead of buried in worker logs.
-_SUBSCRIPTION_WRITERS = ("codex", "claude-code")
+def _provider_auth_snapshot(base_path: Path, udir: Path) -> dict[str, Any]:
+    """Return secret-free availability for this universe's assignment."""
 
-
-def _provider_auth_snapshot() -> dict[str, Any]:
-    """Presence-based auth health for the subscription writers + a roll-up.
-
-    Reads the same shared-volume auth paths the workers use (the main daemon
-    and workers share ``/data`` in the cloud deploy), so a writer whose creds
-    are missing surfaces here. ``all_writers_unauthenticated`` is the
-    actionable roll-up: when true the loop cannot produce at all.
-    """
-    from tinyassets.providers.base import subscription_auth_health
-
-    writers: dict[str, Any] = {}
-    known_states: list[str] = []
-    for name in _SUBSCRIPTION_WRITERS:
-        # allow_probe=False: get_status is an MCP request path and must
-        # never block on the codex live-probe subprocess (up to 120s).
-        # Fast paths + cached verdicts only; the worker gate owns probing.
-        health = subscription_auth_health(name, allow_probe=False)
-        status = health["status"]
-        detail = {
-            "ok": "subscription auth available",
-            "not_logged_in": "subscription auth unavailable; reauthentication required",
-        }.get(status, "subscription auth state inconclusive")
-        writers[name] = {"status": status, "detail": detail}
-        if health["status"] in ("ok", "not_logged_in"):
-            known_states.append(health["status"])
-    all_down = bool(known_states) and all(
-        s == "not_logged_in" for s in known_states
+    from tinyassets.assigned_credential_execution import (
+        NO_REQUESTER_OWNED_EXECUTOR,
+        NoRequesterOwnedExecutor,
+        assigned_credential_availability,
     )
-    return {"writers": writers, "all_writers_unauthenticated": all_down}
+
+    try:
+        authority = assigned_credential_availability(base_path, udir)
+    except NoRequesterOwnedExecutor:
+        return {
+            "status": "held",
+            "hold_reason": NO_REQUESTER_OWNED_EXECUTOR,
+        }
+    return {
+        "status": "ready",
+        "provider": authority.provider,
+        "agent_binding_id": authority.agent_binding_id,
+        "binding_revision": authority.binding_revision,
+    }
 
 
 def _compute_supervisor_liveness(
@@ -512,31 +501,16 @@ def _compute_supervisor_liveness(
     # Provider auth health — surfaced before the queue read so a dead-writer
     # roll-up is visible even if the queue read fails. Turns the loop_stalled
     # warning's "provider auth?" suspicion into a concrete signal.
-    out["provider_auth"] = _provider_auth_snapshot()
-    _dead_writers = [
-        name
-        for name, info in out["provider_auth"]["writers"].items()
-        if info["status"] == "not_logged_in"
-    ]
-    if out["provider_auth"]["all_writers_unauthenticated"]:
+    out["assigned_credential"] = _provider_auth_snapshot(
+        Path(udir).parent,
+        Path(udir),
+    )
+    # Compatibility alias for callers that have not renamed the status field.
+    out["provider_auth"] = out["assigned_credential"]
+    if out["assigned_credential"]["status"] == "held":
         out["warnings"].append(
-            "all_writers_unauthenticated: every subscription writer "
-            "(codex, claude-code) is unauthenticated — the loop cannot "
-            "produce. Re-seed provider auth on the worker volume. "
-            "(2026-06-25 loop-wedge root cause; workers now self-quarantine "
-            "rather than claim-and-poison the queue.)"
-        )
-    elif _dead_writers:
-        # Partial outage is the EXACT 2026-06-25 shape (claude dead, codex
-        # alive). Warn even though the loop still produces, so a degraded
-        # fleet is never silent (Hard Rule #8) — the dead workers
-        # self-quarantine and the loop runs at reduced writer capacity.
-        out["warnings"].append(
-            f"writer_unauthenticated: subscription writer(s) "
-            f"{', '.join(_dead_writers)} not logged in — those workers "
-            "self-quarantine (no claim, no poison) and the loop runs at "
-            "reduced writer capacity until re-seeded. (2026-06-25 partial "
-            "loop-wedge signature.)"
+            "no_requester_owned_executor: queued work will hold until the "
+            "universe's assigned credential becomes available."
         )
 
     v1_error = ""
@@ -1040,13 +1014,8 @@ def get_status(universe_id: str = "") -> str:
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
-    import shutil as _shutil
-    api_key_enabled = api_key_providers_enabled()
-    api_key_vars_present = [
-        name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
-    ]
-    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-    codex_auth_file = codex_home / "auth.json"
+    api_key_enabled = False
+    api_key_vars_present: list[str] = []
     # Priority chain mirrors the provider-router's preference order:
     # local/subscription endpoints beat API-key-only providers. Ollama is
     # always-local; codex+claude are subprocess-bound CLIs the daemon can drive;
@@ -1055,30 +1024,8 @@ def get_status(universe_id: str = "") -> str:
     # Claude is "bound" only when its binary AND subscription auth are present —
     # the binary-only check let a dead-auth claude masquerade as bound (the
     # 2026-06-25 blind spot). Codex already gates on auth.json below; mirror it.
-    from tinyassets.providers.base import subscription_auth_health as _auth_health
-    claude_authed = (
-        _shutil.which("claude")
-        and _auth_health("claude-code", allow_probe=False)["status"]
-        != "not_logged_in"
-    )
-    if os.environ.get("OLLAMA_HOST"):
-        endpoint_hint = "ollama"
-    elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
-        endpoint_hint = "anthropic"
-    elif _shutil.which("codex") and codex_auth_file.is_file():
-        endpoint_hint = "codex"
-    elif claude_authed:
-        endpoint_hint = "claude"
-    elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
-        endpoint_hint = "codex"
-    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
-        endpoint_hint = "xai"
-    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
-        endpoint_hint = "gemini"
-    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
-        endpoint_hint = "groq"
-    else:
-        endpoint_hint = "unset"
+    assigned = _provider_auth_snapshot(_base_path(), Path(udir))
+    endpoint_hint = str(assigned.get("provider") or "unset")
 
     tier_routing_policy = {
         "served_llm_type": served_llm_type or "any",
@@ -1342,10 +1289,7 @@ def get_status(universe_id: str = "") -> str:
     # Best-effort — a missing router or quota object yields an empty dict.
     per_provider_cooldown_remaining: dict[str, int] = {}
     try:
-        from tinyassets.providers.router import FALLBACK_CHAINS
-        all_provider_names: list[str] = list(
-            dict.fromkeys(p for chain in FALLBACK_CHAINS.values() for p in chain)
-        )
+        all_provider_names = [endpoint_hint] if endpoint_hint != "unset" else []
         from tinyassets.graph_compiler import _get_shared_router
         router = _get_shared_router()
         if router is not None and hasattr(router, "_quota"):

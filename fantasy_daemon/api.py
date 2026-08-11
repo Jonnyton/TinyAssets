@@ -670,8 +670,6 @@ def health() -> dict[str, Any]:
 
 def _get_provider_health() -> tuple[dict[str, Any], list[str]]:
     """Build provider status info and identify unhealthy roles."""
-    from fantasy_daemon.providers.router import FALLBACK_CHAINS
-
     # Known providers with setup hints
     _SETUP_HINTS: dict[str, str] = {
         "gemini-free": "Needs GEMINI_API_KEY env var",
@@ -695,12 +693,9 @@ def _get_provider_health() -> tuple[dict[str, Any], list[str]]:
 
     # Build per-provider status
     providers_info: dict[str, Any] = {}
-    all_known = set(FALLBACK_CHAINS.get("writer", [])) | set(FALLBACK_CHAINS.get("judge", []))
+    all_known = registered
     for name in sorted(all_known):
-        roles = [
-            role for role, chain in FALLBACK_CHAINS.items()
-            if name in chain
-        ]
+        roles = ["assigned"]
         info: dict[str, Any] = {
             "family": _FAMILIES.get(name, "unknown"),
             "roles": roles,
@@ -723,7 +718,7 @@ def _get_provider_health() -> tuple[dict[str, Any], list[str]]:
 
     # Identify roles with no working provider
     unhealthy: list[str] = []
-    for role, chain in FALLBACK_CHAINS.items():
+    for role, chain in ():
         has_working = any(
             name in registered
             and (router is None or router._quota.cooldown_remaining(name) == 0)

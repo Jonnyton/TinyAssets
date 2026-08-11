@@ -437,20 +437,9 @@ def test_entrypoint_never_seeds_auth_bundle():
     assert "base64 -d" not in text
 
 
-def test_codex_auth_keepalive_exercises_shared_codex_home():
-    text = CODEX_KEEPALIVE.read_text(encoding="utf-8")
-    assert "workflow_dispatch" in text
-    assert "schedule:" in text
-    assert "DO_SSH_KEY" in text
-    assert "docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon codex exec" in text
-
-
-def test_claude_auth_keepalive_exercises_shared_config_dir():
-    text = CLAUDE_KEEPALIVE.read_text(encoding="utf-8")
-    assert "workflow_dispatch" in text
-    assert "schedule:" in text
-    assert "DO_SSH_KEY" in text
-    assert "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude -p" in text
+def test_ambient_host_auth_keepalive_workflows_are_removed():
+    assert not CODEX_KEEPALIVE.exists()
+    assert not CLAUDE_KEEPALIVE.exists()
 
 
 def test_entrypoint_execs_cmd():

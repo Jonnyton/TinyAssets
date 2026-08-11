@@ -1,13 +1,12 @@
 """TinyAssets Server system tray launcher.
 
 Double-click the desktop shortcut -> this script starts:
-  1. One daemon per preferred provider (Author Daemons, LangGraph writing
-     engines) with the writer role pinned via ``--provider <name>``
+  1. One credential-neutral daemon that resolves each universe assignment
   2. MCP TinyAssets Server (Python, port 8001)
   3. Optional local Cloudflare Tunnel for dev-only debugging
 
 A system tray icon shows live status. Hover aggregates active providers.
-Right-click to start/stop per-provider daemons, change defaults, or quit.
+Right-click to restart services, open the connector, or quit.
 """
 
 from __future__ import annotations
@@ -30,8 +29,6 @@ from PIL import Image, ImageDraw, ImageFont
 from pystray import Icon, Menu, MenuItem
 
 from tinyassets.preferences import (
-    ALL_PROVIDERS,
-    LOCAL_PROVIDERS,
     load_preferences,
     save_preferences,
 )
@@ -69,9 +66,6 @@ def _runtime_paths() -> tuple[Path, Path]:
 
 PROJECT_DIR, LOG_DIR = _runtime_paths()
 SINGLETON_LOCK_PATH = LOG_DIR / ".tray.lock"
-
-_LOCAL_PROVIDER_SET = set(LOCAL_PROVIDERS)
-
 
 def _runtime_command(role: str, source_args: list[str]) -> list[str]:
     """Resolve a child command for source Python or a frozen desktop bundle."""
@@ -371,19 +365,11 @@ class UniverseServerManager:
         when another local provider is already running. Subscription providers
         may run multiple same-provider daemons; the tray warns separately.
         """
-        if provider not in ALL_PROVIDERS:
-            return False, f"unknown provider {provider!r}"
         authority_ready, authority_reason = _packaged_authority_state()
         if not authority_ready:
             return False, authority_reason
-        running = self._running_providers()
-        if provider in _LOCAL_PROVIDER_SET:
-            other_local = [p for p in running if p in _LOCAL_PROVIDER_SET]
-            if other_local:
-                return False, (
-                    f"local provider {other_local[0]} already running; "
-                    "only one local daemon at a time"
-                )
+        if self._any_daemon_alive:
+            return False, "daemon already running"
         return True, ""
 
     def start_daemon_for(self, provider: str) -> bool:
@@ -394,18 +380,7 @@ class UniverseServerManager:
             return False
 
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        runtime_key = self._next_daemon_key(provider)
-        try:
-            from tinyassets.daemon_registry import provider_capacity_warning
-
-            warning = provider_capacity_warning(
-                provider,
-                running_count=self._running_provider_counts().get(provider, 0),
-            )
-            if warning:
-                print(f"  [warn] {warning['message']}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [warn] capacity warning unavailable for {provider}: {exc}")
+        runtime_key = "daemon"
 
         log_name = runtime_key.replace("#", ".")
         log_path = LOG_DIR / f"daemon.{log_name}.log"
@@ -420,7 +395,15 @@ class UniverseServerManager:
         # Belt and suspenders: --provider is consumed by argparse and sets
         # TINYASSETS_PIN_WRITER itself, but setting it in the env too means
         # the router pin survives even if the flag parsing changes.
-        env["TINYASSETS_PIN_WRITER"] = provider
+        for name in (
+            "TINYASSETS_PIN_WRITER",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
+            env.pop(name, None)
         env["TINYASSETS_DAEMON_INSTANCE_KEY"] = runtime_key
         # Pin the data root so child's data_dir() resolves to the same
         # absolute path the tray picked. Prevents CWD drift between tray
@@ -436,8 +419,6 @@ class UniverseServerManager:
                         "fantasy_daemon",
                         "--universe",
                         str(universe_path),
-                        "--provider",
-                        provider,
                         "--no-tray",
                     ],
                 ),
@@ -691,56 +672,13 @@ class UniverseServerManager:
     # -- Auto-start -----------------------------------------------------
 
     def _auto_start_providers(self) -> list[str]:
-        """Return providers to auto-start, locals first to respect constraint."""
+        """Return the one credential-neutral daemon when auto-start is on."""
         prefs = load_preferences()
         if not prefs.get("auto_start_default", True):
             return []
-        configured = [
-            p for p in prefs.get("default_providers", [])
-            if p in ALL_PROVIDERS
-        ]
-        # Start local providers first so the "only one local" rule doesn't
-        # silently drop ollama-local when a subscription provider sits
-        # earlier in the list.
-        locals_first = [p for p in configured if p in _LOCAL_PROVIDER_SET]
-        subs = [p for p in configured if p not in _LOCAL_PROVIDER_SET]
-        return locals_first + subs
+        return ["daemon"]
 
     # -- Tray menu ------------------------------------------------------
-
-    def _make_provider_toggle(self, provider: str):
-        """Return a click handler that starts or stops *provider*."""
-        def _handler(icon=None, item=None) -> None:
-            if provider in self._running_providers():
-                self._phase = f"Stopping {provider}..."
-                self._kill_daemon_for(provider)
-            else:
-                self._phase = f"Starting {provider}..."
-                self.start_daemon_for(provider)
-        return _handler
-
-    def _is_running_checker(self, provider: str):
-        def _check(item) -> bool:
-            return provider in self._running_providers()
-        return _check
-
-    def _set_default_provider(self, provider: str):
-        def _handler(icon=None, item=None) -> None:
-            prefs = load_preferences()
-            # Singular default for the radio; keep list schema so future
-            # multi-default UI can extend without a migration.
-            save_preferences({
-                "default_providers": [provider],
-                "auto_start_default": prefs.get("auto_start_default", True),
-            })
-        return _handler
-
-    def _is_default_provider(self, provider: str):
-        def _check(item) -> bool:
-            prefs = load_preferences()
-            defaults = prefs.get("default_providers", [])
-            return bool(defaults) and defaults[0] == provider
-        return _check
 
     def _toggle_auto_start(self, icon=None, item=None) -> None:
         prefs = load_preferences()
@@ -753,24 +691,6 @@ class UniverseServerManager:
         return bool(load_preferences().get("auto_start_default", True))
 
     def _build_menu(self) -> Menu:
-        provider_items = [
-            MenuItem(
-                provider,
-                self._make_provider_toggle(provider),
-                checked=self._is_running_checker(provider),
-            )
-            for provider in ALL_PROVIDERS
-        ]
-        default_items = [
-            MenuItem(
-                provider,
-                self._set_default_provider(provider),
-                checked=self._is_default_provider(provider),
-                radio=True,
-            )
-            for provider in ALL_PROVIDERS
-        ]
-
         return Menu(
             MenuItem(
                 lambda _: self.status_text,
@@ -778,10 +698,8 @@ class UniverseServerManager:
                 enabled=False,
             ),
             Menu.SEPARATOR,
-            MenuItem("Providers", Menu(*provider_items)),
-            MenuItem("Set default provider", Menu(*default_items)),
             MenuItem(
-                "Auto-start default",
+                "Auto-start daemon",
                 self._toggle_auto_start,
                 checked=self._is_auto_start_on,
             ),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,23 @@ def test_non_windows_provider_processes_keep_default_creation_flags(
     monkeypatch.setattr(peer_agent.sys, "platform", "linux")
 
     assert peer_agent.creation_flags() == 0
+
+
+def test_subscription_cli_env_strips_api_keys_without_product_authority(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "C:\\claude-subscription")
+    monkeypatch.setenv("CODEX_HOME", "C:\\codex-subscription")
+
+    env = peer_agent.subscription_cli_env()
+
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["CLAUDE_CONFIG_DIR"] == "C:\\claude-subscription"
+    assert env["CODEX_HOME"] == "C:\\codex-subscription"
+    assert env["PATH"] == os.environ["PATH"]
 
 
 def test_git_common_dir_is_resolved_as_an_absolute_path(tmp_path: Path) -> None:

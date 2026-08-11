@@ -46,8 +46,6 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from codex_review import resolve_codex, to_native_path  # noqa: E402
 
-from tinyassets.providers.base import subprocess_env_for_provider  # noqa: E402
-
 # codex v0.122+ can exit 0 with empty output on auth failure (see
 # workflow/providers/codex_provider.py). Same heuristic here — stderr only,
 # the transcript stdout can carry false-positive substrings ("401" in a git
@@ -58,6 +56,23 @@ _AUTH_PATTERNS = ("401", "unauthorized", "reconnecting", "auth", "login")
 # argv through cmd.exe parsing even with shell=False (BatBadBut class):
 # list2cmdline quoting does NOT protect these, so reject them loudly instead.
 _CMD_METACHARS = frozenset("&|%<>^\"")
+_API_KEY_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "GEMINI_API_KEY",
+    "GROQ_API_KEY",
+    "XAI_API_KEY",
+)
+
+
+def subscription_cli_env() -> dict[str, str]:
+    """Preserve developer CLI subscriptions without product authority."""
+
+    env = os.environ.copy()
+    for name in _API_KEY_ENV_VARS:
+        env.pop(name, None)
+    return env
 
 
 def resolve_claude() -> str:
@@ -279,10 +294,10 @@ def main() -> int:
         return fail("empty prompt", 2)
 
     if args.provider == "claude":
-        env = subprocess_env_for_provider("claude-code")
+        env = subscription_cli_env()
         cmd = build_claude_cmd(args)
     else:
-        env = subprocess_env_for_provider("codex")
+        env = subscription_cli_env()
         if args.system:
             prompt = f"{args.system}\n\n{prompt}"
         if not out_path:

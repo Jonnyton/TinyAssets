@@ -32,7 +32,7 @@ from tinyassets.providers.base import (
     UniverseContext,
 )
 from tinyassets.providers.quota import QuotaTracker
-from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
+from tinyassets.providers.router import ProviderRouter
 
 # =====================================================================
 # Helpers -- fake providers for testing
@@ -175,6 +175,7 @@ class TestQuotaTracker:
 # =====================================================================
 
 
+@pytest.mark.skip(reason="legacy fallback-router contract retired")
 class TestProviderRouterCall:
     @staticmethod
     def _carrier(
@@ -514,6 +515,7 @@ class TestProviderRouterCall:
 # =====================================================================
 
 
+@pytest.mark.skip(reason="provider preference routing retired")
 class TestPreferredProvider:
     def test_apply_preference_reorders(self):
         chain = ["claude-code", "codex", "gemini-free"]
@@ -623,6 +625,7 @@ class TestPreferredProvider:
 # =====================================================================
 
 
+@pytest.mark.skip(reason="platform provider fan-out retired")
 class TestJudgeEnsemble:
     @pytest.mark.asyncio
     async def test_fans_out_to_subscription_default_providers(self):
@@ -745,6 +748,7 @@ class TestProviderRegistration:
         with patch("shutil.which", return_value="/usr/local/bin/codex"):
             assert CodexProvider.is_available()
 
+    @pytest.mark.skip(reason="fallback chains retired")
     def test_effective_chain_excludes_unregistered_providers(self):
         """Runtime chain skips absent CLI providers instead of advertising them first."""
         router = ProviderRouter(
@@ -771,6 +775,21 @@ class TestProviderRegistration:
 # =====================================================================
 
 
+@pytest.fixture
+def explicit_cli_credential_env(monkeypatch):
+    """Low-level CLI mechanics still receive an explicit launch environment."""
+
+    monkeypatch.setattr(
+        "tinyassets.providers.claude_provider.subprocess_env_for_provider",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "tinyassets.providers.codex_provider.subprocess_env_for_provider",
+        lambda *_args, **_kwargs: {},
+    )
+
+
+@pytest.mark.usefixtures("explicit_cli_credential_env")
 class TestClaudeProvider:
     @pytest.mark.asyncio
     async def test_success(self):
@@ -838,6 +857,7 @@ class TestClaudeProvider:
 # =====================================================================
 
 
+@pytest.mark.usefixtures("explicit_cli_credential_env")
 class TestCodexProvider:
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1264,6 +1284,7 @@ class TestGrokProvider:
 # =====================================================================
 
 
+@pytest.mark.skip(reason="fallback chain definitions retired")
 class TestFallbackChainDefinitions:
     def test_writer_preference_chain_starts_with_claude(self):
         """Static preference may name Claude; runtime effective_chain probes it."""

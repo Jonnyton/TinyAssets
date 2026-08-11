@@ -199,6 +199,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
         "daemon",
         "cloudflared",
         "logs",
+        "slack-agent",
     }
     assert all(service.get("restart") == "no" for service in services.values())
 

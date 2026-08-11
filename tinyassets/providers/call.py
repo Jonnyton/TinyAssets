@@ -172,13 +172,12 @@ def _build_fallback_router() -> "Optional[ProviderRouter]":
     bridge.
     """
     try:
-        from tinyassets.providers.base import subscription_auth_health
         from tinyassets.providers.router import ProviderRouter
     except ImportError:
         logger.info("Real ProviderRouter not available; using mock-only provider")
         return None
 
-    router = ProviderRouter(auth_health=subscription_auth_health)
+    router = ProviderRouter()
 
     try:
         from tinyassets.providers.claude_provider import ClaudeProvider

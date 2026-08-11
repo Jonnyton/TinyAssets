@@ -214,7 +214,14 @@ def test_resolver_snapshots_exact_serving_credential_and_cleans_it(
     monkeypatch.setattr(
         execution,
         "current_serving_authority",
-        lambda *_a, **_k: (assignment, SimpleNamespace(), custody),
+        lambda *_a, **_k: (
+            assignment,
+            SimpleNamespace(
+                allowed_operations=("run_graph",),
+                allowed_roles=("writer", "judge", "extract"),
+            ),
+            custody,
+        ),
     )
     monkeypatch.setattr(execution, "snapshot_llm_subscription_credential", lambda **_k: snapshot)
     monkeypatch.setattr(execution, "cleanup_llm_credential_snapshot", cleaned.append)
@@ -263,20 +270,17 @@ def test_refresh_pending_holds_tracks_current_credential_availability(
         ),
     )
 
-    @contextmanager
     def unavailable(*_args, **_kwargs):
         raise execution.NoRequesterOwnedExecutor()
-        yield
 
-    monkeypatch.setattr(execution, "resolve_assigned_credential", unavailable)
+    monkeypatch.setattr(execution, "assigned_credential_availability", unavailable)
     execution.refresh_pending_credential_holds(tmp_path, universe)
     assert read_queue(universe)[0].hold_reason == "no_requester_owned_executor"
 
-    @contextmanager
     def available(*_args, **_kwargs):
-        yield object()
+        return object()
 
-    monkeypatch.setattr(execution, "resolve_assigned_credential", available)
+    monkeypatch.setattr(execution, "assigned_credential_availability", available)
     execution.refresh_pending_credential_holds(tmp_path, universe)
     assert read_queue(universe)[0].hold_reason == ""
 

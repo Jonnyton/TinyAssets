@@ -37,8 +37,10 @@ transforms:
         .role = "daemon"
       } else if .tag == "tinyassets-tunnel" {
         .role = "cloudflared"
-      } else if starts_with!(.tag, "tinyassets-worker") {
-        .role = "worker"
+      } else if .tag == "tinyassets-logs" {
+        .role = "logs"
+      } else if .tag == "tinyassets-slack-agent" {
+        .role = "slack-transport"
       } else {
         .role = "other"
       }

@@ -26,6 +26,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import rfc8785
@@ -1365,11 +1366,11 @@ def test_queue_list_merges_epoch2_without_exposing_request_text(
         encoding="utf-8",
     )
     with_capacity = json.loads(_action_queue_list(universe_id=uid))
-    assert with_capacity["compatible_worker_count"] == 1
-    assert with_capacity["eligible_epoch2_pending_count"] == 1
+    assert with_capacity["compatible_worker_count"] == 0
+    assert with_capacity["eligible_epoch2_pending_count"] == 0
     assert with_capacity["operational_state_counts"][
         "awaiting_compatible_capacity"
-    ] == 0
+    ] == 1
 
     control_runtime_instance(
         base,
@@ -1589,6 +1590,10 @@ def test_queue_list_capacity_is_specific_to_directed_daemon(
 
     base, uid = server_base
     initialize_author_server(base)
+    monkeypatch.setattr(
+        "tinyassets.assigned_credential_execution.assigned_credential_availability",
+        lambda *_args, **_kwargs: SimpleNamespace(provider="codex"),
+    )
     worker_daemon = create_daemon(
         base,
         display_name="Available worker daemon",

@@ -117,10 +117,7 @@ class NodeBidProducer:
         if not bids_root.is_dir():
             return []
 
-        # Which LLM types are we willing to serve?
         served_llm_type = ""
-        if isinstance(config, dict):
-            served_llm_type = str(config.get("served_llm_type", "") or "")
 
         # mtime short-circuit — bust cache if repo_root or served LLM changed.
         try:
@@ -140,12 +137,6 @@ class NodeBidProducer:
                 continue
             # LLM-type filter at producer side — the dispatcher also
             # filters, but doing it here keeps the queue cleaner.
-            if (
-                bid.required_llm_type
-                and served_llm_type
-                and bid.required_llm_type != served_llm_type
-            ):
-                continue
             ok, reason = validate_node_bid_inputs(bid.inputs or {})
             if not ok:
                 logger.warning(

@@ -1075,7 +1075,10 @@ def snapshot_llm_subscription_credential(
     """Copy current credential bytes into one immutable launch directory."""
 
     universe = Path(universe_dir).resolve(strict=True)
-    if custody.universe_id != universe.name or custody.service != "codex":
+    if (
+        custody.universe_id != universe.name
+        or custody.service not in {"codex", "claude"}
+    ):
         raise PermissionError("credential snapshot root is not current")
     record = _usable_subscription_record(universe, custody.service)
     material = _subscription_material(universe, custody.service, record)
@@ -1113,18 +1116,24 @@ def snapshot_llm_subscription_credential(
         _root_identity=root_identity,
     )
     try:
-        auth_file = directory / "auth.json"
         if _plain_snapshot_directory(directory) != directory_identity:
             raise PermissionError("credential snapshot directory identity changed")
-        _write_exclusive_snapshot_file(auth_file, material)
-        config_file = directory / "config.toml"
-        _write_exclusive_snapshot_file(
-            config_file,
-            b'cli_auth_credentials_store = "file"\n',
-        )
+        if custody.service == "codex":
+            material_file = directory / "auth.json"
+            _write_exclusive_snapshot_file(material_file, material)
+            _write_exclusive_snapshot_file(
+                directory / "config.toml",
+                b'cli_auth_credentials_store = "file"\n',
+            )
+        elif _secret_value(record, "oauth_token", "claude_code_oauth_token"):
+            material_file = directory / ".oauth-token"
+            _write_exclusive_snapshot_file(material_file, material)
+        else:
+            material_file = directory / ".credentials.json"
+            _write_exclusive_snapshot_file(material_file, material)
         lock_file = directory / ".lock"
         _write_exclusive_snapshot_file(lock_file, b"")
-        copied_material = _read_credential_material(auth_file)
+        copied_material = _read_credential_material(material_file)
         copied_record_digest = _canonical_digest({
             "material_digest": (
                 "sha256:" + hashlib.sha256(copied_material).hexdigest()

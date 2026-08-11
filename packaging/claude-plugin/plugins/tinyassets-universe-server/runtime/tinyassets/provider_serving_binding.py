@@ -43,8 +43,8 @@ _PROVIDER_SERVICE = {
     "claude-code": "claude",
     "codex": "codex",
 }
-_SERVING_OPERATIONS = ("converse",)
-_SERVING_ROLES = ("writer",)
+_SERVING_OPERATIONS = ("converse", "run_graph")
+_SERVING_ROLES = ("writer", "judge", "extract")
 _MAX_BINDING_INVOCATIONS = 10_000
 _MAX_TOKENS = 32_768
 _MAX_COST_MICROUNITS = 10_000_000
@@ -403,6 +403,8 @@ def _current_serving_authority(
     owner_user_id: str,
     universe_id: str,
     agent: dict[str, object],
+    operation: str = "converse",
+    role: str = "writer",
 ) -> tuple[ProviderAssignment, object, LLMCredentialCustodyReference]:
     """Re-read the complete server-owned serving chain in one SQLite fence."""
 
@@ -431,8 +433,8 @@ def _current_serving_authority(
         owner_user_id=owner_user_id,
         universe_id=universe_id,
         provider=assignment.provider,
-        operation="converse",
-        role="writer",
+        operation=operation,
+        role=role,
     ):
         raise PermissionError("connect your provider before enabling serving")
     custody = current_llm_subscription_custody(

@@ -1096,7 +1096,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
         "has_work": has_work,
         "last_activity_at": last_activity,
         "staleness": staleness,
-        "worker_liveness": _worker_liveness(udir),
+        "assigned_credential": _assigned_credential_liveness(udir),
         "word_count": word_count,
         "word_count_sample": word_count_sample,
         "accept_rate": accept_rate,
@@ -1104,328 +1104,28 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     }
 
 
-_WORKER_SUPERVISOR_FILENAME = ".worker_supervisor.json"
-_WORKER_SUPERVISOR_PREFIX = ".worker_supervisor."
-_WORKER_SUPERVISOR_SUFFIX = ".json"
-_WORKER_QUEUE_DESCRIPTOR_FIELDS = (
-    "queue_protocol_version",
-    "capabilities",
-    "boot_id",
-    "build_sha",
-    "config_hash",
-    "universe_id",
-    "expires_at",
-)
+def _assigned_credential_liveness(udir: Path) -> dict[str, Any]:
+    """Return secret-free assigned execution availability."""
 
+    from tinyassets.assigned_credential_execution import (
+        NO_REQUESTER_OWNED_EXECUTOR,
+        NoRequesterOwnedExecutor,
+        assigned_credential_availability,
+    )
 
-def _worker_id_from_heartbeat_path(path: Path) -> str:
-    name = path.name
-    if (
-        name.startswith(_WORKER_SUPERVISOR_PREFIX)
-        and name.endswith(_WORKER_SUPERVISOR_SUFFIX)
-    ):
-        return name[
-            len(_WORKER_SUPERVISOR_PREFIX):-len(_WORKER_SUPERVISOR_SUFFIX)
-        ]
-    return ""
-
-
-def _read_worker_liveness_entry(
-    beat_path: Path,
-    *,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    worker_id = _worker_id_from_heartbeat_path(beat_path)
     try:
-        beat = json.loads(beat_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):  # noqa: BLE001 — probe, not gate
+        authority = assigned_credential_availability(udir.parent, udir)
+    except NoRequesterOwnedExecutor:
         return {
-            "present": True,
-            "parse_error": True,
-            "worker_id": worker_id,
-            "runtime_instance_id": "",
+            "status": "held",
+            "hold_reason": NO_REQUESTER_OWNED_EXECUTOR,
         }
-
-    worker_id = str(beat.get("worker_id") or worker_id)
-    runtime_instance_id = str(beat.get("runtime_instance_id") or "")
-    try:
-        ts = datetime.strptime(
-            str(beat.get("ts", "")), "%Y-%m-%dT%H:%M:%SZ",
-        ).replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):  # noqa: BLE001 — probe, not gate
-        return {
-            "present": True,
-            "parse_error": True,
-            "worker_id": worker_id,
-            "runtime_instance_id": runtime_instance_id,
-        }
-    observed_at = now or datetime.now(timezone.utc)
-    if observed_at.tzinfo is None:
-        observed_at = observed_at.replace(tzinfo=timezone.utc)
-    age_s = max(
-        0.0,
-        (observed_at.astimezone(timezone.utc) - ts).total_seconds(),
-    )
-    planned_sleep = float(beat.get("planned_sleep_s") or 0.0)
-    allowed = max(300.0, planned_sleep + 120.0)
-    result = {
-        "present": True,
-        "alive": age_s <= allowed,
-        "beat_age_s": round(age_s, 1),
-        "phase": beat.get("phase", ""),
-        "subprocess_alive": bool(beat.get("subprocess_alive", False)),
-        "consec_crashes": beat.get("consec_crashes", 0),
-        "total_spawns": beat.get("total_spawns", 0),
-        "last_exit_rc": beat.get("last_exit_rc"),
-        "worker_id": worker_id,
-        "runtime_instance_id": runtime_instance_id,
+    return {
+        "status": "ready",
+        "provider": authority.provider,
+        "agent_binding_id": authority.agent_binding_id,
+        "binding_revision": authority.binding_revision,
     }
-    for field in _WORKER_QUEUE_DESCRIPTOR_FIELDS:
-        if field in beat:
-            result[field] = beat[field]
-    return result
-
-
-def _worker_liveness(
-    udir: Path,
-    *,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    """Supervisor-heartbeat liveness, distinct from content activity.
-
-    ``last_activity_at`` answers "when did the daemon last DO something"
-    (activity.log / .runtime_status.json mtimes) — it goes stale both
-    when the worker is wedged AND when there is simply nothing to do.
-    This field answers "is the worker process alive right now" from the
-    ``.worker_supervisor.json`` beat the cloud_worker supervisor writes
-    (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
-    canary) use it to page on wedge and stay quiet on idle.
-    """
-    legacy_path = udir / _WORKER_SUPERVISOR_FILENAME
-    worker_paths = sorted(
-        path for path in udir.glob(
-            f"{_WORKER_SUPERVISOR_PREFIX}*{_WORKER_SUPERVISOR_SUFFIX}"
-        )
-        if path.name != _WORKER_SUPERVISOR_FILENAME
-    )
-    if not worker_paths and legacy_path.exists():
-        worker_paths = [legacy_path]
-    if not worker_paths:
-        return {"present": False}
-
-    workers = [
-        _read_worker_liveness_entry(path, now=now)
-        for path in worker_paths
-    ]
-    if legacy_path.exists():
-        summary = _read_worker_liveness_entry(legacy_path, now=now)
-    else:
-        summary = min(
-            workers,
-            key=lambda entry: float(entry.get("beat_age_s", float("inf"))),
-        )
-    out = dict(summary)
-    out["workers"] = workers
-    out["worker_count"] = len(workers)
-    out["runtime_instance_count"] = len({
-        str(worker.get("runtime_instance_id") or "")
-        for worker in workers
-        if worker.get("runtime_instance_id")
-    })
-    return out
-
-
-def _classify_epoch2_workers(
-    udir: Path,
-    *,
-    now: datetime | None = None,
-    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """Return compatible workers plus why every other worker was rejected.
-
-    The accept decision is unchanged; the second element only records which
-    gate turned each worker away. Before this existed, ten live workers could
-    yield ``compatible_worker_count: 0`` with no way to tell which of the
-    admission gates was responsible, and production sat blocked for 22.5h on
-    a cause no read-only surface could name.
-
-    Attribution is first-failure-wins, following the original short-circuit
-    order, so the counts sum to the number of rejected workers.
-    """
-    from tinyassets.branch_tasks_v2 import (
-        WorkerClaimDescriptor,
-        _descriptor_is_live,
-    )
-
-    rejected: dict[str, int] = {}
-    mismatch_fields: set[str] = set()
-
-    def reject(gate: str) -> None:
-        rejected[gate] = rejected.get(gate, 0) + 1
-
-    observed_at = now or datetime.now(timezone.utc)
-    if observed_at.tzinfo is None:
-        observed_at = observed_at.replace(tzinfo=timezone.utc)
-    observed_at = observed_at.astimezone(timezone.utc)
-    runtime_by_id: dict[str, dict[str, Any]] = {}
-    if trusted_descriptors is None:
-        from tinyassets.daemon_registry import list_runtime_instances
-
-        runtimes = list_runtime_instances(
-            udir.parent,
-            universe_id=udir.name,
-        )
-        runtime_by_id = {
-            str(runtime.get("runtime_instance_id") or ""): runtime
-            for runtime in runtimes
-            if runtime.get("status") == "provisioned"
-        }
-        trusted_descriptors = {
-            runtime_id: (
-                runtime.get("metadata", {}).get(
-                    "queue_protocol_descriptor"
-                )
-            )
-            for runtime_id, runtime in runtime_by_id.items()
-        }
-    else:
-        runtime_by_id = {
-            runtime_id: {
-                "runtime_instance_id": runtime_id,
-                "daemon_id": "",
-                "provider_name": "",
-                "model_name": "",
-            }
-            for runtime_id in trusted_descriptors
-        }
-    workers = _worker_liveness(udir, now=observed_at).get("workers", [])
-    compatible: list[dict[str, str]] = []
-    for worker in workers:
-        capabilities = worker.get("capabilities")
-        if not worker.get("alive"):
-            reject("beat_not_alive")
-            continue
-        if not worker.get("subprocess_alive"):
-            reject("subprocess_not_alive")
-            continue
-        if not isinstance(capabilities, (list, tuple, set, frozenset)):
-            reject("capabilities_not_a_collection")
-            continue
-        try:
-            descriptor = WorkerClaimDescriptor(
-                queue_protocol_version=int(
-                    worker.get("queue_protocol_version")
-                ),
-                capabilities=frozenset(str(item) for item in capabilities),
-                worker_id=str(worker.get("worker_id") or ""),
-                runtime_instance_id=str(
-                    worker.get("runtime_instance_id") or ""
-                ),
-                boot_id=str(worker.get("boot_id") or ""),
-                build_sha=str(worker.get("build_sha") or ""),
-                config_hash=str(worker.get("config_hash") or ""),
-                universe_id=str(worker.get("universe_id") or ""),
-                expires_at=str(worker.get("expires_at") or ""),
-            )
-        except (TypeError, ValueError):
-            reject("descriptor_malformed")
-            continue
-        heartbeat_descriptor = {
-            "queue_protocol_version": descriptor.queue_protocol_version,
-            "capabilities": sorted(descriptor.capabilities),
-            "worker_id": descriptor.worker_id,
-            "runtime_instance_id": descriptor.runtime_instance_id,
-            "boot_id": descriptor.boot_id,
-            "build_sha": descriptor.build_sha,
-            "config_hash": descriptor.config_hash,
-            "universe_id": descriptor.universe_id,
-            "expires_at": descriptor.expires_at,
-        }
-        trusted = trusted_descriptors.get(descriptor.runtime_instance_id)
-        runtime = runtime_by_id.get(descriptor.runtime_instance_id)
-        if descriptor.universe_id != udir.name:
-            reject("universe_id_mismatch")
-            continue
-        if runtime is None:
-            reject("no_provisioned_runtime_row")
-            continue
-        if trusted != heartbeat_descriptor:
-            if trusted is None:
-                reject("descriptor_never_published")
-            else:
-                reject("descriptor_not_trusted")
-                # Field NAMES only — never the values, which carry
-                # build/config identity.
-                if isinstance(trusted, dict):
-                    mismatch_fields.update(
-                        key
-                        for key in set(trusted) | set(heartbeat_descriptor)
-                        if trusted.get(key) != heartbeat_descriptor.get(key)
-                    )
-            continue
-        if not _descriptor_is_live(
-            descriptor,
-            transaction_at=observed_at.isoformat(),
-        ):
-            reject("descriptor_lease_not_live")
-            continue
-        compatible.append({
-            "worker_id": descriptor.worker_id,
-            "runtime_instance_id": descriptor.runtime_instance_id,
-            "daemon_id": str(runtime.get("daemon_id") or ""),
-            "provider_name": str(runtime.get("provider_name") or ""),
-            "model_name": str(runtime.get("model_name") or ""),
-        })
-    evidence: dict[str, Any] = {
-        "observed_worker_beats": len(workers),
-        "provisioned_runtime_count": len(runtime_by_id),
-        "rejected": dict(sorted(rejected.items())),
-    }
-    if mismatch_fields:
-        evidence["descriptor_mismatch_fields"] = sorted(mismatch_fields)
-    return (
-        sorted(
-            compatible,
-            key=lambda worker: (
-                worker["worker_id"],
-                worker["runtime_instance_id"],
-            ),
-        ),
-        evidence,
-    )
-
-
-def _compatible_epoch2_workers(
-    udir: Path,
-    *,
-    now: datetime | None = None,
-    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
-) -> list[dict[str, str]]:
-    """Return workers with live, complete, universe-bound v2 evidence."""
-    workers, _ = _classify_epoch2_workers(
-        udir,
-        now=now,
-        trusted_descriptors=trusted_descriptors,
-    )
-    return workers
-
-
-def _compatible_epoch2_worker_ids(
-    udir: Path,
-    *,
-    now: datetime | None = None,
-    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
-) -> list[str]:
-    """Compatibility helper for liveness tests and concise status callers."""
-    try:
-        workers = _compatible_epoch2_workers(
-            udir,
-            now=now,
-            trusted_descriptors=trusted_descriptors,
-        )
-    except Exception:  # noqa: BLE001 — missing trust means no capacity
-        return []
-    return sorted({worker["worker_id"] for worker in workers})
 
 
 def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
@@ -1501,31 +1201,35 @@ def _epoch2_operational_read(
     capacity_error = ""
     consumer_ready = EPOCH2_QUEUE_CONSUMER_READY is True
     capacity_evidence: dict[str, Any] = {}
+    credential_available = False
     if not consumer_ready:
-        workers = []
         capacity_error = "epoch2_consumer_not_ready"
     else:
         try:
-            workers, capacity_evidence = _classify_epoch2_workers(udir)
-        except Exception as exc:  # noqa: BLE001 — surface trust-read failure
-            workers = []
-            capacity_error = str(exc)
+            from tinyassets.assigned_credential_execution import (
+                NoRequesterOwnedExecutor,
+                assigned_credential_availability,
+            )
+
+            authority = assigned_credential_availability(base_path, udir)
+            credential_available = True
+            capacity_evidence = {"assigned_provider": authority.provider}
+        except NoRequesterOwnedExecutor:
+            capacity_evidence = {"hold_reason": "no_requester_owned_executor"}
+        except Exception:  # noqa: BLE001 - preserve queue reads fail-closed
+            capacity_evidence = {"hold_reason": "no_requester_owned_executor"}
+            capacity_error = "assigned_credential_evidence_unavailable"
 
     def capacity_matches(task) -> bool:
-        if (
-            task.required_llm_type
-            and cfg.served_llm_type
-            and task.required_llm_type != cfg.served_llm_type
-        ):
-            return False
         if not prefers_request_type(task.request_type):
             return False
         if task.directed_daemon_id:
-            return any(
-                worker["daemon_id"] == task.directed_daemon_id
-                for worker in workers
+            return bool(
+                credential_available
+                and cfg.active_daemon_id
+                and task.directed_daemon_id == cfg.active_daemon_id
             )
-        return bool(workers)
+        return consumer_ready and credential_available
 
     try:
         result = Epoch2BranchTaskAdapter(
@@ -1545,11 +1249,11 @@ def _epoch2_operational_read(
             summary=_unavailable_epoch2_summary(str(exc)),
             candidates=(),
         )
-    result.summary["compatible_worker_count"] = len(workers)
+    result.summary["compatible_worker_count"] = int(credential_available)
     result.summary["consumer_ready"] = consumer_ready
     result.summary["capacity_evidence_available"] = not capacity_error
     # Name the admission gate when capacity is zero; a bare 0 is unactionable.
-    if capacity_evidence and not workers:
+    if capacity_evidence and not credential_available:
         result.summary["capacity_rejections"] = capacity_evidence
     if capacity_error:
         result.summary["operational_counts_authoritative"] = False
