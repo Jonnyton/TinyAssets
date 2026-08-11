@@ -10,16 +10,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
-import shutil
 import sqlite3
 import stat
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
@@ -488,12 +489,21 @@ class LLMCredentialCustodyReference:
 
 @dataclass(frozen=True, slots=True)
 class LLMCredentialSnapshot:
-    """One launch's sealed credential copy and snapshot-derived custody facts."""
+    """One launch's rotation-stable, sandbox-read-only credential copy.
 
+    This blocks source-rotation races and sandbox-interior writes. It does not
+    defend against same-UID mutation; those processes remain inside the
+    credential-vault trust boundary.
+    """
+
+    # At-rest/operator-blind sealing belongs to credential-vault task 1.8.
     directory: Path = field(repr=False)
     service: str
     generation: int
     reference_digest: str
+    _directory_identity: tuple[int, int] = field(repr=False)
+    _root_directory: Path = field(repr=False)
+    _root_identity: tuple[int, int] = field(repr=False)
 
 
 def _canonical_digest(value: object) -> str:
@@ -865,25 +875,196 @@ def current_llm_subscription_custody(
     )
 
 
+def _is_snapshot_reparse_point(file_stat: os.stat_result) -> bool:
+    if stat.S_ISLNK(file_stat.st_mode):
+        return True
+    attributes = getattr(file_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag)
+
+
+def _snapshot_file_identity(file_stat: os.stat_result) -> tuple[int, int]:
+    device = getattr(file_stat, "st_dev", None)
+    inode = getattr(file_stat, "st_ino", None)
+    if type(device) is not int or type(inode) is not int or inode == 0:
+        raise PermissionError("credential snapshot filesystem identity is unavailable")
+    return device, inode
+
+
+def _plain_snapshot_directory(path: Path) -> tuple[int, int]:
+    try:
+        file_stat = path.lstat()
+        resolved = Path(os.path.realpath(path))
+        resolved_stat = resolved.stat()
+    except OSError as exc:
+        raise PermissionError("credential snapshot directory is unavailable") from exc
+    if (
+        _is_snapshot_reparse_point(file_stat)
+        or not stat.S_ISDIR(file_stat.st_mode)
+        or os.path.normcase(os.path.abspath(path))
+        != os.path.normcase(os.path.abspath(resolved))
+    ):
+        raise PermissionError("credential snapshot directory must be a plain directory")
+    identity = _snapshot_file_identity(file_stat)
+    if _snapshot_file_identity(resolved_stat) != identity:
+        raise PermissionError("credential snapshot directory identity is unstable")
+    get_effective_uid = getattr(os, "geteuid", None)
+    if callable(get_effective_uid) and file_stat.st_uid != get_effective_uid():
+        raise PermissionError("credential snapshot directory has another owner")
+    return identity
+
+
+def _prepare_snapshot_root(universe: Path) -> tuple[Path, tuple[int, int]]:
+    runtime_dir = universe / ".runtime"
+    snapshot_root = runtime_dir / "provider-launch-credentials"
+    for directory in (runtime_dir, snapshot_root):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise PermissionError("credential snapshot directory cannot be created") from exc
+        identity = _plain_snapshot_directory(directory)
+        _chmod_best_effort(directory, 0o700)
+        if _plain_snapshot_directory(directory) != identity:
+            raise PermissionError("credential snapshot directory identity changed")
+    return snapshot_root, _plain_snapshot_directory(snapshot_root)
+
+
+def _create_snapshot_directory(
+    snapshot_root: Path,
+    root_identity: tuple[int, int],
+) -> tuple[Path, tuple[int, int]]:
+    for _attempt in range(16):
+        if _plain_snapshot_directory(snapshot_root) != root_identity:
+            raise PermissionError("credential snapshot root identity changed")
+        directory = snapshot_root / f"codex-{secrets.token_hex(16)}"
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise PermissionError("credential snapshot directory cannot be created") from exc
+        identity = _plain_snapshot_directory(directory)
+        if _plain_snapshot_directory(snapshot_root) != root_identity:
+            raise PermissionError("credential snapshot root identity changed")
+        return directory, identity
+    raise PermissionError("credential snapshot directory name cannot be reserved")
+
+
+def _write_exclusive_snapshot_file(path: Path, contents: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise PermissionError("credential snapshot file cannot be created") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            _is_snapshot_reparse_point(current)
+            or not stat.S_ISREG(current.st_mode)
+            or getattr(current, "st_nlink", 1) != 1
+            or _snapshot_file_identity(opened) != _snapshot_file_identity(current)
+        ):
+            raise PermissionError("credential snapshot file identity is unstable")
+        remaining = memoryview(contents)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("credential snapshot file write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+    _chmod_best_effort(path, 0o400)
+
+
+def _remove_snapshot_tree(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> None:
+    file_stat = path.lstat()
+    if expected_identity is not None and _snapshot_file_identity(file_stat) != expected_identity:
+        raise PermissionError("credential snapshot path identity changed")
+    if _is_snapshot_reparse_point(file_stat):
+        if stat.S_ISDIR(file_stat.st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
+        return
+    if stat.S_ISDIR(file_stat.st_mode):
+        with os.scandir(path) as entries:
+            children = [Path(entry.path) for entry in entries]
+        for child in children:
+            _remove_snapshot_tree(child)
+        _chmod_best_effort(path, 0o700)
+        path.rmdir()
+        return
+    _chmod_best_effort(path, 0o600)
+    path.unlink()
+
+
+def _locate_tracked_snapshot(snapshot: LLMCredentialSnapshot) -> Path | None:
+    try:
+        current = snapshot.directory.lstat()
+    except FileNotFoundError:
+        current = None
+    except OSError:
+        current = None
+    if (
+        current is not None
+        and not _is_snapshot_reparse_point(current)
+        and stat.S_ISDIR(current.st_mode)
+        and _snapshot_file_identity(current) == snapshot._directory_identity
+    ):
+        return snapshot.directory
+
+    logger.warning(
+        "credential snapshot path identity changed; locating tracked directory"
+    )
+    try:
+        if (
+            _plain_snapshot_directory(snapshot._root_directory)
+            != snapshot._root_identity
+        ):
+            return None
+        with os.scandir(snapshot._root_directory) as entries:
+            for entry in entries:
+                try:
+                    entry_stat = Path(entry.path).lstat()
+                    identity = _snapshot_file_identity(entry_stat)
+                except (OSError, PermissionError):
+                    continue
+                if identity != snapshot._directory_identity:
+                    continue
+                if (
+                    _is_snapshot_reparse_point(entry_stat)
+                    or not stat.S_ISDIR(entry_stat.st_mode)
+                ):
+                    return None
+                return Path(entry.path)
+    except (OSError, PermissionError):
+        return None
+    return None
+
+
 def cleanup_llm_credential_snapshot(snapshot: LLMCredentialSnapshot | None) -> None:
-    """Best-effort removal for a per-launch credential snapshot; never raise."""
+    """Best-effort identity-anchored snapshot removal; never raise."""
 
     if snapshot is None:
         return
     try:
-        if snapshot.directory.exists():
-            for path in sorted(snapshot.directory.rglob("*"), reverse=True):
-                try:
-                    path.chmod(0o700 if path.is_dir() else 0o600)
-                except OSError:
-                    pass
-            try:
-                snapshot.directory.chmod(0o700)
-            except OSError:
-                pass
-            shutil.rmtree(snapshot.directory)
+        tracked_directory = _locate_tracked_snapshot(snapshot)
+        if tracked_directory is not None:
+            _remove_snapshot_tree(
+                tracked_directory,
+                expected_identity=snapshot._directory_identity,
+            )
     except Exception:  # noqa: BLE001 - cleanup must never mask launch outcome
-        pass
+        logger.warning("credential snapshot cleanup could not remove tracked directory")
 
 
 def snapshot_llm_subscription_credential(
@@ -917,29 +1098,32 @@ def snapshot_llm_subscription_credential(
     ):
         raise PermissionError("credential changed before launch snapshot")
 
-    snapshot_root = universe / ".runtime" / "provider-launch-credentials"
-    snapshot_root.mkdir(parents=True, exist_ok=True)
-    _chmod_best_effort(snapshot_root, 0o700)
-    directory = Path(tempfile.mkdtemp(prefix="codex-", dir=snapshot_root))
+    snapshot_root, root_identity = _prepare_snapshot_root(universe)
+    directory, directory_identity = _create_snapshot_directory(
+        snapshot_root,
+        root_identity,
+    )
     snapshot = LLMCredentialSnapshot(
         directory=directory,
         service=custody.service,
         generation=custody.generation,
         reference_digest=snapshot_reference_digest,
+        _directory_identity=directory_identity,
+        _root_directory=snapshot_root,
+        _root_identity=root_identity,
     )
     try:
         auth_file = directory / "auth.json"
-        auth_file.write_bytes(material)
-        _chmod_best_effort(auth_file, 0o400)
+        if _plain_snapshot_directory(directory) != directory_identity:
+            raise PermissionError("credential snapshot directory identity changed")
+        _write_exclusive_snapshot_file(auth_file, material)
         config_file = directory / "config.toml"
-        config_file.write_text(
-            'cli_auth_credentials_store = "file"\n',
-            encoding="utf-8",
+        _write_exclusive_snapshot_file(
+            config_file,
+            b'cli_auth_credentials_store = "file"\n',
         )
-        _chmod_best_effort(config_file, 0o400)
         lock_file = directory / ".lock"
-        lock_file.write_bytes(b"")
-        _chmod_best_effort(lock_file, 0o400)
+        _write_exclusive_snapshot_file(lock_file, b"")
         copied_material = _read_credential_material(auth_file)
         copied_record_digest = _canonical_digest({
             "material_digest": (
@@ -957,7 +1141,7 @@ def snapshot_llm_subscription_credential(
         )
         if copied_reference_digest != custody.reference_digest:
             raise PermissionError("credential snapshot custody digest disagrees")
-        _chmod_best_effort(directory, 0o500)
+        _chmod_best_effort(directory, 0o700)
         return snapshot
     except BaseException:
         cleanup_llm_credential_snapshot(snapshot)

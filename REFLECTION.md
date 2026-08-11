@@ -1561,3 +1561,12 @@ fresh-host rollback edges found later.
 - **What I would do differently:** make the first real-adapter test spawn an
   on-disk wrapper target and inspect the exact mount graph; mocking subprocess
   creation allowed both a missing `/opt` tree and a vacuous bypass assertion.
+
+## 2026-08-10 - BYO-LLM slice 1 credential snapshot fix round 3
+
+- **What surprised me:** Windows `DirEntry.stat()` returned zero device/inode
+  values while `Path.lstat()` preserved the volume/file-index across rename.
+- **Pattern worth capturing:** temporary-secret cleanup must track filesystem
+  identity, revalidate names, and search only a validated immediate parent.
+- **What I would do differently:** start snapshot work with root-alias and
+  renamed-decoy mutation tests before describing any copy as sealed.
