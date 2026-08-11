@@ -1089,10 +1089,14 @@ def test_held_payload_does_not_invoke_a_second_provider_call(
     data_dir, monkeypatch
 ):
     """The held path is deterministic — it never retries onto another engine."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.universe_server import converse
 
     _login("founder-1")
-    called = _engine_raises(monkeypatch, _exhausted())
+    called = _engine_raises(
+        monkeypatch,
+        ProviderAuthorityHeldError("Connect your provider before running this universe."),
+    )
 
     json.loads(converse(message="Hello"))
 

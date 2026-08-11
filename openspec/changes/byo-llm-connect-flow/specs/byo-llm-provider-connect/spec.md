@@ -5,11 +5,12 @@
 ### Requirement: Vault custody issues the serving credential reference
 
 The credential-vault subsystem SHALL adopt exactly one usable universe-scoped
-`llm_subscription` record for the authenticated binding creator and SHALL issue
-an opaque credential reference with a monotonic generation and server-derived
-digest. Provider-binding, API, and router code SHALL NOT store, return, or
-accept caller-asserted credential material, credential identifiers,
-generations, or ownership.
+`llm_subscription` record only when the authenticated caller matches the
+server-recorded principal that deposited or connected that credential. It
+SHALL issue an opaque reference with a monotonic generation and a digest bound
+to both the vault record and actual credential material. Provider-binding,
+API, and router code SHALL NOT store, return, or accept caller-asserted
+credential material, credential identifiers, generations, or ownership.
 
 #### Scenario: Existing Codex subscription is adopted
 
@@ -19,10 +20,18 @@ generations, or ownership.
   to that owner, universe, service, current record digest, and generation
 - **AND** no secret or credential-reference digest is returned by the operation
 
+#### Scenario: ACL collaborator owns the agent but not the credential
+
+- **WHEN** a write-ACL collaborator creates an agent in another principal's
+  universe and attempts to bind that principal's deposited credential
+- **THEN** custody adoption and provider-authority minting are denied
+- **AND** ACL permission or payload fields cannot substitute for depositor ownership
+
 #### Scenario: Custody evidence is not usable
 
 - **WHEN** the matching vault record is missing, duplicated, unreadable,
-  path-escaping, symlinked, auth-unusable, or changes after adoption
+  path-escaping, symlinked, auth-unusable, ownerless, owned by another
+  principal, or its path-backed credential bytes change after adoption
 - **THEN** the operation or served call holds before provider access
 
 ### Requirement: Serving-provider bind is one atomic server-derived operation

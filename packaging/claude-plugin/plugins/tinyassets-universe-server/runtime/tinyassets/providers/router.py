@@ -357,13 +357,13 @@ class ProviderRouter:
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
 
-        if operation == "converse":
+        if universe_context is not None and universe_context.provider_invocation is None:
             from tinyassets.provider_assignment import authorize_served_provider_call
 
             if (
-                universe_context is None
-                or universe_context.universe_dir is None
+                universe_context.universe_dir is None
                 or universe_context.provider_request is None
+                or not operation
             ):
                 raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
             universe_dir = universe_context.universe_dir
@@ -621,9 +621,15 @@ class ProviderRouter:
 
             logger.info("Trying provider %s for role=%s", provider_name, role)
             try:
+                budget_reservation = None
                 if served_authority is not None:
                     from tinyassets.auth.middleware import (
                         consume_provider_request_invocation,
+                    )
+                    from tinyassets.provider_assignment import (
+                        abandon_served_provider_budget,
+                        finalize_served_provider_budget,
+                        reserve_served_provider_budget,
                     )
 
                     try:
@@ -635,9 +641,43 @@ class ProviderRouter:
                         raise ProviderAuthorityHeldError(
                             _CONNECT_PROVIDER_MESSAGE
                         ) from exc
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
+                    estimated_input_tokens = max(
+                        1,
+                        len(
+                            (f"{system}\n\n{prompt}" if system else prompt).encode(
+                                "utf-8"
+                            )
+                        ),
+                    )
+                    budget_reservation = reserve_served_provider_budget(
+                        universe_dir.parent,
+                        universe_dir=universe_dir,
+                        authority=served_authority,
+                        requested_output_tokens=cfg.max_tokens,
+                        estimated_input_tokens=estimated_input_tokens,
+                    )
+                    cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
+                try:
+                    resp = await provider.complete(
+                        prompt, system, cfg, universe_dir=universe_dir,
+                    )
+                except BaseException:
+                    if budget_reservation is not None:
+                        abandon_served_provider_budget(
+                            universe_dir.parent,
+                            budget_reservation,
+                        )
+                    raise
+                if budget_reservation is not None:
+                    finalize_served_provider_budget(
+                        universe_dir.parent,
+                        authority=served_authority,
+                        reservation=budget_reservation,
+                        input_tokens=resp.input_tokens,
+                        output_tokens=resp.output_tokens,
+                        cost_microunits=resp.cost_microunits,
+                        fallback_output=resp.text,
+                    )
                 self._quota.record_success(provider_name)
             except ProviderAuthorityHeldError:
                 raise
@@ -823,7 +863,7 @@ class ProviderRouter:
         method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
-        if operation == "converse":
+        if universe_context is not None:
             response = await self.call(
                 role,
                 prompt,
@@ -833,16 +873,6 @@ class ProviderRouter:
                 universe_context=universe_context,
             )
             return response.text, response.provider, self._call_meta(response, attempts=1)
-        if universe_context is not None and universe_context.provider_invocation is not None:
-            resp = await self.call(
-                role,
-                prompt,
-                system,
-                config,
-                operation=operation,
-                universe_context=universe_context,
-            )
-            return resp.text, resp.provider, self._call_meta(resp, attempts=1)
 
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None

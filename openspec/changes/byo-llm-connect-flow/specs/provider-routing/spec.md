@@ -4,14 +4,17 @@
 
 ### Requirement: Served turns use only fresh universe-owned provider authority
 
-For operation `converse`, the router SHALL fail closed unless the explicitly
-carried current-request capability, selected agent binding and revision,
+Every universe-scoped provider call SHALL pass served-authority validation;
+universe configuration and process configuration are projections, never
+authority. A `converse` call is eligible only when the explicitly carried
+current-request capability, selected agent binding and revision,
 requester-local assignment, active `ProviderWorkBinding`, and current opaque
 vault custody reference all agree on the authenticated founder, universe,
 provider, generations, digests, operation, role, expiry, and budgets. The
 authorized chain SHALL contain exactly that provider and SHALL never widen to
 an ambient host credential, runtime preference, default chain, or another
-universe's binding.
+universe's binding. Other universe-scoped operations SHALL hold until an exact
+server authority for that operation exists.
 
 #### Scenario: Exact served authority is current
 
@@ -28,6 +31,13 @@ universe's binding.
 - **THEN** the router raises the typed provider-authority hold with
   connect-provider guidance before provider or credential access
 - **AND** no ambient provider is attempted
+
+#### Scenario: Configuration names a provider without live authority
+
+- **WHEN** a universe-scoped call, including `run_graph`, has provider
+  preferences or an allowlist but no matching live server-issued authority
+- **THEN** the call holds before provider access
+- **AND** configuration alone cannot select or invoke a provider
 
 #### Scenario: Credential rotates after request selection
 
@@ -63,7 +73,7 @@ class with its exact app-ingress mechanism and routed agent revision.
 
 ### Requirement: Assignment readers and writers are requester-local fenced
 
-Provider launch SHALL hold a shared canonical-universe admission fence from
+Provider launch SHALL hold a cross-process shared canonical-universe admission fence from
 fresh validation through provider completion. Assignment publication,
 credential-vault replacement, provider-reference changes, and serving-state
 changes SHALL use the exclusive side of the same non-reentrant fence. A writer
@@ -76,3 +86,33 @@ fail loudly.
   while a served call holds the shared fence
 - **THEN** the writer waits until the call releases it
 - **AND** no call observes a mixed assignment/custody generation
+
+### Requirement: Served-call budgets are durable launch authority
+
+Immediately before provider launch, the router SHALL atomically revalidate the
+assignment and credential generation and reserve invocation, token, and cost
+budget in the authority database. Concurrent reservations, completed usage,
+and indeterminate failures SHALL count against the exact binding generation.
+After completion, actual adapter usage SHALL be recorded; an over-ceiling result
+SHALL be withheld and future calls SHALL remain held.
+
+#### Scenario: Provider exceeds a reserved ceiling
+
+- **WHEN** actual token or cost usage exceeds the durable reservation
+- **THEN** the result is withheld and the reservation is marked exceeded
+- **AND** no later call can reuse the consumed budget
+
+### Requirement: Bindable Codex serving runs in an OS sandbox
+
+A served Codex adapter call SHALL execute under an external OS sandbox that
+read-only mounts the selected universe, exposes only its contained Codex auth
+home, disables Codex shell execution and user/project rules, and emits
+machine-readable usage accounting. If the sandbox or accounting output is
+unavailable, the adapter SHALL fail closed before returning a reply.
+
+#### Scenario: Sandboxed Codex turn completes
+
+- **WHEN** a live Codex serving authority reaches the real adapter
+- **THEN** Codex runs inside the OS sandbox and returns its reply plus token
+  accounting
+- **AND** no unconfined fallback launch is attempted

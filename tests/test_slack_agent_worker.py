@@ -82,6 +82,8 @@ def test_server_serving_state_enrolls_and_withdraws_a_universe(tmp_path, monkeyp
             "service": "codex",
             "auth_json_b64": "e30=",
         }],
+        owner_user_id="owner-dynamic",
+        universe_id="u-dynamic",
     )
     definition = publish_definition(
         tmp_path,

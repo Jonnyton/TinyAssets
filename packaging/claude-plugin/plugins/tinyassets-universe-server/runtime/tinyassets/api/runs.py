@@ -62,7 +62,11 @@ def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
         # A legacy/unowned run has no requester authority. Keep it explicit so
         # the router raises ProviderAuthorityHeldError instead of consulting
         # the process-global provider selection.
-        return bind_universe_provider_call(provider_call, UniverseContext())
+        return bind_universe_provider_call(
+            provider_call,
+            UniverseContext(),
+            operation="run_graph",
+        )
     universe_dir = _universe_dir(uid)
     return bind_universe_provider_call(
         provider_call,
@@ -70,6 +74,7 @@ def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
             universe_dir=universe_dir,
             config=load_universe_config(universe_dir),
         ),
+        operation="run_graph",
     )
 
 
@@ -201,7 +206,7 @@ _EMPTY_LLM_RESPONSE_ACTION = (
 
 
 # Phase 3: Graph Runner — execute a BranchDefinition
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 # The runner compiles a validated branch into a LangGraph StateGraph via
 # `tinyassets.graph_compiler.compile_branch`, runs it synchronously against
 # user-supplied inputs, and persists run metadata + per-node events in
@@ -1597,9 +1602,9 @@ def _action_run_routing_evidence(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 # get_memory_scope_status — self-auditing primitive §4.1
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ---------------------------------------------------------------------------
 
 
 def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:

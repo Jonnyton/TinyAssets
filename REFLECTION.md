@@ -1538,3 +1538,14 @@ fresh-host rollback edges found later.
 - **What I would do differently:** start the first RED suite with both lexical
   and resolved path containment, plus registry-lifetime assertions for every
   ephemeral capability.
+
+## 2026-08-10 - BYO-LLM slice 1 adversarial fix round
+
+- **What surprised me:** config-only routing and recording adapters jointly hid
+  that the production path was both unauthorized and unable to launch.
+- **Pattern worth capturing:** security acceptance needs a real adapter path,
+  cross-process exclusion, material-bound custody, and mutation proof at every
+  authority seam; a mocked router alone is insufficient.
+- **What I would do differently:** run the ambient-authority and real-adapter
+  probes before expanding happy-path coverage, then run the broad graph callers
+  as soon as universe routing becomes fail-closed.

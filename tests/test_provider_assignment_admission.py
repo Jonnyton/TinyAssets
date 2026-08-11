@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import multiprocessing
+import queue
 import threading
 
 import pytest
+
+
+def _enter_exclusive_in_child(universe: str, events) -> None:
+    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+
+    events.put("attempting")
+    with ProviderAssignmentAdmission().exclusive(universe):
+        events.put("entered")
 
 
 def test_shared_launch_fence_blocks_assignment_writer_until_release(tmp_path):
@@ -41,3 +51,25 @@ def test_assignment_admission_refuses_reentrant_and_reverse_order(tmp_path):
         with pytest.raises(RuntimeError, match="not reentrant"):
             with admission.exclusive(universe):
                 pass
+
+
+def test_shared_launch_fence_blocks_writer_in_another_process(tmp_path):
+    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+
+    universe = tmp_path / "u-fenced"
+    universe.mkdir()
+    context = multiprocessing.get_context("spawn")
+    events = context.Queue()
+    process = context.Process(
+        target=_enter_exclusive_in_child,
+        args=(str(universe), events),
+    )
+    admission = ProviderAssignmentAdmission()
+    with admission.shared(universe):
+        process.start()
+        assert events.get(timeout=5) == "attempting"
+        with pytest.raises(queue.Empty):
+            events.get(timeout=0.25)
+    assert events.get(timeout=5) == "entered"
+    process.join(timeout=5)
+    assert process.exitcode == 0

@@ -19,7 +19,7 @@ recall+reply proof completes once slice 1 lands.
 - [ ] 1.4 Reset the drift left by the 2026-08-10 live diagnosis:
       `agent_binding_01kz0k6mwe61a0ph60a2hzp01x` points at the GitHub grant
       `pwb_fbddd0e8…` (grants no authority); repoint at its real minted binding.
-- [ ] 1.5 Tests: minting is requester-owned + rejects non-chat/completion scopes;
+- [x] 1.5 Tests: minting is requester-owned + rejects non-chat/completion scopes;
       wiring rejects mis-scoped refs; a served turn resolves the universe's own
       binding and never an ambient host credential. Mirror parity rebuilt.
 - [ ] 1.6 Live proof: u-tiny/Demo App serves a real Slack reply; the durable-memory

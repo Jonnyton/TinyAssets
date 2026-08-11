@@ -40,6 +40,7 @@ class TestGeminiGroqRegistration:
     ):
         pytest.importorskip("google.genai")
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-gemini")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
 
         stub = _reload_stub()
 
@@ -51,6 +52,7 @@ class TestGeminiGroqRegistration:
     ):
         pytest.importorskip("groq")
         monkeypatch.setenv("GROQ_API_KEY", "test-key-groq")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
 
         stub = _reload_stub()
 

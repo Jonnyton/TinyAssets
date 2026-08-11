@@ -1,19 +1,8 @@
-"""Per-universe engine resolution via an EXPLICIT ``universe_context`` argument.
+"""Universe contexts carry scope, but never mint provider authority.
 
-This is the router/provider/vault-layer proof for option (b): a single daemon
-process serving interleaved calls for two different universes must resolve each
-call's engine preference (``preferred_writer``) AND credential-vault auth
-(``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``) from the ``universe_context`` threaded
-on the call stack — NOT from the process-global ``runtime.universe_config`` /
-``TINYASSETS_UNIVERSE``.
-
-The globals are deliberately pinned to universe A for the whole test. Before the
-change the router has no ``universe_context`` parameter and every call bleeds to
-A's global (A's preferred writer + A's vault auth). After the change, B-context
-calls must be served by B's preferred writer with B's vault auth, even while the
-globals still point at A and even though the sync wrappers hop through a
-ThreadPoolExecutor (the context must survive the pool hop via explicit
-capture, never a ContextVar).
+These tests pin ambient globals while interleaving explicit universe contexts.
+Neither per-universe configuration nor process-global configuration may cause a
+provider launch without a fresh server-issued serving carrier.
 """
 
 from __future__ import annotations
@@ -136,14 +125,14 @@ def _pinned_to_universe_a(tmp_path, monkeypatch):
         runtime.universe_config = saved_config
 
 
-def test_call_sync_resolves_engine_and_auth_per_universe_context(
+def test_call_sync_rejects_interleaved_config_only_universe_contexts(
     _pinned_to_universe_a,
 ):
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
     fixt = _pinned_to_universe_a
     universe_a = fixt["a"]
     universe_b = fixt["b"]
-    codex_home = fixt["codex_home"]
-    claude_cfg = fixt["claude_cfg"]
 
     router = ProviderRouter()
     router.register(_RecordingProvider("codex", "openai", "CODEX_HOME"))
@@ -161,49 +150,27 @@ def test_call_sync_resolves_engine_and_auth_per_universe_context(
 
     def _worker(item):
         label, ctx = item
-        resp = router.call_sync(
-            role="writer",
-            prompt=f"prompt-{label}",
-            system="system",
-            universe_context=ctx,
-        )
-        return label, resp
+        with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
+            router.call_sync(
+                role="writer",
+                prompt=f"prompt-{label}",
+                system="system",
+                universe_context=ctx,
+            )
+        return label
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(_worker, plan))
 
-    a_count = 0
-    b_count = 0
-    for label, resp in results:
-        if label == "a":
-            a_count += 1
-            assert resp.provider == "codex", (
-                f"A-context call must be served by codex, got {resp.provider!r}"
-            )
-            assert resp.text == str(universe_a), (
-                f"codex must see universe_dir==A, saw {resp.text!r}"
-            )
-            assert resp.model == str(codex_home), (
-                f"codex must resolve A's CODEX_HOME, got {resp.model!r}"
-            )
-        else:
-            b_count += 1
-            assert resp.provider == "claude-code", (
-                f"B-context call must be served by claude-code, got {resp.provider!r}"
-            )
-            assert resp.text == str(universe_b), (
-                f"claude-code must see universe_dir==B, saw {resp.text!r}"
-            )
-            assert resp.model == str(claude_cfg), (
-                f"claude-code must resolve B's CLAUDE_CONFIG_DIR, got {resp.model!r}"
-            )
-
-    assert a_count == 12
-    assert b_count == 12
+    assert results.count("a") == 12
+    assert results.count("b") == 12
 
 
-def test_call_provider_forwards_universe_context(_pinned_to_universe_a, monkeypatch):
-    """The call.py bridge threads universe_context through to call_sync."""
+def test_call_provider_does_not_treat_forwarded_universe_config_as_authority(
+    _pinned_to_universe_a,
+    monkeypatch,
+):
+    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers import call as call_module
 
     fixt = _pinned_to_universe_a
@@ -222,16 +189,13 @@ def test_call_provider_forwards_universe_context(_pinned_to_universe_a, monkeypa
     call_module.set_force_mock(False)
     call_module.set_provider_router(router)
     try:
-        text = call_module.call_provider(
-            "prompt-b",
-            "system",
-            role="writer",
-            universe_context=ctx_b,
-        )
+        with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
+            call_module.call_provider(
+                "prompt-b",
+                "system",
+                role="writer",
+                universe_context=ctx_b,
+            )
     finally:
         call_module.set_provider_router(saved)
         call_module.set_force_mock(saved_mock)
-
-    # B-context routed to claude-code, which saw universe_dir==B.
-    assert text == str(fixt["b"])
-    assert call_module.get_last_provider() == "claude-code"

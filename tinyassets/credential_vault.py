@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -391,13 +392,83 @@ def _write_credential_vault_unlocked(
 def write_credential_vault(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
+    *,
+    owner_user_id: str | None = None,
+    universe_id: str | None = None,
 ) -> dict[str, Any]:
-    """Write while excluding assignment readers and other custody writers."""
+    """Write while excluding launches and optionally record depositor ownership.
+
+    ``owner_user_id`` is trusted transport state, never a vault-record field.
+    Omitting it leaves new LLM subscription material unowned and therefore
+    ineligible for serving authority.
+    """
 
     from tinyassets.provider_assignment import provider_assignment_admission
+    from tinyassets.storage import db_path
 
-    with provider_assignment_admission().exclusive(universe_dir):
-        return _write_credential_vault_unlocked(universe_dir, credentials)
+    universe = Path(universe_dir).resolve(strict=False)
+    owner = (owner_user_id or "").strip()
+    uid = (universe_id or universe.name).strip()
+    if owner_user_id is not None and not owner:
+        raise ValueError("credential owner must be a non-empty server principal")
+    if uid != universe.name:
+        raise ValueError("credential universe does not match its canonical directory")
+    with provider_assignment_admission().exclusive(universe):
+        conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+        try:
+            _ensure_llm_deposit_owner_schema(conn)
+            if owner:
+                existing = conn.execute(
+                    """
+                    SELECT DISTINCT owner_user_id
+                      FROM llm_credential_deposit_owners
+                     WHERE universe_id = ?
+                    """,
+                    (uid,),
+                ).fetchall()
+                if any(str(row[0]) != owner for row in existing):
+                    raise PermissionError(
+                        "credential ownership transfer requires a dedicated flow"
+                    )
+            summary = _write_credential_vault_unlocked(universe, credentials)
+            records = load_credential_vault(universe)
+            services = {
+                _service(record)
+                for record in records
+                if record.get("credential_type") == "llm_subscription"
+                and _service(record) in {"claude", "codex"}
+            }
+            conn.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in services)
+            if services:
+                conn.execute(
+                    f"""
+                    DELETE FROM llm_credential_deposit_owners
+                     WHERE universe_id = ? AND service NOT IN ({placeholders})
+                    """,
+                    (uid, *sorted(services)),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
+                    (uid,),
+                )
+            if owner:
+                for service_name in services:
+                    conn.execute(
+                        """
+                        INSERT INTO llm_credential_deposit_owners (
+                            universe_id, service, owner_user_id
+                        ) VALUES (?, ?, ?)
+                        ON CONFLICT(universe_id, service) DO UPDATE SET
+                            owner_user_id = excluded.owner_user_id
+                        """,
+                        (uid, service_name, owner),
+                    )
+            conn.commit()
+            return summary
+        finally:
+            conn.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,6 +487,81 @@ class LLMCredentialCustodyReference:
 def _canonical_digest(value: object) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_deposit_owners (
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL,
+            PRIMARY KEY (universe_id, service)
+        )
+        """
+    )
+
+
+def _read_credential_material(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise PermissionError("exactly one usable subscription credential is required")
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise PermissionError("exactly one usable subscription credential is required")
+    material = path.read_bytes()
+    after = path.stat(follow_symlinks=False)
+    identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if identity_before != identity_after:
+        raise PermissionError("credential material changed during validation")
+    return material
+
+
+def _subscription_material_digest(
+    universe_dir: Path,
+    service: str,
+    record: dict[str, Any],
+) -> str:
+    if service == "codex":
+        encoded = record.get("auth_json_b64")
+        if isinstance(encoded, str) and encoded.strip():
+            material = _decode_codex_auth_json(encoded)
+        else:
+            home = _codex_home_from_record(record, universe_dir)
+            if home is None:
+                home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+            auth_file = _contained_path(universe_dir, str(home / "auth.json"))
+            if auth_file is None:
+                raise PermissionError("exactly one usable subscription credential is required")
+            material = _read_credential_material(auth_file)
+    elif service == "claude":
+        token = _secret_value(record, "oauth_token", "claude_code_oauth_token")
+        if token:
+            material = token.encode("utf-8")
+        else:
+            config_dir = _claude_config_dir_from_record(record, universe_dir)
+            credential_file = (
+                _contained_path(universe_dir, str(config_dir / ".credentials.json"))
+                if config_dir is not None
+                else None
+            )
+            if credential_file is None:
+                raise PermissionError("exactly one usable subscription credential is required")
+            material = _read_credential_material(credential_file)
+    else:
+        raise PermissionError("exactly one usable subscription credential is required")
+    return "sha256:" + hashlib.sha256(material).hexdigest()
+
+
+def _subscription_record_digest(
+    universe_dir: Path,
+    service: str,
+    record: dict[str, Any],
+) -> str:
+    return _canonical_digest({
+        "material_digest": _subscription_material_digest(universe_dir, service, record),
+        "record": record,
+    })
 
 
 def _contained_path(universe_dir: Path, raw: object) -> Path | None:
@@ -541,7 +687,17 @@ def adopt_llm_subscription_custody(
         raise ValueError("LLM custody root is invalid")
     universe = Path(universe_dir)
     record = _usable_subscription_record(universe, canonical_service)
-    record_digest = _canonical_digest(record)
+    record_digest = _subscription_record_digest(universe, canonical_service, record)
+    _ensure_llm_deposit_owner_schema(conn)
+    depositor = conn.execute(
+        """
+        SELECT owner_user_id FROM llm_credential_deposit_owners
+         WHERE universe_id = ? AND service = ?
+        """,
+        (uid, canonical_service),
+    ).fetchone()
+    if depositor is None or str(depositor[0]) != owner:
+        raise PermissionError("caller is not the server-recorded credential owner")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS llm_credential_custody (
@@ -630,6 +786,16 @@ def current_llm_subscription_custody(
 ) -> LLMCredentialCustodyReference | None:
     """Reload and verify the current opaque reference without adopting state."""
 
+    _ensure_llm_deposit_owner_schema(conn)
+    recorded_owner = conn.execute(
+        """
+        SELECT owner_user_id FROM llm_credential_deposit_owners
+         WHERE universe_id = ? AND service = ?
+        """,
+        (universe_id.strip(), service.strip().lower()),
+    ).fetchone()
+    if recorded_owner is None or str(recorded_owner[0]) != owner_user_id.strip():
+        return None
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS llm_credential_custody (
@@ -658,7 +824,9 @@ def current_llm_subscription_custody(
         record = _usable_subscription_record(Path(universe_dir), service.strip().lower())
     except (PermissionError, ValueError, OSError):
         return None
-    record_digest = _canonical_digest(record)
+    record_digest = _subscription_record_digest(
+        Path(universe_dir), service.strip().lower(), record,
+    )
     expected = _custody_reference_digest(
         reference_id=str(row[0]),
         owner_user_id=owner_user_id.strip(),

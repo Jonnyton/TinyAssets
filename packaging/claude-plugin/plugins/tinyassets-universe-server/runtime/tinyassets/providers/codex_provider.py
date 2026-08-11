@@ -7,6 +7,7 @@ Claude, making it ideal as a judge when Claude is the writer.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import shutil
@@ -46,6 +47,8 @@ def _resolve_codex_cmd() -> tuple[list[str], bool]:
     codex_path = shutil.which("codex")
     if codex_path and sys.platform == "win32" and codex_path.lower().endswith((".cmd", ".bat")):
         return [codex_path], True
+    if codex_path:
+        return [codex_path], False
     return ["codex"], False
 
 
@@ -98,26 +101,12 @@ class CodexProvider(BaseProvider):
     ) -> ProviderResponse:
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
-        # Fail-closed (2026-07-03 P0 review, Codex ADAPT): Codex cannot enforce
-        # the founder-facing universe sandbox — its `--sandbox read-only` still
-        # reads the whole filesystem and it honors no tool allow/deny policy, so
-        # a founder's universe could read the repo / other universes / host files.
-        # Refuse rather than run a founder-facing turn unconfined; the universe's
-        # assigned engine must be a sandbox-capable one (claude-code).
-        if config.sandbox_workspace:
-            raise ProviderError(
-                "codex cannot enforce the universe sandbox (WebFetch-only + "
-                "filesystem confinement); refusing to run a founder-facing turn "
-                "unconfined. Assign a sandbox-capable engine (claude-code)."
-            )
         base_cmd, use_shell = _resolve_codex_cmd()
         model = _codex_model()
         sandbox_status = get_sandbox_status()
-        sandbox_args = (
-            ["--full-auto"]
-            if sandbox_status.get("bwrap_available")
-            else ["--dangerously-bypass-approvals-and-sandbox"]
-        )
+        sandbox_args = ["--full-auto"] if sandbox_status.get("bwrap_available") else [
+            "--dangerously-bypass-approvals-and-sandbox"
+        ]
         # Prompt-node calls use Codex as a subscription-backed text model, but
         # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;
@@ -130,6 +119,36 @@ class CodexProvider(BaseProvider):
         effort_args = _reasoning_effort_args(
             getattr(config, "reasoning_effort", "")
         )
+        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        machine_accounting = bool(config.sandbox_workspace)
+        if config.sandbox_workspace:
+            if universe_dir is None or use_shell or not sandbox_status.get("bwrap_available"):
+                raise ProviderError(
+                    "codex served turns require the OS sandbox; refusing unconfined launch"
+                )
+            bwrap_path = str(sandbox_status.get("bwrap_path") or shutil.which("bwrap") or "")
+            codex_home = Path(proc_env.get("CODEX_HOME", "")).resolve(strict=False)
+            universe_root = universe_dir.resolve(strict=False)
+            try:
+                codex_home.relative_to(universe_root)
+            except ValueError as exc:
+                raise ProviderError("codex auth home is outside the served universe") from exc
+            if not bwrap_path or not codex_home.is_dir():
+                raise ProviderError(
+                    "codex served turns require an available OS sandbox and universe auth"
+                )
+            sandbox_args = [
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--disable",
+                "shell_tool",
+                "--disable",
+                "unified_exec",
+                "-c",
+                'web_search="cached"',
+                "--json",
+            ]
         cmd = [
             *base_cmd,
             "exec",
@@ -140,10 +159,52 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
 
         win_kw = _no_window_kwargs()
-        cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
+        if config.sandbox_workspace:
+            inner_cmd = [*cmd, "-C", "/workspace"]
+            bwrap_cmd = [
+                bwrap_path,
+                "--die-with-parent",
+                "--new-session",
+                "--unshare-all",
+                "--share-net",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--tmpfs",
+                "/tmp",
+                "--ro-bind",
+                str(universe_root),
+                "/workspace",
+                "--bind",
+                str(codex_home),
+                "/codex-home",
+                "--setenv",
+                "CODEX_HOME",
+                "/codex-home",
+                "--setenv",
+                "HOME",
+                "/tmp",
+            ]
+            for system_path in (
+                "/usr",
+                "/bin",
+                "/lib",
+                "/lib64",
+                "/etc/ssl/certs",
+                "/etc/resolv.conf",
+                "/etc/hosts",
+                "/etc/nsswitch.conf",
+            ):
+                if Path(system_path).exists() or system_path == "/usr":
+                    bwrap_cmd.extend(("--ro-bind", system_path, system_path))
+            cmd_with_cwd = [*bwrap_cmd, *inner_cmd]
+            proc_env["CODEX_HOME"] = "/codex-home"
+            proc_env["HOME"] = "/tmp"
+        else:
+            cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
         if use_shell:
             proc = await asyncio.create_subprocess_shell(
                 shlex.join(cmd_with_cwd),
@@ -193,7 +254,47 @@ class CodexProvider(BaseProvider):
                 f"codex exec exit {proc.returncode}: {stderr_text}"
             )
 
-        text = stdout.decode("utf-8", errors="replace").strip()
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        input_tokens = None
+        output_tokens = None
+        cost_microunits = None
+        if machine_accounting:
+            messages: list[str] = []
+            usage: dict[str, object] | None = None
+            try:
+                events = [json.loads(line) for line in stdout_text.splitlines() if line.strip()]
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ProviderError("codex returned invalid accounting output") from exc
+            for event in events:
+                if not isinstance(event, dict):
+                    raise ProviderError("codex returned invalid accounting output")
+                item = event.get("item")
+                if (
+                    event.get("type") == "item.completed"
+                    and isinstance(item, dict)
+                    and item.get("type") == "agent_message"
+                    and isinstance(item.get("text"), str)
+                ):
+                    messages.append(item["text"])
+                if event.get("type") == "turn.completed" and isinstance(
+                    event.get("usage"), dict
+                ):
+                    usage = event["usage"]
+            if not messages or usage is None:
+                raise ProviderError("codex accounting output omitted result or usage")
+            try:
+                input_tokens = int(usage["input_tokens"])
+                output_tokens = int(usage["output_tokens"]) + int(
+                    usage.get("reasoning_output_tokens", 0)
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProviderError("codex accounting output contained invalid usage") from exc
+            if input_tokens < 0 or output_tokens < 0:
+                raise ProviderError("codex accounting output contained invalid usage")
+            cost_microunits = (input_tokens + output_tokens) * 100
+            text = messages[-1].strip()
+        else:
+            text = stdout_text
 
         if not text:
             # codex v0.122+ exits 0 on auth failure (401) but emits nothing to
@@ -219,4 +320,7 @@ class CodexProvider(BaseProvider):
             model=model,
             family=self.family,
             latency_ms=elapsed_ms,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_microunits=cost_microunits,
         )

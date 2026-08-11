@@ -96,6 +96,9 @@ class ProviderResponse:
     family: str
     latency_ms: float
     degraded: bool = False
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_microunits: int | None = None
 
 
 # Sentinel for quality-floor-only degraded judge responses.

@@ -38,6 +38,7 @@ class TestGrokRegistration:
     ):
         pytest.importorskip("openai")
         monkeypatch.setenv("XAI_API_KEY", "test-key-grok")
+        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
 
         stub = _reload_stub()
 

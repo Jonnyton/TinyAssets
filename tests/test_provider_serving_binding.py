@@ -40,6 +40,8 @@ def _seed_universe(tmp_path):
             "service": "codex",
             "auth_json_b64": "e30=",
         }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
     )
     definition = publish_definition(
         tmp_path,
@@ -104,6 +106,98 @@ def test_credential_vault_owns_opaque_generation_safe_llm_reference(tmp_path):
     assert rotated.reference_digest != first.reference_digest
 
 
+def test_custody_adoption_requires_server_recorded_depositor_ownership(tmp_path):
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody,
+        write_credential_vault,
+    )
+    from tinyassets.storage import db_path
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    write_credential_vault(
+        universe_dir,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "e30=",
+        }],
+    )
+    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
+    conn.execute("BEGIN IMMEDIATE")
+    with pytest.raises(PermissionError, match="credential owner"):
+        adopt_llm_subscription_custody(
+            conn,
+            universe_dir=universe_dir,
+            owner_user_id="collaborator-1",
+            universe_id="u-owner",
+            service="codex",
+        )
+    conn.rollback()
+    conn.close()
+
+
+def test_path_backed_codex_rotation_changes_custody_generation_and_digest(tmp_path):
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody,
+        current_llm_subscription_custody,
+        write_credential_vault,
+    )
+    from tinyassets.storage import db_path
+
+    universe_dir = tmp_path / "u-owner"
+    auth_home = universe_dir / "codex-auth"
+    auth_home.mkdir(parents=True)
+    auth_file = auth_home / "auth.json"
+    auth_file.write_bytes(b'{"tokens":{"access_token":"first"}}')
+    write_credential_vault(
+        universe_dir,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "codex_home": str(auth_home),
+        }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+    )
+    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
+    conn.execute("BEGIN IMMEDIATE")
+    first = adopt_llm_subscription_custody(
+        conn,
+        universe_dir=universe_dir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    conn.commit()
+
+    auth_file.write_bytes(b'{"tokens":{"access_token":"rotated"}}')
+    conn.execute("BEGIN")
+    assert current_llm_subscription_custody(
+        conn,
+        universe_dir=universe_dir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    ) is None
+    conn.rollback()
+
+    conn.execute("BEGIN IMMEDIATE")
+    rotated = adopt_llm_subscription_custody(
+        conn,
+        universe_dir=universe_dir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    conn.commit()
+    conn.close()
+
+    assert rotated.reference_id == first.reference_id
+    assert rotated.generation == first.generation + 1
+    assert rotated.reference_digest != first.reference_digest
+
+
 def test_custody_refuses_duplicate_and_path_escaping_subscription_records(tmp_path):
     from tinyassets.credential_vault import (
         adopt_llm_subscription_custody,
@@ -126,6 +220,8 @@ def test_custody_refuses_duplicate_and_path_escaping_subscription_records(tmp_pa
                 "codex_home": str(tmp_path / "outside"),
             },
         ],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
     )
     conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
     conn.execute("BEGIN IMMEDIATE")
@@ -146,6 +242,8 @@ def test_custody_refuses_duplicate_and_path_escaping_subscription_records(tmp_pa
             "service": "codex",
             "codex_home": str(tmp_path / "outside"),
         }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
     )
     conn.execute("BEGIN IMMEDIATE")
     with pytest.raises(PermissionError, match="exactly one usable"):
@@ -195,6 +293,8 @@ def test_custody_refuses_symlinked_subscription_path_components(tmp_path):
             "service": "codex",
             "codex_home": str(linked_home),
         }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
     )
 
     conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
@@ -284,6 +384,8 @@ def test_bind_replays_only_while_custody_is_still_current(tmp_path):
             "service": "codex",
             "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
         }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
     )
     rebound = bind_serving_provider(
         base_path=tmp_path,
@@ -452,6 +554,7 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
 ):
     from tinyassets.api import permissions
     from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.custom_agents import create_binding
     from tinyassets.daemon_server import grant_universe_access
 
     universe_dir, agent = _seed_universe(tmp_path)
@@ -514,6 +617,22 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
         payload={"enabled": False},
     )
     assert denied["error"] == "provider_authority_denied"
+
+    collaborator_binding = create_binding(
+        tmp_path,
+        universe_id="u-owner",
+        definition_id=agent["agent_definition_id"],
+        created_by="collaborator-1",
+        payload=_binding(),
+    )
+    forged = custom_agents(
+        action="bind_serving_provider",
+        universe_id="u-owner",
+        binding_id=collaborator_binding["agent_binding_id"],
+        expected_revision=1,
+        payload={"provider": "codex"},
+    )
+    assert forged["error"] == "provider_authority_denied"
     assert universe_dir.is_dir()
 
 

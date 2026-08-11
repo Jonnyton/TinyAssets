@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import secrets
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -48,7 +51,260 @@ class ServedProviderAuthority:
     universe_id: str
     agent_binding_id: str
     binding_revision: int
+    binding_id: str
+    binding_generation: int
+    binding_digest: str
+    credential_reference_id: str
+    credential_reference_generation: int
+    credential_reference_digest: str
+    credential_service: str
     request_capability: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ServedProviderBudgetReservation:
+    reservation_id: str
+    binding_id: str
+    binding_generation: int
+    output_tokens: int
+    reserved_total_tokens: int
+    reserved_cost_microunits: int
+
+
+_SERVED_COST_MICROUNITS_PER_TOKEN = 100
+
+
+def _ensure_served_budget_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS served_provider_budget_reservations (
+            reservation_id TEXT PRIMARY KEY,
+            binding_id TEXT NOT NULL,
+            binding_generation INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK (
+                state IN ('reserved', 'succeeded', 'indeterminate', 'exceeded')
+            ),
+            reserved_total_tokens INTEGER NOT NULL CHECK (reserved_total_tokens >= 1),
+            reserved_cost_microunits INTEGER NOT NULL
+                CHECK (reserved_cost_microunits >= 1),
+            actual_total_tokens INTEGER,
+            actual_cost_microunits INTEGER
+        )
+        """
+    )
+
+
+def reserve_served_provider_budget(
+    base_path: str | Path,
+    *,
+    universe_dir: str | Path,
+    authority: ServedProviderAuthority,
+    requested_output_tokens: int,
+    estimated_input_tokens: int,
+) -> ServedProviderBudgetReservation:
+    """Atomically reserve remaining durable binding budget before launch."""
+
+    from tinyassets.credential_vault import current_llm_subscription_custody
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    held = "Provider authority budget is exhausted; reconnect or rebind your provider."
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in (requested_output_tokens, estimated_input_tokens)
+    ):
+        raise ProviderAuthorityHeldError(held)
+    store = SQLiteProviderWorkAuthorityStore(base_path)
+    with store.connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        assignment = load_provider_assignment_in_transaction(
+            conn, universe_id=authority.universe_id,
+        )
+        binding = store.get_binding_in_transaction(conn, binding_id=authority.binding_id)
+        custody = current_llm_subscription_custody(
+            conn,
+            universe_dir=universe_dir,
+            owner_user_id=authority.owner_user_id,
+            universe_id=authority.universe_id,
+            service=authority.credential_service,
+        )
+        if (
+            assignment is None
+            or assignment.state != "ready"
+            or assignment.binding_id != authority.binding_id
+            or assignment.binding_generation != authority.binding_generation
+            or assignment.binding_digest != authority.binding_digest
+            or binding is None
+            or not store.validate_in_transaction(
+                conn,
+                binding_id=authority.binding_id,
+                binding_generation=authority.binding_generation,
+                binding_digest=authority.binding_digest,
+                owner_user_id=authority.owner_user_id,
+                universe_id=authority.universe_id,
+                provider=authority.provider,
+                operation="converse",
+                role="writer",
+            )
+            or custody is None
+            or custody.reference_id != authority.credential_reference_id
+            or custody.generation != authority.credential_reference_generation
+            or custody.reference_digest != authority.credential_reference_digest
+        ):
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
+        _ensure_served_budget_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT state, reserved_total_tokens, reserved_cost_microunits,
+                   actual_total_tokens, actual_cost_microunits
+              FROM served_provider_budget_reservations
+             WHERE binding_id = ? AND binding_generation = ?
+            """,
+            (authority.binding_id, authority.binding_generation),
+        ).fetchall()
+        if len(rows) >= authority.max_invocations:
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
+        used_tokens = sum(
+            int(row[3]) if row[0] == "succeeded" else int(row[1])
+            for row in rows
+        )
+        used_cost = sum(
+            int(row[4]) if row[0] == "succeeded" else int(row[2])
+            for row in rows
+        )
+        remaining_tokens = authority.max_tokens - used_tokens
+        remaining_cost = authority.max_cost_microunits - used_cost
+        affordable_total_tokens = remaining_cost // _SERVED_COST_MICROUNITS_PER_TOKEN
+        output_tokens = min(
+            requested_output_tokens,
+            remaining_tokens - estimated_input_tokens,
+            affordable_total_tokens - estimated_input_tokens,
+        )
+        if output_tokens < 1:
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
+        reserved_total = estimated_input_tokens + output_tokens
+        reserved_cost = reserved_total * _SERVED_COST_MICROUNITS_PER_TOKEN
+        reservation = ServedProviderBudgetReservation(
+            reservation_id=f"served_budget_{secrets.token_hex(16)}",
+            binding_id=authority.binding_id,
+            binding_generation=authority.binding_generation,
+            output_tokens=output_tokens,
+            reserved_total_tokens=reserved_total,
+            reserved_cost_microunits=reserved_cost,
+        )
+        conn.execute(
+            """
+            INSERT INTO served_provider_budget_reservations (
+                reservation_id, binding_id, binding_generation, state,
+                reserved_total_tokens, reserved_cost_microunits
+            ) VALUES (?, ?, ?, 'reserved', ?, ?)
+            """,
+            (
+                reservation.reservation_id,
+                reservation.binding_id,
+                reservation.binding_generation,
+                reservation.reserved_total_tokens,
+                reservation.reserved_cost_microunits,
+            ),
+        )
+        conn.commit()
+        return reservation
+
+
+def finalize_served_provider_budget(
+    base_path: str | Path,
+    *,
+    authority: ServedProviderAuthority,
+    reservation: ServedProviderBudgetReservation,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cost_microunits: int | None,
+    fallback_output: str = "",
+) -> None:
+    """Persist actual usage and hold when one call crossed its reservation."""
+
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    measured_input = (
+        input_tokens
+        if isinstance(input_tokens, int) and not isinstance(input_tokens, bool)
+        and input_tokens >= 0
+        else max(1, reservation.reserved_total_tokens - reservation.output_tokens)
+    )
+    measured_output = (
+        output_tokens
+        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool)
+        and output_tokens >= 0
+        else len(fallback_output.encode("utf-8"))
+    )
+    actual_total = measured_input + measured_output
+    measured_cost = (
+        cost_microunits
+        if isinstance(cost_microunits, int) and not isinstance(cost_microunits, bool)
+        and cost_microunits >= 0
+        else actual_total * _SERVED_COST_MICROUNITS_PER_TOKEN
+    )
+    exceeded = (
+        actual_total > reservation.reserved_total_tokens
+        or measured_cost > reservation.reserved_cost_microunits
+        or actual_total > authority.max_tokens
+        or measured_cost > authority.max_cost_microunits
+    )
+    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_served_budget_schema(conn)
+        cursor = conn.execute(
+            """
+            UPDATE served_provider_budget_reservations
+               SET state = ?, actual_total_tokens = ?, actual_cost_microunits = ?
+             WHERE reservation_id = ? AND binding_id = ?
+               AND binding_generation = ? AND state = 'reserved'
+            """,
+            (
+                "exceeded" if exceeded else "succeeded",
+                actual_total,
+                measured_cost,
+                reservation.reservation_id,
+                authority.binding_id,
+                authority.binding_generation,
+            ),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            raise ProviderAuthorityHeldError("Provider authority budget accounting failed.")
+        conn.commit()
+    finally:
+        conn.close()
+    if exceeded:
+        raise ProviderAuthorityHeldError(
+            "Provider authority budget was exceeded; the provider result was withheld."
+        )
+
+
+def abandon_served_provider_budget(
+    base_path: str | Path,
+    reservation: ServedProviderBudgetReservation,
+) -> None:
+    """Conservatively consume a reservation when provider usage is unknown."""
+
+    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_served_budget_schema(conn)
+        conn.execute(
+            """
+            UPDATE served_provider_budget_reservations SET state = 'indeterminate'
+             WHERE reservation_id = ? AND state = 'reserved'
+            """,
+            (reservation.reservation_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class _AdmissionState:
@@ -61,7 +317,7 @@ class _AdmissionState:
 
 
 class ProviderAssignmentAdmission:
-    """Process-local shared-reader/exclusive-writer admission by universe path."""
+    """Cross-process shared-reader/exclusive-writer admission by universe path."""
 
     def __init__(self) -> None:
         self._states_lock = threading.Lock()
@@ -76,6 +332,47 @@ class ProviderAssignmentAdmission:
         with self._states_lock:
             return self._states.setdefault(key, _AdmissionState())
 
+    @staticmethod
+    @contextmanager
+    def _file_lock(universe_dir: str | Path, *, exclusive: bool) -> Iterator[None]:
+        universe = Path(universe_dir).resolve(strict=False)
+        universe.mkdir(parents=True, exist_ok=True)
+        handle = (universe / ".provider-assignment-admission.lock").open("a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                # Windows exposes only exclusive byte-range locks here. That
+                # serializes readers conservatively while still excluding
+                # credential/assignment writers across processes.
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                while True:
+                    try:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.01)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(handle.fileno(), mode)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
     @contextmanager
     def shared(self, universe_dir: str | Path) -> Iterator[None]:
         state = self._state(universe_dir)
@@ -88,7 +385,8 @@ class ProviderAssignmentAdmission:
             state.readers += 1
             state.reader_threads.add(thread_id)
         try:
-            yield
+            with self._file_lock(universe_dir, exclusive=False):
+                yield
         finally:
             with state.condition:
                 state.readers -= 1
@@ -110,7 +408,8 @@ class ProviderAssignmentAdmission:
             finally:
                 state.waiting_writers -= 1
         try:
-            yield
+            with self._file_lock(universe_dir, exclusive=True):
+                yield
         finally:
             with state.condition:
                 state.writer = None
@@ -456,12 +755,17 @@ def authorize_served_provider_call(
                     universe_id=uid,
                     agent_binding_id=carrier_binding_id,
                     binding_revision=carrier_revision,
+                    binding_id=provider_binding.binding_id,
+                    binding_generation=provider_binding.generation,
+                    binding_digest=provider_binding.binding_digest,
+                    credential_reference_id=custody.reference_id,
+                    credential_reference_generation=custody.generation,
+                    credential_reference_digest=custody.reference_digest,
+                    credential_service=service,
                     request_capability=capability,
                 )
-                try:
-                    yield authority
-                finally:
-                    conn.rollback()
+                conn.rollback()
+            yield authority
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
@@ -477,11 +781,15 @@ __all__ = [
     "ProviderAssignment",
     "ProviderAssignmentAdmission",
     "ServedProviderAuthority",
+    "ServedProviderBudgetReservation",
+    "abandon_served_provider_budget",
     "authorize_served_provider_call",
     "ensure_provider_assignment_schema",
     "load_provider_assignment",
     "load_provider_assignment_in_transaction",
     "provider_assignment_admission",
     "provider_assignment_digest",
+    "reserve_served_provider_budget",
+    "finalize_served_provider_budget",
     "store_provider_assignment_in_transaction",
 ]

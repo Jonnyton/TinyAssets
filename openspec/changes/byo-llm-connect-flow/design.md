@@ -240,9 +240,14 @@ Slice 1 therefore consumes the keystone/custody-owned opaque-reference seam. A
 small server-owned custody index must bind an opaque credential ID and
 generation to `(authenticated owner, universe, credential type, canonical
 service)` and validate the current vault slot under assignment admission. For a
-pre-existing vault record, the first authenticated admin adoption writes that
-index from server state; it does not trust `owner_user_id`, credential ID, or
-generation found in vault JSON. Missing, duplicate, unreadable, path-escaping,
+pre-existing vault record, adoption requires an existing server-held depositor
+record created by the authenticated credential-connect/deposit boundary; an
+admin or ACL collaborator cannot claim ownerless or another principal's
+material. The custody digest covers both normalized record metadata and the
+actual credential bytes, including path-backed `auth.json`, and is revalidated
+at reservation immediately before launch. It does not trust `owner_user_id`,
+credential ID, or generation found in vault JSON. Missing, duplicate,
+unreadable, path-escaping,
 symlinked, replaced-during-resolution, or auth-unusable records hold with no
 artifact creation and no binding mutation.
 
