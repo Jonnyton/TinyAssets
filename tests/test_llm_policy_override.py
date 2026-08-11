@@ -124,10 +124,14 @@ def _mock_router_for_policy(
     mock_router = MagicMock()
 
     if raises_on_preferred:
-        def _side_effect(role, prompt, system, policy, config=None, difficulty=""):
+        def _side_effect(
+            role, prompt, system, policy, config=None, difficulty="", **_kwargs,
+        ):
             raise raises_on_preferred
     else:
-        def _side_effect(role, prompt, system, policy, config=None, difficulty=""):
+        def _side_effect(
+            role, prompt, system, policy, config=None, difficulty="", **_kwargs,
+        ):
             return preferred_response, preferred_provider, {}
 
     mock_router.call_with_policy_sync.side_effect = _side_effect
@@ -246,7 +250,9 @@ def test_node_policy_overrides_branch_default():
     branch = _make_branch(node, default_llm_policy=branch_policy)
 
     calls: list[dict] = []
-    def _mock_policy_call(role, prompt, system, policy, config=None, difficulty=""):
+    def _mock_policy_call(
+        role, prompt, system, policy, config=None, difficulty="", **_kwargs,
+    ):
         calls.append({"policy": policy})
         return "node-policy-response", "codex", {}
 
@@ -352,7 +358,9 @@ def test_difficulty_override_passed_through():
     branch = _make_branch(node)
 
     calls: list[dict] = []
-    def _mock_call(role, prompt, system, policy, config=None, difficulty=""):
+    def _mock_call(
+        role, prompt, system, policy, config=None, difficulty="", **_kwargs,
+    ):
         calls.append({"difficulty": difficulty})
         return "hard-response", "claude-code", {}
 

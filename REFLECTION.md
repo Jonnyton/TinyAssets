@@ -1526,3 +1526,47 @@ fresh-host rollback edges found later.
 - **What I would do differently:** run the independent reviewer earlier with
   a smaller exact-head brief; repeated peer CLI timeouts should not be allowed
   to delay hosted verification or be mistaken for an approval.
+
+## 2026-08-10 - Requester-owned serving authority
+
+- **What surprised me:** a path can resolve inside the universe and still be
+  unsafe custody input when a symlink or Windows junction remains retargetable.
+- **Pattern worth capturing:** authorize spend from one exact chain—current
+  request lease, serving agent revision, requester-local assignment, active
+  `ProviderWorkBinding`, and generation-bound custody—and hold the admission
+  fence through the provider launch.
+- **What I would do differently:** start the first RED suite with both lexical
+  and resolved path containment, plus registry-lifetime assertions for every
+  ephemeral capability.
+
+## 2026-08-10 - BYO-LLM slice 1 adversarial fix round
+
+- **What surprised me:** config-only routing and recording adapters jointly hid
+  that the production path was both unauthorized and unable to launch.
+- **Pattern worth capturing:** security acceptance needs a real adapter path,
+  cross-process exclusion, material-bound custody, and mutation proof at every
+  authority seam; a mocked router alone is insufficient.
+- **What I would do differently:** run the ambient-authority and real-adapter
+  probes before expanding happy-path coverage, then run the broad graph callers
+  as soon as universe routing becomes fail-closed.
+
+## 2026-08-10 - BYO-LLM slice 1 adversarial fix round 2
+
+- **What surprised me:** a cross-process fence and a current digest still left
+  the launched process reading mutable bytes through a writable bind; the lock
+  described cooperation, not custody.
+- **Pattern worth capturing:** derive launch authority from copied bytes, expose
+  only that per-launch snapshot read-only, and keep request-call budgets
+  separate from durable binding high-water accounting.
+- **What I would do differently:** make the first real-adapter test spawn an
+  on-disk wrapper target and inspect the exact mount graph; mocking subprocess
+  creation allowed both a missing `/opt` tree and a vacuous bypass assertion.
+
+## 2026-08-10 - BYO-LLM slice 1 credential snapshot fix round 3
+
+- **What surprised me:** Windows `DirEntry.stat()` returned zero device/inode
+  values while `Path.lstat()` preserved the volume/file-index across rename.
+- **Pattern worth capturing:** temporary-secret cleanup must track filesystem
+  identity, revalidate names, and search only a validated immediate parent.
+- **What I would do differently:** start snapshot work with root-alias and
+  renamed-decoy mutation tests before describing any copy as sealed.

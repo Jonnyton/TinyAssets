@@ -93,15 +93,20 @@ class UniverseBoundProviderCall:
 
     provider_call: Any
     universe_context: Any
+    operation: str
 
     def __call__(self, prompt: str, system: str = "", **kwargs: Any) -> str:
         supplied = kwargs.pop("universe_context", None)
         if supplied is not None and supplied is not self.universe_context:
             raise PermissionError("provider call cannot substitute universe context")
+        supplied_operation = kwargs.pop("operation", None)
+        if supplied_operation is not None and supplied_operation != self.operation:
+            raise PermissionError("provider call cannot substitute its bound operation")
         return self.provider_call(
             prompt,
             system,
             universe_context=self.universe_context,
+            operation=self.operation,
             **kwargs,
         )
 
@@ -131,6 +136,7 @@ class UniverseBoundProviderCall:
             policy,
             config,
             difficulty,
+            operation=self.operation,
             universe_context=self.universe_context,
         )
         _last_provider = result[1]
@@ -140,11 +146,16 @@ class UniverseBoundProviderCall:
 def bind_universe_provider_call(
     provider_call: Any,
     universe_context: Any,
+    *,
+    operation: str,
 ) -> UniverseBoundProviderCall:
     """Bind an explicit universe context to direct and policy graph calls."""
     if universe_context is None:
         raise ValueError("universe_context is required")
-    return UniverseBoundProviderCall(provider_call, universe_context)
+    normalized_operation = (operation or "").strip()
+    if not normalized_operation:
+        raise ValueError("operation is required for a universe-bound provider call")
+    return UniverseBoundProviderCall(provider_call, universe_context, normalized_operation)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +323,7 @@ def call_provider(
         Optional server-owned operation bound to a provider authority carrier.
         Omit for ordinary unarmed calls.
     """
-    governed = operation is not None
+    governed = operation is not None or universe_context is not None
     if _force_mock:
         if governed:
             raise PermissionError("governed provider calls cannot use force-mock output")

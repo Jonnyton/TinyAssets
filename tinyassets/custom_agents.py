@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS agent_bindings (
     configuration_json TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     status TEXT NOT NULL DEFAULT 'configured'
-        CHECK (status IN ('configured')),
+        CHECK (status IN ('configured', 'serving')),
     created_by TEXT NOT NULL,
     updated_by TEXT NOT NULL,
     created_at REAL NOT NULL,
@@ -451,6 +451,7 @@ def _normalize_binding_payload(payload: Any) -> dict[str, Any]:
         "agent_definition_id",
         "created_at",
         "created_by",
+        "provider_ref",
         "revision",
         "status",
         "universe_id",
@@ -483,10 +484,58 @@ def _ensure_schema(base_path: str | Path) -> Path:
             conn.execute("PRAGMA journal_mode = WAL")
             with conn:
                 conn.executescript(_SCHEMA)
+                _migrate_serving_status(conn)
         finally:
             conn.close()
         _SCHEMA_INITIALIZED.add(key)
     return path
+
+
+def _migrate_serving_status(conn: sqlite3.Connection) -> None:
+    """Expand the binding-status CHECK on databases created before slice 1."""
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_bindings'"
+    ).fetchone()
+    sql = str(row[0] or "") if row is not None else ""
+    if "'serving'" in sql:
+        return
+    conn.execute("DROP INDEX IF EXISTS idx_agent_binding_universe")
+    conn.execute("DROP INDEX IF EXISTS idx_agent_binding_definition")
+    conn.execute("ALTER TABLE agent_bindings RENAME TO agent_bindings_pre_serving")
+    conn.executescript(
+        """
+        CREATE TABLE agent_bindings (
+            agent_binding_id TEXT PRIMARY KEY,
+            universe_id TEXT NOT NULL,
+            agent_definition_id TEXT NOT NULL,
+            configuration_json TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            status TEXT NOT NULL DEFAULT 'configured'
+                CHECK (status IN ('configured', 'serving')),
+            created_by TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY(agent_definition_id)
+                REFERENCES agent_definitions(agent_definition_id) ON DELETE RESTRICT
+        );
+        INSERT INTO agent_bindings (
+            agent_binding_id, universe_id, agent_definition_id,
+            configuration_json, revision, status, created_by, updated_by,
+            created_at, updated_at
+        )
+        SELECT agent_binding_id, universe_id, agent_definition_id,
+               configuration_json, revision, status, created_by, updated_by,
+               created_at, updated_at
+          FROM agent_bindings_pre_serving;
+        DROP TABLE agent_bindings_pre_serving;
+        CREATE INDEX idx_agent_binding_universe
+            ON agent_bindings(universe_id, updated_at DESC);
+        CREATE INDEX idx_agent_binding_definition
+            ON agent_bindings(agent_definition_id);
+        """
+    )
 
 
 @contextmanager
@@ -1079,55 +1128,177 @@ def update_binding(
     requested_definition = (definition_id or "").strip()
     updated_at = time.time()
 
-    with _agent_connect(base_path) as conn:
-        current = _read_binding_row(
-            conn,
-            universe_id=uid,
-            binding_id=bid,
-        )
-        if current is None:
-            raise AgentNotFoundError(f"agent binding {bid!r} was not found")
-        selected_definition = requested_definition or str(current["agent_definition_id"])
-        _require_definition(conn, selected_definition)
-        cursor = conn.execute(
-            """
-            UPDATE agent_bindings
-            SET agent_definition_id = ?,
-                configuration_json = ?,
-                revision = revision + 1,
-                updated_by = ?,
-                updated_at = ?
-            WHERE universe_id = ?
-              AND agent_binding_id = ?
-              AND revision = ?
-            """,
-            (
-                selected_definition,
-                _canonical_json(configuration),
-                actor,
-                updated_at,
-                uid,
-                bid,
-                expected_revision,
-            ),
-        )
-        if cursor.rowcount != 1:
-            actual = _read_binding_row(
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    universe_dir = Path(base_path) / uid
+    with provider_assignment_admission().exclusive(universe_dir):
+        with _agent_connect(base_path) as conn:
+            current = _read_binding_row(
                 conn,
                 universe_id=uid,
                 binding_id=bid,
             )
-            actual_revision = int(actual["revision"]) if actual is not None else None
-            raise AgentConflictError(
-                f"binding revision conflict: expected {expected_revision}, found {actual_revision}"
+            if current is None:
+                raise AgentNotFoundError(f"agent binding {bid!r} was not found")
+            selected_definition = requested_definition or str(
+                current["agent_definition_id"]
             )
-        updated = _read_binding_row(
-            conn,
-            universe_id=uid,
-            binding_id=bid,
+            _require_definition(conn, selected_definition)
+            cursor = conn.execute(
+                """
+                UPDATE agent_bindings
+                SET agent_definition_id = ?,
+                    configuration_json = ?,
+                    revision = revision + 1,
+                    updated_by = ?,
+                    updated_at = ?
+                WHERE universe_id = ?
+                  AND agent_binding_id = ?
+                  AND revision = ?
+                """,
+                (
+                    selected_definition,
+                    _canonical_json(configuration),
+                    actor,
+                    updated_at,
+                    uid,
+                    bid,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                actual = _read_binding_row(
+                    conn,
+                    universe_id=uid,
+                    binding_id=bid,
+                )
+                actual_revision = (
+                    int(actual["revision"]) if actual is not None else None
+                )
+                raise AgentConflictError(
+                    f"binding revision conflict: expected {expected_revision}, "
+                    f"found {actual_revision}"
+                )
+            updated = _read_binding_row(
+                conn,
+                universe_id=uid,
+                binding_id=bid,
+            )
+            assert updated is not None
+            return _binding_from_row(updated)
+
+
+def set_binding_provider_ref_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    universe_id: str,
+    binding_id: str,
+    expected_revision: int,
+    owner_user_id: str,
+    provider_ref: str,
+) -> dict[str, Any]:
+    """Server-only CAS for the authority-validated provider selection."""
+
+    if not conn.in_transaction:
+        raise ValueError("provider binding update requires an active transaction")
+    current = _read_binding_row(
+        conn,
+        universe_id=universe_id.strip(),
+        binding_id=binding_id.strip(),
+    )
+    if current is None:
+        raise AgentNotFoundError(f"agent binding {binding_id!r} was not found")
+    if str(current["created_by"]) != owner_user_id.strip():
+        raise PermissionError("only the binding creator may assign its provider")
+    if int(current["revision"]) != expected_revision:
+        raise AgentConflictError(
+            f"binding revision conflict: expected {expected_revision}, "
+            f"found {int(current['revision'])}"
         )
-        assert updated is not None
-        return _binding_from_row(updated)
+    configuration = json.loads(str(current["configuration_json"]))
+    configuration["provider_ref"] = provider_ref.strip()
+    updated_at = time.time()
+    cursor = conn.execute(
+        """
+        UPDATE agent_bindings
+           SET configuration_json = ?, revision = revision + 1,
+               status = 'configured', updated_by = ?, updated_at = ?
+         WHERE universe_id = ? AND agent_binding_id = ? AND revision = ?
+        """,
+        (
+            _canonical_json(configuration),
+            owner_user_id.strip(),
+            updated_at,
+            universe_id.strip(),
+            binding_id.strip(),
+            expected_revision,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise AgentConflictError("binding changed during provider assignment")
+    updated = _read_binding_row(
+        conn,
+        universe_id=universe_id.strip(),
+        binding_id=binding_id.strip(),
+    )
+    assert updated is not None
+    return _binding_from_row(updated)
+
+
+def set_binding_serving_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    universe_id: str,
+    binding_id: str,
+    expected_revision: int,
+    owner_user_id: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Server-only CAS for configured/serving intent."""
+
+    if not conn.in_transaction:
+        raise ValueError("serving update requires an active transaction")
+    current = _read_binding_row(
+        conn,
+        universe_id=universe_id.strip(),
+        binding_id=binding_id.strip(),
+    )
+    if current is None:
+        raise AgentNotFoundError(f"agent binding {binding_id!r} was not found")
+    if str(current["created_by"]) != owner_user_id.strip():
+        raise PermissionError("only the binding creator may change serving state")
+    if int(current["revision"]) != expected_revision:
+        raise AgentConflictError(
+            f"binding revision conflict: expected {expected_revision}, "
+            f"found {int(current['revision'])}"
+        )
+    if not isinstance(enabled, bool):
+        raise AgentValidationError("enabled must be a boolean")
+    status = "serving" if enabled else "configured"
+    cursor = conn.execute(
+        """
+        UPDATE agent_bindings
+           SET status = ?, updated_by = ?, updated_at = ?
+         WHERE universe_id = ? AND agent_binding_id = ? AND revision = ?
+        """,
+        (
+            status,
+            owner_user_id.strip(),
+            time.time(),
+            universe_id.strip(),
+            binding_id.strip(),
+            expected_revision,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise AgentConflictError("binding changed during serving transition")
+    updated = _read_binding_row(
+        conn,
+        universe_id=universe_id.strip(),
+        binding_id=binding_id.strip(),
+    )
+    assert updated is not None
+    return _binding_from_row(updated)
 
 
 __all__ = [
@@ -1145,5 +1316,7 @@ __all__ = [
     "list_bindings",
     "list_definitions",
     "publish_definition",
+    "set_binding_provider_ref_in_transaction",
+    "set_binding_serving_in_transaction",
     "update_binding",
 ]

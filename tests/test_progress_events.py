@@ -83,8 +83,14 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
     )
 
     from tinyassets import universe_server as us
+    provider_calls = importlib.import_module("tinyassets.providers.call")
 
     importlib.reload(us)
+    monkeypatch.setattr(
+        provider_calls,
+        "call_provider",
+        lambda prompt, _system="", **_kwargs: f"fixture:{prompt}",
+    )
     yield us, base
     importlib.reload(us)
 

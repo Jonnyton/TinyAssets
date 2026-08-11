@@ -1358,14 +1358,32 @@ def provider_work_binding_id(
     owner_user_id: str,
     universe_id: str,
     provider: str,
+    binding_class: str = "default",
 ) -> str:
+    normalized_class = _reference(binding_class, "binding_class")
     identity = {
         "owner_user_id": _reference(owner_user_id, "owner_user_id"),
         "provider": _reference(provider, "provider"),
         "schema_version": 1,
         "universe_id": _reference(universe_id, "universe_id"),
     }
+    if normalized_class != "default":
+        identity["binding_class"] = normalized_class
     return f"pwb_{_content_digest(identity).removeprefix('sha256:')[:32]}"
+
+
+def provider_work_binding_class(
+    *,
+    allowed_operations: tuple[str, ...],
+    allowed_roles: tuple[str, ...],
+) -> str:
+    """Server-derived identity slot without adding a second binding model."""
+
+    return (
+        "serving"
+        if allowed_operations == ("converse",) and allowed_roles == ("writer",)
+        else "default"
+    )
 
 
 def _from_seed(seed: ProviderWorkBindingSeed, *, created_at: str) -> ProviderWorkBinding:
@@ -1375,6 +1393,10 @@ def _from_seed(seed: ProviderWorkBindingSeed, *, created_at: str) -> ProviderWor
             owner_user_id=seed.owner_user_id,
             universe_id=seed.universe_id,
             provider=seed.provider,
+            binding_class=provider_work_binding_class(
+                allowed_operations=seed.allowed_operations,
+                allowed_roles=seed.allowed_roles,
+            ),
         ),
         generation=1,
         binding_digest=_PLACEHOLDER_DIGEST,
@@ -1439,6 +1461,34 @@ class ProviderWorkBindingService:
             raise ValueError("store must implement binding issuance persistence")
         return issue(seed)
 
+    def issue_in_transaction(
+        self,
+        connection: object,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingWriteResult:
+        """Issue through the same service contract inside a caller-owned fence."""
+
+        if not isinstance(root, ProviderWorkBindingRoot):
+            raise ValueError("root must be a ProviderWorkBindingRoot")
+        if self._resolver is None:
+            raise PermissionError("server-owned provider assignment is unavailable")
+        transactional = getattr(self._resolver, "resolve_current_in_transaction", None)
+        seed = (
+            transactional(connection, root)
+            if callable(transactional)
+            else self._resolver.resolve(root)
+        )
+        if not isinstance(seed, ProviderWorkBindingSeed) or (
+            seed.owner_user_id != root.owner_user_id
+            or seed.universe_id != root.universe_id
+            or seed.provider != root.provider
+        ):
+            raise PermissionError("server-owned provider assignment is unavailable")
+        issue = getattr(self._store, "_issue_binding_in_transaction", None)
+        if not callable(issue):
+            raise ValueError("store must implement transactional binding issuance")
+        return issue(connection, seed)
+
     def revoke(self, expected: ProviderWorkBindingFence) -> ProviderWorkBindingWriteResult:
         if not isinstance(expected, ProviderWorkBindingFence):
             raise ValueError("expected must be a ProviderWorkBindingFence")
@@ -1462,6 +1512,38 @@ class ProviderWorkBindingService:
         )
         with self._store.transaction() as transaction:
             return transaction.compare_and_swap(expected, replacement)
+
+    def revoke_in_transaction(
+        self,
+        connection: object,
+        expected: ProviderWorkBindingFence,
+    ) -> ProviderWorkBindingWriteResult:
+        """Revoke an exact binding inside a caller-owned aggregate transaction."""
+
+        if not isinstance(expected, ProviderWorkBindingFence):
+            raise ValueError("expected must be a ProviderWorkBindingFence")
+        current = expected.expected_record
+        if current.state is not ProviderWorkBindingState.ACTIVE:
+            return ProviderWorkBindingWriteResult(
+                ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                current,
+            )
+        provisional = replace(
+            current,
+            generation=current.generation + 1,
+            binding_digest=_PLACEHOLDER_DIGEST,
+            state=ProviderWorkBindingState.REVOKED,
+            revocation_generation=current.revocation_generation + 1,
+            updated_at=self._store.timestamp(),
+        )
+        replacement = replace(
+            provisional,
+            binding_digest=provisional.expected_digest(),
+        )
+        transition = getattr(self._store, "_compare_and_swap_binding_in_transaction", None)
+        if not callable(transition):
+            raise ValueError("store must implement transactional binding transitions")
+        return transition(connection, expected, replacement)
 
     def rebind(
         self,
@@ -1515,6 +1597,56 @@ class ProviderWorkBindingService:
         replacement = replace(replacement, binding_digest=replacement.expected_digest())
         with self._store.transaction() as transaction:
             return transaction.compare_and_swap(expected, replacement)
+
+    def rebind_in_transaction(
+        self,
+        connection: object,
+        expected: ProviderWorkBindingFence,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingWriteResult:
+        """Rebind server-derived authority inside a caller-owned transaction."""
+
+        if not isinstance(expected, ProviderWorkBindingFence):
+            raise ValueError("expected must be a ProviderWorkBindingFence")
+        if not isinstance(root, ProviderWorkBindingRoot):
+            raise ValueError("root must be a ProviderWorkBindingRoot")
+        if self._resolver is None:
+            raise PermissionError("server-owned provider assignment is unavailable")
+        transactional = getattr(self._resolver, "resolve_current_in_transaction", None)
+        seed = (
+            transactional(connection, root)
+            if callable(transactional)
+            else self._resolver.resolve(root)
+        )
+        if not isinstance(seed, ProviderWorkBindingSeed) or (
+            seed.owner_user_id != root.owner_user_id
+            or seed.universe_id != root.universe_id
+            or seed.provider != root.provider
+        ):
+            raise PermissionError("server-owned provider assignment is unavailable")
+        current = expected.expected_record
+        replacement = replace(
+            current,
+            generation=current.generation + 1,
+            state=ProviderWorkBindingState.ACTIVE,
+            credential_reference_digest=seed.credential_reference_digest,
+            allowed_operations=seed.allowed_operations,
+            allowed_roles=seed.allowed_roles,
+            assignment_generation=seed.assignment_generation,
+            assignment_digest=seed.assignment_digest,
+            revocation_generation=0,
+            max_invocations=seed.max_invocations,
+            max_tokens=seed.max_tokens,
+            max_cost_microunits=seed.max_cost_microunits,
+            expires_at=seed.expires_at,
+            updated_at=self._store.timestamp(),
+            binding_digest=_PLACEHOLDER_DIGEST,
+        )
+        replacement = replace(replacement, binding_digest=replacement.expected_digest())
+        transition = getattr(self._store, "_compare_and_swap_binding_in_transaction", None)
+        if not callable(transition):
+            raise ValueError("store must implement transactional binding transitions")
+        return transition(connection, expected, replacement)
 
 
 class ProviderWorkReceiptService:

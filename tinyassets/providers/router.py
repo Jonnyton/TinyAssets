@@ -355,6 +355,56 @@ class ProviderRouter:
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
+        """Route a call, fencing founder-facing served turns before launch."""
+
+        if universe_context is not None and universe_context.provider_invocation is None:
+            from tinyassets.provider_assignment import authorize_served_provider_call
+
+            if (
+                universe_context.universe_dir is None
+                or universe_context.provider_request is None
+                or not operation
+            ):
+                raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+            universe_dir = universe_context.universe_dir
+            with authorize_served_provider_call(
+                universe_dir.parent,
+                universe_dir=universe_dir,
+                request_carrier=universe_context.provider_request,
+                role=role,
+                operation=operation,
+            ) as authority:
+                authorized_context = replace(
+                    universe_context,
+                    served_provider=authority,
+                )
+                return await self._call_routed(
+                    role,
+                    prompt,
+                    system,
+                    config,
+                    operation=operation,
+                    universe_context=authorized_context,
+                )
+        return await self._call_routed(
+            role,
+            prompt,
+            system,
+            config,
+            operation=operation,
+            universe_context=universe_context,
+        )
+
+    async def _call_routed(
+        self,
+        role: str,
+        prompt: str,
+        system: str,
+        config: ModelConfig | None = None,
+        *,
+        operation: str | None = None,
+        universe_context: UniverseContext | None = None,
+    ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
 
         Returns a :class:`ProviderResponse` on success.  For judge role,
@@ -370,10 +420,32 @@ class ProviderRouter:
             role=role,
             operation=operation,
         )
+        served_authority = universe_context.served_provider if universe_context else None
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
-        if invocation_carrier is not None:
+        if served_authority is not None:
+            if operation != "converse" or role != "writer":
+                raise PermissionError("served provider authority is converse/writer only")
+            if served_authority.max_tokens < 1:
+                raise PermissionError("served provider authority has no token budget")
+            if served_authority.max_cost_microunits < 1:
+                raise PermissionError("served provider authority has no cost budget")
+            if cfg.max_tokens is None:
+                cfg = replace(cfg, max_tokens=served_authority.max_tokens)
+            elif (
+                isinstance(cfg.max_tokens, bool)
+                or not isinstance(cfg.max_tokens, int)
+                or cfg.max_tokens < 0
+                or cfg.max_tokens > served_authority.max_tokens
+            ):
+                raise PermissionError("provider call exceeds served token ceiling")
+            cfg = replace(
+                cfg,
+                credential_snapshot_dir=served_authority.credential_snapshot_dir,
+            )
+            chain = [served_authority.provider]
+        elif invocation_carrier is not None:
             if invocation_carrier.max_tokens < 1:
                 raise PermissionError("armed provider invocation has no positive token budget")
             if invocation_carrier.max_cost_microunits < 1:
@@ -396,7 +468,10 @@ class ProviderRouter:
         # provider fails, the call fails loudly (hard rule #8).
         pin_writer = os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
         is_pinned_writer = role == "writer" and bool(pin_writer)
-        if invocation_carrier is not None:
+        if served_authority is not None:
+            if is_pinned_writer and pin_writer != served_authority.provider:
+                raise PermissionError("writer pin conflicts with served provider")
+        elif invocation_carrier is not None:
             if is_pinned_writer and pin_writer != invocation_carrier.provider:
                 raise PermissionError("writer pin conflicts with armed provider")
         elif is_pinned_writer:
@@ -416,10 +491,14 @@ class ProviderRouter:
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
         # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = _effective_universe_provider_ceiling(
-            universe_context,
-            resolved_config,
-            carrier_armed=invocation_carrier is not None,
+        allowlist = (
+            [served_authority.provider]
+            if served_authority is not None
+            else _effective_universe_provider_ceiling(
+                universe_context,
+                resolved_config,
+                carrier_armed=invocation_carrier is not None,
+            )
         )
         if allowlist is not None:
             filtered = self._apply_allowlist(chain, allowlist)
@@ -484,7 +563,11 @@ class ProviderRouter:
         # For normal fallback routing, remove unregistered providers before
         # iteration so the live chain does not advertise phantom first entries.
         attempts: list[ProviderAttemptDiagnostic] = []
-        if invocation_carrier is None and not is_pinned_writer:
+        if (
+            invocation_carrier is None
+            and served_authority is None
+            and not is_pinned_writer
+        ):
             effective_chain, excluded = self.effective_chain(chain)
             if excluded:
                 logger.info(
@@ -542,10 +625,66 @@ class ProviderRouter:
 
             logger.info("Trying provider %s for role=%s", provider_name, role)
             try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
+                budget_reservation = None
+                if served_authority is not None:
+                    from tinyassets.auth.middleware import (
+                        consume_provider_request_invocation,
+                    )
+                    from tinyassets.provider_assignment import (
+                        abandon_served_provider_budget,
+                        finalize_served_provider_budget,
+                        reserve_served_provider_budget,
+                    )
+
+                    try:
+                        consume_provider_request_invocation(
+                            served_authority.request_capability,
+                            limit=served_authority.request_max_invocations,
+                        )
+                    except PermissionError as exc:
+                        raise ProviderAuthorityHeldError(
+                            _CONNECT_PROVIDER_MESSAGE
+                        ) from exc
+                    estimated_input_tokens = max(
+                        1,
+                        len(
+                            (f"{system}\n\n{prompt}" if system else prompt).encode(
+                                "utf-8"
+                            )
+                        ),
+                    )
+                    budget_reservation = reserve_served_provider_budget(
+                        universe_dir.parent,
+                        universe_dir=universe_dir,
+                        authority=served_authority,
+                        requested_output_tokens=cfg.max_tokens,
+                        estimated_input_tokens=estimated_input_tokens,
+                    )
+                    cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
+                try:
+                    resp = await provider.complete(
+                        prompt, system, cfg, universe_dir=universe_dir,
+                    )
+                except BaseException:
+                    if budget_reservation is not None:
+                        abandon_served_provider_budget(
+                            universe_dir.parent,
+                            budget_reservation,
+                        )
+                    raise
+                if budget_reservation is not None:
+                    finalize_served_provider_budget(
+                        universe_dir.parent,
+                        authority=served_authority,
+                        reservation=budget_reservation,
+                        input_tokens=resp.input_tokens,
+                        output_tokens=resp.output_tokens,
+                        cost_microunits=resp.cost_microunits,
+                        fallback_output=resp.text,
+                    )
                 self._quota.record_success(provider_name)
+            except ProviderAuthorityHeldError:
+                raise
             except ProviderUnavailableError as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -618,6 +757,12 @@ class ProviderRouter:
             return resp
 
         # All providers exhausted.
+        if served_authority is not None:
+            raise AllProvidersExhaustedError(
+                f"Served provider {served_authority.provider!r} exhausted; "
+                "universe authority forbids fallback widening.",
+                attempts=attempts,
+            )
         if invocation_carrier is not None:
             raise AllProvidersExhaustedError(
                 f"Armed provider {invocation_carrier.provider!r} exhausted; "
@@ -722,8 +867,8 @@ class ProviderRouter:
         method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
-        if universe_context is not None and universe_context.provider_invocation is not None:
-            resp = await self.call(
+        if universe_context is not None:
+            response = await self.call(
                 role,
                 prompt,
                 system,
@@ -731,7 +876,7 @@ class ProviderRouter:
                 operation=operation,
                 universe_context=universe_context,
             )
-            return resp.text, resp.provider, self._call_meta(resp, attempts=1)
+            return response.text, response.provider, self._call_meta(response, attempts=1)
 
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None

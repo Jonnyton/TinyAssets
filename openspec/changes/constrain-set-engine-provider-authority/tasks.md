@@ -370,6 +370,15 @@
   checks, and fail-loud reverse/reentrant acquisition.
 - [ ] 5.6 Run focused tests GREEN and commit this reviewable slice.
 
+Slice-1 implementation note (2026-08-10, `claude/byo-llm-slice1`): the
+BYO-LLM vertical slice co-advances the current-message FastMCP reserve/worker
+claim, requester-local shared/exclusive assignment admission, opaque
+credential-vault reference, pending/ready/failed assignment journal, and
+fresh router-sink validation. The broader parent tasks remain unchecked:
+their global V2 flag, every transport/call-site inventory item, non-serving
+source mappings, background receipts, and rollout proofs are outside this
+bounded slice and still gate canonical completion.
+
 ## 6. RED tests — propagation, taxonomy, and reference-only launch
 
 - [ ] 6.1 Add exhaustive call-site tests proving live requests retain the

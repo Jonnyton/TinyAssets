@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import base64
+import os
+import sqlite3
+import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +26,55 @@ from tinyassets.credential_vault import (
     resolve_github_token,
     write_credential_vault,
 )
+
+
+def _make_directory_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as symlink_error:
+        if os.name != "nt":
+            pytest.skip(f"directory symlinks unavailable: {symlink_error}")
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode:
+        pytest.skip(f"directory junctions unavailable: {result.stderr.strip()}")
+
+
+def _credential_snapshot_fixture(tmp_path):
+    from tinyassets.credential_vault import adopt_llm_subscription_custody
+    from tinyassets.storage import db_path
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    write_credential_vault(
+        universe_dir,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "eyJ0b2tlbiI6InNuYXBzaG90LXNlY3JldCJ9",
+        }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+    )
+    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        custody = adopt_llm_subscription_custody(
+            conn,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            service="codex",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return universe_dir, custody
 
 
 def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
@@ -600,3 +653,85 @@ def test_apply_provider_auth_env_uses_workflow_universe(tmp_path):
 
 def test_missing_vault_loads_as_empty(tmp_path: Path):
     assert load_credential_vault(tmp_path) == []
+
+
+@pytest.mark.parametrize("link_level", ["runtime", "snapshot_root"])
+def test_snapshot_refuses_symlinked_root_before_writing_secret(tmp_path, link_level):
+    from tinyassets.credential_vault import snapshot_llm_subscription_credential
+
+    universe_dir, custody = _credential_snapshot_fixture(tmp_path)
+    runtime_dir = universe_dir / ".runtime"
+    outside = tmp_path / "outside-snapshot-root"
+    outside.mkdir()
+    if link_level == "runtime":
+        _make_directory_link(runtime_dir, outside)
+    else:
+        runtime_dir.mkdir()
+        _make_directory_link(runtime_dir / "provider-launch-credentials", outside)
+
+    with pytest.raises(PermissionError, match="snapshot directory"):
+        snapshot_llm_subscription_credential(
+            universe_dir=universe_dir,
+            custody=custody,
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_snapshot_cleanup_preserves_decoy_and_removes_renamed_plaintext(
+    tmp_path,
+    caplog,
+):
+    from tinyassets.credential_vault import (
+        cleanup_llm_credential_snapshot,
+        snapshot_llm_subscription_credential,
+    )
+
+    universe_dir, custody = _credential_snapshot_fixture(tmp_path)
+    snapshot = snapshot_llm_subscription_credential(
+        universe_dir=universe_dir,
+        custody=custody,
+    )
+    outside = tmp_path / "outside-cleanup"
+    outside.mkdir()
+    outside_marker = outside / "keep.txt"
+    outside_marker.write_text("outside the snapshot", encoding="utf-8")
+    _make_directory_link(snapshot.directory / "outside-link", outside)
+    relocated = snapshot.directory.with_name(snapshot.directory.name + "-relocated")
+    snapshot.directory.rename(relocated)
+    snapshot.directory.mkdir()
+    decoy = snapshot.directory / "keep.txt"
+    decoy.write_text("not the tracked snapshot", encoding="utf-8")
+
+    cleanup_llm_credential_snapshot(snapshot)
+
+    assert snapshot.directory.is_dir()
+    assert decoy.read_text(encoding="utf-8") == "not the tracked snapshot"
+    assert not relocated.exists()
+    assert list(snapshot.directory.parent.glob("*/auth.json")) == []
+    assert outside_marker.read_text(encoding="utf-8") == "outside the snapshot"
+    assert "credential snapshot path identity changed" in caplog.text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX modes")
+def test_snapshot_directory_and_files_are_owner_only(tmp_path):
+    from tinyassets.credential_vault import (
+        cleanup_llm_credential_snapshot,
+        snapshot_llm_subscription_credential,
+    )
+
+    universe_dir, custody = _credential_snapshot_fixture(tmp_path)
+    snapshot = snapshot_llm_subscription_credential(
+        universe_dir=universe_dir,
+        custody=custody,
+    )
+    try:
+        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot.directory.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot.directory.parent.parent.stat().st_mode) == 0o700
+        assert {
+            path.name: stat.S_IMODE(path.stat().st_mode)
+            for path in snapshot.directory.iterdir()
+        } == {".lock": 0o400, "auth.json": 0o400, "config.toml": 0o400}
+    finally:
+        cleanup_llm_credential_snapshot(snapshot)

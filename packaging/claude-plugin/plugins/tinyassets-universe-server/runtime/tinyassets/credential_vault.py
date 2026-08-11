@@ -8,11 +8,19 @@ secret values only to daemon-side effectors/providers that need them.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import os
 import re
+import secrets
+import sqlite3
+import stat
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
@@ -308,7 +316,7 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     return _records_from_payload(payload)
 
 
-def write_credential_vault(
+def _write_credential_vault_unlocked(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
 ) -> dict[str, Any]:
@@ -382,6 +390,762 @@ def write_credential_vault(
         "collapsed_credential_count": collapsed_credential_count,
         "dropped_credential_slots": dropped_credential_slots,
     }
+
+
+def write_credential_vault(
+    universe_dir: str | Path,
+    credentials: list[dict[str, Any]] | dict[str, Any],
+    *,
+    owner_user_id: str | None = None,
+    universe_id: str | None = None,
+) -> dict[str, Any]:
+    """Write while excluding launches and optionally record depositor ownership.
+
+    ``owner_user_id`` is trusted transport state, never a vault-record field.
+    Omitting it leaves new LLM subscription material unowned and therefore
+    ineligible for serving authority.
+    """
+
+    from tinyassets.provider_assignment import provider_assignment_admission
+    from tinyassets.storage import db_path
+
+    universe = Path(universe_dir).resolve(strict=False)
+    owner = (owner_user_id or "").strip()
+    uid = (universe_id or universe.name).strip()
+    if owner_user_id is not None and not owner:
+        raise ValueError("credential owner must be a non-empty server principal")
+    if uid != universe.name:
+        raise ValueError("credential universe does not match its canonical directory")
+    with provider_assignment_admission().exclusive(universe):
+        conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+        try:
+            _ensure_llm_deposit_owner_schema(conn)
+            if owner:
+                existing = conn.execute(
+                    """
+                    SELECT DISTINCT owner_user_id
+                      FROM llm_credential_deposit_owners
+                     WHERE universe_id = ?
+                    """,
+                    (uid,),
+                ).fetchall()
+                if any(str(row[0]) != owner for row in existing):
+                    raise PermissionError(
+                        "credential ownership transfer requires a dedicated flow"
+                    )
+            summary = _write_credential_vault_unlocked(universe, credentials)
+            records = load_credential_vault(universe)
+            services = {
+                _service(record)
+                for record in records
+                if record.get("credential_type") == "llm_subscription"
+                and _service(record) in {"claude", "codex"}
+            }
+            conn.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in services)
+            if services:
+                conn.execute(
+                    f"""
+                    DELETE FROM llm_credential_deposit_owners
+                     WHERE universe_id = ? AND service NOT IN ({placeholders})
+                    """,
+                    (uid, *sorted(services)),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
+                    (uid,),
+                )
+            if owner:
+                for service_name in services:
+                    conn.execute(
+                        """
+                        INSERT INTO llm_credential_deposit_owners (
+                            universe_id, service, owner_user_id
+                        ) VALUES (?, ?, ?)
+                        ON CONFLICT(universe_id, service) DO UPDATE SET
+                            owner_user_id = excluded.owner_user_id
+                        """,
+                        (uid, service_name, owner),
+                    )
+            conn.commit()
+            return summary
+        finally:
+            conn.close()
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCredentialCustodyReference:
+    """Secret-free credential identity issued by the vault custody owner."""
+
+    reference_id: str
+    owner_user_id: str
+    universe_id: str
+    service: str
+    generation: int
+    reference_digest: str
+    _record_digest: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCredentialSnapshot:
+    """One launch's rotation-stable, sandbox-read-only credential copy.
+
+    This blocks source-rotation races and sandbox-interior writes. It does not
+    defend against same-UID mutation; those processes remain inside the
+    credential-vault trust boundary.
+    """
+
+    # At-rest/operator-blind sealing belongs to credential-vault task 1.8.
+    directory: Path = field(repr=False)
+    service: str
+    generation: int
+    reference_digest: str
+    _directory_identity: tuple[int, int] = field(repr=False)
+    _root_directory: Path = field(repr=False)
+    _root_identity: tuple[int, int] = field(repr=False)
+
+
+def _canonical_digest(value: object) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_deposit_owners (
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL,
+            PRIMARY KEY (universe_id, service)
+        )
+        """
+    )
+
+
+def _read_credential_material(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise PermissionError("exactly one usable subscription credential is required")
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise PermissionError("exactly one usable subscription credential is required")
+    material = path.read_bytes()
+    after = path.stat(follow_symlinks=False)
+    identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if identity_before != identity_after:
+        raise PermissionError("credential material changed during validation")
+    return material
+
+
+def _subscription_material(
+    universe_dir: Path,
+    service: str,
+    record: dict[str, Any],
+) -> bytes:
+    if service == "codex":
+        encoded = record.get("auth_json_b64")
+        if isinstance(encoded, str) and encoded.strip():
+            return _decode_codex_auth_json(encoded)
+        home = _codex_home_from_record(record, universe_dir)
+        if home is None:
+            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+        auth_file = _contained_path(universe_dir, str(home / "auth.json"))
+        if auth_file is None:
+            raise PermissionError("exactly one usable subscription credential is required")
+        return _read_credential_material(auth_file)
+    if service == "claude":
+        token = _secret_value(record, "oauth_token", "claude_code_oauth_token")
+        if token:
+            return token.encode("utf-8")
+        config_dir = _claude_config_dir_from_record(record, universe_dir)
+        credential_file = (
+            _contained_path(universe_dir, str(config_dir / ".credentials.json"))
+            if config_dir is not None
+            else None
+        )
+        if credential_file is None:
+            raise PermissionError("exactly one usable subscription credential is required")
+        return _read_credential_material(credential_file)
+    raise PermissionError("exactly one usable subscription credential is required")
+
+
+def _subscription_material_digest(
+    universe_dir: Path,
+    service: str,
+    record: dict[str, Any],
+) -> str:
+    material = _subscription_material(universe_dir, service, record)
+    return "sha256:" + hashlib.sha256(material).hexdigest()
+
+
+def _subscription_record_digest(
+    universe_dir: Path,
+    service: str,
+    record: dict[str, Any],
+) -> str:
+    return _canonical_digest({
+        "material_digest": _subscription_material_digest(universe_dir, service, record),
+        "record": record,
+    })
+
+
+def _contained_path(universe_dir: Path, raw: object) -> Path | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    root = universe_dir.resolve(strict=True)
+    candidate = Path(raw.strip())
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    lexical = Path(os.path.abspath(candidate))
+    try:
+        relative = lexical.relative_to(root)
+    except ValueError:
+        return None
+    current = root
+    for part in relative.parts:
+        current = current / part
+        is_junction = getattr(current, "is_junction", None)
+        if current.exists() and (
+            current.is_symlink()
+            or (callable(is_junction) and is_junction())
+            or (
+                os.name == "nt"
+                and os.path.normcase(os.path.realpath(current))
+                != os.path.normcase(os.path.abspath(current))
+            )
+        ):
+            return None
+    resolved = lexical.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _usable_subscription_record(
+    universe_dir: Path,
+    service: str,
+) -> dict[str, Any]:
+    vault_path = credential_vault_path(universe_dir)
+    if vault_path.is_symlink() or not vault_path.is_file():
+        raise PermissionError("exactly one usable subscription credential is required")
+    records = _llm_records(universe_dir, service)
+    if len(records) != 1:
+        raise PermissionError("exactly one usable subscription credential is required")
+    record = records[0]
+    path_fields = (
+        ("codex_home", "home", "auth_home", "path", "auth_json_path")
+        if service == "codex"
+        else ("claude_config_dir", "config_dir", "path", "claude_home", "home", "auth_home")
+    )
+    resolved_paths = [
+        _contained_path(universe_dir, record.get(key))
+        for key in path_fields
+        if isinstance(record.get(key), str) and str(record.get(key)).strip()
+    ]
+    if any(path is None for path in resolved_paths):
+        raise PermissionError("exactly one usable subscription credential is required")
+    if service == "codex":
+        encoded = record.get("auth_json_b64")
+        if isinstance(encoded, str) and encoded.strip():
+            _decode_codex_auth_json(encoded)
+            return record
+        home = _codex_home_from_record(record, universe_dir)
+        if home is None:
+            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+        contained_home = _contained_path(universe_dir, str(home))
+        if contained_home is None or not (contained_home / "auth.json").is_file():
+            raise PermissionError("exactly one usable subscription credential is required")
+        return record
+    if service == "claude":
+        if _secret_value(record, "oauth_token", "claude_code_oauth_token"):
+            return record
+        config_dir = _claude_config_dir_from_record(record, universe_dir)
+        contained_dir = (
+            _contained_path(universe_dir, str(config_dir))
+            if config_dir is not None
+            else None
+        )
+        if contained_dir is None or not contained_dir.is_dir():
+            raise PermissionError("exactly one usable subscription credential is required")
+        return record
+    raise PermissionError("exactly one usable subscription credential is required")
+
+
+def _custody_reference_digest(
+    *,
+    reference_id: str,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+    generation: int,
+    record_digest: str,
+) -> str:
+    return _canonical_digest({
+        "generation": generation,
+        "owner_user_id": owner_user_id,
+        "record_digest": record_digest,
+        "reference_id": reference_id,
+        "schema_version": 1,
+        "service": service,
+        "universe_id": universe_id,
+    })
+
+
+def adopt_llm_subscription_custody(
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+) -> LLMCredentialCustodyReference:
+    """Adopt or rotate one current vault record under an existing transaction."""
+
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("LLM custody adoption requires an active SQLite transaction")
+    owner = owner_user_id.strip()
+    uid = universe_id.strip()
+    canonical_service = service.strip().lower()
+    if not owner or not uid or canonical_service not in {"claude", "codex"}:
+        raise ValueError("LLM custody root is invalid")
+    universe = Path(universe_dir)
+    record = _usable_subscription_record(universe, canonical_service)
+    record_digest = _subscription_record_digest(universe, canonical_service, record)
+    _ensure_llm_deposit_owner_schema(conn)
+    depositor = conn.execute(
+        """
+        SELECT owner_user_id FROM llm_credential_deposit_owners
+         WHERE universe_id = ? AND service = ?
+        """,
+        (uid, canonical_service),
+    ).fetchone()
+    if depositor is None or str(depositor[0]) != owner:
+        raise PermissionError("caller is not the server-recorded credential owner")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_custody (
+            reference_id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL,
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            record_digest TEXT NOT NULL,
+            reference_digest TEXT NOT NULL,
+            UNIQUE (owner_user_id, universe_id, service)
+        )
+        """
+    )
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner, uid, canonical_service),
+    ).fetchone()
+    if row is None:
+        reference_id = f"llm_credential_{secrets.token_hex(16)}"
+        generation = 1
+    else:
+        reference_id = str(row[0])
+        if str(row[2]) == record_digest:
+            return LLMCredentialCustodyReference(
+                reference_id=reference_id,
+                owner_user_id=owner,
+                universe_id=uid,
+                service=canonical_service,
+                generation=int(row[1]),
+                reference_digest=str(row[3]),
+                _record_digest=record_digest,
+            )
+        generation = int(row[1]) + 1
+    reference_digest = _custody_reference_digest(
+        reference_id=reference_id,
+        owner_user_id=owner,
+        universe_id=uid,
+        service=canonical_service,
+        generation=generation,
+        record_digest=record_digest,
+    )
+    conn.execute(
+        """
+        INSERT INTO llm_credential_custody (
+            reference_id, owner_user_id, universe_id, service, generation,
+            record_digest, reference_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_user_id, universe_id, service) DO UPDATE SET
+            generation = excluded.generation,
+            record_digest = excluded.record_digest,
+            reference_digest = excluded.reference_digest
+        """,
+        (
+            reference_id,
+            owner,
+            uid,
+            canonical_service,
+            generation,
+            record_digest,
+            reference_digest,
+        ),
+    )
+    return LLMCredentialCustodyReference(
+        reference_id=reference_id,
+        owner_user_id=owner,
+        universe_id=uid,
+        service=canonical_service,
+        generation=generation,
+        reference_digest=reference_digest,
+        _record_digest=record_digest,
+    )
+
+
+def current_llm_subscription_custody(
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+) -> LLMCredentialCustodyReference | None:
+    """Reload and verify the current opaque reference without adopting state."""
+
+    _ensure_llm_deposit_owner_schema(conn)
+    recorded_owner = conn.execute(
+        """
+        SELECT owner_user_id FROM llm_credential_deposit_owners
+         WHERE universe_id = ? AND service = ?
+        """,
+        (universe_id.strip(), service.strip().lower()),
+    ).fetchone()
+    if recorded_owner is None or str(recorded_owner[0]) != owner_user_id.strip():
+        return None
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_custody (
+            reference_id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL,
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            record_digest TEXT NOT NULL,
+            reference_digest TEXT NOT NULL,
+            UNIQUE (owner_user_id, universe_id, service)
+        )
+        """
+    )
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner_user_id.strip(), universe_id.strip(), service.strip().lower()),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        record = _usable_subscription_record(Path(universe_dir), service.strip().lower())
+    except (PermissionError, ValueError, OSError):
+        return None
+    record_digest = _subscription_record_digest(
+        Path(universe_dir), service.strip().lower(), record,
+    )
+    expected = _custody_reference_digest(
+        reference_id=str(row[0]),
+        owner_user_id=owner_user_id.strip(),
+        universe_id=universe_id.strip(),
+        service=service.strip().lower(),
+        generation=int(row[1]),
+        record_digest=record_digest,
+    )
+    if record_digest != str(row[2]) or expected != str(row[3]):
+        return None
+    return LLMCredentialCustodyReference(
+        reference_id=str(row[0]),
+        owner_user_id=owner_user_id.strip(),
+        universe_id=universe_id.strip(),
+        service=service.strip().lower(),
+        generation=int(row[1]),
+        reference_digest=str(row[3]),
+        _record_digest=record_digest,
+    )
+
+
+def _is_snapshot_reparse_point(file_stat: os.stat_result) -> bool:
+    if stat.S_ISLNK(file_stat.st_mode):
+        return True
+    attributes = getattr(file_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag)
+
+
+def _snapshot_file_identity(file_stat: os.stat_result) -> tuple[int, int]:
+    device = getattr(file_stat, "st_dev", None)
+    inode = getattr(file_stat, "st_ino", None)
+    if type(device) is not int or type(inode) is not int or inode == 0:
+        raise PermissionError("credential snapshot filesystem identity is unavailable")
+    return device, inode
+
+
+def _plain_snapshot_directory(path: Path) -> tuple[int, int]:
+    try:
+        file_stat = path.lstat()
+        resolved = Path(os.path.realpath(path))
+        resolved_stat = resolved.stat()
+    except OSError as exc:
+        raise PermissionError("credential snapshot directory is unavailable") from exc
+    if (
+        _is_snapshot_reparse_point(file_stat)
+        or not stat.S_ISDIR(file_stat.st_mode)
+        or os.path.normcase(os.path.abspath(path))
+        != os.path.normcase(os.path.abspath(resolved))
+    ):
+        raise PermissionError("credential snapshot directory must be a plain directory")
+    identity = _snapshot_file_identity(file_stat)
+    if _snapshot_file_identity(resolved_stat) != identity:
+        raise PermissionError("credential snapshot directory identity is unstable")
+    get_effective_uid = getattr(os, "geteuid", None)
+    if callable(get_effective_uid) and file_stat.st_uid != get_effective_uid():
+        raise PermissionError("credential snapshot directory has another owner")
+    return identity
+
+
+def _prepare_snapshot_root(universe: Path) -> tuple[Path, tuple[int, int]]:
+    runtime_dir = universe / ".runtime"
+    snapshot_root = runtime_dir / "provider-launch-credentials"
+    for directory in (runtime_dir, snapshot_root):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise PermissionError("credential snapshot directory cannot be created") from exc
+        identity = _plain_snapshot_directory(directory)
+        _chmod_best_effort(directory, 0o700)
+        if _plain_snapshot_directory(directory) != identity:
+            raise PermissionError("credential snapshot directory identity changed")
+    return snapshot_root, _plain_snapshot_directory(snapshot_root)
+
+
+def _create_snapshot_directory(
+    snapshot_root: Path,
+    root_identity: tuple[int, int],
+) -> tuple[Path, tuple[int, int]]:
+    for _attempt in range(16):
+        if _plain_snapshot_directory(snapshot_root) != root_identity:
+            raise PermissionError("credential snapshot root identity changed")
+        directory = snapshot_root / f"codex-{secrets.token_hex(16)}"
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise PermissionError("credential snapshot directory cannot be created") from exc
+        identity = _plain_snapshot_directory(directory)
+        if _plain_snapshot_directory(snapshot_root) != root_identity:
+            raise PermissionError("credential snapshot root identity changed")
+        return directory, identity
+    raise PermissionError("credential snapshot directory name cannot be reserved")
+
+
+def _write_exclusive_snapshot_file(path: Path, contents: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise PermissionError("credential snapshot file cannot be created") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            _is_snapshot_reparse_point(current)
+            or not stat.S_ISREG(current.st_mode)
+            or getattr(current, "st_nlink", 1) != 1
+            or _snapshot_file_identity(opened) != _snapshot_file_identity(current)
+        ):
+            raise PermissionError("credential snapshot file identity is unstable")
+        remaining = memoryview(contents)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("credential snapshot file write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+    _chmod_best_effort(path, 0o400)
+
+
+def _remove_snapshot_tree(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> None:
+    file_stat = path.lstat()
+    if expected_identity is not None and _snapshot_file_identity(file_stat) != expected_identity:
+        raise PermissionError("credential snapshot path identity changed")
+    if _is_snapshot_reparse_point(file_stat):
+        if stat.S_ISDIR(file_stat.st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
+        return
+    if stat.S_ISDIR(file_stat.st_mode):
+        with os.scandir(path) as entries:
+            children = [Path(entry.path) for entry in entries]
+        for child in children:
+            _remove_snapshot_tree(child)
+        _chmod_best_effort(path, 0o700)
+        path.rmdir()
+        return
+    _chmod_best_effort(path, 0o600)
+    path.unlink()
+
+
+def _locate_tracked_snapshot(snapshot: LLMCredentialSnapshot) -> Path | None:
+    try:
+        current = snapshot.directory.lstat()
+    except FileNotFoundError:
+        current = None
+    except OSError:
+        current = None
+    if (
+        current is not None
+        and not _is_snapshot_reparse_point(current)
+        and stat.S_ISDIR(current.st_mode)
+        and _snapshot_file_identity(current) == snapshot._directory_identity
+    ):
+        return snapshot.directory
+
+    logger.warning(
+        "credential snapshot path identity changed; locating tracked directory"
+    )
+    try:
+        if (
+            _plain_snapshot_directory(snapshot._root_directory)
+            != snapshot._root_identity
+        ):
+            return None
+        with os.scandir(snapshot._root_directory) as entries:
+            for entry in entries:
+                try:
+                    entry_stat = Path(entry.path).lstat()
+                    identity = _snapshot_file_identity(entry_stat)
+                except (OSError, PermissionError):
+                    continue
+                if identity != snapshot._directory_identity:
+                    continue
+                if (
+                    _is_snapshot_reparse_point(entry_stat)
+                    or not stat.S_ISDIR(entry_stat.st_mode)
+                ):
+                    return None
+                return Path(entry.path)
+    except (OSError, PermissionError):
+        return None
+    return None
+
+
+def cleanup_llm_credential_snapshot(snapshot: LLMCredentialSnapshot | None) -> None:
+    """Best-effort identity-anchored snapshot removal; never raise."""
+
+    if snapshot is None:
+        return
+    try:
+        tracked_directory = _locate_tracked_snapshot(snapshot)
+        if tracked_directory is not None:
+            _remove_snapshot_tree(
+                tracked_directory,
+                expected_identity=snapshot._directory_identity,
+            )
+    except Exception:  # noqa: BLE001 - cleanup must never mask launch outcome
+        logger.warning("credential snapshot cleanup could not remove tracked directory")
+
+
+def snapshot_llm_subscription_credential(
+    *,
+    universe_dir: str | Path,
+    custody: LLMCredentialCustodyReference,
+) -> LLMCredentialSnapshot:
+    """Copy current credential bytes into one immutable launch directory."""
+
+    universe = Path(universe_dir).resolve(strict=True)
+    if custody.universe_id != universe.name or custody.service != "codex":
+        raise PermissionError("credential snapshot root is not current")
+    record = _usable_subscription_record(universe, custody.service)
+    material = _subscription_material(universe, custody.service, record)
+    material_digest = "sha256:" + hashlib.sha256(material).hexdigest()
+    snapshot_record_digest = _canonical_digest({
+        "material_digest": material_digest,
+        "record": record,
+    })
+    snapshot_reference_digest = _custody_reference_digest(
+        reference_id=custody.reference_id,
+        owner_user_id=custody.owner_user_id,
+        universe_id=custody.universe_id,
+        service=custody.service,
+        generation=custody.generation,
+        record_digest=snapshot_record_digest,
+    )
+    if (
+        snapshot_record_digest != custody._record_digest
+        or snapshot_reference_digest != custody.reference_digest
+    ):
+        raise PermissionError("credential changed before launch snapshot")
+
+    snapshot_root, root_identity = _prepare_snapshot_root(universe)
+    directory, directory_identity = _create_snapshot_directory(
+        snapshot_root,
+        root_identity,
+    )
+    snapshot = LLMCredentialSnapshot(
+        directory=directory,
+        service=custody.service,
+        generation=custody.generation,
+        reference_digest=snapshot_reference_digest,
+        _directory_identity=directory_identity,
+        _root_directory=snapshot_root,
+        _root_identity=root_identity,
+    )
+    try:
+        auth_file = directory / "auth.json"
+        if _plain_snapshot_directory(directory) != directory_identity:
+            raise PermissionError("credential snapshot directory identity changed")
+        _write_exclusive_snapshot_file(auth_file, material)
+        config_file = directory / "config.toml"
+        _write_exclusive_snapshot_file(
+            config_file,
+            b'cli_auth_credentials_store = "file"\n',
+        )
+        lock_file = directory / ".lock"
+        _write_exclusive_snapshot_file(lock_file, b"")
+        copied_material = _read_credential_material(auth_file)
+        copied_record_digest = _canonical_digest({
+            "material_digest": (
+                "sha256:" + hashlib.sha256(copied_material).hexdigest()
+            ),
+            "record": record,
+        })
+        copied_reference_digest = _custody_reference_digest(
+            reference_id=custody.reference_id,
+            owner_user_id=custody.owner_user_id,
+            universe_id=custody.universe_id,
+            service=custody.service,
+            generation=custody.generation,
+            record_digest=copied_record_digest,
+        )
+        if copied_reference_digest != custody.reference_digest:
+            raise PermissionError("credential snapshot custody digest disagrees")
+        _chmod_best_effort(directory, 0o700)
+        return snapshot
+    except BaseException:
+        cleanup_llm_credential_snapshot(snapshot)
+        raise
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:

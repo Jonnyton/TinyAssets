@@ -175,7 +175,24 @@ def _register_structured_tool(
 
     @wraps(fn)
     def _tool(*args, **kwargs):
-        return _structured_return(fn(*args, **kwargs))
+        from tinyassets.auth.middleware import (
+            claim_provider_request,
+            provider_request_reserve,
+            revoke_provider_request,
+        )
+
+        reserve = provider_request_reserve()
+        capability = None
+        if reserve is not None:
+            capability = claim_provider_request(
+                reserve,
+                tool_name=name or fn.__name__,
+            )
+        try:
+            return _structured_return(fn(*args, **kwargs))
+        finally:
+            if capability is not None:
+                revoke_provider_request(capability)
 
     _tool.__name__ = f"_mcp_{fn.__name__}"
     # Inject docstring-derived parameter descriptions so the advertised
@@ -689,7 +706,7 @@ def write_graph(
             a create-scoped sign-in declined auto-birth).
         operation: With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
-            With target=agent_binding, bind/update.
+            With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=automation, bind_provider/reconcile_provider/create/pause/
             rebind/resume/stop. Rebind a stopped automation to a published
             immutable Branch version; binding
@@ -1013,6 +1030,8 @@ def write_graph(
             "bind": "create_binding",
             "create": "create_binding",
             "update": "update_binding",
+            "bind_serving_provider": "bind_serving_provider",
+            "set_serving": "set_serving",
         }.get(binding_operation)
         if action is None:
             return json.dumps(
@@ -1020,7 +1039,12 @@ def write_graph(
                     "error": "unknown_agent_operation",
                     "target": "agent_binding",
                     "operation": operation,
-                    "allowed_operations": ["bind", "update"],
+                    "allowed_operations": [
+                        "bind",
+                        "update",
+                        "bind_serving_provider",
+                        "set_serving",
+                    ],
                 }
             )
         return json.dumps(
@@ -2572,7 +2596,54 @@ class _DeprecatedToolVisibility(Middleware):
         return await call_next(context)
 
 
+class _ProviderRequestAuthority(Middleware):
+    """Mint an inert, exact-message reserve before FastMCP selects a worker."""
+
+    async def on_call_tool(self, context, call_next):
+        from mcp.server.lowlevel.server import request_ctx
+
+        from tinyassets.auth.middleware import (
+            cancel_provider_request_reserve,
+            current_mcp_message_identity,
+            reserve_provider_request,
+            reset_provider_request_reserve,
+            set_provider_request_reserve,
+        )
+
+        identity = current_mcp_message_identity()
+        name = str(getattr(context.message, "name", "") or "")
+        fastmcp_context = getattr(context, "fastmcp_context", None)
+        if (
+            identity is None
+            or not name
+            or fastmcp_context is None
+            or bool(getattr(fastmcp_context, "is_background_task", False))
+        ):
+            return await call_next(context)
+        assert identity is not None
+        try:
+            active_request = request_ctx.get()
+            request_id = str(active_request.request_id)
+            session_id = str(fastmcp_context.session_id)
+        except (LookupError, RuntimeError):
+            # No current MCP message means there is no request authority to mint.
+            return await call_next(context)
+        reserve = reserve_provider_request(
+            principal_id=identity.user_id,
+            session_id=session_id,
+            request_id=request_id,
+            tool_name=name,
+        )
+        token = set_provider_request_reserve(reserve)
+        try:
+            return await call_next(context)
+        finally:
+            cancel_provider_request_reserve(reserve)
+            reset_provider_request_reserve(token)
+
+
 mcp.add_middleware(_WikiCanaryExecutionAuthority())
+mcp.add_middleware(_ProviderRequestAuthority())
 mcp.add_middleware(_DeprecatedToolVisibility())
 
 

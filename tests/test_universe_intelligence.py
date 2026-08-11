@@ -461,7 +461,8 @@ def test_writer_backoff_retries_when_all_providers_were_skipped(monkeypatch):
     calls = {"n": 0}
 
     def flaky(turn_input, system="", *, role="writer", universe_context=None,
-              config=None):
+              config=None, operation=None):
+        assert operation == "converse"
         calls["n"] += 1
         if calls["n"] < 2:
             raise _exhausted("skipped", "skipped")
@@ -486,7 +487,8 @@ def test_writer_backoff_does_NOT_retry_if_a_provider_actually_ran(monkeypatch):
     calls = {"n": 0}
 
     def ran_then_failed(turn_input, system="", *, role="writer",
-                        universe_context=None, config=None):
+                        universe_context=None, config=None, operation=None):
+        assert operation == "converse"
         calls["n"] += 1
         raise _exhausted("failed", "skipped")  # one provider executed
 
@@ -509,7 +511,8 @@ def test_writer_backoff_gives_up_on_sustained_cooldown(monkeypatch):
     calls = {"n": 0}
 
     def always(turn_input, system="", *, role="writer", universe_context=None,
-               config=None):
+               config=None, operation=None):
+        assert operation == "converse"
         calls["n"] += 1
         raise _exhausted("skipped", "skipped")
 

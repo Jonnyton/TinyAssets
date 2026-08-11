@@ -55,7 +55,14 @@ def test_parse_iso_to_epoch_returns_none_on_garbage():
 
 def test_empty_queue_returns_zero_counts(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    out = _compute_supervisor_liveness(tmp_path)
+    # Pass a NESTED universe dir: the epoch-2 read resolves its store from
+    # `udir.parent`, so handing it `tmp_path` directly reads the SHARED pytest
+    # temp root (`pytest-N/`) — which any sibling test can pollute with a stray
+    # runs store, flipping epoch-2 to "available" and failing this test only in a
+    # full-suite run. Nesting one level makes `udir.parent == tmp_path` (isolated).
+    udir = tmp_path / "universe"
+    udir.mkdir()
+    out = _compute_supervisor_liveness(udir)
     assert out["queue_state"]["depth"] == 0
     assert out["queue_state"]["pending"] == 0
     assert out["queue_state"]["running"] == 0

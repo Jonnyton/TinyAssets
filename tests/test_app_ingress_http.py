@@ -71,6 +71,28 @@ def test_a_correctly_signed_request_is_delivered():
     assert calls[0]["external_sender_id"] == "U0WIRE00001"
 
 
+def test_signed_delivery_marks_only_the_current_app_transport_request():
+    raw, headers = _signed()
+    seen: list[bool] = []
+
+    def _deliver(**_kwargs):
+        seen.append(http.authenticated_app_transport())
+        return _Result()
+
+    assert http.authenticated_app_transport() is False
+    status, _ = http.handle_request(
+        body=raw,
+        headers=headers,
+        env=ENV,
+        now=NOW,
+        deliver=_deliver,
+    )
+
+    assert status == 200
+    assert seen == [True]
+    assert http.authenticated_app_transport() is False
+
+
 def test_an_unsigned_request_never_reaches_delivery():
     raw = json.dumps(BODY).encode("utf-8")
     deliver, calls = _spy()

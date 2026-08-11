@@ -33,6 +33,7 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Callable
 
 from tinyassets.effectors.slack_agent_service import (
     SlackAgentConfig,
@@ -54,6 +55,15 @@ AUTH_TEST_URL = "https://slack.com/api/auth.test"
 def configured_universes() -> list[str]:
     raw = os.environ.get(UNIVERSES_ENV, "")
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def dynamic_serving_universes() -> list[str]:
+    """Discover server-authorized serving bindings from the canonical store."""
+
+    from tinyassets.provider_serving_binding import list_serving_universes
+    from tinyassets.storage import data_dir
+
+    return list_serving_universes(data_dir())
 
 
 def _identify(bot_token: str) -> tuple[str, str]:
@@ -205,6 +215,72 @@ async def serve_all(universe_ids: list[str], connection: str) -> int:
     return 0
 
 
+async def serve_reconciling(
+    universe_ids: list[str],
+    connection: str,
+    *,
+    enrollment_source: Callable[[], list[str]] = dynamic_serving_universes,
+    poll_interval_s: float = 5.0,
+    stopping: asyncio.Event | None = None,
+    install_signal_handlers: bool = True,
+) -> int:
+    """Continuously reconcile sockets with static + server serving intent."""
+
+    static = set(universe_ids)
+    stop = stopping or asyncio.Event()
+    tasks: dict[str, asyncio.Task[None]] = {}
+    retired: list[asyncio.Task[None]] = []
+    enrolled: set[str] = set()
+
+    def _stop(*_args: object) -> None:
+        logger.info("slack agent: signal received — shutting down")
+        stop.set()
+
+    if install_signal_handlers:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _stop)
+            except (NotImplementedError, AttributeError):
+                signal.signal(sig, _stop)
+
+    try:
+        while not stop.is_set():
+            try:
+                dynamic = set(enrollment_source())
+            except Exception:  # noqa: BLE001 - keep current sockets, report drift
+                logger.exception("slack agent: serving enrollment refresh failed")
+                dynamic = enrolled - static
+            desired = static | dynamic
+            for uid in sorted(enrolled - desired):
+                task = tasks.pop(uid, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                if task is not None:
+                    retired.append(task)
+                enrolled.remove(uid)
+                logger.info("slack agent: withdrew dynamic enrollment for %s", uid)
+            for uid in sorted(desired - enrolled):
+                tasks[uid] = asyncio.create_task(
+                    _report_unexpected(uid, serve_universe(uid, connection)),
+                    name=f"slack:{uid}",
+                )
+                enrolled.add(uid)
+                logger.info("slack agent: enrolled %s", uid)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=poll_interval_s)
+            except TimeoutError:
+                pass
+    finally:
+        for task in tasks.values():
+            if not task.done():
+                task.cancel()
+        pending = [*retired, *tasks.values()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run Slack Socket Mode agents for the configured universes."
@@ -228,7 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     universe_ids = args.universe or configured_universes()
-    if not universe_ids:
+    dynamic = dynamic_serving_universes()
+    if not universe_ids and not dynamic:
         logger.error(
             "no universes configured — set %s (comma-separated) or pass --universe",
             UNIVERSES_ENV,
@@ -240,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         len(universe_ids),
         args.connection,
     )
-    return asyncio.run(serve_all(universe_ids, args.connection))
+    return asyncio.run(serve_reconciling(universe_ids, args.connection))
 
 
 if __name__ == "__main__":

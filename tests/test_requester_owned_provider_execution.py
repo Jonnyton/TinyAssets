@@ -18,7 +18,7 @@ from tinyassets.branches import (
 )
 from tinyassets.config import UniverseConfig
 from tinyassets.exceptions import ProviderAuthorityHeldError
-from tinyassets.graph_compiler import compile_branch
+from tinyassets.graph_compiler import CompilerError, compile_branch
 from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
@@ -77,11 +77,11 @@ def _policy_branch() -> BranchDefinition:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("engine_source", ["byo_api_key", "self_hosted_endpoint"])
-async def test_user_universe_policy_cannot_borrow_platform_provider(
+async def test_user_universe_config_cannot_mint_served_authority(
     engine_source,
     tmp_path,
 ):
-    """MUTATION: remove the user ceiling/context resolution -> platform spy fires."""
+    """MUTATION: trust requester-owned config alone -> a provider spy fires."""
     requester = _SpyProvider("codex", text="requester-owned")
     platform = _SpyProvider("claude-code", text="platform-owned")
     router = ProviderRouter(providers={
@@ -100,16 +100,20 @@ async def test_user_universe_policy_cannot_borrow_platform_provider(
         ),
     )
 
-    text, provider, _meta = await router.call_with_policy(
-        "writer",
-        "prompt",
-        "system",
-        {"preferred": {"provider": "claude-code"}},
-        universe_context=context,
-    )
+    with pytest.raises(
+        ProviderAuthorityHeldError,
+        match=r"(?i)connect your provider",
+    ):
+        await router.call_with_policy(
+            "writer",
+            "prompt",
+            "system",
+            {"preferred": {"provider": "claude-code"}},
+            operation="run_graph",
+            universe_context=context,
+        )
 
-    assert (text, provider) == ("requester-owned", "codex")
-    assert requester.calls == [tmp_path]
+    assert requester.calls == []
     assert platform.calls == []
 
 
@@ -223,11 +227,11 @@ def test_unresolved_run_binding_holds_instead_of_returning_raw_call(monkeypatch)
     assert platform.calls == []
 
 
-def test_policy_graph_uses_bound_universe_context_not_global_router(
+def test_policy_graph_preserves_context_and_holds_without_served_authority(
     tmp_path,
     monkeypatch,
 ):
-    """MUTATION: drop context in either graph bridge -> platform spy serves it."""
+    """MUTATION: drop context in either graph bridge -> a provider spy serves it."""
     from langgraph.checkpoint.memory import InMemorySaver
 
     from tinyassets.providers import call as call_module
@@ -256,17 +260,17 @@ def test_policy_graph_uses_bound_universe_context_not_global_router(
             provider_call=call_module.call_provider,
             universe_context=context,
         )
-        result = compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
-            {"topic": "tiny assets"},
-            config={"configurable": {"thread_id": "requester-context"}},
-        )
+        with pytest.raises(CompilerError, match=r"(?i)connect your provider"):
+            compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
+                {"topic": "tiny assets"},
+                config={"configurable": {"thread_id": "requester-context"}},
+            )
     finally:
         runtime.universe_config = saved_global
         call_module.set_provider_router(saved_router)
         call_module.set_force_mock(saved_mock)
 
-    assert result["answer"] == "requester-owned"
-    assert requester.calls == [universe]
+    assert requester.calls == []
     assert platform.calls == []
 
 

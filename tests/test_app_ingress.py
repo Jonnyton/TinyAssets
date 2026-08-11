@@ -7,6 +7,10 @@ credential, and the transport gets back nothing it could forge or leak.
 
 from __future__ import annotations
 
+import base64
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from tinyassets import app_ingress
@@ -217,6 +221,89 @@ def test_the_actor_id_is_workspace_namespaced(base):
     _, calls = _deliver()
 
     assert calls["converse"][0]["actor_id"] == f"slack:{TEAM}:{SENDER}"
+
+
+def test_signed_founder_slack_turn_carries_exact_server_request_authority(
+    base,
+    monkeypatch,
+):
+    from tinyassets import app_ingress_http
+    from tinyassets.auth.middleware import provider_request_capability
+
+    binding = _make_universe(base, "u-ingress-authority")
+    _bind(base, "u-ingress-authority", binding)
+    grant = SimpleNamespace(
+        subject_id=OWNER,
+        agent_binding_id=binding,
+        binding_revision=1,
+    )
+    monkeypatch.setattr(app_ingress, "_recognize", lambda **_kwargs: grant)
+    seen: dict[str, object] = {}
+
+    def _converse(universe_id, prompt, **kwargs):
+        capability = provider_request_capability()
+        assert capability is not None
+        seen.update(
+            universe_id=universe_id,
+            prompt=prompt,
+            principal=capability.principal_id,
+            mechanism=capability.mechanism,
+            issuer=capability.issuer,
+            tool_name=capability.tool_name,
+            **kwargs,
+        )
+        return "served"
+
+    monkeypatch.setattr(
+        "tinyassets.universe_intelligence.converse_as_external_sender",
+        _converse,
+    )
+    monkeypatch.setattr(
+        app_ingress,
+        "_post",
+        lambda **_kwargs: "slack:C0INGRESS01:1700000000.000200",
+    )
+    key = b"k" * 32
+    now = 1_700_000_000
+    body = json.dumps(
+        {
+            "provider": "slack",
+            "api_app_id": APP,
+            "workspace_id": TEAM,
+            "actor_team_id": TEAM,
+            "external_sender_id": SENDER,
+            "channel_id": CHANNEL,
+            "event_id": "Ev-authority-1",
+            "event_type": "app_mention",
+            "text": "<@U0BOT> prove authority",
+            "thread_ts": "",
+        }
+    ).encode()
+    timestamp = str(now)
+    status, payload = app_ingress_http.handle_request(
+        body=body,
+        headers={
+            app_ingress_http.SIGNATURE_HEADER: app_ingress_http.sign(
+                body,
+                timestamp,
+                key,
+            ),
+            app_ingress_http.TIMESTAMP_HEADER: timestamp,
+        },
+        env={
+            app_ingress_http.HMAC_ENV: base64.b64encode(key).decode("ascii"),
+        },
+        now=now,
+    )
+
+    assert status == 200
+    assert payload["handled"] is True
+    assert seen["principal"] == OWNER
+    assert seen["mechanism"] == "tinyassets.authenticated-app-event.v1"
+    assert seen["issuer"] == "tinyassets.app_ingress_http"
+    assert seen["tool_name"] == "slack_event"
+    assert seen["agent_binding_id"] == binding
+    assert seen["binding_revision"] == 1
 
 
 def test_a_replayed_event_mints_no_second_grant(base, monkeypatch):

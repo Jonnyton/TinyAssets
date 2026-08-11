@@ -10,12 +10,14 @@ import abc
 import logging
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from tinyassets.auth.middleware import ProviderRequestCarrier
     from tinyassets.config import UniverseConfig
+    from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,8 @@ class UniverseContext:
     universe_dir: Path | None = None
     config: "UniverseConfig | None" = None
     provider_invocation: "ProviderInvocationCarrier | None" = None
+    provider_request: "ProviderRequestCarrier | None" = None
+    served_provider: "ServedProviderAuthority | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +85,14 @@ class ModelConfig:
     floor that closes shell-escape / host-access even if a settings file would
     grant them."""
 
+    credential_snapshot_dir: Path | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    """Internal per-launch credential snapshot. Served adapters must use this
+    immutable copy instead of resolving mutable vault paths at use time."""
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderResponse:
@@ -92,6 +104,9 @@ class ProviderResponse:
     family: str
     latency_ms: float
     degraded: bool = False
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_microunits: int | None = None
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -369,13 +384,17 @@ def _safe_resolution_reason(exc: BaseException) -> str:
 
 
 def subprocess_env_for_provider(
-    provider_name: str, *, universe_dir: Path | None = None,
+    provider_name: str,
+    *,
+    universe_dir: Path | None = None,
+    credential_snapshot_dir: Path | None = None,
 ) -> dict[str, str]:
-    """Return subprocess env with API-key policy and vault auth applied.
+    """Return subprocess env with API-key policy and exact launch auth applied.
 
     When *universe_dir* is given it takes precedence over the process-global
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
+    A credential snapshot, when supplied, replaces vault resolution entirely.
     """
     bound_universe = os.environ.get("TINYASSETS_UNIVERSE", "").strip()
     resolved_universe = (
@@ -402,6 +421,19 @@ def subprocess_env_for_provider(
         if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
             raise ValueError("unsupported universe provider")
         universe_root = resolved_universe.expanduser().resolve(strict=False)
+        if credential_snapshot_dir is not None:
+            snapshot = _resolved_universe_child(
+                universe_root,
+                credential_snapshot_dir,
+            )
+            if snapshot.is_symlink() or not snapshot.is_dir():
+                raise ValueError("credential snapshot is unavailable")
+            env = _provider_child_runtime_env(provider_name, universe_root)
+            if provider_name == "codex":
+                env["CODEX_HOME"] = str(snapshot)
+            else:
+                env["CLAUDE_CONFIG_DIR"] = str(snapshot)
+            return env
         from tinyassets.credential_vault import (
             apply_provider_auth_env,
             credential_vault_path,

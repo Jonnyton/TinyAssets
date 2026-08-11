@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
+import threading
+import weakref
 from collections import deque
 from contextvars import ContextVar, Token
 from typing import Any
@@ -49,6 +52,355 @@ _current_request_boundary_id: ContextVar[str | None] = ContextVar(
     "tinyassets_current_request_boundary_id",
     default=None,
 )
+_current_provider_request: ContextVar[ProviderRequestCapability | None] = ContextVar(
+    "tinyassets_current_provider_request",
+    default=None,
+)
+_current_provider_reserve: ContextVar[ProviderRequestReserve | None] = ContextVar(
+    "tinyassets_current_provider_reserve",
+    default=None,
+)
+
+_PROVIDER_REQUEST_MECHANISM = "tinyassets.authenticated-request.v1"
+_PROVIDER_REQUEST_ISSUER = "tinyassets.auth.middleware"
+_PROVIDER_REQUEST_LOCK = threading.Lock()
+_PROVIDER_REQUESTS: dict[str, dict[str, Any]] = {}
+
+
+class ProviderRequestReserve:
+    """One server-issued dispatch reserve; inert until its worker claims it."""
+
+    __slots__ = ("_nonce", "_identity_token", "_issuer_pid", "__weakref__")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("provider request reserves are server-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("provider request reserves are immutable")
+
+    def __reduce__(self):
+        raise TypeError("provider request reserves are non-serializable")
+
+
+class ProviderRequestCapability:
+    """A live, one-request provider capability claimed by the tool worker."""
+
+    __slots__ = (
+        "principal_id",
+        "session_id",
+        "request_id",
+        "tool_name",
+        "mechanism",
+        "issuer",
+        "_nonce",
+        "_identity_token",
+        "_issuer_pid",
+        "_worker_id",
+        "_context_token",
+        "__weakref__",
+    )
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("provider request capabilities are server-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("provider request capabilities are immutable")
+
+    def __reduce__(self):
+        raise TypeError("provider request capabilities are non-serializable")
+
+
+class ProviderRequestCarrier:
+    """Sealed request authority threaded explicitly through provider workers."""
+
+    __slots__ = (
+        "universe_id",
+        "agent_binding_id",
+        "binding_revision",
+        "operation",
+        "_nonce",
+        "_identity_token",
+        "_issuer_pid",
+    )
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("provider request carriers are server-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("provider request carriers are immutable")
+
+    def __reduce__(self):
+        raise TypeError("provider request carriers are non-serializable")
+
+
+def _reset_provider_request_state_after_fork() -> None:
+    global _PROVIDER_REQUEST_LOCK, _PROVIDER_REQUESTS
+    _PROVIDER_REQUEST_LOCK = threading.Lock()
+    _PROVIDER_REQUESTS = {}
+    _current_provider_request.set(None)
+    _current_provider_reserve.set(None)
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_provider_request_state_after_fork)
+
+
+def _discard_unclaimed_provider_request(nonce: str, issuer_pid: int) -> None:
+    if issuer_pid != os.getpid():
+        return
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(nonce)
+        if record is not None and record["state"] == "reserved":
+            _PROVIDER_REQUESTS.pop(nonce, None)
+
+
+def reserve_provider_request(
+    *,
+    principal_id: str,
+    session_id: str,
+    request_id: str,
+    tool_name: str,
+    mechanism: str = _PROVIDER_REQUEST_MECHANISM,
+    issuer: str = _PROVIDER_REQUEST_ISSUER,
+) -> ProviderRequestReserve:
+    """Reserve one exact authenticated dispatch before worker selection."""
+
+    fields = {
+        "principal_id": principal_id,
+        "session_id": session_id,
+        "request_id": request_id,
+        "tool_name": tool_name,
+        "mechanism": mechanism,
+        "issuer": issuer,
+    }
+    if any(not isinstance(value, str) or not value.strip() for value in fields.values()):
+        raise ValueError("provider request fields must be non-empty strings")
+    nonce = secrets.token_hex(32)
+    identity_token = object()
+    issuer_pid = os.getpid()
+    reserve = object.__new__(ProviderRequestReserve)
+    object.__setattr__(reserve, "_nonce", nonce)
+    object.__setattr__(reserve, "_identity_token", identity_token)
+    object.__setattr__(reserve, "_issuer_pid", issuer_pid)
+    with _PROVIDER_REQUEST_LOCK:
+        _PROVIDER_REQUESTS[nonce] = {
+            **{key: value.strip() for key, value in fields.items()},
+            "identity_token": identity_token,
+            "issuer_pid": issuer_pid,
+            "state": "reserved",
+            "worker_id": None,
+            "capability_ref": None,
+            "invocations": 0,
+        }
+    weakref.finalize(reserve, _discard_unclaimed_provider_request, nonce, issuer_pid)
+    return reserve
+
+
+def claim_provider_request(
+    reserve: ProviderRequestReserve,
+    *,
+    tool_name: str,
+) -> ProviderRequestCapability:
+    """Claim an inert reserve exactly once in the actual tool worker."""
+
+    if type(reserve) is not ProviderRequestReserve or reserve._issuer_pid != os.getpid():
+        raise PermissionError("provider request reserve is not server-issued")
+    worker_id = threading.get_ident()
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(reserve._nonce)
+        if record is None or record["identity_token"] is not reserve._identity_token:
+            raise PermissionError("provider request reserve is invalid")
+        if record["state"] != "reserved":
+            raise PermissionError("provider request reserve was already claimed or revoked")
+        if record["tool_name"] != tool_name:
+            raise PermissionError("provider request reserve belongs to another tool")
+        capability = object.__new__(ProviderRequestCapability)
+        for name in (
+            "principal_id",
+            "session_id",
+            "request_id",
+            "tool_name",
+            "mechanism",
+            "issuer",
+        ):
+            object.__setattr__(capability, name, record[name])
+        object.__setattr__(capability, "_nonce", reserve._nonce)
+        object.__setattr__(capability, "_identity_token", reserve._identity_token)
+        object.__setattr__(capability, "_issuer_pid", os.getpid())
+        object.__setattr__(capability, "_worker_id", worker_id)
+        record["state"] = "claimed"
+        record["worker_id"] = worker_id
+        record["capability_ref"] = weakref.ref(capability)
+    context_token = _current_provider_request.set(capability)
+    object.__setattr__(capability, "_context_token", context_token)
+    return capability
+
+
+def set_provider_request_reserve(
+    reserve: ProviderRequestReserve,
+) -> Token[ProviderRequestReserve | None]:
+    """Publish one inert middleware reserve to the actual tool worker."""
+
+    if type(reserve) is not ProviderRequestReserve or reserve._issuer_pid != os.getpid():
+        raise PermissionError("provider request reserve is not server-issued")
+    return _current_provider_reserve.set(reserve)
+
+
+def reset_provider_request_reserve(
+    token: Token[ProviderRequestReserve | None],
+) -> None:
+    _current_provider_reserve.reset(token)
+
+
+def provider_request_reserve() -> ProviderRequestReserve | None:
+    return _current_provider_reserve.get()
+
+
+def cancel_provider_request_reserve(reserve: ProviderRequestReserve) -> None:
+    """Revoke an unclaimed reserve when dispatch does not reach a tool worker."""
+
+    if type(reserve) is not ProviderRequestReserve or reserve._issuer_pid != os.getpid():
+        raise PermissionError("provider request reserve is not server-issued")
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(reserve._nonce)
+        if record is not None and record["identity_token"] is reserve._identity_token:
+            if record["state"] == "reserved":
+                _PROVIDER_REQUESTS.pop(reserve._nonce, None)
+
+
+def _active_provider_request(capability: ProviderRequestCapability) -> dict[str, Any]:
+    if type(capability) is not ProviderRequestCapability:
+        raise PermissionError("provider request capability is not server-issued")
+    if capability._issuer_pid != os.getpid():
+        raise PermissionError("provider request capability belongs to another process")
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(capability._nonce)
+        exact = (
+            record is not None,
+            record is not None and record["state"] == "claimed",
+            record is not None and record["identity_token"] is capability._identity_token,
+            record is not None and record["capability_ref"]() is capability,
+        )
+        if not all(exact):
+            raise PermissionError("provider request capability is revoked")
+        return dict(record)
+
+
+def provider_request_capability() -> ProviderRequestCapability | None:
+    """Return the exact live capability only in its claimed tool worker."""
+
+    capability = _current_provider_request.get()
+    if capability is None:
+        return None
+    record = _active_provider_request(capability)
+    if record["worker_id"] != threading.get_ident():
+        return None
+    return capability
+
+
+def revoke_provider_request(capability: ProviderRequestCapability) -> None:
+    """Synchronously revoke a request lease before result release."""
+
+    if type(capability) is not ProviderRequestCapability:
+        raise PermissionError("provider request capability is not server-issued")
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(capability._nonce)
+        if record is not None and record["identity_token"] is capability._identity_token:
+            _PROVIDER_REQUESTS.pop(capability._nonce, None)
+    if _current_provider_request.get() is capability:
+        _current_provider_request.reset(capability._context_token)
+
+
+def consume_provider_request_invocation(
+    capability: ProviderRequestCapability,
+    *,
+    limit: int,
+) -> int:
+    """Consume one bounded provider launch from the exact live request."""
+
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("provider request invocation limit must be positive")
+    _active_provider_request(capability)
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(capability._nonce)
+        if (
+            record is None
+            or record["state"] != "claimed"
+            or record["identity_token"] is not capability._identity_token
+        ):
+            raise PermissionError("provider request capability is revoked")
+        used = int(record["invocations"])
+        if used >= limit:
+            raise PermissionError("provider request invocation budget is exhausted")
+        record["invocations"] = used + 1
+        return used + 1
+
+
+def mint_provider_request_carrier(
+    *,
+    universe_id: str,
+    agent_binding_id: str,
+    binding_revision: int,
+    operation: str,
+) -> ProviderRequestCarrier:
+    """Seal exact served-turn selection under the current request lease."""
+
+    capability = provider_request_capability()
+    if capability is None:
+        raise PermissionError("provider request capability is unavailable")
+    if (
+        not universe_id.strip()
+        or not agent_binding_id.strip()
+        or isinstance(binding_revision, bool)
+        or not isinstance(binding_revision, int)
+        or binding_revision < 1
+        or not operation.strip()
+    ):
+        raise ValueError("provider request carrier target is invalid")
+    carrier = object.__new__(ProviderRequestCarrier)
+    object.__setattr__(carrier, "universe_id", universe_id.strip())
+    object.__setattr__(carrier, "agent_binding_id", agent_binding_id.strip())
+    object.__setattr__(carrier, "binding_revision", binding_revision)
+    object.__setattr__(carrier, "operation", operation.strip())
+    object.__setattr__(carrier, "_nonce", capability._nonce)
+    object.__setattr__(carrier, "_identity_token", capability._identity_token)
+    object.__setattr__(carrier, "_issuer_pid", capability._issuer_pid)
+    return carrier
+
+
+def validate_provider_request_carrier(
+    carrier: ProviderRequestCarrier,
+    *,
+    universe_id: str,
+    agent_binding_id: str,
+    binding_revision: int,
+    operation: str,
+) -> ProviderRequestCapability:
+    """Validate the sealed target plus its still-live server registry lease."""
+
+    if type(carrier) is not ProviderRequestCarrier or carrier._issuer_pid != os.getpid():
+        raise PermissionError("provider request carrier is not server-issued")
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(carrier._nonce)
+        if (
+            record is None
+            or record["state"] != "claimed"
+            or record["identity_token"] is not carrier._identity_token
+        ):
+            raise PermissionError("provider request capability is revoked")
+        capability_ref = record["capability_ref"]
+        capability = capability_ref() if capability_ref is not None else None
+    if capability is None:
+        raise PermissionError("provider request capability is revoked")
+    if carrier.universe_id != universe_id:
+        raise PermissionError("provider request carrier belongs to another universe")
+    if carrier.agent_binding_id != agent_binding_id:
+        raise PermissionError("provider request carrier belongs to another agent binding")
+    if carrier.binding_revision != binding_revision:
+        raise PermissionError("provider request carrier has a stale binding revision")
+    if carrier.operation != operation:
+        raise PermissionError("provider request carrier belongs to another operation")
+    return capability
 
 # Module-level provider (initialized once at startup)
 _provider: AuthProvider | None = None
@@ -293,6 +645,36 @@ def current_request_boundary_id() -> str | None:
     """Opaque identity of this exact authenticated transport request."""
 
     return _current_request_boundary_id.get()
+
+
+def current_mcp_message_identity() -> Identity | None:
+    """Re-derive bearer identity from only the low-level current MCP message."""
+
+    from mcp.server.lowlevel.server import request_ctx
+
+    try:
+        request = request_ctx.get().request
+    except LookupError:
+        return None
+    if request is None:
+        return None
+    try:
+        auth_headers = request.headers.getlist("authorization")
+        method = request.method.upper()
+        path = request.url.path
+    except (AttributeError, TypeError):
+        return None
+    if method != "POST" or path not in {"/mcp", "/mcp/"} or len(auth_headers) != 1:
+        return None
+    scheme, separator, credential = auth_headers[0].partition(" ")
+    if scheme.lower() != "bearer" or not separator or not credential.strip():
+        return None
+    if wiki_canary_token_matches(credential.strip()):
+        return None
+    identity = _get_provider().resolve_token(credential.strip())
+    if identity is None or identity is ANONYMOUS or identity.user_id == "anonymous":
+        return None
+    return identity
 
 
 class AuthContextMiddleware:

@@ -44,6 +44,7 @@ from tinyassets.provider_work_authority import (
     _reservation_from_request,
     _reservation_with_state,
     provider_invocation_reservation_id,
+    provider_work_binding_class,
     provider_work_binding_id,
     provider_work_claim_id,
     provider_work_receipt_id,
@@ -443,6 +444,10 @@ class _Transaction:
                 owner_user_id=binding.owner_user_id,
                 universe_id=binding.universe_id,
                 provider=binding.provider,
+                binding_class=provider_work_binding_class(
+                    allowed_operations=binding.allowed_operations,
+                    allowed_roles=binding.allowed_roles,
+                ),
             )
             or binding.binding_digest != binding.expected_digest()
         ):
@@ -531,6 +536,10 @@ class _Transaction:
             owner_user_id=replacement.owner_user_id,
             universe_id=replacement.universe_id,
             provider=replacement.provider,
+            binding_class=provider_work_binding_class(
+                allowed_operations=replacement.allowed_operations,
+                allowed_roles=replacement.allowed_roles,
+            ),
         )
         common = (
             replacement.generation == current.generation + 1,
@@ -1864,6 +1873,18 @@ class SQLiteProviderWorkAuthorityStore:
             raise ValueError("seed must be a ProviderWorkBindingSeed")
         binding = _from_seed(seed, created_at=self.timestamp())
         return _Transaction(conn)._insert(binding)
+
+    def _compare_and_swap_binding_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        expected: ProviderWorkBindingFence,
+        replacement: ProviderWorkBinding,
+    ) -> ProviderWorkBindingWriteResult:
+        """Compose a validated binding transition into a larger transaction."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("binding transition requires an active SQLite transaction")
+        return _Transaction(conn).compare_and_swap(expected, replacement)
 
     def install_test_binding(
         self,
