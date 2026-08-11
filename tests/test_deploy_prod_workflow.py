@@ -197,10 +197,6 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     services = override["services"]
     assert set(services) == {
         "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
         "cloudflared",
         "logs",
     }
@@ -609,7 +605,7 @@ def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_syncs_codex_subscription_bundle_with_helper():
+def test_deploy_deletes_ambient_provider_auth_and_syncs_requester_binding():
     wf = _load()
     deploy_step = next(
         (s for s in _steps(wf) if s.get("id") == "deploy"),
@@ -618,11 +614,11 @@ def test_deploy_syncs_codex_subscription_bundle_with_helper():
     assert deploy_step is not None, "deploy job must have a deploy step"
     run_script = deploy_step.get("run", "") or ""
     assert "TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS" in run_script
-    assert "OPENAI_API_KEY" not in run_script, (
-        "deploy must not recover the public daemon by syncing API-key writer auth"
-    )
+    assert "set TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
+    assert "set TINYASSETS_ALLOW_API_KEY_PROVIDERS" not in run_script
+    assert "set TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON" in run_script
+    assert "delete TINYASSETS_BUG_INVESTIGATION" in run_script
+    assert "OPENAI_API_KEY" in run_script
 
 
 def test_deploy_syncs_runtime_compose_and_systemd_files():
@@ -744,14 +740,12 @@ def test_deploy_preserves_host_owned_log_destination():
     assert "LOG_DEST" not in run_script
 
 
-def test_deploy_verifies_cloud_worker_running():
+def test_deploy_retires_platform_llm_workers_instead_of_verifying_them():
     wf = _load()
-    worker_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
-        None,
+    assert not any(
+        step.get("name") == "Verify cloud worker is running" for step in _steps(wf)
     )
-    assert worker_step is not None, "deploy must verify cloud workers are running"
-    run_script = worker_step.get("run", "") or ""
+    run_script = _step_named(wf, "Retire legacy Workflow service").get("run", "")
     for name in (
         "tinyassets-worker",
         "tinyassets-worker-codex-2",
@@ -759,24 +753,13 @@ def test_deploy_verifies_cloud_worker_running():
         "tinyassets-worker-claude-2",
     ):
         assert name in run_script
-    assert "docker inspect" in run_script
-    assert "State.Running" in run_script
-    assert "for i in $(seq 1 30)" in run_script
-    assert "sleep 2" in run_script
-    assert "docker compose --env-file /etc/tinyassets/env" in run_script
-    assert "exit 1" in run_script
+    assert 'docker rm -f "$container"' in run_script
 
 
-def test_deploy_proves_running_workers_lack_request_hmac():
-    wf = _load()
-    worker_step = _step_named(wf, "Verify cloud worker is running")
-    run_script = worker_step.get("run", "") or ""
-    step_env = worker_step.get("env") or {}
-
-    assert "steps.tag.outputs.image_ref" in str(step_env.get("TARGET_IMAGE", ""))
-    assert "verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'" in run_script
-    assert "docker exec ${container} python -c" not in run_script
-    assert "in os.environ" not in run_script
+def test_deploy_has_no_worker_hmac_fleet_probe():
+    assert "verify-request-hmac-rotation-fleet.sh" not in _WORKFLOW.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_deploy_retires_legacy_workflow_service_before_restart():
@@ -812,47 +795,23 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     assert "systemctl mask workflow-daemon.service" in run_script
 
 
-def test_deploy_rejects_cloud_worker_workflow_universe_override():
+def test_deploy_has_no_cloud_worker_universe_override():
     wf = _load()
-    worker_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
-        None,
+    assert "set_active_universe" not in str(wf)
+    assert "_resolve_universe_path" not in _WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_deploy_does_not_canary_platform_subscription_binding():
+    wf = _load()
+    assert not any(
+        "subscription LLM binding" in (step.get("name") or "")
+        for step in _steps(wf)
     )
-    assert worker_step is not None
-    run_script = worker_step.get("run", "") or ""
-    assert "grep -q '^TINYASSETS_UNIVERSE='" in run_script
-    assert "stdio-only override" in run_script
-    assert "_resolve_universe_path" in run_script
 
 
-def test_deploy_verifies_llm_binding_when_codex_auth_is_synced():
+def test_deploy_has_no_codex_bundle_conditional():
     wf = _load()
-    for step in _steps(wf):
-        if "Verify subscription LLM binding" in (step.get("name") or ""):
-            assert "HAS_CODEX_AUTH_BUNDLE" in str(step.get("if", ""))
-            run_script = step.get("run", "") or ""
-            assert "verify_llm_binding.py" in run_script
-            assert "--require-sandbox" in run_script
-            assert "--retries 12" in run_script
-            assert "--retry-delay 10" in run_script
-            return
-    pytest.fail("deploy must verify LLM binding when it syncs Codex subscription auth")
-
-
-def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
-    wf = _load()
-    step_name = "Report subscription LLM binding when no deploy auth bundle is configured"
-    step = next(
-        (s for s in _steps(wf) if s.get("name") == step_name),
-        None,
-    )
-    assert step is not None
-    run_script = step.get("run", "") or ""
-    assert "verify_llm_binding.py" in run_script
-    assert "--require-sandbox" in run_script
-    assert "--retries 12" in run_script
-    assert "--retry-delay 10" in run_script
-    assert "::warning::No deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
+    assert "HAS_CODEX_AUTH_BUNDLE" not in str(wf)
 
 
 def test_production_marker_is_immediately_before_first_scrub_host_write():
@@ -1246,13 +1205,11 @@ def test_deploy_failure_issue_has_truthful_bounded_wording():
 
 def _codex_volume_step(wf: dict) -> dict:
     step = next(
-        (s for s in _steps(wf) if s.get("name") == "Prepare codex auth persistent volume"),
+        (s for s in _steps(wf) if s.get("name") == "Prepare data volume ownership"),
         None,
     )
     assert step is not None, (
-        "deploy must include a 'Prepare codex auth persistent volume' "
-        "step that provisions tinyassets-data/.codex on every deploy "
-        "(Forever Rule — no host-action required)"
+        "deploy must prepare tinyassets-data ownership on every deploy"
     )
     return step
 
@@ -1261,7 +1218,7 @@ def test_codex_volume_step_runs_before_deploy():
     wf = _load()
     steps = _steps(wf)
     names = [s.get("name", "") for s in steps]
-    volume_idx = names.index("Prepare codex auth persistent volume")
+    volume_idx = names.index("Prepare data volume ownership")
     deploy_idx = next(i for i, step in enumerate(steps) if step.get("id") == "deploy")
     assert volume_idx < deploy_idx, (
         "Codex auth volume must be provisioned BEFORE the daemon "
@@ -1270,78 +1227,9 @@ def test_codex_volume_step_runs_before_deploy():
     )
 
 
-def test_codex_volume_step_chown_is_unconditional():
-    """Regression guard for Codex round-2 Finding 2.
-
-    Round-1 placed `chown` inside the `if [ ! -d "$VOLUME_DIR" ]` branch.
-    If a prior deploy attempt left the dir root-owned, subsequent
-    deploys silently skipped the ownership repair and uid 1001 couldn't
-    write. Fix: run chown unconditionally every deploy.
-    """
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-
-    # Extract the heredoc body so we can reason about block structure.
-    # The heredoc starts after `<<'SH'` and ends at a line containing `SH`.
-    lines = run_script.splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.endswith("<<'SH'")),
-        None,
-    )
-    end = (
-        next(
-            (
-                i
-                for i, line in enumerate(lines[start + 1 :], start=start + 1)
-                if line.strip() == "SH"
-            ),
-            None,
-        )
-        if start is not None
-        else None
-    )
-    assert start is not None and end is not None, (
-        "Could not locate heredoc body in 'Prepare codex auth persistent volume'"
-    )
-    body = lines[start + 1 : end]
-
-    chown_line_idx = next(
-        (
-            i
-            for i, line in enumerate(body)
-            if line.strip().startswith('chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"')
-        ),
-        None,
-    )
-    chmod_line_idx = next(
-        (i for i, line in enumerate(body) if line.strip().startswith('chmod 700 "$CODEX_DIR"')),
-        None,
-    )
-    assert chown_line_idx is not None, "chown on $CODEX_DIR must be present"
-    assert chmod_line_idx is not None, "chmod 700 on $CODEX_DIR must be present"
-
-    # Walk backwards from each line; the most recent unmatched `if [` must
-    # NOT be the `[ ! -d "$CODEX_DIR" ]` branch. Track indent depth via
-    # leading whitespace as a coarse signal — both unconditional lines
-    # should sit at the heredoc's base indent.
-    def _indent(line: str) -> int:
-        return len(line) - len(line.lstrip(" "))
-
-    base_indent = min(
-        (_indent(line) for line in body if line.strip()),
-        default=0,
-    )
-    chown_indent = _indent(body[chown_line_idx])
-    chmod_indent = _indent(body[chmod_line_idx])
-    assert chown_indent == base_indent, (
-        f"chown line must sit at heredoc base indent ({base_indent}); "
-        f"got indent {chown_indent}. Being nested inside `if [ ! -d ]` "
-        "is exactly the Finding-2 regression we are guarding against."
-    )
-    assert chmod_indent == base_indent, (
-        f"chmod line must sit at heredoc base indent ({base_indent}); got indent {chmod_indent}."
-    )
+def test_deploy_does_not_prepare_ambient_codex_auth_subdirectory():
+    run_script = _codex_volume_step(_load()).get("run", "") or ""
+    assert "CODEX_DIR" not in run_script
 
 
 def test_codex_volume_step_creates_dir_idempotently():
@@ -1351,18 +1239,9 @@ def test_codex_volume_step_creates_dir_idempotently():
     assert 'docker volume create "$VOLUME_NAME"' in run_script, (
         "tinyassets-data named volume must be created idempotently before resolving its mountpoint"
     )
-    assert 'docker volume inspect "$VOLUME_NAME"' in run_script, (
-        "deploy must resolve the local volume mountpoint before preparing .codex"
-    )
-    assert 'CODEX_DIR="$VOLUME_DIR/.codex"' in run_script
-    assert 'mkdir -p "$CODEX_DIR"' in run_script, (
-        "directory creation must use `mkdir -p` so re-running the step "
-        "is a no-op when the dir already exists"
-    )
-    assert 'if [ ! -d "$CODEX_DIR" ]' in run_script, (
-        "dir-create branch must be guarded by an existence check so the "
-        "create-log line is skipped when the dir already exists"
-    )
+    assert 'docker volume inspect "$VOLUME_NAME"' in run_script
+    assert "CODEX_DIR" not in run_script
+    assert "CLAUDE_DIR" not in run_script
 
 
 def test_codex_volume_step_repairs_volume_root_for_auth_db():
@@ -1376,45 +1255,14 @@ def test_codex_volume_step_repairs_volume_root_for_auth_db():
     assert "unable to open database file" in run_script
 
 
-def test_codex_volume_step_migrates_from_running_container_once():
-    """First deploy after CODEX_HOME migration onto a live droplet must copy the
-    rotated auth.json out of the running tinyassets-worker into the
-    persistent volume. Subsequent deploys skip (auth.json already
-    present). No-op when no live source container exists.
-    """
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-    assert 'if [ ! -f "$CODEX_DIR/auth.json" ]' in run_script, (
-        "migration branch must be guarded so it fires exactly once"
-    )
-    assert "docker inspect tinyassets-worker" in run_script, (
-        "migration must check tinyassets-worker presence before docker cp"
-    )
-    assert "docker exec tinyassets-worker test -f /data/.codex/auth.json" in run_script, (
-        "migration must check the new CODEX_HOME path before copying"
-    )
-    assert "docker exec tinyassets-worker test -f /app/.codex/auth.json" in run_script, (
-        "migration must also support one-time legacy /app/.codex pickup"
-    )
-    assert "docker cp tinyassets-worker:/data/.codex/auth.json" in run_script
-    assert "docker cp tinyassets-worker:/app/.codex/auth.json" in run_script
-    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"' in run_script
-    assert 'chmod 600 "$CODEX_DIR/auth.json"' in run_script
+def test_deploy_does_not_copy_credentials_from_legacy_worker():
+    run_script = _codex_volume_step(_load()).get("run", "") or ""
+    assert "docker cp tinyassets-worker" not in run_script
 
 
-def test_subscription_volume_step_prepares_claude_config_dir():
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-    assert 'CLAUDE_DIR="$VOLUME_DIR/.claude"' in run_script
-    assert 'mkdir -p "$CLAUDE_DIR"' in run_script
-    assert 'chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"' in run_script
-    assert 'chmod 700 "$CLAUDE_DIR"' in run_script
-    assert "docker exec tinyassets-worker test -d /data/.claude" in run_script
-    assert "docker exec tinyassets-worker test -d /app/.claude" in run_script
-    assert "docker cp tinyassets-worker:/data/.claude/." in run_script
-    assert "docker cp tinyassets-worker:/app/.claude/." in run_script
+def test_deploy_does_not_prepare_ambient_claude_auth_subdirectory():
+    run_script = _codex_volume_step(_load()).get("run", "") or ""
+    assert "CLAUDE_DIR" not in run_script
 
 
 # ---------------------------------------------------------------------------
@@ -1488,7 +1336,7 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
         "Transitional task 2.1 stop-writer preflight",
         "Scrub stale cloud env overrides",
         "Sync runtime deploy files",
-        "Prepare codex auth persistent volume",
+        "Prepare data volume ownership",
         "Retire legacy Workflow service",
         "Deploy new image",
     }
@@ -1632,7 +1480,7 @@ def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
         install_name,
         "Scrub stale cloud env overrides",
         "Sync runtime deploy files",
-        "Prepare codex auth persistent volume",
+        "Prepare data volume ownership",
         "Retire legacy Workflow service",
         "Deploy new image",
     }
@@ -1688,55 +1536,25 @@ def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
     )
 
 
-def test_request_hmac_rotation_requires_deployed_corrected_boundary():
+def test_request_hmac_rotation_has_no_worker_fleet_boundary():
+    workflow_text = _WORKFLOW.read_text(encoding="utf-8")
+    assert "verify-request-hmac-rotation-fleet.sh" not in workflow_text
+    assert "ROTATION_FLEET_IDS" not in workflow_text
+
+
+def test_request_hmac_rotation_follows_daemon_stop_writer_fence():
     wf = _load()
     steps = _steps(wf)
     indexes = {step.get("name"): index for index, step in enumerate(steps)}
-    proof_name = "Prove request HMAC rotation boundary before quiescence"
     stop_name = "Transitional task 2.1 stop-writer preflight"
     install_name = "Install daemon-only request idempotency HMAC secret"
-    assert indexes[proof_name] < indexes[stop_name] < indexes[install_name]
 
-    proof = _step_named(wf, proof_name)
-    proof_condition = str(proof.get("if", ""))
-    proof_script = proof.get("run", "") or ""
-    proof_env = proof.get("env") or {}
-    assert "github.event_name == 'workflow_dispatch'" in proof_condition
-    assert "inputs.rotate_request_idempotency_hmac" in proof_condition
-    assert "steps.tag.outputs.image_ref" in str(proof_env.get("TARGET_IMAGE", ""))
-    assert "deploy/verify-request-hmac-rotation-fleet.sh" in proof_script
-    assert "verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'" in proof_script
-    assert "fleet_ids<<EOF" in proof_script
-    assert "proved_image_ref=${TARGET_IMAGE}" in proof_script
-
-    install = _step_named(wf, "Install daemon-only request idempotency HMAC secret")
-    script = install.get("run", "") or ""
-    install_env = install.get("env") or {}
-    assert "steps.rotation-boundary.outputs.fleet_ids" in str(
-        install_env.get("ROTATION_FLEET_IDS", "")
-    )
-    assert "steps.rotation-boundary.outputs.proved_image_ref" in str(
-        install_env.get("ROTATION_PROVED_IMAGE_REF", "")
-    )
-    assert "steps.tag.outputs.image_ref" in str(install_env.get("TARGET_IMAGE", ""))
-    secret_write = script.index(
-        'printf \'%s\' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"'
-    )
-    prerequisite_tokens = (
-        "sha256sum deploy/compose.yml",
-        "sudo sha256sum /opt/tinyassets/compose.yml",
-        "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
-        "ROTATION_FLEET_IDS",
-        "ROTATION_PROVED_IMAGE_REF",
-        "TARGET_IMAGE",
-        "rotation target image differs from the pre-proved correction image",
-        "deploy/verify-request-hmac-rotation-fleet.sh",
-        "verify-request-hmac-rotation-fleet.sh assert-quiesced",
-    )
-    for token in prerequisite_tokens:
-        assert script.index(token) < secret_write, token
-    assert "rotation requires the corrected Compose file" in script
-    assert "rotation prerequisite failed" in script
+    assert indexes[stop_name] < indexes[install_name]
+    assert "Prove request HMAC rotation boundary before quiescence" not in indexes
+    script = _step_named(wf, install_name).get("run", "") or ""
+    assert "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in script
+    assert "no LLM worker fleet exists" in script
+    assert "verify-request-hmac-rotation-fleet.sh" not in script
 
 
 def test_request_idempotency_hmac_template_and_compose_contract():
@@ -2086,11 +1904,7 @@ def test_deploy_step_summary_reports_github_pr_capability_visibility():
     )
 
 
-def test_github_pr_capability_sync_runs_after_codex_auth_sync():
-    """Determinism: both sync blocks live in the same Deploy step, and
-    the capability sync must run AFTER the codex-auth sync so the
-    summary order matches the operator's mental model (codex first,
-    capability second)."""
+def test_github_pr_capability_sync_runs_after_requester_binding_sync():
     wf = _load()
     deploy_step = next(
         (s for s in _steps(wf) if s.get("id") == "deploy"),
@@ -2098,14 +1912,14 @@ def test_github_pr_capability_sync_runs_after_codex_auth_sync():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    codex_marker = "set TINYASSETS_CODEX_AUTH_JSON_B64"
+    binding_marker = "set TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON"
     cap_marker = "set TINYASSETS_GITHUB_PUSH_CAPABILITIES"
-    codex_idx = run_script.find(codex_marker)
+    binding_idx = run_script.find(binding_marker)
     cap_idx = run_script.find(cap_marker)
-    assert codex_idx != -1, "codex-auth sync block must be present"
+    assert binding_idx != -1, "requester binding sync block must be present"
     assert cap_idx != -1, "capability sync block must be present"
-    assert codex_idx < cap_idx, (
-        "capability sync must run after the codex-auth sync — both "
+    assert binding_idx < cap_idx, (
+        "capability sync must run after the requester binding sync — both "
         "live in the same Deploy step and the operator-facing summary "
         "lists them in that order"
     )
@@ -2308,7 +2122,7 @@ def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
         wf, "Transitional task 2.1 stop-writer preflight"
     ).get("run", "")
     proof = _stop_writer_step(
-        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
+        wf, "Transitional task 2.1 prove exact writer set and unchanged receipts"
     ).get("run", "")
 
     assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in preflight
@@ -2343,7 +2157,7 @@ def test_stop_writer_compares_post_deploy_and_post_canary_snapshots():
     wf = _load()
     steps = _steps(wf)
     deploy_proof = _stop_writer_step(
-        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
+        wf, "Transitional task 2.1 prove exact writer set and unchanged receipts"
     )
     canary = _step_named(wf, "Post-deploy canary — canonical URL only")
     post_canary = _stop_writer_step(
@@ -2452,13 +2266,18 @@ def test_cleanup_derives_cutover_only_from_current_run_generation():
 
 
 def test_shared_fleet_workers_still_share_their_credential_roots():
-    """Accept-direction control: the shared fleet must stay shared."""
+    """The canonical cloud stack has no ambient provider credential roots."""
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
-    for name in ("worker", "worker-codex-2", "worker-claude-1", "worker-claude-2"):
-        env = compose["services"][name]["environment"]
-        assert env["CODEX_HOME"] == "/data/.codex", name
-        assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
-        assert "TINYASSETS_UNIVERSE" not in env, name
+    assert not {
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    } & set(compose["services"])
+    for service in compose["services"].values():
+        env = service.get("environment") or {}
+        assert "CODEX_HOME" not in env
+        assert "CLAUDE_CONFIG_DIR" not in env
 
 
 
@@ -2489,32 +2308,23 @@ def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
     assert 'python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles' in wf_all
 
 
-def test_active_universe_repoint_is_explicit_input_only_and_validated():
-    """The marker that decides which universe the fleet serves.
+def test_deploy_has_no_platform_worker_universe_repoint_input():
+    workflow_text = _WORKFLOW.read_text(encoding="utf-8")
+    assert "set_active_universe" not in workflow_text
 
-    `cloud_worker._resolve_universe` reads /data/.active_universe before any
-    other default, and an AUTHENTICATED `switch_universe` is request-scoped by
-    design and never writes it — so there is no in-band way for a user to
-    repoint the fleet at their own universe. Four admissible slices sat
-    unclaimed for >18h because of exactly this.
 
-    It must never move by default, and never to an unvalidated value.
-    """
+def test_active_universe_repoint_route_is_absent():
     wf = _load()
-    inputs = wf[True]["workflow_dispatch"]["inputs"] if True in wf else wf["on"]["workflow_dispatch"]["inputs"]
-    assert "set_active_universe" in inputs
-    assert not inputs["set_active_universe"].get("required", False)
-    assert "default" not in inputs["set_active_universe"]
-
-    step = next(
-        s for s in wf["jobs"]["deploy"]["steps"]
-        if s.get("name", "").startswith("Repoint the active-universe marker")
+    inputs = (
+        wf[True]["workflow_dispatch"]["inputs"]
+        if True in wf
+        else wf["on"]["workflow_dispatch"]["inputs"]
     )
-    # Only ever on an explicit non-empty input.
-    assert "inputs.set_active_universe != ''" in str(step.get("if", ""))
-    run = step.get("run", "") or ""
-    assert "invalid universe id" in run
-    assert "^[A-Za-z0-9._-]{1,128}$" in run
+    assert "set_active_universe" not in inputs
+    assert not any(
+        step.get("name", "").startswith("Repoint the active-universe marker")
+        for step in wf["jobs"]["deploy"]["steps"]
+    )
 
 
 def test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup():

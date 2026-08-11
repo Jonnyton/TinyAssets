@@ -261,37 +261,19 @@ def test_local_git_credentials_stay_out_of_git_and_docker_context():
 # ---------------------------------------------------------------------------
 
 
-def test_env_template_has_codex_subscription_auth_bundle():
-    """tinyassets-env.template must include a Codex subscription auth placeholder."""
+def test_env_template_has_no_platform_provider_credentials():
+    """Cloud host configuration must not offer an ambient LLM route."""
     text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in text, (
-        "tinyassets-env.template must expose the Codex subscription auth bundle path"
-    )
-
-
-def test_env_template_has_claude_subscription_config_dir():
-    text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "CLAUDE_CONFIG_DIR=/data/.claude" in text
-
-
-def test_env_template_has_openai_api_key():
-    """tinyassets-env.template keeps OPENAI_API_KEY as a deprecated placeholder."""
-    text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY" in text, (
-        "tinyassets-env.template must mention OPENAI_API_KEY so operators know it is deprecated"
-    )
-
-
-def test_env_template_openai_key_is_placeholder():
-    """OPENAI_API_KEY line must be blank (placeholder, not a real key)."""
-    for line in ENV_TEMPLATE.read_text(encoding="utf-8").splitlines():
-        if line.startswith("OPENAI_API_KEY="):
-            value = line.split("=", 1)[1].strip()
-            assert value == "", (
-                f"OPENAI_API_KEY must be a blank placeholder; found: {value!r}"
-            )
-            return
-    raise AssertionError("OPENAI_API_KEY= line not found in tinyassets-env.template")
+    for forbidden in (
+        "TINYASSETS_CODEX_AUTH_JSON_B64",
+        "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "OPENAI_API_KEY",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+    ):
+        assert forbidden not in text
 
 
 # ---------------------------------------------------------------------------
@@ -308,18 +290,12 @@ def test_compose_daemon_uses_env_file():
     )
 
 
-def test_compose_requires_explicit_workflow_image_without_latest_default():
-    """daemon + worker must not silently pull mutable :latest."""
+def test_compose_requires_explicit_daemon_image_without_latest_default():
+    """The daemon must not silently pull mutable :latest."""
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
+    for service_name in ("daemon",):
         image = data["services"][service_name].get("image", "")
         assert "${TINYASSETS_IMAGE:?" in image, (
             f"{service_name} image must require TINYASSETS_IMAGE instead of "
@@ -353,78 +329,30 @@ def test_compose_env_file_covers_daemon_service():
     )
 
 
-def test_compose_codex_auth_home_is_shared_data_volume():
-    """Services that invoke codex must share one persistent CODEX_HOME."""
+def test_compose_has_no_ambient_codex_auth_home():
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
-        service = data["services"][service_name]
+    for service_name, service in data["services"].items():
         environment = service.get("environment") or {}
-        volumes = service.get("volumes") or []
-        assert environment.get("CODEX_HOME") == "/data/.codex", (
-            f"{service_name} must use /data/.codex so Codex CLI and "
-            "get_status look at the persistent tinyassets-data volume"
-        )
-        assert "tinyassets-data:/data" in volumes, (
-            f"{service_name} must mount tinyassets-data at /data"
-        )
-        assert "/var/lib/tinyassets-codex:/app/.codex" not in volumes
+        assert "CODEX_HOME" not in environment, service_name
 
 
-def test_compose_claude_config_dir_is_shared_data_volume():
-    """Services that invoke claude must share one persistent CLAUDE_CONFIG_DIR."""
+def test_compose_has_no_ambient_claude_config_dir():
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
-        service = data["services"][service_name]
+    for service_name, service in data["services"].items():
         environment = service.get("environment") or {}
-        volumes = service.get("volumes") or []
-        assert environment.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
-        assert "tinyassets-data:/data" in volumes
+        assert "CLAUDE_CONFIG_DIR" not in environment, service_name
 
 
-def test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off():
+def test_compose_declares_no_cloud_llm_workers():
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     services = data["services"]
-    expected = {
-        "worker": ("tinyassets-worker", "codex", "codex-1", "cloud-droplet-codex-1"),
-        "worker-codex-2": (
-            "tinyassets-worker-codex-2", "codex", "codex-2", "cloud-droplet-codex-2",
-        ),
-        "worker-claude-1": (
-            "tinyassets-worker-claude-1", "claude-code", "claude-1",
-            "cloud-droplet-claude-1",
-        ),
-        "worker-claude-2": (
-            "tinyassets-worker-claude-2", "claude-code", "claude-2",
-            "cloud-droplet-claude-2",
-        ),
-    }
-
-    for service_name, (container, provider, worker_id, host_user) in expected.items():
-        service = services[service_name]
-        environment = service.get("environment") or {}
-        command = service.get("command") or []
-        assert service["container_name"] == container
-        assert command[-2:] == ["--provider", provider]
-        assert environment.get("TINYASSETS_WORKER_ID") == worker_id
-        assert environment.get("UNIVERSE_SERVER_HOST_USER") == host_user
-        assert environment.get("TINYASSETS_GOAL_POOL") == "off"
+    assert not any(name == "worker" or name.startswith("worker-") for name in services)
+    assert {"daemon", "cloudflared", "logs"} <= set(services)
 
 
 # ---------------------------------------------------------------------------
@@ -463,28 +391,23 @@ def test_entrypoint_script_exists():
     assert ENTRYPOINT.exists(), f"Missing: {ENTRYPOINT}"
 
 
-def test_entrypoint_installs_codex_auth_bundle():
+def test_entrypoint_strips_codex_auth_bundle():
     text = ENTRYPOINT.read_text(encoding="utf-8")
     assert "TINYASSETS_CODEX_AUTH_JSON_B64" in text
-    assert 'CODEX_HOME="${CODEX_HOME:-/data/.codex}"' in text
-    assert "base64 -d" in text
-    assert "auth.json" in text, (
-        "docker-entrypoint.sh must install the subscription-backed Codex auth bundle"
-    )
+    assert 'unset "${_name}"' in text
+    assert "base64 -d" not in text
 
 
-def test_entrypoint_creates_claude_config_dir():
+def test_entrypoint_strips_claude_config_dir():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert 'CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"' in text
-    assert 'mkdir -p "${CLAUDE_CONFIG_DIR}"' in text
-    assert 'chmod 700 "${CLAUDE_CONFIG_DIR}"' in text
+    assert "CLAUDE_CONFIG_DIR" in text
+    assert 'unset "${_name}"' in text
 
 
-def test_entrypoint_pins_codex_file_credentials_store():
+def test_entrypoint_does_not_materialize_codex_credentials():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert 'cli_auth_credentials_store = "file"' in text, (
-        "container auth must use file-backed Codex credentials under CODEX_HOME"
-    )
+    assert 'cli_auth_credentials_store = "file"' not in text
+    assert "auth.json" not in text
 
 
 def test_entrypoint_does_not_login_with_api_key():
@@ -499,22 +422,19 @@ def test_entrypoint_does_not_login_with_api_key():
     )
 
 
-def test_entrypoint_strips_api_key_providers_by_default():
+def test_entrypoint_strips_api_key_providers_unconditionally():
     text = ENTRYPOINT.read_text(encoding="utf-8")
     assert "TINYASSETS_ALLOW_API_KEY_PROVIDERS" in text
     assert "OPENAI_API_KEY" in text
     assert 'unset "${_name}"' in text, (
-        "entrypoint must strip API-key provider env vars unless explicitly enabled"
+        "entrypoint must strip API-key provider env vars"
     )
 
 
-def test_entrypoint_replaces_auth_bundle_atomically():
+def test_entrypoint_never_seeds_auth_bundle():
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "mktemp" in text
-    assert "mv " in text
-    assert "failed to decode TINYASSETS_CODEX_AUTH_JSON_B64" in text, (
-        "entrypoint must atomically replace Codex auth when a bundle is provided"
-    )
+    assert "mktemp" not in text
+    assert "base64 -d" not in text
 
 
 def test_codex_auth_keepalive_exercises_shared_codex_home():
