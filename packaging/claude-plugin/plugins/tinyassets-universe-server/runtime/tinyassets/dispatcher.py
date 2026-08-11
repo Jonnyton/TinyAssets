@@ -395,6 +395,8 @@ def select_next_task(
     for task in queue:
         if task.status != "pending":
             continue
+        if str(getattr(task, "hold_reason", "") or "").strip():
+            continue
         queue_epoch = int(getattr(task, "queue_epoch", 1))
         if queue_epochs is not None and queue_epoch not in queue_epochs:
             continue

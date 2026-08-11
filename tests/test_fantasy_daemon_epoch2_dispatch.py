@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,25 @@ from tinyassets.storage.automation_activations import (
     AutomationActivationStore,
 )
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+
+@pytest.fixture(autouse=True)
+def _epoch2_tests_use_assigned_credential_seam(monkeypatch):
+    """Epoch-2 lifecycle tests isolate queue fencing from credential custody."""
+
+    from tinyassets import assigned_credential_execution as execution
+
+    monkeypatch.setattr(
+        execution,
+        "refresh_pending_credential_holds",
+        lambda *_args, **_kwargs: True,
+    )
+
+    @contextmanager
+    def bind(_base_path, _universe_dir, provider_call):
+        yield provider_call
+
+    monkeypatch.setattr(execution, "bind_assigned_provider_call", bind)
 
 
 def _activation_subject(ref: str) -> ExecutionSubject:
@@ -724,7 +744,7 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from tinyassets import cloud_automation_continuation, runs
+    from tinyassets import assigned_credential_execution, runs
 
     universe = tmp_path / "universe-a"
     universe.mkdir()
@@ -732,12 +752,12 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
     captured: dict = {}
     authorized_provider = object()
 
-    def prepare_provider(base_path, **kwargs):
+    @contextmanager
+    def bind_provider(base_path, universe_dir, provider_call):
         captured["provider_base_path"] = base_path
-        captured["provider_task"] = kwargs["claimed_task"]
-        captured["provider_daemon_id"] = kwargs["daemon_id"]
-        captured["raw_provider_call"] = kwargs["provider_call"]
-        return authorized_provider
+        captured["provider_universe_dir"] = universe_dir
+        captured["raw_provider_call"] = provider_call
+        yield authorized_provider
 
     def execute_version(_base_path, **kwargs):
         captured.update(kwargs)
@@ -749,9 +769,9 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
         )
 
     monkeypatch.setattr(
-        cloud_automation_continuation,
-        "prepare_claimed_cloud_provider_call",
-        prepare_provider,
+        assigned_credential_execution,
+        "bind_assigned_provider_call",
+        bind_provider,
     )
     monkeypatch.setattr(runs, "get_run_by_branch_task_id", lambda *_a, **_k: None)
     monkeypatch.setattr(runs, "execute_branch_version", execute_version)
@@ -783,8 +803,7 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
     assert success is True
     assert error == ""
     assert captured["provider_base_path"] == tmp_path
-    assert captured["provider_task"] is task
-    assert captured["provider_daemon_id"] == "daemon-a"
+    assert captured["provider_universe_dir"] == universe
     assert callable(captured["raw_provider_call"])
     assert captured["provider_call"] is authorized_provider
 

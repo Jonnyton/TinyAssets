@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
     from tinyassets.auth.middleware import ProviderRequestCarrier
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
@@ -42,6 +43,7 @@ class UniverseContext:
     provider_invocation: "ProviderInvocationCarrier | None" = None
     provider_request: "ProviderRequestCarrier | None" = None
     served_provider: "ServedProviderAuthority | None" = None
+    assigned_credential: "AssignedCredentialAuthority | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,16 +405,11 @@ def subprocess_env_for_provider(
         else Path(bound_universe) if bound_universe else None
     )
     if resolved_universe is None:
-        # No-universe (host-local / standalone-daemon) calls keep the host's own
-        # subscription environment. The founder's fail-closed guarantee applies
-        # to USER universes, which always carry a universe_dir and are enforced
-        # by the router-level provider ceiling (ProviderAuthorityHeldError) in
-        # tinyassets/providers/router.py — they never reach this branch.
-        # Fail-closing host-local no-universe completions is deliberately
-        # deferred to the TINYASSETS_PROVIDER_AUTHORITY_V2-gated successor per
-        # constrain-set-engine Decision 5 (host/operator maintenance receipt),
-        # so shipped host-local behavior is preserved while V2 is dark.
-        return subprocess_env_without_api_keys() or os.environ.copy()
+        from tinyassets.exceptions import ProviderUnavailableError
+
+        raise ProviderUnavailableError(
+            "provider launch requires an assigned credential"
+        )
 
     credential_resolution_failed = False
     reason = ""

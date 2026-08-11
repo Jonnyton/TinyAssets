@@ -211,16 +211,10 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # our own worker_id is that predecessor's orphan — reclaim it in seconds
         # instead of waiting out the TTL. Scoped to our own id, so unlike the
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
-        # Require a genuinely UNIQUE worker id: when TINYASSETS_WORKER_ID is unset,
-        # cloud_worker materializes the shared DEFAULT_HOST_USER ("cloud-droplet")
-        # into the child env, which several manually-started supervisors could
-        # share — and reclaiming "our own" non-unique id would steal a live
-        # twin's task (Codex review). The compose fleet assigns unique ids
-        # (claude-1/codex-2/...), so this only excludes the un-configured default.
-        from tinyassets.cloud_worker import DEFAULT_HOST_USER
-
+        # A runtime identity is optional, but when present it is unique to this
+        # daemon process. There is no shared cloud-worker default identity.
         worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
-        if worker_id and worker_id != DEFAULT_HOST_USER:
+        if worker_id:
             reclaim_predecessor_tasks(universe_path, worker_id=worker_id)
         # reclaim_leaseless=True: startup is the one safe place to also reset
         # running rows that carry no lease (pre-lease-era / corrupt orphans),
@@ -438,6 +432,15 @@ def _try_dispatcher_pick(
         # drains the child BranchTasks its driver enqueues — otherwise the
         # driver re-runs every cycle and the queue starves (Codex review).
         if not (_workflow_unified_execution_enabled() or _soul_loop_dispatch_enabled()):
+            return None, {}
+        from tinyassets.assigned_credential_execution import (
+            refresh_pending_credential_holds,
+        )
+
+        if not refresh_pending_credential_holds(
+            universe_path.parent,
+            universe_path,
+        ):
             return None, {}
         # BUG-011 Phase C: sweep expired leases before every pick so a
         # wedged worker's claim is reaped at the next dispatch attempt
@@ -1498,41 +1501,6 @@ def _try_execute_claimed_branch_task(
             )
         except ImportError:
             provider_call = None
-        automation_id = str(getattr(claimed_task, "automation_id", "") or "").strip()
-        if is_epoch2 and automation_id:
-            if provider_call is None:
-                return (
-                    False,
-                    "cloud_provider_bridge_unavailable",
-                    {
-                        "automation_id": automation_id,
-                        "branch_task_id": str(claimed_task.branch_task_id),
-                    },
-                )
-            try:
-                from tinyassets.cloud_automation_continuation import (
-                    prepare_claimed_cloud_provider_call,
-                )
-
-                governed_provider_call = prepare_claimed_cloud_provider_call(
-                    base_path,
-                    claimed_task=claimed_task,
-                    daemon_id=daemon_id,
-                    provider_call=provider_call,
-                )
-            except (OSError, PermissionError, ValueError) as exc:
-                return (
-                    False,
-                    "cloud_provider_authority_unavailable",
-                    {
-                        "automation_id": automation_id,
-                        "branch_task_id": str(claimed_task.branch_task_id),
-                        "authority_error": str(exc),
-                    },
-                )
-            if governed_provider_call is not None:
-                provider_call = governed_provider_call
-
         execution_kwargs = {
             "inputs": _branch_task_inputs_for_execution(claimed_task),
             "run_name": run_name,
@@ -1554,42 +1522,63 @@ def _try_execute_claimed_branch_task(
             "_origin_branch_task_id": str(getattr(claimed_task, "origin_branch_task_id", "") or ""),
         }
         try:
-            if is_epoch2:
-                execution_kwargs["_queue_branch_task_id"] = str(claimed_task.branch_task_id)
-                if branch_task_heartbeat is not None:
-                    with _continuous_branch_task_heartbeat(
-                        branch_task_heartbeat,
-                    ) as assert_authority:
+            from tinyassets.assigned_credential_execution import (
+                NoRequesterOwnedExecutor,
+                bind_assigned_provider_call,
+            )
 
-                        def authority_checked_node_status(
-                            node_id: str,
-                            status: str,
-                        ) -> None:
-                            assert_authority()
-                            if on_node_status is not None:
-                                on_node_status(node_id, status)
-                            assert_authority()
+            if provider_call is None:
+                raise NoRequesterOwnedExecutor()
+            with bind_assigned_provider_call(
+                base_path,
+                universe_path,
+                provider_call,
+            ) as assigned_provider_call:
+                execution_kwargs["provider_call"] = assigned_provider_call
+                if is_epoch2:
+                    execution_kwargs["_queue_branch_task_id"] = str(
+                        claimed_task.branch_task_id
+                    )
+                    if branch_task_heartbeat is not None:
+                        with _continuous_branch_task_heartbeat(
+                            branch_task_heartbeat,
+                        ) as assert_authority:
 
-                        execution_kwargs["on_node_status"] = authority_checked_node_status
+                            def authority_checked_node_status(
+                                node_id: str,
+                                status: str,
+                            ) -> None:
+                                assert_authority()
+                                if on_node_status is not None:
+                                    on_node_status(node_id, status)
+                                assert_authority()
+
+                            execution_kwargs["on_node_status"] = authority_checked_node_status
+                            outcome = execute_branch_version(
+                                base_path,
+                                branch_version_id=branch_version_id,
+                                **execution_kwargs,
+                            )
+                            assert_authority()
+                    else:
                         outcome = execute_branch_version(
                             base_path,
                             branch_version_id=branch_version_id,
                             **execution_kwargs,
                         )
-                        assert_authority()
                 else:
-                    outcome = execute_branch_version(
+                    assert branch is not None
+                    outcome = execute_branch(
                         base_path,
-                        branch_version_id=branch_version_id,
+                        branch=branch,
                         **execution_kwargs,
                     )
-            else:
-                assert branch is not None
-                outcome = execute_branch(
-                    base_path,
-                    branch=branch,
-                    **execution_kwargs,
-                )
+        except NoRequesterOwnedExecutor:
+            return (
+                False,
+                "no_requester_owned_executor",
+                {"branch_task_id": str(claimed_task.branch_task_id)},
+            )
         except BranchTaskRunReservationConflict:
             reserved_run = get_run_by_branch_task_id(
                 base_path,
@@ -3652,35 +3641,7 @@ def _main_unfenced() -> None:
         choices=["streamable-http", "sse", "stdio"],
         help="MCP transport protocol (default: streamable-http)",
     )
-    parser.add_argument(
-        "--provider",
-        default="",
-        help=(
-            "Pin the writer role to a single provider (no fallback). "
-            "Known: claude-code, codex, gemini-free, groq-free, grok-free, "
-            "ollama-local. Omit for the default fallback chain."
-        ),
-    )
-
     args = parser.parse_args()
-
-    # Apply --provider pin via TINYASSETS_PIN_WRITER env var so the router
-    # consults it per-call instead of mutating FALLBACK_CHAINS at import.
-    # Env-var routing survives subprocess boundaries for future multi-
-    # daemon tray work and keeps the module shape stable.
-    if args.provider:
-        from fantasy_daemon.providers import router as _router_mod
-
-        known = set().union(*_router_mod.FALLBACK_CHAINS.values())
-        if args.provider not in known:
-            parser.error(
-                f"--provider {args.provider!r} is not a known provider. Known: {sorted(known)}"
-            )
-        os.environ["TINYASSETS_PIN_WRITER"] = args.provider
-        logger.info(
-            "Writer role pinned to provider %s via TINYASSETS_PIN_WRITER",
-            args.provider,
-        )
 
     # Logging setup
     level = logging.DEBUG if args.verbose else logging.INFO

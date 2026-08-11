@@ -733,6 +733,19 @@ def test_flag_matrix_default_off_state(monkeypatch):
 # ───────────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _queue_tests_have_an_assigned_credential(monkeypatch):
+    """Queue lifecycle tests isolate dispatch from credential resolution."""
+
+    from tinyassets import assigned_credential_execution as execution
+
+    monkeypatch.setattr(
+        execution,
+        "refresh_pending_credential_holds",
+        lambda *_args, **_kwargs: True,
+    )
+
+
 def test_wire_up_try_pick_returns_none_when_queue_empty(
     universe_dir, monkeypatch,
 ):

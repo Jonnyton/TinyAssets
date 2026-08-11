@@ -1,0 +1,369 @@
+"""Credential-driven daemon execution without a provider-shaped fleet."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tinyassets.exceptions import (
+    AllProvidersExhaustedError,
+    ProviderUnavailableError,
+)
+from tinyassets.providers.base import (
+    BaseProvider,
+    ModelConfig,
+    ProviderResponse,
+    UniverseContext,
+    subprocess_env_for_provider,
+)
+from tinyassets.providers.router import ProviderRouter
+
+
+class _Provider(BaseProvider):
+    def __init__(self, name: str, *, failure: Exception | None = None) -> None:
+        self.name = name
+        self.family = name
+        self.failure = failure
+        self.calls: list[Path | None] = []
+
+    async def complete(
+        self,
+        prompt: str,
+        system: str,
+        config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
+    ) -> ProviderResponse:
+        self.calls.append(universe_dir)
+        if self.failure is not None:
+            raise self.failure
+        return ProviderResponse(
+            text=f"served-by-{self.name}",
+            provider=self.name,
+            model=self.name,
+            family=self.family,
+            latency_ms=1.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_assigned_credential_routes_to_exact_provider(tmp_path: Path) -> None:
+    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
+
+    codex = _Provider("codex")
+    claude = _Provider("claude-code")
+    router = ProviderRouter({codex.name: codex, claude.name: claude})
+    context = UniverseContext(
+        universe_dir=tmp_path,
+        assigned_credential=AssignedCredentialAuthority(
+            universe_id=tmp_path.name,
+            owner_user_id="owner-a",
+            agent_binding_id="agent-a",
+            binding_revision=3,
+            provider="codex",
+            credential_snapshot_dir=tmp_path / "snapshot",
+        ),
+    )
+
+    response = await router.call(
+        "writer",
+        "prompt",
+        "system",
+        operation="run_graph",
+        universe_context=context,
+    )
+
+    assert response.provider == "codex"
+    assert codex.calls == [tmp_path]
+    assert claude.calls == []
+
+
+@pytest.mark.asyncio
+async def test_assigned_credential_failure_never_tries_another_provider(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
+
+    codex = _Provider("codex", failure=ProviderUnavailableError("rate limited"))
+    claude = _Provider("claude-code")
+    router = ProviderRouter({codex.name: codex, claude.name: claude})
+    context = UniverseContext(
+        universe_dir=tmp_path,
+        assigned_credential=AssignedCredentialAuthority(
+            universe_id=tmp_path.name,
+            owner_user_id="owner-a",
+            agent_binding_id="agent-a",
+            binding_revision=3,
+            provider="codex",
+            credential_snapshot_dir=tmp_path / "snapshot",
+        ),
+    )
+
+    with pytest.raises(AllProvidersExhaustedError, match="Assigned provider 'codex'"):
+        await router.call(
+            "writer",
+            "prompt",
+            "system",
+            operation="run_graph",
+            universe_context=context,
+        )
+
+    assert codex.calls == [tmp_path]
+    assert claude.calls == []
+
+
+@pytest.mark.asyncio
+async def test_node_policy_cannot_replace_assigned_provider(tmp_path: Path) -> None:
+    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
+
+    codex = _Provider("codex")
+    claude = _Provider("claude-code")
+    router = ProviderRouter({codex.name: codex, claude.name: claude})
+    context = UniverseContext(
+        universe_dir=tmp_path,
+        assigned_credential=AssignedCredentialAuthority(
+            universe_id=tmp_path.name,
+            owner_user_id="owner-a",
+            agent_binding_id="agent-a",
+            binding_revision=1,
+            provider="codex",
+            credential_snapshot_dir=tmp_path / "snapshot",
+        ),
+    )
+
+    text, provider, _meta = await router.call_with_policy(
+        "writer",
+        "prompt",
+        "system",
+        {"preferred": {"provider": "claude-code"}},
+        operation="run_graph",
+        universe_context=context,
+    )
+
+    assert text == "served-by-codex"
+    assert provider == "codex"
+    assert codex.calls == [tmp_path]
+    assert claude.calls == []
+
+
+def test_no_universe_call_cannot_inherit_host_provider_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "ambient-codex"))
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-secret")
+
+    with pytest.raises(ProviderUnavailableError, match="assigned credential"):
+        subprocess_env_for_provider("codex")
+
+
+def test_resolver_snapshots_exact_serving_credential_and_cleans_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tinyassets import assigned_credential_execution as execution
+
+    universe = tmp_path / "u-a"
+    universe.mkdir()
+    assignment = SimpleNamespace(
+        state="ready",
+        universe_id="u-a",
+        owner_user_id="owner-a",
+        provider="codex",
+        binding_id="provider-binding-a",
+        binding_generation=4,
+        binding_digest="sha256:binding",
+        credential_reference_id="credential-a",
+        credential_reference_generation=7,
+        credential_reference_digest="sha256:credential",
+    )
+    agent = {
+        "agent_binding_id": "agent-a",
+        "created_by": "owner-a",
+        "revision": 3,
+        "status": "serving",
+        "configuration": {"provider_ref": "provider-binding-a"},
+    }
+    custody = SimpleNamespace(
+        reference_id="credential-a",
+        generation=7,
+        reference_digest="sha256:credential",
+    )
+    snapshot = SimpleNamespace(directory=universe / ".snapshot")
+    cleaned: list[object] = []
+
+    monkeypatch.setattr(execution, "load_provider_assignment", lambda *_a, **_k: assignment)
+    monkeypatch.setattr(execution, "resolve_serving_agent_binding", lambda *_a, **_k: agent)
+
+    class _Connection:
+        def execute(self, _sql: str) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    class _Store:
+        @contextmanager
+        def connection(self):
+            yield _Connection()
+
+    monkeypatch.setattr(execution, "SQLiteProviderWorkAuthorityStore", lambda _base: _Store())
+    monkeypatch.setattr(
+        execution,
+        "current_serving_authority",
+        lambda *_a, **_k: (assignment, SimpleNamespace(), custody),
+    )
+    monkeypatch.setattr(execution, "snapshot_llm_subscription_credential", lambda **_k: snapshot)
+    monkeypatch.setattr(execution, "cleanup_llm_credential_snapshot", cleaned.append)
+
+    with execution.resolve_assigned_credential(tmp_path, universe) as authority:
+        assert authority.provider == "codex"
+        assert authority.credential_snapshot_dir == snapshot.directory
+        assert authority.agent_binding_id == "agent-a"
+        assert cleaned == []
+
+    assert cleaned == [snapshot]
+
+
+def test_resolver_maps_missing_assignment_to_typed_hold(tmp_path: Path) -> None:
+    from tinyassets.assigned_credential_execution import (
+        NO_REQUESTER_OWNED_EXECUTOR,
+        NoRequesterOwnedExecutor,
+        resolve_assigned_credential,
+    )
+
+    universe = tmp_path / "u-empty"
+    universe.mkdir()
+
+    with pytest.raises(NoRequesterOwnedExecutor) as held:
+        with resolve_assigned_credential(tmp_path, universe):
+            raise AssertionError("unreachable")
+
+    assert held.value.reason == NO_REQUESTER_OWNED_EXECUTOR
+
+
+def test_refresh_pending_holds_tracks_current_credential_availability(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tinyassets import assigned_credential_execution as execution
+    from tinyassets.branch_tasks import BranchTask, append_task, read_queue
+
+    universe = tmp_path / "u-a"
+    universe.mkdir()
+    append_task(
+        universe,
+        BranchTask(
+            branch_task_id="task-a",
+            branch_def_id="branch-a",
+            universe_id="u-a",
+        ),
+    )
+
+    @contextmanager
+    def unavailable(*_args, **_kwargs):
+        raise execution.NoRequesterOwnedExecutor()
+        yield
+
+    monkeypatch.setattr(execution, "resolve_assigned_credential", unavailable)
+    execution.refresh_pending_credential_holds(tmp_path, universe)
+    assert read_queue(universe)[0].hold_reason == "no_requester_owned_executor"
+
+    @contextmanager
+    def available(*_args, **_kwargs):
+        yield object()
+
+    monkeypatch.setattr(execution, "resolve_assigned_credential", available)
+    execution.refresh_pending_credential_holds(tmp_path, universe)
+    assert read_queue(universe)[0].hold_reason == ""
+
+
+def test_bound_branch_provider_call_carries_assigned_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tinyassets import assigned_credential_execution as execution
+
+    universe = tmp_path / "u-a"
+    universe.mkdir()
+    authority = execution.AssignedCredentialAuthority(
+        universe_id="u-a",
+        owner_user_id="owner-a",
+        agent_binding_id="agent-a",
+        binding_revision=1,
+        provider="codex",
+        credential_snapshot_dir=universe / ".snapshot",
+    )
+
+    @contextmanager
+    def resolved(*_args, **_kwargs):
+        yield authority
+
+    monkeypatch.setattr(execution, "resolve_assigned_credential", resolved)
+    seen: list[UniverseContext] = []
+
+    def provider_call(_prompt: str, _system: str = "", **kwargs):
+        seen.append(kwargs["universe_context"])
+        return "ok"
+
+    with execution.bind_assigned_provider_call(
+        tmp_path,
+        universe,
+        provider_call,
+    ) as bound:
+        assert bound("prompt") == "ok"
+
+    assert len(seen) == 1
+    assert seen[0].universe_dir == universe
+    assert seen[0].assigned_credential is authority
+
+
+def test_daemon_does_not_claim_queue_when_credential_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from fantasy_daemon import __main__ as daemon_main
+    from tinyassets import assigned_credential_execution as execution
+    from tinyassets.branch_tasks import BranchTask, append_task, read_queue
+
+    universe = tmp_path / "u-a"
+    universe.mkdir()
+    append_task(
+        universe,
+        BranchTask(
+            branch_task_id="task-a",
+            branch_def_id="branch-a",
+            universe_id="u-a",
+        ),
+    )
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "1")
+    monkeypatch.setenv("TINYASSETS_DISPATCHER_ENABLED", "on")
+
+    def unavailable(base_path: Path, universe_dir: Path) -> bool:
+        assert Path(base_path) == tmp_path
+        assert Path(universe_dir) == universe
+        from tinyassets.branch_tasks import set_task_hold_reason
+
+        set_task_hold_reason(
+            universe,
+            "task-a",
+            execution.NO_REQUESTER_OWNED_EXECUTOR,
+        )
+        return False
+
+    monkeypatch.setattr(
+        execution,
+        "refresh_pending_credential_holds",
+        unavailable,
+    )
+
+    claimed, inputs = daemon_main._try_dispatcher_pick(universe, "daemon-a")
+
+    assert claimed is None
+    assert inputs == {}
+    queued = read_queue(universe)[0]
+    assert queued.status == "pending"
+    assert queued.hold_reason == execution.NO_REQUESTER_OWNED_EXECUTOR

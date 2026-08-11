@@ -357,7 +357,11 @@ class ProviderRouter:
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
 
-        if universe_context is not None and universe_context.provider_invocation is None:
+        if (
+            universe_context is not None
+            and universe_context.provider_invocation is None
+            and universe_context.assigned_credential is None
+        ):
             from tinyassets.provider_assignment import authorize_served_provider_call
 
             if (
@@ -421,10 +425,21 @@ class ProviderRouter:
             operation=operation,
         )
         served_authority = universe_context.served_provider if universe_context else None
+        assigned_credential = (
+            universe_context.assigned_credential if universe_context else None
+        )
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
-        if served_authority is not None:
+        if assigned_credential is not None:
+            if universe_dir is None or universe_dir.name != assigned_credential.universe_id:
+                raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+            cfg = replace(
+                cfg,
+                credential_snapshot_dir=assigned_credential.credential_snapshot_dir,
+            )
+            chain = [assigned_credential.provider]
+        elif served_authority is not None:
             if operation != "converse" or role != "writer":
                 raise PermissionError("served provider authority is converse/writer only")
             if served_authority.max_tokens < 1:
@@ -468,7 +483,9 @@ class ProviderRouter:
         # provider fails, the call fails loudly (hard rule #8).
         pin_writer = os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
         is_pinned_writer = role == "writer" and bool(pin_writer)
-        if served_authority is not None:
+        if assigned_credential is not None:
+            is_pinned_writer = False
+        elif served_authority is not None:
             if is_pinned_writer and pin_writer != served_authority.provider:
                 raise PermissionError("writer pin conflicts with served provider")
         elif invocation_carrier is not None:
@@ -492,7 +509,9 @@ class ProviderRouter:
         # narrowed chain to [pin_writer] above; the filter then enforces
         # pin × allowlist composition. None = no-op (backwards-compat).
         allowlist = (
-            [served_authority.provider]
+            [assigned_credential.provider]
+            if assigned_credential is not None
+            else [served_authority.provider]
             if served_authority is not None
             else _effective_universe_provider_ceiling(
                 universe_context,
@@ -757,6 +776,12 @@ class ProviderRouter:
             return resp
 
         # All providers exhausted.
+        if assigned_credential is not None:
+            raise AllProvidersExhaustedError(
+                f"Assigned provider {assigned_credential.provider!r} exhausted; "
+                "workflow authority forbids fallback widening.",
+                attempts=attempts,
+            )
         if served_authority is not None:
             raise AllProvidersExhaustedError(
                 f"Served provider {served_authority.provider!r} exhausted; "

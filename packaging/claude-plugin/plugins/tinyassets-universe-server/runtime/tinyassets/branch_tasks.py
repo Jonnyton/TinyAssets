@@ -97,6 +97,7 @@ class BranchTask:
     directed_daemon_id: str = ""
     evidence_url: str = ""
     error: str = ""
+    hold_reason: str = ""
     cancel_requested: bool = False
     request_type: str = "branch_run"
     deadline: str = ""
@@ -376,6 +377,8 @@ def claim_task(
                 continue
             if row.get("status") != "pending":
                 return None
+            if str(row.get("hold_reason") or "").strip():
+                return None
             heartbeat_at, lease_expires_at = _lease_window()
             row["status"] = "running"
             row["claimed_by"] = claimer
@@ -384,6 +387,28 @@ def claim_task(
             row["executor_runtime_id"] = executor_runtime_id or ""
             row["heartbeat_at"] = heartbeat_at
             row["lease_expires_at"] = lease_expires_at
+            _write_raw(qp, raw)
+            return BranchTask.from_dict(row)
+    return None
+
+
+def set_task_hold_reason(
+    universe_path: Path,
+    task_id: str,
+    reason: str,
+) -> BranchTask | None:
+    """Set or clear sanitized hold evidence on one pending task."""
+
+    normalized = str(reason or "").strip()
+    qp = queue_path(universe_path)
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if not isinstance(row, dict) or row.get("branch_task_id") != task_id:
+                continue
+            if row.get("status") != "pending":
+                return None
+            row["hold_reason"] = normalized
             _write_raw(qp, raw)
             return BranchTask.from_dict(row)
     return None

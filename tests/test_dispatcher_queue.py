@@ -204,6 +204,26 @@ def test_claim_task_idempotent(universe_dir):
     assert second is None
 
 
+def test_pending_hold_reason_roundtrips_and_can_be_cleared(universe_dir):
+    from tinyassets.branch_tasks import set_task_hold_reason
+
+    task = _make_task(branch_task_id="held-task")
+    append_task(universe_dir, task)
+
+    held = set_task_hold_reason(
+        universe_dir,
+        task.branch_task_id,
+        "no_requester_owned_executor",
+    )
+    assert held is not None
+    assert held.status == "pending"
+    assert held.hold_reason == "no_requester_owned_executor"
+
+    released = set_task_hold_reason(universe_dir, task.branch_task_id, "")
+    assert released is not None
+    assert released.hold_reason == ""
+
+
 def test_mark_status_valid_transitions(universe_dir):
     t = _make_task()
     append_task(universe_dir, t)
@@ -296,6 +316,25 @@ def test_user_boost_within_tier():
     assert score_task(hi, now_iso=now, config=cfg) > score_task(
         lo, now_iso=now, config=cfg,
     )
+
+
+def test_dispatcher_skips_held_task_without_blocking_ready_work(universe_dir):
+    from tinyassets.branch_tasks import set_task_hold_reason
+
+    held = _make_task(branch_task_id="held", priority_weight=100.0)
+    ready = _make_task(branch_task_id="ready", priority_weight=1.0)
+    append_task(universe_dir, held)
+    append_task(universe_dir, ready)
+    set_task_hold_reason(
+        universe_dir,
+        held.branch_task_id,
+        "no_requester_owned_executor",
+    )
+
+    selected = select_next_task(universe_dir, config=DispatcherConfig())
+
+    assert selected is not None
+    assert selected.branch_task_id == ready.branch_task_id
 
 
 def test_deferred_coefficients_zero_until_paid_market_enabled():
@@ -1356,7 +1395,7 @@ def test_queue_list_discloses_staged_epoch2_work_awaiting_capacity(server_base):
     `consumer_ready: true`, so that contract is gone.
 
     The distinction still worth pinning is the one that replaced it: an
-    activated consumer with **no live worker** must count the staged row as
+    activated consumer with **no requester-owned executor** must count the staged row as
     valid, refuse to call it eligible, and say exactly why.
     """
     from tinyassets.api.universe import _action_queue_list
@@ -1388,7 +1427,7 @@ def test_queue_list_discloses_staged_epoch2_work_awaiting_capacity(server_base):
     # And the reason is disclosed rather than left implicit.
     assert response["operational_state_counts"]["awaiting_compatible_capacity"] == 1
     assert response["operational_reason_counts"]["awaiting_compatible_capacity"] == {
-        "no_live_compatible_worker": 1
+        "no_requester_owned_executor": 1
     }
 
 

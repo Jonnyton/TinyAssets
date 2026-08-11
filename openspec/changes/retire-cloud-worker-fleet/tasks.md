@@ -1,8 +1,8 @@
 ## 1. Credential-driven execution
 
-- [ ] 1.1 Add failing tests for assigned-credential resolution, exact-provider routing, snapshot cleanup, and `no_requester_owned_executor` holds.
-- [ ] 1.2 Implement the daemon-side assigned-credential resolver and bind it to claimed BranchTask provider calls without changing serving-binding public modules.
-- [ ] 1.3 Add pending hold evidence and deterministic runnable-task selection so a held task neither executes nor blocks another ready task.
+- [x] 1.1 Add failing tests for assigned-credential resolution, exact-provider routing, snapshot cleanup, and `no_requester_owned_executor` holds.
+- [x] 1.2 Implement the daemon-side assigned-credential resolver and bind it to claimed BranchTask provider calls without changing serving-binding public modules.
+- [x] 1.3 Add pending hold evidence and deterministic runnable-task selection so a held task neither executes nor blocks another ready task.
 
 ## 2. Provider model retirement
 

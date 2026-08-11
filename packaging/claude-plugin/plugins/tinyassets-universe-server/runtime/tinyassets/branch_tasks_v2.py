@@ -607,7 +607,7 @@ class Epoch2BranchTaskAdapter:
                 and not capacity_matcher(task)
             ):
                 operational_state = "awaiting_compatible_capacity"
-                reason = "no_live_compatible_worker"
+                reason = "no_requester_owned_executor"
             else:
                 operational_state = ""
                 reason = ""
