@@ -1,21 +1,20 @@
-# Active lane: BYO-LLM connect flow slice 1
+# Active lane: retire the cloud worker fleet
 
-- Purpose: implement the approved owner/founder-only BYO-LLM serving path without ambient or platform-provider authority.
-- Provider/session: `codex-byo-llm-slice1`.
-- Branch: `claude/byo-llm-slice1`.
-- Base ref: `origin/main` at `7b451b2c98abb9b411d35b32def96a319d721594`.
+- Purpose: remove the fixed provider-shaped cloud fleet and make queued automation execution resolve each universe workflow's assigned serving credential.
+- Provider/session: `codex-gpt5-desktop`.
+- Branch: `claude/fleet-removal-complete`.
+- Base ref: `origin/main` at `04eb0f60344c82d23520dab32d6d03fd8afbcbae`.
 - Worktree: `C:/Users/Jonathan/Projects/wf-byo-llm-slice1`.
-- STATUS row: `Build BYO-LLM connect flow slice 1`.
-- OpenSpec: `openspec/changes/byo-llm-connect-flow/`, tasks 1.1-1.6 only.
-- Co-advanced contract: `openspec/changes/constrain-set-engine-provider-authority/`, request capability, requester-local admission, and sink validation only.
-- PLAN refs: `Module: Providers`; `Module: API & MCP Interface`.
-- Memory refs: no prior provider memory found; authored proposal/design/tasks are the durable handoff.
-- Related implications: credential custody, custom-agent binding, Slack app ingress, provider routing, cloud-drain source overlap.
-- Ship condition: focused/full relevant tests, Ruff, plugin mirror, mutation proof, exact-head dual-family approval, isolated canary, rendered proof, and production-SHA gate.
-- Abandon condition: the approved design conflicts with current authoritative code in a way that cannot fail closed within slice 1.
-- Pickup hints: preserve `ProviderWorkBinding`; reject caller authority fields; owner/founder only; no direct u-tiny patch; no rollout from this lane.
-- PR expectation: commit locally only until review/canary prerequisites are independently satisfied.
+- STATUS row: `Retire the cloud worker fleet; credential-driven daemon execution`.
+- OpenSpec: `openspec/changes/retire-cloud-worker-fleet/`.
+- PLAN refs: `Module: Providers`; `Module: Daemon Platform`.
+- Memory refs: founder architecture and acceptance criteria in the 2026-08-11 task request; no external research required.
+- Related implications: supersedes the provider-shaped cloud-drain/fleet runtime; preserves the queue, ingress, memory, canaries, and non-LLM daemon machinery.
+- Ship condition: full required-test surface has zero new failures vs origin/main, changed-file Ruff is clean, plugin mirror rebuilt, independent review complete, and the branch committed without merge/deploy.
+- Abandon condition: the merged serving-binding contract cannot resolve branch-task universe authority without changing its approved public interface.
+- Pickup hints: fail closed with `no_requester_owned_executor`; never borrow ambient host credentials, choose another provider, or add platform fallback chains.
+- PR expectation: commit locally only; do not merge or deploy.
 
 ## Idea feed refs
 
-- None promoted; incidental findings stay out of this slice.
+- None promoted; the founder architecture is direct build authority.
