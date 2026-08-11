@@ -54,20 +54,12 @@ services:
     environment:
       HOME: /app
       TINYASSETS_DATA_DIR: /data
-      # Persist Codex subscription auth on the shared tinyassets-data volume.
-      # daemon + worker intentionally share one auth.json lineage; do not
-      # split CODEX_HOME per service or duplicate the single-use refresh token.
-      CODEX_HOME: /data/.codex
-      # Persist Claude subscription auth on the shared tinyassets-data volume.
-      CLAUDE_CONFIG_DIR: /data/.claude
       # Shared community-pool root on the durable volume. Load-bearing: the
       # container has no `.git`, so `producers.goal_pool.repo_root_path()`
       # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
       # if this is unset. Do NOT "clean this up" by dropping it. The directory
       # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
       TINYASSETS_REPO_ROOT: /data/community-pool
-      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
-      TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       # Fleet activation only. Goal-pool/marketplace economy stays dark
       # until the PR-177 follow-on intentionally unstubs it.
       TINYASSETS_GOAL_POOL: "off"
@@ -129,7 +121,7 @@ services:
       org.tinyassets.component: tunnel
       org.tinyassets.role: cloudflare-ingress
 
-  # Row K — log aggregation sidecar. Receives daemon, tunnel, and worker
+  # Row K — log aggregation sidecar. Receives daemon and tunnel
   # stdout through Docker's asynchronous Fluent logging driver. The listener
   # is host-loopback-only and Vector has no Docker control socket. Ships to Better Stack when
   # BETTERSTACK_SOURCE_TOKEN is set in /etc/tinyassets/env; otherwise
@@ -158,121 +150,21 @@ services:
       org.tinyassets.component: logs
       org.tinyassets.role: log-forwarder
 
-  # Cloud-side node-executor fleet. This is the small "4 runtimes up"
-  # slice: two Codex workers and two Claude workers, all serving the
-  # host's main universe first. Goal-pool/marketplace spare-capacity
-  # routing remains a PR-177 follow-on.
-  #
-  # Auth: all Codex workers share CODEX_HOME=/data/.codex, protected by
-  # the image's /usr/local/bin/codex flock wrapper; all Claude workers
-  # share CLAUDE_CONFIG_DIR=/data/.claude. Do not split auth homes per
-  # daemon unless the provider subscription model changes.
-  #
-  # Concurrency safety: branch_tasks.claim_task is file-locked. Multiple
-  # workers claiming tasks in the same universe file race for the lock;
-  # loser sees status != pending and returns None. No double-claim possible.
-  worker: &cloud_worker_base
-    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
-    container_name: tinyassets-worker
-    restart: unless-stopped
-    logging: *tinyassets_log_forwarding
-    security_opt:
-      - seccomp=unconfined
-      - apparmor=unconfined
-    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "codex"]
-    environment: &cloud_worker_env
-      HOME: /app
-      TINYASSETS_DATA_DIR: /data
-      CODEX_HOME: /data/.codex
-      CLAUDE_CONFIG_DIR: /data/.claude
-      # Shared community-pool root on the durable volume. Load-bearing: the
-      # container has no `.git`, so `producers.goal_pool.repo_root_path()`
-      # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
-      # if this is unset. Do NOT "clean this up" by dropping it. The directory
-      # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
-      TINYASSETS_REPO_ROOT: /data/community-pool
-      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
-      TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
-      TINYASSETS_GOAL_POOL: "off"
-      TINYASSETS_PAID_MARKET: "off"
-      TINYASSETS_WORKER_ID: codex-1
-      TINYASSETS_WORKER_MODEL: gpt-5
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-1
-    env_file:
-      - /etc/tinyassets/env
-    volumes:
-      - tinyassets-data:/data
-    depends_on:
-      daemon:
-        condition: service_healthy
-    # Liveness watchdog (docs/specs/daemon-liveness-watchdog.md §1): the
-    # supervisor writes worker-specific beats; this check fails when
-    # this container's beat goes stale or pickable work sits unclaimed
-    # (the 2026-06 dormancy class: container "healthy" 37h while no
-    # claims happened). NOTE: compose does NOT restart unhealthy
-    # containers by itself — deploy/tinyassets-autoheal.timer on the host
-    # restarts any TinyAssets container that reports unhealthy.
-    healthcheck:
-      test: ["CMD", "python", "-m", "tinyassets.cloud_worker_healthcheck"]
-      interval: 60s
-      timeout: 15s
-      retries: 3
-      start_period: 120s
-    labels:
-      org.tinyassets.component: worker
-      org.tinyassets.role: node-executor
-
-  worker-codex-2:
-    <<: *cloud_worker_base
-    container_name: tinyassets-worker-codex-2
-    environment:
-      <<: *cloud_worker_env
-      TINYASSETS_WORKER_ID: codex-2
-      TINYASSETS_WORKER_MODEL: gpt-5
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-2
-
-  worker-claude-1:
-    <<: *cloud_worker_base
-    container_name: tinyassets-worker-claude-1
-    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
-    environment:
-      <<: *cloud_worker_env
-      TINYASSETS_WORKER_ID: claude-1
-      TINYASSETS_WORKER_MODEL: claude
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-1
-
-  worker-claude-2:
-    <<: *cloud_worker_base
-    container_name: tinyassets-worker-claude-2
-    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
-    environment:
-      <<: *cloud_worker_env
-      TINYASSETS_WORKER_ID: claude-2
-      TINYASSETS_WORKER_MODEL: claude
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-2
-
   # Slack agents for users who have connected a workspace. Holds one outbound
   # Socket Mode connection per universe, so a user can talk to their agent in
   # Slack with no host machine online — the Forever Rule applied to this
   # surface. There is no inbound port and no public endpoint: the container
   # dials out to Slack.
   #
-  # Deliberately does NOT inherit `cloud_worker_base`. A cross-family review of
-  # the deploy plan returned CRITICAL on that: the anchor carries `env_file:
-  # /etc/tinyassets/env` (every secret on the box), unconfined seccomp and
-  # AppArmor, and no resource limits. This service handles traffic that arrives
-  # from the internet via Slack, so a defect in it would have had stack-wide
-  # secret access and could starve the droplet. It gets only what it needs.
-  #
   # Note what is absent: no `env_file` (every secret on the box) and, since
   # 2026-08-06, no `tinyassets-data` mount either.
   #
   # It used to read each universe's vault off the data volume. That could not
   # survive: `retire_cheat_loop_deploy_fence.py` deletes any container mounting
-  # that volume outside the canonical five, and it did so six times between
+  # that volume outside the canonical daemon, and it did so six times between
   # 03:36 and 04:25 UTC on 2026-08-06 while failing two production deploys. The
   # invariant is structural, not an allowlist gap — several fence call sites
-  # require the consumer set be EXACTLY the five and four require it be EMPTY
+  # require the writer set be EXACTLY the daemon and four require it be EMPTY
   # during removal, and Docker labels are self-asserted so a label-gated
   # allowlist is forgeable by the writer the fence exists to catch.
   #
@@ -302,14 +194,13 @@ services:
     profiles: ["slack"]
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
+    entrypoint: ["/usr/bin/tini", "--"]
     command: ["python", "-m", "tinyassets.slack_agent_worker"]
     environment:
       HOME: /app
       # No TINYASSETS_DATA_DIR, deliberately. With no volume behind it, `/data`
       # would resolve to an empty container-local directory and any residual
       # vault read would quietly find nothing instead of failing loudly.
-      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
-      TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-slack-agent-1
       # Required, and found only by RUNNING it: docker-entrypoint.sh hard-exits
       # with ENV-UNREADABLE unless one of CLOUDFLARE_TUNNEL_TOKEN /
@@ -334,8 +225,8 @@ services:
     depends_on:
       daemon:
         condition: service_healthy
-    # Bounded so a defect here cannot starve the daemon or the workers beside
-    # it. A socket pump plus one CLI turn at a time fits comfortably.
+    # Bounded so a defect here cannot starve the daemon. A socket pump plus one
+    # CLI turn at a time fits comfortably.
     mem_limit: 2g
     pids_limit: 512
     # No healthcheck yet, and that is a known gap rather than an oversight: the
@@ -358,3 +249,5 @@ networks:
   default:
     name: tinyassets-net
     # Default bridge; cloudflared reaches daemon via `daemon:8001`.
+    volumes:
+      - tinyassets-data:/data:ro

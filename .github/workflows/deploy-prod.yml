@@ -18,11 +18,6 @@ name: Deploy prod
 #   DO_SSH_USER      — SSH user on the Droplet (e.g. root or deploy)
 #   DO_SSH_KEY       — Private key PEM for the above user
 #
-# Optional subscription auth secret:
-#   TINYASSETS_CODEX_AUTH_JSON_B64 - base64-encoded ~/.codex/auth.json.
-#   When present, deploy syncs it into /etc/tinyassets/env without printing it
-#   and forces TINYASSETS_ALLOW_API_KEY_PROVIDERS=0 for the public daemon.
-#
 # Optional PR-122 Phase 2 capability migration source (PR-128):
 #   WORKFLOW_GITHUB_PR_CAPABILITIES - pre-rename encrypted JSON object mapping
 #   "<owner>/<repo>" -> "<token>". Deploy validates and narrows it to the
@@ -43,15 +38,6 @@ on:
         type: string
       unsafe_fence_source_run_id:
         description: 'Durable unsafe-fence source identity (<run_id>-<attempt>)'
-        required: false
-        type: string
-      clear_pinned_writer:
-        description: 'Remove TINYASSETS_PIN_WRITER from /etc/tinyassets/env so an exhausted writer falls back to the rest of the chain. Leave empty for no change.'
-        required: false
-        type: boolean
-        default: false
-      set_active_universe:
-        description: 'Repoint /data/.active_universe at this universe id (workers resolve their served universe through it). Leave empty for no change.'
         required: false
         type: string
       retire_extra_consumer:
@@ -325,18 +311,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HAS_CODEX_AUTH_BUNDLE: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 != '' }}
-      # Claude provider auth on the droplet. CLAUDE_CODE_OAUTH_TOKEN is a
-      # `claude setup-token` long-lived token Claude Code reads from the env
-      # (rotation-safe, no file). When set, the deploy syncs it into
-      # /etc/tinyassets/env so a fresh /data volume is not left "Not logged in"
-      # (the 2026-06-25 loop-wedge root cause). Same secret the CI workers use.
-      HAS_CLAUDE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-      # Codex-style fallback: base64 of a subscription ~/.claude/.credentials.json.
-      # The entrypoint seeds it to $CLAUDE_CONFIG_DIR/.credentials.json only when
-      # missing. Preferred is CLAUDE_CODE_OAUTH_TOKEN above (rotation-safe); this
-      # is the file path for hosts without a setup-token.
-      HAS_CLAUDE_CREDENTIALS_BUNDLE: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 != '' }}
       # Bounded project-rename migration. The existing encrypted repository
       # secret remains the single revocation source; the deploy narrows its
       # map to the exact TinyAssets destination before installation.
@@ -598,58 +572,6 @@ jobs:
           fi
           SH
 
-      - name: Prove request HMAC rotation boundary before quiescence
-        id: rotation-boundary
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac }}
-        env:
-          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/install-tinyassets-env.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/verify-request-hmac-rotation-fleet.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/verify-request-hmac-rotation-fleet.sh"
-          expected_compose_sha="$(sha256sum deploy/compose.yml | cut -d ' ' -f 1)"
-          actual_compose_sha="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo sha256sum /opt/tinyassets/compose.yml 2>/dev/null | cut -d ' ' -f 1" || true)"
-          if [ -z "${actual_compose_sha}" ] || [ "${actual_compose_sha}" != "${expected_compose_sha}" ]; then
-            echo "::error::rotation requires the corrected Compose file to be deployed first"
-            exit 1
-          fi
-          if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"; then
-            echo "::error::rotation prerequisite failed: shared env exposes request admission authority"
-            exit 1
-          fi
-          fleet_ids="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'")" || {
-            echo "::error::rotation prerequisite failed: runtime fleet is absent, uses another image, or exposes request admission authority"
-            exit 1
-          }
-          mapfile -t expected_ids <<< "${fleet_ids}"
-          if [ "${#expected_ids[@]}" -ne 4 ]; then
-            echo "::error::rotation prerequisite returned an incomplete worker identity set"
-            exit 1
-          fi
-          for container_id in "${expected_ids[@]}"; do
-            if [[ ! "${container_id}" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "::error::rotation prerequisite returned a malformed worker identity"
-              exit 1
-            fi
-          done
-          {
-            echo 'fleet_ids<<EOF'
-            printf '%s\n' "${expected_ids[@]}"
-            echo 'EOF'
-            echo "proved_image_ref=${TARGET_IMAGE}"
-          } >> "${GITHUB_OUTPUT}"
-          echo "rotation running-fleet boundary and exact correction image proved before quiescence"
-
       - name: Prove candidate image loads before quiescence
         id: candidate-sanity
         env:
@@ -802,9 +724,6 @@ jobs:
         env:
           TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
           REQUEST_HMAC_INSTALL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac && 'set' || 'set-once' }}
-          ROTATION_FLEET_IDS: ${{ steps.rotation-boundary.outputs.fleet_ids }}
-          ROTATION_PROVED_IMAGE_REF: ${{ steps.rotation-boundary.outputs.proved_image_ref }}
-          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
         run: |
           case "${REQUEST_HMAC_INSTALL_MODE}" in
             set-once|set) ;;
@@ -820,15 +739,7 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/verify-request-hmac-rotation-fleet.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/verify-request-hmac-rotation-fleet.sh"
           if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ]; then
-            if [ -z "${ROTATION_PROVED_IMAGE_REF}" ] \
-                || [ "${ROTATION_PROVED_IMAGE_REF}" != "${TARGET_IMAGE}" ]; then
-              echo "::error::rotation target image differs from the pre-proved correction image"
-              exit 1
-            fi
             expected_compose_sha="$(sha256sum deploy/compose.yml | cut -d ' ' -f 1)"
             actual_compose_sha="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -843,26 +754,7 @@ jobs:
               echo "::error::rotation prerequisite failed: shared env exposes request admission authority"
               exit 1
             fi
-            mapfile -t expected_ids <<< "${ROTATION_FLEET_IDS}"
-            if [ "${#expected_ids[@]}" -ne 4 ]; then
-              echo "::error::rotation prerequisite is missing the pre-quiescence worker identity set"
-              exit 1
-            fi
-            for container_id in "${expected_ids[@]}"; do
-              if [[ ! "${container_id}" =~ ^[0-9a-f]{64}$ ]]; then
-                echo "::error::rotation prerequisite contains a malformed worker identity"
-                exit 1
-              fi
-            done
-            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                sudo bash /tmp/verify-request-hmac-rotation-fleet.sh assert-quiesced "${expected_ids[@]}"
-            then
-              echo "rotation exact fleet is quiesced before key transmission"
-            else
-              echo "::error::rotation prerequisite failed: pre-proved worker identity is not exactly quiesced"
-              exit 1
-            fi
+            echo "rotation follows the stop-writer daemon fence; no LLM worker fleet exists"
           fi
           printf '%s' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}" | \
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -899,9 +791,8 @@ jobs:
       # droplet env file, making wiki_path() resolve to /app/C:\Users\...
       # Strip explicit TINYASSETS_WIKI_PATH so the resolver falls back to
       # $TINYASSETS_DATA_DIR/wiki (=/data/wiki).
-      # Also strip TINYASSETS_UNIVERSE: it is a stdio-shim override, and
-      # leaving it in the cloud env can bind tinyassets-worker to a
-      # different universe than the public MCP default.
+      # Also strip TINYASSETS_UNIVERSE: it is a stdio-shim override and has no
+      # authority in the cloud daemon.
       # Hard rename cutover: /etc/tinyassets/env may have been bootstrapped
       # from /etc/workflow/env on first deploy. Strip every legacy
       # WORKFLOW_* override and workflow-named backup target so the
@@ -914,7 +805,7 @@ jobs:
           echo "production_mutation_started=true" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_GH_REPO" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID WORKFLOW_CODEX_AUTH_JSON_B64 WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64 WORKFLOW_GITHUB_PR_CAPABILITIES BACKUP_GH_REPO TINYASSETS_CODEX_AUTH_JSON_B64 TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 CLAUDE_CODE_OAUTH_TOKEN CODEX_HOME CLAUDE_CONFIG_DIR OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_BASE_URL GEMINI_API_KEY GROQ_API_KEY XAI_API_KEY OLLAMA_HOST TINYASSETS_PIN_WRITER TINYASSETS_ALLOW_API_KEY_PROVIDERS" \
               < deploy/install-tinyassets-env.sh
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -952,27 +843,7 @@ jobs:
                sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service; \
                sudo systemctl daemon-reload"
 
-      # Codex CLI rotates single-use OAuth refresh tokens in-place inside
-      # the container. compose.yml sets CODEX_HOME=/data/.codex and
-      # CLAUDE_CONFIG_DIR=/data/.claude for daemon + worker, backed by the
-      # shared tinyassets-data volume, so rotated subscription auth survives
-      # container restart. This step makes those directories self-provisioning
-      # on every deploy — idempotent, no host hands required, per the Forever
-      # Rule (24/7 uptime, zero hosts online).
-      #
-      # Three idempotent branches:
-      #   - tinyassets-data/.codex already present -> skip creation
-      #   - /data/.codex/auth.json already in volume -> skip migration
-      #   - no running container with /data/.codex/auth.json or legacy
-      #     /app/.codex/auth.json -> skip migration
-      #     (new container will seed from TINYASSETS_CODEX_AUTH_JSON_B64 on first boot)
-      #   - /data/.claude already present -> preserve; otherwise migrate from
-      #     a running container's /data/.claude or legacy /app/.claude.
-      #
-      # The migration branch only fires once: the first deploy after this
-      # CODEX_HOME move onto a live droplet where tinyassets-worker has a
-      # rotated auth.json at either the new or legacy location.
-      - name: Prepare codex auth persistent volume
+      - name: Prepare data volume ownership
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -985,8 +856,6 @@ jobs:
 
           docker volume create "$VOLUME_NAME" >/dev/null
           VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
-          CODEX_DIR="$VOLUME_DIR/.codex"
-          CLAUDE_DIR="$VOLUME_DIR/.claude"
 
           # OAuth registration state lives directly at /data/.auth.db.
           # The volume root must be writable by the container's uid 1001;
@@ -999,74 +868,6 @@ jobs:
             -exec chown "$TINYASSETS_UID:$TINYASSETS_GID" {} + \
             -exec chmod 600 {} + || true
 
-          # Create the directory if missing. mkdir -p is itself a no-op
-          # when the path already exists.
-          if [ ! -d "$CODEX_DIR" ]; then
-            echo "creating codex auth persistent directory at $CODEX_DIR"
-            mkdir -p "$CODEX_DIR"
-          fi
-
-          # Ownership + mode are repaired UNCONDITIONALLY every deploy.
-          # If a prior attempt left the dir root-owned, this heals the
-          # posture so uid 1001 can write. Both chown and chmod are
-          # themselves idempotent — no-op when state already matches.
-          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"
-          chmod 700 "$CODEX_DIR"
-
-          # Migration: if the volume is empty but a tinyassets-worker container is
-          # currently running with a Codex auth.json inside it, copy the live
-          # refresh chain into /data/.codex so the new container preserves it
-          # instead of falling back to the stale env-var secret.
-          if [ ! -f "$CODEX_DIR/auth.json" ]; then
-            tmp_dir="$(mktemp -d)"
-            trap 'rm -rf "$tmp_dir"' EXIT
-            if docker inspect tinyassets-worker >/dev/null 2>&1; then
-              if docker exec tinyassets-worker test -f /data/.codex/auth.json 2>/dev/null; then
-                echo "migrating live codex auth.json from tinyassets-worker:/data/.codex"
-                docker cp tinyassets-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
-              elif docker exec tinyassets-worker test -f /app/.codex/auth.json 2>/dev/null; then
-                echo "migrating legacy codex auth.json from tinyassets-worker:/app/.codex"
-                docker cp tinyassets-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
-              fi
-            fi
-            if [ -s "$tmp_dir/auth.json" ]; then
-              cp "$tmp_dir/auth.json" "$CODEX_DIR/auth.json"
-              chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"
-              chmod 600 "$CODEX_DIR/auth.json"
-            fi
-          fi
-
-          # Confirm final state for the log.
-          ls -la "$CODEX_DIR" || true
-
-          if [ ! -d "$CLAUDE_DIR" ]; then
-            echo "creating Claude auth persistent directory at $CLAUDE_DIR"
-            mkdir -p "$CLAUDE_DIR"
-          fi
-          chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
-          chmod 700 "$CLAUDE_DIR"
-
-          if ! find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
-            tmp_claude="$(mktemp -d)"
-            if docker inspect tinyassets-worker >/dev/null 2>&1; then
-              if docker exec tinyassets-worker test -d /data/.claude 2>/dev/null; then
-                echo "migrating live Claude config from tinyassets-worker:/data/.claude"
-                docker cp tinyassets-worker:/data/.claude/. "$tmp_claude/" || true
-              elif docker exec tinyassets-worker test -d /app/.claude 2>/dev/null; then
-                echo "migrating legacy Claude config from tinyassets-worker:/app/.claude"
-                docker cp tinyassets-worker:/app/.claude/. "$tmp_claude/" || true
-              fi
-            fi
-            if find "$tmp_claude" -mindepth 1 -maxdepth 1 | grep -q .; then
-              cp -a "$tmp_claude"/. "$CLAUDE_DIR"/
-              chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
-              find "$CLAUDE_DIR" -type d -exec chmod 700 {} +
-              find "$CLAUDE_DIR" -type f -exec chmod 600 {} +
-            fi
-            rm -rf "$tmp_claude"
-          fi
-
-          ls -la "$CLAUDE_DIR" || true
           SH
 
       - name: Retire legacy Workflow service
@@ -1126,6 +927,13 @@ jobs:
             workflow-worker-claude-2; do
             docker rm -f "$container" >/dev/null 2>&1 || true
           done
+          for container in \
+            tinyassets-worker \
+            tinyassets-worker-codex-2 \
+            tinyassets-worker-claude-1 \
+            tinyassets-worker-claude-2; do
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          done
 
           for unit_file in /etc/systemd/system/workflow*.service /etc/systemd/system/workflow*.timer; do
             if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
@@ -1141,9 +949,6 @@ jobs:
       - name: Deploy new image
         id: deploy
         env:
-          TINYASSETS_CODEX_AUTH_JSON_B64: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 }}
           TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON: ${{ secrets.TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON }}
           HAS_REQUESTER_PROVIDER_ENROLLMENTS: ${{ secrets.TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON != '' }}
           # Bounded pre-rename migration source. Never install this broad map
@@ -1173,7 +978,7 @@ jobs:
           # not the writer fence; old-image rollback is separately prohibited.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID TINYASSETS_BUG_INVESTIGATION_GOAL_ID"
+              "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID TINYASSETS_BUG_INVESTIGATION_GOAL_ID TINYASSETS_CODEX_AUTH_JSON_B64 TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 CLAUDE_CODE_OAUTH_TOKEN CODEX_HOME CLAUDE_CONFIG_DIR OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_BASE_URL GEMINI_API_KEY GROQ_API_KEY XAI_API_KEY OLLAMA_HOST TINYASSETS_PIN_WRITER TINYASSETS_ALLOW_API_KEY_PROVIDERS"
           # Enqueue go-live (2026-06-03): turn ON the in-node paced enqueue verb
           # so a user-built driver branch can append run-requests to its own
           # universe's dispatcher queue. The verb shipped dark in #1214 and was
@@ -1247,17 +1052,6 @@ jobs:
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo bash /tmp/install-tinyassets-env.sh set UNIVERSE_SERVER_AUTH"
           fi
-          if [ "${HAS_CODEX_AUTH_BUNDLE}" = "true" ]; then
-            echo "Deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64 found; syncing subscription auth bundle."
-            printf '%s' "${TINYASSETS_CODEX_AUTH_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64"
-            printf '%s' '0' | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS"
-          else
-            echo "::warning::TINYASSETS_CODEX_AUTH_JSON_B64 is not visible to deploy; leaving any existing droplet subscription auth untouched."
-          fi
           if [ "${HAS_REQUESTER_PROVIDER_ENROLLMENTS}" = "true" ]; then
             echo "Deploy-visible requester provider enrollment manifest found; syncing server-only assignment facts."
             printf '%s' "${TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -1265,27 +1059,6 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON"
           else
             echo "::notice::TINYASSETS_REQUESTER_PROVIDER_ENROLLMENTS_JSON is not configured; requester-owned cloud compute binding remains held."
-          fi
-          # Claude provider auth: sync CLAUDE_CODE_OAUTH_TOKEN into
-          # /etc/tinyassets/env (same atomic helper) so claude-code workers
-          # authenticate from the env on a fresh /data volume. Without it the
-          # deploy could only migrate creds from a live container — a circular
-          # dependency that fails once the credentials are gone (the 2026-06-25
-          # loop-wedge root cause). The entrypoint also seeds a credentials file
-          # from TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 when present; the env token
-          # is preferred (rotation-safe).
-          if [ "${HAS_CLAUDE_OAUTH_TOKEN}" = "true" ]; then
-            echo "Deploy-visible CLAUDE_CODE_OAUTH_TOKEN found; syncing claude-code auth token."
-            printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set CLAUDE_CODE_OAUTH_TOKEN"
-          elif [ "${HAS_CLAUDE_CREDENTIALS_BUNDLE}" = "true" ]; then
-            echo "Deploy-visible TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 found; syncing claude credentials bundle."
-            printf '%s' "${TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64"
-          else
-            echo "::warning::No claude auth (CLAUDE_CODE_OAUTH_TOKEN / TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64) visible to deploy; leaving any existing droplet claude auth untouched."
           fi
           # PR-128 — sync the Phase 2 effector capability map. Same
           # install-tinyassets-env.sh helper, same atomic write
@@ -1377,10 +1150,10 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES TINYASSETS_GITHUB_PR_CAPABILITIES"
           fi
           {
-            echo "## Deploy subscription auth"
+            echo "## Deploy requester-owned execution authority"
             echo ""
-            echo "- TINYASSETS_CODEX_AUTH_JSON_B64 visible to deploy: \`${HAS_CODEX_AUTH_BUNDLE}\`"
-            echo "- API-key providers forced off when the Codex subscription bundle is synced."
+            echo "- Requester provider enrollment manifest visible: \`${HAS_REQUESTER_PROVIDER_ENROLLMENTS}\`"
+            echo "- Ambient host provider credentials are deleted from the daemon env."
             echo "- Exact TinyAssets GitHub push capability source visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           # retire-cheat-loop task 2.1: unmask the daemon only after the exact
@@ -1413,45 +1186,6 @@ jobs:
             exit 1
           }
 
-      - name: Clear the pinned writer (explicit input only)
-        if: inputs.clear_pinned_writer
-        run: |
-          # TINYASSETS_PIN_WRITER narrows the writer chain to ONE provider
-          # with no fallback -- the only hard-pin in the system. Live
-          # 2026-08-06, run 7ca009898ead4fe9: a soul-loop slice executed
-          # correctly and then failed with 'Pinned writer provider
-          # 'claude-code' exhausted. TINYASSETS_PIN_WRITER disables
-          # fallback', so the drain could not use the owner's other
-          # subscription even though it was authenticated and idle.
-          #
-          # Explicit input only; never clears on an ordinary deploy.
-          B64=c2V0IC1ldW8gcGlwZWZhaWwKZWNobyAiY3VycmVudCBwaW46ICQoZ3JlcCAtRSAnXlRJTllBU1NFVFNfUElOX1dSSVRFUj0nIC9ldGMvdGlueWFzc2V0cy9lbnYgfHwgZWNobyAnPHVuc2V0PicpIgpiYXNoIC90bXAvaW5zdGFsbC10aW55YXNzZXRzLWVudi5zaCBkZWxldGUgVElOWUFTU0VUU19QSU5fV1JJVEVSCmVjaG8gImFmdGVyOiAkKGdyZXAgLUUgJ15USU5ZQVNTRVRTX1BJTl9XUklURVI9JyAvZXRjL3Rpbnlhc3NldHMvZW52IHx8IGVjaG8gJzx1bnNldD4nKSIK
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "echo ${B64} | base64 -d | sudo bash -s"
-      - name: Repoint the active-universe marker (explicit input only)
-        if: inputs.set_active_universe != ''
-        env:
-          TARGET_UNIVERSE: ${{ inputs.set_active_universe }}
-        run: |
-          # `cloud_worker._resolve_universe` reads /data/.active_universe
-          # before any other default, so this marker decides which universe
-          # the whole worker fleet serves. An AUTHENTICATED switch_universe
-          # is request-scoped by design and never writes it, so there is no
-          # in-band way for a user to repoint the fleet at their own
-          # universe -- which is why four admissible slices sat unclaimed
-          # while the fleet served a different universe.
-          #
-          # Explicit input only, never a default, and the target must already
-          # exist on the volume. Reversible by dispatching with the old value.
-          if [[ ! "${TARGET_UNIVERSE}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
-            echo "::error::invalid universe id"
-            exit 1
-          fi
-          B64=c2V0IC1ldW8gcGlwZWZhaWwKVEFSR0VUPSIkMSIKIyAvZGF0YSBpcyBhIE5BTUVEIERPQ0tFUiBWT0xVTUUsIG5vdCBhIGhvc3QgcGF0aCDigJQgaXQgb25seSBleGlzdHMgaW5zaWRlIGEKIyBjb250YWluZXIuIFRoZSBmaXJzdCBjdXQgb2YgdGhpcyBjaGVja2VkIC9kYXRhIG9uIHRoZSBob3N0LCB3aGVyZSBpdCBkb2VzIG5vdAojIGV4aXN0LCBhbmQgaXRzIG93biBndWFyZCBjb3JyZWN0bHkgcmVmdXNlZCAocnVuIDMxMDUzNTIzODY3KS4KZG9ja2VyIHJ1biAtLXJtIC12IHRpbnlhc3NldHMtZGF0YTovZGF0YSBhbHBpbmU6MyBzaCAtYyAiCiAgc2V0IC1lCiAgaWYgWyAhIC1kIC9kYXRhLyR7VEFSR0VUfSBdOyB0aGVuCiAgICBlY2hvICdyZWZ1c2luZzogL2RhdGEvJHtUQVJHRVR9IGlzIG5vdCBhbiBleGlzdGluZyB1bml2ZXJzZSBkaXJlY3RvcnknID4mMgogICAgZXhpdCAxCiAgZmkKICBlY2hvIFwiY3VycmVudCBtYXJrZXI6IFwkKGNhdCAvZGF0YS8uYWN0aXZlX3VuaXZlcnNlIDI+L2Rldi9udWxsIHx8IGVjaG8gJzxub25lPicpXCIKICBwcmludGYgJyVzJyAnJHtUQVJHRVR9JyA+IC9kYXRhLy5hY3RpdmVfdW5pdmVyc2UudG1wCiAgbXYgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZS50bXAgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZQogIGVjaG8gXCJuZXcgbWFya2VyOiBcJChjYXQgL2RhdGEvLmFjdGl2ZV91bml2ZXJzZSlcIgoiCg==
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "echo ${B64} | base64 -d | sudo bash -s -- ${TARGET_UNIVERSE}"
       - name: Wait for daemon health
         id: candidate_health
         run: |
@@ -1552,89 +1286,15 @@ jobs:
           PY
           exit 0
 
-      - name: Verify cloud worker is running
-        env:
-          TARGET_IMAGE: ${{ steps.tag.outputs.image_ref }}
-        run: |
-          worker_containers="tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2"
-          for container in ${worker_containers}; do
-            running=""
-            for i in $(seq 1 30); do
-              running=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null || true")
-              if [ "${running}" = "true" ]; then
-                echo "${container} running after ${i} poll(s)"
-                break
-              fi
-              sleep 2
-            done
-            if [ "${running}" != "true" ]; then
-              echo "::error::${container} is not running after deploy; node execution fleet is not 24/7."
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml ps; sudo docker ps -a --filter name=${container}; sudo docker logs --tail 120 ${container} 2>&1 || true"
-              exit 1
-            fi
-            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker exec ${container} env | grep -q '^TINYASSETS_UNIVERSE='"; then
-              echo "::error::${container} inherited TINYASSETS_UNIVERSE from /etc/tinyassets/env. That stdio-only override can bind a worker to a different universe than the public MCP default."
-              exit 1
-            fi
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo docker logs --tail 160 ${container} 2>&1 | grep -E 'cloud_worker:|Registered|Graph execution failed|subprocess exited|spawn failed|No module named|Traceback' || true"
-          done
-          if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash /tmp/verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}' >/dev/null"; then
-            echo "::error::running workers expose request admission minting authority or could not be verified from host-controlled Docker metadata"
-            exit 1
-          fi
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo docker exec -i tinyassets-worker python -' <<'PY'
-          import os
-          from pathlib import Path
-          from tinyassets.cloud_worker import _resolve_universe_path
-
-          root = Path(os.environ.get("TINYASSETS_DATA_DIR", "/data"))
-          active_marker = root / ".active_universe"
-          try:
-              active = active_marker.read_text(encoding="utf-8").strip()
-          except OSError:
-              active = ""
-
-          universe = _resolve_universe_path()
-          print(f"worker diagnostic: data_root={root}")
-          print(f"worker diagnostic: active_marker={active or '<unset>'}")
-          print(f"worker diagnostic: resolved_universe={universe}")
-          for name in (
-              ".runtime_status.json",
-              "status.json",
-              "activity.log",
-              "enrichment_signals.json",
-              "worldbuild_signals.json",
-              "work_targets.json",
-          ):
-              path = universe / name
-              try:
-                  size = path.stat().st_size if path.exists() else 0
-              except OSError:
-                  size = -1
-              print(f"worker diagnostic: {name} exists={path.exists()} bytes={size}")
-          PY
-
-      - name: Transitional task 2.1 prove exact fleet and unchanged receipts
+      - name: Transitional task 2.1 prove exact writer set and unchanged receipts
         env:
           NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
           TARGET_REVISION: ${{ steps.stop-writer.outputs.target_revision }}
         run: |
           set -euo pipefail
-          # retire-cheat-loop task 2.1: require exactly daemon + four workers
-          # on the selected digest/revision, all old IDs stopped, no stray
-          # writer or queue risk, and the same read-only receipt snapshot.
+          # retire-cheat-loop task 2.1: require the exact daemon writer set on
+          # the selected digest/revision,
+          # with the old ID stopped and the same read-only receipt snapshot.
           evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -1665,21 +1325,6 @@ jobs:
           # Drift guard: live /mcp must advertise the exact seven canonical
           # handles. Fails the deploy on a missing handle or legacy-tool leak.
           python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles --verbose
-
-      - name: Verify subscription LLM binding after synced Codex auth
-        if: env.HAS_CODEX_AUTH_BUNDLE == 'true'
-        run: |
-          python scripts/verify_llm_binding.py \
-              --url "${CANARY_URL}" --timeout 20 --require-sandbox \
-              --retries 12 --retry-delay 10
-
-      - name: Report subscription LLM binding when no deploy auth bundle is configured
-        if: env.HAS_CODEX_AUTH_BUNDLE != 'true'
-        run: |
-          python scripts/verify_llm_binding.py \
-              --url "${CANARY_URL}" --timeout 20 --require-sandbox \
-              --retries 12 --retry-delay 10
-          echo "Subscription LLM binding and sandbox runtime are already live."
 
       - name: Verify CF Access gates direct URL (expects 403/401)
         id: access-gate
@@ -1904,7 +1549,7 @@ jobs:
           echo "cleanup_safely_fenced=false" >> "$GITHUB_OUTPUT"
           # retire-cheat-loop task 2.1: independently inspect durable masks and
           # host fence state even when the preflight step produced no outputs.
-          # Restore only after exact-five fleet, digest, revision, old-ID,
+          # Restore only after exact writer-set, digest, revision, old-ID,
           # queue, process, and receipt proof. Otherwise leave racers fenced.
           STOP_WRITER_SHA=35da9d4fc1a1fc51d3db56bf5d1627691f54d894
           evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
@@ -2060,10 +1705,6 @@ jobs:
           previous_revision = sys.argv[4]
           expected_services = {
               "tinyassets-daemon": "daemon",
-              "tinyassets-worker": "worker",
-              "tinyassets-worker-codex-2": "worker-codex-2",
-              "tinyassets-worker-claude-1": "worker-claude-1",
-              "tinyassets-worker-claude-2": "worker-claude-2",
           }
           exact_fleet = (
               isinstance(containers, dict)
