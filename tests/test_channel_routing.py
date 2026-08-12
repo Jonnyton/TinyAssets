@@ -173,7 +173,14 @@ def test_a_binding_by_a_non_owner_routes_nowhere(tmp_path: Path) -> None:
     assert _route(tmp_path, channel=CHANNEL_ALPHA) is None
 
 
-def test_a_rotated_agent_binding_stops_routing(tmp_path: Path) -> None:
+def test_a_reconfigured_agent_binding_keeps_routing(tmp_path: Path) -> None:
+    """An agent evolving FORWARD — a re-configure, or attaching a provider — is
+    the same binding the channel was pointed at, not a substitution, so routing
+    must follow it. Pinning the exact bind-time revision orphaned a channel the
+    moment its universe became able to reply: attaching a provider bumps the
+    revision and flips the status to ``serving``, and a universe went dark on
+    Slack for days. Ownership is still re-derived per message; a deleted,
+    replaced, or unowned binding fails closed (below)."""
     from tinyassets.custom_agents import update_binding
 
     hobby = _founder_universe(tmp_path, universe="u-hobby")
@@ -185,8 +192,48 @@ def test_a_rotated_agent_binding_stops_routing(tmp_path: Path) -> None:
         binding_id=hobby.agent_binding_id,
         updated_by=FOUNDER_ID,
         expected_revision=hobby.binding_revision,
-        payload={"schema_version": 1, "name": "Rotated", "model": "other"},
+        payload={"schema_version": 1, "name": "Reconfigured", "model": "other"},
     )
+
+    routed = _route(tmp_path, channel=CHANNEL_ALPHA)
+    assert routed is not None and routed.universe_id == "u-hobby"
+
+
+def test_a_serving_binding_keeps_routing(tmp_path: Path, monkeypatch) -> None:
+    """``serving`` (a provider is attached) is the ONE status that can actually
+    answer a turn, and it must route. Regression for the days-long Slack
+    silence: the ownership gate accepted only ``configured``, so a universe
+    orphaned its own routing the instant it became answerable."""
+    import tinyassets.app_channel_routing as routing
+
+    hobby = _founder_universe(tmp_path, universe="u-hobby")
+    _bind(tmp_path, channel=CHANNEL_ALPHA, target=hobby)
+
+    real = routing.get_binding
+
+    def _serving(base, *, universe_id, binding_id):
+        record = dict(real(base, universe_id=universe_id, binding_id=binding_id))
+        record["status"] = "serving"
+        record["revision"] = int(record["revision"]) + 1
+        return record
+
+    monkeypatch.setattr(routing, "get_binding", _serving)
+
+    routed = _route(tmp_path, channel=CHANNEL_ALPHA)
+    assert routed is not None and routed.universe_id == "u-hobby"
+
+
+def test_a_vanished_agent_binding_still_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The relaxation must not become fail-open: a binding whose agent id no
+    longer resolves — deleted, or replaced by a NEW id — routes nowhere."""
+    import tinyassets.app_channel_routing as routing
+
+    hobby = _founder_universe(tmp_path, universe="u-hobby")
+    _bind(tmp_path, channel=CHANNEL_ALPHA, target=hobby)
+
+    monkeypatch.setattr(routing, "get_binding", lambda *a, **k: None)
 
     assert _route(tmp_path, channel=CHANNEL_ALPHA) is None
 
