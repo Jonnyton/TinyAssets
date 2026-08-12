@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -407,6 +408,17 @@ def _make_proc_mock(returncode: int, stdout: bytes, stderr: bytes) -> MagicMock:
 
 
 class TestClaudeProviderBwrapDetection:
+    @pytest.fixture(autouse=True)
+    def _bypass_no_universe_fail_close(self, monkeypatch):
+        # A no-universe launch now fail-closes (ProviderUnavailableError) before
+        # the subprocess even runs (covered in test_credential_fail_closed).
+        # Stub the env resolution so these tests reach their real subject:
+        # bwrap-stderr sandbox detection on the (mocked) CLI subprocess.
+        monkeypatch.setattr(
+            "tinyassets.providers.claude_provider.subprocess_env_for_provider",
+            lambda *a, **k: dict(os.environ),
+        )
+
     def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.claude_provider import ClaudeProvider
@@ -444,6 +456,15 @@ class TestClaudeProviderBwrapDetection:
 
 
 class TestCodexProviderBwrapDetection:
+    @pytest.fixture(autouse=True)
+    def _bypass_no_universe_fail_close(self, monkeypatch):
+        # See TestClaudeProviderBwrapDetection: isolate bwrap detection from the
+        # no-universe credential fail-close.
+        monkeypatch.setattr(
+            "tinyassets.providers.codex_provider.subprocess_env_for_provider",
+            lambda *a, **k: dict(os.environ),
+        )
+
     def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.codex_provider import CodexProvider
