@@ -28,6 +28,11 @@ VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs"}
 )
 
+
+class LLMCredentialOwnershipConflict(PermissionError):
+    """A deposit attempted to replace another principal's credential."""
+
+
 # Map a deposited llm_api_key record's ``service`` to the provider-subprocess
 # env var that CLI providers read. Only CLI-subprocess providers are reachable
 # via the vault env overlay (claude-code / codex); the in-process HTTP free-tier
@@ -319,6 +324,8 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
 def _write_credential_vault_unlocked(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
+    *,
+    reject_duplicate_llm_service: str = "",
 ) -> dict[str, Any]:
     """Validate and write a per-universe credential vault.
 
@@ -344,6 +351,8 @@ def _write_credential_vault_unlocked(
             for record in existing
             if _credentials_match(record, incoming)
         ]
+        if reject_duplicate_llm_service and len(matching) > 1:
+            raise ValueError("duplicate LLM subscription credential slot")
         collapsed_credential_count = max(0, len(matching) - 1)
         if incoming["credential_type"] == "vcs":
             dropped_purposes = (
@@ -398,6 +407,7 @@ def write_credential_vault(
     *,
     owner_user_id: str | None = None,
     universe_id: str | None = None,
+    require_usable_llm_subscription: bool = False,
 ) -> dict[str, Any]:
     """Write while excluding launches and optionally record depositor ownership.
 
@@ -412,28 +422,57 @@ def write_credential_vault(
     universe = Path(universe_dir).resolve(strict=False)
     owner = (owner_user_id or "").strip()
     uid = (universe_id or universe.name).strip()
+    incoming_records = _records_from_payload(credentials)
     if owner_user_id is not None and not owner:
         raise ValueError("credential owner must be a non-empty server principal")
     if uid != universe.name:
         raise ValueError("credential universe does not match its canonical directory")
+    deposited_services = {
+        _service(record)
+        for record in incoming_records
+        if record.get("credential_type") == "llm_subscription"
+    }
+    if owner and not deposited_services.issubset({"claude", "codex"}):
+        raise ValueError("LLM subscription service is not supported")
     with provider_assignment_admission().exclusive(universe):
         conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
         try:
             _ensure_llm_deposit_owner_schema(conn)
-            if owner:
+            if owner and deposited_services:
+                placeholders = ",".join("?" for _ in deposited_services)
                 existing = conn.execute(
-                    """
-                    SELECT DISTINCT owner_user_id
+                    f"""
+                    SELECT service, owner_user_id
                       FROM llm_credential_deposit_owners
                      WHERE universe_id = ?
+                       AND service IN ({placeholders})
                     """,
-                    (uid,),
+                    (uid, *sorted(deposited_services)),
                 ).fetchall()
-                if any(str(row[0]) != owner for row in existing):
-                    raise PermissionError(
+                if any(str(row[1]) != owner for row in existing):
+                    raise LLMCredentialOwnershipConflict(
                         "credential ownership transfer requires a dedicated flow"
                     )
-            summary = _write_credential_vault_unlocked(universe, credentials)
+            duplicate_guard = (
+                next(iter(deposited_services))
+                if (
+                    require_usable_llm_subscription
+                    and owner
+                    and len(incoming_records) == 1
+                    and deposited_services
+                )
+                else ""
+            )
+            if duplicate_guard:
+                _validate_llm_subscription_deposit_record(
+                    universe,
+                    incoming_records[0],
+                )
+            summary = _write_credential_vault_unlocked(
+                universe,
+                incoming_records,
+                reject_duplicate_llm_service=duplicate_guard,
+            )
             records = load_credential_vault(universe)
             services = {
                 _service(record)
@@ -461,10 +500,15 @@ def write_credential_vault(
                     conn.execute(
                         """
                         INSERT INTO llm_credential_deposit_owners (
-                            universe_id, service, owner_user_id
-                        ) VALUES (?, ?, ?)
+                            universe_id, service, owner_user_id, connected_at
+                        ) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                         ON CONFLICT(universe_id, service) DO UPDATE SET
-                            owner_user_id = excluded.owner_user_id
+                            owner_user_id = excluded.owner_user_id,
+                            connected_at = CASE
+                                WHEN llm_credential_deposit_owners.connected_at = ''
+                                THEN excluded.connected_at
+                                ELSE llm_credential_deposit_owners.connected_at
+                            END
                         """,
                         (uid, service_name, owner),
                     )
@@ -518,10 +562,85 @@ def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
             universe_id TEXT NOT NULL,
             service TEXT NOT NULL,
             owner_user_id TEXT NOT NULL,
+            connected_at TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (universe_id, service)
         )
         """
     )
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(llm_credential_deposit_owners)")
+    }
+    if "connected_at" not in columns:
+        conn.execute(
+            "ALTER TABLE llm_credential_deposit_owners "
+            "ADD COLUMN connected_at TEXT NOT NULL DEFAULT ''"
+        )
+
+
+def _validate_llm_subscription_deposit_record(
+    universe_dir: Path,
+    record: dict[str, Any],
+) -> None:
+    service = _service(record)
+    if record.get("credential_type") != "llm_subscription" or service not in {
+        "claude",
+        "codex",
+    }:
+        raise ValueError("LLM subscription credential is invalid")
+    material = _subscription_material(universe_dir, service, record)
+    if not material:
+        raise ValueError("LLM subscription credential is unusable")
+    if service == "codex" and not record.get("auth_json_b64"):
+        malformed = False
+        try:
+            json.loads(material)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            malformed = True
+        if malformed:
+            raise ValueError("Codex subscription credential is unusable") from None
+
+
+def list_llm_subscription_connections(
+    universe_dir: str | Path,
+    *,
+    universe_id: str,
+) -> list[dict[str, str]]:
+    """Return only redacted, currently usable LLM deposit projections."""
+
+    from tinyassets.storage import db_path
+
+    universe = Path(universe_dir).resolve(strict=False)
+    uid = universe_id.strip()
+    if not uid or uid != universe.name:
+        raise ValueError("credential universe does not match its canonical directory")
+    conn = sqlite3.connect(db_path(universe.parent))
+    try:
+        _ensure_llm_deposit_owner_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT service, owner_user_id, connected_at
+              FROM llm_credential_deposit_owners
+             WHERE universe_id = ?
+             ORDER BY service
+            """,
+            (uid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    connected: list[dict[str, str]] = []
+    for service, owner, connected_at in rows:
+        canonical_service = str(service)
+        try:
+            _usable_subscription_record(universe, canonical_service)
+        except (OSError, PermissionError, ValueError):
+            continue
+        connected.append({
+            "service": canonical_service,
+            "owner_user_id": str(owner),
+            "connected_at": str(connected_at),
+        })
+    return connected
 
 
 def _read_credential_material(path: Path) -> bytes:
