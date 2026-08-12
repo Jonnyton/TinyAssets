@@ -103,3 +103,39 @@ def test_windows_file_lock_retry_is_bounded_and_fails_closed():
         )
 
     assert attempts == 3
+
+
+def test_shared_admission_tolerates_read_only_data_mount(tmp_path, monkeypatch):
+    # The Slack ingress agent mounts /data read-only. A SHARED (reader) lock —
+    # used by list_serving_universes on every serving-enrollment cycle — must
+    # still work; only EXCLUSIVE writers need write access. Regression: the
+    # slack agent crashed each cycle on OSError [Errno 30] Read-only file system
+    # and never served any universe (u-tiny went silent for days).
+    from pathlib import Path
+
+    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+
+    universe = tmp_path / "u-ro"
+    universe.mkdir()
+    # A read-write writer elsewhere already created the lock file.
+    (universe / ".provider-assignment-admission.lock").write_bytes(b"\0")
+
+    real_open = Path.open
+
+    def read_only_open(self, mode="r", *args, **kwargs):
+        # Simulate a read-only mount: any write-capable open fails.
+        if "a" in mode or "w" in mode or "+" in mode:
+            raise OSError(30, "Read-only file system")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", read_only_open)
+    admission = ProviderAssignmentAdmission()
+
+    # Shared lock must succeed via the read-only fallback.
+    with admission.shared(universe):
+        pass
+
+    # Exclusive (writer) lock must still fail loudly — it genuinely needs write.
+    with pytest.raises(OSError):
+        with admission.exclusive(universe):
+            pass

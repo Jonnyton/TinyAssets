@@ -379,25 +379,55 @@ class ProviderAssignmentAdmission:
     @contextmanager
     def _file_lock(universe_dir: str | Path, *, exclusive: bool) -> Iterator[None]:
         universe = Path(universe_dir).resolve(strict=False)
-        universe.mkdir(parents=True, exist_ok=True)
-        handle = (universe / ".provider-assignment-admission.lock").open("a+b")
+        lock_path = universe / ".provider-assignment-admission.lock"
+        # A read-only data mount (e.g. the Slack ingress agent, which mounts
+        # /data :ro) cannot create the dir or open the lock file for write.
+        # An EXCLUSIVE (writer/assignment-mutating) lock genuinely needs write
+        # access, so surface the error there. A SHARED (reader) lock — used by
+        # list_serving_universes and other read paths — does not: fall back to
+        # a read-only handle for the shared flock, or, if the file cannot be
+        # opened at all, proceed lock-free (no writer can be mutating
+        # assignment state on a read-only filesystem anyway). Before this, the
+        # Slack agent's serving-enrollment refresh crashed on every cycle and
+        # never served any universe.
+        handle = None
+        writable = True
+        try:
+            universe.mkdir(parents=True, exist_ok=True)
+            handle = lock_path.open("a+b")
+        except OSError:
+            if exclusive:
+                raise
+            try:
+                handle = lock_path.open("rb")
+                writable = False
+            except OSError:
+                yield
+                return
         try:
             if os.name == "nt":
                 import msvcrt
 
-                # Windows exposes only exclusive byte-range locks here. That
-                # serializes readers conservatively while still excluding
-                # credential/assignment writers across processes.
-                handle.seek(0, os.SEEK_END)
-                if handle.tell() == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                _acquire_windows_file_lock(handle)
-                try:
+                if not writable:
+                    # Read-only handle on Windows: the byte-range lock helper
+                    # needs a writable region. This is a dev-only edge (prod is
+                    # Linux); a read-only mount has no concurrent writer, so a
+                    # shared reader proceeds lock-free.
                     yield
-                finally:
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    # Windows exposes only exclusive byte-range locks here. That
+                    # serializes readers conservatively while still excluding
+                    # credential/assignment writers across processes.
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() == 0:
+                        handle.write(b"\0")
+                        handle.flush()
+                    _acquire_windows_file_lock(handle)
+                    try:
+                        yield
+                    finally:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
 
