@@ -1497,7 +1497,7 @@ class PreparedCloudContinuationActivationService:
         ):
             self._fail(
                 "executor_audience_unavailable",
-                "trusted cloud worker assignment is absent or mismatched",
+                "trusted assigned executor is absent or mismatched",
             )
 
         activation = self._converge_activation(request, preflight_audience)
@@ -1523,7 +1523,7 @@ class PreparedCloudContinuationActivationService:
         )
         def require_current_worker_provider(conn: sqlite3.Connection) -> None:
             if not self._worker_provider_current(conn, preflight_audience):
-                raise PermissionError("cloud worker provider is no longer current")
+                raise PermissionError("assigned credential is no longer current")
 
         try:
             admission = admission_store.commit_admission(
@@ -1572,7 +1572,7 @@ class PreparedCloudContinuationActivationService:
                 self._activation_store.stop(expected=activation)
             raise CloudContinuationActivationError(
                 "executor_audience_unavailable",
-                "trusted cloud worker provider changed before admission",
+                "assigned credential changed before admission",
             ) from exc
         if admission.get("request_id") != binding.source_id:
             self._fail(
@@ -1592,7 +1592,7 @@ class PreparedCloudContinuationActivationService:
         ):
             self._fail(
                 "executor_audience_unavailable",
-                "trusted cloud worker assignment is absent or mismatched",
+                "trusted assigned executor is absent or mismatched",
             )
         logical_attempt_key = build_request_task_attempt_key(
             tenant_id=definition.principal_id,
@@ -1680,7 +1680,7 @@ class PreparedCloudContinuationActivationService:
             ):
                 self._fail(
                     "executor_audience_unavailable",
-                    "trusted cloud worker provider changed before activation",
+                    "assigned credential changed before activation",
                 )
         exact = (
             current is not None,
@@ -2312,14 +2312,13 @@ class _ClaimedCloudProviderSession:
         providers: set[str] = set()
         if not policy:
             return providers
+        if "fallback_chain" in policy:
+            raise PermissionError(
+                "fallback_chain is retired; use explicit workflow branches"
+            )
         preferred = policy.get("preferred")
         if isinstance(preferred, dict) and preferred.get("provider"):
             providers.add(str(preferred["provider"]))
-        fallback_chain = policy.get("fallback_chain")
-        if isinstance(fallback_chain, list):
-            for entry in fallback_chain:
-                if isinstance(entry, dict) and entry.get("provider"):
-                    providers.add(str(entry["provider"]))
         difficulty_overrides = policy.get("difficulty_override")
         if isinstance(difficulty_overrides, list):
             for entry in difficulty_overrides:
@@ -2479,7 +2478,7 @@ class _ClaimedCloudProviderSession:
             raise PermissionError("automation requires assigned credential authority")
         call_kwargs = dict(kwargs)
         call_kwargs.update(
-            operation=bound_operation,
+            operation=self._OPERATION,
             universe_context=replace(
                 bound_context,
                 provider_invocation=carrier,
@@ -2603,7 +2602,7 @@ def prepare_claimed_cloud_provider_call(
         worker_id=worker_id,
         provider_name=provider_binding.provider,
     ):
-        raise PermissionError("cloud worker provider does not match requester binding")
+        raise PermissionError("assigned credential does not match requester binding")
     audience = BackgroundBranchExecutorAudience(
         executor_class=BackgroundBranchExecutorClass.CLOUD,
         daemon_id=daemon_id,

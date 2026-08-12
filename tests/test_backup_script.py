@@ -37,7 +37,14 @@ sys.path.insert(0, str(REPO / "scripts"))
 from backup_prune import _apply_retention  # noqa: E402
 
 _SHELLCHECK = shutil.which("shellcheck")
-_BASH = shutil.which("bash")
+_WINDOWS_WSL_BASH = (
+    Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "bash.exe"
+)
+_BASH = (
+    str(_WINDOWS_WSL_BASH)
+    if os.name == "nt" and _WINDOWS_WSL_BASH.is_file()
+    else shutil.which("bash")
+)
 
 pytestmark = pytest.mark.skipif(_BASH is None, reason="bash not available")
 
@@ -64,12 +71,14 @@ def _bash_path(path: Path) -> str:
         drive = resolved.drive.rstrip(":").lower()
         rest = resolved.as_posix()[2:]
         return f"/mnt/{drive}{rest}"
-    return resolved.as_posix()
+    drive = resolved.drive.rstrip(":").lower()
+    rest = resolved.as_posix()[2:]
+    return f"/{drive}{rest}"
 
 
 def _bash_path_env(*leading_paths: Path) -> str:
     leading = [_bash_path(path) for path in leading_paths]
-    if _is_wsl_bash():
+    if os.name == "nt":
         return ":".join([
             *leading,
             "/usr/local/sbin",

@@ -5,11 +5,10 @@
 This exists because `scripts/slack_live_test.py` — useful as it is for proving
 the thing works — runs on whoever's laptop is open. The Forever Rule is that
 every surface works 24/7 with **zero hosts online**, so the socket has to be
-held by a container on the droplet, next to `cloud_worker`, not by a terminal
+held by the profile-gated Slack container on the droplet, not by a terminal
 someone might close.
 
-Configuration comes from the environment, matching how `cloud_worker` is
-deployed:
+Non-secret routing configuration comes from the environment:
 
     TINYASSETS_SLACK_UNIVERSES   comma-separated universe ids to serve
     TINYASSETS_SLACK_CONNECTION  connection id (default: slack-main)

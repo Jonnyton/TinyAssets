@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.providers import call as provider_call
 
 
@@ -154,7 +155,8 @@ def test_no_router_no_fallback_raises() -> None:
         provider_call.call_provider("x")
 
 
-def test_fallback_response_used_when_router_absent() -> None:
+def test_fallback_response_cannot_mask_missing_router() -> None:
     provider_call.set_force_mock(False)
     provider_call.set_provider_router(None)
-    assert provider_call.call_provider("x", fallback_response="FB") == "FB"
+    with pytest.raises(AllProvidersExhaustedError):
+        provider_call.call_provider("x", fallback_response="FB")

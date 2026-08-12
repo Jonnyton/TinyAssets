@@ -319,14 +319,11 @@ class NodeDefinition:
     # Per-node LLM policy override. Shape:
     # {
     #   "preferred": {"provider": str, "model": str, "reasoning_effort"?: str},
-    #   "fallback_chain": [{"provider": str, "model"?: str,
-    #                       "trigger": "unavailable"|"rate_limited"|
-    #                                  "cost_exceeded"|"empty_response"}],
     #   "difficulty_override": [{"if_difficulty": str,
     #                            "use": {"provider": str, "model"?: str}}],
     # }
     # When None the branch-level default_llm_policy applies; when that is
-    # also None the existing role-based routing is used (backward-compat).
+    # also None the assigned credential's defaults are used.
     llm_policy: dict[str, Any] | None = None
 
     # When True the node shells out to a bwrap-sandboxed CLI (dev, checker,
@@ -681,11 +678,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_VALID_POLICY_TRIGGERS = frozenset({
-    "unavailable", "rate_limited", "cost_exceeded", "empty_response",
-})
-
-
 def _validate_checkpoints(
     checkpoints: list[dict[str, Any]], *, node_id: str,
 ) -> list[str]:
@@ -804,25 +796,10 @@ def _validate_llm_policy_shape(
 
     fallback_chain = policy.get("fallback_chain")
     if fallback_chain is not None:
-        if not isinstance(fallback_chain, list):
-            errors.append(f"{context}: 'fallback_chain' must be a list.")
-        else:
-            for i, entry in enumerate(fallback_chain):
-                if not isinstance(entry, dict):
-                    errors.append(
-                        f"{context}: fallback_chain[{i}] must be a dict."
-                    )
-                    continue
-                if "provider" not in entry:
-                    errors.append(
-                        f"{context}: fallback_chain[{i}] must have a 'provider' key."
-                    )
-                trigger = entry.get("trigger")
-                if trigger is not None and trigger not in _VALID_POLICY_TRIGGERS:
-                    errors.append(
-                        f"{context}: fallback_chain[{i}] trigger {trigger!r} "
-                        f"must be one of {sorted(_VALID_POLICY_TRIGGERS)}."
-                    )
+        errors.append(
+            f"{context}: 'fallback_chain' is retired; model fallback as "
+            "explicit workflow branches with their own serving assignments."
+        )
 
     difficulty_override = policy.get("difficulty_override")
     if difficulty_override is not None:

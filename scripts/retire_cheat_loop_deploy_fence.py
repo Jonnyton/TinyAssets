@@ -22,7 +22,6 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import quote
@@ -414,126 +413,6 @@ def inventory_queue_risk(volume_dir: Path) -> list[dict[str, str]]:
     )
 
 
-def hold_queue_work_without_requester_executor(
-    volume_dir: Path,
-) -> list[dict[str, str]]:
-    """Cancel already-admitted cloud work after all legacy writers stop.
-
-    New admission is held before a task row exists. This one-time transition
-    gives older pending/running rows the same typed terminal reason so the
-    fleet prune cannot strand them silently.
-    """
-    held: list[dict[str, str]] = []
-    terminal_at = datetime.now(timezone.utc).isoformat()
-    for path in sorted(volume_dir.rglob("branch_tasks.json")):
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            tasks = _v1_tasks(raw)
-        except FenceError:
-            raise
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise FenceError(
-                f"v1 queue unreadable: {path.relative_to(volume_dir)}"
-            ) from exc
-        changed = False
-        for task in tasks:
-            status = str(task.get("status", "")).lower()
-            if status not in V1_RISK_STATUSES:
-                continue
-            task["status"] = "cancelled"
-            task["terminal_at"] = terminal_at
-            task["error_code"] = NO_REQUESTER_EXECUTOR_CODE
-            task["error"] = NO_REQUESTER_EXECUTOR_REASON
-            changed = True
-            held.append({
-                "id": str(task.get("branch_task_id") or ""),
-                "status": "cancelled",
-                "store": path.relative_to(volume_dir).as_posix(),
-                "version": "v1",
-            })
-        if changed:
-            _atomic_json(path, raw)  # type: ignore[arg-type]
-
-    for path in sorted(volume_dir.rglob(".tinyassets.db")):
-        try:
-            with sqlite3.connect(path) as connection:
-                connection.row_factory = sqlite3.Row
-                tables = {
-                    str(row[0])
-                    for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )
-                }
-                if "branch_tasks_v2" not in tables:
-                    continue
-                columns = {
-                    str(row["name"])
-                    for row in connection.execute(
-                        "PRAGMA table_info(branch_tasks_v2)"
-                    )
-                }
-                required = {
-                    "branch_task_id",
-                    "status",
-                    "terminal_at",
-                    "detail_json",
-                }
-                if not required <= columns:
-                    raise FenceError("v2 queue schema cannot record typed hold")
-                placeholders = ",".join("?" for _ in V2_RISK_STATUSES)
-                rows = list(connection.execute(
-                    "SELECT branch_task_id,status,detail_json "
-                    "FROM branch_tasks_v2 "
-                    f"WHERE status IN ({placeholders}) "
-                    "ORDER BY branch_task_id",
-                    tuple(sorted(V2_RISK_STATUSES)),
-                ))
-                for row in rows:
-                    try:
-                        detail = json.loads(str(row["detail_json"] or "{}"))
-                    except json.JSONDecodeError as exc:
-                        raise FenceError("v2 task detail_json is unreadable") from exc
-                    if not isinstance(detail, dict):
-                        raise FenceError("v2 task detail_json has unexpected shape")
-                    detail["error_code"] = NO_REQUESTER_EXECUTOR_CODE
-                    detail["reason"] = NO_REQUESTER_EXECUTOR_REASON
-                    connection.execute(
-                        "UPDATE branch_tasks_v2 "
-                        "SET status='cancelled', terminal_at=?, detail_json=? "
-                        "WHERE branch_task_id=? AND status IN "
-                        f"({placeholders})",
-                        (
-                            terminal_at,
-                            json.dumps(detail, sort_keys=True, separators=(",", ":")),
-                            str(row["branch_task_id"]),
-                            *tuple(sorted(V2_RISK_STATUSES)),
-                        ),
-                    )
-                    held.append({
-                        "id": str(row["branch_task_id"]),
-                        "status": "cancelled",
-                        "store": path.relative_to(volume_dir).as_posix(),
-                        "version": "v2",
-                    })
-                if rows and "request_admissions" in tables:
-                    connection.execute(
-                        "UPDATE request_admissions SET terminal_at=?, updated_at=? "
-                        "WHERE branch_task_id IN (SELECT branch_task_id "
-                        "FROM branch_tasks_v2 WHERE terminal_at=?)",
-                        (terminal_at, terminal_at, terminal_at),
-                    )
-        except FenceError:
-            raise
-        except (OSError, sqlite3.DatabaseError) as exc:
-            raise FenceError(
-                f"v2 queue transition failed: {path.relative_to(volume_dir)}"
-            ) from exc
-    return sorted(
-        held,
-        key=lambda row: (row["version"], row["store"], row["id"]),
-    )
-
-
 def _env_map(info: Mapping[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {}
     for item in info.get("Config", {}).get("Env", []) or []:
@@ -604,7 +483,7 @@ def safe_fleet_matches(
         EXPECTED_CONTAINERS
     ):
         return False
-    if observation.get("stray_writer_processes") or observation.get("queue_risk"):
+    if observation.get("stray_writer_processes"):
         return False
     for name in EXPECTED_CONTAINERS:
         item = containers.get(name, {})
@@ -1297,6 +1176,7 @@ def observe_fleet(
         volume_dir,
     )
     return {
+        "expected_containers": list(EXPECTED_CONTAINERS),
         "containers": containers,
         "volume_container_names": host.volume_container_names(),
         "receipt_container_path": receipt.container_path,
@@ -1628,7 +1508,6 @@ def preflight(
         raise FenceError("controlled container identity is unavailable")
     controlled_identities = tuple(controlled_identity_values)
     controlled_pids = host.container_pids(controlled_identities)
-    preliminary_risk = inventory_queue_risk(volume_dir)
     preliminary_processes = _stray_writer_processes(
         receipt.host_path,
         controlled_pids,
@@ -1731,10 +1610,14 @@ def preflight(
     for name, old_id in old_ids.items():
         if _container_running_exact(host, old_id):
             old_still_running.append({"container": name, "id": old_id})
-    held_queue_work = hold_queue_work_without_requester_executor(volume_dir)
-    state["held_queue_work"] = held_queue_work
-    _atomic_json(state_path, state)
+    # The live daemon may legitimately advance queue state before it stops.
+    # Establish the preservation baseline only after every controlled writer is
+    # confirmed quiesced; deployment machinery must not mutate it afterward.
+    preliminary_risk = inventory_queue_risk(volume_dir)
     final_risk = inventory_queue_risk(volume_dir)
+    state["queue_work_preserved"] = final_risk == preliminary_risk
+    state["final_queue_risk"] = final_risk
+    _atomic_json(state_path, state)
     extra_still_running = [
         name
         for name, extra in extra_consumers.items()
@@ -1764,8 +1647,8 @@ def preflight(
             raise FenceError(
                 f"restored sidecar recorded identity changed: {name}"
             )
-    if final_risk:
-        raise FenceError("post-quiesce requester-executor queue risk is nonzero")
+    if final_risk != preliminary_risk:
+        raise FenceError("queue work changed during writer quiescence")
     if final_processes:
         raise FenceError("post-quiesce stray writer process risk is nonzero")
     if final_snapshot != preliminary_snapshot:
@@ -1792,8 +1675,8 @@ def preflight(
         "receipt_container_path": receipt.container_path,
         "receipt_host_path": str(receipt.host_path),
         "preliminary_queue_risk": preliminary_risk,
-        "held_queue_work": held_queue_work,
         "final_queue_risk": final_risk,
+        "queue_work_preserved": True,
         "stray_writer_processes": final_processes,
         "receipt_snapshot": final_snapshot,
         "restart_racer_state": state["restart_racer_state"],
@@ -2039,8 +1922,8 @@ def prepare_deploy(
     if image_ref != state.get("target_image_ref") or _configured_image() != image_ref:
         raise FenceError("atomically installed target image does not match fence")
     volume_dir = Path(str(state["volume_mountpoint"]))
-    if inventory_queue_risk(volume_dir):
-        raise FenceError("queue risk appeared before target start")
+    if inventory_queue_risk(volume_dir) != state.get("final_queue_risk", []):
+        raise FenceError("queue work changed before target start")
     receipt_path = Path(str(state["receipt_host_path"]))
     if receipt_snapshot(receipt_path) != state.get("receipt_snapshot"):
         raise FenceError("receipt snapshot changed before target start")
@@ -2766,7 +2649,7 @@ def _prove_quiesced_restore_observation(
         EXPECTED_CONTAINERS
     ):
         return False
-    if observation.get("queue_risk") or observation.get("stray_writer_processes"):
+    if observation.get("stray_writer_processes"):
         return False
     if observation.get("receipt_snapshot") != state.get("receipt_snapshot"):
         return False
@@ -3138,8 +3021,6 @@ def restore_quiesced(
             raise FenceError(f"quiesced sidecar identity was substituted: {name}")
         _assert_sidecar_nonwriter(name, info, volume_dir)
 
-    if inventory_queue_risk(volume_dir):
-        raise FenceError("queue risk appeared before quiesced restore")
     if _stray_writer_processes(receipt_path, set(), volume_dir):
         raise FenceError("stray writer process appeared before quiesced restore")
     if receipt_snapshot(receipt_path) != state.get("receipt_snapshot"):
@@ -3486,8 +3367,6 @@ def _validate_unsafe_recovery_source(
     volume_dir = Path(str(state["volume_mountpoint"]))
     if volume_dir.resolve() != host.volume_dir().resolve():
         raise FenceError("fenced volume mountpoint changed")
-    if inventory_queue_risk(volume_dir):
-        raise FenceError("bug_investigation queue risk appeared while fenced")
     receipt_path = Path(str(state["receipt_host_path"]))
     if receipt_snapshot(receipt_path) != state["receipt_snapshot"]:
         raise FenceError("receipt snapshot changed while fenced")

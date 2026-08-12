@@ -264,7 +264,6 @@ def test_triage_repairs_run_inside_authoritative_host_lock():
         "Repair — disk full (docker prune + journalctl vacuum)",
         "Repair — image pull failure (release-state rollback target)",
         "Repair — watchdog hot-loop (stop + sleep 60 + start)",
-        "Repair — provider_exhaustion (stop worker + .pause)",
         "Attempt compose restart",
     )
     steps = _steps(_load())
@@ -298,7 +297,7 @@ def test_provider_exhaustion_page_uses_existing_pushover_cli_contract():
     assert step.get("continue-on-error") is True
 
 
-def test_provider_exhaustion_page_is_not_gated_by_worker_pause_setting():
+def test_provider_exhaustion_page_follows_typed_hold_record():
     steps = _steps(_load())
     page_index = next(
         index for index, item in enumerate(steps)
@@ -310,7 +309,7 @@ def test_provider_exhaustion_page_is_not_gated_by_worker_pause_setting():
     assert "AUTO_REPAIR" not in page_step.get("env", {})
     assert page_index > next(
         index for index, item in enumerate(steps)
-        if item.get("id") == "repair_provider_exhaustion_gate"
+        if item.get("id") == "repair_provider_exhaustion"
     )
     assert page_index < next(
         index for index, item in enumerate(steps)
@@ -337,13 +336,12 @@ def test_bounded_repair_failures_continue_to_canonical_reprobe():
         assert steps.index(step) < reprobe_index, repair_id
 
 
-def test_provider_exhaustion_repair_keeps_its_ssh_remote_target():
+def test_provider_exhaustion_repair_never_mutates_a_fleet_or_falls_back():
     run = _step_by_id("repair_provider_exhaustion")["run"]
 
-    remote_target = '"${DO_SSH_USER}@${DO_DROPLET_HOST}"'
-    repair_command = "docker stop tinyassets-worker 2>&1 || true"
-    assert remote_target in run
-    assert run.index(remote_target) < run.index(repair_command)
+    assert "no provider fallback or fleet mutation is permitted" in run
+    assert "docker stop" not in run
+    assert "ssh " not in run
 
 
 def test_persistent_red_escalation_fails_visibly_after_actual_reprobe():

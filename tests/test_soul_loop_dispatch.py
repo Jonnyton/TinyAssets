@@ -137,6 +137,10 @@ def test_soul_loop_mode_keeps_queue_unstarved(monkeypatch, tmp_path):
     # — otherwise the driver re-runs each cycle and the children starve.
     monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
     monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
+    monkeypatch.setattr(
+        "tinyassets.assigned_credential_execution.refresh_pending_credential_holds",
+        lambda *_args: True,
+    )
     _seed_pending_child(tmp_path, tid="child-42")
     claimed, _inputs = dm._try_dispatcher_pick(tmp_path, "daemon-x")
     assert claimed is not None
@@ -213,8 +217,6 @@ def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(
             "--universe",
             str(tmp_path),
             "--no-tray",
-            "--provider",
-            "codex",
         ],
     )
 
@@ -223,7 +225,6 @@ def test_workflow_cli_allows_non_fantasy_domain_for_declared_soul_loop(
         "universe_path": str(tmp_path),
         "db_path": None,
         "no_tray": True,
-        "pinned_provider": "codex",
     }]
 
 

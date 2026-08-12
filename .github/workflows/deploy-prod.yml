@@ -1789,9 +1789,15 @@ jobs:
 
           evidence = json.load(open(sys.argv[1], encoding="utf-8"))
           containers = evidence.get("containers", {})
+          expected = set(evidence.get("expected_containers", []))
           images = {row.get("image_ref") for row in containers.values()}
           revisions = {row.get("revision") for row in containers.values()}
-          if len(containers) != 5 or len(images) != 1 or len(revisions) != 1:
+          if (
+              expected != {"tinyassets-daemon"}
+              or set(containers) != expected
+              or len(images) != 1
+              or len(revisions) != 1
+          ):
               raise SystemExit("active fleet identity is not exact")
           print(next(iter(images)))
           print(next(iter(revisions)))
@@ -1804,6 +1810,9 @@ jobs:
           readarray -t identity < "$evidence_dir/cleanup-identity.txt"
           active_image="${identity[0]}"
           active_revision="${identity[1]}"
+          if [[ ! "$active_image" =~ ^ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}$ ]]; then
+            fence_unsafe_and_fail "active fleet image is not canonical"
+          fi
           if [[ ! "$active_revision" =~ ^[0-9a-f]{40}$ ]]; then
             fence_unsafe_and_fail "active fleet revision is not canonical"
           fi

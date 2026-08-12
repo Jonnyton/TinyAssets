@@ -106,7 +106,6 @@ def _pinned_to_universe_a(tmp_path, monkeypatch):
     universe_b, claude_cfg = _write_claude_universe(tmp_path / "universe_b")
 
     # Neither a hard writer pin nor api-key opt-in should interfere.
-    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
     monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
 
     # Pin the process globals to universe A — this is the whole point: the

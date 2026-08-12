@@ -25,7 +25,6 @@ from scripts.retire_cheat_loop_deploy_fence import (
     expire_recovery,
     fence_status,
     finalize_recovery,
-    hold_queue_work_without_requester_executor,
     inventory_queue_risk,
     post_canary,
     preflight,
@@ -266,56 +265,6 @@ def test_queue_inventory_v2_runs_foreign_key_check(tmp_path: Path):
 
     with pytest.raises(FenceError, match="foreign key check failed"):
         inventory_queue_risk(tmp_path)
-
-
-def test_existing_queue_rows_receive_typed_no_executor_terminal_receipt(
-    tmp_path: Path,
-):
-    universe = tmp_path / "universes" / "held"
-    universe.mkdir(parents=True)
-    v1_path = universe / "branch_tasks.json"
-    v1_path.write_text(
-        json.dumps([{
-            "branch_task_id": "v1-pending",
-            "request_type": "branch_run",
-            "status": "pending",
-        }]),
-        encoding="utf-8",
-    )
-    db = universe / ".tinyassets.db"
-    with sqlite3.connect(db) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE branch_tasks_v2 (
-                branch_task_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                terminal_at TEXT,
-                detail_json TEXT NOT NULL DEFAULT '{}'
-            );
-            INSERT INTO branch_tasks_v2 VALUES (
-                'v2-running', 'running', NULL, '{"kept":"value"}'
-            );
-            """
-        )
-
-    held = hold_queue_work_without_requester_executor(tmp_path)
-
-    assert [row["id"] for row in held] == ["v1-pending", "v2-running"]
-    v1 = json.loads(v1_path.read_text(encoding="utf-8"))[0]
-    assert v1["status"] == "cancelled"
-    assert v1["error_code"] == "no_requester_owned_executor"
-    assert v1["error"] == "no requester-owned executor for this universe"
-    with sqlite3.connect(db) as connection:
-        status, terminal_at, detail_json = connection.execute(
-            "SELECT status,terminal_at,detail_json FROM branch_tasks_v2"
-        ).fetchone()
-    assert status == "cancelled"
-    assert terminal_at
-    assert json.loads(detail_json) == {
-        "error_code": "no_requester_owned_executor",
-        "kept": "value",
-        "reason": "no requester-owned executor for this universe",
-    }
 
 
 def test_queue_inventory_fails_closed_on_unreadable_or_partial_store(tmp_path: Path):
@@ -2425,6 +2374,13 @@ def test_preflight_allows_exact_legacy_worker_retirement_transition(
     host.containers["tinyassets-worker"] = worker
     _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
     state_path = tmp_path / "fence-state.json"
+    queue_path = tmp_path / "branch_tasks.json"
+    queued = [{
+        "branch_task_id": "preserved-task",
+        "request_type": "branch_run",
+        "status": "pending",
+    }]
+    queue_path.write_text(json.dumps(queued), encoding="utf-8")
 
     result = preflight(
         host,
@@ -2435,7 +2391,9 @@ def test_preflight_allows_exact_legacy_worker_retirement_transition(
     )
 
     assert result["phase"] == "preflight_proved"
-    assert result["held_queue_work"] == []
+    assert result["queue_work_preserved"] is True
+    assert result["final_queue_risk"] == result["preliminary_queue_risk"]
+    assert json.loads(queue_path.read_text(encoding="utf-8")) == queued
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert set(state["extra_volume_consumers"]) == {"tinyassets-worker"}
     assert not host.containers["tinyassets-worker"]["State"]["Running"]
@@ -5862,7 +5820,7 @@ def test_recover_unsafe_refences_after_mutation_os_error(
     assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == "unsafe_fenced"
 
 
-@pytest.mark.parametrize("fault", ["extra", "queue", "receipt"])
+@pytest.mark.parametrize("fault", ["extra", "receipt"])
 def test_recover_unsafe_refuses_unproved_fenced_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ):
@@ -5874,19 +5832,6 @@ def test_recover_unsafe_refuses_unproved_fenced_snapshot(
         host.containers["extra"] = host._containers("extra", "sha256:old", running=False)[
             "tinyassets-daemon"
         ]
-    elif fault == "queue":
-        (tmp_path / "branch_tasks.json").write_text(
-            json.dumps(
-                [
-                    {
-                        "branch_task_id": "x",
-                        "request_type": "bug_investigation",
-                        "status": "pending",
-                    }
-                ]
-            ),
-            encoding="utf-8",
-        )
     else:
         with sqlite3.connect(tmp_path / "wiki_trigger_attempts.db") as connection:
             connection.execute(

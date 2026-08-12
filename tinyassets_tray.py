@@ -5,7 +5,7 @@ Double-click the desktop shortcut -> this script starts:
   2. MCP TinyAssets Server (Python, port 8001)
   3. Optional local Cloudflare Tunnel for dev-only debugging
 
-A system tray icon shows live status. Hover aggregates active providers.
+A system tray icon shows live status for the credential-neutral daemon.
 Right-click to restart services, open the connector, or quit.
 """
 
@@ -146,10 +146,8 @@ class UniverseServerManager:
     """Manages daemons, local MCP, optional dev tunnel, and tab watchdog."""
 
     def __init__(self) -> None:
-        # One entry per daemon process. The first process for a provider uses
-        # the provider name as key; later same-provider processes use
-        # provider#N. Value is (Popen, log_handle) so the log handle can be
-        # closed on teardown (FD-leak guard).
+        # At most one credential-neutral daemon. The mapping form keeps process
+        # and log-handle teardown atomic without implying provider capacity.
         self.daemon_procs: dict[str, tuple[subprocess.Popen, IO]] = {}
         self.mcp_proc: subprocess.Popen | None = None
         self.tunnel_proc: subprocess.Popen | None = None
@@ -173,11 +171,7 @@ class UniverseServerManager:
         self._active_universe = self._read_active_universe()
         self._ensure_active_universe_file()
 
-        # Runtime-status bridge from the daemon (provider visibility).
-        # Single file per-universe today (Task A); when multiple daemons
-        # write the same file they race, so we rely on daemon_procs keys
-        # as the authoritative "who's running" signal and only use this
-        # payload for best-effort "last active provider" detail.
+        # Runtime-status bridge from the daemon (assignment visibility).
         self._runtime_status: dict | None = None
         self._RUNTIME_STATUS_FRESHNESS_SEC = 30.0
 
@@ -260,48 +254,23 @@ class UniverseServerManager:
 
     # -- Status ----------------------------------------------------------
 
-    def _running_providers(self) -> list[str]:
-        """Return provider names whose daemon subprocess is still alive."""
+    def _daemon_alive(self) -> bool:
+        """Return whether the one credential-neutral daemon is alive."""
         with self._procs_lock:
-            return [
-                self._provider_for_daemon_key(name)
-                for name, (proc, _) in self.daemon_procs.items()
-                if proc.poll() is None
-            ]
-
-    @staticmethod
-    def _provider_for_daemon_key(key: str) -> str:
-        return key.split("#", 1)[0]
-
-    def _running_provider_counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for provider in self._running_providers():
-            counts[provider] = counts.get(provider, 0) + 1
-        return counts
-
-    def _next_daemon_key(self, provider: str) -> str:
-        ordinal = self._running_provider_counts().get(provider, 0) + 1
-        key = provider if ordinal == 1 else f"{provider}#{ordinal}"
-        with self._procs_lock:
-            while key in self.daemon_procs:
-                ordinal += 1
-                key = f"{provider}#{ordinal}"
-        return key
+            entry = self.daemon_procs.get("daemon")
+            return entry is not None and entry[0].poll() is None
 
     @property
     def _any_daemon_alive(self) -> bool:
-        return bool(self._running_providers())
+        return self._daemon_alive()
 
     @property
     def status_text(self) -> str:
         parts = []
-        running = self._running_providers()
-        if running:
-            parts.append(
-                f"Daemons: {', '.join(running)} ({self._active_universe})"
-            )
+        if self._daemon_alive():
+            parts.append(f"Daemon: Running ({self._active_universe})")
         else:
-            parts.append(f"Daemons: None ({self._active_universe})")
+            parts.append(f"Daemon: Stopped ({self._active_universe})")
         if self._mcp_serving:
             parts.append("MCP: Serving")
         elif self._mcp_alive:
@@ -322,31 +291,29 @@ class UniverseServerManager:
 
     @property
     def hover_text(self) -> str:
-        running = self._running_providers()
+        running = self._daemon_alive()
         if running and self._mcp_serving and self._tunnel_ok:
             base = "TinyAssets Server - Live at tinyassets.io/mcp"
         else:
             base = f"TinyAssets Server - {self._phase}"
         if running:
-            return f"{base} | Active: {', '.join(running)}"
-        # Fallback: if nothing in daemon_procs but a fresh runtime_status
-        # file exists (e.g., daemon was spawned outside the tray), surface
-        # whatever the daemon reports so the tray isn't misleadingly silent.
+            suffix = self._runtime_status_suffix()
+            assigned = f" | Assigned: {suffix}" if suffix else ""
+            return f"{base} | Daemon: Running{assigned}"
+        # If a daemon was spawned outside the tray, surface its fresh exact
+        # assignment without treating the router registry as a fleet.
         suffix = self._runtime_status_suffix()
-        return f"{base} | Active: {suffix}" if suffix else base
+        return f"{base} | Assigned: {suffix}" if suffix else base
 
     def _runtime_status_suffix(self) -> str:
         status = self._runtime_status
         if not status:
             return ""
-        pinned = (status.get("provider") or "").strip()
-        if pinned:
-            return pinned
-        return (status.get("active_provider_label") or "").strip()
+        return (status.get("provider") or "").strip()
 
     @property
     def icon_color(self) -> tuple:
-        running = bool(self._running_providers())
+        running = self._daemon_alive()
         if running and self._mcp_serving and self._tunnel_ok:
             return GREEN
         elif running or self._mcp_alive or self._tunnel_alive:
@@ -358,13 +325,8 @@ class UniverseServerManager:
 
     # -- Process lifecycle -----------------------------------------------
 
-    def _can_start(self, provider: str) -> tuple[bool, str]:
-        """Check constraint rules before spawning a daemon for *provider*.
-
-        Returns ``(ok, reason)``. ``ok`` is False for unknown providers or
-        when another local provider is already running. Subscription providers
-        may run multiple same-provider daemons; the tray warns separately.
-        """
+    def _can_start(self) -> tuple[bool, str]:
+        """Check whether the one credential-neutral daemon may start."""
         authority_ready, authority_reason = _packaged_authority_state()
         if not authority_ready:
             return False, authority_reason
@@ -372,18 +334,16 @@ class UniverseServerManager:
             return False, "daemon already running"
         return True, ""
 
-    def start_daemon_for(self, provider: str) -> bool:
+    def start_daemon(self) -> bool:
         """Launch a credential-neutral daemon for the active universe.
 
-        *provider* is a preference/constraint surface only (unknown/second-local
-        rejection); it is NOT passed to the child. The spawned daemon receives
-        no ``--provider``/``TINYASSETS_PIN_WRITER`` and has the ambient
+        The spawned daemon receives no provider pin and has the ambient
         provider/credential env stripped, so it resolves each universe's
         assigned serving credential at runtime. Returns True on spawn.
         """
-        ok, reason = self._can_start(provider)
+        ok, reason = self._can_start()
         if not ok:
-            print(f"  [skip] {provider}: {reason}")
+            print(f"  [skip] daemon: {reason}")
             return False
 
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -399,17 +359,11 @@ class UniverseServerManager:
 
         universe_path = self._data_dir() / self._active_universe
         env = os.environ.copy()
-        # Belt and suspenders: --provider is consumed by argparse and sets
-        # TINYASSETS_PIN_WRITER itself, but setting it in the env too means
-        # the router pin survives even if the flag parsing changes.
-        for name in (
-            "TINYASSETS_PIN_WRITER",
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-        ):
+        # The tray is never provider authority. Strip ambient host credentials
+        # so each run must resolve its universe's serving assignment.
+        from tinyassets.providers.base import AMBIENT_PROVIDER_AUTH_ENV_VARS
+
+        for name in AMBIENT_PROVIDER_AUTH_ENV_VARS:
             env.pop(name, None)
         env["TINYASSETS_DAEMON_INSTANCE_KEY"] = runtime_key
         # Pin the data root so child's data_dir() resolves to the same
@@ -627,14 +581,11 @@ class UniverseServerManager:
         except Exception:
             return False
 
-    def _kill_daemon_for(self, provider: str) -> None:
-        """Terminate the daemon pinned to *provider* and close its log."""
+    def _kill_daemon(self) -> None:
+        """Terminate the credential-neutral daemon and close its log."""
         with self._procs_lock:
-            keys = [
-                key for key in self.daemon_procs
-                if self._provider_for_daemon_key(key) == provider
-            ]
-            entries = [self.daemon_procs.pop(key) for key in keys]
+            entry = self.daemon_procs.pop("daemon", None)
+            entries = [entry] if entry is not None else []
         for proc, log in entries:
             try:
                 if proc.poll() is None:
@@ -650,12 +601,7 @@ class UniverseServerManager:
                     pass
 
     def _kill_all_daemons(self) -> None:
-        providers = {
-            self._provider_for_daemon_key(key)
-            for key in list(self.daemon_procs.keys())
-        }
-        for provider in providers:
-            self._kill_daemon_for(provider)
+        self._kill_daemon()
 
     def kill_all(self) -> None:
         """Terminate all processes."""
@@ -678,12 +624,10 @@ class UniverseServerManager:
 
     # -- Auto-start -----------------------------------------------------
 
-    def _auto_start_providers(self) -> list[str]:
-        """Return the one credential-neutral daemon when auto-start is on."""
+    def _auto_start_daemon(self) -> bool:
+        """Return whether the credential-neutral daemon should auto-start."""
         prefs = load_preferences()
-        if not prefs.get("auto_start_default", True):
-            return []
-        return ["daemon"]
+        return bool(prefs.get("auto_start_default", True))
 
     # -- Tray menu ------------------------------------------------------
 
@@ -743,9 +687,9 @@ class UniverseServerManager:
         self._phase = "Restarting..."
         self.kill_all()
         time.sleep(1)
-        for provider in self._auto_start_providers():
-            self._phase = f"Starting {provider}..."
-            self.start_daemon_for(provider)
+        if self._auto_start_daemon():
+            self._phase = "Starting daemon..."
+            self.start_daemon()
             time.sleep(1)
         self._phase = "Starting MCP server on port 8001..."
         self.start_mcp()
@@ -781,8 +725,8 @@ class UniverseServerManager:
                     self._phase = f"Switching to {self._active_universe}..."
                     self._kill_all_daemons()
                     time.sleep(1)
-                    for provider in self._auto_start_providers():
-                        self.start_daemon_for(provider)
+                    if self._auto_start_daemon():
+                        self.start_daemon()
 
                 restarted = False
                 if not self._mcp_alive and self.mcp_proc is not None:
@@ -818,21 +762,21 @@ class UniverseServerManager:
     def run(self) -> None:
         """Start everything and block until quit."""
         authority_ready, authority_reason = _packaged_authority_state()
-        auto_start = self._auto_start_providers() if authority_ready else []
+        auto_start = self._auto_start_daemon() if authority_ready else False
         print("Starting TinyAssets Server...")
         print(f"  Project:   {PROJECT_DIR}")
         print(f"  Universe:  {self._active_universe}")
         print(f"  Endpoint:  {MCP_URL}")
-        print(f"  Providers: {auto_start or 'none (auto-start off)'}")
+        print(f"  Daemon:    {'auto-start' if auto_start else 'auto-start off'}")
         if not authority_ready:
             print(f"  Account:    pending ({authority_reason})")
         print()
 
         # 1. Launch daemons
-        for provider in auto_start:
-            self._phase = f"Starting {provider} daemon..."
-            if self.start_daemon_for(provider):
-                print(f"  [OK] daemon ({provider}) starting")
+        if auto_start:
+            self._phase = "Starting daemon..."
+            if self.start_daemon():
+                print("  [OK] daemon starting")
             time.sleep(1)
 
         # 2. Launch MCP server
@@ -865,7 +809,7 @@ class UniverseServerManager:
             print("  [skip] Tab watchdog script missing; tab hygiene degrades to entry-hook only")
         print()
         print("  Look for the 'U' icon in your system tray.")
-        print("  Right-click it to manage providers or quit.")
+        print("  Right-click it to restart services or quit.")
 
         monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         monitor.start()

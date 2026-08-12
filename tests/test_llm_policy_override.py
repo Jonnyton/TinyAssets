@@ -3,8 +3,8 @@
 docs/vetted-specs.md — "Per-node llm_policy override" (navigator-vetted 2026-04-22).
 
 Coverage:
-- pinned preferred provider used when available
-- fallback fires after preferred failure (trigger-typed)
+- preferred metadata reaches the exact-authority provider bridge
+- platform fallback chains are rejected
 - difficulty_override routes correctly
 - branch default_llm_policy applies when node-level unset
 - unset policy = role-routing backward-compat (no regression)
@@ -117,8 +117,6 @@ def _mock_router_for_policy(
     preferred_response: str = "policy-response",
     preferred_provider: str = "groq-free",
     raises_on_preferred: Exception | None = None,
-    fallback_response: str = "fallback-response",
-    fallback_provider: str = "ollama-local",
 ) -> MagicMock:
     """Build a mock ProviderRouter for unit-testing the policy path."""
     mock_router = MagicMock()
@@ -138,7 +136,7 @@ def _mock_router_for_policy(
     return mock_router
 
 
-def test_pinned_preferred_used_when_available():
+def test_preferred_metadata_reaches_exact_authority_bridge():
     """With llm_policy.preferred, ProviderRouter.call_with_policy_sync is called
     and the response + provider_name flow back through the graph."""
     policy = {"preferred": {"provider": "groq-free"}}
@@ -171,7 +169,7 @@ def test_pinned_preferred_used_when_available():
     assert ran[0]["provider_served"] == "groq-free"
 
 
-def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
+def test_empty_router_uses_injected_assigned_provider_call():
     """BUG-038: a fresh policy router with no registered providers must not
     exhaust before the run_branch provider bridge can serve the node."""
     policy = {"preferred": {"provider": "codex"}}
@@ -277,37 +275,15 @@ def test_node_policy_overrides_branch_default():
     assert calls[0]["policy"]["preferred"]["provider"] == "codex"
 
 
-def test_fallback_fires_when_preferred_exhausted():
-    """When policy providers all fail, call_with_policy_sync falls through
-    to the role chain (tested via router's own fallback, here mocked)."""
-    from tinyassets.exceptions import AllProvidersExhaustedError
-
+def test_fallback_chain_is_rejected_as_a_platform_policy():
     policy = {
         "preferred": {"provider": "groq-free"},
         "fallback_chain": [{"provider": "ollama-local", "trigger": "unavailable"}],
     }
-    node = _make_node(llm_policy=policy)
-    branch = _make_branch(node)
 
-    # Simulate router raising AllProvidersExhaustedError
-    mock_router = MagicMock()
-    mock_router.call_with_policy_sync.side_effect = AllProvidersExhaustedError(
-        "all exhausted"
-    )
+    errors = _validate_llm_policy_shape(policy, context="test")
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        compiled = compile_branch(
-            branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
-        )
-        app = compiled.graph.compile()
-        with pytest.raises(Exception):
-            app.invoke(
-                {"topic": "x"},
-                config={"configurable": {"thread_id": "t-fallback"}},
-            )
+    assert any("fallback_chain" in error and "retired" in error for error in errors)
 
 
 def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
@@ -392,7 +368,7 @@ def test_node_llm_policy_serializes_and_deserializes():
     """llm_policy round-trips through to_dict / from_dict."""
     policy = {
         "preferred": {"provider": "groq-free", "model": "llama3-8b"},
-        "fallback_chain": [{"provider": "ollama-local", "trigger": "unavailable"}],
+        "temperature": 0.2,
     }
     node = NodeDefinition(
         node_id="n1", display_name="N1",
@@ -434,12 +410,12 @@ def test_validate_rejects_preferred_without_provider():
     assert any("provider" in e for e in errors)
 
 
-def test_validate_rejects_invalid_trigger():
+def test_validate_rejects_retired_fallback_chain():
     errors = _validate_llm_policy_shape(
         {"fallback_chain": [{"provider": "x", "trigger": "bad-trigger"}]},
         context="test",
     )
-    assert any("bad-trigger" in e for e in errors)
+    assert any("fallback_chain" in e and "retired" in e for e in errors)
 
 
 def test_validate_rejects_difficulty_override_without_use():
@@ -454,9 +430,6 @@ def test_validate_accepts_valid_policy():
     errors = _validate_llm_policy_shape(
         {
             "preferred": {"provider": "groq-free", "model": "llama3"},
-            "fallback_chain": [
-                {"provider": "ollama-local", "trigger": "unavailable"},
-            ],
             "difficulty_override": [
                 {"if_difficulty": "hard", "use": {"provider": "claude-code"}},
             ],

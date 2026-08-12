@@ -1,11 +1,11 @@
-"""Tests for the runtime-status bridge + --provider CLI pin.
+"""Tests for credential-driven runtime status and the retired CLI pin.
 
 Covers:
 - ``DaemonController._write_runtime_status`` payload shape, atomic write,
   and ``_remove_runtime_status`` on shutdown.
 - ``UniverseServerManager._read_runtime_status`` freshness gate.
-- ``UniverseServerManager.hover_text`` provider suffix.
-- ``--provider`` CLI validation + TINYASSETS_PIN_WRITER env var.
+- ``UniverseServerManager.hover_text`` exact-assignment suffix.
+- the retired ``--provider`` CLI pin stays absent.
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _make_controller_stub(universe_path: Path, pinned: str = ""):
+def _make_controller_stub(universe_path: Path, assigned: str = ""):
     """Build a DaemonController without triggering its real start()."""
     from fantasy_daemon.__main__ import DaemonController
 
     controller = DaemonController.__new__(DaemonController)
     controller._universe_path = str(universe_path)
-    controller._pinned_provider = pinned
+    controller._current_assigned_provider = lambda: assigned
     controller._router = None
     controller._last_provider_used = ""
     controller._runtime_status_path = universe_path / ".runtime_status.json"
@@ -40,7 +40,7 @@ def _make_controller_stub(universe_path: Path, pinned: str = ""):
 
 
 def test_write_runtime_status_payload_shape(tmp_path: Path) -> None:
-    controller = _make_controller_stub(tmp_path, pinned="codex")
+    controller = _make_controller_stub(tmp_path, assigned="codex")
     controller._last_provider_used = "claude-code"
 
     controller._write_runtime_status()
@@ -122,10 +122,10 @@ def test_runtime_status_heartbeat_thread_joins_on_stop(
     assert not thread.is_alive()
 
 
-def test_write_runtime_status_empty_pin_serializes_to_empty_string(
+def test_write_runtime_status_missing_assignment_serializes_empty_provider(
     tmp_path: Path,
 ) -> None:
-    controller = _make_controller_stub(tmp_path, pinned="")
+    controller = _make_controller_stub(tmp_path, assigned="")
     controller._write_runtime_status()
 
     payload = json.loads((tmp_path / ".runtime_status.json").read_text("utf-8"))
@@ -229,7 +229,7 @@ def test_read_runtime_status_malformed_json_returns_none(tray_manager) -> None:
     assert mgr._read_runtime_status() is None
 
 
-def test_hover_text_appends_pinned_provider(tray_manager) -> None:
+def test_hover_text_appends_assigned_provider(tray_manager) -> None:
     mgr, universe_dir = tray_manager
     _write_status(
         universe_dir / ".runtime_status.json",
@@ -237,13 +237,13 @@ def test_hover_text_appends_pinned_provider(tray_manager) -> None:
         provider="codex",
     )
     mgr._runtime_status = mgr._read_runtime_status()
-    mgr._daemon_alive = mgr._mcp_serving = mgr._tunnel_ok = True
+    mgr._mcp_serving = mgr._tunnel_ok = True
 
     text = mgr.hover_text
-    assert "Active: codex" in text
+    assert "Assigned: codex" in text
 
 
-def test_hover_text_falls_back_to_active_label_when_not_pinned(tray_manager) -> None:
+def test_hover_text_never_falls_back_to_registry_label(tray_manager) -> None:
     mgr, universe_dir = tray_manager
     _write_status(
         universe_dir / ".runtime_status.json",
@@ -252,143 +252,40 @@ def test_hover_text_falls_back_to_active_label_when_not_pinned(tray_manager) -> 
         active_provider_label="claude-code, codex",
     )
     mgr._runtime_status = mgr._read_runtime_status()
-    mgr._daemon_alive = mgr._mcp_serving = mgr._tunnel_ok = True
+    mgr._mcp_serving = mgr._tunnel_ok = True
 
-    assert "Active: claude-code, codex" in mgr.hover_text
+    assert "Assigned:" not in mgr.hover_text
+    assert "claude-code, codex" not in mgr.hover_text
 
 
 def test_hover_text_no_suffix_when_status_absent(tray_manager) -> None:
     mgr, _ = tray_manager
     mgr._runtime_status = None
-    mgr._daemon_alive = mgr._mcp_serving = mgr._tunnel_ok = True
+    mgr._mcp_serving = mgr._tunnel_ok = True
 
-    assert "Active:" not in mgr.hover_text
+    assert "Assigned:" not in mgr.hover_text
 
 
 # ---------------------------------------------------------------------------
-# CLI: --provider validation + TINYASSETS_PIN_WRITER env var
+# CLI: the retired provider pin stays absent
 # ---------------------------------------------------------------------------
 
 
-def test_cli_rejects_unknown_provider() -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "fantasy_daemon", "--provider", "not-a-real-one"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert result.returncode != 0
-    combined = (result.stderr + result.stdout).lower()
-    assert "not a known provider" in combined or "not-a-real-one" in combined
-
-
-def test_cli_help_mentions_provider_flag() -> None:
+def test_cli_has_no_provider_pin_surface() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "fantasy_daemon", "--help"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
+
     assert result.returncode == 0
-    assert "--provider" in result.stdout
+    assert "--provider" not in result.stdout
+    assert "TINYASSETS_PIN_WRITER" not in result.stdout
 
 
-# ---------------------------------------------------------------------------
-# Router: TINYASSETS_PIN_WRITER narrows chain and fails loudly on exhaustion
-# ---------------------------------------------------------------------------
+def test_router_exports_no_platform_chains() -> None:
+    from tinyassets.providers import router as router_mod
 
-
-class _RecordingProvider:
-    """Stand-in async provider that records calls and can raise on demand."""
-
-    def __init__(self, name: str, fail: bool = False) -> None:
-        self.name = name
-        self._fail = fail
-        self.calls = 0
-
-    async def complete(self, prompt, system, cfg, *, universe_dir=None):
-        from tinyassets.exceptions import ProviderUnavailableError
-        from tinyassets.providers.base import ProviderResponse
-
-        self.calls += 1
-        if self._fail:
-            raise ProviderUnavailableError(f"{self.name} down")
-        return ProviderResponse(
-            text="ok",
-            provider=self.name,
-            model="test-model",
-            family="test-family",
-            latency_ms=1.0,
-        )
-
-
-@pytest.fixture
-def _clear_pin(monkeypatch):
-    monkeypatch.delenv("TINYASSETS_PIN_WRITER", raising=False)
-    yield
-
-
-def test_router_pins_to_env_var_provider(monkeypatch, _clear_pin) -> None:
-    from tinyassets.providers.router import ProviderRouter
-
-    pinned = _RecordingProvider("codex")
-    other = _RecordingProvider("claude-code")
-    router = ProviderRouter(providers={"codex": pinned, "claude-code": other})
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
-
-    import asyncio
-    resp = asyncio.run(router.call("writer", "p", "s"))
-
-    assert resp.provider == "codex"
-    assert pinned.calls == 1
-    assert other.calls == 0
-
-
-def test_router_pinned_writer_raises_on_exhaustion_no_fallback(
-    monkeypatch, _clear_pin,
-) -> None:
-    from tinyassets.exceptions import AllProvidersExhaustedError
-    from tinyassets.providers.router import ProviderRouter
-
-    pinned = _RecordingProvider("codex", fail=True)
-    would_succeed = _RecordingProvider("ollama-local")
-    router = ProviderRouter(
-        providers={"codex": pinned, "ollama-local": would_succeed},
-    )
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
-
-    import asyncio
-    with pytest.raises(AllProvidersExhaustedError) as ei:
-        asyncio.run(router.call("writer", "p", "s"))
-
-    # Loud failure identifies the pin explicitly and does NOT touch the
-    # would-succeed provider.
-    assert "codex" in str(ei.value).lower()
-    assert would_succeed.calls == 0
-
-
-def test_router_pin_does_not_affect_non_writer_roles(
-    monkeypatch, _clear_pin,
-) -> None:
-    """Judge ensemble / extract should ignore TINYASSETS_PIN_WRITER."""
-    from tinyassets.providers.router import ProviderRouter
-
-    p1 = _RecordingProvider("codex")
-    p2 = _RecordingProvider("claude-code")
-    router = ProviderRouter(providers={"codex": p1, "claude-code": p2})
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
-
-    import asyncio
-    # 'extract' chain starts with codex so it still resolves to codex here,
-    # but the mechanism must be the normal chain (no loud-fail behavior).
-    asyncio.run(router.call("extract", "p", "s"))
-    assert p1.calls == 1
-
-
-def test_cli_pin_known_providers_covers_all_chains() -> None:
-    """Every name in FALLBACK_CHAINS must pass the --provider validator."""
-    from fantasy_daemon.providers import router as router_mod
-
-    known = set().union(*router_mod.FALLBACK_CHAINS.values())
-    # Every chain-member we publish is acceptable input to the CLI.
-    assert "claude-code" in known
-    assert "codex" in known
-    assert "ollama-local" in known
-    # And the validation set is derived from the live chains, not frozen.
-    assert known == set().union(*router_mod.FALLBACK_CHAINS.values())
+    assert not hasattr(router_mod, "FALLBACK_CHAINS")
+    assert not hasattr(router_mod.ProviderRouter(), "effective_chain")

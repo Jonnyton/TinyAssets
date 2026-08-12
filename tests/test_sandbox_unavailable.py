@@ -407,7 +407,7 @@ def _make_proc_mock(returncode: int, stdout: bytes, stderr: bytes) -> MagicMock:
 
 
 class TestClaudeProviderBwrapDetection:
-    def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
+    def test_raises_sandbox_unavailable_on_bwrap_stderr(self, tmp_path):
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.claude_provider import ClaudeProvider
 
@@ -418,14 +418,22 @@ class TestClaudeProviderBwrapDetection:
             return proc
 
         provider = ClaudeProvider()
+        universe = tmp_path / "universe"
+        snapshot = universe / "snapshot"
+        snapshot.mkdir(parents=True)
+        config = ModelConfig(credential_snapshot_dir=snapshot)
 
         with patch.object(sys, "platform", "linux"):
             with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
                 with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
                     with pytest.raises(SandboxUnavailableError):
-                        asyncio.run(provider.complete("hello", "", ModelConfig()))
+                        asyncio.run(
+                            provider.complete(
+                                "hello", "", config, universe_dir=universe
+                            )
+                        )
 
-    def test_normal_stderr_does_not_raise(self):
+    def test_normal_stderr_does_not_raise(self, tmp_path):
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.claude_provider import ClaudeProvider
 
@@ -435,16 +443,24 @@ class TestClaudeProviderBwrapDetection:
             return proc
 
         provider = ClaudeProvider()
+        universe = tmp_path / "universe"
+        snapshot = universe / "snapshot"
+        snapshot.mkdir(parents=True)
+        config = ModelConfig(credential_snapshot_dir=snapshot)
 
         with patch.object(sys, "platform", "linux"):
             with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
                 with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    result = asyncio.run(provider.complete("hello", "", ModelConfig()))
+                    result = asyncio.run(
+                        provider.complete(
+                            "hello", "", config, universe_dir=universe
+                        )
+                    )
         assert result.text == "response text"
 
 
 class TestCodexProviderBwrapDetection:
-    def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
+    def test_raises_sandbox_unavailable_on_bwrap_stderr(self, tmp_path):
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.codex_provider import CodexProvider
 
@@ -455,14 +471,22 @@ class TestCodexProviderBwrapDetection:
             return proc
 
         provider = CodexProvider()
+        universe = tmp_path / "universe"
+        snapshot = universe / "snapshot"
+        snapshot.mkdir(parents=True)
+        config = ModelConfig(credential_snapshot_dir=snapshot)
 
         with patch.object(sys, "platform", "linux"):
             with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
                 with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
                     with pytest.raises(SandboxUnavailableError):
-                        asyncio.run(provider.complete("hello", "", ModelConfig()))
+                        asyncio.run(
+                            provider.complete(
+                                "hello", "", config, universe_dir=universe
+                            )
+                        )
 
-    def test_normal_stderr_does_not_raise(self):
+    def test_normal_stderr_does_not_raise(self, tmp_path):
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.codex_provider import CodexProvider
 
@@ -472,9 +496,17 @@ class TestCodexProviderBwrapDetection:
             return proc
 
         provider = CodexProvider()
+        universe = tmp_path / "universe"
+        snapshot = universe / "snapshot"
+        snapshot.mkdir(parents=True)
+        config = ModelConfig(credential_snapshot_dir=snapshot)
 
         with patch.object(sys, "platform", "linux"):
             with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
                 with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    result = asyncio.run(provider.complete("hello", "", ModelConfig()))
+                    result = asyncio.run(
+                        provider.complete(
+                            "hello", "", config, universe_dir=universe
+                        )
+                    )
         assert result.text == "codex output"

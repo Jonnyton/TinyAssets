@@ -3,6 +3,8 @@
 ### Requirement: Provider routing uses one assigned credential authority
 Every universe-scoped provider call SHALL carry exactly one current server-resolved authority: an authenticated served request, an armed background binding, or the daemon's assigned-serving-credential context. The router SHALL attempt only the provider named by that authority and SHALL NOT read a process writer pin, fallback chain, free-provider chain, preferred-provider order, or ambient host credential to widen the route.
 
+The assigned context SHALL carry the actual provider-work binding identity, generation, digest, assignment generation/digest, revocation generation, custody identity, and durable token/cost/invocation ceilings. The router SHALL require the canonical serving binding's `converse`/`writer` scope and SHALL reserve and reconcile durable binding spend for assigned calls. When an armed background invocation carrier is also present, its provider, assignment generation/digest, custody digest, and revocation generation SHALL match the assigned context; its exact operation and role SHALL validate without substitution, and the effective token ceiling SHALL be the lower of the binding and invocation ceilings. The serving binding validates credential assignment; the separately store-minted workflow carrier authorizes its internal operation and role without changing the selected credential.
+
 #### Scenario: Assigned credential is the only attempted provider
 - **WHEN** a daemon branch run carries an assigned credential for provider `codex`
 - **THEN** the router attempts only `codex`
@@ -16,6 +18,15 @@ Every universe-scoped provider call SHALL carry exactly one current server-resol
 - **WHEN** the provider selected by the assigned credential is unavailable, rate-limited, or exhausted
 - **THEN** the call fails with evidence for that provider and does not attempt another registered provider
 
+#### Scenario: Binding and invocation ceilings both apply
+- **WHEN** an assigned workflow call also carries a single-use background invocation reservation
+- **THEN** the carrier's declared operation and role are validated exactly
+- **AND** the call is refused when it exceeds either the invocation ceiling or the assigned binding's remaining durable budget
+
+#### Scenario: Retired router constructor option fails loudly
+- **WHEN** a caller supplies a retired fallback, pin, or auth-health router option
+- **THEN** router construction raises `TypeError` naming the retired option
+
 ### Requirement: Node policy cannot change credential authority
 Per-node LLM policy SHALL be allowed to refine non-authority model settings, but any policy provider preference SHALL be ignored or rejected when it differs from the provider named by the run's assigned credential.
 
@@ -23,6 +34,11 @@ Per-node LLM policy SHALL be allowed to refine non-authority model settings, but
 - **WHEN** a workflow node prefers Claude while the serving binding assigns Codex
 - **THEN** the node runs only on Codex or holds
 - **AND** Claude is not invoked
+
+#### Scenario: Retired fallback-chain policy is rejected
+- **WHEN** a branch policy contains `fallback_chain`
+- **THEN** validation fails loudly and no provider is invoked
+- **AND** the user is directed to model alternatives as explicit workflow branches with independently assigned credentials
 
 ## REMOVED Requirements
 

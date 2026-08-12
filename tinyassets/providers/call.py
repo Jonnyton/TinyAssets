@@ -1,8 +1,7 @@
-"""General LLM-call bridge for the engine.
+"""General LLM-call bridge for exact-authority execution.
 
-Routes all provider calls through the shared :class:`ProviderRouter`
-(synchronous ``call_sync``), with a deterministic mock path for tests and an
-explicit fallback when providers are exhausted. This is the engine's single,
+Routes calls through an explicitly installed :class:`ProviderRouter`
+(synchronous ``call_sync``), with a deterministic mock path for tests. This is the engine's single,
 domain-agnostic LLM-call primitive — engine code must reach the LLM only
 through this module, never through a domain package. (It was previously hosted
 inside the fantasy domain; the relocation is the de-fantasy audit's Tier A:
@@ -43,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Mutable module state (use the accessors below; do not import these names)
 # ---------------------------------------------------------------------------
 
-# Skip real provider calls and return mock/fallback output. Tests set this via
+# Skip real provider calls and return mock output. Tests set this via
 # set_force_mock() in conftest.
 _force_mock = False
 
@@ -62,7 +61,7 @@ def set_force_mock(value: bool) -> None:
 
 
 def is_force_mock() -> bool:
-    """Whether call_provider() short-circuits to mock/fallback output."""
+    """Whether call_provider() short-circuits to explicit test mock output."""
     return _force_mock
 
 
@@ -159,82 +158,9 @@ def bind_universe_provider_call(
 
 
 # ---------------------------------------------------------------------------
-# Fallback router for standalone / script / test usage
-# ---------------------------------------------------------------------------
-
-
-def _build_fallback_router() -> "Optional[ProviderRouter]":
-    """Best-effort router registering whatever providers are available.
-
-    A daemon overwrites this via :func:`set_provider_router`, so these
-    registrations only serve standalone/script/test usage. Each provider import
-    is independently guarded so a missing optional dependency never breaks the
-    bridge.
-    """
-    try:
-        from tinyassets.providers.router import ProviderRouter
-    except ImportError:
-        logger.info("Real ProviderRouter not available; using mock-only provider")
-        return None
-
-    router = ProviderRouter()
-
-    try:
-        from tinyassets.providers.claude_provider import ClaudeProvider
-        if ClaudeProvider.is_available():
-            router.register(ClaudeProvider())
-            logger.info("Registered ClaudeProvider")
-        else:
-            logger.debug("claude binary not found - ClaudeProvider skipped")
-    except Exception:
-        logger.debug("ClaudeProvider not available")
-
-    try:
-        from tinyassets.providers.codex_provider import CodexProvider
-        if CodexProvider.is_available():
-            router.register(CodexProvider())
-            logger.info("Registered CodexProvider")
-        else:
-            logger.debug("codex binary not found - CodexProvider skipped")
-    except Exception:
-        logger.debug("CodexProvider not available")
-
-    try:
-        from tinyassets.providers.ollama_provider import OllamaProvider
-        router.register(OllamaProvider())
-        logger.info("Registered OllamaProvider")
-    except Exception:
-        logger.debug("OllamaProvider not available")
-
-    try:
-        from tinyassets.providers.gemini_provider import GeminiProvider
-        router.register(GeminiProvider())
-        logger.info("Registered GeminiProvider")
-    except Exception:
-        logger.debug("GeminiProvider not available")
-
-    try:
-        from tinyassets.providers.groq_provider import GroqProvider
-        router.register(GroqProvider())
-        logger.info("Registered GroqProvider")
-    except Exception:
-        logger.debug("GroqProvider not available")
-
-    try:
-        from tinyassets.providers.grok_provider import GrokProvider
-        router.register(GrokProvider())
-        logger.info("Registered GrokProvider")
-    except Exception:
-        logger.debug("GrokProvider not available")
-
-    logger.info(
-        "ProviderRouter ready with providers: %s",
-        router.available_providers,
-    )
-    return router
-
-
-_real_router = _build_fallback_router()
+# Provider registration belongs to the daemon or explicit caller. Importing this
+# module never discovers ambient host credentials or silently constructs routes.
+_real_router: "Optional[ProviderRouter]" = None
 
 
 # ---------------------------------------------------------------------------
@@ -294,12 +220,11 @@ def call_provider(
     universe_context: Any = None,
     operation: str | None = None,
 ) -> str:
-    """Call an LLM provider with automatic fallback.
+    """Call the one provider selected by explicit authority.
 
-    Routes through the installed :class:`ProviderRouter`'s synchronous
-    ``call_sync`` (which runs the async fallback chain in a dedicated thread).
-    On transient exhaustion, retries up to 3 times with exponential backoff.
-    Falls back to mock/``fallback_response`` only when forced or exhausted.
+    Routes through the installed router's synchronous ``call_sync``. On
+    transient exhaustion, retries the same exact provider up to three times.
+    ``fallback_response`` is honored only by the explicit force-mock test seam.
 
     Parameters
     ----------
@@ -310,9 +235,7 @@ def call_provider(
     role:
         Routing role (writer, judge, extract).
     fallback_response:
-        Returned if all providers fail. If ``None`` in production, provider
-        exhaustion surfaces as the real error rather than masquerading as an
-        empty LLM response downstream.
+        Explicit test output used only when force-mock is enabled.
     universe_context:
         Optional per-universe routing context (:class:`~tinyassets.providers.
         base.UniverseContext`) threaded through to ``call_sync`` so engine
@@ -331,8 +254,6 @@ def call_provider(
         # Preserve the exact legacy string (callers/tests may assert on it).
         return "[Mock response -- _FORCE_MOCK is True]"
 
-    provider_error: Exception | None = None
-
     if _real_router is not None:
         try:
             return _call_router_with_retry(
@@ -343,25 +264,13 @@ def call_provider(
 
             if isinstance(e, ProviderAuthorityHeldError):
                 raise
-            provider_error = e
             logger.error(
-                "All providers exhausted for role=%s after retries: %s", role, e,
+                "Assigned provider exhausted for role=%s after retries: %s", role, e,
             )
-
-    if governed and provider_error is not None:
-        raise provider_error
-    if fallback_response is not None and not governed:
-        logger.warning(
-            "Using fallback response for role=%s (%d chars)",
-            role, len(fallback_response),
-        )
-        return fallback_response
-    if provider_error is not None:
-        raise provider_error
+            raise
 
     from tinyassets.exceptions import AllProvidersExhaustedError
 
     raise AllProvidersExhaustedError(
-        f"No provider router available for role={role!r} and no fallback_response "
-        "was provided."
+        f"No explicitly installed provider router is available for role={role!r}."
     )

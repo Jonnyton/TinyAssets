@@ -66,7 +66,7 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # queue-owner maintenance over the canonical store: it grants no execution
     # authority. Every recovered task is filtered to this universe and to
     # `status == "pending"`, and must still pass the exact worker + activation
-    # claim transaction below before anything executes.
+    # assigned-credential claim transaction below before anything executes.
     CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "recover_expired"),
     CallSite(
         "fantasy_daemon/__main__.py",
@@ -312,9 +312,12 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
         SourceReference("tinyassets/api/permissions.py", "def current_request_actor_id("),
         SourceReference("tinyassets/api/engine_helpers.py", "def _current_actor("),
     ),
-    "daemon_cloud_and_distributed_worker": (
+    "daemon_assigned_credential_execution": (
         SourceReference("fantasy_daemon/__main__.py", "def _try_execute_claimed_branch_task("),
-        SourceReference("tinyassets/cloud_worker.py", "def run_supervisor("),
+        SourceReference(
+            "tinyassets/assigned_credential_execution.py",
+            "def resolve_assigned_credential(",
+        ),
         SourceReference("tinyassets/execution_authority/records.py", "class ExecutionGrantV1:"),
     ),
     "selector_leaderboard_and_market_delegate": (

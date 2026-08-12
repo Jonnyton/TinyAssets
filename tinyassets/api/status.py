@@ -1006,7 +1006,7 @@ def get_status(universe_id: str = "") -> str:
     except Exception as exc:
         return json.dumps({
             "error": "config_load_failed",
-            "detail": str(exc),
+            "detail": type(exc).__name__,
             "universe_id": uid,
             "universe_exists": universe_exists,
             "identity_evidence": identity_evidence,
@@ -1014,16 +1014,17 @@ def get_status(universe_id: str = "") -> str:
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
-    api_key_enabled = False
-    api_key_vars_present: list[str] = []
-    # Priority chain mirrors the provider-router's preference order:
-    # local/subscription endpoints beat API-key-only providers. Ollama is
-    # always-local; codex+claude are subprocess-bound CLIs the daemon can drive;
-    # xai/gemini/groq are API-key-backed network providers and are ignored
-    # unless TINYASSETS_ALLOW_API_KEY_PROVIDERS is explicitly enabled.
-    # Claude is "bound" only when its binary AND subscription auth are present —
-    # the binary-only check let a dead-auth claude masquerade as bound (the
-    # 2026-06-25 blind spot). Codex already gates on auth.json below; mirror it.
+    from tinyassets.providers.base import (
+        API_KEY_PROVIDER_ENV_VARS,
+        api_key_providers_enabled,
+    )
+
+    api_key_enabled = api_key_providers_enabled()
+    api_key_vars_present = [
+        name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
+    ]
+    # Report the exact current serving assignment. Ambient endpoints and API
+    # keys are diagnostics only; they never become routing authority.
     assigned = _provider_auth_snapshot(_base_path(), Path(udir))
     endpoint_hint = str(assigned.get("provider") or "unset")
 
@@ -1148,10 +1149,8 @@ def get_status(universe_id: str = "") -> str:
         )
     if endpoint_hint == "unset":
         actionable_next_steps.append(
-            "Bind a default LLM provider: set OLLAMA_HOST (local Ollama), "
-            "install Claude CLI subscription auth, or install Codex CLI with "
-            "subscription auth at CODEX_HOME/auth.json. API-key providers require "
-            "explicit TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 opt-in."
+            "Deposit a requester-owned credential in this universe's vault and "
+            "assign it to the workflow serving binding."
         )
     if last_completed_llm == "unknown" and activity_tail:
         actionable_next_steps.append(

@@ -205,7 +205,7 @@ def create_daemon(
         # `daemon_create` accepts caller metadata straight from the public
         # surface. An attacker could therefore mint a daemon carrying
         # owner_user_id="victim" and satisfy any owner-scoped check built on it,
-        # including `_is_project_loop_daemon`, whose flag `cloud_worker` uses to
+        # including `_is_project_loop_daemon`, used by queue execution to
         # select a daemon and register runtime authority.
         #
         # Found by cross-family review 2026-08-05 and reproduced: ownership must
@@ -375,7 +375,7 @@ def ensure_daemon_runtime(
     branch_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create or refresh the runtime slot for a stable worker process."""
+    """Create or refresh the runtime slot for a stable daemon executor."""
     clean_worker_id = worker_id.strip()
     if not clean_worker_id:
         raise ValueError("worker_id is required")
@@ -390,9 +390,9 @@ def ensure_daemon_runtime(
     merged_metadata = dict(metadata or {})
     merged_metadata.setdefault("owner_user_id", daemon["owner_user_id"])
     merged_metadata.setdefault("tenant_id", daemon["tenant_id"])
+    merged_metadata.setdefault("runtime_registration", "daemon_runtime")
     merged_metadata.update({
         "worker_id": clean_worker_id,
-        "runtime_registration": "cloud_worker",
         "daemon_id": daemon["daemon_id"],
         "daemon_soul_hash": daemon["soul_hash"],
         "daemon_soul_mode": daemon["soul_mode"],

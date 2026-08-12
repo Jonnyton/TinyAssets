@@ -28,6 +28,9 @@ x-tinyassets-log-forwarding: &tinyassets_log_forwarding
   options:
     fluentd-address: "127.0.0.1:24224"
     fluentd-async: "true"
+    cache-disabled: "false"
+    cache-max-size: "256m"
+    cache-max-file: "4"
     tag: "{{.Name}}"
 
 # Dev use:
@@ -111,7 +114,7 @@ services:
     # service name), then drop network_mode: host.
     network_mode: host
     # Tunnel token auth (shape A per Row C).
-    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN for public ingress}
     environment:
       CLOUDFLARE_TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
@@ -156,7 +159,7 @@ services:
   # surface. There is no inbound port and no public endpoint: the container
   # dials out to Slack.
   #
-  # Note what is absent: no `env_file` (every secret on the box) and, since
+  # Note what is absent: no general `/etc/tinyassets/env` and, since
   # 2026-08-06, no `tinyassets-data` mount either.
   #
   # It used to read each universe's vault off the data volume. That could not
@@ -229,10 +232,8 @@ services:
     # CLI turn at a time fits comfortably.
     mem_limit: 2g
     pids_limit: 512
-    # No healthcheck yet, and that is a known gap rather than an oversight: the
-    # inherited cloud-worker check probes the node-claim queue this service
-    # never touches, so it would report permanently unhealthy and the autoheal
-    # timer would restart it forever. A real check has to prove the SOCKET is
+    # No healthcheck yet, and that is a known gap rather than an oversight. A
+    # real check has to prove the SOCKET is
     # live — an alive process with a dead socket is the failure that matters —
     # and that needs a heartbeat this worker does not yet write.
     labels:
@@ -249,5 +250,3 @@ networks:
   default:
     name: tinyassets-net
     # Default bridge; cloudflared reaches daemon via `daemon:8001`.
-    volumes:
-      - tinyassets-data:/data:ro

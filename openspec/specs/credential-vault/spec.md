@@ -5,9 +5,7 @@
 ## Purpose
 
 Per-universe typed credential store (as-built: flat JSON guarded by best-effort file permissions) with daemon-side resolvers and a provider auth env overlay so a universe runs on its founder's assigned engine, not the host's.
-
 ## Requirements
-
 ### Requirement: Per-Universe Typed Credential Store
 
 The system SHALL persist credentials in a per-universe vault file named `.credential-vault.json` inside the universe directory, written as a JSON object with `schema_version` 1 and a `credentials` list. Every credential record SHALL declare a `credential_type` that is one of `social`, `llm_subscription`, `llm_api_key`, or `vcs`; a record with any other type SHALL be rejected at write time. A Codex `llm_subscription` record that provides `auth_json_b64` SHALL contain a non-empty, strictly decodable base64 value whose decoded bytes are valid JSON; malformed values SHALL be rejected before the stored vault is replaced. The write helper (`tinyassets.credential_vault.write_credential_vault`) SHALL return a non-secret summary containing only the vault path, credential count, credential types, service names, collapsed-record count, and descriptors for any VCS purpose slots removed by a narrowing upsert, and SHALL never include secret material in that summary.
@@ -307,3 +305,25 @@ The system SHALL treat a validated one-record payload written to an existing vau
 
 - **WHEN** two processes write the same universe vault concurrently, including overlapping one-record read-modify-write upserts
 - **THEN** the boundary provides no lock, unique temporary path, compare-and-swap check, lost-update prevention, or deterministic winner guarantee
+
+### Requirement: Assigned serving credential is the sole universe execution authority
+For a universe-scoped workflow execution, the vault SHALL expose credential material only through the exact current serving assignment selected for that universe. The daemon SHALL resolve the serving agent row, assignment, provider-work binding, custody reference, and binding budgets inside one transaction while holding shared provider-assignment admission for the complete run; it SHALL snapshot that assigned credential for the run and clean the snapshot afterward, including when authority construction or the provider body fails. A concurrent disable, revision change, rebind, or custody rotation SHALL wait for the active run or cause the next resolution to hold. A missing, malformed, stale, revoked, exhausted, or unavailable assignment SHALL produce the typed hold `no_requester_owned_executor` without attaching the underlying credential exception chain; the vault/provider boundary SHALL NOT copy ambient host credential variables, search for another credential record, or fall back to another provider.
+
+#### Scenario: Exact assigned credential is snapshotted
+- **WHEN** a workflow's current serving assignment and vault custody reference agree
+- **THEN** the daemon receives a launch-scoped snapshot for only that assigned credential
+- **AND** the snapshot is removed after the run
+
+#### Scenario: Assignment mutation cannot race an active snapshot
+- **WHEN** a provider assignment writer attempts to disable, revise, rebind, or rotate the credential while a run holds assigned credential authority
+- **THEN** the mutation waits for the run's shared admission fence
+- **AND** no stale serving identity can be launched after the mutation commits
+
+#### Scenario: Missing assigned credential cannot inherit host auth
+- **WHEN** the host process has valid provider auth but the task universe has no usable assigned credential
+- **THEN** execution holds with `no_requester_owned_executor`
+- **AND** no host auth home, token, API key, endpoint, or provider route enters the child
+
+#### Scenario: Another vault credential is not an implicit fallback
+- **WHEN** the assigned credential is unavailable and the same vault contains another provider credential
+- **THEN** the other credential remains unused unless the user explicitly rebinds the workflow

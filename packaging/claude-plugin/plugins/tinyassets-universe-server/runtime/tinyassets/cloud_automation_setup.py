@@ -105,7 +105,7 @@ def prepare_cloud_automation(
     expected_control: CloudAutomationControl | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> CloudAutomationSetupResult:
-    """Prepare a stopped activation that a matching cloud worker can start."""
+    """Prepare a stopped activation for the universe's assigned executor."""
 
     if not isinstance(definition, RepositorySpecWorkDefinition):
         raise ValueError("definition must be a RepositorySpecWorkDefinition")

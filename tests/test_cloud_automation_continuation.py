@@ -44,8 +44,10 @@ from tinyassets.cloud_automation_continuation import (
     PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
-    prepare_claimed_cloud_provider_call as _prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
+)
+from tinyassets.cloud_automation_continuation import (
+    prepare_claimed_cloud_provider_call as _prepare_claimed_cloud_provider_call,
 )
 from tinyassets.cloud_automation_control import (
     CloudAutomationTriggerFence,
@@ -943,7 +945,7 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
         "third",
         "fourth",
     ]
-    assert all(call["operation"] == "run_graph" for call in calls)
+    assert all(call["operation"] == "repository_spec_delivery" for call in calls)
     assert all(call["provider"] == "codex" for call in calls)
     with pytest.raises(PermissionError, match="provider invocation"):
         authorized_call("over budget", "system")
@@ -1710,7 +1712,6 @@ def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
             "system",
             {
                 "preferred": {"provider": "claude"},
-                "fallback_chain": [{"provider": "codex"}],
             },
         )
 
@@ -1818,7 +1819,7 @@ def test_provider_family_drift_blocks_claim_and_launch(
 
     with pytest.raises(
         PermissionError,
-        match="cloud worker provider does not match requester binding",
+        match="assigned credential does not match requester binding",
     ):
         prepare_claimed_cloud_provider_call(
             tmp_path,

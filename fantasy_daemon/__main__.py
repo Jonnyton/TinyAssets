@@ -189,13 +189,13 @@ def _dispatcher_startup(universe_path: Path) -> None:
 
     Uses lease-aware :func:`reclaim_expired_leases`, NOT the blanket
     :func:`recover_claimed_tasks`. The blanket reset is unsafe in the
-    multi-worker fleet (each worker shares ``/data``): a starting
-    worker would reset *every* ``running`` row — including tasks a live
-    peer worker is mid-execution on — back to ``pending``, so the task
+    concurrent daemon execution (all processes share ``/data``): a starting
+    daemon would reset *every* ``running`` row — including tasks a live
+    peer is mid-execution on — back to ``pending``, so the task
     gets re-claimed and double-finalized (the ``Invalid transition``
     crash + lost results that wedged the loop, 2026-06-25 incident).
     The lease-aware sweep only reclaims rows whose lease actually
-    expired (a wedged/dead worker), leaving healthy peers untouched.
+    expired (a wedged/dead executor), leaving healthy peers untouched.
     """
     try:
         from tinyassets.branch_tasks import (
@@ -203,10 +203,10 @@ def _dispatcher_startup(universe_path: Path) -> None:
             reclaim_expired_leases,
         )
 
-        # Redeploy-churn recovery: a SIGKILLed predecessor of THIS worker_id
+        # Redeploy-churn recovery: a SIGKILLed predecessor of THIS runtime id
         # left its running tasks orphaned with a still-valid (~30min) lease. At
         # our startup we have not claimed anything yet, so any running row under
-        # our own worker_id is that predecessor's orphan — reclaim it in seconds
+        # our own runtime id is that predecessor's orphan — reclaim it in seconds
         # instead of waiting out the TTL. Scoped to our own id, so unlike the
         # old blanket reset it never steals a live peer's task (2026-06-25 wedge).
         # A runtime identity is optional, but when present it is unique to this
@@ -426,8 +426,8 @@ def _pump_assigned_cloud_automation(
         audience = BackgroundBranchExecutorAudience(
             executor_class=BackgroundBranchExecutorClass.CLOUD,
             daemon_id=context.daemon_id,
-            runtime_id=context.runtime_instance_id,
-            worker_id=context.worker_id,
+            runtime_id=context.descriptor.runtime_instance_id,
+            worker_id=context.descriptor.worker_id,
         )
         activated = activate_one_requested_cloud_automation(
             base,
@@ -524,7 +524,7 @@ def _try_dispatcher_pick(
                     resolved_universe,
                     daemon_id=daemon_id,
                 )
-                worker_id = candidate_context.worker_id
+                worker_id = candidate_context.descriptor.worker_id
                 if candidate_context is not None and candidate_context.daemon_id == daemon_id:
                     epoch2_adapter = candidate_adapter
                     epoch2_context = candidate_context
@@ -1812,7 +1812,6 @@ class DaemonController:
         no_tray: bool = False,
         premise: str = "",
         log_callback: Any = None,
-        pinned_provider: str = "",
     ) -> None:
         self._universe_path = universe_path
         # Default DB paths inside the universe directory (not CWD)
@@ -1871,7 +1870,6 @@ class DaemonController:
         self._pending_universe_switch: str = ""
         self._last_status_write: float = 0.0
         self._STATUS_WRITE_COOLDOWN: float = 5.0  # seconds
-        self._pinned_provider: str = pinned_provider
         self._runtime_status_path = Path(universe_path) / ".runtime_status.json"
         self._runtime_status_thread: threading.Thread | None = None
 
@@ -2572,7 +2570,7 @@ class DaemonController:
                         self._paused.wait(timeout=1.0)
 
                     # Activity/status handling must run even in --no-tray
-                    # cloud-worker mode; dashboard emission is gated inside
+                    # daemon mode; dashboard emission is gated inside
                     # _handle_node_output.
                     if isinstance(event, dict):
                         for node_name, node_output in event.items():
@@ -2882,12 +2880,12 @@ class DaemonController:
         """Write .runtime_status.json atomically for external status consumers.
 
         Separate from status.json — this is the tray/lead contract for
-        provider visibility: pid, pinned provider (if any), last provider
-        used, label, and timestamp. Atomic write via tmp + os.replace.
+        provider visibility: pid, exact assigned provider (if available), last
+        provider used, label, and timestamp. Atomic write via tmp + os.replace.
         """
         payload = {
             "pid": os.getpid(),
-            "provider": self._pinned_provider,
+            "provider": self._current_assigned_provider(),
             "last_used_provider": self._last_provider_used,
             "active_provider_label": self.active_provider_label,
             "updated": datetime.now(timezone.utc).isoformat(),
@@ -3254,13 +3252,24 @@ class DaemonController:
 
     @property
     def active_provider_label(self) -> str:
-        """Return a human-readable label for the current provider status."""
-        if self._router is None:
-            return "Mock (no LLM connected)"
-        providers = self._router.available_providers
-        if not providers:
-            return "Mock (no LLM connected)"
-        return ", ".join(providers)
+        """Return the one assigned provider, never the router registry."""
+        provider = self._current_assigned_provider()
+        return provider or "Awaiting assigned credential"
+
+    def _current_assigned_provider(self) -> str:
+        try:
+            from tinyassets.assigned_credential_execution import (
+                NoRequesterOwnedExecutor,
+                assigned_credential_availability,
+            )
+
+            authority = assigned_credential_availability(
+                Path(self._universe_path).parent,
+                Path(self._universe_path),
+            )
+            return authority.provider
+        except NoRequesterOwnedExecutor:
+            return ""
 
     # ------------------------------------------------------------------
     # Tray callbacks
@@ -3523,7 +3532,6 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
             universe_path=universe_path,
             no_tray=True,  # We manage tray ourselves
             premise=args.premise,
-            pinned_provider=args.provider,
         )
         # Wire dashboard to update tray status
         controller._tray = tray
@@ -3793,7 +3801,6 @@ def _main_unfenced() -> None:
                 universe_path=universe_path,
                 no_tray=True,
                 premise=args.premise,
-                pinned_provider=args.provider,
             )
             daemon_thread = threading.Thread(
                 target=controller.start,
@@ -3856,7 +3863,6 @@ def _main_unfenced() -> None:
         checkpoint_path=args.checkpoint_db,
         no_tray=args.no_tray,
         premise=args.premise,
-        pinned_provider=args.provider,
     )
 
     # Handle SIGINT/SIGTERM gracefully

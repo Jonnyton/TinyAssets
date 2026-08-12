@@ -112,7 +112,7 @@ def _commit_epoch2(
     )
 
 
-def _seed_cloud_worker(
+def _seed_assigned_daemon(
     base_path: Path,
     universe: Path,
     monkeypatch,
@@ -129,7 +129,7 @@ def _seed_cloud_worker(
         universe_id=universe.name,
         provider_name="codex",
         model_name="gpt-5",
-        created_by="cloud-worker",
+        created_by="assigned-credential-daemon",
         worker_id="worker-a",
         metadata={"automation_executor_class": "cloud"},
     )
@@ -163,6 +163,16 @@ def _seed_cloud_worker(
         branch_tasks_v2,
         "EPOCH2_QUEUE_CONSUMER_READY",
         True,
+    )
+    context = Epoch2BranchTaskAdapter(base_path).worker_claim_context(
+        worker_id="worker-a",
+        runtime_instance_id=runtime["runtime_instance_id"],
+        universe_id=universe.name,
+    )
+    assert context is not None
+    monkeypatch.setattr(
+        "tinyassets.assigned_credential_execution.ensure_assigned_daemon_claim_context",
+        lambda *_args, **_kwargs: context,
     )
     return daemon, runtime
 
@@ -234,7 +244,7 @@ def test_worker_claim_context_is_read_from_canonical_runtime_transaction(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
 
     context = Epoch2BranchTaskAdapter(tmp_path).worker_claim_context(
         worker_id="worker-a",
@@ -276,7 +286,7 @@ def test_dispatch_claims_activation_bound_epoch2_task(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="claim",
@@ -305,7 +315,7 @@ def test_dispatch_resumes_live_epoch2_claim_before_selecting_new_work(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     active = _active_cloud_automation(tmp_path)
     first = _commit_epoch2(
         tmp_path,
@@ -345,7 +355,7 @@ def test_restart_refuses_live_claim_after_activation_is_stopped(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     active = _active_cloud_automation(tmp_path)
     committed = _commit_epoch2(
         tmp_path,
@@ -377,7 +387,7 @@ def test_epoch2_observers_heartbeat_and_finalize_transactional_task(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="lifecycle",
@@ -412,7 +422,7 @@ def test_dispatch_recovers_expired_epoch2_claim_before_new_selection(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     active = _active_cloud_automation(tmp_path)
     first = _commit_epoch2(
         tmp_path,
@@ -449,14 +459,14 @@ def test_dispatch_recovers_expired_epoch2_claim_before_new_selection(
     assert Epoch2BranchTaskAdapter(tmp_path).get(pending_id).status == "pending"
 
 
-def test_runtime_descriptor_mismatch_fails_closed_without_queue_mutation(
+def test_ambient_runtime_env_cannot_substitute_assigned_daemon_context(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="mismatch",
@@ -471,9 +481,10 @@ def test_runtime_descriptor_mismatch_fails_closed_without_queue_mutation(
     )
 
     assert runtime["runtime_instance_id"] != "runtime::forged"
-    assert claimed is None
-    assert inputs == {}
-    assert Epoch2BranchTaskAdapter(tmp_path).get(committed["branch_task_id"]).status == "pending"
+    assert claimed is not None
+    assert claimed.branch_task_id == committed["branch_task_id"]
+    assert claimed.executor_runtime_id == runtime["runtime_instance_id"]
+    assert inputs["request_id"] == committed["request_id"]
 
 
 def test_activation_bound_claim_is_single_flight_across_workers(
@@ -772,6 +783,10 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
         assigned_credential_execution,
         "bind_assigned_provider_call",
         bind_provider,
+    )
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_continuation.prepare_claimed_cloud_provider_call",
+        lambda _base_path, *, provider_call, **_kwargs: provider_call,
     )
     monkeypatch.setattr(runs, "get_run_by_branch_task_id", lambda *_a, **_k: None)
     monkeypatch.setattr(runs, "execute_branch_version", execute_version)
@@ -1109,7 +1124,7 @@ def test_epoch2_mid_run_cancel_cannot_finalize_completed_provider_as_success(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="mid-run-cancel",
@@ -1188,7 +1203,7 @@ def test_epoch2_atomic_settlement_makes_last_moment_cancel_win(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="settlement-cancel-race",
@@ -1232,7 +1247,7 @@ def test_epoch2_terminalization_failure_propagates(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     _commit_epoch2(
         tmp_path,
         key="settlement-failure",
@@ -1419,7 +1434,7 @@ def test_epoch2_cancel_request_finishes_without_legacy_queue_mutation(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="cancel",
@@ -1447,7 +1462,7 @@ def test_restart_reconciles_cancel_requested_before_new_selection(
     initialize_author_server(tmp_path)
     universe = tmp_path / "universe-a"
     universe.mkdir()
-    daemon, _runtime = _seed_cloud_worker(tmp_path, universe, monkeypatch)
+    daemon, _runtime = _seed_assigned_daemon(tmp_path, universe, monkeypatch)
     committed = _commit_epoch2(
         tmp_path,
         key="cancel-on-restart",

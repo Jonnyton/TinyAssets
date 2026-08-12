@@ -23,6 +23,8 @@ Before claiming a pending BranchTask, the daemon SHALL resolve the physical queu
 ### Requirement: Production container ownership is worker-free
 The canonical production compose and deploy fence SHALL recognize only the default `daemon`, `tunnel`, and `logs` services plus the profile-gated `slack-agent`; it SHALL define no cloud-worker service, worker provider pin, worker healthcheck, worker route input, or worker auth-home materialization.
 
+Deploy quiescence SHALL preserve every queued row byte-for-byte and treat queued work as valid daemon-owned state, not as a fleet risk to cancel. The preservation baseline SHALL be sampled only after controlled writers are quiesced. The deploy observer SHALL publish its exact expected container contract; cleanup verification SHALL compare against that contract rather than a hardcoded fleet count and SHALL validate the active immutable image. Docker Compose schema rendering SHALL be a tested acceptance gate. Fluent log forwarding SHALL keep an explicit readable local cache large enough for the hourly offsite collector's default window, and cleanup/pruning SHALL target only script-owned scratch space and canonical TinyAssets archive names.
+
 #### Scenario: Canonical compose has no fixed workers
 - **WHEN** the production compose file is inspected or rendered without optional profiles
 - **THEN** no `worker`, `worker-codex-2`, `worker-claude-1`, or `worker-claude-2` service exists
@@ -32,10 +34,13 @@ The canonical production compose and deploy fence SHALL recognize only the defau
 - **WHEN** deployment ownership discovery finds a container executing the retired cloud-worker module
 - **THEN** the fence refuses deployment as a stray writer instead of accepting it as canonical
 
-## MODIFIED Requirements
+#### Scenario: Deploy preserves pending and running queue state
+- **WHEN** the writer-free deploy fence quiesces the prior daemon while queue rows exist
+- **THEN** the before and after queue inventories are identical
+- **AND** no row is cancelled, terminalized, or assigned a false executor hold by deployment machinery
 
-### Requirement: Host-singleton and idle-cycle coordination fail safe
-Two file-lock coordination primitives SHALL keep the daemon runtime safe. `tinyassets.singleton_lock` SHALL enforce a single host daemon instance via an OS-exclusive file lock that is the ground truth, with a PID sidecar as a human-readable breadcrumb; a PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. `tinyassets.idle_cycle` SHALL dedupe the no-work heartbeat cycle for the daemon with a run lock plus a freshness stamp and SHALL fail OPEN—degrading to a possibly-duplicate cycle, never a stalled heartbeat—when lock or stamp I/O fails. Neither primitive SHALL imply or enumerate a provider-shaped worker fleet.
+### Requirement: Host daemon singleton fails safe
+`tinyassets.singleton_lock` SHALL enforce one host daemon instance via an OS-exclusive file lock as ground truth, with a PID sidecar as a human-readable breadcrumb. A PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. The singleton SHALL NOT imply provider-shaped daemon capacity.
 
 #### Scenario: A second host instance cannot acquire the lock
 - **WHEN** a second process attempts to acquire the singleton lock while another live process holds it
@@ -45,11 +50,11 @@ Two file-lock coordination primitives SHALL keep the daemon runtime safe. `tinya
 - **WHEN** a PID sidecar exists but no process holds the paired OS lock
 - **THEN** acquisition succeeds and the sidecar is overwritten with the new PID
 
-#### Scenario: Idle-cycle coordination I/O failure fails open
-- **WHEN** the idle-cycle run lock or stamp I/O errors
-- **THEN** the slot is granted so the heartbeat cannot stall
-
 ## REMOVED Requirements
+
+### Requirement: Host-singleton and fleet idle-cycle coordination fail safe
+**Reason**: The fleet-wide idle-cycle lock/stamp is retired with the fixed fleet; the daemon singleton remains specified separately.
+**Migration**: Run queue cycles in the one canonical daemon and rely on its host singleton.
 
 ### Requirement: The supervisor keeps one daemon subprocess alive with backoff, producer restart, auth quarantine, and graceful drain
 **Reason**: The cloud-worker supervisor and fixed worker processes are retired.

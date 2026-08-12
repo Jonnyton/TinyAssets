@@ -19,27 +19,6 @@ The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-l
 - **THEN** it starts no `cloudflared` process and records the tunnel as down
 - **AND** the daemon and local MCP startup paths remain available
 
-### Requirement: Tray Provider Controls Enforce Current Host Constraints
-
-The host tray SHALL list the providers known to `tinyassets.preferences`, allow a user to start or stop a provider, persist one default provider plus the auto-start toggle, and start configured defaults with local providers ordered first. It SHALL reject unknown providers and SHALL reject a second distinct local provider while one local provider is running. It MUST allow subscription providers alongside a local provider and MAY run multiple daemon processes for the same subscription provider while emitting the registry's capacity warning. Every spawned daemon SHALL receive the selected provider through both `--provider` and `TINYASSETS_PIN_WRITER`, a distinct `TINYASSETS_DAEMON_INSTANCE_KEY`, and the tray's absolute `TINYASSETS_DATA_DIR`.
-
-#### Scenario: A second local provider is refused
-
-- **WHEN** one provider classified as local is alive and the user starts a different local provider
-- **THEN** the tray refuses the second start and creates no daemon process for it
-
-#### Scenario: Duplicate subscription daemons remain distinguishable
-
-- **WHEN** the user starts the same subscription provider twice
-- **THEN** both daemons may run with distinct instance keys and distinct per-instance log files
-- **AND** the tray reports both instances as that provider
-
-#### Scenario: Preferences drive startup
-
-- **WHEN** saved preferences enable auto-start and name known default providers
-- **THEN** the tray returns those providers in local-first order and launches them during startup
-- **AND** unknown saved provider names are ignored
-
 ### Requirement: The Tray And Its Children Share One Active Universe Root
 
 The host tray SHALL resolve its universe root through `tinyassets.storage.data_dir`, read and maintain `.active_universe` under that root, and pass the same absolute root to daemon and MCP subprocesses. If the marker is absent or invalid, it SHALL choose the first sorted universe containing `PROGRAM.md`, then the first sorted non-hidden directory, and finally `default-universe`. While running, a valid marker change SHALL switch the active universe and restart the auto-start provider daemons against the newly selected directory.
@@ -121,3 +100,26 @@ The package SHALL publish the `tinyassets` GUI command as `tinyassets.desktop.la
 #### Scenario: Legacy source launcher remains explicit
 - **WHEN** a developer directly runs the repository-local `tinyassets.pyw`
 - **THEN** that helper supplies `--tunnel` explicitly and does not redefine the installed GUI default
+
+### Requirement: Tray Starts One Credential-Neutral Host Daemon
+
+The host tray SHALL start and supervise at most one credential-neutral daemon, persist only the auto-start toggle for daemon lifecycle, and expose no provider-start/provider-stop fleet controls. Provider assignment happens through the app/browser MCP setup surface.
+
+The tray SHALL NOT pass `--provider` or any writer pin. It SHALL strip the complete canonical `AMBIENT_PROVIDER_AUTH_ENV_VARS` set from the child, matching the production entrypoint rather than maintaining a smaller desktop-only list. The daemon SHALL receive `TINYASSETS_DAEMON_INSTANCE_KEY=daemon` and the tray's absolute `TINYASSETS_DATA_DIR`.
+
+#### Scenario: A second daemon start is refused
+
+- **WHEN** the credential-neutral daemon is already alive and the tray receives another start request
+- **THEN** it refuses the second start and creates no additional daemon process
+
+#### Scenario: Spawned daemon is credential-neutral, not provider-pinned
+
+- **WHEN** the tray starts a host daemon for the active universe
+- **THEN** the child process receives no provider-selection argument or environment
+- **AND** the ambient provider/credential environment variables are removed from the child
+- **AND** the daemon resolves the universe's assigned serving credential at runtime and holds fail-closed when none is available
+
+#### Scenario: Auto-start drives singleton startup
+
+- **WHEN** saved preferences enable auto-start
+- **THEN** the tray launches exactly one credential-neutral daemon during startup

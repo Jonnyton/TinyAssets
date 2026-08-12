@@ -27,8 +27,7 @@ class UniverseConfig:
 
     # Provider preferences
     preferred_writer: str = ""
-    """Preferred writer provider name (e.g. 'claude-code'). Empty = use
-    default fallback chain."""
+    """Legacy display preference; never grants provider execution authority."""
 
     preferred_judge: str = ""
     """Preferred judge provider. Empty = use all available."""
@@ -36,19 +35,9 @@ class UniverseConfig:
     allowed_providers: list[str] | None = None
     """Per-universe provider allowlist (Q6.3 privacy primitive).
 
-    None = no stored allowlist. Legacy/contextless routing preserves the full
-    fallback chain, while an explicit requester-universe call derives a strict
-    ceiling from that universe's selected writer/judge so it cannot borrow the
-    process-global chain. A list = strict allowlist; the
-    router filters every fallback chain (writer/judge/extract) and the
-    judge ensemble down to providers whose name appears here. If the
-    filter empties a chain, the call hard-fails with
-    ``AllProvidersExhaustedError`` rather than silently leaking to a
-    disallowed third-party provider.
-
-    Composes with ``TINYASSETS_PIN_WRITER``: the pin sets the chain to a
-    single provider first, then the allowlist filter applies; if the
-    pinned provider is not in the allowlist the call hard-fails.
+    Retained for configuration compatibility only. Execution uses the exact
+    provider serving binding and never treats this list as authority or as a
+    provider-substitution mechanism.
 
     See ``docs/design-notes/2026-04-27-q63-third-party-provider-privacy.md``
     and ``.claude/agent-memory/navigator/q63_section4_dispositions.md``

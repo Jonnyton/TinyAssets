@@ -411,6 +411,12 @@ def select_next_task(
         # LLM-type filter. Both sides non-empty and non-matching
         # → skip. Empty ``served_llm_type`` means "serve all types";
         # empty ``task.required_llm_type`` means "any daemon welcome".
+        if (
+            task.required_llm_type
+            and config.served_llm_type
+            and task.required_llm_type != config.served_llm_type
+        ):
+            continue
         # Request-type filter: only claim types this daemon prefers.
         if not prefers_request_type(task.request_type):
             continue

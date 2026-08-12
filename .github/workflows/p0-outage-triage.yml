@@ -132,8 +132,8 @@ jobs:
       #   disk_full            — docker system prune -af
       #   image_pull_failure   — roll back to release-state rollback_target
       #   watchdog_hotloop     — stop → sleep 60 → start (reset limit)
-      #   provider_exhaustion  — stop worker + write .pause sentinel;
-      #                          page host priority=2 (Lane 4b)
+      #   provider_exhaustion  — record requester-credential hold;
+      #                          page host priority=2
       #   unknown              — generic compose restart (legacy behavior)
       - name: Classify outage
         id: classify
@@ -285,60 +285,19 @@ jobs:
           systemctl start tinyassets-daemon
           REPAIR_WATCHDOG
 
-      # --- Repair branch 6: provider_exhaustion (Lane 4b) --------------
-      # Daemon alive + writing, but every scene terminates as REVERT —
-      # the 2026-04-23 P0 signature. Revert-loop canary fires this via
-      # the triage pipeline; auto-repair halts the generator (docker
-      # stop tinyassets-worker + .pause sentinel) and pages the host
-      # priority=2 because provider routing needs human intervention
-      # (rotate API keys, bump quota, flip tier_routing_policy).
-      #
-      # Staged rollout (spec §Rollout plan Phase 3): auto-repair gated
-      # on TINYASSETS_REVERT_AUTO_REPAIR=on. Off by default so the class
-      # can run in WARN-only mode during 7-day soak period before
-      # flipping on. Spec Phase 6: remove gate after 14 days clean.
-      #
-      # Distinct from disk_full: no volume pressure, cause-addressing;
-      # distinct from generic restart: restart re-enters the loop on
-      # broken providers.
-      - name: Repair — provider_exhaustion (auto-repair gate check)
-        id: repair_provider_exhaustion_gate
-        if: steps.classify.outputs.class == 'provider_exhaustion'
-        env:
-          REVERT_AUTO_REPAIR: ${{ vars.TINYASSETS_REVERT_AUTO_REPAIR || '' }}
-        run: |
-          if [ "${REVERT_AUTO_REPAIR,,}" = "on" ] || \
-             [ "${REVERT_AUTO_REPAIR,,}" = "true" ] || \
-             [ "${REVERT_AUTO_REPAIR,,}" = "1" ]; then
-            echo "auto_repair_enabled=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::provider_exhaustion auto-repair ENABLED"
-          else
-            echo "auto_repair_enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::provider_exhaustion DETECTED but auto-repair gated off (TINYASSETS_REVERT_AUTO_REPAIR unset). WARN-only mode; host must act manually."
-          fi
-
-      - name: Repair — provider_exhaustion (stop worker + .pause)
+      # --- Hold branch 6: provider_exhaustion --------------------------
+      # Credential failure belongs to the universe, not a fleet. Record the
+      # same typed hold as queue execution and page the owner. Never borrow
+      # host auth, substitute a provider, or mutate runtime containers.
+      - name: Hold — provider_exhaustion (assigned credential unavailable)
         id: repair_provider_exhaustion
-        if: >
-          steps.classify.outputs.class == 'provider_exhaustion' &&
-          steps.repair_provider_exhaustion_gate.outputs.auto_repair_enabled == 'true'
+        if: steps.classify.outputs.class == 'provider_exhaustion'
         continue-on-error: true
         run: |
-          echo "::warning::provider_exhaustion — halting worker + pausing universe"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_PROVIDER'
-          set -euo pipefail
-          docker stop tinyassets-worker 2>&1 || true
-          for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/; do
-            [ -d "$udir" ] && touch "$udir.pause" && echo "paused $udir"
-          done
-          ls -la /var/lib/docker/volumes/tinyassets-data/_data/*/.pause 2>&1
-          REPAIR_PROVIDER
+          echo "::warning::provider_exhaustion — no_requester_owned_executor"
+          echo "no provider fallback or fleet mutation is permitted"
 
-      # Priority=2 page regardless of auto-repair gate — host needs to
-      # know even in WARN-only mode so they can act manually. Matches
-      # spec §Q6 repair-branch YAML.
+      # Priority=2 page follows the durable typed-hold record.
       - name: Page — provider_exhaustion (Pushover priority=2)
         if: steps.classify.outputs.class == 'provider_exhaustion'
         continue-on-error: true
@@ -608,7 +567,6 @@ jobs:
             echo "  - image_pull: \`${{ steps.repair_pull.outcome }}\`"
             echo "  - watchdog_hotloop: \`${{ steps.repair_watchdog.outcome }}\`"
             echo "  - tunnel_token: \`${{ steps.triage_tunnel.outcome }}\`"
-            echo "  - provider_exhaustion (gate): \`${{ steps.repair_provider_exhaustion_gate.outcome }}\` (enabled=${{ steps.repair_provider_exhaustion_gate.outputs.auto_repair_enabled }})"
             echo "  - provider_exhaustion (repair): \`${{ steps.repair_provider_exhaustion.outcome }}\`"
             echo "- **Generic restart attempted:** \`${{ steps.restart.outcome }}\`"
             echo "- **Re-probe:** \`${{ steps.reprobe.outputs.color }}\`"

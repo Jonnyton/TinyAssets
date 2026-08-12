@@ -54,13 +54,7 @@ def _provider_invocation_carrier(
         raise PermissionError("armed provider invocation requires an operation")
     if type(carrier) is not ProviderInvocationCarrier:
         raise PermissionError("provider invocation carrier is not server-owned")
-    invocation_operation = (
-        carrier.operation
-        if universe_context is not None
-        and universe_context.assigned_credential is not None
-        else operation
-    )
-    carrier.validate_for_call(role=role, operation=invocation_operation)
+    carrier.validate_for_call(role=role, operation=operation)
     return carrier
 
 
@@ -94,6 +88,9 @@ class ProviderRouter:
         quota: QuotaTracker | None = None,
         **_retired_options: object,
     ) -> None:
+        if _retired_options:
+            names = ", ".join(sorted(_retired_options))
+            raise TypeError(f"retired provider router options are forbidden: {names}")
         self._providers = providers or {}
         self._quota = quota or QuotaTracker()
 
@@ -182,10 +179,37 @@ class ProviderRouter:
             if universe_dir is None or universe_dir.name != assigned.universe_id:
                 raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
             if (
-                operation not in assigned.allowed_operations
-                or role not in assigned.allowed_roles
+                "converse" not in assigned.allowed_operations
+                or "writer" not in assigned.allowed_roles
             ):
                 raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+            if assigned.max_tokens < 1 or assigned.max_cost_microunits < 1:
+                raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+            ceiling = assigned.max_tokens
+            if invocation is not None:
+                if (
+                    invocation.provider != assigned.provider
+                    or invocation.assignment_generation
+                    != assigned.assignment_generation
+                    or invocation.assignment_digest != assigned.assignment_digest
+                    or invocation.credential_reference_digest
+                    != assigned.credential_reference_digest
+                    or invocation.binding_revocation_generation
+                    != assigned.binding_revocation_generation
+                ):
+                    raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+                if invocation.max_tokens < 1 or invocation.max_cost_microunits < 1:
+                    raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+                ceiling = min(ceiling, invocation.max_tokens)
+            if cfg.max_tokens is None:
+                cfg = replace(cfg, max_tokens=ceiling)
+            elif (
+                isinstance(cfg.max_tokens, bool)
+                or not isinstance(cfg.max_tokens, int)
+                or cfg.max_tokens < 1
+                or cfg.max_tokens > ceiling
+            ):
+                raise PermissionError("provider call exceeds assigned token ceiling")
             provider_name = assigned.provider
             cfg = replace(
                 cfg,
@@ -201,7 +225,7 @@ class ProviderRouter:
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
-                or cfg.max_tokens < 0
+                or cfg.max_tokens < 1
                 or cfg.max_tokens > served.max_tokens
             ):
                 raise PermissionError("provider call exceeds served token ceiling")
@@ -215,7 +239,7 @@ class ProviderRouter:
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
-                or cfg.max_tokens < 0
+                or cfg.max_tokens < 1
                 or cfg.max_tokens > invocation.max_tokens
             ):
                 raise PermissionError("provider call exceeds armed token ceiling")
@@ -247,27 +271,29 @@ class ProviderRouter:
 
         reservation = None
         try:
-            if served is not None:
+            budget_authority = assigned or served
+            if budget_authority is not None:
                 from tinyassets.auth.middleware import consume_provider_request_invocation
                 from tinyassets.provider_assignment import reserve_served_provider_budget
 
-                try:
-                    consume_provider_request_invocation(
-                        served.request_capability,
-                        limit=served.request_max_invocations,
-                    )
-                except PermissionError as exc:
-                    raise ProviderAuthorityHeldError(
-                        _CONNECT_PROVIDER_MESSAGE
-                    ) from exc
-                estimated_input_tokens = max(
-                    1,
-                    len((f"{system}\n\n{prompt}" if system else prompt).encode()),
+                if served is not None:
+                    try:
+                        consume_provider_request_invocation(
+                            served.request_capability,
+                            limit=served.request_max_invocations,
+                        )
+                    except PermissionError as exc:
+                        raise ProviderAuthorityHeldError(
+                            _CONNECT_PROVIDER_MESSAGE
+                        ) from exc
+                input_bytes = len(
+                    (f"{system}\n\n{prompt}" if system else prompt).encode()
                 )
+                estimated_input_tokens = max(1, (input_bytes + 2) // 3)
                 reservation = reserve_served_provider_budget(
                     universe_dir.parent,
                     universe_dir=universe_dir,
-                    authority=served,
+                    authority=budget_authority,
                     requested_output_tokens=cfg.max_tokens,
                     estimated_input_tokens=estimated_input_tokens,
                 )
@@ -283,7 +309,7 @@ class ProviderRouter:
 
                 finalize_served_provider_budget(
                     universe_dir.parent,
-                    authority=served,
+                    authority=budget_authority,
                     reservation=reservation,
                     input_tokens=response.input_tokens,
                     output_tokens=response.output_tokens,
@@ -293,6 +319,16 @@ class ProviderRouter:
             self._quota.record_success(provider_name)
             return response
         except ProviderAuthorityHeldError:
+            if reservation is not None:
+                from tinyassets.provider_assignment import abandon_served_provider_budget
+
+                abandon_served_provider_budget(universe_dir.parent, reservation)
+            raise
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            if reservation is not None:
+                from tinyassets.provider_assignment import abandon_served_provider_budget
+
+                abandon_served_provider_budget(universe_dir.parent, reservation)
             raise
         except BaseException as exc:
             if reservation is not None:
@@ -357,6 +393,10 @@ class ProviderRouter:
         del difficulty
         cfg = config or _default_config(universe_context)
         if policy:
+            if "fallback_chain" in policy:
+                raise ValueError(
+                    "fallback_chain is retired; use explicit workflow branches"
+                )
             temperature = policy.get("temperature")
             max_tokens = policy.get("max_tokens")
             if isinstance(temperature, (int, float)) and not isinstance(

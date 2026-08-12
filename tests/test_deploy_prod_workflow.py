@@ -68,6 +68,49 @@ def test_deploy_prod_yml_parses():
     _load()
 
 
+def test_worker_free_compose_schema_is_valid(tmp_path):
+    compose_path = _REPO / "deploy" / "compose.yml"
+    compose_text = compose_path.read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_text)
+    assert "volumes" not in compose["networks"]["default"]
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("docker compose is unavailable")
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("SCHEMA_TEST=1\n", encoding="utf-8")
+    schema_compose = tmp_path / "compose.yml"
+    for path in (
+        "/etc/tinyassets/env",
+        "/etc/tinyassets/agent-interchange.env",
+        "/etc/tinyassets/request-idempotency.env",
+        "/etc/tinyassets/app-ingress.env",
+    ):
+        compose_text = compose_text.replace(path, empty_env.as_posix())
+    schema_compose.write_text(compose_text, encoding="utf-8")
+    result = subprocess.run(
+        [docker, "compose", "-f", str(schema_compose), "config", "--quiet"],
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "TINYASSETS_IMAGE": (
+                "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "1" * 64
+            ),
+            "CLOUDFLARE_TUNNEL_TOKEN": "schema-test",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cleanup_identity_uses_observer_worker_free_contract():
+    text = _text()
+    assert 'expected = set(evidence.get("expected_containers", []))' in text
+    assert 'expected != {"tinyassets-daemon"}' in text
+    assert "len(containers) != 5" not in text
+    assert "active fleet image is not canonical" in text
+
+
 # ---------------------------------------------------------------------------
 # (b) workflow_dispatch present (manual deploy path)
 # ---------------------------------------------------------------------------

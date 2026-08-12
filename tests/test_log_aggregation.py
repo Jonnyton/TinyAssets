@@ -59,10 +59,7 @@ def test_runtime_containers_forward_logs_without_docker_socket():
     for name in (
         "daemon",
         "cloudflared",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
+        "slack-agent",
     ):
         logging = services[name].get("logging") or {}
         assert logging.get("driver") == "fluentd", name
@@ -131,7 +128,9 @@ def test_vector_classifies_forwarded_runtime_tags():
     source = transform.get("source", "")
     assert "tinyassets-daemon" in source
     assert "tinyassets-tunnel" in source
-    assert "tinyassets-worker" in source
+    assert "tinyassets-logs" in source
+    assert "tinyassets-slack-agent" in source
+    assert "tinyassets-worker" not in source
 
 
 def test_vector_has_stdout_sink():
@@ -226,17 +225,33 @@ def test_ship_logs_script_exists():
     assert SHIP_LOGS.exists(), "deploy/ship-logs.sh must exist"
 
 
-def test_ship_logs_default_covers_complete_production_fleet():
+def test_ship_logs_default_covers_worker_free_runtime():
     text = SHIP_LOGS.read_text(encoding="utf-8")
     for container in (
         "tinyassets-daemon",
         "tinyassets-tunnel",
-        "tinyassets-worker",
-        "tinyassets-worker-codex-2",
-        "tinyassets-worker-claude-1",
-        "tinyassets-worker-claude-2",
-        ):
+        "tinyassets-logs",
+    ):
         assert container in text
+    default = text.split('LOG_CONTAINERS="${LOG_CONTAINERS:-', 1)[1].split('}"', 1)[0]
+    assert "tinyassets-slack-agent" not in default
+    assert "tinyassets-worker" not in text
+
+
+def test_fluent_log_cache_covers_hourly_offsite_collection():
+    compose = _load_compose()
+    options = compose["x-tinyassets-log-forwarding"]["options"]
+    assert options["cache-disabled"] == "false"
+    assert options["cache-max-size"] == "256m"
+    assert options["cache-max-file"] == "4"
+    assert 'LOG_SINCE="${LOG_SINCE:-2h}"' in SHIP_LOGS.read_text(encoding="utf-8")
+
+
+def test_ship_logs_cleanup_and_prune_targets_are_owned_and_anchored():
+    text = SHIP_LOGS.read_text(encoding="utf-8")
+    assert 'if [[ -e "${LOG_DIR}" ]]' in text
+    assert "^tinyassets-logs-\\K" in text
+    assert "(?=\\.tar\\.gz$)" in text
 
 
 def test_ship_logs_requires_a_complete_readable_fleet_archive():

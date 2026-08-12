@@ -90,16 +90,14 @@ RUN set -e; \
 # — then COPY --from=builder targets a known path.
 #
 # Smoke-test the install via the absolute path. The final-stage image
-# does NOT symlink the bare codex bin to /usr/local/bin; it copies the
-# flock wrapper there instead (see below). Adding the same wrapper in
-# the builder stage would just be dead weight, so we run the binary
-# directly here.
+# validates the installed binary directly in the builder stage.
 RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
     /opt/codex-install/node_modules/.bin/codex --version
 
-# Install Claude Code CLI next to Codex so the daemon can register the
-# subscription-backed claude-code provider when CLAUDE_CONFIG_DIR is present.
+# Install Claude Code CLI next to Codex. Credential snapshots are supplied
+# explicitly for each assigned workflow launch; the image carries no shared
+# host-owned provider authentication.
 RUN mkdir -p /opt/claude-code-install && \
     npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
     /opt/claude-code-install/node_modules/.bin/claude --version
@@ -111,9 +109,8 @@ COPY pyproject.toml ./
 COPY PLAN.md ./
 COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/
-# fantasy_daemon is the node-execution runtime invoked by
-# tinyassets.cloud_worker. Without it in the image, the cloud worker
-# supervisor crash-loops with `No module named fantasy_daemon`.
+# fantasy_daemon is the credential-driven node-execution runtime invoked by
+# the daemon container.
 COPY fantasy_daemon/ ./fantasy_daemon/
 
 # Install into a venv that we'll copy to the final stage. Keeps the
@@ -150,7 +147,6 @@ RUN apt-get update && \
         gnupg \
         libgomp1 \
         tini \
-        util-linux \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         -o /tmp/nodesource-repo.gpg.key \
@@ -172,18 +168,12 @@ RUN apt-get update && \
     groupadd --system --gid 1001 tinyassets && \
     useradd --system --uid 1001 --gid tinyassets --home /app --shell /bin/bash tinyassets
 
-# Copy the codex install tree from builder and install the flock
-# wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
-# flock on a sentinel in /app/.codex before exec'ing the real codex
-# binary — required because PR #965 binds the codex auth directory
-# across the daemon + worker containers, and Codex's official CI/CD
-# auth guide forbids sharing one auth.json across concurrent runners
-# without serialization (concurrent refresh attempts race rotation
-# and trigger `refresh_token_reused`). See deploy/codex-flock-wrapper.sh.
+# Copy both provider CLIs and expose their binaries directly. Authentication
+# arrives only through the assigned credential's launch-scoped snapshot; no
+# shared host auth directory or cross-container serialization exists.
 COPY --from=builder /opt/codex-install /opt/codex-install
 COPY --from=builder /opt/claude-code-install /opt/claude-code-install
-COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
-RUN chmod 0755 /usr/local/bin/codex && \
+RUN ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex && \
     ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
     /usr/local/bin/codex --version && \
     /usr/local/bin/claude --version

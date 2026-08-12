@@ -173,14 +173,15 @@ class TestPolicyResolution:
         assert result["policy_resolution"]["source"] == "node"
         assert result["policy_resolution"]["effective_policy"] == node_policy
 
-    def test_fallback_chain_extracted(self):
+    def test_fallback_chain_is_not_an_inspection_surface(self):
         policy = {
             "preferred": {"provider": "claude"},
             "fallback_chain": [{"provider": "groq", "trigger": "unavailable"}],
         }
         branch = _make_branch(llm_policy=policy)
         result = inspect_node_dry(branch, node_id="n1")
-        assert result["policy_resolution"]["fallback_chain"] == policy["fallback_chain"]
+        assert "fallback_chain" not in result["policy_resolution"]
+        assert any("fallback_chain" in error for error in branch.validate())
 
 
 class TestMcpDryInspectNode:

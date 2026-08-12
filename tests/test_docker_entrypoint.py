@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tinyassets.providers.base import AMBIENT_PROVIDER_AUTH_ENV_VARS
 
 REPO = Path(__file__).resolve().parent.parent
 ENTRYPOINT = REPO / "deploy" / "docker-entrypoint.sh"
@@ -39,11 +42,8 @@ def _run(tmp_path: Path, extra: dict[str, str], *, include_data: bool = True):
         ),
         **extra,
     }
-    command = (
-        "for name in OPENAI_API_KEY ANTHROPIC_API_KEY OLLAMA_HOST CODEX_HOME "
-        "CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN TINYASSETS_PIN_WRITER; do "
-        "test -z \"${!name:-}\" || exit 91; done"
-    )
+    names = " ".join(AMBIENT_PROVIDER_AUTH_ENV_VARS)
+    command = f'for name in {names}; do test -z "${{!name:-}}" || exit 91; done'
     return subprocess.run(
         [_BASH, _bash_path(ENTRYPOINT), _BASH, "-c", command],
         capture_output=True,
@@ -55,19 +55,18 @@ def _run(tmp_path: Path, extra: dict[str, str], *, include_data: bool = True):
 def test_ambient_provider_credentials_are_removed_before_command(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
-        {
-            "OPENAI_API_KEY": "host-key",
-            "ANTHROPIC_API_KEY": "host-key",
-            "OLLAMA_HOST": "http://host-ollama",
-            "CODEX_HOME": "/host/codex",
-            "CLAUDE_CONFIG_DIR": "/host/claude",
-            "CLAUDE_CODE_OAUTH_TOKEN": "host-token",
-            "TINYASSETS_PIN_WRITER": "codex",
-        },
+        {name: f"host-{name.lower()}" for name in AMBIENT_PROVIDER_AUTH_ENV_VARS},
     )
 
     assert result.returncode == 0, result.stderr
     assert "removing ambient provider authority" in result.stderr
+
+
+def test_entrypoint_strip_list_matches_canonical_provider_auth_surface() -> None:
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    match = re.search(r"_ambient_provider_env=\(\s*(.*?)\s*\)", text, re.DOTALL)
+    assert match is not None
+    assert tuple(match.group(1).split()) == AMBIENT_PROVIDER_AUTH_ENV_VARS
 
 
 def test_empty_env_file_sentinel_fails_loudly(tmp_path: Path) -> None:

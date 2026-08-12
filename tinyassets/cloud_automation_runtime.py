@@ -243,7 +243,7 @@ def produce_one_due_cloud_automation_slice(
     claim_lease_seconds: int = 120,
     clock: Callable[[], datetime] | None = None,
 ) -> CloudAutomationSliceProduction | None:
-    """Claim and materialize at most one due Trigger for one cloud worker."""
+    """Claim and materialize at most one due Trigger for an assigned executor."""
 
     if not isinstance(audience, BackgroundBranchExecutorAudience):
         raise ValueError("audience must be a BackgroundBranchExecutorAudience")
@@ -313,7 +313,7 @@ def produce_one_due_cloud_automation_slice(
         raise PermissionError("prepared cloud continuation is unavailable")
     binding = background_store.get_binding(continuation.background_binding_id)
     if binding is None or binding.daemon_id != audience.daemon_id:
-        raise PermissionError("cloud worker audience does not own the continuation")
+        raise PermissionError("assigned executor audience does not own the continuation")
     ledger = ConnectionLedger(
         root / "outbound.db",
         verify_authenticated_principal=lambda: continuation.principal_id,

@@ -613,7 +613,6 @@ def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
     root = Path(__file__).resolve().parents[1]
     for relative in (
         "tinyassets/__main__.py",
-        "tinyassets/cloud_worker.py",
         "tinyassets/mcp_server.py",
         "tinyassets/universe_server.py",
         "tinyassets/desktop/launcher.py",

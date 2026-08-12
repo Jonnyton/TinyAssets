@@ -114,13 +114,6 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Disable desktop tray (for headless operation)",
     )
 
-    parser.add_argument(
-        "--provider",
-        type=str,
-        default="",
-        help="Pin the supervised writer provider",
-    )
-
     return parser
 
 
@@ -226,7 +219,6 @@ def main() -> int:
                 universe_path=args.universe,
                 db_path=args.db,
                 no_tray=args.no_tray,
-                pinned_provider=args.provider,
             )
 
             # If --api flag is set, start the API server alongside the daemon

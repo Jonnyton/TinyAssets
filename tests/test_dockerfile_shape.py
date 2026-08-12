@@ -148,74 +148,22 @@ def test_dockerfile_claude_version_smoke():
 
 
 # ---------------------------------------------------------------------------
-# Dockerfile — codex flock wrapper (PR #965 Codex round-2 Finding 1)
+# Dockerfile — launch-scoped provider credentials
 # ---------------------------------------------------------------------------
 
 
-def test_dockerfile_installs_codex_flock_wrapper():
-    """Final stage must install deploy/codex-flock-wrapper.sh as /usr/local/bin/codex.
-
-    compose sets CODEX_HOME=/data/.codex across daemon + worker.
-    Codex's official CI/CD auth guide forbids sharing one
-    auth.json across concurrent runners; the wrapper serializes
-    invocations via an exclusive flock on CODEX_HOME/.lock.
-
-    Round-1 of PR #965 used a bare symlink (`ln -s ... /usr/local/bin/codex`),
-    which is the exact pattern Codex Issue #10332 calls out as broken
-    when the auth dir is shared. The wrapper replaces it.
-    """
+def test_dockerfile_installs_provider_clis_without_shared_auth_wrapper():
+    """Provider CLIs run with the assigned credential's private snapshot."""
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex" in text, (
-        "Dockerfile must COPY deploy/codex-flock-wrapper.sh to /usr/local/bin/codex "
-        "so every `codex` invocation goes through the cross-container flock"
+    assert "ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex" in text, (
+        "Dockerfile must expose the installed Codex CLI directly"
     )
-    # The legacy bare symlink must be gone. Regression guard.
-    assert "ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex" not in text, (
-        "Dockerfile must not install codex via bare symlink; concurrent "
-        "containers sharing CODEX_HOME would race the OAuth refresh "
-        "(Codex Issue #10332). Use the flock wrapper instead."
+    assert "codex-flock-wrapper" not in text, (
+        "worker-free execution must not serialize a shared host auth directory"
     )
-
-
-def test_dockerfile_installs_util_linux_for_flock():
-    """flock(1) lives in util-linux. The final stage apt layer must include it
-    explicitly so the wrapper works even if the base image trims util-linux
-    in a future python-slim revision.
-    """
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "util-linux" in text, (
-        "Final stage must apt-install util-linux; flock(1) is part of "
-        "that package and codex-flock-wrapper.sh exec's flock on every call"
-    )
-
-
-def test_codex_flock_wrapper_script_present():
-    """The wrapper script itself must exist + be executable + lock the shared dir."""
     wrapper = REPO_ROOT / "deploy" / "codex-flock-wrapper.sh"
-    assert wrapper.exists(), "deploy/codex-flock-wrapper.sh must exist"
-    text = wrapper.read_text(encoding="utf-8")
-    # Bash strict-mode header.
-    assert text.startswith("#!/usr/bin/env bash"), (
-        "wrapper must declare #!/usr/bin/env bash shebang"
-    )
-    assert "set -euo pipefail" in text, "wrapper must use strict bash"
-    # Lock target must live next to auth.json so the shared CODEX_HOME
-    # makes the lock visible across containers.
-    assert "CODEX_HOME" in text and ".lock" in text, (
-        "wrapper must lock a sentinel inside the codex auth directory"
-    )
-    assert "flock -x" in text, (
-        "wrapper must use exclusive flock (`flock -x`) — shared locks "
-        "would not serialize refresh writes"
-    )
-    # The actual codex binary should be the exec target.
-    assert "/opt/codex-install/node_modules/.bin/codex" in text, (
-        "wrapper must exec the real codex bin under flock"
-    )
-    assert text.rstrip().endswith('exec flock -x "${LOCK_FILE}" "${CODEX_BIN}" "$@"'), (
-        "wrapper's final line must `exec flock -x ... codex \"$@\"` so the "
-        "wrapper process is replaced (no double-fork) and signals + exit codes "
-        "propagate from codex to the daemon/worker caller"
+    assert not wrapper.exists(), (
+        "the retired cross-container auth wrapper must not remain in deploy/"
     )
 
 

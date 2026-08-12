@@ -16,13 +16,19 @@ from __future__ import annotations
 
 import pytest
 
+from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.base import (
+    BaseProvider,
+    ModelConfig,
+    ProviderResponse,
+    UniverseContext,
+)
 from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
     build_chain_state,
@@ -117,12 +123,10 @@ class TestBuildChainState:
             chain=["codex", "ollama-local"],
             attempts=attempts,
             api_key_providers_enabled=False,
-            pinned_writer="codex",
             allowlist=["codex", "ollama-local"],
         )
         assert state["role"] == "writer"
         assert state["api_key_providers_enabled"] is False
-        assert state["pinned_writer"] == "codex"
         assert state["allowlist"] == ["codex", "ollama-local"]
         assert len(state["attempts"]) == 2
         assert state["attempts"][0]["skip_class"] == "auth_invalid"
@@ -179,9 +183,68 @@ class TestAllProvidersExhaustedError:
 
 
 class TestProviderRouterDiagnostics:
+    @pytest.fixture(autouse=True)
+    def _budget(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from tinyassets import provider_assignment
+
+        def reserve(*_args, **kwargs):
+            output = kwargs["requested_output_tokens"]
+            return SimpleNamespace(
+                output_tokens=output,
+                reserved_total_tokens=output + 1,
+                reserved_cost_microunits=(output + 1) * 100,
+            )
+
+        monkeypatch.setattr(provider_assignment, "reserve_served_provider_budget", reserve)
+        monkeypatch.setattr(
+            provider_assignment,
+            "finalize_served_provider_budget",
+            lambda *_a, **_k: None,
+        )
+        monkeypatch.setattr(
+            provider_assignment,
+            "abandon_served_provider_budget",
+            lambda *_a, **_k: None,
+        )
+
+    @staticmethod
+    def _context(tmp_path, provider: str) -> UniverseContext:
+        universe = tmp_path / "u-owner"
+        universe.mkdir()
+        snapshot = universe / "credential-snapshot"
+        snapshot.mkdir()
+        authority = AssignedCredentialAuthority(
+            universe_id="u-owner",
+            owner_user_id="owner-1",
+            agent_binding_id="agent-1",
+            binding_revision=1,
+            provider=provider,
+            credential_snapshot_dir=snapshot,
+            binding_id="binding-a",
+            binding_generation=1,
+            binding_digest="sha256:" + "1" * 64,
+            assignment_generation=1,
+            assignment_digest="sha256:" + "3" * 64,
+            binding_revocation_generation=0,
+            credential_reference_id="credential-a",
+            credential_reference_generation=1,
+            credential_reference_digest="sha256:" + "2" * 64,
+            credential_service="codex" if provider == "codex" else "claude",
+            max_invocations=100,
+            max_tokens=4096,
+            max_cost_microunits=1_000_000,
+            allowed_operations=("converse",),
+            allowed_roles=("writer",),
+        )
+        return UniverseContext(
+            universe_dir=universe,
+            assigned_credential=authority,
+        )
+
     @pytest.mark.asyncio
-    async def test_router_attaches_attempts_and_chain_state(self, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+    async def test_router_attaches_exact_provider_failure(self, tmp_path):
         router = ProviderRouter(
             providers={
                 "codex": FailingProvider(
@@ -198,21 +261,23 @@ class TestProviderRouterDiagnostics:
         )
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await router.call("writer", "prompt", "system")
+            await router.call(
+                "writer",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=self._context(tmp_path, "codex"),
+            )
 
         err = exc_info.value
         assert err.attempts is not None
-        assert err.chain_state is not None
-        assert err.chain_state["role"] == "writer"
-        assert err.chain_state["api_key_providers_enabled"] is False
-        assert err.chain_state["chain"] == ["codex", "ollama-local"]
+        assert err.chain_state is None
         attempts = {attempt.provider: attempt for attempt in err.attempts}
-        assert attempts["claude-code"].skip_class == "not_in_registry"
         assert attempts["codex"].skip_class == "auth_invalid"
-        assert attempts["ollama-local"].skip_class == "provider_error"
+        assert "ollama-local" not in attempts
 
     @pytest.mark.asyncio
-    async def test_router_marks_timeouts(self):
+    async def test_router_marks_exact_provider_timeout(self, tmp_path):
         router = ProviderRouter(
             providers={
                 "codex": FailingProvider(
@@ -229,7 +294,13 @@ class TestProviderRouterDiagnostics:
         )
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await router.call("extract", "prompt", "system")
+            await router.call(
+                "extract",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=self._context(tmp_path, "codex"),
+            )
 
         attempts = {attempt.provider: attempt for attempt in exc_info.value.attempts}
         assert attempts["codex"].skip_class == "timed_out"

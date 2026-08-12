@@ -413,6 +413,8 @@ class TestBugInvestigationDirectRunRouting:
     def test_direct_run_passes_physical_universe_to_matched_execution(
         self, tmp_path, monkeypatch
     ):
+        from contextlib import contextmanager
+
         from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
         from tinyassets.runs import RUN_STATUS_COMPLETED
 
@@ -456,6 +458,15 @@ class TestBugInvestigationDirectRunRouting:
             return _Outcome()
 
         monkeypatch.setattr("tinyassets.runs.execute_branch", _capture_execute)
+
+        @contextmanager
+        def _assigned_call(_base, _universe, provider_call):
+            yield provider_call
+
+        monkeypatch.setattr(
+            "tinyassets.assigned_credential_execution.bind_assigned_provider_call",
+            _assigned_call,
+        )
         task = BranchTask(
             branch_task_id="bt-physical",
             branch_def_id="branch-1",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -15,12 +16,9 @@ from tinyassets.credential_vault import (
     cleanup_llm_credential_snapshot,
     snapshot_llm_subscription_credential,
 )
-from tinyassets.provider_assignment import load_provider_assignment
+from tinyassets.provider_assignment import provider_assignment_admission
 from tinyassets.provider_serving_binding import (
     _current_serving_authority as current_serving_authority,
-)
-from tinyassets.provider_serving_binding import (
-    resolve_serving_agent_binding,
 )
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
@@ -50,8 +48,21 @@ class AssignedCredentialAuthority:
     binding_revision: int
     provider: str
     credential_snapshot_dir: Path = field(repr=False, compare=False)
-    allowed_operations: tuple[str, ...] = ("run_graph",)
-    allowed_roles: tuple[str, ...] = ("writer", "judge", "extract")
+    binding_id: str
+    binding_generation: int
+    binding_digest: str
+    assignment_generation: int
+    assignment_digest: str
+    binding_revocation_generation: int
+    credential_reference_id: str
+    credential_reference_generation: int
+    credential_reference_digest: str
+    credential_service: str
+    max_invocations: int
+    max_tokens: int
+    max_cost_microunits: int
+    allowed_operations: tuple[str, ...]
+    allowed_roles: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +74,19 @@ class AssignedCredentialAvailability:
     agent_binding_id: str
     binding_revision: int
     provider: str
+    binding_id: str
+    binding_generation: int
+    binding_digest: str
+    assignment_generation: int
+    assignment_digest: str
+    binding_revocation_generation: int
+    credential_reference_id: str
+    credential_reference_generation: int
+    credential_reference_digest: str
+    credential_service: str
+    max_invocations: int
+    max_tokens: int
+    max_cost_microunits: int
     allowed_operations: tuple[str, ...]
     allowed_roles: tuple[str, ...]
 
@@ -76,41 +100,52 @@ def _assigned_credential_state(
     if universe.parent != base or not universe.name:
         raise NoRequesterOwnedExecutor()
 
-    assignment = load_provider_assignment(base, universe_id=universe.name)
-    if assignment is None or assignment.state != "ready":
-        raise NoRequesterOwnedExecutor()
-    agent = resolve_serving_agent_binding(
-        base,
-        universe_id=universe.name,
-        owner_user_id=assignment.owner_user_id,
-    )
     store = SQLiteProviderWorkAuthorityStore(base)
     with store.connection() as conn:
         conn.execute("BEGIN")
+        rows = conn.execute(
+            "SELECT * FROM agent_bindings WHERE universe_id = ? "
+            "AND status = 'serving' ORDER BY agent_binding_id",
+            (universe.name,),
+        ).fetchall()
+        from tinyassets.custom_agents import _binding_from_row
+
+        agents = [_binding_from_row(row) for row in rows]
+        owners = {str(agent["created_by"]) for agent in agents}
+        if len(agents) != 1 or len(owners) != 1:
+            conn.rollback()
+            raise NoRequesterOwnedExecutor()
+        agent = agents[0]
+        owner_user_id = next(iter(owners))
         current, binding, custody = current_serving_authority(
             conn,
             store=store,
             universe_dir=universe,
-            owner_user_id=assignment.owner_user_id,
+            owner_user_id=owner_user_id,
             universe_id=universe.name,
             agent=agent,
-            operation="run_graph",
-            role="writer",
         )
         conn.rollback()
-    if (
-        current.provider != assignment.provider
-        or current.binding_id != assignment.binding_id
-        or current.credential_reference_id != assignment.credential_reference_id
-    ):
-        raise NoRequesterOwnedExecutor()
     return (
         AssignedCredentialAvailability(
             universe_id=universe.name,
-            owner_user_id=assignment.owner_user_id,
+            owner_user_id=current.owner_user_id,
             agent_binding_id=str(agent["agent_binding_id"]),
             binding_revision=int(agent["revision"]),
-            provider=assignment.provider,
+            provider=current.provider,
+            binding_id=binding.binding_id,
+            binding_generation=binding.generation,
+            binding_digest=binding.binding_digest,
+            assignment_generation=binding.assignment_generation,
+            assignment_digest=binding.assignment_digest,
+            binding_revocation_generation=binding.revocation_generation,
+            credential_reference_id=custody.reference_id,
+            credential_reference_generation=custody.generation,
+            credential_reference_digest=custody.reference_digest,
+            credential_service=custody.service,
+            max_invocations=binding.max_invocations,
+            max_tokens=binding.max_tokens,
+            max_cost_microunits=binding.max_cost_microunits,
             allowed_operations=tuple(binding.allowed_operations),
             allowed_roles=tuple(binding.allowed_roles),
         ),
@@ -125,12 +160,22 @@ def assigned_credential_availability(
     """Resolve current credential identity without materializing its secret."""
 
     try:
-        availability, _custody = _assigned_credential_state(base_path, universe_dir)
-        return availability
+        universe = Path(universe_dir).resolve(strict=False)
+        with provider_assignment_admission().shared(universe):
+            availability, _custody = _assigned_credential_state(base_path, universe)
+            return availability
     except NoRequesterOwnedExecutor:
         raise
-    except (KeyError, LookupError, OSError, PermissionError, RuntimeError, ValueError) as exc:
-        raise NoRequesterOwnedExecutor() from exc
+    except (
+        KeyError,
+        LookupError,
+        OSError,
+        PermissionError,
+        RuntimeError,
+        sqlite3.DatabaseError,
+        ValueError,
+    ):
+        raise NoRequesterOwnedExecutor() from None
 
 
 @contextmanager
@@ -142,31 +187,59 @@ def resolve_assigned_credential(
 
     universe = Path(universe_dir).resolve(strict=False)
     snapshot = None
-    try:
-        availability, custody = _assigned_credential_state(base_path, universe)
-        snapshot = snapshot_llm_subscription_credential(
-            universe_dir=universe,
-            custody=custody,
-        )
-    except NoRequesterOwnedExecutor:
-        raise
-    except (KeyError, LookupError, OSError, PermissionError, RuntimeError, ValueError) as exc:
-        raise NoRequesterOwnedExecutor() from exc
+    with provider_assignment_admission().shared(universe):
+        try:
+            availability, custody = _assigned_credential_state(base_path, universe)
+            snapshot = snapshot_llm_subscription_credential(
+                universe_dir=universe,
+                custody=custody,
+            )
+        except NoRequesterOwnedExecutor:
+            raise
+        except (
+            KeyError,
+            LookupError,
+            OSError,
+            PermissionError,
+            RuntimeError,
+            sqlite3.DatabaseError,
+            ValueError,
+        ):
+            raise NoRequesterOwnedExecutor() from None
+        try:
+            authority = AssignedCredentialAuthority(
+                universe_id=availability.universe_id,
+                owner_user_id=availability.owner_user_id,
+                agent_binding_id=availability.agent_binding_id,
+                binding_revision=availability.binding_revision,
+                provider=availability.provider,
+                binding_id=availability.binding_id,
+                binding_generation=availability.binding_generation,
+                binding_digest=availability.binding_digest,
+                assignment_generation=availability.assignment_generation,
+                assignment_digest=availability.assignment_digest,
+                binding_revocation_generation=(
+                    availability.binding_revocation_generation
+                ),
+                credential_reference_id=availability.credential_reference_id,
+                credential_reference_generation=(
+                    availability.credential_reference_generation
+                ),
+                credential_reference_digest=(
+                    availability.credential_reference_digest
+                ),
+                credential_service=availability.credential_service,
+                max_invocations=availability.max_invocations,
+                max_tokens=availability.max_tokens,
+                max_cost_microunits=availability.max_cost_microunits,
+                allowed_operations=availability.allowed_operations,
+                allowed_roles=availability.allowed_roles,
+                credential_snapshot_dir=snapshot.directory,
+            )
+            yield authority
+        finally:
+            cleanup_llm_credential_snapshot(snapshot)
 
-    authority = AssignedCredentialAuthority(
-        universe_id=availability.universe_id,
-        owner_user_id=availability.owner_user_id,
-        agent_binding_id=availability.agent_binding_id,
-        binding_revision=availability.binding_revision,
-        provider=availability.provider,
-        allowed_operations=availability.allowed_operations,
-        allowed_roles=availability.allowed_roles,
-        credential_snapshot_dir=snapshot.directory,
-    )
-    try:
-        yield authority
-    finally:
-        cleanup_llm_credential_snapshot(snapshot)
 
 
 def refresh_pending_credential_holds(

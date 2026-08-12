@@ -1570,3 +1570,15 @@ fresh-host rollback edges found later.
   identity, revalidate names, and search only a validated immediate parent.
 - **What I would do differently:** start snapshot work with root-alias and
   renamed-decoy mutation tests before describing any copy as sealed.
+
+## 2026-08-11 - Cloud worker fleet retirement
+
+- **What surprised me:** a green 11k-test ratchet still missed an invalid
+  Compose schema and an exact-five cleanup invariant because tests parsed YAML
+  without asking Docker to validate it.
+- **Pattern worth capturing:** credential-driven execution needs one continuous
+  chain—serving assignment, custody snapshot, workflow carrier, and durable
+  spend—with queue state treated as preserved user work during deployment.
+- **What I would do differently:** begin architecture removals with executable
+  production-shape validation and mutation probes for the retired invariant,
+  then run independent review before the first full-suite pass.

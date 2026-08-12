@@ -1824,7 +1824,7 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
         provider_name="codex",
         model_name="codex",
         created_by="acct_alice",
-        worker_id="worker-a",
+        worker_id="worker_cloud_1",
     )
     set_worker_queue_descriptor(
         tmp_path,
@@ -1832,7 +1832,7 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
         descriptor={
             "queue_protocol_version": 2,
             "capabilities": ["operator_request_v1"],
-            "worker_id": "worker-a",
+            "worker_id": "worker_cloud_1",
             "runtime_instance_id": runtime["runtime_instance_id"],
             "boot_id": "boot-assigned-a",
             "build_sha": "a" * 40,
@@ -1842,18 +1842,20 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
                 datetime.now(timezone.utc) + timedelta(minutes=5)
             ).isoformat(),
         },
-        expected_worker_id="worker-a",
+        expected_worker_id="worker_cloud_1",
     )
     selected = []
     monkeypatch.setattr(
         "tinyassets.assigned_credential_execution.ensure_assigned_daemon_claim_context",
         lambda base, universe, *, daemon_id: (
-            selected.append((base, universe, daemon_id))
-            or SimpleNamespace(
-                daemon_id=daemon_id,
-                    runtime_instance_id=runtime["runtime_instance_id"],
-                    worker_id="worker-a",
-            )
+                selected.append((base, universe, daemon_id))
+                or SimpleNamespace(
+                    daemon_id=daemon_id,
+                    descriptor=SimpleNamespace(
+                        runtime_instance_id=runtime["runtime_instance_id"],
+                        worker_id="worker_cloud_1",
+                    ),
+                )
         ),
     )
 
@@ -1877,8 +1879,8 @@ def test_daemon_pump_holds_when_no_assigned_credential(
     """Missing requester-owned authority must not create an executor."""
 
     from fantasy_daemon import __main__ as daemon_main
-    from tinyassets.assigned_credential_execution import NoRequesterOwnedExecutor
     from tinyassets.api import cloud_automations, permissions
+    from tinyassets.assigned_credential_execution import NoRequesterOwnedExecutor
     from tinyassets.storage.automation_activations import AutomationActivationStore
 
     definition = _seed_setup_authority(tmp_path)

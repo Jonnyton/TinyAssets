@@ -179,14 +179,14 @@ def test_journal_sanitizer_names_only_the_allowlisted_conflicting_container():
     assert token not in json.dumps(result)
 
 
-def test_journal_sanitizer_does_not_prefix_match_allowlisted_worker_names():
+def test_journal_sanitizer_does_not_treat_retired_worker_as_runtime_sidecar():
     result = sanitize_journal(
         b"Container tinyassets-daemon Creating\n"
         b'Conflict. The container name "/tinyassets-worker-codex-2" '
         b'is already in use by container "opaque"\n'
     )
 
-    assert result["conflict_containers"] == ["tinyassets-worker-codex-2"]
+    assert result["conflict_containers"] == []
 
 
 def test_journal_sanitizer_does_not_echo_unallowlisted_conflicting_name():

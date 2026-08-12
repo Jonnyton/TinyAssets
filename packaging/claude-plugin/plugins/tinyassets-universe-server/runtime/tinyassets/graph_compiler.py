@@ -698,7 +698,6 @@ def inspect_node_dry(
           "policy_resolution": {
             "source": "node" | "branch" | "default",
             "effective_policy": dict | None,
-            "fallback_chain": list,
           },
           "warnings": list[dict],   # from collect_build_warnings for this node
         }
@@ -735,10 +734,6 @@ def inspect_node_dry(
         else:
             policy_source = "default"
 
-        fallback_chain: list[dict[str, Any]] = []
-        if isinstance(effective_policy, dict):
-            fallback_chain = effective_policy.get("fallback_chain", [])
-
         # Per-node warnings from the branch-level collector (filter to this node)
         branch_warnings = collect_build_warnings(branch)
         node_warnings = [w for w in branch_warnings if w.get("node_id") == nd.node_id]
@@ -758,7 +753,6 @@ def inspect_node_dry(
             "policy_resolution": {
                 "source": policy_source,
                 "effective_policy": effective_policy,
-                "fallback_chain": fallback_chain,
             },
             "warnings": node_warnings,
         }

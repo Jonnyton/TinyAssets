@@ -15,15 +15,14 @@ def test_source_runtime_command_preserves_python_module_launch(
 
     command = tinyassets_tray._runtime_command(
         "daemon",
-        ["-m", "fantasy_daemon", "--provider", "codex"],
+        ["-m", "fantasy_daemon", "--no-tray"],
     )
 
     assert command == [
         sys.executable,
         "-m",
         "fantasy_daemon",
-        "--provider",
-        "codex",
+        "--no-tray",
     ]
 
 
@@ -64,7 +63,7 @@ def test_packaged_daemon_start_is_blocked_until_account_binding(
     )
     manager = tinyassets_tray.UniverseServerManager()
 
-    allowed, reason = manager._can_start("codex")
+    allowed, reason = manager._can_start()
 
     assert allowed is False
     assert reason == "account binding required"

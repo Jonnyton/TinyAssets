@@ -9,6 +9,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from tinyassets.config import load_universe_config, write_universe_config_fields
 from tinyassets.credential_vault import (
     provider_auth_env_overrides,
@@ -16,6 +18,7 @@ from tinyassets.credential_vault import (
     supported_llm_api_key_services,
     write_credential_vault,
 )
+from tinyassets.exceptions import ProviderUnavailableError
 from tinyassets.providers.base import subprocess_env_for_provider
 
 
@@ -29,7 +32,7 @@ def test_write_universe_config_fields_merges_and_preserves(tmp_path):
     assert cfg.preferred_judge == "gemini-free"
 
 
-def test_llm_api_key_injects_into_claude_cli_env(tmp_path):
+def test_vault_key_cannot_launch_without_assigned_snapshot(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "llm_api_key",
         "service": "anthropic",
@@ -39,9 +42,8 @@ def test_llm_api_key_injects_into_claude_cli_env(tmp_path):
     # provider_auth_env_overrides maps it to the CLI env var.
     overrides = provider_auth_env_overrides(tmp_path, "claude-code")
     assert overrides["ANTHROPIC_API_KEY"] == "sk-ant-test-XYZ"
-    # The subprocess env carries it even though the global api-key strip runs first.
-    env = subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
-    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-test-XYZ"
+    with pytest.raises(ProviderUnavailableError, match="assigned credential snapshot"):
+        subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
 
 
 def test_openai_key_maps_to_codex_only(tmp_path):

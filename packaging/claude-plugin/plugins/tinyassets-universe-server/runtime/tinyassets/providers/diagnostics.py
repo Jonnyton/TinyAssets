@@ -67,7 +67,6 @@ def build_chain_state(
     attempts: list[ProviderAttemptDiagnostic],
     *,
     api_key_providers_enabled: bool | None = None,
-    pinned_writer: str | None = None,
     allowlist: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a structured ``chain_state`` dict for the failure record.
@@ -83,8 +82,6 @@ def build_chain_state(
     }
     if api_key_providers_enabled is not None:
         out["api_key_providers_enabled"] = bool(api_key_providers_enabled)
-    if pinned_writer:
-        out["pinned_writer"] = pinned_writer
     if allowlist is not None:
         out["allowlist"] = list(allowlist)
     return out

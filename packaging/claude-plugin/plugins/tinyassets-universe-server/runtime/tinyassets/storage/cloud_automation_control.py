@@ -211,7 +211,7 @@ class CloudAutomationControlStore:
         automation_id: str,
         cadence_seconds: int,
     ) -> CloudAutomationControl:
-        """Persist owner/definition/cadence before a cloud worker activates it."""
+        """Persist owner/definition/cadence before assigned execution begins."""
 
         created = CloudAutomationControl.create(
             automation_id=automation_id,
@@ -304,12 +304,8 @@ class CloudAutomationControlStore:
     def list_universe_ids_with_desired_active(self, *, limit: int = 100) -> list[str]:
         """Universe ids holding at least one desired-active automation.
 
-        A cloud worker resolves exactly ONE universe path at startup, so without
-        this the fleet can only ever service automations that happen to live in
-        that universe. Proven live 2026-08-05: production's own deploy
-        diagnostic reported `active_marker=<unset>` and
-        `resolved_universe=/data/concordance`, while the owner's automations sat
-        in `/data/u-01kxm1vszd8hwp7em418asq8h9` and never once converged.
+        The daemon uses this index to revisit every universe with desired-active
+        work, resolving each universe's own assigned credential independently.
         """
         if limit < 1:
             raise ValueError("limit must be positive")

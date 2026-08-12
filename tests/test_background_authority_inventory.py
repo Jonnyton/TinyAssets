@@ -129,7 +129,7 @@ def test_inventory_covers_every_required_source_family() -> None:
         "direct_live_and_versioned_run",
         "resume_and_recovery",
         "request_actor_boundary",
-        "daemon_cloud_and_distributed_worker",
+        "daemon_assigned_credential_execution",
         "selector_leaderboard_and_market_delegate",
         "retired_wiki_forwarding",
     }

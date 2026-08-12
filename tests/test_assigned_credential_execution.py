@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import traceback
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderUnavailableError,
@@ -20,6 +23,120 @@ from tinyassets.providers.base import (
     subprocess_env_for_provider,
 )
 from tinyassets.providers.router import ProviderRouter
+
+
+def _authority(universe: Path, *, provider: str = "codex"):
+    return AssignedCredentialAuthority(
+        universe_id=universe.name,
+        owner_user_id="owner-a",
+        agent_binding_id="agent-a",
+        binding_revision=3,
+        provider=provider,
+        credential_snapshot_dir=universe / "snapshot",
+        binding_id="binding-a",
+        binding_generation=4,
+        binding_digest="sha256:" + "1" * 64,
+        assignment_generation=3,
+        assignment_digest="sha256:" + "3" * 64,
+        binding_revocation_generation=0,
+        credential_reference_id="credential-a",
+        credential_reference_generation=7,
+        credential_reference_digest="sha256:" + "2" * 64,
+        credential_service="codex" if provider == "codex" else "claude",
+        max_invocations=100,
+        max_tokens=4096,
+        max_cost_microunits=1_000_000,
+        allowed_operations=("converse",),
+        allowed_roles=("writer",),
+    )
+
+
+def _seed_serving_assignment(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    universe = tmp_path / "u-owner"
+    universe.mkdir()
+    write_credential_vault(
+        universe,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "e30=",
+        }],
+        owner_user_id="owner-1",
+        universe_id=universe.name,
+    )
+    definition = publish_definition(
+        tmp_path,
+        author_id="owner-1",
+        payload={
+            "schema_version": 1,
+            "name": "Assigned executor",
+            "description": "Exact serving fixture",
+            "tags": ["test"],
+            "components": {
+                "identity": {"kind": "soul", "config": {"voice": "direct"}},
+            },
+        },
+    )
+    agent = create_binding(
+        tmp_path,
+        universe_id=universe.name,
+        definition_id=definition["agent_definition_id"],
+        created_by="owner-1",
+        payload={"schema_version": 1, "name": "Assigned", "role": "writer"},
+    )
+    connected = bind_serving_provider(
+        base_path=tmp_path,
+        universe_dir=universe,
+        owner_user_id="owner-1",
+        universe_id=universe.name,
+        agent_binding_id=agent["agent_binding_id"],
+        expected_revision=agent["revision"],
+        provider="codex",
+    )
+    configured = connected["agent_binding"]
+    serving = set_serving(
+        base_path=tmp_path,
+        universe_dir=universe,
+        owner_user_id="owner-1",
+        universe_id=universe.name,
+        agent_binding_id=configured["agent_binding_id"],
+        expected_revision=configured["revision"],
+        enabled=True,
+    )
+    return universe, serving["agent_binding"]
+
+
+@pytest.fixture(autouse=True)
+def _assigned_budget(monkeypatch: pytest.MonkeyPatch):
+    from tinyassets import provider_assignment
+
+    def reserve(*_args, **kwargs):
+        output_tokens = kwargs["requested_output_tokens"]
+        return SimpleNamespace(
+            output_tokens=output_tokens,
+            reserved_total_tokens=output_tokens + 1,
+            reserved_cost_microunits=(output_tokens + 1) * 100,
+        )
+
+    monkeypatch.setattr(
+        provider_assignment,
+        "reserve_served_provider_budget",
+        reserve,
+    )
+    monkeypatch.setattr(
+        provider_assignment,
+        "finalize_served_provider_budget",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        provider_assignment,
+        "abandon_served_provider_budget",
+        lambda *_a, **_k: None,
+    )
 
 
 class _Provider(BaseProvider):
@@ -51,21 +168,12 @@ class _Provider(BaseProvider):
 
 @pytest.mark.asyncio
 async def test_assigned_credential_routes_to_exact_provider(tmp_path: Path) -> None:
-    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
-
     codex = _Provider("codex")
     claude = _Provider("claude-code")
     router = ProviderRouter({codex.name: codex, claude.name: claude})
     context = UniverseContext(
         universe_dir=tmp_path,
-        assigned_credential=AssignedCredentialAuthority(
-            universe_id=tmp_path.name,
-            owner_user_id="owner-a",
-            agent_binding_id="agent-a",
-            binding_revision=3,
-            provider="codex",
-            credential_snapshot_dir=tmp_path / "snapshot",
-        ),
+        assigned_credential=_authority(tmp_path),
     )
 
     response = await router.call(
@@ -85,21 +193,12 @@ async def test_assigned_credential_routes_to_exact_provider(tmp_path: Path) -> N
 async def test_assigned_credential_failure_never_tries_another_provider(
     tmp_path: Path,
 ) -> None:
-    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
-
     codex = _Provider("codex", failure=ProviderUnavailableError("rate limited"))
     claude = _Provider("claude-code")
     router = ProviderRouter({codex.name: codex, claude.name: claude})
     context = UniverseContext(
         universe_dir=tmp_path,
-        assigned_credential=AssignedCredentialAuthority(
-            universe_id=tmp_path.name,
-            owner_user_id="owner-a",
-            agent_binding_id="agent-a",
-            binding_revision=3,
-            provider="codex",
-            credential_snapshot_dir=tmp_path / "snapshot",
-        ),
+        assigned_credential=_authority(tmp_path),
     )
 
     with pytest.raises(AllProvidersExhaustedError, match="Assigned provider 'codex'"):
@@ -117,21 +216,12 @@ async def test_assigned_credential_failure_never_tries_another_provider(
 
 @pytest.mark.asyncio
 async def test_node_policy_cannot_replace_assigned_provider(tmp_path: Path) -> None:
-    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
-
     codex = _Provider("codex")
     claude = _Provider("claude-code")
     router = ProviderRouter({codex.name: codex, claude.name: claude})
     context = UniverseContext(
         universe_dir=tmp_path,
-        assigned_credential=AssignedCredentialAuthority(
-            universe_id=tmp_path.name,
-            owner_user_id="owner-a",
-            agent_binding_id="agent-a",
-            binding_revision=1,
-            provider="codex",
-            credential_snapshot_dir=tmp_path / "snapshot",
-        ),
+        assigned_credential=_authority(tmp_path),
     )
 
     text, provider, _meta = await router.call_with_policy(
@@ -149,6 +239,38 @@ async def test_node_policy_cannot_replace_assigned_provider(tmp_path: Path) -> N
     assert claude.calls == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("authority_update", "role"),
+    [
+        ({"allowed_operations": ("repository_spec_delivery",)}, "writer"),
+        ({"allowed_roles": ("judge",)}, "writer"),
+    ],
+)
+async def test_noncanonical_serving_scope_holds_before_provider_launch(
+    tmp_path: Path,
+    authority_update: dict[str, object],
+    role: str,
+) -> None:
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    provider = _Provider("codex")
+    router = ProviderRouter({provider.name: provider})
+    authority = replace(_authority(tmp_path), **authority_update)
+    context = UniverseContext(universe_dir=tmp_path, assigned_credential=authority)
+
+    with pytest.raises(ProviderAuthorityHeldError):
+        await router.call(
+            role,
+            "prompt",
+            "system",
+            operation="run_graph",
+            universe_context=context,
+        )
+
+    assert provider.calls == []
+
+
 def test_no_universe_call_cannot_inherit_host_provider_auth(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -161,78 +283,22 @@ def test_no_universe_call_cannot_inherit_host_provider_auth(
 
 
 def test_resolver_snapshots_exact_serving_credential_and_cleans_it(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     from tinyassets import assigned_credential_execution as execution
 
-    universe = tmp_path / "u-a"
-    universe.mkdir()
-    assignment = SimpleNamespace(
-        state="ready",
-        universe_id="u-a",
-        owner_user_id="owner-a",
-        provider="codex",
-        binding_id="provider-binding-a",
-        binding_generation=4,
-        binding_digest="sha256:binding",
-        credential_reference_id="credential-a",
-        credential_reference_generation=7,
-        credential_reference_digest="sha256:credential",
-    )
-    agent = {
-        "agent_binding_id": "agent-a",
-        "created_by": "owner-a",
-        "revision": 3,
-        "status": "serving",
-        "configuration": {"provider_ref": "provider-binding-a"},
-    }
-    custody = SimpleNamespace(
-        reference_id="credential-a",
-        generation=7,
-        reference_digest="sha256:credential",
-    )
-    snapshot = SimpleNamespace(directory=universe / ".snapshot")
-    cleaned: list[object] = []
-
-    monkeypatch.setattr(execution, "load_provider_assignment", lambda *_a, **_k: assignment)
-    monkeypatch.setattr(execution, "resolve_serving_agent_binding", lambda *_a, **_k: agent)
-
-    class _Connection:
-        def execute(self, _sql: str) -> None:
-            return None
-
-        def rollback(self) -> None:
-            return None
-
-    class _Store:
-        @contextmanager
-        def connection(self):
-            yield _Connection()
-
-    monkeypatch.setattr(execution, "SQLiteProviderWorkAuthorityStore", lambda _base: _Store())
-    monkeypatch.setattr(
-        execution,
-        "current_serving_authority",
-        lambda *_a, **_k: (
-            assignment,
-            SimpleNamespace(
-                allowed_operations=("run_graph",),
-                allowed_roles=("writer", "judge", "extract"),
-            ),
-            custody,
-        ),
-    )
-    monkeypatch.setattr(execution, "snapshot_llm_subscription_credential", lambda **_k: snapshot)
-    monkeypatch.setattr(execution, "cleanup_llm_credential_snapshot", cleaned.append)
+    universe, agent = _seed_serving_assignment(tmp_path)
 
     with execution.resolve_assigned_credential(tmp_path, universe) as authority:
         assert authority.provider == "codex"
-        assert authority.credential_snapshot_dir == snapshot.directory
-        assert authority.agent_binding_id == "agent-a"
-        assert cleaned == []
+        assert authority.credential_snapshot_dir.is_dir()
+        assert authority.agent_binding_id == agent["agent_binding_id"]
+        assert authority.allowed_operations == ("converse",)
+        assert authority.allowed_roles == ("writer",)
+        assert authority.binding_id.startswith("pwb_")
+        snapshot_dir = authority.credential_snapshot_dir
 
-    assert cleaned == [snapshot]
+    assert not snapshot_dir.exists()
 
 
 def test_resolver_maps_missing_assignment_to_typed_hold(tmp_path: Path) -> None:
@@ -250,6 +316,64 @@ def test_resolver_maps_missing_assignment_to_typed_hold(tmp_path: Path) -> None:
             raise AssertionError("unreachable")
 
     assert held.value.reason == NO_REQUESTER_OWNED_EXECUTOR
+
+
+def test_provider_body_exception_is_not_reclassified_as_credential_hold(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.assigned_credential_execution import resolve_assigned_credential
+
+    universe, _agent = _seed_serving_assignment(tmp_path)
+    with pytest.raises(RuntimeError, match="provider body failed"):
+        with resolve_assigned_credential(tmp_path, universe):
+            raise RuntimeError("provider body failed")
+
+
+def test_snapshot_failure_secret_is_not_attached_to_typed_hold(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tinyassets import assigned_credential_execution as execution
+
+    universe, _agent = _seed_serving_assignment(tmp_path)
+
+    def fail_snapshot(**_kwargs):
+        raise ValueError("secret=must-not-leak")
+
+    monkeypatch.setattr(execution, "snapshot_llm_subscription_credential", fail_snapshot)
+    with pytest.raises(execution.NoRequesterOwnedExecutor) as caught:
+        with execution.resolve_assigned_credential(tmp_path, universe):
+            raise AssertionError("unreachable")
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "must-not-leak" not in rendered
+
+
+def test_snapshot_is_cleaned_when_authority_construction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tinyassets import assigned_credential_execution as execution
+
+    universe, _agent = _seed_serving_assignment(tmp_path)
+    snapshot = SimpleNamespace(directory=universe / ".snapshot")
+    cleaned: list[object] = []
+    monkeypatch.setattr(
+        execution,
+        "snapshot_llm_subscription_credential",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(execution, "cleanup_llm_credential_snapshot", cleaned.append)
+
+    def fail_authority(**_kwargs):
+        raise ValueError("construction failed")
+
+    monkeypatch.setattr(execution, "AssignedCredentialAuthority", fail_authority)
+    with pytest.raises(ValueError, match="construction failed"):
+        with execution.resolve_assigned_credential(tmp_path, universe):
+            raise AssertionError("unreachable")
+
+    assert cleaned == [snapshot]
 
 
 def test_refresh_pending_holds_tracks_current_credential_availability(
@@ -293,14 +417,7 @@ def test_bound_branch_provider_call_carries_assigned_context(
 
     universe = tmp_path / "u-a"
     universe.mkdir()
-    authority = execution.AssignedCredentialAuthority(
-        universe_id="u-a",
-        owner_user_id="owner-a",
-        agent_binding_id="agent-a",
-        binding_revision=1,
-        provider="codex",
-        credential_snapshot_dir=universe / ".snapshot",
-    )
+    authority = _authority(universe)
 
     @contextmanager
     def resolved(*_args, **_kwargs):

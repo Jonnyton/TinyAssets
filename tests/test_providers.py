@@ -1,4 +1,4 @@
-"""Tests for the provider layer: routing, fallback, quota, subprocess providers.
+"""Tests for exact-authority routing, quota, and subprocess providers.
 
 Unit tests mock the subprocess layer so they run without real CLI
 binaries or network access.
@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,13 +20,12 @@ import pytest
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
+    ProviderAuthorityHeldError,
     ProviderError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import (
-    DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
     ModelConfig,
     ProviderResponse,
@@ -175,521 +175,215 @@ class TestQuotaTracker:
 # =====================================================================
 
 
-@pytest.mark.skip(reason="legacy fallback-router contract retired")
-class TestProviderRouterCall:
-    @staticmethod
-    def _carrier(
-        *, provider: str = "codex", role: str = "writer",
-        operation: str = "repository_spec_delivery", max_tokens: int = 77,
-        max_cost_microunits: int = 1,
-    ):
-        carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier.provider = provider
-        carrier.role = role
-        carrier.operation = operation
-        carrier.max_tokens = max_tokens
-        carrier.max_cost_microunits = max_cost_microunits
-        carrier.validate_for_call.return_value = provider
-        return carrier
+def _assigned_context(
+    tmp_path: Path,
+    *,
+    provider: str = "codex",
+    roles: tuple[str, ...] = ("writer", "judge", "extract"),
+) -> UniverseContext:
+    from tinyassets.assigned_credential_execution import AssignedCredentialAuthority
 
-    @staticmethod
-    def _carrier_resolver(carrier):
-        def resolve(_context, *, role, operation):
-            carrier.validate_for_call(role=role, operation=operation)
-            return carrier
-        return resolve
+    universe = tmp_path / "universe"
+    universe.mkdir(exist_ok=True)
+    snapshot = tmp_path / "credential-snapshot"
+    snapshot.mkdir(exist_ok=True)
+    return UniverseContext(
+        universe_dir=universe,
+        assigned_credential=AssignedCredentialAuthority(
+            universe_id=universe.name,
+            owner_user_id="owner-a",
+            agent_binding_id="agent-a",
+            binding_revision=1,
+            provider=provider,
+            credential_snapshot_dir=snapshot,
+            binding_id="binding-a",
+            binding_generation=1,
+            binding_digest="sha256:" + "1" * 64,
+            assignment_generation=1,
+            assignment_digest="sha256:" + "3" * 64,
+            binding_revocation_generation=0,
+            credential_reference_id="credential-a",
+            credential_reference_generation=1,
+            credential_reference_digest="sha256:" + "2" * 64,
+            credential_service="codex" if provider == "codex" else "claude",
+            max_invocations=100,
+            max_tokens=4096,
+            max_cost_microunits=1_000_000,
+            allowed_operations=("converse",),
+            allowed_roles=roles,
+        ),
+    )
 
-    @pytest.mark.asyncio
-    async def test_armed_carrier_narrows_provider_and_token_ceiling(self):
-        providers = _make_providers()
-        health = MagicMock()
-        router = ProviderRouter(providers=providers, auth_health=health)
-        carrier = self._carrier()
 
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            response = await router.call(
-                "writer", "prompt", "system", ModelConfig(max_tokens=None),
-                operation="repository_spec_delivery",
-                universe_context=UniverseContext(provider_invocation=carrier),
+class TestProviderRouterExactAuthority:
+    @pytest.fixture(autouse=True)
+    def _budget(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from tinyassets import provider_assignment
+
+        def reserve(*_args, **kwargs):
+            output = kwargs["requested_output_tokens"]
+            return SimpleNamespace(
+                output_tokens=output,
+                reserved_total_tokens=output + 1,
+                reserved_cost_microunits=(output + 1) * 100,
             )
 
-        assert response.provider == "codex"
-        assert providers["codex"].call_count == 1
-        assert providers["codex"].last_config is not None
-        assert providers["codex"].last_config.max_tokens == 77
-        assert providers["claude-code"].call_count == 0
-        health.assert_not_called()
-        carrier.validate_for_call.assert_called_once_with(
-            role="writer", operation="repository_spec_delivery",
+        monkeypatch.setattr(provider_assignment, "reserve_served_provider_budget", reserve)
+        monkeypatch.setattr(
+            provider_assignment,
+            "finalize_served_provider_budget",
+            lambda *_a, **_k: None,
+        )
+        monkeypatch.setattr(
+            provider_assignment,
+            "abandon_served_provider_budget",
+            lambda *_a, **_k: None,
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("field", "message"),
-        (
-            ("max_tokens", "token budget"),
-            ("max_cost_microunits", "cost budget"),
-        ),
-    )
-    async def test_armed_carrier_rejects_zero_budget_authority(
-        self,
-        field,
-        message,
-    ):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        carrier = self._carrier(**{field: 0})
-
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(PermissionError, match=message):
-                await router.call(
-                    "writer",
-                    "prompt",
-                    "system",
-                    ModelConfig(max_tokens=None),
-                    operation="repository_spec_delivery",
-                    universe_context=UniverseContext(provider_invocation=carrier),
-                )
-
-        assert all(provider.call_count == 0 for provider in providers.values())
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("max_tokens", [-1, 78])
-    async def test_armed_carrier_rejects_invalid_or_wider_token_cap(self, max_tokens):
+    async def test_assigned_provider_is_the_only_provider_called(self, tmp_path):
         providers = _make_providers()
         router = ProviderRouter(providers=providers)
 
-        carrier = self._carrier(max_tokens=77)
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(PermissionError, match="token ceiling"):
-                await router.call(
-                    "writer", "prompt", "system", ModelConfig(max_tokens=max_tokens),
-                    operation="repository_spec_delivery",
-                    universe_context=UniverseContext(provider_invocation=carrier),
-                )
+        response = await router.call(
+            "writer",
+            "prompt",
+            "system",
+            operation="run_graph",
+            universe_context=_assigned_context(tmp_path, provider="codex"),
+        )
 
-        assert all(provider.call_count == 0 for provider in providers.values())
+        assert response.provider == "codex"
+        assert providers["codex"].call_count == 1
+        assert sum(provider.call_count for provider in providers.values()) == 1
+        assert providers["codex"].last_config.credential_snapshot_dir == (
+            tmp_path / "credential-snapshot"
+        )
 
     @pytest.mark.asyncio
-    async def test_armed_carrier_never_falls_back_to_another_provider(self):
+    async def test_policy_cannot_replace_assigned_provider(self, tmp_path):
+        providers = _make_providers()
+        router = ProviderRouter(providers=providers)
+
+        text, provider, meta = await router.call_with_policy(
+            "writer",
+            "prompt",
+            "system",
+            {"preferred": {"provider": "claude-code"}, "max_tokens": 27},
+            operation="run_graph",
+            universe_context=_assigned_context(tmp_path, provider="codex"),
+        )
+
+        assert (text, provider) == ("codex-resp", "codex")
+        assert meta["attempts"] == 1
+        assert providers["codex"].last_config.max_tokens == 27
+        assert providers["claude-code"].call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_assigned_failure_never_falls_back(self, tmp_path):
         providers = _make_providers(
             codex=FakeProvider(
                 "codex",
                 "openai",
-                fail_with=ProviderUnavailableError("down"),
+                fail_with=ProviderUnavailableError("rate limited"),
             )
         )
         router = ProviderRouter(providers=providers)
 
-        carrier = self._carrier(max_tokens=10)
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(AllProvidersExhaustedError):
-                await router.call(
-                    "writer", "prompt", "system", ModelConfig(max_tokens=10),
-                    operation="repository_spec_delivery",
-                    universe_context=UniverseContext(provider_invocation=carrier),
-                )
+        with pytest.raises(AllProvidersExhaustedError) as caught:
+            await router.call(
+                "writer",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=_assigned_context(tmp_path, provider="codex"),
+            )
 
+        assert [attempt.provider for attempt in caught.value.attempts] == ["codex"]
         assert providers["codex"].call_count == 1
         assert providers["claude-code"].call_count == 0
+        assert providers["ollama-local"].call_count == 0
 
     @pytest.mark.asyncio
-    async def test_invalid_carrier_holds_before_health_quota_or_provider(self):
-        providers = _make_providers()
-        health = MagicMock()
-        quota = MagicMock()
-        carrier = self._carrier()
-        carrier.validate_for_call.side_effect = PermissionError("stale carrier")
-        router = ProviderRouter(providers=providers, quota=quota, auth_health=health)
+    async def test_missing_authority_holds_before_launch(self):
+        provider = FakeProvider("codex", "openai")
+        router = ProviderRouter(providers={"codex": provider})
 
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
-            with pytest.raises(PermissionError, match="stale carrier"):
-                await router.call(
-                    "writer", "prompt", "system",
-                    operation="repository_spec_delivery",
-                    universe_context=UniverseContext(provider_invocation=carrier),
-                )
-
-        health.assert_not_called()
-        quota.available.assert_not_called()
-        assert all(provider.call_count == 0 for provider in providers.values())
-
-    @pytest.mark.asyncio
-    async def test_nonexact_or_operationless_carrier_holds_before_provider_access(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        context = UniverseContext(provider_invocation=self._carrier())
-
-        with pytest.raises(PermissionError, match="requires an operation"):
-            await router.call("writer", "prompt", "system", universe_context=context)
-        with pytest.raises(PermissionError, match="server-owned"):
-            await router.call(
-                "writer", "prompt", "system",
-                operation="repository_spec_delivery", universe_context=context,
-            )
-
-        assert all(provider.call_count == 0 for provider in providers.values())
-
-    @pytest.mark.asyncio
-    async def test_armed_carrier_bypasses_policy_fallback_and_ensemble_fanout(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-        policy_carrier = self._carrier(role="judge")
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(policy_carrier),
-        ):
-            text, provider, _meta = await router.call_with_policy(
-                "judge", "prompt", "system",
-                {"preferred": {"provider": "claude-code"}},
-                ModelConfig(max_tokens=10),
-                operation="repository_spec_delivery",
-                universe_context=UniverseContext(provider_invocation=policy_carrier),
-            )
-        ensemble_carrier = self._carrier(role="judge")
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(ensemble_carrier),
-        ):
-            ensemble = await router.call_judge_ensemble(
-                "prompt", "system", ModelConfig(max_tokens=10),
-                operation="repository_spec_delivery",
-                universe_context=UniverseContext(provider_invocation=ensemble_carrier),
-            )
-
-        assert text == "codex-resp"
-        assert provider == "codex"
-        assert [response.provider for response in ensemble] == ["codex"]
-        assert providers["codex"].call_count == 2
-        assert providers["claude-code"].call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_writer_uses_first_available(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("writer", "write prose", "you are a writer")
-        assert resp.provider == "claude-code"
-        assert resp.text == "claude-resp"
-        assert providers["claude-code"].call_count == 1
-        assert providers["codex"].call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_writer_falls_back_on_error(self):
-        providers = _make_providers(
-            **{"claude-code": FakeProvider(
-                "claude-code", "anthropic",
-                fail_with=ProviderUnavailableError("down"),
-            )}
-        )
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("writer", "write prose", "system")
-        assert resp.provider == "codex"
-        assert resp.text == "codex-resp"
-
-    @pytest.mark.asyncio
-    async def test_writer_falls_to_ollama(self):
-        failing = {
-            "claude-code": FakeProvider("claude-code", "anthropic", fail_with=ProviderError("x")),
-            "codex": FakeProvider("codex", "openai", fail_with=ProviderTimeoutError("x")),
-            "gemini-free": FakeProvider(
-                "gemini-free", "google",
-                fail_with=ProviderUnavailableError("x"),
-            ),
-            "groq-free": FakeProvider("groq-free", "meta", fail_with=ProviderError("x")),
-            "ollama-local": FakeProvider("ollama-local", "local", "ollama-resp"),
-        }
-        router = ProviderRouter(providers=failing)
-
-        resp = await router.call("writer", "prompt", "system")
-        assert resp.provider == "ollama-local"
-
-    @pytest.mark.asyncio
-    async def test_writer_raises_when_all_exhausted(self):
-        all_fail = {
-            name: FakeProvider(name, "x", fail_with=ProviderError("down"))
-            for name in FALLBACK_CHAINS["writer"]
-        }
-        router = ProviderRouter(providers=all_fail)
-
-        with pytest.raises(AllProvidersExhaustedError):
+        with pytest.raises(ProviderAuthorityHeldError):
             await router.call("writer", "prompt", "system")
 
-    @pytest.mark.asyncio
-    async def test_judge_returns_degraded_when_all_exhausted(self):
-        all_fail = {
-            name: FakeProvider(name, "x", fail_with=ProviderError("down"))
-            for name in FALLBACK_CHAINS["judge"]
-        }
-        router = ProviderRouter(providers=all_fail)
-
-        resp = await router.call("judge", "prompt", "system")
-        assert resp.degraded is True
-        assert resp is DEGRADED_JUDGE_RESPONSE
+        assert provider.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_extract_prefers_codex(self):
+    async def test_assignment_rejects_wrong_universe_and_token_ceiling(self, tmp_path):
+        provider = FakeProvider("codex", "openai")
+        router = ProviderRouter(providers={"codex": provider})
+        context = _assigned_context(tmp_path, roles=("writer",))
+
+        wrong_universe = replace(context, universe_dir=tmp_path / "other")
+        with pytest.raises(ProviderAuthorityHeldError):
+            await router.call(
+                "writer",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=wrong_universe,
+            )
+        with pytest.raises(PermissionError, match="assigned token ceiling"):
+            await router.call(
+                "writer",
+                "prompt",
+                "system",
+                ModelConfig(max_tokens=4097),
+                operation="run_graph",
+                universe_context=context,
+            )
+
+        assert provider.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_judge_ensemble_is_one_exact_launch(self, tmp_path):
         providers = _make_providers()
         router = ProviderRouter(providers=providers)
 
-        resp = await router.call("extract", "extract facts", "system")
-        assert resp.provider == "codex"
-
-    @pytest.mark.asyncio
-    async def test_skips_missing_providers(self):
-        # Only ollama registered.
-        providers = {"ollama-local": FakeProvider("ollama-local", "local", "ok")}
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("writer", "prompt", "system")
-        assert resp.provider == "ollama-local"
-
-    @pytest.mark.asyncio
-    async def test_cooldown_applied_on_unavailable(self):
-        providers = _make_providers(
-            **{"claude-code": FakeProvider(
-                "claude-code", "anthropic",
-                fail_with=ProviderUnavailableError("rate limited"),
-            )}
+        responses = await router.call_judge_ensemble(
+            "judge",
+            "system",
+            operation="run_graph",
+            universe_context=_assigned_context(tmp_path, provider="codex"),
         )
-        quota = QuotaTracker()
-        router = ProviderRouter(providers=providers, quota=quota)
 
-        resp = await router.call("writer", "prompt", "system")
-        # Should have fallen back to codex.
-        assert resp.provider == "codex"
-        # Claude should now be in cooldown.
-        assert quota.available("claude-code") is False
+        assert [response.provider for response in responses] == ["codex"]
+        assert sum(provider.call_count for provider in providers.values()) == 1
 
-    @pytest.mark.asyncio
-    async def test_timeout_cooldown_applied(self):
-        providers = _make_providers(
-            **{"claude-code": FakeProvider(
-                "claude-code", "anthropic",
-                fail_with=ProviderTimeoutError("hung"),
-            )}
-        )
-        quota = QuotaTracker()
-        router = ProviderRouter(providers=providers, quota=quota)
+    def test_router_has_no_chain_or_fanout_api(self):
+        router = ProviderRouter()
+        assert not hasattr(router, "effective_chain")
+        assert not hasattr(router, "preferred_provider")
 
-        resp = await router.call("writer", "prompt", "system")
-        assert resp.provider == "codex"
-        assert quota.available("claude-code") is False
+    def test_retired_router_options_fail_loudly(self):
+        with pytest.raises(TypeError, match="fallback_chain"):
+            ProviderRouter(fallback_chain=["codex"])
 
-    def test_call_sync_does_not_serialize_on_single_shared_worker(self):
+    def test_sync_calls_can_overlap_on_exact_assignment(self, tmp_path):
         provider = SlowCountingProvider()
         router = ProviderRouter(providers={provider.name: provider})
-        start = threading.Barrier(3)
+        context = _assigned_context(tmp_path, provider=provider.name)
 
-        def _call() -> ProviderResponse:
-            start.wait(timeout=2)
-            return router.call_sync("writer", "prompt", "system")
+        def call_once() -> str:
+            return router.call_sync(
+                "writer",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=context,
+            ).text
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(_call), pool.submit(_call)]
-            start.wait(timeout=2)
-            results = [future.result(timeout=2) for future in futures]
-
-        assert [result.provider for result in results] == ["claude-code", "claude-code"]
+            assert list(pool.map(lambda _item: call_once(), range(2))) == ["ok", "ok"]
         assert provider.max_active == 2
-
-
-# =====================================================================
-# ProviderRouter -- preferred provider config
-# =====================================================================
-
-
-@pytest.mark.skip(reason="provider preference routing retired")
-class TestPreferredProvider:
-    def test_apply_preference_reorders(self):
-        chain = ["claude-code", "codex", "gemini-free"]
-        result = ProviderRouter._apply_preference(chain, "gemini-free")
-        assert result == ["gemini-free", "claude-code", "codex"]
-
-    def test_apply_preference_noop_when_empty(self):
-        chain = ["claude-code", "codex"]
-        assert ProviderRouter._apply_preference(chain, "") == chain
-
-    def test_apply_preference_noop_when_not_in_chain(self):
-        chain = ["claude-code", "codex"]
-        assert ProviderRouter._apply_preference(chain, "grok-free") == chain
-
-    def test_apply_preference_already_first(self):
-        chain = ["claude-code", "codex"]
-        assert ProviderRouter._apply_preference(chain, "claude-code") == chain
-
-    @pytest.mark.asyncio
-    async def test_api_key_preferred_writer_ignored_without_opt_in(self, monkeypatch):
-        from tinyassets import runtime_singletons as runtime
-        from tinyassets.config import UniverseConfig
-
-        monkeypatch.setattr(
-            runtime, "universe_config",
-            UniverseConfig(preferred_writer="gemini-free"),
-        )
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("writer", "prompt", "system")
-        assert resp.provider == "claude-code"
-        assert providers["gemini-free"].call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_preferred_writer_tried_first_with_api_key_opt_in(self, monkeypatch):
-        from tinyassets import runtime_singletons as runtime
-        from tinyassets.config import UniverseConfig
-
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-        monkeypatch.setattr(
-            runtime, "universe_config",
-            UniverseConfig(preferred_writer="gemini-free"),
-        )
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("writer", "prompt", "system")
-        assert resp.provider == "gemini-free"
-
-    @pytest.mark.asyncio
-    async def test_api_key_preferred_judge_ignored_without_opt_in(self, monkeypatch):
-        from tinyassets import runtime_singletons as runtime
-        from tinyassets.config import UniverseConfig
-
-        monkeypatch.setattr(
-            runtime, "universe_config",
-            UniverseConfig(preferred_judge="groq-free"),
-        )
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("judge", "prompt", "system")
-        assert resp.provider == "codex"
-        assert providers["groq-free"].call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_preferred_judge_tried_first_with_api_key_opt_in(self, monkeypatch):
-        from tinyassets import runtime_singletons as runtime
-        from tinyassets.config import UniverseConfig
-
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-        monkeypatch.setattr(
-            runtime, "universe_config",
-            UniverseConfig(preferred_judge="groq-free"),
-        )
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("judge", "prompt", "system")
-        assert resp.provider == "groq-free"
-
-    @pytest.mark.asyncio
-    async def test_preferred_writer_falls_back_on_failure(self, monkeypatch):
-        from tinyassets import runtime_singletons as runtime
-        from tinyassets.config import UniverseConfig
-
-        monkeypatch.setattr(
-            runtime, "universe_config",
-            UniverseConfig(preferred_writer="gemini-free"),
-        )
-        providers = _make_providers(
-            **{"gemini-free": FakeProvider(
-                "gemini-free", "google",
-                fail_with=ProviderUnavailableError("down"),
-            )}
-        )
-        router = ProviderRouter(providers=providers)
-
-        resp = await router.call("writer", "prompt", "system")
-        # API-key provider is ignored by default; chain stays subscription-first.
-        assert resp.provider == "claude-code"
-
-
-# =====================================================================
-# ProviderRouter -- judge ensemble
-# =====================================================================
-
-
-@pytest.mark.skip(reason="platform provider fan-out retired")
-class TestJudgeEnsemble:
-    @pytest.mark.asyncio
-    async def test_fans_out_to_subscription_default_providers(self):
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        results = await router.call_judge_ensemble("judge this", "system")
-        # API-key-backed judges are ignored unless the host opts in.
-        assert len(results) == 2
-        families = {r.family for r in results}
-        assert families == {"openai", "local"}
-
-    @pytest.mark.asyncio
-    async def test_fans_out_to_all_available_with_api_key_opt_in(self, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-        providers = _make_providers()
-        router = ProviderRouter(providers=providers)
-
-        results = await router.call_judge_ensemble("judge this", "system")
-        assert len(results) == 5
-        families = {r.family for r in results}
-        assert families == {"openai", "google", "meta", "xai", "local"}
-
-    @pytest.mark.asyncio
-    async def test_partial_availability(self):
-        """Only registered providers are called — no duplicates."""
-        providers = {
-            "codex": FakeProvider("codex", "openai", "codex-resp"),
-            "gemini-free": FakeProvider("gemini-free", "google", "gemini-resp"),
-        }
-        router = ProviderRouter(providers=providers)
-
-        results = await router.call_judge_ensemble("judge this", "system")
-        assert len(results) == 1
-        families = {r.family for r in results}
-        assert families == {"openai"}
-
-    @pytest.mark.asyncio
-    async def test_ensemble_with_failures(self, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-        providers = {
-            "codex": FakeProvider("codex", "openai", fail_with=ProviderError("x")),
-            "gemini-free": FakeProvider("gemini-free", "google", "gemini-resp"),
-            "groq-free": FakeProvider("groq-free", "meta", "groq-resp"),
-            "ollama-local": FakeProvider("ollama-local", "local", "ollama-resp"),
-        }
-        router = ProviderRouter(providers=providers)
-
-        results = await router.call_judge_ensemble("judge this", "system")
-        # Codex fails -> gemini, groq, ollama should fill 3 slots.
-        assert len(results) >= 2
-        families = {r.family for r in results}
-        assert "openai" not in families
-
-    @pytest.mark.asyncio
-    async def test_empty_ensemble_when_all_fail(self):
-        all_fail = {
-            name: FakeProvider(name, name, fail_with=ProviderError("down"))
-            for name in ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"]
-        }
-        router = ProviderRouter(providers=all_fail)
-
-        results = await router.call_judge_ensemble("judge this", "system")
-        assert results == []
 
 
 # =====================================================================
@@ -747,28 +441,6 @@ class TestProviderRegistration:
 
         with patch("shutil.which", return_value="/usr/local/bin/codex"):
             assert CodexProvider.is_available()
-
-    @pytest.mark.skip(reason="fallback chains retired")
-    def test_effective_chain_excludes_unregistered_providers(self):
-        """Runtime chain skips absent CLI providers instead of advertising them first."""
-        router = ProviderRouter(
-            providers={
-                "codex": FakeProvider("codex", "openai"),
-                "ollama-local": FakeProvider("ollama-local", "local"),
-            },
-        )
-
-        chain, excluded = router.effective_chain(FALLBACK_CHAINS["writer"])
-
-        assert chain == ["codex", "ollama-local"]
-        assert [attempt.provider for attempt in excluded] == [
-            "claude-code",
-            "gemini-free",
-            "groq-free",
-            "grok-free",
-        ]
-        assert {attempt.skip_class for attempt in excluded} == {"not_in_registry"}
-
 
 # =====================================================================
 # ClaudeProvider (subprocess mock)
@@ -1280,37 +952,3 @@ class TestGrokProvider:
 
 
 # =====================================================================
-# Fallback chain definitions
-# =====================================================================
-
-
-@pytest.mark.skip(reason="fallback chain definitions retired")
-class TestFallbackChainDefinitions:
-    def test_writer_preference_chain_starts_with_claude(self):
-        """Static preference may name Claude; runtime effective_chain probes it."""
-        assert FALLBACK_CHAINS["writer"][0] == "claude-code"
-        assert FALLBACK_CHAINS["writer"][-1] == "ollama-local"
-
-    def test_judge_chain_starts_with_codex(self):
-        assert FALLBACK_CHAINS["judge"][0] == "codex"
-
-    def test_extract_chain_starts_with_codex(self):
-        assert FALLBACK_CHAINS["extract"][0] == "codex"
-        assert FALLBACK_CHAINS["extract"][-1] == "ollama-local"
-
-    def test_embed_is_local_only(self):
-        assert FALLBACK_CHAINS["embed"] == ["ollama-local"]
-
-    def test_all_chains_include_ollama(self):
-        """Ollama is in every chain as last-resort fallback."""
-        for role, chain in FALLBACK_CHAINS.items():
-            assert "ollama-local" in chain, f"{role} chain missing ollama-local"
-
-    def test_ollama_is_last_in_judge_chain(self):
-        """Ollama is last in judge chains (text-parsed, not JSON)."""
-        assert FALLBACK_CHAINS["judge"][-1] == "ollama-local"
-
-    def test_grok_in_writer_and_judge_chains(self):
-        """Grok appears in writer and judge chains for diversity."""
-        assert "grok-free" in FALLBACK_CHAINS["writer"]
-        assert "grok-free" in FALLBACK_CHAINS["judge"]

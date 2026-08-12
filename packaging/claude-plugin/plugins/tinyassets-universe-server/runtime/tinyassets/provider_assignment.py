@@ -173,11 +173,15 @@ def reserve_served_provider_budget(
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
         used_tokens = sum(
-            int(row[3]) if row[0] == "succeeded" else int(row[1])
+            int(row[3])
+            if row[0] in {"succeeded", "exceeded"} and row[3] is not None
+            else int(row[1])
             for row in rows
         )
         used_cost = sum(
-            int(row[4]) if row[0] == "succeeded" else int(row[2])
+            int(row[4])
+            if row[0] in {"succeeded", "exceeded"} and row[4] is not None
+            else int(row[2])
             for row in rows
         )
         remaining_tokens = authority.max_tokens - used_tokens

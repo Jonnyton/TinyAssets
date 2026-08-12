@@ -72,36 +72,23 @@ class TestIsAvailableClassmethod:
         assert _Dummy.is_available() is True
 
 
-class TestStubSkipsWhenBinaryAbsent:
-    def test_claude_not_registered_when_binary_absent(
-        self, monkeypatch, reset_stub
-    ):
-        import tinyassets.providers.claude_provider as _cp
-        monkeypatch.setattr(_cp.ClaudeProvider, "is_available", classmethod(lambda cls: False))
+def test_provider_binaries_never_materialize_an_ambient_router(
+    monkeypatch, reset_stub
+):
+    import tinyassets.providers.claude_provider as claude_provider
+    import tinyassets.providers.codex_provider as codex_provider
 
-        stub = _reload_stub()
+    monkeypatch.setattr(
+        claude_provider.ClaudeProvider,
+        "is_available",
+        classmethod(lambda cls: True),
+    )
+    monkeypatch.setattr(
+        codex_provider.CodexProvider,
+        "is_available",
+        classmethod(lambda cls: True),
+    )
 
-        assert stub._real_router is not None
-        assert "claude-code" not in stub._real_router.available_providers
+    stub = _reload_stub()
 
-    def test_codex_not_registered_when_binary_absent(
-        self, monkeypatch, reset_stub
-    ):
-        import tinyassets.providers.codex_provider as _cdp
-        monkeypatch.setattr(_cdp.CodexProvider, "is_available", classmethod(lambda cls: False))
-
-        stub = _reload_stub()
-
-        assert stub._real_router is not None
-        assert "codex" not in stub._real_router.available_providers
-
-    def test_claude_registered_when_binary_present(
-        self, monkeypatch, reset_stub
-    ):
-        import tinyassets.providers.claude_provider as _cp
-        monkeypatch.setattr(_cp.ClaudeProvider, "is_available", classmethod(lambda cls: True))
-
-        stub = _reload_stub()
-
-        assert stub._real_router is not None
-        assert "claude-code" in stub._real_router.available_providers
+    assert stub._real_router is None

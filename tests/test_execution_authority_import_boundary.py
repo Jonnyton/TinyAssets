@@ -78,7 +78,6 @@ import importlib, json, sys
 targets = [
     "tinyassets.api.runs",
     "tinyassets.runs",
-    "tinyassets.cloud_worker",
     "tinyassets.branch_tasks_v2",
 ]
 for target in targets:

@@ -107,8 +107,8 @@ documents each):
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
 Generate the daemon-only request-admission key without printing it. The
-dedicated file is exposed only to the daemon, not to workers, Cloudflare, or
-logging sidecars, and the atomic installer preserves its ownership and mode:
+dedicated file is exposed only to the daemon, not to Cloudflare or logging
+sidecars, and the atomic installer preserves its ownership and mode:
 
 ```bash
 openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /opt/tinyassets/deploy/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
@@ -117,7 +117,7 @@ openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyass
 For automated production deploys, store a separately generated value under the
 GitHub Actions repository secret `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`.
 The deploy validates it before touching the host and installs it before
-recreating the daemon/workers. Ordinary deploys use `set-once` and fail closed
+recreating the daemon. Ordinary deploys use `set-once` and fail closed
 if GitHub and the host differ because persisted idempotency hashes and admission
 witnesses depend on the current key. If the key crosses an execution boundary,
 first ship the reviewed daemon-only boundary correction, replace the repository
@@ -125,11 +125,9 @@ secret, then manually dispatch that same correction image with
 `rotate_request_idempotency_hmac=true`. Incident rotation intentionally
 invalidates witnesses signed by the exposed key. The rotation workflow requires
 the resolved target to match the exact immutable image already running on the
-daemon and four workers, proves the worker identities lack minting authority in
-host-controlled Docker configuration metadata before the stop-writer fence,
-then reads state by those immutable IDs and repeats the name-to-ID check before
-it transmits the replacement. Verify the restarted worker environments and
-canonical MCP health before resuming activation.
+daemon, fences the writer, then reads state by that immutable ID and repeats
+the name-to-ID check before it transmits the replacement. Verify the restarted
+daemon environment and canonical MCP health before resuming activation.
 
 Generate a unique daemon-only agent interchange key without printing it to the
 terminal. This writes canonical single-line base64 for 48 random bytes:
@@ -155,72 +153,21 @@ ls -la /etc/tinyassets/env /etc/tinyassets/agent-interchange.env /etc/tinyassets
 If ownership/mode differs, re-run the bootstrap — it resets to
 `root:tinyassets 640`.
 
-## Step 3b — Codex auth persistent volume
+## Step 3b — Requester credential custody
 
-Codex CLI uses single-use OAuth refresh tokens that rotate in-place
-during normal operation. The compose stack persists Codex's auth state
-across container restarts at `CODEX_HOME=/data/.codex` on the shared
-`tinyassets-data` Docker volume (see `deploy/compose.yml`).
-Without this, every restart throws away rotated tokens and the next
-refresh attempt fails with `refresh_token_reused`. Design source:
-<https://developers.openai.com/codex/auth/ci-cd-auth>.
+Production has no host-owned provider credential, shared provider auth
+directory, provider keepalive, or worker credential migration. Do not seed
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, provider API keys, or provider auth blobs in
+`/etc/tinyassets/env` or the shared data volume.
 
-**The deploy workflow prepares the auth directory + migration automatically.**
-`.github/workflows/deploy-prod.yml` has a `Prepare codex auth
-persistent volume` step that runs on every deploy. It is idempotent:
-
-- Creates `tinyassets-data` when missing, resolves its local mountpoint,
-  and creates `.codex` inside it; repairs ownership (`uid 1001:1001`)
-  and mode (`700`) unconditionally every deploy so a failed earlier
-  attempt gets healed back to a state uid 1001 can write.
-- On the very first deploy onto a pre-existing live droplet, copies
-  the rotated `auth.json` out of the running `tinyassets-worker`
-  container into `/data/.codex` so the post-restart container preserves
-  the live refresh chain. It checks the new `/data/.codex/auth.json`
-  path first and then the legacy `/app/.codex/auth.json` path for the
-  one-time migration.
-- After that, every subsequent deploy is a complete no-op for this
-  section — the volume + `auth.json` are already in place and the
-  entrypoint preserves the file on restart.
-
-The auth file is shared across the `tinyassets-daemon` and
-`tinyassets-worker` containers (both call `codex exec`: the daemon's
-in-process executor handles `run_branch` MCP calls; the worker's
-`fantasy_daemon` subprocess handles queued BranchTasks). Concurrent
-refresh attempts are serialized by `/usr/local/bin/codex` (which is
-`deploy/codex-flock-wrapper.sh`, installed by the Dockerfile in place
-of the bare codex symlink) — it takes an exclusive `flock -x` on
-`$CODEX_HOME/.lock` before every invocation. This mitigates the
-`refresh_token_reused` race that Codex's official CI/CD auth guide
-warns about for shared-auth scenarios (Codex Issue #10332).
-
-**Host action is only needed in two rare cases:**
-
-1. **Brand-new droplet, no live container to migrate from.** The
-   workflow step creates the empty `/data/.codex`; the new container then
-   seeds `auth.json` from `TINYASSETS_CODEX_AUTH_JSON_B64` (GitHub
-   Actions secret or `/etc/tinyassets/env`) on first boot. Host action:
-   keep `TINYASSETS_CODEX_AUTH_JSON_B64` rotated so a fresh-droplet
-   bootstrap has a known-good seed available.
-2. **Persistent volume wiped (disaster recovery).** Same as case 1:
-   the entrypoint reseeds from the env-var on the next boot. Host
-   action: same — keep the GitHub Actions secret or `/etc/tinyassets/env`
-   value fresh.
-
-In normal steady-state operation (volume intact, container restarts
-for image bumps), Codex's in-place refresh chain survives indefinitely
-with no host intervention.
-
-Claude Code subscription auth mirrors this persistence pattern directly.
-`deploy/compose.yml` sets `CLAUDE_CONFIG_DIR=/data/.claude`, and the
-entrypoint creates that directory on the shared `tinyassets-data` volume.
-The matching keepalive workflow runs a trivial `claude -p` call with the
-same `CLAUDE_CONFIG_DIR` so the subscription session is exercised after
-deploys and during idle weeks. Host login command for a fresh volume:
-
-```bash
-sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude auth login --claudeai
-```
+Each universe stores its user-chosen credentials in its vault and assigns a
+serving credential to each workflow through the app/browser MCP setup flow.
+The daemon resolves that exact assignment for every execution and launches the
+provider with a private credential snapshot. If the assignment is missing or
+unavailable, the queued work remains held with
+`no_requester_owned_executor`; it never borrows a host credential and never
+switches providers. Users model any desired alternative as an explicit
+workflow branch.
 
 ## Step 4 — Start the daemon (~30 sec)
 
@@ -518,7 +465,7 @@ Then `DO_SSH_USER=deploy` in the GH secret.
 ## Row K — Log aggregation (sidecar in compose)
 
 The `logs` service in `deploy/compose.yml` runs a Vector sidecar that
-receives `daemon`, `cloudflared`, and worker stdout through Docker's
+receives `daemon` and `cloudflared` stdout through Docker's
 asynchronous Fluent logging driver on host-loopback port 24224 and forwards
 events. Vector receives no Docker socket or container-control capability. Two paths:
 

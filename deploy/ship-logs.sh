@@ -13,8 +13,8 @@
 # Environment variables:
 #   LOG_DEST          rclone destination URL  (REQUIRED unless DRY_RUN=1)
 #   LOG_CONTAINERS    space-separated container names to archive
-#                     default: daemon, tunnel, and all four cloud workers
-#   LOG_SINCE         docker logs --since window  default: 24h
+#                     default: daemon, tunnel, and logs
+#   LOG_SINCE         docker logs --since window  default: 2h (timer runs hourly)
 #   LOG_RETAIN_DAYS   delete remote archives older than N days  default: 30
 #   DRY_RUN           set to 1 to validate env + print plan without touching anything
 #   LOG_DIR           local scratch dir for log files  default: /tmp/tinyassets-logs-$$
@@ -31,8 +31,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 LOG_DEST="${LOG_DEST:-}"
-LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel tinyassets-logs tinyassets-slack-agent}"
-LOG_SINCE="${LOG_SINCE:-24h}"
+LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel tinyassets-logs}"
+LOG_SINCE="${LOG_SINCE:-2h}"
 LOG_RETAIN_DAYS="${LOG_RETAIN_DAYS:-30}"
 DRY_RUN="${DRY_RUN:-0}"
 LOG_DIR="${LOG_DIR:-/tmp/tinyassets-logs-$$}"
@@ -77,7 +77,11 @@ fi
 # Collect Docker container logs
 # ---------------------------------------------------------------------------
 
-mkdir -p "${LOG_DIR}"
+if [[ -e "${LOG_DIR}" ]]; then
+    echo "ERROR: LOG_DIR must not already exist: ${LOG_DIR}" >&2
+    exit 1
+fi
+mkdir -m 700 -p "${LOG_DIR}"
 trap 'rm -rf "${LOG_DIR}"' EXIT
 
 echo "[ship-logs] collecting logs for containers: ${LOG_CONTAINERS}"
@@ -159,7 +163,9 @@ rclone lsf --format "tp" "${LOG_DEST}/" 2>/dev/null \
     | sort \
     | while IFS=";" read -r _size path; do
         # Extract timestamp from tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz
-        ts_str=$(echo "${path}" | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}' || true)
+        ts_str=$(echo "${path}" \
+            | grep -oP '^tinyassets-logs-\K\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?=\.tar\.gz$)' \
+            || true)
         if [[ -z "${ts_str}" ]]; then
             continue
         fi

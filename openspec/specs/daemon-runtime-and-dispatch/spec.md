@@ -53,60 +53,6 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 - **WHEN** the worker id is blank or equal to the shared host default
 - **THEN** `reclaim_predecessor_tasks` reclaims nothing and the lease TTL remains the only fallback
 
-### Requirement: The supervisor keeps one daemon subprocess alive with backoff, producer restart, auth quarantine, and graceful drain
-The cloud-worker supervisor (`tinyassets.cloud_worker` run-supervisor loop) SHALL spawn the daemon subprocess, wait for its exit, and respawn it with exponential backoff — a shorter idle backoff after clean (no-work) exits and a longer crash backoff after non-zero exits — until a SIGTERM/SIGINT stop is requested. While a subprocess runs it SHALL poll for newly-queued branch tasks and restart the child so pending work is picked up, SHALL write a phase-tagged heartbeat file, and SHALL quarantine itself (skip the spawn, beat, back off, re-check) when the writer provider is unauthenticated so a dead-auth worker never claims-and-fails tasks. On a stop signal, once the child's death is CONFIRMED, it SHALL release that worker's own orphaned leases so a live peer can pick the work up immediately rather than waiting out the lease TTL.
-
-#### Scenario: backoff differs by exit kind
-- **WHEN** the subprocess exits cleanly versus crashing
-- **THEN** the supervisor sleeps an idle backoff after the clean exit and a crash backoff after the crash
-- **AND** consecutive exits of the same kind grow the backoff up to its ceiling
-
-#### Scenario: newly queued work restarts the child
-- **WHEN** a pending branch task appears while the subprocess is running and no branch task is already running
-- **THEN** the supervisor restarts the subprocess so the pending task is claimed on the next spawn
-
-#### Scenario: an unauthenticated writer quarantines the worker
-- **WHEN** the writer provider reports `not_logged_in` before a spawn
-- **THEN** the supervisor skips the spawn, writes an `auth_quarantined` heartbeat, and backs off without claiming any task
-
-#### Scenario: confirmed child death releases its leases
-- **WHEN** a stop signal terminates the child and its exit is confirmed
-- **THEN** the supervisor releases that worker's own orphaned leases during graceful drain
-
-### Requirement: The container healthcheck asserts liveness, not mere process existence
-The container healthcheck (`tinyassets.cloud_worker_healthcheck`) SHALL report healthy only when the supervisor heartbeat file exists, is parseable, and is fresh relative to the supervisor's own declared backoff sleep bounded by a hard staleness floor, AND no pickable branch task has been waiting past the pickable-staleness bound. It SHALL exit 0 when healthy and exit 1 with a one-line reason otherwise, so a wedged-but-running worker (a stale heartbeat or pickable work stuck unpicked) is reported unhealthy and self-heals via container restart rather than passing a naive process-alive check.
-
-#### Scenario: a missing or stale heartbeat is unhealthy
-- **WHEN** the supervisor heartbeat file is absent, unreadable, or older than its allowed staleness
-- **THEN** the healthcheck reports unhealthy and exits 1 with a one-line reason
-
-#### Scenario: stuck pickable work is unhealthy
-- **WHEN** a pickable branch task has been waiting past the pickable-staleness bound while the heartbeat is stale
-- **THEN** the healthcheck reports unhealthy
-
-#### Scenario: a beating supervisor with no stuck work is healthy
-- **WHEN** the heartbeat is fresh and no pickable work is waiting past the bound
-- **THEN** the healthcheck reports healthy and exits 0
-
-### Requirement: Host-singleton and fleet idle-cycle coordination fail safe
-Two file-lock coordination primitives SHALL keep the runtime safe under concurrency. `tinyassets.singleton_lock` SHALL enforce a single host daemon instance via an OS-exclusive file lock that is the ground truth, with a PID sidecar as a human-readable breadcrumb; a PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. `tinyassets.idle_cycle` SHALL dedupe the no-work heartbeat cycle across a fleet with a run lock plus a freshness stamp, skipping when another worker is mid-cycle or has a fresh stamp, and SHALL fail OPEN — degrading to a possibly-duplicate cycle, never a stalled heartbeat — when its lock or stamp I/O fails.
-
-#### Scenario: a second host instance cannot acquire the lock
-- **WHEN** a second process attempts to acquire the singleton lock while another live process holds it
-- **THEN** acquisition fails and reports the holding PID from the sidecar
-
-#### Scenario: a stale PID sidecar is overwritten
-- **WHEN** a PID sidecar exists but no process holds the paired OS lock
-- **THEN** acquisition succeeds and the sidecar is overwritten with the new PID
-
-#### Scenario: a fresh foreign idle-cycle stamp is skipped
-- **WHEN** a worker attempts the idle cycle while a different worker's stamp is within the freshness window
-- **THEN** it declines the slot and does not run a duplicate no-work cycle
-
-#### Scenario: idle-cycle coordination I/O failure fails open
-- **WHEN** the idle-cycle run lock or stamp I/O errors
-- **THEN** the slot is granted (fail open) so the heartbeat cannot stall
-
 ### Requirement: Scheduled and event-triggered invocation is persisted and restart-recoverable
 Scheduled and event-triggered branch invocation (`tinyassets.scheduler`) SHALL persist cron and interval schedules and event subscriptions in the universe's runs SQLite database so they survive daemon restart, with the tick loop reading the database each tick and firing due schedules. It SHALL deliver each event at most once per subscription through a persisted `scheduler_delivered_events` idempotency table, SHALL rate-limit active schedules and subscriptions per owner, and SHALL gate schedule removal to the owner or an admin. As-built limitation: on restart an interval schedule catches up a single missed fire on the first tick (its interval has already elapsed), but a cron schedule fires only the current due minute and does NOT backfill cron ticks missed while the daemon was down.
 
@@ -711,3 +657,53 @@ fleet.
 - **AND** a mismatched observed image or revision is reported only as
   unavailable, never copied into the artifact
 - **AND** retains the artifact for no more than seven days
+
+### Requirement: Daemon queue execution is credential-driven and fail-closed
+Before claiming a pending BranchTask, the daemon SHALL resolve the physical queue universe's current provider assignment and sole serving agent binding, verify the assigned credential is available, and bind an immutable credential snapshot to all LLM calls in that branch run. It SHALL never use a platform, host, market, or alternate-provider credential for the task.
+
+#### Scenario: Runnable task uses its universe assignment
+- **WHEN** a pending task belongs to a universe with one current serving binding and usable assigned credential
+- **THEN** the daemon claims the task and every LLM node uses only that credential
+
+#### Scenario: Missing assignment holds pending work
+- **WHEN** a pending task's universe has no current usable assigned serving credential
+- **THEN** the daemon leaves the task pending with `hold_reason` equal to `no_requester_owned_executor`
+- **AND** it does not invoke a provider or claim the task
+
+#### Scenario: Later assignment releases the hold
+- **WHEN** a previously held task's universe gains a current usable serving credential
+- **THEN** the daemon clears the hold marker and the task becomes eligible for ordinary deterministic dispatch
+
+#### Scenario: One held task does not block runnable work
+- **WHEN** the highest-scored task is held and another pending task has an available assigned credential
+- **THEN** the dispatcher selects the highest-scored runnable task
+
+### Requirement: Production container ownership is worker-free
+The canonical production compose and deploy fence SHALL recognize only the default `daemon`, `tunnel`, and `logs` services plus the profile-gated `slack-agent`; it SHALL define no cloud-worker service, worker provider pin, worker healthcheck, worker route input, or worker auth-home materialization.
+
+Deploy quiescence SHALL preserve every queued row byte-for-byte and treat queued work as valid daemon-owned state, not as a fleet risk to cancel. The preservation baseline SHALL be sampled only after controlled writers are quiesced. The deploy observer SHALL publish its exact expected container contract; cleanup verification SHALL compare against that contract rather than a hardcoded fleet count and SHALL validate the active immutable image. Docker Compose schema rendering SHALL be a tested acceptance gate. Fluent log forwarding SHALL keep an explicit readable local cache large enough for the hourly offsite collector's default window, and cleanup/pruning SHALL target only script-owned scratch space and canonical TinyAssets archive names.
+
+#### Scenario: Canonical compose has no fixed workers
+- **WHEN** the production compose file is inspected or rendered without optional profiles
+- **THEN** no `worker`, `worker-codex-2`, `worker-claude-1`, or `worker-claude-2` service exists
+- **AND** the daemon remains the queue-capable runtime
+
+#### Scenario: Deploy fence rejects a stray worker
+- **WHEN** deployment ownership discovery finds a container executing the retired cloud-worker module
+- **THEN** the fence refuses deployment as a stray writer instead of accepting it as canonical
+
+#### Scenario: Deploy preserves pending and running queue state
+- **WHEN** the writer-free deploy fence quiesces the prior daemon while queue rows exist
+- **THEN** the before and after queue inventories are identical
+- **AND** no row is cancelled, terminalized, or assigned a false executor hold by deployment machinery
+
+### Requirement: Host daemon singleton fails safe
+`tinyassets.singleton_lock` SHALL enforce one host daemon instance via an OS-exclusive file lock as ground truth, with a PID sidecar as a human-readable breadcrumb. A PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. The singleton SHALL NOT imply provider-shaped daemon capacity.
+
+#### Scenario: A second host instance cannot acquire the lock
+- **WHEN** a second process attempts to acquire the singleton lock while another live process holds it
+- **THEN** acquisition fails and reports the holding PID from the sidecar
+
+#### Scenario: A stale PID sidecar is overwritten
+- **WHEN** a PID sidecar exists but no process holds the paired OS lock
+- **THEN** acquisition succeeds and the sidecar is overwritten with the new PID

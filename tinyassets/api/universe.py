@@ -6027,7 +6027,7 @@ def _action_declare_universe_loop(
     ``_action_create_universe``, and the public ``write_graph target="universe"``
     never forwarded it — so no publicly created universe could declare a loop,
     then or ever. Every downstream consequence followed silently: no loop ->
-    ``select_project_loop_daemon`` returns None -> the cloud worker skips runtime
+    ``select_project_loop_daemon`` returns None -> the daemon skips runtime
     registration -> nothing converges an automation's activation -> scheduled
     execution never runs.
 
@@ -6079,9 +6079,9 @@ def _action_declare_universe_loop(
             "current": soul.loop_branch_def_id,
         })
 
-    # A declared loop is not yet a SERVABLE loop: without a project-loop daemon
-    # for this universe, `cloud_worker._register_worker_runtime` skips runtime
-    # registration and nothing claims the universe's work.
+    # A declared loop is not yet a SERVABLE loop: without an assigned serving
+    # credential and a daemon runtime for this universe, nothing can claim and
+    # execute the universe's work.
     #
     # This route deliberately does NOT provision that daemon. Three consecutive
     # cross-family reviews rejected doing so, and the last one showed why the

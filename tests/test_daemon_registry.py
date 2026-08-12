@@ -159,7 +159,7 @@ def test_ensure_daemon_runtime_reuses_live_but_not_retired_worker_slot(
     assert second["runtime_instance_id"] == first["runtime_instance_id"]
     assert second["status"] == "provisioned"
     assert second["metadata"]["worker_id"] == "codex-1"
-    assert second["metadata"]["runtime_registration"] == "cloud_worker"
+    assert second["metadata"]["runtime_registration"] == "daemon_runtime"
     runtimes = daemon_registry.list_runtime_instances(
         tmp_path, universe_id="patch-loop-live",
     )
