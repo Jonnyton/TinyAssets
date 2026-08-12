@@ -196,7 +196,11 @@ class ClaudeProvider(BaseProvider):
             cmd.extend(["--system-prompt", system])
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
-        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        proc_env = subprocess_env_for_provider(
+            self.name,
+            universe_dir=universe_dir,
+            credential_snapshot_dir=config.credential_snapshot_dir,
+        )
 
         win_kw = _no_window_kwargs()
         if use_shell:
@@ -287,7 +291,11 @@ class ClaudeProvider(BaseProvider):
             cmd.extend(["--system-prompt", system])
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
-        proc_env = subprocess_env_for_provider(self.name, universe_dir=universe_dir)
+        proc_env = subprocess_env_for_provider(
+            self.name,
+            universe_dir=universe_dir,
+            credential_snapshot_dir=config.credential_snapshot_dir,
+        )
 
         win_kw = _no_window_kwargs()
         if use_shell:
