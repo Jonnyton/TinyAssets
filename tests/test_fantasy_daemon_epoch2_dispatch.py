@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -52,6 +53,25 @@ def _epoch2_tests_use_assigned_credential_seam(monkeypatch):
         yield provider_call
 
     monkeypatch.setattr(execution, "bind_assigned_provider_call", bind)
+
+    # The credential-driven dispatch establishes its daemon claim context via
+    # ensure_assigned_daemon_claim_context, which resolves the universe's
+    # assigned serving credential and would fail closed here. Isolate that
+    # custody step by building the SAME real Epoch2 claim context from the
+    # worker these tests seed (_seed_cloud_worker), so queue fencing is
+    # exercised for real while credential resolution is stubbed out.
+    def _seeded_claim_context(base_path, universe_dir, *, daemon_id):
+        from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+
+        return Epoch2BranchTaskAdapter(Path(base_path)).worker_claim_context(
+            worker_id=os.environ["TINYASSETS_WORKER_ID"],
+            runtime_instance_id=os.environ["TINYASSETS_RUNTIME_INSTANCE_ID"],
+            universe_id=Path(universe_dir).name,
+        )
+
+    monkeypatch.setattr(
+        execution, "ensure_assigned_daemon_claim_context", _seeded_claim_context
+    )
 
 
 def _activation_subject(ref: str) -> ExecutionSubject:

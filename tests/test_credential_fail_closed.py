@@ -134,26 +134,19 @@ def test_universe_without_credential_does_not_inherit_host_auth(host_auth, tmp_p
     assert not (universe / ".credentials").exists()
 
 
-def test_host_local_daemon_keeps_its_own_auth(host_auth):
-    """The guard must not break the host's own flows.
+def test_no_universe_launch_fails_closed(host_auth):
+    """A no-universe provider launch now fails closed, never inherits host auth.
 
-    MUTATION: apply the universe empty-base environment without a universe
-    binding -> RED, because the host daemon would lose its own credentials.
+    The cloud-worker-fleet retirement closes the previously-deferred host-local
+    no-universe gap (was gated behind TINYASSETS_PROVIDER_AUTHORITY_V2): the
+    platform never supplies an LLM and never falls back to ambient host
+    credentials, so a launch with no universe (hence no serving binding to
+    resolve) raises rather than borrowing the host's subscription environment.
 
-    Keystone slice 1 (requester-owned execution) deliberately does NOT strip
-    this no-universe path: the founder fail-closed guarantee covers USER
-    universes (which carry a universe_dir and hit the router-level ceiling),
-    and host-local no-universe fail-close is deferred to the
-    TINYASSETS_PROVIDER_AUTHORITY_V2-gated successor (constrain-set-engine
-    Decision 5). So this asserts host-env RETENTION, not the strip.
+    MUTATION: return the host environment for the no-universe branch -> RED.
     """
-    env = subprocess_env_for_provider("claude-code", universe_dir=None)
-
-    for name in HOST_SUBSCRIPTION_ENV_VARS:
-        assert env.get(name) == f"host-value-for-{name}", (
-            f"{name} was stripped for a host-local call with no universe in "
-            "play; that breaks the daemon and dev loop"
-        )
+    with pytest.raises(ProviderUnavailableError, match="assigned credential"):
+        subprocess_env_for_provider("claude-code", universe_dir=None)
 
 
 def test_host_local_api_key_policy_strips_all_six_variables(host_auth, monkeypatch):
@@ -417,20 +410,25 @@ def test_default_cli_homes_cannot_recover_host_auth(tmp_path, monkeypatch):
     assert effective_claude_home != host_home / ".claude"
 
 
-def test_host_local_execution_does_not_invoke_vault_helpers(host_auth, monkeypatch):
-    """A host-local call must not depend on universe vault helpers."""
+def test_no_universe_launch_fails_closed_before_any_vault_helper(
+    host_auth, monkeypatch
+):
+    """The no-universe fail-close happens before touching any vault helper.
+
+    If the branch reached apply_provider_auth_env it would raise the synthetic
+    RuntimeError below; instead it must raise the typed ProviderUnavailableError
+    first, proving the fail-close is decided before any credential machinery.
+    """
 
     def broken_apply(env, provider_name, *, universe_dir=None):
-        raise RuntimeError("vault helper must not run for host-local execution")
+        raise RuntimeError("vault helper must not run for a no-universe launch")
 
     monkeypatch.setattr(
         "tinyassets.credential_vault.apply_provider_auth_env", broken_apply
     )
 
-    env = subprocess_env_for_provider("claude-code", universe_dir=None)
-
-    for name in HOST_SUBSCRIPTION_ENV_VARS:
-        assert env.get(name) == f"host-value-for-{name}"
+    with pytest.raises(ProviderUnavailableError, match="assigned credential"):
+        subprocess_env_for_provider("claude-code", universe_dir=None)
 
 
 def test_universe_child_environment_is_default_deny_with_safe_runtime_basics(
@@ -776,25 +774,23 @@ def test_helper_outside_overlay_path_is_rejected_after_helper(
     assert not outside.exists()
 
 
-def test_host_local_countercase_preserves_unknown_ambient_authority(
+def test_no_universe_launch_fails_closed_for_unknown_ambient_authority(
     host_auth, monkeypatch
 ):
-    """No-universe host tooling remains an ordinary inherited environment."""
+    """No-universe launch fails closed even for unrecognized ambient tokens."""
     monkeypatch.setenv("FUTURE_PROVIDER_MASTER_TOKEN", "host-local-only")
 
-    env = subprocess_env_for_provider("claude-code", universe_dir=None)
+    with pytest.raises(ProviderUnavailableError, match="assigned credential"):
+        subprocess_env_for_provider("claude-code", universe_dir=None)
 
-    assert env["FUTURE_PROVIDER_MASTER_TOKEN"] == "host-local-only"
 
-
-def test_host_local_countercase_preserves_future_provider_name(
+def test_no_universe_launch_fails_closed_for_future_provider_name(
     host_auth, monkeypatch
 ):
     monkeypatch.setenv("FUTURE_PROVIDER_MASTER_TOKEN", "host-local-only")
 
-    env = subprocess_env_for_provider("future-cli", universe_dir=None)
-
-    assert env["FUTURE_PROVIDER_MASTER_TOKEN"] == "host-local-only"
+    with pytest.raises(ProviderUnavailableError, match="assigned credential"):
+        subprocess_env_for_provider("future-cli", universe_dir=None)
 
 
 def test_provider_base_runtime_mirror_matches_canonical():

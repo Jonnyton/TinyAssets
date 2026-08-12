@@ -426,8 +426,8 @@ def _pump_assigned_cloud_automation(
         audience = BackgroundBranchExecutorAudience(
             executor_class=BackgroundBranchExecutorClass.CLOUD,
             daemon_id=context.daemon_id,
-            runtime_id=context.runtime_instance_id,
-            worker_id=context.worker_id,
+            runtime_id=context.descriptor.runtime_instance_id,
+            worker_id=context.descriptor.worker_id,
         )
         activated = activate_one_requested_cloud_automation(
             base,
@@ -524,7 +524,7 @@ def _try_dispatcher_pick(
                     resolved_universe,
                     daemon_id=daemon_id,
                 )
-                worker_id = candidate_context.worker_id
+                worker_id = candidate_context.descriptor.worker_id
                 if candidate_context is not None and candidate_context.daemon_id == daemon_id:
                     epoch2_adapter = candidate_adapter
                     epoch2_context = candidate_context
