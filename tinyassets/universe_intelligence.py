@@ -645,11 +645,20 @@ def converse(
                 universe_id=uid,
                 binding_id=agent_binding_id,
             )
+            # `binding_revision` is the revision the router pinned when the
+            # channel was bound; the live serving binding may have moved FORWARD
+            # since (re-configure, provider attach). Requiring exact equality
+            # orphaned the Slack path the moment a universe attached its provider
+            # (its binding flips to `serving` at a higher revision). Reject only a
+            # ROLLED-BACK live binding (live < pinned); revisions are monotonic,
+            # so a forward move is the same owner's evolved binding, not a
+            # substitution. `status == "serving"` (a real provider is attached)
+            # and `created_by == principal` (the authenticated owner) still gate.
             if (
                 selected is None
                 or selected["status"] != "serving"
                 or selected["created_by"] != capability.principal_id
-                or int(selected["revision"]) != binding_revision
+                or int(selected["revision"]) < binding_revision
             ):
                 raise PermissionError("connect your provider")
         else:

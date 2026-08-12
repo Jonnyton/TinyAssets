@@ -167,10 +167,20 @@ class ChannelRouter:
                 universe_id=binding.universe_id,
                 binding_id=binding.agent_binding_id,
             )
+            # A live binding is either `configured` (provisioned) or `serving`
+            # (provider attached) — and `serving` is the ONE state that can
+            # actually answer a turn. The channel binding freezes a revision at
+            # bind time; the agent then evolves forward (re-configure, attach a
+            # provider), so pinning an EXACT revision orphans a channel's routing
+            # the moment its universe becomes able to reply. Re-derive ownership
+            # from current state per the module contract: same binding id (looked
+            # up by stable id, so a replaced agent → None → fails closed), a live
+            # status, and a revision that has only moved forward. A deleted,
+            # revoked, or rolled-back binding still fails closed.
             return (
                 agent is not None
-                and agent.get("status") == "configured"
-                and int(agent.get("revision", 0)) == binding.binding_revision
+                and agent.get("status") in ("configured", "serving")
+                and int(agent.get("revision", 0)) >= binding.binding_revision
             )
         except (KeyError, TypeError, ValueError, OSError, sqlite3.Error) as exc:
             logger.debug("channel binding ownership check failed closed (%s)", type(exc).__name__)
