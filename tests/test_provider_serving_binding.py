@@ -344,8 +344,11 @@ def test_bind_serving_provider_derives_authority_and_wires_one_generation(tmp_pa
     assert stored_agent["revision"] == 2
     assert provider_binding.owner_user_id == "owner-1"
     assert provider_binding.universe_id == "u-owner"
-    assert provider_binding.allowed_operations == ("converse",)
-    assert provider_binding.allowed_roles == ("writer",)
+    # The serving binding's scope was widened so the universe's assigned
+    # credential can BOTH converse and run the daemon's branches (run_graph),
+    # judge, and extract — the credential-driven execution grant.
+    assert provider_binding.allowed_operations == ("converse", "run_graph")
+    assert provider_binding.allowed_roles == ("writer", "judge", "extract")
     assert assignment.state == "ready"
     assert assignment.binding_id == provider_binding.binding_id
     assert assignment.assignment_digest == provider_binding.assignment_digest
@@ -577,7 +580,10 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
         payload={"provider": "codex"},
     )
     assert connected["status"] == "ready"
-    assert connected["provider_binding"]["allowed_operations"] == ["converse"]
+    assert connected["provider_binding"]["allowed_operations"] == [
+        "converse",
+        "run_graph",
+    ]
     assert "credential_reference_digest" not in connected["provider_binding"]
 
     enabled = custom_agents(

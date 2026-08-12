@@ -33,6 +33,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkBindingRoot,
     ProviderWorkBindingSeed,
     ProviderWorkBindingService,
+    provider_work_binding_class,
     provider_work_binding_id,
 )
 from tinyassets.storage.provider_work_authority import (
@@ -215,11 +216,21 @@ def bind_serving_provider(
 
     admission = provider_assignment_admission()
     store = SQLiteProviderWorkAuthorityStore(base)
+    # Derive the binding_class exactly as the issue path does (from the seed's
+    # allowed operations/roles), NOT a hardcoded "serving". The serving scope
+    # was widened to include run_graph/judge/extract so the daemon's assigned
+    # credential can run branches; provider_work_binding_class only returns
+    # "serving" for the narrow (converse)/(writer) scope, so a hardcoded
+    # "serving" here predicted a binding_id the issue path never mints, and the
+    # bind's assignment/binding digests disagreed. Mirror the real derivation.
     serving_binding_id = provider_work_binding_id(
         owner_user_id=owner,
         universe_id=uid,
         provider=selected,
-        binding_class="serving",
+        binding_class=provider_work_binding_class(
+            allowed_operations=_SERVING_OPERATIONS,
+            allowed_roles=_SERVING_ROLES,
+        ),
     )
     with admission.exclusive(universe):
         agent = get_binding(base, universe_id=uid, binding_id=binding_id)

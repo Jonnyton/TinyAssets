@@ -1719,5 +1719,6 @@ __all__ = [
     "ProviderUniverseWorkReceipt",
     "ProviderUniverseWorkResolver",
     "ProviderUniverseWorkRoot",
+    "provider_work_binding_class",
     "provider_work_binding_id",
 ]
