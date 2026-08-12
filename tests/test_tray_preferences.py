@@ -109,14 +109,10 @@ def test_cache_hit_avoids_disk(_isolated_prefs: Path) -> None:
     assert prefs2["default_providers"] == ["grok-free"]
 
 
-def test_provider_constants_cover_router_chain() -> None:
-    # Every provider in the router fallback chains must be classified.
-    from tinyassets.providers.router import FALLBACK_CHAINS
+def test_router_exposes_no_fallback_chain_constant() -> None:
+    # Fallback chains were retired with the worker fleet: provider selection is
+    # the universe's single assigned credential, so the router publishes no
+    # chain constant for the tray preferences to have to classify.
+    import tinyassets.providers.router as router_mod
 
-    seen: set[str] = set()
-    for chain in FALLBACK_CHAINS.values():
-        seen.update(chain)
-
-    known = set(preferences.ALL_PROVIDERS)
-    missing = seen - known
-    assert not missing, f"Providers in router not classified: {missing}"
+    assert not hasattr(router_mod, "FALLBACK_CHAINS")

@@ -59,10 +59,7 @@ def test_runtime_containers_forward_logs_without_docker_socket():
     for name in (
         "daemon",
         "cloudflared",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
+        "slack-agent",
     ):
         logging = services[name].get("logging") or {}
         assert logging.get("driver") == "fluentd", name
@@ -131,7 +128,7 @@ def test_vector_classifies_forwarded_runtime_tags():
     source = transform.get("source", "")
     assert "tinyassets-daemon" in source
     assert "tinyassets-tunnel" in source
-    assert "tinyassets-worker" in source
+    assert "tinyassets-slack-agent" in source
 
 
 def test_vector_has_stdout_sink():
@@ -231,10 +228,7 @@ def test_ship_logs_default_covers_complete_production_fleet():
     for container in (
         "tinyassets-daemon",
         "tinyassets-tunnel",
-        "tinyassets-worker",
-        "tinyassets-worker-codex-2",
-        "tinyassets-worker-claude-1",
-        "tinyassets-worker-claude-2",
+        "tinyassets-slack-agent",
         ):
         assert container in text
 

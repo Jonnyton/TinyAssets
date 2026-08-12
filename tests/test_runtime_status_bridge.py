@@ -280,13 +280,16 @@ def test_cli_rejects_unknown_provider() -> None:
     assert "not a known provider" in combined or "not-a-real-one" in combined
 
 
-def test_cli_help_mentions_provider_flag() -> None:
+def test_cli_help_has_no_provider_pin_flag() -> None:
+    # The credential-driven daemon is provider-neutral: it resolves each
+    # universe's assigned serving credential at runtime, so there is no
+    # --provider pin flag to advertise (retired with the worker fleet).
     result = subprocess.run(
         [sys.executable, "-m", "fantasy_daemon", "--help"],
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0
-    assert "--provider" in result.stdout
+    assert "--provider" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +327,14 @@ def _clear_pin(monkeypatch):
     yield
 
 
-def test_router_pins_to_env_var_provider(monkeypatch, _clear_pin) -> None:
-    from tinyassets.providers.router import ProviderRouter
+def test_router_ignores_env_var_pin_and_fails_closed(monkeypatch, _clear_pin) -> None:
+    # The writer pin was retired with the worker fleet: the router has no
+    # process-env pin path. A call with no serving/assigned authority fails
+    # closed regardless of TINYASSETS_PIN_WRITER, and touches no provider.
+    from tinyassets.providers.router import (
+        ProviderAuthorityHeldError,
+        ProviderRouter,
+    )
 
     pinned = _RecordingProvider("codex")
     other = _RecordingProvider("claude-code")
@@ -333,18 +342,23 @@ def test_router_pins_to_env_var_provider(monkeypatch, _clear_pin) -> None:
     monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
 
     import asyncio
-    resp = asyncio.run(router.call("writer", "p", "s"))
+    with pytest.raises(ProviderAuthorityHeldError):
+        asyncio.run(router.call("writer", "p", "s"))
 
-    assert resp.provider == "codex"
-    assert pinned.calls == 1
+    assert pinned.calls == 0
     assert other.calls == 0
 
 
-def test_router_pinned_writer_raises_on_exhaustion_no_fallback(
+def test_router_has_no_fallback_to_another_provider(
     monkeypatch, _clear_pin,
 ) -> None:
-    from tinyassets.exceptions import AllProvidersExhaustedError
-    from tinyassets.providers.router import ProviderRouter
+    # Fallback chains were retired: no path attempts a second registered
+    # provider. With no serving/assigned authority the call fails closed
+    # before any provider, so the would-succeed provider is never reached.
+    from tinyassets.providers.router import (
+        ProviderAuthorityHeldError,
+        ProviderRouter,
+    )
 
     pinned = _RecordingProvider("codex", fail=True)
     would_succeed = _RecordingProvider("ollama-local")
@@ -354,20 +368,22 @@ def test_router_pinned_writer_raises_on_exhaustion_no_fallback(
     monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
 
     import asyncio
-    with pytest.raises(AllProvidersExhaustedError) as ei:
+    with pytest.raises(ProviderAuthorityHeldError):
         asyncio.run(router.call("writer", "p", "s"))
 
-    # Loud failure identifies the pin explicitly and does NOT touch the
-    # would-succeed provider.
-    assert "codex" in str(ei.value).lower()
+    assert pinned.calls == 0
     assert would_succeed.calls == 0
 
 
-def test_router_pin_does_not_affect_non_writer_roles(
+def test_router_non_writer_roles_also_fail_closed_without_authority(
     monkeypatch, _clear_pin,
 ) -> None:
-    """Judge ensemble / extract should ignore TINYASSETS_PIN_WRITER."""
-    from tinyassets.providers.router import ProviderRouter
+    """Non-writer roles never had a pin and still have none; like the writer
+    role they fail closed without a serving/assigned authority."""
+    from tinyassets.providers.router import (
+        ProviderAuthorityHeldError,
+        ProviderRouter,
+    )
 
     p1 = _RecordingProvider("codex")
     p2 = _RecordingProvider("claude-code")
@@ -375,20 +391,15 @@ def test_router_pin_does_not_affect_non_writer_roles(
     monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
 
     import asyncio
-    # 'extract' chain starts with codex so it still resolves to codex here,
-    # but the mechanism must be the normal chain (no loud-fail behavior).
-    asyncio.run(router.call("extract", "p", "s"))
-    assert p1.calls == 1
+    with pytest.raises(ProviderAuthorityHeldError):
+        asyncio.run(router.call("extract", "p", "s"))
+    assert p1.calls == 0
+    assert p2.calls == 0
 
 
-def test_cli_pin_known_providers_covers_all_chains() -> None:
-    """Every name in FALLBACK_CHAINS must pass the --provider validator."""
+def test_router_module_exposes_no_fallback_chains() -> None:
+    """FALLBACK_CHAINS was retired with the fleet: provider selection is the
+    universe's single assigned credential, never a published chain."""
     from fantasy_daemon.providers import router as router_mod
 
-    known = set().union(*router_mod.FALLBACK_CHAINS.values())
-    # Every chain-member we publish is acceptable input to the CLI.
-    assert "claude-code" in known
-    assert "codex" in known
-    assert "ollama-local" in known
-    # And the validation set is derived from the live chains, not frozen.
-    assert known == set().union(*router_mod.FALLBACK_CHAINS.values())
+    assert not hasattr(router_mod, "FALLBACK_CHAINS")

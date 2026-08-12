@@ -137,6 +137,13 @@ def test_soul_loop_mode_keeps_queue_unstarved(monkeypatch, tmp_path):
     # — otherwise the driver re-runs each cycle and the children starve.
     monkeypatch.delenv("TINYASSETS_UNIFIED_EXECUTION", raising=False)
     monkeypatch.setenv("TINYASSETS_SOUL_LOOP_DISPATCH", "on")
+    # Credential-driven dispatch now gates the pick on the universe's assigned
+    # serving credential; isolate that custody step so this test exercises the
+    # queue-unstarving behavior it is about.
+    monkeypatch.setattr(
+        "tinyassets.assigned_credential_execution.refresh_pending_credential_holds",
+        lambda *_args: True,
+    )
     _seed_pending_child(tmp_path, tid="child-42")
     claimed, _inputs = dm._try_dispatcher_pick(tmp_path, "daemon-x")
     assert claimed is not None

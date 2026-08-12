@@ -1824,7 +1824,7 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
         provider_name="codex",
         model_name="codex",
         created_by="acct_alice",
-        worker_id="worker-a",
+        worker_id="worker_a",
     )
     set_worker_queue_descriptor(
         tmp_path,
@@ -1832,7 +1832,7 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
         descriptor={
             "queue_protocol_version": 2,
             "capabilities": ["operator_request_v1"],
-            "worker_id": "worker-a",
+            "worker_id": "worker_a",
             "runtime_instance_id": runtime["runtime_instance_id"],
             "boot_id": "boot-assigned-a",
             "build_sha": "a" * 40,
@@ -1842,7 +1842,7 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
                 datetime.now(timezone.utc) + timedelta(minutes=5)
             ).isoformat(),
         },
-        expected_worker_id="worker-a",
+        expected_worker_id="worker_a",
     )
     selected = []
     monkeypatch.setattr(
@@ -1851,8 +1851,10 @@ def test_daemon_pump_converges_activation_on_assigned_credential(
             selected.append((base, universe, daemon_id))
             or SimpleNamespace(
                 daemon_id=daemon_id,
+                descriptor=SimpleNamespace(
                     runtime_instance_id=runtime["runtime_instance_id"],
-                    worker_id="worker-a",
+                    worker_id="worker_a",
+                ),
             )
         ),
     )

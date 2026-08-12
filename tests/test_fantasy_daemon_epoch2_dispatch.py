@@ -793,6 +793,14 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
         "bind_assigned_provider_call",
         bind_provider,
     )
+    # This test's subject is the requester-owned BINDING wiring
+    # (bind_assigned_provider_call above). The downstream continuation plumbing
+    # (admission lookup + assigned-credential-match) is exercised separately in
+    # test_cloud_automation_continuation.py, so stub it to a passthrough here.
+    monkeypatch.setattr(
+        "tinyassets.cloud_automation_continuation.prepare_claimed_cloud_provider_call",
+        lambda _base_path, *, provider_call, **_kwargs: provider_call,
+    )
     monkeypatch.setattr(runs, "get_run_by_branch_task_id", lambda *_a, **_k: None)
     monkeypatch.setattr(runs, "execute_branch_version", execute_version)
     task = SimpleNamespace(

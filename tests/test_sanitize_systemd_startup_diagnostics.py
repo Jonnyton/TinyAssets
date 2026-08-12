@@ -179,14 +179,17 @@ def test_journal_sanitizer_names_only_the_allowlisted_conflicting_container():
     assert token not in json.dumps(result)
 
 
-def test_journal_sanitizer_does_not_prefix_match_allowlisted_worker_names():
+def test_journal_sanitizer_echoes_full_allowlisted_container_name():
+    # Allowlisted names are echoed by their FULL hyphenated identity, never a
+    # loose prefix. (The worker names this once guarded were retired with the
+    # fleet; tinyassets-slack-agent exercises the same multi-component case.)
     result = sanitize_journal(
         b"Container tinyassets-daemon Creating\n"
-        b'Conflict. The container name "/tinyassets-worker-codex-2" '
+        b'Conflict. The container name "/tinyassets-slack-agent" '
         b'is already in use by container "opaque"\n'
     )
 
-    assert result["conflict_containers"] == ["tinyassets-worker-codex-2"]
+    assert result["conflict_containers"] == ["tinyassets-slack-agent"]
 
 
 def test_journal_sanitizer_does_not_echo_unallowlisted_conflicting_name():
