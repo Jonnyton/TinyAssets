@@ -199,11 +199,23 @@ class AppPrincipalMappingService:
                 universe_id=target.universe_id,
                 binding_id=target.agent_binding_id,
             )
+            # Same live-state contract as channel routing (`_still_owned`) and
+            # converse's served-authority gate: a `serving` binding (a provider
+            # is attached — the only state that can actually answer) is as valid
+            # a founder anchor as `configured`, and a binding whose revision has
+            # moved FORWARD is the same binding evolved, not a substitution.
+            # Pinning `configured` + exact revision denied founder recognition
+            # the instant a universe attached its provider, which — with app
+            # ingress requiring the grant before minting provider authority —
+            # was a third gate keeping serving universes silent. Ownership is
+            # still anchored by the single admin ACL row above and
+            # `created_by == subject_id`; the binding is looked up by stable id,
+            # so a replaced/deleted id fails closed, and revisions are monotonic.
             if (
                 binding is None
                 or binding.get("created_by") != target.subject_id
-                or binding.get("status") != "configured"
-                or int(binding.get("revision", 0)) != target.binding_revision
+                or binding.get("status") not in ("configured", "serving")
+                or int(binding.get("revision", 0)) < target.binding_revision
             ):
                 return None
             return CurrentFounderBinding(
