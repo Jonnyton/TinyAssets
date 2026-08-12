@@ -210,6 +210,53 @@ def test_connect_llm_rejects_different_owner_without_overwriting(tmp_path, monke
     assert replacement not in json.dumps(refused)
 
 
+def test_connect_llm_ownership_conflict_is_scoped_to_the_deposited_service(
+    tmp_path,
+    monkeypatch,
+):
+    import tinyassets.universe_server as server
+    from tinyassets.storage import db_path
+
+    (tmp_path / "u-owner").mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    codex = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {"service": "codex", "auth_json_b64": _auth_b64("{}")}
+            ),
+        )
+    )
+    assert codex["status"] == "connected"
+
+    _as_actor(monkeypatch, tmp_path, actor="owner-2")
+    claude = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "claude",
+                    "auth_json_b64": _auth_b64("claude-owner-2"),
+                }
+            ),
+        )
+    )
+    assert claude["status"] == "connected"
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        owners = conn.execute(
+            "SELECT service, owner_user_id "
+            "FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ? ORDER BY service",
+            ("u-owner",),
+        ).fetchall()
+    assert owners == [("claude", "owner-2"), ("codex", "owner-1")]
+
+
 @pytest.mark.parametrize(
     "payload_json",
     [

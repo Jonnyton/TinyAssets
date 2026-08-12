@@ -496,7 +496,7 @@ def write_credential_vault(
                     (uid,),
                 )
             if owner:
-                for service_name in services:
+                for service_name in deposited_services:
                     conn.execute(
                         """
                         INSERT INTO llm_credential_deposit_owners (

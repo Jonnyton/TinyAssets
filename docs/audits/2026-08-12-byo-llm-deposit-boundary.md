@@ -39,9 +39,10 @@ changed. In particular, `app_channel_routing.py`, `universe_intelligence.py`,
 
 - `python -m pytest -q tests/test_llm_subscription_connections.py`
   - RED before implementation: 14 failed because `connect_llm` did not exist.
-  - GREEN after implementation: 14 passed.
+  - GREEN after implementation: 15 passed, including the later cross-service
+    depositor-owner regression found during local security review.
 - `python -m pytest -q tests/test_llm_subscription_connections.py tests/test_workos_pipes_connections.py tests/test_provider_serving_binding.py tests/test_credential_vault.py`
-  - 61 passed, 1 skipped in 6.01s.
+  - 62 passed, 1 skipped in 5.85s.
 - `python -m ruff check tinyassets/credential_vault.py tinyassets/api/cloud_connections.py tests/test_llm_subscription_connections.py`
   - All checks passed.
 - `python packaging/claude-plugin/build_plugin.py`
