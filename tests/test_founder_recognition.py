@@ -453,14 +453,7 @@ def test_a_sender_who_does_not_own_the_universe_is_not_the_founder(
     assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000020")) is None
 
 
-def test_a_reconfigured_binding_keeps_recognition(tmp_path: Path) -> None:
-    """Re-configuring your own agent — or attaching a provider, which flips the
-    binding to ``serving`` and bumps its revision — does not change that you are
-    the founder. Pinning the exact bind-time revision revoked recognition the
-    moment a universe evolved its agent, and because app ingress requires the
-    founder grant before minting provider authority, that kept serving universes
-    silent. Ownership is still the admin ACL row plus ``created_by``; a deleted
-    universe or a lost admin row still revokes (elsewhere)."""
+def test_a_rotated_binding_revokes_recognition(tmp_path: Path) -> None:
     recognizer, target, grant = _recognized(tmp_path, event_id="Ev0000000011")
     assert is_founder_grant(grant)
 
@@ -470,39 +463,10 @@ def test_a_reconfigured_binding_keeps_recognition(tmp_path: Path) -> None:
         binding_id=target.agent_binding_id,
         updated_by=FOUNDER_ID,
         expected_revision=target.binding_revision,
-        payload={"schema_version": 1, "name": "Reconfigured", "model": "other-model"},
+        payload={"schema_version": 1, "name": "Rotated", "model": "other-model"},
     )
 
-    regrant = recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000012"))
-    assert is_founder_grant(regrant)
-    assert regrant.universe_id == target.universe_id
-
-
-def test_a_serving_binding_keeps_recognition(tmp_path: Path, monkeypatch) -> None:
-    """``serving`` (a provider is attached) is a valid founder anchor — it is the
-    only status that can actually answer a turn — so it must not revoke
-    recognition. Regression for the third gate in the days-long Slack silence."""
-    import tinyassets.app_principal_mapping as mapping_mod
-
-    recognizer, target, grant = _recognized(tmp_path, event_id="Ev0000000015")
-    assert is_founder_grant(grant)
-
-    real = mapping_mod.get_binding
-
-    def _serving(base, *, universe_id, binding_id):
-        record = real(base, universe_id=universe_id, binding_id=binding_id)
-        if record is None:
-            return None
-        record = dict(record)
-        record["status"] = "serving"
-        record["revision"] = int(record["revision"]) + 1
-        return record
-
-    monkeypatch.setattr(mapping_mod, "get_binding", _serving)
-
-    regrant = recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000016"))
-    assert is_founder_grant(regrant)
-    assert regrant.universe_id == target.universe_id
+    assert recognizer.recognize(_socket_event(tmp_path, event_id="Ev0000000012")) is None
 
 
 def test_a_deleted_universe_revokes_recognition(tmp_path: Path) -> None:
