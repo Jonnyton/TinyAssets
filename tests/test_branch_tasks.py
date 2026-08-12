@@ -371,19 +371,31 @@ def test_reclaim_predecessor_ignores_non_running_rows(tmp_path: Path) -> None:
     assert read_queue(tmp_path)[0].status == "pending"
 
 
-def test_dispatcher_startup_reclaims_own_predecessor_orphan(
-    tmp_path: Path, monkeypatch,
+def test_dispatcher_startup_reclaims_leaseless_orphan(
+    tmp_path: Path,
 ) -> None:
-    """End-to-end: a replacement worker clears its predecessor's orphan at boot,
-    even with a still-valid lease (redeploy-churn recovery)."""
+    """End-to-end: startup reclaims a lease-less running orphan.
+
+    The fleet-era worker_id predecessor-reclaim was removed with the
+    cloud_worker/host_pool prune (commit 3fff44d0); startup recovery now
+    flows purely through lease-aware reclaim. A running row with no lease
+    (a pre-lease-era / SIGKILLed-predecessor orphan) is reset to pending
+    at boot so its work is not stranded."""
     from fantasy_daemon.__main__ import _dispatcher_startup
 
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
-    _claim_running(tmp_path, worker="claude-1")  # fresh ~30min lease
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")  # -> running + lease
+    qp = queue_path(tmp_path)
+    data = json.loads(qp.read_text())
+    data[0]["lease_expires_at"] = ""  # orphaned: no lease to wait out
+    qp.write_text(json.dumps(data))
 
     _dispatcher_startup(tmp_path)
 
-    assert read_queue(tmp_path)[0].status == "pending"
+    row = read_queue(tmp_path)[0]
+    assert row.status == "pending"
+    assert row.claimed_by == ""
 
 
 def test_dispatcher_startup_preserves_peer_under_other_worker_id(
@@ -417,17 +429,19 @@ def test_dispatcher_startup_no_predecessor_reclaim_without_worker_id(
     assert read_queue(tmp_path)[0].status == "running"
 
 
-def test_dispatcher_startup_skips_shared_default_worker_id(
+def test_dispatcher_startup_does_not_reclaim_fresh_lease_by_worker_id(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    """The shared 'cloud-droplet' fallback id is NOT predecessor-reclaimed —
-    several manually-started supervisors could share it, so reclaiming it would
-    risk stealing a live twin's task (Codex review). Falls back to TTL."""
+    """The fleet-era worker_id predecessor-reclaim — and its shared-default-id
+    skip guard (formerly cloud_worker.DEFAULT_HOST_USER) — is gone with the
+    cloud_worker/host_pool prune. Startup no longer reclaims a fresh-lease
+    running row just because its worker_id matches this daemon's env id; only
+    expired / lease-less rows are reclaimed, so a valid lease is always left to
+    its owner (a live twin is never stolen from)."""
     from fantasy_daemon.__main__ import _dispatcher_startup
-    from tinyassets.cloud_worker import DEFAULT_HOST_USER
 
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", DEFAULT_HOST_USER)
-    _claim_running(tmp_path, worker=DEFAULT_HOST_USER)  # fresh lease under default id
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "claude-1")
+    _claim_running(tmp_path, worker="claude-1")  # fresh lease, same id as env
 
     _dispatcher_startup(tmp_path)
 

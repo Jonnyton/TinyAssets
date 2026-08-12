@@ -22,7 +22,12 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.base import (
+    BaseProvider,
+    ModelConfig,
+    ProviderResponse,
+    UniverseContext,
+)
 from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
     build_chain_state,
@@ -178,10 +183,40 @@ class TestAllProvidersExhaustedError:
         assert err.chain_state["attempts"][0]["skip_class"] == "auth_invalid"
 
 
+def _assigned_credential(tmp_path, provider):
+    """Build a valid single-provider serving authority for ``provider``.
+
+    Credential-driven execution launches exactly the assigned provider —
+    no chain, no fallback — so a valid authority is what lets the router
+    reach a real provider attempt (rather than fail closed with
+    ProviderAuthorityHeldError).
+    """
+    from tinyassets.assigned_credential_execution import (
+        AssignedCredentialAuthority,
+    )
+
+    return UniverseContext(
+        universe_dir=tmp_path,
+        assigned_credential=AssignedCredentialAuthority(
+            universe_id=tmp_path.name,
+            owner_user_id="owner-a",
+            agent_binding_id="agent-a",
+            binding_revision=1,
+            provider=provider,
+            credential_snapshot_dir=tmp_path / "snapshot",
+        ),
+    )
+
+
 class TestProviderRouterDiagnostics:
     @pytest.mark.asyncio
-    async def test_router_attaches_attempts_and_chain_state(self, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+    async def test_router_attaches_attempt_diagnostics(self, tmp_path):
+        # Post-fleet-retirement: the router runs exactly the assigned
+        # provider, so the exhausted error carries a single attempt
+        # diagnostic classified by failure kind — and never widens to
+        # the other registered provider. The multi-provider ``chain_state``
+        # is gone from this path (build_chain_state is exercised directly
+        # in TestBuildChainState); the router no longer populates it.
         router = ProviderRouter(
             providers={
                 "codex": FailingProvider(
@@ -198,21 +233,25 @@ class TestProviderRouterDiagnostics:
         )
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await router.call("writer", "prompt", "system")
+            await router.call(
+                "writer",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=_assigned_credential(tmp_path, "codex"),
+            )
 
         err = exc_info.value
         assert err.attempts is not None
-        assert err.chain_state is not None
-        assert err.chain_state["role"] == "writer"
-        assert err.chain_state["api_key_providers_enabled"] is False
-        assert err.chain_state["chain"] == ["codex", "ollama-local"]
+        assert err.chain_state is None
         attempts = {attempt.provider: attempt for attempt in err.attempts}
-        assert attempts["claude-code"].skip_class == "not_in_registry"
+        # Only the assigned provider is attempted — no fallback widening.
+        assert set(attempts) == {"codex"}
+        assert attempts["codex"].status == "failed"
         assert attempts["codex"].skip_class == "auth_invalid"
-        assert attempts["ollama-local"].skip_class == "provider_error"
 
     @pytest.mark.asyncio
-    async def test_router_marks_timeouts(self):
+    async def test_router_marks_timeouts(self, tmp_path):
         router = ProviderRouter(
             providers={
                 "codex": FailingProvider(
@@ -220,16 +259,17 @@ class TestProviderRouterDiagnostics:
                     "openai",
                     ProviderTimeoutError("codex hung"),
                 ),
-                "ollama-local": FailingProvider(
-                    "ollama-local",
-                    "local",
-                    ProviderError("local unavailable"),
-                ),
             },
         )
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await router.call("extract", "prompt", "system")
+            await router.call(
+                "extract",
+                "prompt",
+                "system",
+                operation="run_graph",
+                universe_context=_assigned_credential(tmp_path, "codex"),
+            )
 
         attempts = {attempt.provider: attempt for attempt in exc_info.value.attempts}
         assert attempts["codex"].skip_class == "timed_out"

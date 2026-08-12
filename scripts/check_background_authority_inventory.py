@@ -314,7 +314,9 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     ),
     "daemon_cloud_and_distributed_worker": (
         SourceReference("fantasy_daemon/__main__.py", "def _try_execute_claimed_branch_task("),
-        SourceReference("tinyassets/cloud_worker.py", "def run_supervisor("),
+        # cloud_worker.run_supervisor removed with the fleet prune (3fff44d0):
+        # execution is now credential-driven off the assigned binding, so the
+        # daemon's claimed-task path + ExecutionGrantV1 own this family.
         SourceReference("tinyassets/execution_authority/records.py", "class ExecutionGrantV1:"),
     ),
     "selector_leaderboard_and_market_delegate": (

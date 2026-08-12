@@ -2495,7 +2495,7 @@ def test_operational_snapshot_separates_inert_and_waiting_rows(
     }
     assert snapshot["operational_reason_counts"] == {
         "awaiting_compatible_capacity": {
-            "no_live_compatible_worker": 1,
+            "no_requester_owned_executor": 1,
         },
         "invalid_operator_admission": {
             "invalid_operator_admission": 1,

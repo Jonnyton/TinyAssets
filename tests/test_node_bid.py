@@ -310,7 +310,10 @@ def test_producer_skips_non_open_status(repo_root, universe_dir):
     assert [t.inputs["__node_bid_id"] for t in tasks] == ["nb_open"]
 
 
-def test_producer_filters_llm_type_mismatch(repo_root, universe_dir):
+def test_producer_no_llm_type_filtering(repo_root, universe_dir):
+    # Credential-driven execution removed the served_llm_type bid filter:
+    # the producer emits every open bid regardless of required_llm_type,
+    # even when the caller still passes a served_llm_type config.
     _write_bid_yaml(repo_root, "nb_opus", node_def_id="f", required_llm_type="claude-opus")
     _write_bid_yaml(repo_root, "nb_sonnet", node_def_id="f", required_llm_type="claude-sonnet")
     _write_bid_yaml(repo_root, "nb_any", node_def_id="f", required_llm_type="")
@@ -320,7 +323,7 @@ def test_producer_filters_llm_type_mismatch(repo_root, universe_dir):
         config={"served_llm_type": "claude-opus"},
     )
     ids = sorted(t.inputs["__node_bid_id"] for t in tasks)
-    assert ids == ["nb_any", "nb_opus"]
+    assert ids == ["nb_any", "nb_opus", "nb_sonnet"]
 
 
 def test_producer_empty_served_llm_accepts_all(repo_root, universe_dir):
@@ -570,7 +573,9 @@ def test_llm_type_filter_matching_passes(tmp_path):
     assert select_next_task(u, config=cfg) is not None
 
 
-def test_llm_type_filter_mismatch_skipped(tmp_path):
+def test_llm_type_mismatch_not_skipped(tmp_path):
+    # Credential-driven execution removed the served_llm_type dispatch
+    # filter: a served/required mismatch no longer skips the task.
     from tinyassets.branch_tasks import append_task
     u = tmp_path / "u"
     u.mkdir()
@@ -578,7 +583,7 @@ def test_llm_type_filter_mismatch_skipped(tmp_path):
         tid="t1", trigger_source="paid_bid", required_llm_type="claude-opus",
     ))
     cfg = DispatcherConfig(accept_paid_bids=True, served_llm_type="claude-sonnet")
-    assert select_next_task(u, config=cfg) is None
+    assert select_next_task(u, config=cfg) is not None
 
 
 # ───────────────────────────────────────────────────────────────────────

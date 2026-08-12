@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 
 import pytest
 
@@ -456,6 +457,28 @@ class TestBugInvestigationDirectRunRouting:
             return _Outcome()
 
         monkeypatch.setattr("tinyassets.runs.execute_branch", _capture_execute)
+
+        # Credential-driven execution now wraps the branch run in the
+        # requester-owned provider binding (fleet retirement). This test's
+        # subject is that the physical universe id reaches execution, so stub
+        # the credential-custody seam to a passthrough — its own coverage lives
+        # in test_assigned_credential_execution.py / the continuation tests.
+        from tinyassets import assigned_credential_execution
+
+        @contextmanager
+        def _bind(base_path, universe_dir, provider_call):
+            yield provider_call
+
+        monkeypatch.setattr(
+            assigned_credential_execution,
+            "bind_assigned_provider_call",
+            _bind,
+        )
+        monkeypatch.setattr(
+            "tinyassets.cloud_automation_continuation."
+            "prepare_claimed_cloud_provider_call",
+            lambda _base_path, *, provider_call, **_kwargs: provider_call,
+        )
         task = BranchTask(
             branch_task_id="bt-physical",
             branch_def_id="branch-1",
