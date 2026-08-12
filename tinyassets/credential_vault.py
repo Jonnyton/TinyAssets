@@ -635,6 +635,12 @@ def write_credential_vault(
             conn.commit()
             if journal_written:
                 _clear_llm_deposit_journal(universe)
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "DELETE FROM llm_credential_deposit_commits WHERE deposit_id = ?",
+                    (deposit_id,),
+                )
+                conn.commit()
             return summary
         except BaseException:
             conn.rollback()

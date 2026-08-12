@@ -605,6 +605,38 @@ def test_removing_last_llm_service_uses_durable_recovery_protocol(
     assert credential_vault_path(universe_dir).read_bytes() == original
 
 
+def test_successful_repeated_deposits_do_not_accumulate_commit_markers(
+    tmp_path,
+    monkeypatch,
+):
+    import tinyassets.universe_server as server
+    from tinyassets.storage import db_path
+
+    (tmp_path / "u-owner").mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    for index in range(5):
+        result = json.loads(
+            server.write_graph(
+                target="connection",
+                operation="connect_llm",
+                graph_id="u-owner",
+                payload_json=json.dumps(
+                    {
+                        "service": "codex",
+                        "auth_json_b64": _auth_b64(_codex_auth(f"token-{index}")),
+                    }
+                ),
+            )
+        )
+        assert result["status"] == "connected"
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        markers = conn.execute(
+            "SELECT COUNT(*) FROM llm_credential_deposit_commits"
+        ).fetchone()
+    assert markers == (0,)
+
+
 def test_connect_llm_rejects_different_owner_without_overwriting(tmp_path, monkeypatch):
     import tinyassets.universe_server as server
     from tinyassets.credential_vault import load_credential_vault
