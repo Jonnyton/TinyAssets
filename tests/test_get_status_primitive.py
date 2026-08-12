@@ -243,8 +243,12 @@ def test_get_status_activity_log_line_count_reflects_total(tmp_path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Task #56 — llm_endpoint_bound provider-chain expansion.
-# Priority: ollama → anthropic → codex → claude → unset.
+# Task #56 — llm_endpoint_bound is credential-driven (fleet retirement).
+# Execution binds ONE serving credential per universe; there are no ambient
+# provider pins or fallback chains. With no credential bound (the case in
+# every test below), the hint is "unset" regardless of which env vars / CLIs
+# are present. These tests pin that credential-neutrality so ambient host
+# state can never leak a provider into the status surface.
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -288,12 +292,14 @@ def _get_endpoint_hint(
 
 
 def test_llm_endpoint_bound_ollama(monkeypatch) -> None:
+    # Ambient OLLAMA_HOST no longer pins a provider — the hint is credential-
+    # driven and stays "unset" with no serving credential bound.
     hint = _get_endpoint_hint(
         monkeypatch,
         env={"OLLAMA_HOST": "http://localhost:11434"},
         which_map={},
     )
-    assert hint == "ollama"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_anthropic(monkeypatch) -> None:
@@ -303,7 +309,7 @@ def test_llm_endpoint_bound_anthropic(monkeypatch) -> None:
         which_map={},
         api_key_opt_in=True,
     )
-    assert hint == "anthropic"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_ollama_takes_priority_over_anthropic(
@@ -317,7 +323,7 @@ def test_llm_endpoint_bound_ollama_takes_priority_over_anthropic(
         },
         which_map={},
     )
-    assert hint == "ollama"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_codex(monkeypatch) -> None:
@@ -327,7 +333,7 @@ def test_llm_endpoint_bound_codex(monkeypatch) -> None:
         which_map={"codex": "/usr/local/bin/codex"},
         api_key_opt_in=True,
     )
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> None:
@@ -340,7 +346,7 @@ def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> No
         which_map={"codex": "/usr/local/bin/codex"},
         home=tmp_path,
     )
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> None:
@@ -357,7 +363,7 @@ def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> No
         home=empty_home,
     )
 
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_openai_key_without_codex_cli_falls_through(
@@ -368,17 +374,18 @@ def test_llm_endpoint_bound_openai_key_without_codex_cli_falls_through(
         env={"OPENAI_API_KEY": "sk-test", "CLAUDE_CODE_OAUTH_TOKEN": "tok"},
         which_map={"claude": "/usr/local/bin/claude"},
     )
-    assert hint == "claude"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_claude_cli(monkeypatch) -> None:
-    # claude is bound only with binary AND subscription auth (auth-aware fix).
+    # A present Claude CLI + ambient OAuth token is no longer a binding: the
+    # hint reflects the universe's assigned credential, not host env/CLI state.
     hint = _get_endpoint_hint(
         monkeypatch,
         env={"CLAUDE_CODE_OAUTH_TOKEN": "tok"},
         which_map={"claude": "/usr/local/bin/claude"},
     )
-    assert hint == "claude"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_claude_cli_present_but_unauthed_is_unset(
@@ -418,12 +425,13 @@ def test_llm_endpoint_bound_codex_takes_priority_over_claude(
         },
         home=tmp_path,
     )
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Task #14 — SDK-key-only providers (xai, gemini, groq).
-# Priority: ollama → anthropic → codex → claude → xai → gemini → groq → unset.
+# Task #14 — SDK-key env vars (xai, gemini, groq) must NOT pin the hint.
+# Post fleet-retirement the hint is credential-driven; ambient SDK keys are
+# never a binding, so every combination below resolves to "unset".
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -448,7 +456,7 @@ def test_llm_endpoint_bound_xai(monkeypatch) -> None:
         which_map={},
         api_key_opt_in=True,
     )
-    assert hint == "xai"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_gemini(monkeypatch) -> None:
@@ -458,7 +466,7 @@ def test_llm_endpoint_bound_gemini(monkeypatch) -> None:
         which_map={},
         api_key_opt_in=True,
     )
-    assert hint == "gemini"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_groq(monkeypatch) -> None:
@@ -468,7 +476,7 @@ def test_llm_endpoint_bound_groq(monkeypatch) -> None:
         which_map={},
         api_key_opt_in=True,
     )
-    assert hint == "groq"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_xai_takes_priority_over_gemini(
@@ -480,7 +488,7 @@ def test_llm_endpoint_bound_xai_takes_priority_over_gemini(
         which_map={},
         api_key_opt_in=True,
     )
-    assert hint == "xai"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_gemini_takes_priority_over_groq(
@@ -492,22 +500,24 @@ def test_llm_endpoint_bound_gemini_takes_priority_over_groq(
         which_map={},
         api_key_opt_in=True,
     )
-    assert hint == "gemini"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_claude_beats_xai(monkeypatch) -> None:
-    """Claude CLI is a subprocess-bound primary writer; XAI_API_KEY
-    only feeds an SDK-keyed tertiary fallback. Claude wins."""
+    """Neither a Claude CLI + OAuth token nor an XAI SDK key is a binding.
+    With no assigned serving credential the hint is credential-neutral —
+    ambient host provider state never leaks into the status surface."""
     hint = _get_endpoint_hint(
         monkeypatch,
         env={"XAI_API_KEY": "xai-test", "CLAUDE_CODE_OAUTH_TOKEN": "tok"},
         which_map={"claude": "/usr/local/bin/claude"},
     )
-    assert hint == "claude"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_ollama_beats_all_sdk_keys(monkeypatch) -> None:
-    """Ollama is always-local; beats every SDK-key-only binding."""
+    """A full spread of ambient env (Ollama + every SDK key) still pins
+    nothing — the hint stays "unset" until a serving credential is bound."""
     hint = _get_endpoint_hint(
         monkeypatch,
         env={
@@ -518,7 +528,7 @@ def test_llm_endpoint_bound_ollama_beats_all_sdk_keys(monkeypatch) -> None:
         },
         which_map={},
     )
-    assert hint == "ollama"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_empty_xai_key_falls_through(monkeypatch) -> None:
