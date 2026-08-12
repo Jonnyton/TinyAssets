@@ -373,7 +373,14 @@ class UniverseServerManager:
         return True, ""
 
     def start_daemon_for(self, provider: str) -> bool:
-        """Launch a daemon pinned to *provider*. Returns True on spawn."""
+        """Launch a credential-neutral daemon for the active universe.
+
+        *provider* is a preference/constraint surface only (unknown/second-local
+        rejection); it is NOT passed to the child. The spawned daemon receives
+        no ``--provider``/``TINYASSETS_PIN_WRITER`` and has the ambient
+        provider/credential env stripped, so it resolves each universe's
+        assigned serving credential at runtime. Returns True on spawn.
+        """
         ok, reason = self._can_start(provider)
         if not ok:
             print(f"  [skip] {provider}: {reason}")

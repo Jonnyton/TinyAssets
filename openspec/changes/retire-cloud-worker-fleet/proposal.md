@@ -23,6 +23,7 @@ Production no longer has a fixed provider-shaped cloud worker fleet, but deploym
 - `daemon-runtime-and-dispatch`: replace cloud-worker queue consumption with credential-driven daemon consumption and worker-free deployment ownership.
 - `daemon-identity-and-host-pool`: remove the retired host-pool REST client/runtime surface.
 - `credential-vault`: require universe-scoped execution to use only the credential selected by its serving binding, without ambient fallback.
+- `desktop-host-runtime`: the source tray spawns a credential-neutral daemon (no `--provider`/`TINYASSETS_PIN_WRITER`; ambient provider/credential env stripped) that resolves each universe's assigned serving credential at runtime, instead of provider-pinned per-provider daemons.
 
 ## Impact
 
