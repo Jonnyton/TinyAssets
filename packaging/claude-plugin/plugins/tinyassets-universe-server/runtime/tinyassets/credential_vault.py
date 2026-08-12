@@ -16,6 +16,7 @@ import re
 import secrets
 import sqlite3
 import stat
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,48 @@ def _chmod_best_effort(path: Path, mode: int) -> None:
         os.chmod(path, mode)
     except OSError:
         pass
+
+
+def _durable_sync_file(path: Path) -> None:
+    with path.open("r+b") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _durable_sync_directory(path: Path) -> None:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel32.CreateFileW(
+            str(path),
+            0x40000000,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None,
+            3,
+            0x02000000,
+            None,
+        )
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle == invalid_handle:
+            raise OSError(ctypes.get_last_error(), "cannot durably flush directory")
+        try:
+            if not kernel32.FlushFileBuffers(handle):
+                raise OSError(
+                    ctypes.get_last_error(),
+                    "cannot durably flush directory",
+                )
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+    descriptor = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _as_path(value: Any, universe_dir: Path) -> Path | None:
@@ -354,6 +397,7 @@ def _write_credential_vault_unlocked(
     credentials: list[dict[str, Any]] | dict[str, Any],
     *,
     reject_duplicate_llm_service: str = "",
+    durable: bool = False,
 ) -> dict[str, Any]:
     """Validate and write a per-universe credential vault.
 
@@ -416,6 +460,9 @@ def _write_credential_vault_unlocked(
     _chmod_best_effort(tmp, 0o600)
     tmp.replace(path)
     _chmod_best_effort(path, 0o600)
+    if durable:
+        _durable_sync_file(path)
+        _durable_sync_directory(path.parent)
     credential_types = sorted({str(r["credential_type"]) for r in records})
     # Sanitised, not echoed. This summary is explicitly "suitable for logs and
     # status surfaces", and `service` is arbitrary vault content — a review put
@@ -517,7 +564,7 @@ def write_credential_vault(
                 )
                 else ""
             )
-            if duplicate_guard:
+            if deposited_services:
                 deposit_id = secrets.token_hex(16)
                 _write_llm_deposit_journal(universe, deposit_id=deposit_id)
                 journal_written = True
@@ -527,6 +574,7 @@ def write_credential_vault(
                 universe,
                 incoming_records,
                 reject_duplicate_llm_service=duplicate_guard,
+                durable=journal_written,
             )
             records = load_credential_vault(universe)
             services = {
@@ -557,6 +605,27 @@ def write_credential_vault(
                         service=service_name,
                         owner_user_id=owner,
                         deposit_id=deposit_id,
+                    )
+            elif deposited_services:
+                placeholders = ",".join("?" for _ in deposited_services)
+                conn.execute(
+                    f"""
+                    DELETE FROM llm_credential_deposit_owners
+                     WHERE universe_id = ? AND service IN ({placeholders})
+                    """,
+                    (uid, *sorted(deposited_services)),
+                )
+                custody_table = conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'llm_credential_custody'"
+                ).fetchone()
+                if custody_table is not None:
+                    conn.execute(
+                        f"""
+                        DELETE FROM llm_credential_custody
+                         WHERE universe_id = ? AND service IN ({placeholders})
+                        """,
+                        (uid, *sorted(deposited_services)),
                     )
             conn.commit()
             if journal_written:
@@ -693,13 +762,18 @@ def _write_llm_deposit_journal(universe_dir: Path, *, deposit_id: str) -> None:
         _chmod_best_effort(tmp, 0o600)
         tmp.replace(journal)
         _chmod_best_effort(journal, 0o600)
+        _durable_sync_file(journal)
+        _durable_sync_directory(journal.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
+        journal.unlink(missing_ok=True)
+        _durable_sync_directory(universe_dir)
         raise
 
 
 def _clear_llm_deposit_journal(universe_dir: Path) -> None:
     _llm_deposit_journal_path(universe_dir).unlink(missing_ok=True)
+    _durable_sync_directory(universe_dir)
 
 
 def _recover_llm_deposit_journal(
@@ -731,8 +805,11 @@ def _recover_llm_deposit_journal(
             _chmod_best_effort(tmp, 0o600)
             tmp.replace(vault_path)
             _chmod_best_effort(vault_path, 0o600)
+            _durable_sync_file(vault_path)
+            _durable_sync_directory(vault_path.parent)
         else:
             vault_path.unlink(missing_ok=True)
+            _durable_sync_directory(vault_path.parent)
     _clear_llm_deposit_journal(universe_dir)
 
 
@@ -962,7 +1039,9 @@ def _usable_subscription_record(
     if service == "codex":
         encoded = record.get("auth_json_b64")
         if isinstance(encoded, str) and encoded.strip():
-            _decode_codex_auth_json(encoded)
+            _validate_codex_subscription_material(
+                _decode_codex_auth_json(encoded)
+            )
             return record
         home = _codex_home_from_record(record, universe_dir)
         if home is None:
@@ -970,9 +1049,15 @@ def _usable_subscription_record(
         contained_home = _contained_path(universe_dir, str(home))
         if contained_home is None or not (contained_home / "auth.json").is_file():
             raise PermissionError("exactly one usable subscription credential is required")
+        _validate_codex_subscription_material(
+            _read_credential_material(contained_home / "auth.json")
+        )
         return record
     if service == "claude":
-        if _secret_value(record, "oauth_token", "claude_code_oauth_token"):
+        token = _secret_value(record, "oauth_token", "claude_code_oauth_token")
+        if token:
+            if not token.startswith("sk-ant-oat"):
+                raise ValueError("Claude subscription credential is unusable")
             return record
         config_dir = _claude_config_dir_from_record(record, universe_dir)
         contained_dir = (

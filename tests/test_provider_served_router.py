@@ -76,7 +76,7 @@ def _served_context(
     credential = {
         "credential_type": "llm_subscription",
         "service": "codex",
-        "auth_json_b64": "e30=",
+        "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoiZml4dHVyZSJ9fQ==",
     }
     if path_backed:
         auth_home = universe_dir / "codex-auth"
@@ -272,7 +272,7 @@ def test_served_router_rejects_credential_rotation_after_selection(tmp_path):
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
+            "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoicm90YXRlZCJ9fQ==",
         }],
     )
     provider = _RecordingProvider("codex")

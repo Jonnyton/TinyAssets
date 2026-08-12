@@ -38,7 +38,7 @@ def _seed_universe(tmp_path):
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "e30=",
+            "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoiZml4dHVyZSJ9fQ==",
         }],
         owner_user_id="owner-1",
         universe_id="u-owner",
@@ -80,15 +80,17 @@ def test_credential_vault_owns_opaque_generation_safe_llm_reference(tmp_path):
     assert first.reference_id.startswith("llm_credential_")
     assert first.generation == 1
     assert "auth_json" not in repr(first)
-    assert "e30=" not in repr(first)
+    assert "Zml4dHVyZQ" not in repr(first)
 
     write_credential_vault(
         universe_dir,
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
+            "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoicm90YXRlZCJ9fQ==",
         }],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
     )
     conn.execute("BEGIN IMMEDIATE")
     rotated = adopt_llm_subscription_custody(
@@ -120,7 +122,7 @@ def test_custody_adoption_requires_server_recorded_depositor_ownership(tmp_path)
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "e30=",
+            "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoiZml4dHVyZSJ9fQ==",
         }],
     )
     conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
@@ -212,7 +214,7 @@ def test_custody_refuses_duplicate_and_path_escaping_subscription_records(tmp_pa
             {
                 "credential_type": "llm_subscription",
                 "service": "codex",
-                "auth_json_b64": "e30=",
+                "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoiZml4dHVyZSJ9fQ==",
             },
             {
                 "credential_type": "llm_subscription",
@@ -382,7 +384,7 @@ def test_bind_replays_only_while_custody_is_still_current(tmp_path):
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
+            "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoicm90YXRlZCJ9fQ==",
         }],
         owner_user_id="owner-1",
         universe_id="u-owner",

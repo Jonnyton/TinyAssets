@@ -396,6 +396,107 @@ def test_connection_reads_serialize_legacy_owner_schema_migration(tmp_path):
     assert all(value and value.endswith("Z") for (value,) in connected)
 
 
+def test_deposit_durability_order_fences_database_commit(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets import credential_vault
+
+    (tmp_path / "u-owner").mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    events: list[str] = []
+    real_sync_file = credential_vault._durable_sync_file
+    real_sync_directory = credential_vault._durable_sync_directory
+    real_upsert = credential_vault._upsert_llm_deposit_owner
+
+    def sync_file(path):
+        events.append(f"file:{path.name}")
+        return real_sync_file(path)
+
+    def sync_directory(path):
+        events.append(f"dir:{path.name}")
+        return real_sync_directory(path)
+
+    def upsert(*args, **kwargs):
+        events.append("database-owner")
+        return real_upsert(*args, **kwargs)
+
+    monkeypatch.setattr(credential_vault, "_durable_sync_file", sync_file)
+    monkeypatch.setattr(credential_vault, "_durable_sync_directory", sync_directory)
+    monkeypatch.setattr(credential_vault, "_upsert_llm_deposit_owner", upsert)
+    connected = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth()),
+                }
+            ),
+        )
+    )
+
+    assert connected["status"] == "connected"
+    assert events.index("file:.credential-vault.deposit-journal.json") < events.index(
+        "file:.credential-vault.json"
+    )
+    assert events.index("file:.credential-vault.json") < events.index("database-owner")
+    assert events[-1] == "dir:u-owner"
+
+
+def test_vault_durable_sync_failure_recovers_before_owner_commit(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets import credential_vault
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.storage import db_path
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    vault_path = credential_vault_path(universe_dir)
+    original = '{"schema_version":1,"credentials":[]}\n'
+    vault_path.write_text(original, encoding="utf-8")
+    real_sync_file = credential_vault._durable_sync_file
+    failed = False
+
+    def fail_new_vault_sync(path):
+        nonlocal failed
+        if path.name == ".credential-vault.json" and not failed:
+            failed = True
+            raise OSError("injected vault durability failure")
+        return real_sync_file(path)
+
+    monkeypatch.setattr(
+        credential_vault,
+        "_durable_sync_file",
+        fail_new_vault_sync,
+    )
+    refused = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth("not-durable")),
+                }
+            ),
+        )
+    )
+
+    assert refused == {"error": "llm_connection_invalid"}
+    assert vault_path.read_text(encoding="utf-8") == original
+    assert not (universe_dir / ".credential-vault.deposit-journal.json").exists()
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        owner = conn.execute(
+            "SELECT owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ? AND service = ?",
+            ("u-owner", "codex"),
+        ).fetchone()
+    assert owner is None
+
+
 def test_connect_llm_rejects_different_owner_without_overwriting(tmp_path, monkeypatch):
     import tinyassets.universe_server as server
     from tinyassets.credential_vault import load_credential_vault
@@ -618,6 +719,161 @@ def test_connect_llm_accepts_contained_codex_home_and_never_echoes_path(
     assert connected["status"] == "connected"
     assert str(codex_home) not in json.dumps(connected)
     assert str(codex_home) not in caplog.text
+
+
+def test_path_backed_codex_rotation_to_unusable_holds_binding(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    universe_dir = tmp_path / "u-owner"
+    codex_home = universe_dir / ".credentials" / "codex"
+    codex_home.mkdir(parents=True)
+    auth_file = codex_home / "auth.json"
+    auth_file.write_text(_codex_auth("valid-at-deposit"), encoding="utf-8")
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    agent = _agent_binding(tmp_path, actor="owner-1")
+    connected = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {"service": "codex", "codex_home": str(codex_home)}
+            ),
+        )
+    )
+    assert connected["status"] == "connected"
+
+    auth_file.write_text("{}", encoding="utf-8")
+
+    with pytest.raises((PermissionError, ValueError)):
+        bind_serving_provider(
+            base_path=tmp_path,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id=str(agent["agent_binding_id"]),
+            expected_revision=1,
+            provider="codex",
+        )
+
+
+def test_claude_rotation_to_unusable_holds_binding(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    agent = _agent_binding(tmp_path, actor="owner-1")
+    connected = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "claude",
+                    "auth_json_b64": _auth_b64(_claude_oauth("valid-at-deposit")),
+                }
+            ),
+        )
+    )
+    assert connected["status"] == "connected"
+    credential_vault_path(universe_dir).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "credentials": [
+                    {
+                        "credential_type": "llm_subscription",
+                        "service": "claude",
+                        "token_b64": _auth_b64("not-oauth-anymore"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises((PermissionError, ValueError)):
+        bind_serving_provider(
+            base_path=tmp_path,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id=str(agent["agent_binding_id"]),
+            expected_revision=1,
+            provider="claude-code",
+        )
+
+
+def test_ownerless_replacement_clears_depositor_and_custody(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody,
+        write_credential_vault,
+    )
+    from tinyassets.storage import db_path
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    connected = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth("owned")),
+                }
+            ),
+        )
+    )
+    assert connected["status"] == "connected"
+    with sqlite3.connect(db_path(tmp_path), isolation_level=None) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        custody = adopt_llm_subscription_custody(
+            conn,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            service="codex",
+        )
+        conn.commit()
+    assert custody.owner_user_id == "owner-1"
+
+    write_credential_vault(
+        universe_dir,
+        [
+            {
+                "credential_type": "llm_subscription",
+                "service": "codex",
+                "auth_json_b64": _auth_b64(_codex_auth("ownerless-replacement")),
+            }
+        ],
+    )
+
+    with sqlite3.connect(db_path(tmp_path), isolation_level=None) as conn:
+        owner = conn.execute(
+            "SELECT owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ? AND service = ?",
+            ("u-owner", "codex"),
+        ).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(PermissionError, match="credential owner"):
+            adopt_llm_subscription_custody(
+                conn,
+                universe_dir=universe_dir,
+                owner_user_id="owner-1",
+                universe_id="u-owner",
+                service="codex",
+            )
+        conn.rollback()
+    assert owner is None
 
 
 def test_connect_llm_rejects_uncontained_path_without_echoing_it(

@@ -56,7 +56,7 @@ def _credential_snapshot_fixture(tmp_path):
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "auth_json_b64": "eyJ0b2tlbiI6InNuYXBzaG90LXNlY3JldCJ9",
+            "auth_json_b64": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoic25hcHNob3Qtc2VjcmV0In19",
         }],
         owner_user_id="owner-1",
         universe_id="u-owner",
