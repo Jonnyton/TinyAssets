@@ -295,7 +295,14 @@ def abandon_served_provider_budget(
     base_path: str | Path,
     reservation: ServedProviderBudgetReservation,
 ) -> None:
-    """Conservatively consume a reservation when provider usage is unknown."""
+    """Conservatively consume a reservation when provider usage is unknown.
+
+    Use ONLY when the provider call began and could have spent tokens before
+    dying. A call that never reached the provider (:class:`ProviderUnavailableError`)
+    consumed nothing and must be RELEASED instead — see
+    :func:`release_served_provider_budget` — or a flaky provider permanently
+    exhausts its own budget one failed turn at a time.
+    """
 
     conn = sqlite3.connect(db_path(base_path), isolation_level=None)
     try:
@@ -304,6 +311,35 @@ def abandon_served_provider_budget(
         conn.execute(
             """
             UPDATE served_provider_budget_reservations SET state = 'indeterminate'
+             WHERE reservation_id = ? AND state = 'reserved'
+            """,
+            (reservation.reservation_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def release_served_provider_budget(
+    base_path: str | Path,
+    reservation: ServedProviderBudgetReservation,
+) -> None:
+    """Release a reservation for a call that provably produced no output.
+
+    A provider that never became available spent nothing, so its reservation
+    must not count against the binding's budget at all. Deleting the still-
+    ``reserved`` row (never a ``succeeded``/``exceeded``/``indeterminate`` one,
+    which record real or possible usage) is the difference between a flaky
+    provider that recovers and one that reads as permanently "budget exhausted".
+    """
+
+    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_served_budget_schema(conn)
+        conn.execute(
+            """
+            DELETE FROM served_provider_budget_reservations
              WHERE reservation_id = ? AND state = 'reserved'
             """,
             (reservation.reservation_id,),
@@ -833,6 +869,7 @@ __all__ = [
     "ServedProviderAuthority",
     "ServedProviderBudgetReservation",
     "abandon_served_provider_budget",
+    "release_served_provider_budget",
     "authorize_served_provider_call",
     "ensure_provider_assignment_schema",
     "load_provider_assignment",
