@@ -497,6 +497,114 @@ def test_vault_durable_sync_failure_recovers_before_owner_commit(tmp_path, monke
     assert owner is None
 
 
+def test_recovery_keeps_committed_ownerless_replacement(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets import credential_vault
+    from tinyassets.credential_vault import (
+        list_llm_subscription_connections,
+        load_credential_vault,
+        write_credential_vault,
+    )
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    assert json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth("old")),
+                }
+            ),
+        )
+    )["status"] == "connected"
+    real_clear = credential_vault._clear_llm_deposit_journal
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    def crash_before_unlink(_universe):
+        raise SimulatedProcessCrash
+
+    monkeypatch.setattr(
+        credential_vault,
+        "_clear_llm_deposit_journal",
+        crash_before_unlink,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        write_credential_vault(
+            universe_dir,
+            [
+                {
+                    "credential_type": "llm_subscription",
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth("new-ownerless")),
+                }
+            ],
+        )
+    monkeypatch.setattr(
+        credential_vault,
+        "_clear_llm_deposit_journal",
+        real_clear,
+    )
+
+    assert list_llm_subscription_connections(
+        universe_dir,
+        universe_id="u-owner",
+    ) == []
+    assert load_credential_vault(universe_dir)[0]["auth_json_b64"] == _auth_b64(
+        _codex_auth("new-ownerless")
+    )
+    assert not (universe_dir / ".credential-vault.deposit-journal.json").exists()
+
+
+def test_removing_last_llm_service_uses_durable_recovery_protocol(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets import credential_vault
+    from tinyassets.credential_vault import credential_vault_path, write_credential_vault
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    write_credential_vault(
+        universe_dir,
+        [
+            {
+                "credential_type": "llm_subscription",
+                "service": "codex",
+                "auth_json_b64": _auth_b64(_codex_auth("before-removal")),
+            }
+        ],
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+    )
+    original = credential_vault_path(universe_dir).read_bytes()
+    real_sync_file = credential_vault._durable_sync_file
+    failed = False
+
+    def fail_empty_vault_sync(path):
+        nonlocal failed
+        if path.name == ".credential-vault.json" and not failed:
+            failed = True
+            raise OSError("injected removal durability failure")
+        return real_sync_file(path)
+
+    monkeypatch.setattr(
+        credential_vault,
+        "_durable_sync_file",
+        fail_empty_vault_sync,
+    )
+    with pytest.raises(OSError, match="removal durability"):
+        write_credential_vault(universe_dir, [])
+
+    assert credential_vault_path(universe_dir).read_bytes() == original
+
+
 def test_connect_llm_rejects_different_owner_without_overwriting(tmp_path, monkeypatch):
     import tinyassets.universe_server as server
     from tinyassets.credential_vault import load_credential_vault

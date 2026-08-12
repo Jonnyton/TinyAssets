@@ -564,12 +564,9 @@ def write_credential_vault(
                 )
                 else ""
             )
-            if deposited_services:
-                deposit_id = secrets.token_hex(16)
-                _write_llm_deposit_journal(universe, deposit_id=deposit_id)
-                journal_written = True
-            else:
-                deposit_id = ""
+            deposit_id = secrets.token_hex(16)
+            _write_llm_deposit_journal(universe, deposit_id=deposit_id)
+            journal_written = True
             summary = _write_credential_vault_unlocked(
                 universe,
                 incoming_records,
@@ -627,6 +624,14 @@ def write_credential_vault(
                         """,
                         (uid, *sorted(deposited_services)),
                     )
+            conn.execute(
+                """
+                INSERT INTO llm_credential_deposit_commits (
+                    deposit_id, committed_at
+                ) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """,
+                (deposit_id,),
+            )
             conn.commit()
             if journal_written:
                 _clear_llm_deposit_journal(universe)
@@ -694,6 +699,14 @@ def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
             connected_at TEXT NOT NULL DEFAULT '',
             deposit_id TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (universe_id, service)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_deposit_commits (
+            deposit_id TEXT PRIMARY KEY,
+            committed_at TEXT NOT NULL
         )
         """
     )
@@ -794,7 +807,7 @@ def _recover_llm_deposit_journal(
     except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         raise PermissionError("credential deposit recovery journal is invalid") from None
     committed = conn.execute(
-        "SELECT 1 FROM llm_credential_deposit_owners WHERE deposit_id = ? LIMIT 1",
+        "SELECT 1 FROM llm_credential_deposit_commits WHERE deposit_id = ?",
         (deposit_id,),
     ).fetchone()
     if committed is None:

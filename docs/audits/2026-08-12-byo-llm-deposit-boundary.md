@@ -62,9 +62,12 @@ In particular, `app_channel_routing.py`, `universe_intelligence.py`,
     owner and that the recovery protocol lacked power-crash durability. Both
     now have RED/GREEN regressions; ownerless replacement clears ownership and
     custody, while fsync ordering fences the database commit.
-  - GREEN after hardening: 28 passed.
+  - A committed ownerless write now has a durable commit marker independent of
+    owner rows, so recovery retains the committed vault. All vault writes use
+    the protocol, including removal of the final LLM subscription.
+  - GREEN after hardening: 30 passed.
 - `python -m pytest -q tests/test_llm_subscription_connections.py tests/test_workos_pipes_connections.py tests/test_provider_serving_binding.py tests/test_credential_vault.py tests/test_credential_fail_closed.py tests/test_provider_served_router.py tests/test_universe_server_five_handles.py tests/test_write_gate.py`
-  - 152 passed, 4 skipped in 8.93s; one unrelated FastMCP deprecation warning.
+  - 154 passed, 4 skipped in 9.33s; one unrelated FastMCP deprecation warning.
 - `python -m ruff check tinyassets/credential_vault.py tinyassets/api/cloud_connections.py tinyassets/providers/base.py tests/test_llm_subscription_connections.py`
   - All checks passed.
 - `python packaging/claude-plugin/build_plugin.py`
