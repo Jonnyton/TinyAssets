@@ -193,7 +193,27 @@ def bind_serving_provider(
     if selected not in _PROVIDER_SERVICE:
         raise ValueError("provider must be claude-code or codex")
     if selected == "claude-code":
-        raise PermissionError("claude-code serving is held until every live role is covered")
+        # A serving binding grants exactly `_SERVING_ROLES`. claude-code serving
+        # was held blanket "until every live role is covered"; make that a
+        # COMPUTED fact instead of a permanent block, so it holds exactly when it
+        # should. claude-code may serve iff it covers every role this binding
+        # actually grants. Today `_SERVING_ROLES == ("writer",)` and claude-code
+        # heads the writer chain, so converse serving is covered; if the serving
+        # scope later widens to a role claude-code cannot cover (judge/extract),
+        # this re-blocks it automatically rather than silently serving a role it
+        # cannot fulfil.
+        from tinyassets.providers.router import FALLBACK_CHAINS
+
+        uncovered = [
+            role
+            for role in _SERVING_ROLES
+            if selected not in FALLBACK_CHAINS.get(role, ())
+        ]
+        if uncovered:
+            raise PermissionError(
+                "claude-code serving is held until every live role is covered; "
+                f"uncovered role(s): {', '.join(uncovered)}"
+            )
     if not owner or not uid or not binding_id:
         raise ValueError("owner, universe, and agent binding are required")
     if (
