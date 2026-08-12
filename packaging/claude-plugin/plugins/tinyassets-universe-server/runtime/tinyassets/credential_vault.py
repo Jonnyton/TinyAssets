@@ -23,6 +23,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 VAULT_FILENAME = ".credential-vault.json"
+DEPOSIT_JOURNAL_FILENAME = ".credential-vault.deposit-journal.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
 VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs"}
@@ -31,6 +32,10 @@ VALID_CREDENTIAL_TYPES = frozenset(
 
 class LLMCredentialOwnershipConflict(PermissionError):
     """A deposit attempted to replace another principal's credential."""
+
+
+class LLMCredentialAuthorizationDenied(PermissionError):
+    """The principal was not an admin at the admitted write point."""
 
 
 # Map a deposited llm_api_key record's ``service`` to the provider-subprocess
@@ -136,9 +141,18 @@ def _decode_codex_auth_json(value: Any) -> bytes:
     if decoded.startswith(b"\xef\xbb\xbf"):
         raise ValueError("credential auth_json_b64 decoded content has a UTF-8 BOM")
     invalid = False
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        document: dict[str, Any] = {}
+        for key, nested in pairs:
+            if key in document:
+                raise ValueError("Codex subscription credential has duplicate fields")
+            document[key] = nested
+        return document
+
     try:
-        json.loads(decoded)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        json.loads(decoded, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         # Not chained: both of these retain the decoded credential blob
         # (`.doc` / `.object`). Raised outside the handler so no context
         # survives either.
@@ -146,6 +160,18 @@ def _decode_codex_auth_json(value: Any) -> bytes:
     if invalid:
         raise ValueError("credential auth_json_b64 does not contain valid JSON")
     return decoded
+
+
+def _validate_codex_subscription_material(material: bytes) -> None:
+    encoded = base64.b64encode(material).decode("ascii")
+    decoded = _decode_codex_auth_json(encoded)
+    parsed = json.loads(decoded)
+    if not isinstance(parsed, dict):
+        raise ValueError("Codex subscription credential must be a JSON object")
+    tokens = parsed.get("tokens")
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise ValueError("Codex subscription credential has no access token")
 
 
 def _normalize_record(raw: Any) -> dict[str, Any]:
@@ -259,6 +285,8 @@ def _merge_subscription_records(
         if not slot.isdisjoint(incoming):
             for field in slot:
                 replacement.pop(field, None)
+            if _service(incoming) == "codex":
+                replacement.pop("auth_json_b64", None)
     replacement.update(incoming)
     return replacement
 
@@ -369,6 +397,16 @@ def _write_credential_vault_unlocked(
                     "purposes": sorted(dropped_purposes),
                 })
         records = _merge_single_record(existing, incoming)
+    if reject_duplicate_llm_service:
+        deposited = [
+            record
+            for record in records
+            if record.get("credential_type") == "llm_subscription"
+            and _service(record) == reject_duplicate_llm_service
+        ]
+        if len(deposited) != 1:
+            raise ValueError("exactly one LLM subscription credential is required")
+        _validate_llm_subscription_deposit_record(universe, deposited[0])
     tmp = path.with_name(f"{path.name}.tmp")
     payload = {"schema_version": 1, "credentials": records}
     tmp.write_text(
@@ -408,6 +446,7 @@ def write_credential_vault(
     owner_user_id: str | None = None,
     universe_id: str | None = None,
     require_usable_llm_subscription: bool = False,
+    require_current_admin: bool = False,
 ) -> dict[str, Any]:
     """Write while excluding launches and optionally record depositor ownership.
 
@@ -436,8 +475,23 @@ def write_credential_vault(
         raise ValueError("LLM subscription service is not supported")
     with provider_assignment_admission().exclusive(universe):
         conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+        journal_written = False
         try:
+            conn.execute("BEGIN IMMEDIATE")
             _ensure_llm_deposit_owner_schema(conn)
+            _recover_llm_deposit_journal(universe, conn)
+            if require_current_admin:
+                current_admin = conn.execute(
+                    """
+                    SELECT 1 FROM universe_acl
+                     WHERE universe_id = ? AND actor_id = ? AND permission = 'admin'
+                    """,
+                    (uid, owner),
+                ).fetchone()
+                if current_admin is None:
+                    raise LLMCredentialAuthorizationDenied(
+                        "credential deposit requires a current universe admin"
+                    )
             if owner and deposited_services:
                 placeholders = ",".join("?" for _ in deposited_services)
                 existing = conn.execute(
@@ -464,10 +518,11 @@ def write_credential_vault(
                 else ""
             )
             if duplicate_guard:
-                _validate_llm_subscription_deposit_record(
-                    universe,
-                    incoming_records[0],
-                )
+                deposit_id = secrets.token_hex(16)
+                _write_llm_deposit_journal(universe, deposit_id=deposit_id)
+                journal_written = True
+            else:
+                deposit_id = ""
             summary = _write_credential_vault_unlocked(
                 universe,
                 incoming_records,
@@ -480,7 +535,6 @@ def write_credential_vault(
                 if record.get("credential_type") == "llm_subscription"
                 and _service(record) in {"claude", "codex"}
             }
-            conn.execute("BEGIN IMMEDIATE")
             placeholders = ",".join("?" for _ in services)
             if services:
                 conn.execute(
@@ -497,23 +551,29 @@ def write_credential_vault(
                 )
             if owner:
                 for service_name in deposited_services:
-                    conn.execute(
-                        """
-                        INSERT INTO llm_credential_deposit_owners (
-                            universe_id, service, owner_user_id, connected_at
-                        ) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-                        ON CONFLICT(universe_id, service) DO UPDATE SET
-                            owner_user_id = excluded.owner_user_id,
-                            connected_at = CASE
-                                WHEN llm_credential_deposit_owners.connected_at = ''
-                                THEN excluded.connected_at
-                                ELSE llm_credential_deposit_owners.connected_at
-                            END
-                        """,
-                        (uid, service_name, owner),
+                    _upsert_llm_deposit_owner(
+                        conn,
+                        universe_id=uid,
+                        service=service_name,
+                        owner_user_id=owner,
+                        deposit_id=deposit_id,
                     )
             conn.commit()
+            if journal_written:
+                _clear_llm_deposit_journal(universe)
             return summary
+        except BaseException:
+            conn.rollback()
+            if journal_written:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    _ensure_llm_deposit_owner_schema(conn)
+                    _recover_llm_deposit_journal(universe, conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+            raise
         finally:
             conn.close()
 
@@ -563,6 +623,7 @@ def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
             service TEXT NOT NULL,
             owner_user_id TEXT NOT NULL,
             connected_at TEXT NOT NULL DEFAULT '',
+            deposit_id TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (universe_id, service)
         )
         """
@@ -572,10 +633,133 @@ def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
         for row in conn.execute("PRAGMA table_info(llm_credential_deposit_owners)")
     }
     if "connected_at" not in columns:
-        conn.execute(
-            "ALTER TABLE llm_credential_deposit_owners "
-            "ADD COLUMN connected_at TEXT NOT NULL DEFAULT ''"
+        _add_llm_deposit_owner_column(
+            conn,
+            "connected_at",
+            "TEXT NOT NULL DEFAULT ''",
         )
+    if "deposit_id" not in columns:
+        _add_llm_deposit_owner_column(
+            conn,
+            "deposit_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+    conn.execute(
+        """
+        UPDATE llm_credential_deposit_owners
+           SET connected_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE connected_at = ''
+        """
+    )
+
+
+def _add_llm_deposit_owner_column(
+    conn: sqlite3.Connection,
+    name: str,
+    declaration: str,
+) -> None:
+    try:
+        conn.execute(
+            f"ALTER TABLE llm_credential_deposit_owners ADD COLUMN {name} {declaration}"
+        )
+    except sqlite3.OperationalError:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(llm_credential_deposit_owners)")
+        }
+        if name not in columns:
+            raise
+
+
+def _llm_deposit_journal_path(universe_dir: Path) -> Path:
+    return universe_dir / DEPOSIT_JOURNAL_FILENAME
+
+
+def _write_llm_deposit_journal(universe_dir: Path, *, deposit_id: str) -> None:
+    path = credential_vault_path(universe_dir)
+    journal = _llm_deposit_journal_path(universe_dir)
+    if journal.exists():
+        raise PermissionError("an unfinished credential deposit requires recovery")
+    previous = path.read_bytes() if path.is_file() else b""
+    document = {
+        "schema_version": 1,
+        "deposit_id": deposit_id,
+        "vault_existed": path.is_file(),
+        "previous_vault_b64": base64.b64encode(previous).decode("ascii"),
+    }
+    tmp = journal.with_name(f"{journal.name}.tmp")
+    try:
+        tmp.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+        _chmod_best_effort(tmp, 0o600)
+        tmp.replace(journal)
+        _chmod_best_effort(journal, 0o600)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _clear_llm_deposit_journal(universe_dir: Path) -> None:
+    _llm_deposit_journal_path(universe_dir).unlink(missing_ok=True)
+
+
+def _recover_llm_deposit_journal(
+    universe_dir: Path,
+    conn: sqlite3.Connection,
+) -> None:
+    journal = _llm_deposit_journal_path(universe_dir)
+    if not journal.is_file():
+        return
+    try:
+        document = json.loads(journal.read_text(encoding="utf-8"))
+        deposit_id = str(document["deposit_id"])
+        vault_existed = document["vault_existed"] is True
+        previous = base64.b64decode(
+            str(document["previous_vault_b64"]),
+            validate=True,
+        )
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise PermissionError("credential deposit recovery journal is invalid") from None
+    committed = conn.execute(
+        "SELECT 1 FROM llm_credential_deposit_owners WHERE deposit_id = ? LIMIT 1",
+        (deposit_id,),
+    ).fetchone()
+    if committed is None:
+        vault_path = credential_vault_path(universe_dir)
+        if vault_existed:
+            tmp = vault_path.with_name(f"{vault_path.name}.recover")
+            tmp.write_bytes(previous)
+            _chmod_best_effort(tmp, 0o600)
+            tmp.replace(vault_path)
+            _chmod_best_effort(vault_path, 0o600)
+        else:
+            vault_path.unlink(missing_ok=True)
+    _clear_llm_deposit_journal(universe_dir)
+
+
+def _upsert_llm_deposit_owner(
+    conn: sqlite3.Connection,
+    *,
+    universe_id: str,
+    service: str,
+    owner_user_id: str,
+    deposit_id: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO llm_credential_deposit_owners (
+            universe_id, service, owner_user_id, connected_at, deposit_id
+        ) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?)
+        ON CONFLICT(universe_id, service) DO UPDATE SET
+            owner_user_id = excluded.owner_user_id,
+            connected_at = CASE
+                WHEN llm_credential_deposit_owners.connected_at = ''
+                THEN excluded.connected_at
+                ELSE llm_credential_deposit_owners.connected_at
+            END,
+            deposit_id = excluded.deposit_id
+        """,
+        (universe_id, service, owner_user_id, deposit_id),
+    )
 
 
 def _validate_llm_subscription_deposit_record(
@@ -591,14 +775,12 @@ def _validate_llm_subscription_deposit_record(
     material = _subscription_material(universe_dir, service, record)
     if not material:
         raise ValueError("LLM subscription credential is unusable")
-    if service == "codex" and not record.get("auth_json_b64"):
-        malformed = False
-        try:
-            json.loads(material)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            malformed = True
-        if malformed:
-            raise ValueError("Codex subscription credential is unusable") from None
+    if service == "codex":
+        _validate_codex_subscription_material(material)
+    if service == "claude":
+        token = material.decode("utf-8")
+        if not token.startswith("sk-ant-oat"):
+            raise ValueError("Claude subscription credential is unusable")
 
 
 def list_llm_subscription_connections(
@@ -608,26 +790,34 @@ def list_llm_subscription_connections(
 ) -> list[dict[str, str]]:
     """Return only redacted, currently usable LLM deposit projections."""
 
+    from tinyassets.provider_assignment import provider_assignment_admission
     from tinyassets.storage import db_path
 
     universe = Path(universe_dir).resolve(strict=False)
     uid = universe_id.strip()
     if not uid or uid != universe.name:
         raise ValueError("credential universe does not match its canonical directory")
-    conn = sqlite3.connect(db_path(universe.parent))
-    try:
-        _ensure_llm_deposit_owner_schema(conn)
-        rows = conn.execute(
-            """
-            SELECT service, owner_user_id, connected_at
-              FROM llm_credential_deposit_owners
-             WHERE universe_id = ?
-             ORDER BY service
-            """,
-            (uid,),
-        ).fetchall()
-    finally:
-        conn.close()
+    with provider_assignment_admission().exclusive(universe):
+        conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            _ensure_llm_deposit_owner_schema(conn)
+            _recover_llm_deposit_journal(universe, conn)
+            rows = conn.execute(
+                """
+                SELECT service, owner_user_id, connected_at
+                  FROM llm_credential_deposit_owners
+                 WHERE universe_id = ?
+                 ORDER BY service
+                """,
+                (uid,),
+            ).fetchall()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     connected: list[dict[str, str]] = []
     for service, owner, connected_at in rows:
         canonical_service = str(service)
@@ -748,6 +938,8 @@ def _usable_subscription_record(
     universe_dir: Path,
     service: str,
 ) -> dict[str, Any]:
+    if _llm_deposit_journal_path(universe_dir).exists():
+        raise PermissionError("credential deposit recovery is incomplete")
     vault_path = credential_vault_path(universe_dir)
     if vault_path.is_symlink() or not vault_path.is_file():
         raise PermissionError("exactly one usable subscription credential is required")
@@ -1194,7 +1386,10 @@ def snapshot_llm_subscription_credential(
     """Copy current credential bytes into one immutable launch directory."""
 
     universe = Path(universe_dir).resolve(strict=True)
-    if custody.universe_id != universe.name or custody.service != "codex":
+    if (
+        custody.universe_id != universe.name
+        or custody.service not in {"claude", "codex"}
+    ):
         raise PermissionError("credential snapshot root is not current")
     record = _usable_subscription_record(universe, custody.service)
     material = _subscription_material(universe, custody.service, record)
@@ -1232,18 +1427,21 @@ def snapshot_llm_subscription_credential(
         _root_identity=root_identity,
     )
     try:
-        auth_file = directory / "auth.json"
+        material_file = directory / (
+            "auth.json" if custody.service == "codex" else ".oauth-token"
+        )
         if _plain_snapshot_directory(directory) != directory_identity:
             raise PermissionError("credential snapshot directory identity changed")
-        _write_exclusive_snapshot_file(auth_file, material)
-        config_file = directory / "config.toml"
-        _write_exclusive_snapshot_file(
-            config_file,
-            b'cli_auth_credentials_store = "file"\n',
-        )
+        _write_exclusive_snapshot_file(material_file, material)
+        if custody.service == "codex":
+            config_file = directory / "config.toml"
+            _write_exclusive_snapshot_file(
+                config_file,
+                b'cli_auth_credentials_store = "file"\n',
+            )
         lock_file = directory / ".lock"
         _write_exclusive_snapshot_file(lock_file, b"")
-        copied_material = _read_credential_material(auth_file)
+        copied_material = _read_credential_material(material_file)
         copied_record_digest = _canonical_digest({
             "material_digest": (
                 "sha256:" + hashlib.sha256(copied_material).hexdigest()

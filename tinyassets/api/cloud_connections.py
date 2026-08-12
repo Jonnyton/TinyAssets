@@ -14,6 +14,7 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.credential_vault import (
+    LLMCredentialAuthorizationDenied,
     LLMCredentialOwnershipConflict,
     list_llm_subscription_connections,
     write_credential_vault,
@@ -210,6 +211,7 @@ def cloud_connections(
                 owner_user_id=actor,
                 universe_id=uid,
                 require_usable_llm_subscription=True,
+                require_current_admin=True,
             )
             connection = next(
                 item
@@ -219,6 +221,8 @@ def cloud_connections(
                 )
                 if item["service"] == service
             )
+        except LLMCredentialAuthorizationDenied:
+            return {"error": "not_found", "resource": "connection"}
         except LLMCredentialOwnershipConflict:
             return {"error": "connection_conflict", "resource": "llm_subscription"}
         except (OSError, PermissionError, sqlite3.Error, StopIteration, TypeError, ValueError):

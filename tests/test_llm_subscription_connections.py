@@ -3,12 +3,23 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 
 def _auth_b64(material: str) -> str:
     return base64.b64encode(material.encode()).decode()
+
+
+def _codex_auth(token: str = "codex-access-token") -> str:
+    return json.dumps({"tokens": {"access_token": token}})
+
+
+def _claude_oauth(token: str = "fixture") -> str:
+    return f"sk-ant-oat01-{token}-subscription-token"
 
 
 def _as_actor(monkeypatch, tmp_path, *, actor: str, permission: str = "admin") -> None:
@@ -55,8 +66,8 @@ def _agent_binding(tmp_path, *, actor: str) -> dict[str, object]:
 @pytest.mark.parametrize(
     ("service", "provider", "material"),
     [
-        ("codex", "codex", '{"tokens":{"access_token":"codex-secret"}}'),
-        ("claude", "claude-code", "claude-oauth-secret"),
+        ("codex", "codex", _codex_auth("codex-secret")),
+        ("claude", "claude-code", _claude_oauth("claude-secret")),
     ],
 )
 def test_connect_llm_records_depositor_surfaces_redacted_connection_and_binds(
@@ -142,6 +153,62 @@ def test_connect_llm_records_depositor_surfaces_redacted_connection_and_binds(
     )
     assert bound["status"] == "ready"
 
+    from tinyassets.credential_vault import (
+        cleanup_llm_credential_snapshot,
+        current_llm_subscription_custody,
+        snapshot_llm_subscription_credential,
+    )
+    from tinyassets.providers.base import subprocess_env_for_provider
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        custody = current_llm_subscription_custody(
+            conn,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            service=service,
+        )
+    assert custody is not None
+    snapshot = snapshot_llm_subscription_credential(
+        universe_dir=universe_dir,
+        custody=custody,
+    )
+    try:
+        env = subprocess_env_for_provider(
+            provider,
+            universe_dir=universe_dir,
+            credential_snapshot_dir=snapshot.directory,
+        )
+        if service == "codex":
+            snapshotted = json.loads(
+                (snapshot.directory / "auth.json").read_text(encoding="utf-8")
+            )
+            assert snapshotted["tokens"]["access_token"] == "codex-secret"
+            assert env["CODEX_HOME"] == str(snapshot.directory)
+        else:
+            assert env["CLAUDE_CODE_OAUTH_TOKEN"] == material
+            assert env["CLAUDE_CONFIG_DIR"] == str(snapshot.directory)
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os,sys; "
+                        "sys.exit(0 if os.environ.get('CLAUDE_CODE_OAUTH_TOKEN', '')"
+                        ".startswith('sk-ant-oat') else 9)"
+                    ),
+                ],
+                check=False,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            assert child.returncode == 0
+            assert child.stdout == ""
+            assert material not in child.stderr
+    finally:
+        cleanup_llm_credential_snapshot(snapshot)
+
 
 def test_connect_llm_requires_current_admin_acl(tmp_path, monkeypatch):
     import tinyassets.universe_server as server
@@ -157,13 +224,176 @@ def test_connect_llm_requires_current_admin_acl(tmp_path, monkeypatch):
             operation="connect_llm",
             graph_id="u-owner",
             payload_json=json.dumps(
-                {"service": "codex", "auth_json_b64": _auth_b64("{}")}
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth()),
+                }
             ),
         )
     )
 
     assert denied == {"error": "not_found", "resource": "connection"}
     assert not credential_vault_path(universe_dir).exists()
+
+
+def test_connect_llm_rechecks_admin_at_the_admitted_write(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets.api import cloud_connections as connections_api
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.daemon_server import revoke_universe_access
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    real_write = connections_api.write_credential_vault
+
+    def revoke_then_write(*args, **kwargs):
+        revoke_universe_access(
+            tmp_path,
+            universe_id="u-owner",
+            actor_id="owner-1",
+        )
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(connections_api, "write_credential_vault", revoke_then_write)
+    refused = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth()),
+                }
+            ),
+        )
+    )
+
+    assert refused == {"error": "not_found", "resource": "connection"}
+    assert not credential_vault_path(universe_dir).exists()
+
+
+def test_connect_llm_rolls_back_vault_when_owner_commit_fails(tmp_path, monkeypatch):
+    import tinyassets.universe_server as server
+    from tinyassets import credential_vault
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.storage import db_path
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    _as_actor(monkeypatch, tmp_path, actor="owner-1")
+    vault_path = credential_vault_path(universe_dir)
+    original = '{"schema_version":1,"credentials":[]}\n'
+    vault_path.write_text(original, encoding="utf-8")
+
+    def fail_owner_write(*args, **kwargs):
+        raise sqlite3.OperationalError("injected owner metadata failure")
+
+    monkeypatch.setattr(credential_vault, "_upsert_llm_deposit_owner", fail_owner_write)
+    refused = json.loads(
+        server.write_graph(
+            target="connection",
+            operation="connect_llm",
+            graph_id="u-owner",
+            payload_json=json.dumps(
+                {
+                    "service": "codex",
+                    "auth_json_b64": _auth_b64(_codex_auth("must-roll-back")),
+                }
+            ),
+        )
+    )
+
+    assert refused == {"error": "llm_connection_invalid"}
+    assert vault_path.read_text(encoding="utf-8") == original
+    assert not (universe_dir / ".credential-vault.deposit-journal.json").exists()
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        owner = conn.execute(
+            "SELECT owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ? AND service = ?",
+            ("u-owner", "codex"),
+        ).fetchone()
+    assert owner is None
+
+
+def test_connection_read_recovers_interrupted_uncommitted_deposit(tmp_path):
+    from tinyassets.credential_vault import (
+        _write_llm_deposit_journal,
+        credential_vault_path,
+        list_llm_subscription_connections,
+    )
+
+    universe_dir = tmp_path / "u-owner"
+    universe_dir.mkdir()
+    vault_path = credential_vault_path(universe_dir)
+    original = '{"schema_version":1,"credentials":[]}\n'
+    vault_path.write_text(original, encoding="utf-8")
+    _write_llm_deposit_journal(universe_dir, deposit_id="interrupted-deposit")
+    vault_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "credentials": [
+                    {
+                        "credential_type": "llm_subscription",
+                        "service": "codex",
+                        "auth_json_b64": _auth_b64(_codex_auth("uncommitted")),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert list_llm_subscription_connections(
+        universe_dir,
+        universe_id="u-owner",
+    ) == []
+    assert vault_path.read_text(encoding="utf-8") == original
+    assert not (universe_dir / ".credential-vault.deposit-journal.json").exists()
+
+
+def test_connection_reads_serialize_legacy_owner_schema_migration(tmp_path):
+    from tinyassets.credential_vault import list_llm_subscription_connections
+    from tinyassets.storage import db_path
+
+    for universe_id in ("u-one", "u-two"):
+        (tmp_path / universe_id).mkdir()
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE llm_credential_deposit_owners (
+                universe_id TEXT NOT NULL,
+                service TEXT NOT NULL,
+                owner_user_id TEXT NOT NULL,
+                PRIMARY KEY (universe_id, service)
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO llm_credential_deposit_owners VALUES (?, 'codex', 'owner')",
+            [("u-one",), ("u-two",)],
+        )
+
+    def read(universe_id: str):
+        return list_llm_subscription_connections(
+            tmp_path / universe_id,
+            universe_id=universe_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(read, ("u-one", "u-two"))) == [[], []]
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(llm_credential_deposit_owners)")
+        }
+        connected = conn.execute(
+            "SELECT connected_at FROM llm_credential_deposit_owners"
+        ).fetchall()
+    assert {"connected_at", "deposit_id"}.issubset(columns)
+    assert all(value and value.endswith("Z") for (value,) in connected)
 
 
 def test_connect_llm_rejects_different_owner_without_overwriting(tmp_path, monkeypatch):
@@ -173,8 +403,8 @@ def test_connect_llm_rejects_different_owner_without_overwriting(tmp_path, monke
     universe_dir = tmp_path / "u-owner"
     universe_dir.mkdir()
     _as_actor(monkeypatch, tmp_path, actor="owner-1")
-    original = _auth_b64('{"token":"original-secret"}')
-    replacement = _auth_b64('{"token":"replacement-secret"}')
+    original = _auth_b64(_codex_auth("original-secret"))
+    replacement = _auth_b64(_codex_auth("replacement-secret"))
     first = json.loads(
         server.write_graph(
             target="connection",
@@ -225,7 +455,7 @@ def test_connect_llm_ownership_conflict_is_scoped_to_the_deposited_service(
             operation="connect_llm",
             graph_id="u-owner",
             payload_json=json.dumps(
-                {"service": "codex", "auth_json_b64": _auth_b64("{}")}
+                {"service": "codex", "auth_json_b64": _auth_b64(_codex_auth())}
             ),
         )
     )
@@ -240,7 +470,7 @@ def test_connect_llm_ownership_conflict_is_scoped_to_the_deposited_service(
             payload_json=json.dumps(
                 {
                     "service": "claude",
-                    "auth_json_b64": _auth_b64("claude-owner-2"),
+                    "auth_json_b64": _auth_b64(_claude_oauth("owner-2")),
                 }
             ),
         )
@@ -264,7 +494,20 @@ def test_connect_llm_ownership_conflict_is_scoped_to_the_deposited_service(
         json.dumps({"service": "gemini", "auth_json_b64": _auth_b64("{}")}),
         json.dumps({"service": "codex", "auth_json_b64": "not-base64"}),
         json.dumps({"service": "codex", "auth_json_b64": _auth_b64("not-json")}),
+        json.dumps({"service": "codex", "auth_json_b64": _auth_b64("{}")}),
+        json.dumps({"service": "codex", "auth_json_b64": _auth_b64("[]")}),
+        json.dumps(
+            {
+                "service": "codex",
+                "auth_json_b64": _auth_b64(
+                    '{"tokens":{"access_token":"one","access_token":"two"}}'
+                ),
+            }
+        ),
         json.dumps({"service": "claude", "auth_json_b64": _auth_b64("{}")}),
+        json.dumps(
+            {"service": "claude", "auth_json_b64": _auth_b64("not-an-oauth-token")}
+        ),
         json.dumps(
             {
                 "service": "codex",
@@ -337,7 +580,7 @@ def test_connect_llm_rejects_duplicate_existing_slot_without_collapsing_it(
             operation="connect_llm",
             graph_id="u-owner",
             payload_json=json.dumps(
-                {"service": "codex", "auth_json_b64": _auth_b64("{}")}
+                {"service": "codex", "auth_json_b64": _auth_b64(_codex_auth())}
             ),
         )
     )
@@ -356,7 +599,9 @@ def test_connect_llm_accepts_contained_codex_home_and_never_echoes_path(
     universe_dir = tmp_path / "u-owner"
     codex_home = universe_dir / ".credentials" / "codex"
     codex_home.mkdir(parents=True)
-    (codex_home / "auth.json").write_text('{"token":"path-secret"}', encoding="utf-8")
+    (codex_home / "auth.json").write_text(
+        _codex_auth("path-secret"), encoding="utf-8"
+    )
     _as_actor(monkeypatch, tmp_path, actor="owner-1")
 
     connected = json.loads(
@@ -387,7 +632,9 @@ def test_connect_llm_rejects_uncontained_path_without_echoing_it(
     universe_dir.mkdir()
     outside = tmp_path / "outside-codex-home"
     outside.mkdir()
-    (outside / "auth.json").write_text('{"token":"outside-secret"}', encoding="utf-8")
+    (outside / "auth.json").write_text(
+        _codex_auth("outside-secret"), encoding="utf-8"
+    )
     _as_actor(monkeypatch, tmp_path, actor="owner-1")
 
     refused = json.loads(
