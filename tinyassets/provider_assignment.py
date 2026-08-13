@@ -169,28 +169,61 @@ def reserve_served_provider_budget(
             """,
             (authority.binding_id, authority.binding_generation),
         ).fetchall()
-        if len(rows) >= authority.max_invocations:
-            conn.rollback()
-            raise ProviderAuthorityHeldError(held)
-        used_tokens = sum(
-            int(row[3]) if row[0] == "succeeded" else int(row[1])
-            for row in rows
-        )
-        used_cost = sum(
-            int(row[4]) if row[0] == "succeeded" else int(row[2])
-            for row in rows
-        )
-        remaining_tokens = authority.max_tokens - used_tokens
-        remaining_cost = authority.max_cost_microunits - used_cost
-        affordable_total_tokens = remaining_cost // _SERVED_COST_MICROUNITS_PER_TOKEN
-        output_tokens = min(
-            requested_output_tokens,
-            remaining_tokens - estimated_input_tokens,
-            affordable_total_tokens - estimated_input_tokens,
-        )
-        if output_tokens < 1:
-            conn.rollback()
-            raise ProviderAuthorityHeldError(held)
+        def _reservable_output_tokens(reservation_rows: list) -> int:
+            used_tokens = sum(
+                int(row[3]) if row[0] == "succeeded" else int(row[1])
+                for row in reservation_rows
+            )
+            used_cost = sum(
+                int(row[4]) if row[0] == "succeeded" else int(row[2])
+                for row in reservation_rows
+            )
+            remaining_tokens = authority.max_tokens - used_tokens
+            remaining_cost = authority.max_cost_microunits - used_cost
+            affordable_total_tokens = (
+                remaining_cost // _SERVED_COST_MICROUNITS_PER_TOKEN
+            )
+            return min(
+                requested_output_tokens,
+                remaining_tokens - estimated_input_tokens,
+                affordable_total_tokens - estimated_input_tokens,
+            )
+
+        output_tokens = _reservable_output_tokens(rows)
+        if len(rows) >= authority.max_invocations or output_tokens < 1:
+            # SERVING budgets SELF-HEAL. This reservation path is converse-only
+            # (operation="converse" validated above) and serving turns are
+            # user-driven — each is an inbound chat message, so a serving binding
+            # cannot runaway on its own. Rather than fail a founder mid-conversation
+            # when the per-generation window is spent, RETIRE this generation's
+            # terminal reservations (open a fresh window) and continue. The user's
+            # own BYO-LLM subscription remains the real limit; a fresh binding
+            # generation on rebind/expiry still starts clean. (Before this, a fixed
+            # 32K lifetime cap exhausted in ~7 substantive turns and stayed dead.)
+            conn.execute(
+                """
+                DELETE FROM served_provider_budget_reservations
+                 WHERE binding_id = ? AND binding_generation = ?
+                   AND state <> 'reserved'
+                """,
+                (authority.binding_id, authority.binding_generation),
+            )
+            rows = conn.execute(
+                """
+                SELECT state, reserved_total_tokens, reserved_cost_microunits,
+                       actual_total_tokens, actual_cost_microunits
+                  FROM served_provider_budget_reservations
+                 WHERE binding_id = ? AND binding_generation = ?
+                """,
+                (authority.binding_id, authority.binding_generation),
+            ).fetchall()
+            output_tokens = _reservable_output_tokens(rows)
+            if len(rows) >= authority.max_invocations or output_tokens < 1:
+                # Even a freshly-reset window cannot fit one turn — the cap is
+                # mis-sized below a single turn (a real config error) or too many
+                # reservations are concurrently in flight. Fail honestly.
+                conn.rollback()
+                raise ProviderAuthorityHeldError(held)
         reserved_total = estimated_input_tokens + output_tokens
         reserved_cost = reserved_total * _SERVED_COST_MICROUNITS_PER_TOKEN
         reservation = ServedProviderBudgetReservation(
