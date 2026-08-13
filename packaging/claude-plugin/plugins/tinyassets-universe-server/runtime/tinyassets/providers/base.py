@@ -433,6 +433,23 @@ def subprocess_env_for_provider(
                 env["CODEX_HOME"] = str(snapshot)
             else:
                 env["CLAUDE_CONFIG_DIR"] = str(snapshot)
+                token_path = snapshot / ".oauth-token"
+                before = token_path.lstat()
+                if (
+                    token_path.is_symlink()
+                    or not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                ):
+                    raise ValueError("credential snapshot is unavailable")
+                token = token_path.read_text(encoding="utf-8").strip()
+                after = token_path.lstat()
+                if (
+                    not token
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                ):
+                    raise ValueError("credential snapshot is unavailable")
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = token
             return env
         from tinyassets.credential_vault import (
             apply_provider_auth_env,

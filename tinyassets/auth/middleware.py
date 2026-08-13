@@ -15,6 +15,7 @@ import secrets
 import threading
 import weakref
 from collections import deque
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -454,6 +455,25 @@ def auth_middleware(token: str | None) -> Identity:
     if token and identity is not ANONYMOUS:
         _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
     return identity
+
+
+@contextmanager
+def identity_context(identity: Identity | None):
+    """Bind ``identity`` as the current request identity for the with-block.
+
+    Public wrapper over the module-private ``_current_identity`` contextvar so
+    non-transport callers (e.g. the /connect credential-deposit flow) can run a
+    synchronous unit of work AS a resolved founder without importing the private
+    contextvar. Sets on enter, resets on exit — exactly the set/reset pair
+    ``AuthContextMiddleware`` uses per request. Set/reset happen in the calling
+    thread, so run this INSIDE the worker thread (``run_in_threadpool``) when the
+    body does sync work that reads ``current_identity()``.
+    """
+    token = _current_identity.set(identity)
+    try:
+        yield
+    finally:
+        _current_identity.reset(token)
 
 
 def _auth_challenge_path(path: str) -> bool:

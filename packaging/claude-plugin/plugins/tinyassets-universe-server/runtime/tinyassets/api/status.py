@@ -1417,6 +1417,36 @@ def get_status(universe_id: str = "") -> str:
 
     release_state = _load_release_state()
 
+    # Per-universe serving provider — the actual provider binding THIS universe's
+    # turns run on. Distinct from active_host, which is the DAEMON-GLOBAL default
+    # endpoint hint (derived from env/log heuristics). A "which provider is my
+    # universe on?" question must resolve against universe_serving, not
+    # active_host — the two were conflated live, reporting the host default as a
+    # universe's serving provider. Best-effort: never break the status probe.
+    universe_serving: dict[str, Any] = {"provider": None, "state": "none"}
+    try:
+        from tinyassets.provider_assignment import load_provider_assignment
+
+        _assignment = load_provider_assignment(_base_path(), universe_id=uid)
+        if _assignment is not None:
+            universe_serving = {
+                "provider": _assignment.provider,
+                "state": _assignment.state,
+                "generation": _assignment.generation,
+            }
+    except Exception as exc:  # noqa: BLE001 — a serving lookup must never break the probe
+        universe_serving = {
+            "provider": None,
+            "state": "lookup_failed",
+            "detail": str(exc),
+        }
+    if universe_serving.get("provider"):
+        caveats.append(
+            "active_host is the DAEMON-GLOBAL default; this universe's turns "
+            f"run on universe_serving.provider ({universe_serving['provider']}). "
+            "Read universe_serving, not active_host, for THIS universe's provider."
+        )
+
     response = {
         "schema_version": _STATUS_SCHEMA_VERSION,
         "active_host": policy_payload["active_host"],
@@ -1444,6 +1474,7 @@ def get_status(universe_id: str = "") -> str:
         "release_state": release_state,
         "universe_id": uid,
         "universe_exists": universe_exists,
+        "universe_serving": universe_serving,
     }
 
     # persona — the universe brain speaking as itself. Its self-understanding

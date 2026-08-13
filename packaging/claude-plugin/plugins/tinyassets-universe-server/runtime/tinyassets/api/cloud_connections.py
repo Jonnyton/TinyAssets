@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
-from tinyassets.api.helpers import _base_path, _request_universe
+from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+from tinyassets.credential_vault import (
+    LLMCredentialAuthorizationDenied,
+    LLMCredentialOwnershipConflict,
+    list_llm_subscription_connections,
+    write_credential_vault,
+)
 from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.workos_pipes import WorkOSPipesClient, WorkOSPipesError
 
@@ -41,6 +50,92 @@ def _payload(value: Any) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ValueError("payload_json must be a JSON object")
     return document
+
+
+def _llm_payload(value: Any) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        document: dict[str, Any] = {}
+        for key, nested in pairs:
+            if key in document:
+                raise ValueError("payload_json contains a duplicate field")
+            document[key] = nested
+        return document
+
+    document = (
+        json.loads(value, object_pairs_hook=unique_object)
+        if isinstance(value, str)
+        else value
+    )
+    if not isinstance(document, dict):
+        raise ValueError("payload_json must be a JSON object")
+    if not set(document).issubset({"service", "auth_json_b64", "codex_home"}):
+        raise ValueError("payload_json contains an unsupported field")
+    return document
+
+
+def _strict_secret_text(encoded: object) -> str:
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise ValueError("subscription credential is missing")
+    normalized = encoded.translate(str.maketrans("", "", " \t\r\n"))
+    try:
+        decoded = base64.b64decode(normalized, validate=True).decode("utf-8").strip()
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        raise ValueError("subscription credential is malformed") from None
+    if not decoded:
+        raise ValueError("subscription credential is empty")
+    return decoded
+
+
+def _llm_credential(value: Any) -> dict[str, str]:
+    document = _llm_payload(value)
+    service = document.get("service")
+    if not isinstance(service, str) or service.strip().lower() not in {"claude", "codex"}:
+        raise ValueError("subscription service is not supported")
+    service = service.strip().lower()
+    encoded = document.get("auth_json_b64")
+    codex_home = document.get("codex_home")
+    if service == "claude":
+        if codex_home is not None:
+            raise ValueError("Claude subscription material is invalid")
+        decoded = _strict_secret_text(encoded)
+        try:
+            json.loads(decoded)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise ValueError("Claude subscription material is invalid")
+        return {
+            "credential_type": "llm_subscription",
+            "service": "claude",
+            "token_b64": str(encoded),
+        }
+    if (encoded is None) == (codex_home is None):
+        raise ValueError("exactly one Codex subscription source is required")
+    if encoded is not None:
+        return {
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": str(encoded),
+        }
+    if not isinstance(codex_home, str) or not codex_home.strip():
+        raise ValueError("Codex subscription path is invalid")
+    return {
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "codex_home": codex_home.strip(),
+    }
+
+
+def _is_current_admin(*, actor: str, universe_id: str) -> bool:
+    from tinyassets.daemon_server import list_universe_acl
+
+    try:
+        return any(
+            row.get("actor_id") == actor and row.get("permission") == "admin"
+            for row in list_universe_acl(_base_path(), universe_id=universe_id)
+        )
+    except Exception:  # noqa: BLE001 - unreadable ACL state grants no custody
+        return False
 
 
 def _ids(*, actor: str, universe_id: str, destination: str) -> tuple[str, str]:
@@ -103,9 +198,38 @@ def cloud_connections(
 
     if not permissions.universe_access_allows(uid, write=action != "list"):
         return {"error": "not_found", "resource": "connection"}
-    client = WorkOSPipesClient()
     normalized = (action or "").strip().lower()
+    if normalized == "connect_llm":
+        if not _is_current_admin(actor=actor, universe_id=uid):
+            return {"error": "not_found", "resource": "connection"}
+        try:
+            credential = _llm_credential(payload)
+            service = credential["service"]
+            write_credential_vault(
+                _universe_dir(uid),
+                [credential],
+                owner_user_id=actor,
+                universe_id=uid,
+                require_usable_llm_subscription=True,
+                require_current_admin=True,
+            )
+            connection = next(
+                item
+                for item in list_llm_subscription_connections(
+                    _universe_dir(uid),
+                    universe_id=uid,
+                )
+                if item["service"] == service
+            )
+        except LLMCredentialAuthorizationDenied:
+            return {"error": "not_found", "resource": "connection"}
+        except LLMCredentialOwnershipConflict:
+            return {"error": "connection_conflict", "resource": "llm_subscription"}
+        except (OSError, PermissionError, sqlite3.Error, StopIteration, TypeError, ValueError):
+            return {"error": "llm_connection_invalid"}
+        return {"status": "connected", "connection": connection}
     if normalized == "connect":
+        client = WorkOSPipesClient()
         try:
             destination = _repository(_payload(payload).get("destination"))
             url = client.authorization_url(user_id=actor, return_to=_return_to())
@@ -119,6 +243,7 @@ def cloud_connections(
             "next": "after GitHub consent, retry write_graph target=connection operation=reconcile",
         }
     if normalized == "reconcile":
+        client = WorkOSPipesClient()
         try:
             document = _payload(payload)
             destination = _repository(document.get("destination"))
@@ -186,10 +311,16 @@ def cloud_connections(
             resource = ledger.get_connection(grant.connection_id)
             if resource is not None and resource.connection_class == "pull-request-writer":
                 rows.append(_project(resource, grant))
+        rows.extend(
+            list_llm_subscription_connections(
+                _universe_dir(uid),
+                universe_id=uid,
+            )
+        )
         return {"universe_id": uid, "connections": rows, "count": len(rows)}
     return {
         "error": "unknown_connection_action",
-        "allowed_actions": ["connect", "reconcile", "list"],
+        "allowed_actions": ["connect", "connect_llm", "reconcile", "list"],
     }
 
 

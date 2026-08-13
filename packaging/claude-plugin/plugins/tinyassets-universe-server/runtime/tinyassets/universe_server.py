@@ -215,7 +215,12 @@ mcp = FastMCP(
         "On each conversation's opening message, relay the user's actual message "
         "through `converse` FIRST and render the universe's `reply` verbatim. "
         "With no graph_id, `converse` resolves the authenticated founder's home "
-        "or creates and binds one blank seed home before loading its persona. Do "
+        "or creates and binds one blank seed home before loading its persona. "
+        "But when the user names a SPECIFIC universe (e.g. 'my Tiny universe'), do "
+        "NOT default to home: resolve the name to a graph_id via `read_graph "
+        "target=graphs` (match the entry whose `name` equals what they said) and "
+        "pass that graph_id. If the name matches none or several, list them and "
+        "ask which — never silently act on the wrong universe. Do "
         "NOT call `get_status` as the opening experience: `get_status` is read-only "
         "supporting evidence and never creates a universe or soul bundle. Do NOT "
         "list or describe the tools from their schemas."
@@ -306,6 +311,13 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
     from starlette.responses import HTMLResponse
 
     return HTMLResponse(_LANDING_HTML)
+
+
+# Secure browser credential-deposit flow (WorkOS AuthKit). Registers
+# GET /connect/login, GET /connect/callback, GET|POST /connect on this mcp.
+from tinyassets.connect_deposit import register_connect_routes
+
+register_connect_routes(mcp)
 
 
 # Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
@@ -699,14 +711,32 @@ def write_graph(
 
     Args:
         target: What to write: goal, request, branch, universe, automation,
-            agent, or agent_binding. With target=goal, the default operation proposes a
+            agent, agent_binding, or connection. With target=goal, the default operation proposes a
             Goal; operation=set_canonical sets or unsets a canonical binding.
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
-            a create-scoped sign-in declined auto-birth).
+            a create-scoped sign-in declined auto-birth). With target=connection,
+            manage this universe's own provider connections — including
+            depositing your Claude or Codex subscription (bring-your-own-LLM) so
+            the universe can run its turns on it.
         operation: With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
-            With target=agent_binding, bind/update/bind_serving_provider/set_serving.
+            With target=agent_binding, bind/update/switch_provider (or the
+            lower-level bind_serving_provider + set_serving pair).
+            switch_provider is the ONE-CALL way to switch a universe between the
+            providers you have connected (e.g. Claude and Codex): pass
+            payload {"provider":"claude-code" or "codex"} with the binding's
+            current expected_revision and it binds the provider AND enables
+            serving in a single call — no revision handshake. (bind_serving_provider
+            then set_serving is the two-step equivalent; bind bumps the revision,
+            so set_serving needs the NEW one.)
+            With target=connection, connect_llm/connect/reconcile/list. connect_llm
+            is the dedicated bring-your-own-LLM deposit: it stores a Claude or
+            Codex subscription credential in this universe's ENCRYPTED credential
+            vault (owner-scoped, admin-gated — never a plaintext or generic
+            write). Payload: {"service":"claude" or "codex","auth_json_b64":
+            "<base64 of your raw OAuth token>"} (the base64 is transport encoding
+            only). connect/reconcile/list manage GitHub (WorkOS Pipes) connections.
             With target=automation, bind_provider/reconcile_provider/create/pause/
             rebind/resume/stop. Rebind a stopped automation to a published
             immutable Branch version; binding
@@ -1032,6 +1062,7 @@ def write_graph(
             "update": "update_binding",
             "bind_serving_provider": "bind_serving_provider",
             "set_serving": "set_serving",
+            "switch_provider": "switch_provider",
         }.get(binding_operation)
         if action is None:
             return json.dumps(
@@ -1044,6 +1075,7 @@ def write_graph(
                         "update",
                         "bind_serving_provider",
                         "set_serving",
+                        "switch_provider",
                     ],
                 }
             )

@@ -243,6 +243,7 @@ def custom_agents(
             "update_binding",
             "bind_serving_provider",
             "set_serving",
+            "switch_provider",
         }:
             uid = _binding_universe(universe_id)
             write = normalized in {
@@ -250,6 +251,7 @@ def custom_agents(
                 "update_binding",
                 "bind_serving_provider",
                 "set_serving",
+                "switch_provider",
             }
             denial = _binding_access(uid, write=write)
             if denial is not None:
@@ -277,16 +279,21 @@ def custom_agents(
                     "resource": "agent_binding",
                 }
             document = _payload(payload)
-            if normalized in {"bind_serving_provider", "set_serving"}:
+            if normalized in {
+                "bind_serving_provider",
+                "set_serving",
+                "switch_provider",
+            }:
                 from tinyassets.api.helpers import _universe_dir
                 from tinyassets.provider_serving_binding import (
                     bind_serving_provider,
                     set_serving,
+                    switch_serving_provider,
                 )
 
                 expected_fields = (
                     {"provider"}
-                    if normalized == "bind_serving_provider"
+                    if normalized in {"bind_serving_provider", "switch_provider"}
                     else {"enabled"}
                 )
                 if set(document) != expected_fields:
@@ -300,6 +307,25 @@ def custom_agents(
                         raise AgentValidationError("provider must be a string")
                     try:
                         return bind_serving_provider(
+                            base_path=base,
+                            universe_dir=_universe_dir(uid),
+                            owner_user_id=actor,
+                            universe_id=uid,
+                            agent_binding_id=binding_id,
+                            expected_revision=expected_revision,
+                            provider=provider,
+                        )
+                    except (PermissionError, ValueError, LookupError) as exc:
+                        return {
+                            "error": "provider_authority_denied",
+                            "detail": str(exc),
+                        }
+                if normalized == "switch_provider":
+                    provider = document["provider"]
+                    if not isinstance(provider, str):
+                        raise AgentValidationError("provider must be a string")
+                    try:
+                        return switch_serving_provider(
                             base_path=base,
                             universe_dir=_universe_dir(uid),
                             owner_user_id=actor,
