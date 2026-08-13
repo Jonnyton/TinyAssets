@@ -1,6 +1,6 @@
-# Delta: universe-personification-and-relay — founder-scoped read-only engine MCP
+## MODIFIED Requirements
 
-## MODIFIED Requirement: The engine turn is confined by a fail-closed sandbox
+### Requirement: The engine turn is confined by a fail-closed sandbox
 
 Every universe-intelligence engine turn SHALL run with `sandbox_workspace=True`
 (cwd pinned to the universe's own directory) and a fail-closed tool policy.

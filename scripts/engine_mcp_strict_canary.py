@@ -27,8 +27,10 @@ import tempfile
 from pathlib import Path
 
 _PROMPT = (
-    "List the exact names of every tool you have whose name starts with "
-    "'mcp__', one per line, and nothing else. If there are none, print NONE."
+    "Print exactly one line and nothing else, in this exact format: the text "
+    "'TOOLCHECK:' followed by a comma-separated list of the exact names of "
+    "every tool you have whose name starts with 'mcp__', or 'TOOLCHECK: NONE' "
+    "if you have no such tools."
 )
 
 
@@ -64,8 +66,21 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    # Positive control (Codex 2026-08-13 residuals #4): a blank or evasive model
+    # response must NOT count as PASS. The probe is inconclusive unless the
+    # model produced the demanded TOOLCHECK marker — deterministic evidence that
+    # the instruction was followed — and only then is the name list trusted.
+    marker = re.search(r"TOOLCHECK:\s*(.*)", proc.stdout)
+    if marker is None:
+        print(
+            "CANARY ERROR: probe inconclusive — the model did not produce the "
+            "TOOLCHECK marker. Raw head: " + proc.stdout[:200],
+            file=sys.stderr,
+        )
+        return 2
+    listed = marker.group(1)
     leaked = sorted(
-        name for name in set(re.findall(r"mcp__[A-Za-z0-9_]+(?:__[A-Za-z0-9_-]+)?", proc.stdout))
+        name for name in set(re.findall(r"mcp__[A-Za-z0-9_]+(?:__[A-Za-z0-9_-]+)?", listed))
         if not name.startswith("mcp__canarydead")
     )
     if leaked:
@@ -74,6 +89,14 @@ def main() -> int:
             print(f"  {name}")
         print("Do NOT enable TINYASSETS_ENGINE_MCP_TOOLS on this CLI version.")
         return 1
+    if "NONE" not in listed and not re.search(r"mcp__", listed):
+        # Marker present but neither NONE nor any tool name: still inconclusive.
+        print(
+            "CANARY ERROR: probe inconclusive — TOOLCHECK line carried neither "
+            "NONE nor tool names: " + listed[:200],
+            file=sys.stderr,
+        )
+        return 2
     version = subprocess.run(
         ["claude", "--version"], capture_output=True, text=True, timeout=30,
     ).stdout.strip()

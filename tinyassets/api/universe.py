@@ -1643,6 +1643,14 @@ def _action_list_universes(**_kwargs: Any) -> str:
 
 
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
+    # Echo-leak guard (Codex 2026-08-13 residuals #3): when the caller OMITS the
+    # id, `_request_universe` resolves a default — for a caller with no home that
+    # resolution walks the base directory and can land on a universe the caller
+    # never named. Echoing that RESOLVED name in an error would disclose a
+    # directory name the caller had no way to know (reproduced: anonymous
+    # omitted-id inspect leaked a hidden universe's name in the denial). Error
+    # payloads therefore echo only what the caller SUPPLIED.
+    requested = (universe_id or "").strip()
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
@@ -1652,8 +1660,13 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         # visibility filtering — the exact aggregate disclosure the list action
         # refuses ("existence is privileged"). Callers who may browse get the
         # visibility-filtered `list` action instead.
+        if not requested:
+            return json.dumps({
+                "error": "No universe is selected.",
+                "hint": "Use action=list to browse the universes visible to you.",
+            })
         return json.dumps({
-            "error": f"Universe '{uid}' not found.",
+            "error": f"Universe '{requested}' not found.",
             "hint": "Use action=list to browse the universes visible to you.",
         })
 
@@ -1666,8 +1679,12 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     from tinyassets.api import permissions, visibility
 
     if not visibility.visibility_permits(uid, "read_metadata"):
+        # Echo only the caller-supplied id (see the echo-leak guard above): on
+        # an omitted-id request the denial must not name the universe the
+        # default resolution happened to land on.
         return json.dumps(permissions.universe_access_error(
-            universe_id=uid, write=False, action="inspect", surface="universe",
+            universe_id=requested, write=False, action="inspect",
+            surface="universe",
         ))
 
     result: dict[str, Any] = {"universe_id": uid}

@@ -130,6 +130,45 @@ def test_status_projection_refuses_unprojectable(monkeypatch):
     assert "error" in json.loads(s.get_status())
 
 
+def test_status_projection_fixed_refusal_on_upstream_error(monkeypatch):
+    """Codex residuals #2: an upstream error object gets a FIXED refusal, not an
+    empty-but-OK ``{}`` and not the upstream error text (which can carry host
+    detail)."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setattr(
+        us, "get_status",
+        lambda **kw: json.dumps({"error": "boom at C:/host/secret/path"}),
+    )
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    out = json.loads(s.get_status())
+    assert out == {"error": "status unavailable."}
+    assert "secret" not in json.dumps(out)
+
+
+def test_status_projection_whitelists_nested_serving(monkeypatch):
+    """Codex residuals #2 (reproduced): universe_serving.detail can embed a host
+    path — only the nested whitelist (provider, state) passes."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    full = dict(_FULL_STATUS)
+    full["universe_serving"] = {
+        "provider": "claude-code",
+        "state": "ready",
+        "lookup_failed": True,
+        "detail": "C:/host/secret/vault/path",
+    }
+    monkeypatch.setattr(us, "get_status", lambda **kw: json.dumps(full))
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    out = json.loads(s.get_status())
+    assert out["universe_serving"] == {"provider": "claude-code", "state": "ready"}
+    assert "detail" not in json.dumps(out)
+
+
 def test_inspect_not_found_does_not_enumerate(tmp_path, monkeypatch):
     """Codex ADAPT #2: a missing universe must not enumerate directory names."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -141,6 +180,24 @@ def test_inspect_not_found_does_not_enumerate(tmp_path, monkeypatch):
     out = json.loads(_action_inspect_universe(universe_id="u-nope"))
     assert "not found" in out.get("error", "")
     assert "available" not in out
+    assert "u-secret-alpha" not in json.dumps(out)
+
+
+def test_inspect_omitted_id_denial_echoes_no_resolved_name(tmp_path, monkeypatch):
+    """Codex residuals #3 (reproduced): when an OMITTED-id inspect resolves to a
+    universe that then DENIES metadata, the denial must not echo the name the
+    default resolution landed on — the caller never named it."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    # A non-serial directory: exactly what _designated_public_universe / default
+    # resolution can land on for a caller with no home.
+    (tmp_path / "u-secret-alpha").mkdir()
+
+    from tinyassets.api import visibility
+    from tinyassets.api.universe import _action_inspect_universe
+
+    monkeypatch.setattr(visibility, "visibility_permits", lambda *a, **k: False)
+    out = json.loads(_action_inspect_universe(universe_id=""))
+    assert "error" in out
     assert "u-secret-alpha" not in json.dumps(out)
 
 

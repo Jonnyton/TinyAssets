@@ -158,6 +158,12 @@ _STATUS_PROJECTION = (
 )
 
 
+# Nested whitelist for ``universe_serving`` (Codex 2026-08-13 residuals #2):
+# the field's full shape (post-#2416) can carry ``lookup_failed``/``detail``
+# values that embed HOST PATHS — reproduced in review. Only these keys pass.
+_SERVING_PROJECTION = ("provider", "state")
+
+
 def _projected_status() -> str:
     """The full status handler, reduced to the engine-safe whitelist."""
     import json
@@ -165,6 +171,7 @@ def _projected_status() -> str:
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import get_status as _impl
 
+    refusal = json.dumps({"error": "status unavailable."})
     token = _bind_founder_identity()
     try:
         # get_status keys off ``universe_id`` (NOT graph_id) — pin the correct
@@ -176,10 +183,24 @@ def _projected_status() -> str:
         full = json.loads(raw)
     except (TypeError, ValueError):
         # A non-JSON handler result must not leak unprojected — refuse instead.
-        return json.dumps({"error": "status unavailable (unprojectable result)."})
+        return refusal
     if not isinstance(full, dict):
-        return json.dumps({"error": "status unavailable (unprojectable result)."})
-    return json.dumps({k: full[k] for k in _STATUS_PROJECTION if k in full})
+        return refusal
+    if "error" in full:
+        # An upstream error object is NOT projectable data: its message can
+        # carry host detail, and projecting it to ``{}`` would silently present
+        # an empty-but-OK status. Fixed refusal, no upstream text.
+        return refusal
+    out = {k: full[k] for k in _STATUS_PROJECTION if k in full}
+    serving = out.get("universe_serving")
+    if isinstance(serving, dict):
+        out["universe_serving"] = {
+            k: serving[k] for k in _SERVING_PROJECTION if k in serving
+        }
+    elif "universe_serving" in out:
+        # A non-dict serving value has no declared shape — drop, fail-closed.
+        del out["universe_serving"]
+    return json.dumps(out)
 
 
 @mcp.tool
