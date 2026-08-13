@@ -30,12 +30,16 @@ try:
 except ImportError:  # pragma: no cover - production helper runs on Linux.
     fcntl = None
 
+# The stop-writer fence's EXACT known writer fleet. The fixed provider-shaped
+# worker fleet (tinyassets-worker + -codex-2/-claude-1/-claude-2) was retired
+# under the "no host writer — prune all fleets" direction (execution is
+# credential-driven, not a standing fleet), so the daemon is the only writer
+# container now. Listing the removed workers made the fence's unguarded
+# `docker inspect tinyassets-worker` fail with "no such object" → every deploy
+# aborted at the stop-writer preflight (outages from 2026-08-10 onward). This
+# tuple stays paired 1:1 with RECOVERY_SERVICES (strict zips below).
 EXPECTED_CONTAINERS = (
     "tinyassets-daemon",
-    "tinyassets-worker",
-    "tinyassets-worker-codex-2",
-    "tinyassets-worker-claude-1",
-    "tinyassets-worker-claude-2",
 )
 CANONICAL_SIDECARS = (
     ("tinyassets-tunnel", "cloudflared"),
@@ -75,12 +79,11 @@ AUDITED_FULL_COMPOSE_RECOVERY_RUN_IDS = (
     "30517431860-1",
     "30518735998-1",
 )
+# Compose service names paired 1:1 with EXPECTED_CONTAINERS (strict zips). The
+# retired worker services are dropped here in lockstep — a mismatch in length
+# would raise on `zip(..., strict=True)`.
 RECOVERY_SERVICES = (
     "daemon",
-    "worker",
-    "worker-codex-2",
-    "worker-claude-1",
-    "worker-claude-2",
 )
 RECOVERY_SIDECAR_SERVICES = tuple(
     service for _name, service in CANONICAL_SIDECARS
@@ -459,7 +462,7 @@ def resolve_receipt_store(
             raise FenceError(f"{name} receipt path is outside /data")
         selected_paths.add(normalized)
     if len(selected_paths) != 1:
-        raise FenceError("receipt path differs across the five-container fleet")
+        raise FenceError("receipt path differs across the writer fleet")
     container_path = next(iter(selected_paths))
     host_path = (
         resolved_volume / container_path.removeprefix("/data/")
@@ -1206,7 +1209,7 @@ def _old_identity(
         for info in inspections.values()
     }
     if len(identities) != 1:
-        raise FenceError("old five-container fleet does not share one exact image")
+        raise FenceError("old writer fleet does not share one exact image")
     image_ref, revision = next(iter(identities))
     if image_ref != configured:
         raise FenceError("old configured and running image digests disagree")
@@ -1989,7 +1992,7 @@ def prove(
         state["last_failed_observation"] = observation
         _atomic_json(state_path, state)
         raise FenceError(
-            "exactly five safe target containers were not independently proved"
+            "the expected safe target containers were not independently proved"
         )
     if observation["receipt_snapshot"] != state.get("receipt_snapshot"):
         raise FenceError("post-deploy receipt snapshot mismatch")
@@ -3679,7 +3682,7 @@ def _remove_partial_owned_recovery_generation(
         state.get("phase") != "recovery_starting"
         or not names < set(EXPECTED_CONTAINERS)
     ):
-        raise FenceError("recovery volume inventory is not the exact owned five")
+        raise FenceError("recovery volume inventory is not the exact owned writer fleet")
     project = str(state.get("recovery_project_name", ""))
     if not project:
         raise FenceError("partial recovery generation is not durable")
@@ -3734,7 +3737,7 @@ def _assert_recovery_container_ownership(
     if names:
         if names != set(EXPECTED_CONTAINERS):
             raise FenceError(
-                "recovery volume inventory is not the exact owned five"
+                "recovery volume inventory is not the exact owned writer fleet"
             )
         inspections = _exact_inspections(host)
         for name, info in inspections.items():
