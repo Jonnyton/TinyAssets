@@ -1596,6 +1596,9 @@ def _action_list_universes(**_kwargs: Any) -> str:
         })
 
     from tinyassets.api import visibility
+    from tinyassets.persona import resolve_persona
+    from tinyassets.universe_self_model import read_self_model
+    from tinyassets.universe_soul import read_universe_soul
 
     universes = []
     hidden_by_visibility = 0
@@ -1610,8 +1613,23 @@ def _action_list_universes(**_kwargs: Any) -> str:
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
+        # The universe's OWN name (persona.name), so a caller can resolve a
+        # by-name reference like "my Tiny universe" to this id instead of
+        # silently defaulting to the founder home (the live failure mode).
+        # Best-effort + soul-gated: unnamed/soulless universes report "" and a
+        # lookup error never breaks the listing.
+        universe_name = ""
+        if liveness.get("has_soul"):
+            try:
+                _persona = resolve_persona(
+                    read_universe_soul(child), read_self_model(child)
+                )
+                universe_name = (_persona.name or "").strip()
+            except Exception:  # noqa: BLE001 — a name lookup must not break list
+                universe_name = ""
         info: dict[str, Any] = {
             "id": child.name,
+            "name": universe_name,
             "visibility": visibility.declared_level_name(child.name),
             "has_premise": liveness["has_premise"],
             "has_soul": liveness["has_soul"],

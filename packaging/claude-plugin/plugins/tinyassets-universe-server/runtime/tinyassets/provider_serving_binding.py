@@ -173,6 +173,36 @@ def _write_failed_assignment(
         pass
 
 
+def _assert_provider_serving_coverage(selected: str) -> None:
+    """Validate provider identity + present-day serving-role coverage.
+
+    Shared live-policy gate so re-affirming serving (the switch replay path) can
+    NEVER skip the coverage check that the initial bind enforced — coverage is a
+    COMPUTED fact against today's FALLBACK_CHAINS, not a one-time bind check
+    (Codex review 2026-08-12). A serving binding grants exactly `_SERVING_ROLES`;
+    claude-code may serve iff it heads every one of those role chains. Today
+    `_SERVING_ROLES == ("writer",)` and claude-code heads the writer chain, so
+    converse serving is covered; if the serving scope later widens to a role
+    claude-code cannot cover (judge/extract), this re-blocks it automatically
+    rather than silently serving a role it cannot fulfil.
+    """
+    if selected not in _PROVIDER_SERVICE:
+        raise ValueError("provider must be claude-code or codex")
+    if selected == "claude-code":
+        from tinyassets.providers.router import FALLBACK_CHAINS
+
+        uncovered = [
+            role
+            for role in _SERVING_ROLES
+            if selected not in FALLBACK_CHAINS.get(role, ())
+        ]
+        if uncovered:
+            raise PermissionError(
+                "claude-code serving is held until every live role is covered; "
+                f"uncovered role(s): {', '.join(uncovered)}"
+            )
+
+
 def bind_serving_provider(
     *,
     base_path: str | Path,
@@ -190,10 +220,7 @@ def bind_serving_provider(
     uid = universe_id.strip()
     binding_id = agent_binding_id.strip()
     selected = provider.strip()
-    if selected not in _PROVIDER_SERVICE:
-        raise ValueError("provider must be claude-code or codex")
-    if selected == "claude-code":
-        raise PermissionError("claude-code serving is held until every live role is covered")
+    _assert_provider_serving_coverage(selected)
     if not owner or not uid or not binding_id:
         raise ValueError("owner, universe, and agent binding are required")
     if (
@@ -523,6 +550,131 @@ def set_serving(
         response["provider"] = assignment.provider
         response["assignment_generation"] = assignment.generation
     return response
+
+
+def switch_serving_provider(
+    *,
+    base_path: str | Path,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    agent_binding_id: str,
+    expected_revision: int,
+    provider: str,
+) -> dict[str, object]:
+    """One call: bind ``provider`` as serving authority AND enable serving.
+
+    This COMPOSES the existing revision-gated ``bind_serving_provider`` +
+    ``set_serving`` and resolves the intermediate revision internally, so a
+    caller (or a chatbot) makes ONE call instead of the two-step handshake —
+    bind bumps the revision, then set_serving must use the new one — which
+    forced stale-revision retries in the live chatbot flow. It adds NO new
+    authority: each composed call keeps its own owner + revision +
+    provider-coverage checks, so this can only do what the caller could already
+    do by hand.
+
+    Concurrency (Codex TOCTOU review 2026-08-12): bind releases its exclusive
+    lock before set_serving re-acquires it, so a concurrent owner-authorized
+    switch could intervene in that gap. Guarded two ways: set_serving is threaded
+    with the revision ``bind`` itself left the binding at (an intervening switch
+    bumps it, so set_serving fails STALE rather than silently enabling the other
+    provider), and the enabled provider is verified against the requested one
+    before success is reported. An "already serving the requested provider"
+    call short-circuits to a no-op success so a retry is idempotent.
+    """
+    uid = universe_id.strip()
+    binding_id = agent_binding_id.strip()
+    selected = provider.strip()
+    # Present-day provider + coverage gate BEFORE either path, so the replay
+    # (re-affirm) path can never enable serving on a provider that no longer
+    # covers every serving role — the check bind runs but set_serving does not
+    # (Codex review 2026-08-12).
+    _assert_provider_serving_coverage(selected)
+
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    # Idempotency / retry-safety: if already serving the requested provider,
+    # RE-AFFIRM through set_serving — NOT a bare read-return. set_serving re-runs
+    # the owner (created_by == owner) + custody + serving-authority checks under
+    # its own admission lock, and we thread the CURRENT revision so a
+    # stale-revision retry is idempotent. (Codex review 2026-08-12: a bare
+    # read-return skipped the primitives' owner/coverage/lock checks, so a
+    # collaborator could get a success envelope for a binding they don't own.)
+    # A concurrent change between this read and set_serving makes it fail stale
+    # (fail-loud), and the enabled provider is verified below regardless.
+    _current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
+    if _current is not None and str(_current.get("status")) == "serving":
+        _assignment = load_provider_assignment(base_path, universe_id=uid)
+        if (
+            _assignment is not None
+            and _assignment.provider == selected
+            and _assignment.state == "ready"
+        ):
+            served = set_serving(
+                base_path=base_path,
+                universe_dir=universe_dir,
+                owner_user_id=owner_user_id,
+                universe_id=universe_id,
+                agent_binding_id=agent_binding_id,
+                expected_revision=int(_current["revision"]),
+                enabled=True,
+            )
+            served_provider = served.get("provider")
+            if served_provider != selected:
+                raise PermissionError(
+                    f"serving provider mismatch: requested {selected!r}, "
+                    f"enabled {served_provider!r}"
+                )
+            return {
+                "status": served.get("status", "serving"),
+                "provider": selected,
+                "agent_binding": served.get("agent_binding"),
+                "served": served,
+                "replayed": True,
+            }
+
+    bound = bind_serving_provider(
+        base_path=base_path,
+        universe_dir=universe_dir,
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        agent_binding_id=agent_binding_id,
+        expected_revision=expected_revision,
+        provider=selected,
+    )
+    # Thread the revision bind ITSELF left the binding at (its returned
+    # projection), NOT a fresh re-read. In the post-bind gap a concurrent switch
+    # would bump the revision; using bind's revision makes set_serving fail stale
+    # on that race instead of enabling the intervening provider.
+    agent = bound.get("agent_binding") or {}
+    try:
+        bound_revision = int(agent["revision"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LookupError("could not resolve the post-bind agent revision") from exc
+
+    served = set_serving(
+        base_path=base_path,
+        universe_dir=universe_dir,
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        agent_binding_id=agent_binding_id,
+        expected_revision=bound_revision,
+        enabled=True,
+    )
+    # Defense in depth: never report success on a provider other than requested.
+    served_provider = served.get("provider")
+    if served_provider != selected:
+        raise PermissionError(
+            f"serving provider mismatch: requested {selected!r}, "
+            f"enabled {served_provider!r}"
+        )
+    return {
+        "status": served.get("status", "serving"),
+        "provider": selected,
+        "agent_binding": served.get("agent_binding"),
+        "bound": bound,
+        "served": served,
+    }
 
 
 def resolve_serving_agent_binding(

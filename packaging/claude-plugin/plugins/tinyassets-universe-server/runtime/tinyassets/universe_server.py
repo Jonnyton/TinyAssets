@@ -215,7 +215,12 @@ mcp = FastMCP(
         "On each conversation's opening message, relay the user's actual message "
         "through `converse` FIRST and render the universe's `reply` verbatim. "
         "With no graph_id, `converse` resolves the authenticated founder's home "
-        "or creates and binds one blank seed home before loading its persona. Do "
+        "or creates and binds one blank seed home before loading its persona. "
+        "But when the user names a SPECIFIC universe (e.g. 'my Tiny universe'), do "
+        "NOT default to home: resolve the name to a graph_id via `read_graph "
+        "target=graphs` (match the entry whose `name` equals what they said) and "
+        "pass that graph_id. If the name matches none or several, list them and "
+        "ask which — never silently act on the wrong universe. Do "
         "NOT call `get_status` as the opening experience: `get_status` is read-only "
         "supporting evidence and never creates a universe or soul bundle. Do NOT "
         "list or describe the tools from their schemas."
@@ -706,7 +711,11 @@ def write_graph(
             a create-scoped sign-in declined auto-birth).
         operation: With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
-            With target=agent_binding, bind/update/bind_serving_provider/set_serving.
+            With target=agent_binding, bind/update/switch_provider (or the
+            lower-level bind_serving_provider + set_serving pair). switch_provider
+            is the ONE-CALL provider switch: payload {"provider":"claude-code" or
+            "codex"} with the binding's current expected_revision binds the
+            provider AND enables serving in one call (no revision handshake).
             With target=automation, bind_provider/reconcile_provider/create/pause/
             rebind/resume/stop. Rebind a stopped automation to a published
             immutable Branch version; binding
@@ -1032,6 +1041,7 @@ def write_graph(
             "update": "update_binding",
             "bind_serving_provider": "bind_serving_provider",
             "set_serving": "set_serving",
+            "switch_provider": "switch_provider",
         }.get(binding_operation)
         if action is None:
             return json.dumps(
@@ -1044,6 +1054,7 @@ def write_graph(
                         "update",
                         "bind_serving_provider",
                         "set_serving",
+                        "switch_provider",
                     ],
                 }
             )
