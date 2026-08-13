@@ -337,8 +337,83 @@ def test_capability_present_consent_missing_returns_dry_run(
     assert result["phase"] == "phase_2"
     assert result["reason"] == "missing_consent"
     assert result["destination"] == _DESTINATION
-    assert "not exposed by the advertised handles" in result["hint"]
+    # A shared host-env capability does NOT auto-authorize; the hint points at
+    # the two legitimate paths (own-vault deposit, or an operator consent grant).
+    assert "vault write credential" in result["hint"]
+    assert "internal consent surface" in result["hint"]
     assert "extensions" not in result["hint"]
+
+
+def test_vault_credential_authorizes_write_without_separate_consent(
+    universe_dir, monkeypatch,
+):
+    """Credential-implies-authorization: a per-universe vault write credential
+    for the destination satisfies Gate 2 on its own — the owner's deposit IS the
+    authorization, so no separate consent grant is required (founder model
+    2026-08-13: add the credential, then it's automatic).
+    """
+    # No env capability and no consent grant — only a vault deposit.
+    write_credential_vault(
+        universe_dir,
+        [
+            {
+                "credential_type": "vcs",
+                "service": "github",
+                "destination": _DESTINATION,
+                "purpose": "write",
+                "token": "vault-token",
+            }
+        ],
+    )
+    packet = _make_packet()
+    with _patch_materialize(), patch(
+        "tinyassets.effectors.github_pr.subprocess.run"
+    ) as mock_run:
+        mock_run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout='{"number": 902, "url": '
+            '"https://github.com/Jonnyton/TinyAssets/pull/902"}',
+            stderr="",
+        )
+        result = run_github_pr_effector(
+            node_id="emit",
+            output_keys=["pr_packet"],
+            run_state={"pr_packet": packet},
+            base_path=universe_dir,
+            run_id="run-vault",
+        )
+    # Gate 2 was satisfied by the vault deposit — it did not stop at consent.
+    assert result.get("reason") != "missing_consent"
+
+
+def test_env_capability_does_not_vault_authorize(universe_dir, monkeypatch):
+    """The security boundary: the shared host-env push token is the operator's,
+    not the universe owner's, so it must NOT stand in for the owner's consent.
+    Only a credential in THIS universe's own vault auto-authorizes.
+    """
+    from tinyassets.effectors.github_pr import _vault_credential_authorizes
+
+    # Env capability present, but no vault for this universe.
+    _set_capability(monkeypatch, _DESTINATION, "env-token")
+    assert _vault_credential_authorizes(universe_dir, _DESTINATION) is False
+
+    # A vault holding a write credential for the destination DOES authorize.
+    write_credential_vault(
+        universe_dir,
+        [
+            {
+                "credential_type": "vcs",
+                "service": "github",
+                "destination": _DESTINATION,
+                "purpose": "write",
+                "token": "vault-token",
+            }
+        ],
+    )
+    assert _vault_credential_authorizes(universe_dir, _DESTINATION) is True
+
+    # A different destination in the vault does NOT authorize this one.
+    assert _vault_credential_authorizes(universe_dir, "someone/else") is False
 
 
 def test_consent_destination_must_match_exactly(universe_dir, monkeypatch):

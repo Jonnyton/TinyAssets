@@ -806,6 +806,44 @@ def _check_consent(
         return False
 
 
+def _vault_credential_authorizes(
+    universe_dir: Path | None, destination: str,
+) -> bool:
+    """True iff this universe's OWN vault holds a write credential for ``destination``.
+
+    Credential-implies-authorization (founder model 2026-08-13: *"a user would
+    need to add their github credentials … then it would be auto after that"*):
+    depositing a per-universe vault credential for a destination IS the owner's
+    authorization to write there, so it satisfies the consent gate without a
+    separate grant.
+
+    Scope is deliberately the VAULT only, never the shared host-env push token.
+    ``_read_capability`` resolves vault-first and only falls through to the env
+    token when NO vault is bound; the env token is the operator's, shared across
+    every universe, so treating it as per-universe authorization would let any
+    universe write to the host's configured destinations. An env-backed
+    capability therefore still requires an explicit consent grant — only a
+    credential the universe owner deposited into THIS universe's vault
+    auto-authorizes.
+    """
+    if universe_dir is None or not destination:
+        return False
+    try:
+        from tinyassets.credential_vault import resolve_github_token, vault_exists
+    except Exception:  # pragma: no cover — defensive import guard
+        logger.exception("failed to import credential_vault")
+        return False
+    try:
+        if not vault_exists(universe_dir):
+            return False
+        return bool(
+            resolve_github_token(universe_dir, destination, purpose="write")
+        )
+    except Exception:  # pragma: no cover — gate failure is dry-run-safe
+        logger.exception("vault authorization check crashed for %s", destination)
+        return False
+
+
 def _is_lock_error(exc: BaseException) -> bool:
     """True iff ``exc`` looks like a SQLite "database is locked" class.
 
@@ -2067,8 +2105,16 @@ def run_github_pr_effector(
             "matched_output_key": matched_key,
         }
 
-    # Gate 2: consent grant.
-    if not _check_consent(universe_dir, destination):
+    # Gate 2: consent grant — OR an owner-deposited per-universe vault
+    # credential for this destination, which IS the owner's authorization
+    # (credential-implies-authorization). A shared host-env capability does not
+    # auto-authorize; only a vault credential the owner deposited into THIS
+    # universe does. Gate 1 already proved a capability exists; here we require
+    # that the authorizing capability is the owner's own vault deposit.
+    if not (
+        _check_consent(universe_dir, destination)
+        or _vault_credential_authorizes(universe_dir, destination)
+    ):
         return {
             "dry_run": True,
             "phase": "phase_2",
@@ -2077,9 +2123,10 @@ def run_github_pr_effector(
             "intent": packet,
             "matched_output_key": matched_key,
             "hint": (
-                "Effector consent grants are not exposed by the advertised "
-                "handles; an operator must authorize this universe through "
-                "the internal consent surface."
+                "Deposit a per-universe vault write credential for "
+                f'"{destination}" (that deposit authorizes writes to it), or '
+                "have an operator grant effector consent through the internal "
+                "consent surface."
             ),
         }
 
