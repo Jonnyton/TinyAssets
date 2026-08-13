@@ -1647,12 +1647,14 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     udir = _universe_dir(uid)
 
     if not udir.is_dir():
+        # No enumeration on not-found (Codex 2026-08-13, engine-tools review #2):
+        # listing every universe directory here disclosed existence BEFORE any
+        # visibility filtering — the exact aggregate disclosure the list action
+        # refuses ("existence is privileged"). Callers who may browse get the
+        # visibility-filtered `list` action instead.
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "hint": "Use action=list to browse the universes visible to you.",
         })
 
     # Metadata gate: inspect returns describe-surface metadata (premise, daemon
@@ -5619,12 +5621,14 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
     uid = universe_id
     udir = _universe_dir(uid)
     if not udir.is_dir():
+        # No enumeration on not-found (Codex 2026-08-13, engine-tools review #2):
+        # listing every universe directory here disclosed existence BEFORE any
+        # visibility filtering — the exact aggregate disclosure the list action
+        # refuses ("existence is privileged"). Callers who may browse get the
+        # visibility-filtered `list` action instead.
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "hint": "Use action=list to browse the universes visible to you.",
         })
 
     # Explicit universe selection is not global (universe-creation spec:

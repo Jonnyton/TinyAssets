@@ -107,8 +107,9 @@ def read_graph(target: str = "status") -> str:
     Scoped to YOUR universe — you cannot read another one.
 
     Args:
-        target: What to read: ``status`` (a factual daemon + serving snapshot) or
-            ``graph`` (inspect your universe's graph). Any other value is refused.
+        target: What to read: ``status`` (your universe's projected status
+            snapshot) or ``graph`` (inspect your universe's graph). Any other
+            value is refused.
     """
     import json
 
@@ -123,6 +124,11 @@ def read_graph(target: str = "status") -> str:
                 f"use one of: {sorted(_PINNED_READ_TARGETS)}."
             ),
         })
+    if normalized == "status":
+        # target=status routes to the SAME full host/global status handler the
+        # get_status tool wraps — it must go through the same engine-safe
+        # projection, or read_graph would be a projection bypass.
+        return _projected_status()
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import read_graph as _impl
@@ -137,16 +143,24 @@ def read_graph(target: str = "status") -> str:
         _current_identity.reset(token)
 
 
-@mcp.tool
-def get_status() -> str:
-    """A factual snapshot of your universe's daemon identity + routing config.
+# Engine-safe projection of get_status (Codex 2026-08-13 ADAPT #3): the full
+# handler is HOST/GLOBAL status — root-wide storage, deployment receipts (whose
+# ``extra`` passes unknown fields through verbatim), host topology, absolute
+# paths. None of that is a universe-scoped read, so the engine gets a WHITELIST
+# of universe-only fields. Whitelisting (not blacklisting) means a future field
+# added to get_status fails CLOSED here until deliberately admitted.
+_STATUS_PROJECTION = (
+    "schema_version",
+    "universe_id",
+    "universe_exists",
+    "persona",
+    "universe_serving",  # per-universe serving binding (present post-#2416)
+)
 
-    Read-only ground truth about your universe: serving provider, release state,
-    and daemon facts. Scoped to your own universe.
-    """
-    err = _binding_error()
-    if err is not None:
-        return err
+
+def _projected_status() -> str:
+    """The full status handler, reduced to the engine-safe whitelist."""
+    import json
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import get_status as _impl
@@ -155,9 +169,30 @@ def get_status() -> str:
     try:
         # get_status keys off ``universe_id`` (NOT graph_id) — pin the correct
         # argument (Codex #9).
-        return _impl(universe_id=_GRAPH_ID)
+        raw = _impl(universe_id=_GRAPH_ID)
     finally:
         _current_identity.reset(token)
+    try:
+        full = json.loads(raw)
+    except (TypeError, ValueError):
+        # A non-JSON handler result must not leak unprojected — refuse instead.
+        return json.dumps({"error": "status unavailable (unprojectable result)."})
+    if not isinstance(full, dict):
+        return json.dumps({"error": "status unavailable (unprojectable result)."})
+    return json.dumps({k: full[k] for k in _STATUS_PROJECTION if k in full})
+
+
+@mcp.tool
+def get_status() -> str:
+    """A factual snapshot of your OWN universe: identity, persona, serving state.
+
+    Read-only, scoped to your universe. Host-level daemon internals are not
+    included.
+    """
+    err = _binding_error()
+    if err is not None:
+        return err
+    return _projected_status()
 
 
 if __name__ == "__main__":

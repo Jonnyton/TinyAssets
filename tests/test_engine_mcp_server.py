@@ -68,6 +68,82 @@ def test_get_status_pins_universe_id(monkeypatch):
     assert captured == {"universe_id": "u-pinned"}
 
 
+_FULL_STATUS = {
+    "schema_version": 1,
+    "universe_id": "u-pinned",
+    "universe_exists": True,
+    "persona": {"name": "Tiny"},
+    "universe_serving": {"provider": "claude-code"},
+    # host/global fields that MUST be projected away (Codex ADAPT #3):
+    "active_host": {"llm_endpoint_bound": "codex"},
+    "storage_utilization": {"root": "C:/secret/path"},
+    "release_state": {"git_sha": "abc", "extra": {"oops_secret": "x"}},
+    "sandbox_status": {"binary": "/usr/bin/bwrap"},
+    "evidence": ["/abs/host/path"],
+    "future_unknown_field": {"anything": True},
+}
+
+
+def test_get_status_projects_to_universe_whitelist(monkeypatch):
+    """Codex ADAPT #3: host/global fields (incl. receipt `extra` passthrough and
+    any FUTURE field) never reach the engine — whitelist projection."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setattr(us, "get_status", lambda **kw: json.dumps(_FULL_STATUS))
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+
+    out = json.loads(s.get_status())
+    assert set(out) == {
+        "schema_version", "universe_id", "universe_exists", "persona",
+        "universe_serving",
+    }
+    assert "active_host" not in out
+    assert "release_state" not in out
+    assert "future_unknown_field" not in out
+
+
+def test_read_graph_status_also_projects(monkeypatch):
+    """read_graph target=status routes to the same full handler — it must NOT be
+    a projection bypass."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setattr(us, "get_status", lambda **kw: json.dumps(_FULL_STATUS))
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+
+    out = json.loads(s.read_graph(target="status"))
+    assert "active_host" not in out
+    assert "storage_utilization" not in out
+    assert out["universe_id"] == "u-pinned"
+
+
+def test_status_projection_refuses_unprojectable(monkeypatch):
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setattr(us, "get_status", lambda **kw: "not-json")
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    assert "error" in json.loads(s.get_status())
+
+
+def test_inspect_not_found_does_not_enumerate(tmp_path, monkeypatch):
+    """Codex ADAPT #2: a missing universe must not enumerate directory names."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (tmp_path / "u-secret-alpha").mkdir()
+    (tmp_path / "u-secret-beta").mkdir()
+
+    from tinyassets.api.universe import _action_inspect_universe
+
+    out = json.loads(_action_inspect_universe(universe_id="u-nope"))
+    assert "not found" in out.get("error", "")
+    assert "available" not in out
+    assert "u-secret-alpha" not in json.dumps(out)
+
+
 def test_handlers_refused_when_unbound(monkeypatch):
     """No principal/graph → refuse without ever reaching the real handler."""
     import tinyassets.universe_server as us
