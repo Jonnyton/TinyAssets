@@ -35,9 +35,10 @@ _SERVED_REQUEST_MAX_INVOCATIONS = 2
 #: have produced output we can't measure — locked the entire cap (prod gen=2: a
 #: single reservation of 49.77M exhausted the 50M binding). Bounding the
 #: reservation, not refunding after the fact, is the durable fix: a failed turn
-#: can now cost at most ~this ceiling, never the whole budget, with no risk of
-#: under-counting real usage. 64K comfortably exceeds any real single completion
-#: (model output limits are ≤64K), so it never truncates a legitimate turn.
+#: can now cost at most ~this ceiling, never the whole budget, with no
+#: refund-based undercount within the authorized reservation. 64K comfortably
+#: exceeds any real single completion (model output limits are ≤64K), so it
+#: never truncates a legitimate turn.
 _RESERVATION_OUTPUT_CAP_TOKENS = 65_536
 
 
