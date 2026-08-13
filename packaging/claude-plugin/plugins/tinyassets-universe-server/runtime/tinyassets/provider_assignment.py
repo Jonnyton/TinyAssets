@@ -172,12 +172,20 @@ def reserve_served_provider_budget(
         if len(rows) >= authority.max_invocations:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
+        # Count a row at its MEASURED actual whenever one has been recorded
+        # (succeeded, exceeded, or a reconciled-indeterminate abandon), and only
+        # fall back to the full reservation for rows still in-flight ('reserved',
+        # actual NULL). Counting non-succeeded rows at their full reservation
+        # forever is a durable leak: a single failed turn that reserved ~all
+        # remaining budget (and was abandoned with actual NULL) permanently
+        # consumed the whole cap even though it produced nothing. In-flight rows
+        # still count full reserved so concurrent turns can't overspend.
         used_tokens = sum(
-            int(row[3]) if row[0] == "succeeded" else int(row[1])
+            int(row[3]) if row[3] is not None else int(row[1])
             for row in rows
         )
         used_cost = sum(
-            int(row[4]) if row[0] == "succeeded" else int(row[2])
+            int(row[4]) if row[4] is not None else int(row[2])
             for row in rows
         )
         remaining_tokens = authority.max_tokens - used_tokens
@@ -295,18 +303,38 @@ def abandon_served_provider_budget(
     base_path: str | Path,
     reservation: ServedProviderBudgetReservation,
 ) -> None:
-    """Conservatively consume a reservation when provider usage is unknown."""
+    """Charge a failed turn only for the input it surely sent, not its whole
+    reservation.
 
+    A reservation grabs ``estimated_input + output_tokens`` up front, where
+    ``output_tokens`` can be ~all the remaining budget. When ``provider.complete``
+    raises, no provider output was delivered to the caller, so consuming the whole
+    reservation is a durable leak — one failed turn locked Tiny's entire 50M cap
+    (prod gen=2: a single indeterminate row reserved 49.77M with actual=0, exactly
+    exhausting the binding). We refund the un-produced OUTPUT and record a
+    conservative actual = the estimated INPUT (``reserved_total - output_tokens``),
+    which ``reserve`` then counts instead of the full reservation. The row stays
+    ``indeterminate`` for observability; charging input keeps a real per-launch
+    cost so a flaky provider still can't spam unlimited free launches. Providers
+    here are subscription-only (no per-token billing), so this budget is an
+    abuse/rate guard, not a cost meter — a failed turn must not self-DoS the user.
+    """
+
+    input_tokens = max(1, reservation.reserved_total_tokens - reservation.output_tokens)
+    input_cost = input_tokens * _SERVED_COST_MICROUNITS_PER_TOKEN
     conn = sqlite3.connect(db_path(base_path), isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_served_budget_schema(conn)
         conn.execute(
             """
-            UPDATE served_provider_budget_reservations SET state = 'indeterminate'
+            UPDATE served_provider_budget_reservations
+               SET state = 'indeterminate',
+                   actual_total_tokens = ?,
+                   actual_cost_microunits = ?
              WHERE reservation_id = ? AND state = 'reserved'
             """,
-            (reservation.reservation_id,),
+            (input_tokens, input_cost, reservation.reservation_id),
         )
         conn.commit()
     finally:

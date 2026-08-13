@@ -415,6 +415,66 @@ def test_served_budget_overrun_is_accounted_and_holds_future_calls(tmp_path, mon
     assert provider.calls == 1
 
 
+def test_abandoned_failed_turn_refunds_unproduced_output_and_does_not_lock_budget(
+    tmp_path,
+    monkeypatch,
+):
+    """A single failed turn must not consume the whole cap.
+
+    Prod regression (Tiny binding pwb_9829 gen=2): one turn reserved ~all the
+    remaining budget, `provider.complete` raised, the reservation was abandoned
+    with actual=NULL, and `reserve` counted that row at its FULL reservation
+    forever — permanently exhausting the 50M cap after 230K real tokens. The fix
+    charges an abandoned turn only for its input and refunds the un-produced
+    output, so a later turn still reserves cleanly.
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_assignment import (
+        abandon_served_provider_budget,
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    # One big reservation nearly fills the cap; the input is a small fraction.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 1000)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 1000 * 100)
+    universe_dir, _, capability, context = _served_context(tmp_path)
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            first = reserve_served_provider_budget(
+                tmp_path,
+                universe_dir=universe_dir,
+                authority=authority,
+                requested_output_tokens=900,
+                estimated_input_tokens=50,
+            )
+            # ~all the budget is now reserved by this single turn.
+            assert first.output_tokens >= 800
+
+            # Provider failed → nothing was produced → abandon the reservation.
+            abandon_served_provider_budget(tmp_path, first)
+
+            # A later turn must still reserve: the failed turn refunded its
+            # un-produced output and is charged input-only (~50), not ~950.
+            second = reserve_served_provider_budget(
+                tmp_path,
+                universe_dir=universe_dir,
+                authority=authority,
+                requested_output_tokens=900,
+                estimated_input_tokens=50,
+            )
+            assert second.output_tokens >= 800
+    finally:
+        revoke_provider_request(capability)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="bubblewrap is a POSIX sandbox")
 def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
     tmp_path,
