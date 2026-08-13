@@ -85,6 +85,26 @@ class ModelConfig:
     floor that closes shell-escape / host-access even if a settings file would
     grant them."""
 
+    engine_mcp_enabled: bool = False
+    """When True, the founder-facing universe-intelligence turn gets a LOCAL,
+    founder-scoped TinyAssets MCP server (``tinyassets.engine_mcp_server``) wired
+    in via ``--mcp-config`` + ``--strict-mcp-config``, so the universe agent has
+    the SAME MCP handles the founder's browser chatbot has (read_graph /
+    write_graph / run_graph / read_page / write_page / get_status), acting AS the
+    founder, scoped to its OWN universe. Requires ``engine_mcp_actor_id`` +
+    ``engine_mcp_graph_id`` — the wiring FAILS CLOSED (no tools) if either is
+    empty. Only ever set for a FOUNDER-tier turn; never for the learning
+    extractor or a non-founder caller. See ``engine_mcp_server`` for the identity
+    binding + graph pin."""
+
+    engine_mcp_actor_id: str = ""
+    """The founder actor_id the local engine MCP server binds identity to. Empty
+    disables the engine MCP wiring (fail-closed)."""
+
+    engine_mcp_graph_id: str = ""
+    """The universe graph_id the local engine MCP server PINS every handler call
+    to. Empty disables the engine MCP wiring (fail-closed)."""
+
     credential_snapshot_dir: Path | None = field(
         default=None,
         repr=False,
