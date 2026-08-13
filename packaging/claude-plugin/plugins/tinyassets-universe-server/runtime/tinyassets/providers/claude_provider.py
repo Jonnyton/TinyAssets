@@ -88,6 +88,20 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     data_dir = _os.environ.get("TINYASSETS_DATA_DIR", "").strip()
     if data_dir:
         server_env["TINYASSETS_DATA_DIR"] = data_dir
+    # The stdio server runs `python -m tinyassets.engine_mcp_server` with the
+    # engine's cwd (the universe dir) — NOT the daemon's package root. When the
+    # daemon runs from a checkout/image dir (e.g. /app) rather than a
+    # site-packages install, the child cannot import `tinyassets` without the
+    # package root on PYTHONPATH (reproduced in the local e2e: every tool call
+    # failed "No module named 'tinyassets'"). Propagate the exact root the
+    # daemon itself imported from, ahead of any existing PYTHONPATH.
+    import tinyassets as _pkg
+
+    pkg_root = str(Path(_pkg.__file__).resolve().parent.parent)
+    existing = _os.environ.get("PYTHONPATH", "").strip()
+    server_env["PYTHONPATH"] = (
+        f"{pkg_root}{_os.pathsep}{existing}" if existing else pkg_root
+    )
     mcp_config = {
         "mcpServers": {
             "tinyassets": {

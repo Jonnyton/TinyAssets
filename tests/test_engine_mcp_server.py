@@ -9,6 +9,7 @@ silently re-opening a cross-universe read.
 from __future__ import annotations
 
 import json
+import os
 
 from tinyassets.auth.provider import ANONYMOUS
 
@@ -345,6 +346,28 @@ def test_engine_mcp_flags_emits_strict_config_and_pins(tmp_path):
     assert srv["args"] == ["-m", "tinyassets.engine_mcp_server"]
     assert srv["env"]["TINYASSETS_ENGINE_ACTOR_ID"] == "sub-9"
     assert srv["env"]["TINYASSETS_ENGINE_GRAPH_ID"] == "u-9"
+
+
+def test_engine_mcp_flags_propagates_package_root_on_pythonpath(tmp_path):
+    """The stdio child runs from the universe dir — it can only import
+    `tinyassets` if the daemon's package root is propagated (reproduced live:
+    every tool call failed 'No module named tinyassets' without this)."""
+    from pathlib import Path
+
+    import tinyassets
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.claude_provider import _engine_mcp_flags
+
+    cfg = ModelConfig(
+        engine_mcp_enabled=True,
+        engine_mcp_actor_id="sub-9",
+        engine_mcp_graph_id="u-9",
+    )
+    _engine_mcp_flags(cfg, tmp_path)
+    data = json.loads((tmp_path / ".engine_mcp_config.json").read_text())
+    pythonpath = data["mcpServers"]["tinyassets"]["env"]["PYTHONPATH"]
+    pkg_root = str(Path(tinyassets.__file__).resolve().parent.parent)
+    assert pythonpath.split(os.pathsep)[0] == pkg_root
 
 
 def test_sandbox_cli_args_fails_closed_when_strict_not_installed(monkeypatch, tmp_path):
