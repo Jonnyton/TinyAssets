@@ -424,19 +424,54 @@ def _big_budget_context(tmp_path, monkeypatch):
     return _served_context(tmp_path)
 
 
-@pytest.mark.parametrize("pre_generation", [True, False])
-def test_abandoned_failed_turn_does_not_lock_budget(tmp_path, monkeypatch, pre_generation):
-    """One failed turn that reserved ~all the cap must not exhaust the binding.
+def test_reservation_output_is_capped_regardless_of_request(tmp_path, monkeypatch):
+    """A single reservation may never grab ~the whole binding budget.
 
-    Prod regression (Tiny binding pwb_9829 gen=2): a turn reserved ~all the
-    remaining budget, `provider.complete` raised, the reservation was abandoned
-    with actual=NULL, and `reserve` counted that row at its FULL reservation
-    forever — permanently exhausting the 50M cap after 230K real tokens. A
-    later turn must still reserve, whether the failure was provably
-    pre-generation (input-only charge) or unknown (bounded penalty).
+    The pre-cap leak (prod gen=2) came from an UNBOUNDED reservation: a converse
+    turn requested a huge max, reserved ~all remaining budget, then failed and
+    locked the 50M cap. The cap bounds every reservation so that can't happen.
     """
     from tinyassets.auth.middleware import revoke_provider_request
     from tinyassets.provider_assignment import (
+        _RESERVATION_OUTPUT_CAP_TOKENS,
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    universe_dir, _, capability, context = _big_budget_context(tmp_path, monkeypatch)
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            res = reserve_served_provider_budget(
+                tmp_path,
+                universe_dir=universe_dir,
+                authority=authority,
+                requested_output_tokens=1_000_000,  # caller asks for ~all of it
+                estimated_input_tokens=1_000,
+            )
+            assert res.output_tokens == _RESERVATION_OUTPUT_CAP_TOKENS
+    finally:
+        revoke_provider_request(capability)
+
+
+def test_failed_turn_charges_only_bounded_reservation_and_does_not_lock(
+    tmp_path, monkeypatch
+):
+    """A failed turn is charged its bounded reservation, so a later turn runs.
+
+    Regression for the prod lockout: with the cap in place, even charging the
+    whole reservation on failure costs ~64K, not ~50M, so the binding keeps
+    serving. Red without the fix (uncapped reservation grabs ~all the budget,
+    then abandon locks it).
+    """
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_assignment import (
+        _RESERVATION_OUTPUT_CAP_TOKENS,
         abandon_served_provider_budget,
         authorize_served_provider_call,
         reserve_served_provider_budget,
@@ -458,15 +493,12 @@ def test_abandoned_failed_turn_does_not_lock_budget(tmp_path, monkeypatch, pre_g
                 requested_output_tokens=1_000_000,
                 estimated_input_tokens=1_000,
             )
-            # A single turn reserved ~the whole cap.
-            assert first.output_tokens >= 900_000
+            assert first.output_tokens == _RESERVATION_OUTPUT_CAP_TOKENS
 
-            abandon_served_provider_budget(
-                tmp_path, first, pre_generation=pre_generation
-            )
+            # Provider failed → abandon charges the whole (bounded) reservation.
+            abandon_served_provider_budget(tmp_path, first)
 
-            # The failed turn was charged input (+ at most a bounded penalty),
-            # not its ~1M reservation, so a later turn still reserves cleanly.
+            # Budget spent so far is ~64K of 1M, so a later turn still reserves.
             second = reserve_served_provider_budget(
                 tmp_path,
                 universe_dir=universe_dir,
@@ -474,7 +506,7 @@ def test_abandoned_failed_turn_does_not_lock_budget(tmp_path, monkeypatch, pre_g
                 requested_output_tokens=1_000_000,
                 estimated_input_tokens=1_000,
             )
-            assert second.output_tokens >= 900_000
+            assert second.output_tokens == _RESERVATION_OUTPUT_CAP_TOKENS
     finally:
         revoke_provider_request(capability)
 
@@ -515,7 +547,7 @@ def test_abandon_after_finalize_is_idempotent_noop(tmp_path, monkeypatch):
             )
             # Losing the race must be a silent no-op, never a raise or a
             # double-charge over the already-finalized actual.
-            abandon_served_provider_budget(tmp_path, res, pre_generation=False)
+            abandon_served_provider_budget(tmp_path, res)
     finally:
         revoke_provider_request(capability)
 

@@ -28,14 +28,17 @@ _WINDOWS_LOCK_RETRY_ATTEMPTS = 100
 _WINDOWS_LOCK_RETRY_SECONDS = 0.01
 _SERVED_REQUEST_MAX_INVOCATIONS = 2
 
-#: When a served turn fails mid-stream or with an unknown outcome, we cannot
-#: prove it produced nothing, so we charge its input plus a BOUNDED output
-#: penalty — enough that a flaky provider still pays per failed launch, but far
-#: below the whole remaining reservation (which can be ~the entire binding cap).
-#: A provably pre-generation failure (the provider never started) is charged
-#: input only. This bound, not the full reservation, is what prevents one failed
-#: turn from locking the universe out.
-_ABANDON_UNKNOWN_OUTPUT_PENALTY_TOKENS = 8192
+#: Ceiling on the OUTPUT any single reservation may hold, independent of the
+#: caller's requested max or the remaining budget. Without it a converse turn
+#: (which requests a very large max) reserved ~all the remaining budget, so ONE
+#: failed turn — charged its whole reservation, because a mid-stream failure may
+#: have produced output we can't measure — locked the entire cap (prod gen=2: a
+#: single reservation of 49.77M exhausted the 50M binding). Bounding the
+#: reservation, not refunding after the fact, is the durable fix: a failed turn
+#: can now cost at most ~this ceiling, never the whole budget, with no risk of
+#: under-counting real usage. 64K comfortably exceeds any real single completion
+#: (model output limits are ≤64K), so it never truncates a legitimate turn.
+_RESERVATION_OUTPUT_CAP_TOKENS = 65_536
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +214,7 @@ def reserve_served_provider_budget(
             requested_output_tokens,
             remaining_tokens - estimated_input_tokens,
             affordable_total_tokens - estimated_input_tokens,
+            _RESERVATION_OUTPUT_CAP_TOKENS,
         )
         if output_tokens < 1:
             conn.rollback()
@@ -318,39 +322,26 @@ def finalize_served_provider_budget(
 def abandon_served_provider_budget(
     base_path: str | Path,
     reservation: ServedProviderBudgetReservation,
-    *,
-    pre_generation: bool = False,
 ) -> None:
-    """Terminalize a failed turn at a bounded actual, not its whole reservation.
+    """Terminalize a failed turn at its FULL reservation — which is now bounded.
 
-    A reservation grabs ``estimated_input + output_tokens`` up front, where
-    ``output_tokens`` can be ~all the remaining budget. Consuming that whole
-    reservation on failure was a durable leak — one failed turn locked Tiny's
-    entire 50M cap (prod gen=2: an abandoned row reserved 49.77M, actual=0,
-    exactly exhausting the binding). We record a conservative actual instead:
+    A mid-stream failure may have produced output we can't measure, and the
+    provider layer's exceptions don't prove a pre-launch failure, so we cannot
+    safely refund any of the reservation. Charging the whole reservation is
+    correct AND safe now that every reservation is capped at
+    ``_RESERVATION_OUTPUT_CAP_TOKENS``: the pre-cap leak (prod gen=2: one row
+    reserved 49.77M and locked the 50M binding) came from an UNBOUNDED
+    reservation, not from the full charge. The cap, not a refund, is what stops
+    one failure from locking the universe out.
 
-    * ``pre_generation=True`` — the provider provably never started, so nothing
-      was produced: charge the estimated INPUT only (``reserved_total -
-      output_tokens``) and refund all reserved output.
-    * otherwise — the outcome is unknown (a mid-stream error may have produced
-      output we can't measure): charge input plus a BOUNDED output penalty
-      (``_ABANDON_UNKNOWN_OUTPUT_PENALTY_TOKENS``), never the whole reservation.
-      A flaky provider still pays per failed launch, but one failure can't lock
-      the universe out. Providers are subscription-only, so this budget is an
-      abuse/rate guard, not a cost meter.
-
-    First-terminalizer-wins: if the row is no longer ``reserved`` (``finalize``
-    won a race), this is an idempotent no-op — do not double-charge or raise.
+    First-terminalizer-wins: the UPDATE is scoped to the exact reserved row
+    (reservation + binding + generation). A ``rowcount == 0`` means either
+    ``finalize`` already settled this row (a legitimate race → idempotent no-op)
+    or the row is genuinely absent (an anomaly worth a warning, not silence).
     """
 
-    input_tokens = max(1, reservation.reserved_total_tokens - reservation.output_tokens)
-    if pre_generation:
-        charged_tokens = input_tokens
-    else:
-        charged_tokens = input_tokens + min(
-            reservation.output_tokens, _ABANDON_UNKNOWN_OUTPUT_PENALTY_TOKENS
-        )
-    charged_cost = charged_tokens * _SERVED_COST_MICROUNITS_PER_TOKEN
+    charged_tokens = reservation.reserved_total_tokens
+    charged_cost = reservation.reserved_cost_microunits
     conn = sqlite3.connect(db_path(base_path), isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -361,20 +352,50 @@ def abandon_served_provider_budget(
                SET state = 'indeterminate',
                    actual_total_tokens = ?,
                    actual_cost_microunits = ?
-             WHERE reservation_id = ? AND state = 'reserved'
+             WHERE reservation_id = ? AND binding_id = ?
+               AND binding_generation = ? AND state = 'reserved'
             """,
-            (charged_tokens, charged_cost, reservation.reservation_id),
+            (
+                charged_tokens,
+                charged_cost,
+                reservation.reservation_id,
+                reservation.binding_id,
+                reservation.binding_generation,
+            ),
         )
+        settled = None
+        if cursor.rowcount == 0:
+            settled = conn.execute(
+                """
+                SELECT state FROM served_provider_budget_reservations
+                 WHERE reservation_id = ? AND binding_id = ?
+                   AND binding_generation = ?
+                """,
+                (
+                    reservation.reservation_id,
+                    reservation.binding_id,
+                    reservation.binding_generation,
+                ),
+            ).fetchone()
         conn.commit()
     finally:
         conn.close()
     if cursor.rowcount == 0:
-        # The row was already terminalized (finalize won the race, or a retry).
-        # First terminalizer wins; abandoning a settled reservation is a no-op.
-        logger.debug(
-            "abandon_served_provider_budget: reservation %s already terminal",
-            reservation.reservation_id,
-        )
+        if settled is None:
+            logger.warning(
+                "abandon_served_provider_budget: no reservation %s for binding "
+                "%s generation %s — nothing terminalized",
+                reservation.reservation_id,
+                reservation.binding_id,
+                reservation.binding_generation,
+            )
+        else:
+            # finalize won the race; first terminalizer wins — no double-charge.
+            logger.debug(
+                "abandon_served_provider_budget: reservation %s already %s",
+                reservation.reservation_id,
+                settled[0],
+            )
 
 
 class _AdmissionState:
