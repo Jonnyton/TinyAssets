@@ -665,11 +665,18 @@ class ProviderRouter:
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )
-                except BaseException:
+                except BaseException as exc:
                     if budget_reservation is not None:
+                        # ProviderUnavailableError means the provider never
+                        # started (spawn/auth/unavailable) — provably no output,
+                        # so refund it fully. Any other failure may have produced
+                        # unmeasured output, so it takes the bounded penalty.
                         abandon_served_provider_budget(
                             universe_dir.parent,
                             budget_reservation,
+                            pre_generation=isinstance(
+                                exc, ProviderUnavailableError
+                            ),
                         )
                     raise
                 if budget_reservation is not None:
