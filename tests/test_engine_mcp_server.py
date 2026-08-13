@@ -304,6 +304,10 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
     assert cfg.engine_mcp_enabled is True
     assert "mcp__tinyassets__read_graph" in cfg.allowed_tools
     assert "mcp__tinyassets__get_status" in cfg.allowed_tools
+    # ToolSearch is allowed ONLY on engine-MCP turns (deferred MCP schemas on
+    # older CLIs; strict-mcp-config bounds what it can discover)
+    assert "ToolSearch" in cfg.allowed_tools
+    assert "ToolSearch" not in cfg.disallowed_tools
     # the wildcard deny is dropped so the tinyassets handles are admittable...
     assert "mcp__*" not in cfg.disallowed_tools
     # ...but the resource readers stay denied (surface = exactly the handles)

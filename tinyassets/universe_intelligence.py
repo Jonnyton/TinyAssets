@@ -121,14 +121,24 @@ _ENGINE_DISALLOWED_TOOLS = (
 #   * ``converse`` — never exposed (a universe relaying to itself is a
 #     recursion / fork bomb).
 _ENGINE_MCP_TOOLS = ("read_graph", "get_status")
-_ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
+# ``ToolSearch`` is required on CLI generations that DEFER MCP tool schemas
+# (verified live 2026-08-13 on the prod container's 2.1.183: with ToolSearch
+# denied the granted server's tools are invisible — TOOLCHECK: NONE — and with
+# it allowed the engine found + called get_status; see memory
+# `strict-mcp-config-unlocks-engine-tools`). Under ``--strict-mcp-config`` the
+# ONLY discoverable server is the local founder-scoped one, so allowing
+# ToolSearch does not widen the surface beyond the declared handles.
+_ENGINE_MCP_ALLOWED = tuple(
+    f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS
+) + ("ToolSearch",)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
-# the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
-# Isolation for the OTHER MCP servers comes from ``--strict-mcp-config`` admitting
-# only the one local server (verified 2026-08-13); the three MCP resource-reader
-# tools stay denied so the surface is EXACTLY the declared handles.
+# the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles)
+# and ``ToolSearch`` is un-denied (deferred-schema loading, above). Isolation for
+# the OTHER MCP servers comes from ``--strict-mcp-config`` admitting only the one
+# local server (verified 2026-08-13); the three MCP resource-reader tools stay
+# denied so the surface is EXACTLY the declared handles.
 _ENGINE_DISALLOWED_TOOLS_WITH_MCP = tuple(
-    t for t in _ENGINE_DISALLOWED_TOOLS if t != "mcp__*"
+    t for t in _ENGINE_DISALLOWED_TOOLS if t not in ("mcp__*", "ToolSearch")
 )
 
 
