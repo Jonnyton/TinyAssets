@@ -49,6 +49,63 @@ def _resolve_claude_cmd() -> tuple[list[str], bool]:
     return ["claude"], False
 
 
+def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
+    """Wire the local, founder-scoped TinyAssets MCP server into the engine turn.
+
+    Founder directive 2026-08-12: the universe agent ("Tiny") gets the SAME MCP
+    handles the founder's browser chatbot has. This writes a per-universe
+    ``--mcp-config`` pointing at ``python -m tinyassets.engine_mcp_server`` and
+    returns the flags that admit EXACTLY that one server:
+
+      * ``--strict-mcp-config`` — grants ONLY the servers in ``--mcp-config`` and
+        excludes the logged-in claude.ai account connectors (Google Drive /
+        codex → code exec). Verified 2026-08-13: with strict + a single-server
+        config, ``mcp__codex__codex`` is unreachable — this is what actually
+        closes the 2026-07-03 ambient-MCP leak, not ``--setting-sources``.
+
+    FAIL-CLOSED: the engine MCP is wired only when the founder actor_id AND the
+    universe graph_id are both present; a missing either returns no flags so the
+    turn stays WebFetch-only rather than exposing tools with an unbound identity.
+    The server itself binds ``_current_identity`` to the founder and pins every
+    handler to ``engine_mcp_graph_id`` (see ``tinyassets.engine_mcp_server``).
+    """
+    actor_id = (config.engine_mcp_actor_id or "").strip()
+    graph_id = (config.engine_mcp_graph_id or "").strip()
+    if not (actor_id and graph_id):
+        return []
+    import json as _json
+    import os as _os
+    import sys as _sys
+
+    # Config lives in the sandboxed universe_dir (the engine has no filesystem
+    # read tool, so it never sees it). It carries only identifiers — the founder
+    # actor_id + graph_id + data root — never a secret. Overwritten each turn.
+    config_path = universe_dir / ".engine_mcp_config.json"
+    server_env = {
+        "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
+        "TINYASSETS_ENGINE_GRAPH_ID": graph_id,
+    }
+    data_dir = _os.environ.get("TINYASSETS_DATA_DIR", "").strip()
+    if data_dir:
+        server_env["TINYASSETS_DATA_DIR"] = data_dir
+    mcp_config = {
+        "mcpServers": {
+            "tinyassets": {
+                "command": _sys.executable,
+                "args": ["-m", "tinyassets.engine_mcp_server"],
+                "env": server_env,
+            }
+        }
+    }
+    try:
+        config_path.write_text(_json.dumps(mcp_config), encoding="utf-8")
+    except OSError:
+        # If we cannot write the config, fail closed to WebFetch-only rather than
+        # passing --mcp-config a missing path (which would error the whole turn).
+        return []
+    return ["--mcp-config", str(config_path), "--strict-mcp-config"]
+
+
 def _sandbox_cli_args(
     config: ModelConfig, universe_dir: Path | None
 ) -> tuple[list[str], str | None]:
@@ -90,6 +147,27 @@ def _sandbox_cli_args(
             "sandboxed universe turn requires a universe_dir — refusing to run "
             "un-isolated in the daemon's working directory (fail-closed)."
         )
+    # Founder-scoped engine MCP: only inside the sandbox (universe_dir present),
+    # and only when the caller opted in with a bound founder + universe. The
+    # matching ``mcp__tinyassets__*`` handles are added to ``allowed_tools`` by
+    # the caller (universe_intelligence._sandboxed_config).
+    if config.engine_mcp_enabled and universe_dir is not None:
+        engine_flags = _engine_mcp_flags(config, universe_dir)
+        # FAIL CLOSED (Codex ADAPT 2026-08-13 #1): when engine MCP is on, the
+        # caller has ALREADY relaxed the tool policy — it dropped the ``mcp__*``
+        # wildcard deny so the tinyassets handles are admittable, trusting that
+        # ``--strict-mcp-config`` will exclude every OTHER (ambient account)
+        # connector. If the config could not be written (``_engine_mcp_flags``
+        # returned no ``--strict-mcp-config``), running anyway would fail OPEN —
+        # ambient connectors would load with neither the wildcard deny NOR strict
+        # mode. Refuse the turn instead of silently downgrading isolation.
+        if "--strict-mcp-config" not in engine_flags:
+            raise ProviderError(
+                "engine MCP was requested but --strict-mcp-config could not be "
+                "installed; refusing to run with a relaxed tool policy that would "
+                "expose ambient MCP connectors (fail-closed)."
+            )
+        flags += engine_flags
     run_cwd = str(universe_dir) if config.sandbox_workspace else None
     return flags, run_cwd
 

@@ -93,23 +93,108 @@ _ENGINE_DISALLOWED_TOOLS = (
     "ListMcpResourcesTool",
 )
 
+# ── engine MCP tools (2026-08-13) ───────────────────────────────────────────
+# Founder directive: "all user functions are just mcp functions ... all the same
+# mcp commands whether its through the app or through slack or the browser." When
+# enabled (env flag, FOUNDER turn only), the engine gets a LOCAL, founder-scoped
+# TinyAssets MCP server exposing the same canonical handles the browser chatbot
+# has, acting AS the founder, pinned to its OWN universe (see
+# tinyassets.engine_mcp_server + claude_provider._engine_mcp_flags).
+#
+# Slice 1 = READ handles only (``read_graph`` + ``get_status``): inspection with
+# NO domain mutation / spend / commons blast radius (the status path may touch
+# internal infra sidecars — locks/queue markers — but no domain state or cost),
+# and enough to prove the whole mechanism end-to-end live (identity binding +
+# graph pin + CLI wiring). Both pin cleanly to the universe via their
+# ``graph_id`` / ``universe_id`` parameter, and the founder identity gates reads
+# of a PRIVATE universe.
+#
+# DEFERRED, each gated on the matching cross-family confinement review:
+#   * ``write_graph`` / ``run_graph`` (slice 2) — WRITES + SPEND on the founder's
+#     own subscription. Their target/operation surface has daemon- and
+#     registry-GLOBAL operations (agent publish, daemon memory) that escape a
+#     universe pin, and ``run_graph`` can loop-spend; the safe boundary (which
+#     operations are universe-scoped) is exactly what the review must pin down.
+#   * ``read_page`` / ``write_page`` (slice 3) — resolve their universe from the
+#     founder's HOME, not a graph_id, and ``write_page scope=commons`` writes the
+#     GLOBAL shared commons; pinning them needs a wiki-root override not yet set.
+#   * ``converse`` — never exposed (a universe relaying to itself is a
+#     recursion / fork bomb).
+_ENGINE_MCP_TOOLS = ("read_graph", "get_status")
+_ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
+# Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
+# the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
+# Isolation for the OTHER MCP servers comes from ``--strict-mcp-config`` admitting
+# only the one local server (verified 2026-08-13); the three MCP resource-reader
+# tools stay denied so the surface is EXACTLY the declared handles.
+_ENGINE_DISALLOWED_TOOLS_WITH_MCP = tuple(
+    t for t in _ENGINE_DISALLOWED_TOOLS if t != "mcp__*"
+)
 
-def _sandboxed_config(ctx: UniverseContext) -> ModelConfig:
+
+def _engine_mcp_enabled() -> bool:
+    """True when the founder-scoped engine MCP tooling is switched on.
+
+    Dark by default (``TINYASSETS_ENGINE_MCP_TOOLS`` unset). Kept a runtime flag —
+    not a code constant — so it can be enabled per-deploy after the live Slack
+    proof without a rebuild, and rolled back instantly if it misbehaves.
+    """
+    import os
+
+    return os.environ.get("TINYASSETS_ENGINE_MCP_TOOLS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _sandboxed_config(
+    ctx: UniverseContext,
+    *,
+    founder_principal: str = "",
+    universe_id: str = "",
+    granted: bool = False,
+) -> ModelConfig:
     """Build the isolated ModelConfig for a universe-intelligence turn.
 
     Preserves the universe's configured timeout while pinning the subprocess to
     the universe's own dir (``sandbox_workspace``) with a locked-down tool policy.
+
+    When the engine MCP flag is on AND this is a granted (FOUNDER) turn with a
+    real ``founder_principal`` + ``universe_id``, the universe agent additionally
+    gets the founder-scoped TinyAssets MCP handles (``_ENGINE_MCP_ALLOWED``).
+
+    ``founder_principal`` MUST be the VERIFIED request principal
+    (``ProviderRequestCapability.principal_id`` — the WorkOS subject that already
+    passed the transport auth gate), NEVER the raw ``actor_id`` conversation
+    param: on the Slack path that param is ``slack:<workspace>:<sender>``, not the
+    founder's subject (Codex REJECT 2026-08-13, finding #1). Binding the wrong id
+    would either fail the founder's own ACL or invent a principal.
+
+    Anything less — flag off, non-founder turn, or a missing verified principal —
+    FAILS CLOSED to the WebFetch-only floor: the learning extractor (which calls
+    this with the defaults) and every non-founder caller never receive tools.
     """
     timeout = 300
     try:
         timeout = int(getattr(ctx.config, "timeout", 300) or 300)
     except (TypeError, ValueError):
         timeout = 300
+    engine_mcp = bool(
+        granted and founder_principal and universe_id and _engine_mcp_enabled()
+    )
+    if engine_mcp:
+        allowed = _ENGINE_ALLOWED_TOOLS + _ENGINE_MCP_ALLOWED
+        disallowed = _ENGINE_DISALLOWED_TOOLS_WITH_MCP
+    else:
+        allowed = _ENGINE_ALLOWED_TOOLS
+        disallowed = _ENGINE_DISALLOWED_TOOLS
     return ModelConfig(
         timeout=timeout,
         sandbox_workspace=True,
-        allowed_tools=_ENGINE_ALLOWED_TOOLS,
-        disallowed_tools=_ENGINE_DISALLOWED_TOOLS,
+        allowed_tools=allowed,
+        disallowed_tools=disallowed,
+        engine_mcp_enabled=engine_mcp,
+        engine_mcp_actor_id=founder_principal if engine_mcp else "",
+        engine_mcp_graph_id=universe_id if engine_mcp else "",
     )
 
 
@@ -690,11 +775,21 @@ def converse(
         _conversation_history_block(conversation_history) if granted else ""
     )
     turn_input = history_block + founder_message if history_block else founder_message
+    # Engine MCP identity binds to the VERIFIED request principal (the WorkOS
+    # subject that passed the transport auth gate), NOT the actor_id param — see
+    # _sandboxed_config + Codex REJECT 2026-08-13 #1. No verified capability (or a
+    # non-founder turn) → no principal → engine MCP fails closed to WebFetch-only.
+    founder_principal = capability.principal_id if capability is not None else ""
     reply = _call_writer_with_backoff(
         turn_input,
         system=system,
         universe_context=ctx,
-        config=_sandboxed_config(ctx),
+        config=_sandboxed_config(
+            ctx,
+            founder_principal=founder_principal,
+            universe_id=uid,
+            granted=granted,
+        ),
     )
     # Only a FOUNDER teaches the universe.
     #
