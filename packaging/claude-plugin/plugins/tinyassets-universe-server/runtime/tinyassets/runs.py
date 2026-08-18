@@ -2650,10 +2650,13 @@ def _invoke_graph(
     # raise into the user-facing run status. Hard-rule #8 (fail loudly)
     # is satisfied by the structured error fields on each evidence entry.
     _quarantine_branch_authored_external_write_keys(output)
+    _eff_universe_hint = ""
+    if enqueue_context is not None and getattr(enqueue_context, "universe_id", ""):
+        _eff_universe_hint = str(enqueue_context.universe_id).strip()
     external_write_evidence = _run_external_write_effectors(
         branch,
         output,
-        base_path=base_path,
+        base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
         run_id=run_id,
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
     )
@@ -2728,6 +2731,35 @@ def _quarantine_branch_authored_external_write_keys(
                 system_key,
                 quarantine_key,
             )
+
+
+def _resolve_effector_base(
+    base_path: "str | Path",
+    run_id: str,
+    universe_hint: str = "",
+) -> "str | Path":
+    """Universe dir this run's external-write effectors bind to.
+
+    Graphs get copied/remixed across universes, so the binding universe is the
+    one RUNNING the graph, carried on the run row (``queue_universe_id``) or the
+    live ``enqueue_context``. The effector treats ``base_path`` AS the universe
+    dir; feeding the flat data root made capability + effector-consent gates
+    look at /data and fail closed even when the owner granted them under
+    /data/<universe_id>. Falls back to ``base_path`` (data root) when unknown.
+    """
+    uni = (universe_hint or "").strip()
+    if not uni:
+        try:
+            with _connect(base_path) as _uconn:
+                _urow = _uconn.execute(
+                    "SELECT queue_universe_id FROM runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+            if _urow is not None and _urow["queue_universe_id"]:
+                uni = str(_urow["queue_universe_id"]).strip()
+        except Exception:
+            uni = ""
+    return (Path(base_path) / uni) if uni else base_path
 
 
 def _run_external_write_effectors(
@@ -3073,6 +3105,7 @@ def _execute_branch_core(
     runtime_instance_id: str | None = None,
     worker_id: str | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -3099,6 +3132,7 @@ def _execute_branch_core(
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
+        queue_universe_id=_enqueue_universe_id or None,
     )
 
     executor = _get_executor(invocation_depth=_invocation_depth)
@@ -3114,6 +3148,16 @@ def _execute_branch_core(
                 concurrency_budget_override=concurrency_budget_override,
                 on_node_status=on_node_status,
                 invocation_depth=_invocation_depth,
+                enqueue_context=(
+                    NodeEnqueueContext(
+                        universe_id=_enqueue_universe_id,
+                        actor=actor,
+                        parent_branch_task_id="",
+                        origin_branch_task_id=f"run:{run_id}",
+                    )
+                    if _enqueue_universe_id
+                    else None
+                ),
             )
         except Exception:
             # Belt-and-suspenders: _invoke_graph already catches and
@@ -3152,6 +3196,7 @@ def execute_branch_async(
     concurrency_budget_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -3187,6 +3232,7 @@ def execute_branch_async(
         on_node_status=on_node_status,
         branch_version_id=None,
         _invocation_depth=_invocation_depth,
+        _enqueue_universe_id=_enqueue_universe_id,
     )
 
 
@@ -3650,7 +3696,7 @@ def _invoke_graph_resume(
     external_write_evidence = _run_external_write_effectors(
         branch,
         output,
-        base_path=base_path,
+        base_path=_resolve_effector_base(base_path, run_id),
         run_id=run_id,
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
     )
