@@ -711,6 +711,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             actor=actor,
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
+            _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
         )
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
