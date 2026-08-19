@@ -207,16 +207,22 @@ def _prune_settled_history(conn: sqlite3.Connection, window_start: float) -> Non
     Settled rows are never counted against the in-flight token budget, but they
     accumulate forever — unbounded SQLite growth is a slow DoS (Codex gate #7).
     Cap the settled history to the newest ``_SETTLED_RETENTION_ROWS``, BUT never
-    prune a row still inside the runaway window: the rolling-window guard must
-    count every recent invocation regardless of how retention happens to fall, so
-    the guard is INDEPENDENT of retention (Codex reject #3). A NULL created_at is
-    ancient and therefore prunable. Open rows are never pruned.
+    prune a row the runaway guard still counts: the guard must count every recent
+    invocation regardless of how retention falls, so the guard is INDEPENDENT of
+    retention (Codex reject #3). A row is prunable only if it has a KNOWN
+    timestamp older than the window (``created_at IS NOT NULL AND < window_start``).
+    NULL created_at is NOT prunable: the guard counts NULL rows as in-window
+    (fail-safe over-count), so pruning them would silently defeat the runaway
+    guard — pruning NULLs to the retention cap re-admitted a runaway in the
+    final Codex re-review 2026-08-19. Backfilled pre-migration rows carry
+    ``created_at = 0`` (a known-ancient timestamp) and remain prunable. Open rows
+    are never pruned.
     """
     conn.execute(
         """
         DELETE FROM served_provider_budget_reservations
          WHERE state IN ('succeeded', 'exceeded')
-           AND (created_at IS NULL OR created_at < ?)
+           AND created_at IS NOT NULL AND created_at < ?
            AND reservation_id NOT IN (
                SELECT reservation_id
                  FROM served_provider_budget_reservations
@@ -580,7 +586,7 @@ def finalize_served_provider_budget(
                 SELECT 1 FROM served_provider_budget_reservations
                  WHERE reservation_id = ? AND binding_id = ?
                    AND binding_generation = ?
-                   AND state IN ('succeeded', 'exceeded', 'indeterminate')
+                   AND state IN ('succeeded', 'exceeded')
                 """,
                 (
                     reservation.reservation_id,

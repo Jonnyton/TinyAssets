@@ -2888,6 +2888,56 @@ def main(
         host, port, transport,
     )
 
+    # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
+    # boot reconcile + the lease reconciler were streamable-http-only, so sse/
+    # stdio startup skipped the promised orphan cleanup). Boot reconciliation
+    # settles reservations orphaned by a crashed/killed prior process (at boot
+    # nothing is in-flight, so any open row is dead and safe to release); the
+    # periodic reconciler then settles per-call-lease-expired holds mid-run so a
+    # crashed turn's hold never bricks serving until the next reboot. Cheap +
+    # idempotent + a no-op when there are no reservations.
+    try:
+        import threading as _threading
+
+        from tinyassets.provider_assignment import (
+            reconcile_orphaned_reservations_on_boot,
+            reconcile_served_budget_leases,
+        )
+        from tinyassets.storage import data_dir as _sb_data_dir
+
+        _reclaimed = reconcile_orphaned_reservations_on_boot(_sb_data_dir())
+        if _reclaimed:
+            logger.info(
+                "served budget: released %d orphaned reservation(s) at boot",
+                _reclaimed,
+            )
+
+        def _served_budget_lease_loop() -> None:
+            import time as _time
+
+            while True:
+                _time.sleep(300.0)
+                try:
+                    _n = reconcile_served_budget_leases(_sb_data_dir())
+                    if _n:
+                        logger.info(
+                            "served budget: lease-reconciled %d stale "
+                            "reservation(s)",
+                            _n,
+                        )
+                except Exception:  # noqa: BLE001 - loop must never die
+                    logger.exception(
+                        "served budget: lease reconciliation tick failed"
+                    )
+
+        _threading.Thread(
+            target=_served_budget_lease_loop,
+            name="served-budget-lease-reconciler",
+            daemon=True,
+        ).start()
+    except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
+        logger.exception("served budget: maintenance not started")
+
     # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
@@ -2898,65 +2948,6 @@ def main(
         # in the Cloudflare dashboard, so its public path exposure cannot be
         # read from this repo. A no-op when unconfigured.
         from tinyassets.app_ingress_http import serve_in_background
-
-        # Boot reconciliation: settle served-budget reservations orphaned by a
-        # crashed/killed prior process. At boot nothing is in-flight yet, so any
-        # open row is dead and safe to release — without this, a stuck reservation
-        # permanently consumes serving capacity (Codex P1 2026-08-19).
-        try:
-            from tinyassets.provider_assignment import (
-                reconcile_orphaned_reservations_on_boot,
-            )
-            from tinyassets.storage import data_dir as _data_dir
-
-            _reclaimed = reconcile_orphaned_reservations_on_boot(_data_dir())
-            if _reclaimed:
-                logger.info(
-                    "served budget: released %d orphaned reservation(s) at boot",
-                    _reclaimed,
-                )
-        except Exception:  # noqa: BLE001 - boot must not fail on reconciliation
-            logger.exception("served budget: boot reconciliation skipped")
-
-        # Periodic lease reconciliation: boot-only recovery is not enough (Codex
-        # reject #4). A turn that crashes/hangs mid-call leaves a 'reserved' or
-        # 'indeterminate' hold that never settles during this long-lived process,
-        # so one orphaned near-full reservation could brick serving until the next
-        # reboot. This daemon thread settles holds older than the lease every few
-        # minutes, so serving self-heals mid-run without a restart.
-        try:
-            import threading as _threading
-
-            from tinyassets.provider_assignment import (
-                reconcile_served_budget_leases,
-            )
-            from tinyassets.storage import data_dir as _data_dir2
-
-            def _served_budget_lease_loop() -> None:
-                import time as _time
-
-                while True:
-                    _time.sleep(300.0)
-                    try:
-                        _n = reconcile_served_budget_leases(_data_dir2())
-                        if _n:
-                            logger.info(
-                                "served budget: lease-reconciled %d stale "
-                                "reservation(s)",
-                                _n,
-                            )
-                    except Exception:  # noqa: BLE001 - loop must never die
-                        logger.exception(
-                            "served budget: lease reconciliation tick failed"
-                        )
-
-            _threading.Thread(
-                target=_served_budget_lease_loop,
-                name="served-budget-lease-reconciler",
-                daemon=True,
-            ).start()
-        except Exception:  # noqa: BLE001 - boot must not fail on reconciler setup
-            logger.exception("served budget: lease reconciler not started")
 
         serve_in_background()
         # Founder-scoped engine MCP over HTTP: start one loopback server per
