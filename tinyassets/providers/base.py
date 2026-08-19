@@ -452,7 +452,33 @@ def subprocess_env_for_provider(
             if provider_name == "codex":
                 env["CODEX_HOME"] = str(snapshot)
             else:
-                env["CLAUDE_CONFIG_DIR"] = str(snapshot)
+                # The sealed snapshot stores the claude OAuth token in
+                # auth.json. Claude Code authenticates from
+                # CLAUDE_CODE_OAUTH_TOKEN (see entrypoint).
+                try:
+                    _tok = (snapshot / "auth.json").read_text(
+                        encoding="utf-8"
+                    ).strip()
+                except OSError:
+                    _tok = ""
+                if _tok.startswith("sk-ant-"):
+                    # Raw-token credential: authenticate via the ENV token and
+                    # KEEP CLAUDE_CONFIG_DIR on the clean isolated dir that
+                    # _provider_child_runtime_env already set — do NOT point it
+                    # at the snapshot. The snapshot is a codex-format credential
+                    # dir (config.toml + bare auth.json); pointing the claude
+                    # CLI at a non-claude config dir SILENTLY stops it from
+                    # spawning --mcp-config MCP servers, which broke the
+                    # founder-scoped engine tools (read_graph/run_graph) on every
+                    # SERVED turn while a manual `claude -p` with the same flags
+                    # worked (isolated live 2026-08-19: the engine MCP server
+                    # never launched). The token env fully authenticates, so the
+                    # config dir only needs to be a clean claude config home.
+                    env["CLAUDE_CODE_OAUTH_TOKEN"] = _tok
+                else:
+                    # JSON (.credentials.json) material: leave auth to
+                    # CLAUDE_CONFIG_DIR resolution against the snapshot.
+                    env["CLAUDE_CONFIG_DIR"] = str(snapshot)
             return env
         from tinyassets.credential_vault import (
             apply_provider_auth_env,

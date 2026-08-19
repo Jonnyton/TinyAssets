@@ -633,6 +633,7 @@ class ProviderRouter:
                     from tinyassets.provider_assignment import (
                         abandon_served_provider_budget,
                         finalize_served_provider_budget,
+                        release_served_provider_budget,
                         reserve_served_provider_budget,
                     )
 
@@ -665,12 +666,27 @@ class ProviderRouter:
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )
-                except BaseException:
+                except BaseException as exc:
                     if budget_reservation is not None:
-                        abandon_served_provider_budget(
-                            universe_dir.parent,
-                            budget_reservation,
-                        )
+                        # A provider that never became available produced no
+                        # tokens, so its reservation must be RELEASED, not
+                        # conservatively consumed forever. Abandoning it
+                        # (`indeterminate`) permanently charges the binding for a
+                        # turn that spent nothing — so a flaky provider exhausts
+                        # its own budget one failed turn at a time and then reads
+                        # as "budget exhausted" while actually having capacity.
+                        # Only a failure AFTER the call began (genuinely unknown
+                        # usage) is conservatively consumed.
+                        if isinstance(exc, ProviderUnavailableError):
+                            release_served_provider_budget(
+                                universe_dir.parent,
+                                budget_reservation,
+                            )
+                        else:
+                            abandon_served_provider_budget(
+                                universe_dir.parent,
+                                budget_reservation,
+                            )
                     raise
                 if budget_reservation is not None:
                     finalize_served_provider_budget(

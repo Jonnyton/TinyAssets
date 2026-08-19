@@ -1057,6 +1057,20 @@ def write_graph(
                 expected_revision=expected_revision,
             )
         )
+    if normalized == "source_channel":
+        # Owner self-serve source-channel approval + policy (re-applied
+        # 2026-08-19 after the fe1aaf32 deploy dropped this hot-patch). A
+        # GENERAL primitive: a source_code node is a code channel, a
+        # github_pull_request sink is an effector channel.
+        from tinyassets.api.source_channel import (
+            source_channel as _source_channel_impl,
+        )
+        return _source_channel_impl(
+            action=operation,
+            universe_id=graph_id,
+            branch_id=branch_id,
+            payload=payload_json,
+        )
     return _unknown_target(
         "write_graph",
         target,
@@ -1069,6 +1083,7 @@ def write_graph(
             "connection",
             "agent",
             "agent_binding",
+            "source_channel",
         ),
     )
 
@@ -2884,7 +2899,34 @@ def main(
         # read from this repo. A no-op when unconfigured.
         from tinyassets.app_ingress_http import serve_in_background
 
+        # Boot reconciliation: settle served-budget reservations orphaned by a
+        # crashed/killed prior process. At boot nothing is in-flight yet, so any
+        # open row is dead and safe to release — without this, a stuck reservation
+        # permanently consumes serving capacity (Codex P1 2026-08-19).
+        try:
+            from tinyassets.provider_assignment import (
+                reconcile_orphaned_reservations_on_boot,
+            )
+            from tinyassets.storage import data_dir as _data_dir
+
+            _reclaimed = reconcile_orphaned_reservations_on_boot(_data_dir())
+            if _reclaimed:
+                logger.info(
+                    "served budget: released %d orphaned reservation(s) at boot",
+                    _reclaimed,
+                )
+        except Exception:  # noqa: BLE001 - boot must not fail on reconciliation
+            logger.exception("served budget: boot reconciliation skipped")
+
         serve_in_background()
+        # Founder-scoped engine MCP over HTTP: start one loopback server per
+        # serving universe so the universe agent's `run_graph`/`read_graph`
+        # tools are available on EVERY served turn after a clean boot — no
+        # manual step, surviving container recreate. No-op when the engine-MCP
+        # flag is off. Held alive by this (daemon) process for its lifetime.
+        from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
+
+        _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
         return

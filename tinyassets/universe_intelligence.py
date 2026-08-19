@@ -120,15 +120,28 @@ _ENGINE_DISALLOWED_TOOLS = (
 #     GLOBAL shared commons; pinning them needs a wiki-root override not yet set.
 #   * ``converse`` — never exposed (a universe relaying to itself is a
 #     recursion / fork bomb).
-_ENGINE_MCP_TOOLS = ("read_graph", "get_status")
+_ENGINE_MCP_TOOLS = ("read_graph", "get_status", "run_graph")
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
 # the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
 # Isolation for the OTHER MCP servers comes from ``--strict-mcp-config`` admitting
 # only the one local server (verified 2026-08-13); the three MCP resource-reader
 # tools stay denied so the surface is EXACTLY the declared handles.
+# ``ToolSearch`` is ALSO dropped, not only ``mcp__*``: claude CLI 2.1.183
+# surfaces MCP-server tools through its DEFERRED-tool mechanism — their schemas
+# are loaded on demand via ``ToolSearch`` — so denying ``ToolSearch`` silently
+# prevents the engine ``mcp__tinyassets__*`` handles from EVER becoming callable.
+# Verified live 2026-08-19: with ``ToolSearch`` in the denylist the served turn
+# sees only ``WebFetch`` + ``AskUserQuestion``; drop it and ``read_graph`` /
+# ``run_graph`` work. Isolation for this turn does NOT rely on denying
+# ``ToolSearch``: ``--strict-mcp-config`` admits ONLY the one local engine server
+# (the ambient claude.ai account connectors are excluded), and every dangerous
+# builtin stays individually denied below — a loaded schema for a denied tool is
+# still not callable. The residual (a NEW CLI builtin not yet in this denylist
+# could be ToolSearch-loaded) is the same denylist-rot this module already
+# tracks; the durable fix remains the OS sandbox.
 _ENGINE_DISALLOWED_TOOLS_WITH_MCP = tuple(
-    t for t in _ENGINE_DISALLOWED_TOOLS if t != "mcp__*"
+    t for t in _ENGINE_DISALLOWED_TOOLS if t not in ("mcp__*", "ToolSearch")
 )
 
 

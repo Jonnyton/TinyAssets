@@ -302,8 +302,13 @@ def test_signed_founder_slack_turn_carries_exact_server_request_authority(
     assert seen["mechanism"] == "tinyassets.authenticated-app-event.v1"
     assert seen["issuer"] == "tinyassets.app_ingress_http"
     assert seen["tool_name"] == "slack_event"
-    assert seen["agent_binding_id"] == binding
-    assert seen["binding_revision"] == 1
+    # deliver_app_event no longer passes the routed PERSONA binding to converse:
+    # converse resolves the SERVING binding itself (2026-08-19 Slack fix — the
+    # persona binding is not the serving binding, and passing it made converse's
+    # status=="serving" gate reject every turn). The server request authority
+    # above is what must be carried; the serving binding is resolved downstream.
+    assert "agent_binding_id" not in seen
+    assert "binding_revision" not in seen
 
 
 def test_a_replayed_event_mints_no_second_grant(base, monkeypatch):
