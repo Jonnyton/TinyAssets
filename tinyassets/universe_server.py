@@ -2918,6 +2918,46 @@ def main(
         except Exception:  # noqa: BLE001 - boot must not fail on reconciliation
             logger.exception("served budget: boot reconciliation skipped")
 
+        # Periodic lease reconciliation: boot-only recovery is not enough (Codex
+        # reject #4). A turn that crashes/hangs mid-call leaves a 'reserved' or
+        # 'indeterminate' hold that never settles during this long-lived process,
+        # so one orphaned near-full reservation could brick serving until the next
+        # reboot. This daemon thread settles holds older than the lease every few
+        # minutes, so serving self-heals mid-run without a restart.
+        try:
+            import threading as _threading
+
+            from tinyassets.provider_assignment import (
+                reconcile_served_budget_leases,
+            )
+            from tinyassets.storage import data_dir as _data_dir2
+
+            def _served_budget_lease_loop() -> None:
+                import time as _time
+
+                while True:
+                    _time.sleep(300.0)
+                    try:
+                        _n = reconcile_served_budget_leases(_data_dir2())
+                        if _n:
+                            logger.info(
+                                "served budget: lease-reconciled %d stale "
+                                "reservation(s)",
+                                _n,
+                            )
+                    except Exception:  # noqa: BLE001 - loop must never die
+                        logger.exception(
+                            "served budget: lease reconciliation tick failed"
+                        )
+
+            _threading.Thread(
+                target=_served_budget_lease_loop,
+                name="served-budget-lease-reconciler",
+                daemon=True,
+            ).start()
+        except Exception:  # noqa: BLE001 - boot must not fail on reconciler setup
+            logger.exception("served budget: lease reconciler not started")
+
         serve_in_background()
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
