@@ -660,6 +660,7 @@ class ProviderRouter:
                         authority=served_authority,
                         requested_output_tokens=cfg.max_tokens,
                         estimated_input_tokens=estimated_input_tokens,
+                        call_timeout_s=getattr(cfg, "timeout", None),
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 try:

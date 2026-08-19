@@ -154,3 +154,132 @@ def test_boot_reconcile_prunes_settled_history(tmp_path):
             "SELECT COUNT(*) FROM served_provider_budget_reservations"
         ).fetchone()[0]
     assert remaining == pa._SETTLED_RETENTION_ROWS
+
+
+# ── rolling-window runaway guard + lease reconciliation (Codex reject #3/#4/#5) ─
+
+def _insert_reservation_at(conn, rid, state, created_at, tokens=100,
+                           lease_deadline=None):
+    conn.execute(
+        "INSERT INTO served_provider_budget_reservations "
+        "(reservation_id, binding_id, binding_generation, state, "
+        "reserved_total_tokens, reserved_cost_microunits, "
+        "actual_total_tokens, actual_cost_microunits, created_at, "
+        "lease_deadline) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (rid, "pwb", 1, state, tokens, tokens * 100,
+         None if state in ("reserved", "indeterminate") else tokens,
+         None if state in ("reserved", "indeterminate") else tokens * 100,
+         created_at, lease_deadline),
+    )
+
+
+def test_lease_reconciler_settles_only_past_deadline(tmp_path):
+    import time
+
+    from tinyassets import provider_assignment as pa
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    now = time.time()
+    store = SQLiteProviderWorkAuthorityStore(str(tmp_path))
+    with store.connection() as conn:
+        pa._ensure_served_budget_schema(conn)
+        # Holds PAST their own lease deadline (crashed/hung turn).
+        _insert_reservation_at(conn, "stale_res", "reserved",
+                               now - 5000, lease_deadline=now - 60)
+        _insert_reservation_at(conn, "stale_ind", "indeterminate",
+                               now - 5000, lease_deadline=now - 60)
+        # A genuinely live turn under a HUGE (unbounded) timeout: created long ago
+        # but its deadline is still in the future — must NOT be reclaimed early.
+        _insert_reservation_at(conn, "live_long", "reserved",
+                               now - 5000, lease_deadline=now + 3600)
+        # An old row with NO lease_deadline (pre-migration / old binary) — left to
+        # BOOT reconciliation, NOT settled by the periodic/opportunistic path.
+        _insert_reservation_at(conn, "null_lease", "reserved",
+                               now - 5000, lease_deadline=None)
+        conn.commit()
+
+    settled = pa.reconcile_served_budget_leases(str(tmp_path))
+    assert settled == 2
+
+    with store.connection() as conn:
+        states = dict(conn.execute(
+            "SELECT reservation_id, state FROM "
+            "served_provider_budget_reservations"
+        ).fetchall())
+    assert states["stale_res"] == "succeeded"
+    assert states["stale_ind"] == "succeeded"
+    assert states["live_long"] == "reserved"  # deadline in future: untouched
+    assert states["null_lease"] == "reserved"  # NULL deadline: boot's job only
+
+
+def test_release_settles_no_spend_preserving_invocation_count(tmp_path):
+    import time
+
+    from tinyassets import provider_assignment as pa
+    from tinyassets.provider_assignment import ServedProviderBudgetReservation
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(str(tmp_path))
+    with store.connection() as conn:
+        pa._ensure_served_budget_schema(conn)
+        _insert_reservation_at(conn, "unavail", "reserved", time.time())
+        conn.commit()
+
+    pa.release_served_provider_budget(
+        str(tmp_path),
+        ServedProviderBudgetReservation(
+            reservation_id="unavail",
+            binding_id="pwb",
+            binding_generation=1,
+            output_tokens=1,
+            reserved_total_tokens=100,
+            reserved_cost_microunits=10_000,
+        ),
+    )
+
+    with store.connection() as conn:
+        row = conn.execute(
+            "SELECT state, actual_total_tokens, actual_cost_microunits "
+            "FROM served_provider_budget_reservations WHERE reservation_id='unavail'"
+        ).fetchone()
+    # The row SURVIVES (invocation still counts toward the runaway window) but is
+    # charged zero tokens — a provably-no-output call must not brick the binding
+    # yet must not vanish from the launch count (Codex reject #5).
+    assert row is not None
+    assert row[0] == "succeeded"
+    assert row[1] == 0
+    assert row[2] == 0
+
+
+def test_settled_history_prune_never_evicts_in_window_rows(tmp_path):
+    import time
+
+    from tinyassets import provider_assignment as pa
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    now = time.time()
+    store = SQLiteProviderWorkAuthorityStore(str(tmp_path))
+    with store.connection() as conn:
+        pa._ensure_served_budget_schema(conn)
+        # More recent-window rows than the retention cap: none may be pruned,
+        # because the rolling-window runaway guard must count them all
+        # independently of retention (Codex reject #3).
+        in_window = pa._SETTLED_RETENTION_ROWS + 50
+        for i in range(in_window):
+            _insert_reservation_at(conn, f"w{i}", "succeeded", now - 5)
+        conn.commit()
+
+    pa.reconcile_orphaned_reservations_on_boot(str(tmp_path))
+    with store.connection() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM served_provider_budget_reservations"
+        ).fetchone()[0]
+    # Every in-window row is retained despite exceeding the retention cap.
+    assert remaining == pa._SETTLED_RETENTION_ROWS + 50
