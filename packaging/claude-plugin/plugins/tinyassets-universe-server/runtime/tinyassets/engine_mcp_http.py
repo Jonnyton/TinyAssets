@@ -1,48 +1,45 @@
-"""Persistent per-universe HTTP engine MCP servers, started at daemon boot.
+"""Persistent, supervised, per-universe HTTP engine MCP servers.
 
 The founder-scoped engine MCP tools (``read_graph`` / ``get_status`` /
 ``run_graph``) reach the sandboxed ``claude -p`` universe-intelligence turn
 through a local MCP server. The claude CLI's **stdio** MCP spawn is unreliable
 in the headless served subprocess (verified live 2026-08-19: the stdio server
-never launched and the CLI reported the server "still connecting", so the agent
-never received its tools). The **HTTP** transport connects reliably, so the
-engine server runs over HTTP.
+never launched and the CLI reported the server "still connecting"). The **HTTP**
+transport connects reliably, so the engine server runs over HTTP.
 
-This module starts ONE loopback HTTP engine server per SERVING universe when the
-daemon boots — so the capability survives a container recreate with no manual
-step (the founder's "24/7 without this computer" rule). Each server is PINNED to
-exactly one ``(founder actor, universe graph)`` via env, binds ``127.0.0.1``
-only, and therefore exposes just that one universe's own founder-scoped handles.
-The ``{graph_id: url}`` route map is published to a file the provider reads
-(``claude_provider._engine_mcp_flags``), which points that universe's served
-turns at its HTTP engine server instead of a stdio spawn.
+This starts one loopback HTTP engine server per SERVING universe and KEEPS them
+running — so the capability survives a container recreate AND a lone engine-server
+crash, with no host tending it (the founder's "24/7 without this computer" rule).
+Each server is PINNED to exactly one ``(founder actor, universe graph)`` via env,
+binds ``127.0.0.1`` only, and requires a per-server bearer secret on every request
+(Codex gate #6 — the loopback listener is reachable by any in-container process).
 
-Gated by the same dark ``TINYASSETS_ENGINE_MCP_TOOLS`` flag as the tools
-themselves; a no-op when the flag is off.
-
-Follow-ups (tracked, not blockers for the durable proof):
-  * restart-supervision — a crashed engine server is not currently respawned;
-  * dynamic reconcile — a universe that STARTS serving after boot gets no server
-    until the next boot;
-  * multi-tenant identity — a per-universe pinned loopback server is simple and
-    correct for isolation, but a shared server with per-request signed identity
-    would scale better; the Codex confinement review governs which we ship.
+Confinement (Codex ADAPT 2026-08-19): run_graph and these servers are limited to
+the ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES`` allowlist (empty = dark) until the
+multi-tenant hardening gate lands. The ``{graph_id: {url, secret}}`` route map is
+published (mode 0600) to a file the provider reads
+(``claude_provider._engine_mcp_flags``).
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import secrets
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-#: First loopback port; each serving universe gets the next one, in order.
+#: First loopback port; each serving universe gets the next free one.
 ENGINE_MCP_HTTP_BASE_PORT = 8790
 #: Route map file, read by ``claude_provider._engine_mcp_flags``.
 ROUTES_FILENAME = ".engine_mcp_http_routes.json"
+#: How often the supervisor respawns dead servers + reconciles serving intent.
+_SUPERVISOR_INTERVAL_S = 15.0
 
 
 def _engine_mcp_enabled() -> bool:
@@ -52,17 +49,14 @@ def _engine_mcp_enabled() -> bool:
 
 
 def run_graph_allowlist() -> frozenset[str]:
-    """Universe ids for which the WRITE/COSTLY ``run_graph`` handle is allowed.
+    """Universe ids for which run_graph + an HTTP engine server are allowed.
 
-    Cross-family review (Codex 2026-08-19) ADAPT: the run_graph confinement
-    (author-gate + universe pin + loopback env-pinned server) is safe for a
-    SINGLE isolated founder but NOT yet for multi-tenant — the loopback server
-    has no per-request auth, run_graph does not verify a SAME-universe branch
-    binding or execute an immutable version, and the served budget has DoS
-    edges (settled-row growth, stuck reservations). Until that 8-point gate is
-    met, run_graph and its HTTP engine server are limited to this explicit
-    allowlist (empty = fully dark). Set ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES``
-    (comma-separated) to the vetted test founder(s) only.
+    Cross-family review (Codex 2026-08-19) ADAPT: the run_graph confinement is
+    safe for a SINGLE isolated founder but NOT yet multi-tenant. Until the full
+    hardening gate is met, run_graph and its HTTP server are limited to this
+    explicit allowlist (empty = fully dark). Set
+    ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES`` (comma-separated) to the vetted
+    test founder(s) only.
     """
     raw = os.environ.get("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "")
     return frozenset(u.strip() for u in raw.split(",") if u.strip())
@@ -71,14 +65,12 @@ def run_graph_allowlist() -> frozenset[str]:
 def _serving_universe_owners(base: Path) -> list[tuple[str, str]]:
     """``[(universe_id, owner_actor_id)]`` for universes with a serving binding.
 
-    The owner is the serving agent binding's ``created_by`` — the founder whose
-    identity the engine server binds. Fail-closed to an empty list.
+    The owner is the serving agent binding's ``created_by``. Fail-closed to [].
     """
     import sqlite3
 
     from tinyassets.storage import db_path
 
-    owners: list[tuple[str, str]] = []
     try:
         conn = sqlite3.connect(db_path(base))
         conn.row_factory = sqlite3.Row
@@ -92,6 +84,7 @@ def _serving_universe_owners(base: Path) -> list[tuple[str, str]]:
     except sqlite3.Error:
         logger.exception("engine http: could not enumerate serving universes")
         return []
+    owners: list[tuple[str, str]] = []
     for row in rows:
         uid = str(row["universe_id"] or "").strip()
         owner = str(row["created_by"] or "").strip()
@@ -100,11 +93,83 @@ def _serving_universe_owners(base: Path) -> list[tuple[str, str]]:
     return owners
 
 
-def start_engine_mcp_http_servers(base: str | Path | None = None) -> list[subprocess.Popen]:
-    """Start one loopback HTTP engine server per serving universe; publish routes.
+class _EngineServer:
+    """One pinned loopback engine MCP server subprocess, with a stable secret."""
 
-    Returns the started process handles (the daemon keeps them alive for its own
-    lifetime). A no-op returning ``[]`` when the engine-MCP flag is off.
+    __slots__ = ("universe_id", "owner", "port", "secret", "_data_dir", "proc")
+
+    def __init__(self, universe_id, owner, port, data_dir_env):
+        self.universe_id = universe_id
+        self.owner = owner
+        self.port = port
+        self.secret = secrets.token_urlsafe(32)
+        self._data_dir = data_dir_env
+        self.proc = None
+
+    def start(self) -> bool:
+        env = dict(os.environ)
+        env["TINYASSETS_ENGINE_ACTOR_ID"] = self.owner
+        env["TINYASSETS_ENGINE_GRAPH_ID"] = self.universe_id
+        env["TINYASSETS_DATA_DIR"] = self._data_dir
+        env["TINYASSETS_ENGINE_MCP_HTTP_PORT"] = str(self.port)
+        env["TINYASSETS_ENGINE_MCP_HTTP_SECRET"] = self.secret
+        try:
+            self.proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                [sys.executable, "-m", "tinyassets.engine_mcp_server"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "engine http: failed to start server for %s", self.universe_id
+            )
+            return False
+        logger.info(
+            "engine http: started server for %s on 127.0.0.1:%d",
+            self.universe_id, self.port,
+        )
+        return True
+
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _write_routes(root: Path, servers) -> None:
+    routes = {
+        s.universe_id: {
+            "url": f"http://127.0.0.1:{s.port}/mcp",
+            "secret": s.secret,
+        }
+        for s in servers
+    }
+    path = root / ROUTES_FILENAME
+    try:
+        path.write_text(json.dumps(routes), encoding="utf-8")
+        os.chmod(path, 0o600)  # secrets — never world-readable
+    except OSError:
+        logger.exception("engine http: could not write route map")
+
+
+def _desired_owners(root: Path) -> dict[str, str]:
+    allow = run_graph_allowlist()
+    return {u: o for (u, o) in _serving_universe_owners(root) if u in allow}
+
+
+def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
+    """Start one auth'd loopback engine server per allowlisted serving universe
+    and a daemon supervisor that respawns crashes + reconciles serving intent.
+
+    No-op returning ``[]`` when the engine-MCP flag is off or the allowlist is
+    empty. Called once, early in daemon startup.
     """
     if not _engine_mcp_enabled():
         return []
@@ -112,54 +177,58 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list[subpro
     from tinyassets.storage import data_dir
 
     root = Path(data_dir() if base is None else base)
-    # Only stand up an engine server for a universe on the run_graph allowlist.
-    # A pinned loopback server has no per-request auth, so limiting it to the
-    # single vetted founder keeps the multi-tenant cross-universe-read surface
-    # closed until the Codex hardening gate lands (see run_graph_allowlist).
-    allow = run_graph_allowlist()
-    if not allow:
-        try:
-            (root / ROUTES_FILENAME).write_text("{}", encoding="utf-8")
-        except OSError:
-            pass
-        return []
-    owners = [(u, o) for (u, o) in _serving_universe_owners(root) if u in allow]
     data_dir_env = os.environ.get("TINYASSETS_DATA_DIR", str(root))
 
-    routes: dict[str, str] = {}
-    procs: list[subprocess.Popen] = []
-    for index, (universe_id, owner_actor_id) in enumerate(owners):
-        port = ENGINE_MCP_HTTP_BASE_PORT + index
-        child_env = dict(os.environ)
-        child_env["TINYASSETS_ENGINE_ACTOR_ID"] = owner_actor_id
-        child_env["TINYASSETS_ENGINE_GRAPH_ID"] = universe_id
-        child_env["TINYASSETS_DATA_DIR"] = data_dir_env
-        child_env["TINYASSETS_ENGINE_MCP_HTTP_PORT"] = str(port)
-        try:
-            proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
-                [sys.executable, "-m", "tinyassets.engine_mcp_server"],
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:  # noqa: BLE001 - one universe must not break the boot
-            logger.exception(
-                "engine http: failed to start server for %s", universe_id
-            )
-            continue
-        procs.append(proc)
-        routes[universe_id] = f"http://127.0.0.1:{port}/mcp"
-        logger.info(
-            "engine http: started engine MCP server for %s on 127.0.0.1:%d",
-            universe_id, port,
-        )
+    desired = _desired_owners(root)
+    if not desired:
+        _write_routes(root, [])
+        return []
 
-    try:
-        (root / ROUTES_FILENAME).write_text(
-            json.dumps(routes), encoding="utf-8"
-        )
-    except OSError:
-        logger.exception("engine http: could not write route map")
+    servers: dict[str, _EngineServer] = {}
+    used_ports: set[int] = set()
 
-    return procs
+    def _next_port() -> int:
+        port = ENGINE_MCP_HTTP_BASE_PORT
+        while port in used_ports:
+            port += 1
+        used_ports.add(port)
+        return port
+
+    for universe_id, owner in desired.items():
+        srv = _EngineServer(universe_id, owner, _next_port(), data_dir_env)
+        if srv.start():
+            servers[universe_id] = srv
+    _write_routes(root, servers.values())
+
+    def _supervise() -> None:
+        while True:
+            time.sleep(_SUPERVISOR_INTERVAL_S)
+            try:
+                current = _desired_owners(root)
+                changed = False
+                # Retire universes that stopped serving / left the allowlist.
+                for uid in [u for u in servers if u not in current]:
+                    servers.pop(uid).stop()
+                    changed = True
+                # Respawn crashed servers for still-desired universes.
+                for uid, srv in servers.items():
+                    if not srv.alive():
+                        logger.warning("engine http: respawning dead server %s", uid)
+                        srv.start()
+                        changed = True
+                # Stand up servers for newly-serving allowlisted universes.
+                for uid, owner in current.items():
+                    if uid not in servers:
+                        srv = _EngineServer(uid, owner, _next_port(), data_dir_env)
+                        if srv.start():
+                            servers[uid] = srv
+                            changed = True
+                if changed:
+                    _write_routes(root, servers.values())
+            except Exception:  # noqa: BLE001 - the supervisor must never die
+                logger.exception("engine http: supervisor tick failed")
+
+    threading.Thread(
+        target=_supervise, name="engine-mcp-supervisor", daemon=True
+    ).start()
+    return list(servers.values())

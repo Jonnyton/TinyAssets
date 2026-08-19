@@ -82,6 +82,10 @@ class ServedProviderBudgetReservation:
 
 _SERVED_COST_MICROUNITS_PER_TOKEN = 100
 
+#: Cap on retained SETTLED served-budget rows (Codex gate #7 — bounded growth).
+#: Open rows are never pruned; only the oldest settled history beyond this.
+_SETTLED_RETENTION_ROWS = 5000
+
 
 def _ensure_served_budget_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
@@ -136,6 +140,26 @@ def reconcile_orphaned_reservations_on_boot(base_path: str | Path) -> int:
                            actual_cost_microunits, reserved_cost_microunits)
                  WHERE state IN ('reserved', 'indeterminate')
                 """
+            )
+            # Bounded retention (Codex gate #7): settled rows are never counted
+            # against the in-flight budget, but they accumulate forever —
+            # unbounded SQLite growth is a slow DoS. Cap the SETTLED history to
+            # the newest _SETTLED_RETENTION_ROWS (by rowid), pruning the oldest.
+            # Open rows are never pruned. Runs at boot only, so it is cheap and
+            # never races an in-flight reservation.
+            conn.execute(
+                """
+                DELETE FROM served_provider_budget_reservations
+                 WHERE state IN ('succeeded', 'exceeded')
+                   AND reservation_id NOT IN (
+                       SELECT reservation_id
+                         FROM served_provider_budget_reservations
+                        WHERE state IN ('succeeded', 'exceeded')
+                        ORDER BY rowid DESC
+                        LIMIT ?
+                   )
+                """,
+                (_SETTLED_RETENTION_ROWS,),
             )
             conn.commit()
             return int(cur.rowcount or 0)

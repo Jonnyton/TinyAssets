@@ -60,6 +60,44 @@ _READ_CAPABILITIES = ("read", "list")
 # Bound ONLY for the run_graph handler, never the read handlers — least privilege.
 _RUN_CAPABILITIES = ("read", "list", "write", "submit_request", "costly")
 
+#: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
+#: engine-triggered runs per universe per rolling window.
+_RUN_GRAPH_RATE_WINDOW_S = 3600
+_RUN_GRAPH_RATE_MAX = 20
+
+
+def _recent_engine_run_count() -> tuple[bool, int]:
+    """(over_limit, recent_count) of runs this universe triggered in the window.
+
+    Counts rows in the runs ledger authored by ``universe:<graph>`` whose
+    ``started_at`` is within the window. Fail-OPEN on any read error (never block
+    a legitimate run because the ledger could not be read) — the allowlist +
+    approved-source gate are the primary controls; this is a spam bound.
+    """
+    import sqlite3
+    import time as _time
+    from pathlib import Path as _P
+
+    data_dir = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip() or "."
+    runs_db = _P(data_dir) / ".runs.db"
+    if not runs_db.is_file():
+        return (False, 0)
+    cutoff = _time.time() - _RUN_GRAPH_RATE_WINDOW_S
+    try:
+        conn = sqlite3.connect(str(runs_db))
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM runs "
+                "WHERE actor = ? AND started_at >= ?",
+                (f"universe:{_GRAPH_ID}", cutoff),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return (False, 0)
+    count = int(row[0]) if row else 0
+    return (count >= _RUN_GRAPH_RATE_MAX, count)
+
 
 def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
     """Bind ``_current_identity`` to the founder for one call.
@@ -222,6 +260,19 @@ def run_graph(
             "error": "branch_def_id is required to run a graph.",
         })
 
+    # Effect-spam rate limit (Codex gate #5): a prompt-injected engine could spam
+    # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
+    # the runs THIS universe can trigger via the engine per rolling window. The
+    # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
+    over, recent = _recent_engine_run_count()
+    if over:
+        return json.dumps({
+            "error": (
+                f"run_graph rate limit reached ({recent} runs in the last "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+            ),
+        })
+
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl
 
@@ -251,6 +302,56 @@ if __name__ == "__main__":
     import os as _os2
     _http_port = (_os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_PORT") or "").strip()
     if _http_port:
-        mcp.run(transport="http", host="127.0.0.1", port=int(_http_port))
+        # Per-request auth (Codex gate #6): the loopback listener is reachable by
+        # any in-container process, so every request must carry the shared bearer
+        # secret the launcher injected (and the provider puts in the turn's
+        # --mcp-config headers, invisible to the LLM). FAIL CLOSED: no secret ->
+        # do not serve unauthenticated.
+        import hmac as _hmac
+
+        import uvicorn as _uvicorn
+
+        _secret = (
+            _os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_SECRET") or ""
+        ).strip()
+        if not _secret:
+            raise SystemExit(
+                "engine MCP HTTP refuses to serve without "
+                "TINYASSETS_ENGINE_MCP_HTTP_SECRET"
+            )
+        _expected = "Bearer " + _secret
+        _inner_app = mcp.http_app()
+
+        class _BearerAuth:
+            """Reject any HTTP request lacking the exact bearer secret (401)."""
+
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                if scope.get("type") == "http":
+                    headers = dict(scope.get("headers") or [])
+                    provided = headers.get(b"authorization", b"").decode(
+                        "latin-1"
+                    )
+                    if not _hmac.compare_digest(provided, _expected):
+                        await send({
+                            "type": "http.response.start",
+                            "status": 401,
+                            "headers": [(b"content-type", b"text/plain")],
+                        })
+                        await send({
+                            "type": "http.response.body",
+                            "body": b"unauthorized",
+                        })
+                        return
+                await self.app(scope, receive, send)
+
+        _uvicorn.run(
+            _BearerAuth(_inner_app),
+            host="127.0.0.1",
+            port=int(_http_port),
+            log_level="warning",
+        )
     else:
         mcp.run()  # stdio transport (default)
