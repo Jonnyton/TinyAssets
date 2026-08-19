@@ -158,21 +158,23 @@ def test_boot_reconcile_prunes_settled_history(tmp_path):
 
 # ── rolling-window runaway guard + lease reconciliation (Codex reject #3/#4/#5) ─
 
-def _insert_reservation_at(conn, rid, state, created_at, tokens=100):
+def _insert_reservation_at(conn, rid, state, created_at, tokens=100,
+                           lease_deadline=None):
     conn.execute(
         "INSERT INTO served_provider_budget_reservations "
         "(reservation_id, binding_id, binding_generation, state, "
         "reserved_total_tokens, reserved_cost_microunits, "
-        "actual_total_tokens, actual_cost_microunits, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        "actual_total_tokens, actual_cost_microunits, created_at, "
+        "lease_deadline) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (rid, "pwb", 1, state, tokens, tokens * 100,
          None if state in ("reserved", "indeterminate") else tokens,
          None if state in ("reserved", "indeterminate") else tokens * 100,
-         created_at),
+         created_at, lease_deadline),
     )
 
 
-def test_lease_reconciler_settles_only_stale_unsettled(tmp_path):
+def test_lease_reconciler_settles_only_past_deadline(tmp_path):
     import time
 
     from tinyassets import provider_assignment as pa
@@ -184,14 +186,19 @@ def test_lease_reconciler_settles_only_stale_unsettled(tmp_path):
     store = SQLiteProviderWorkAuthorityStore(str(tmp_path))
     with store.connection() as conn:
         pa._ensure_served_budget_schema(conn)
-        # Stale holds (older than the lease) from a crashed/hung turn.
+        # Holds PAST their own lease deadline (crashed/hung turn).
         _insert_reservation_at(conn, "stale_res", "reserved",
-                               now - pa._UNSETTLED_LEASE_S - 60)
+                               now - 5000, lease_deadline=now - 60)
         _insert_reservation_at(conn, "stale_ind", "indeterminate",
-                               now - pa._UNSETTLED_LEASE_S - 60)
-        # A genuinely live in-flight turn (well within the lease) — must NOT be
-        # charged early.
-        _insert_reservation_at(conn, "live_res", "reserved", now - 5)
+                               now - 5000, lease_deadline=now - 60)
+        # A genuinely live turn under a HUGE (unbounded) timeout: created long ago
+        # but its deadline is still in the future — must NOT be reclaimed early.
+        _insert_reservation_at(conn, "live_long", "reserved",
+                               now - 5000, lease_deadline=now + 3600)
+        # An old row with NO lease_deadline (pre-migration / old binary) — left to
+        # BOOT reconciliation, NOT settled by the periodic/opportunistic path.
+        _insert_reservation_at(conn, "null_lease", "reserved",
+                               now - 5000, lease_deadline=None)
         conn.commit()
 
     settled = pa.reconcile_served_budget_leases(str(tmp_path))
@@ -204,7 +211,8 @@ def test_lease_reconciler_settles_only_stale_unsettled(tmp_path):
         ).fetchall())
     assert states["stale_res"] == "succeeded"
     assert states["stale_ind"] == "succeeded"
-    assert states["live_res"] == "reserved"  # live hold left untouched
+    assert states["live_long"] == "reserved"  # deadline in future: untouched
+    assert states["null_lease"] == "reserved"  # NULL deadline: boot's job only
 
 
 def test_release_settles_no_spend_preserving_invocation_count(tmp_path):

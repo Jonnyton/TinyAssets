@@ -1007,3 +1007,137 @@ def test_claude_serving_optin_clears_the_hold(tmp_path, monkeypatch):
             expected_revision=1,
             provider="claude-code",
         )
+
+
+def _claude_authority(tmp_path):
+    from tinyassets.provider_assignment import ServedProviderAuthority
+
+    return ServedProviderAuthority(
+        provider="claude-code",
+        max_invocations=10,
+        request_max_invocations=2,
+        max_tokens=1000,
+        max_cost_microunits=100_000,
+        owner_user_id="o",
+        universe_id="u",
+        agent_binding_id="b",
+        binding_revision=1,
+        binding_id="bid",
+        binding_generation=1,
+        binding_digest="d",
+        credential_reference_id="c",
+        credential_reference_generation=1,
+        credential_reference_digest="cd",
+        credential_service="claude-code",
+        credential_snapshot_dir=tmp_path,
+        request_capability=object(),
+    )
+
+
+def test_reserve_holds_claude_serving_authority_without_optin(tmp_path, monkeypatch):
+    """Serve-time re-check: a persisted claude-code serving authority is HELD on
+    every served call unless the host opts in — closing the grandfathered-binding
+    gap where a binding created while the flag was on keeps serving after it is
+    cleared (Codex re-review #1). The check returns before any DB access.
+    """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_assignment import reserve_served_provider_budget
+
+    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
+    with pytest.raises(ProviderAuthorityHeldError, match="claude-code serving is held"):
+        reserve_served_provider_budget(
+            str(tmp_path),
+            universe_dir=str(tmp_path),
+            authority=_claude_authority(tmp_path),
+            requested_output_tokens=10,
+            estimated_input_tokens=10,
+        )
+
+
+def test_reserve_passes_claude_hold_with_optin(tmp_path, monkeypatch):
+    """With the opt-in the serve-time claude hold clears; the call proceeds past
+    it and fails on the (absent) binding/custody, NOT on the claude hold."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_assignment import reserve_served_provider_budget
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    with pytest.raises(ProviderAuthorityHeldError) as exc:
+        reserve_served_provider_budget(
+            str(tmp_path),
+            universe_dir=str(tmp_path),
+            authority=_claude_authority(tmp_path),
+            requested_output_tokens=10,
+            estimated_input_tokens=10,
+        )
+    assert "claude-code serving is held" not in str(exc.value)
+
+
+def test_finalize_tolerates_row_already_reconciled(tmp_path):
+    """A call that outran its lease is settled by the reconciler; its late
+    finalize must return gracefully, NOT raise an accounting error (Codex
+    re-review #4). A genuinely MISSING row still raises.
+    """
+    import sqlite3
+
+    from tinyassets import provider_assignment as pa
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_assignment import (
+        ServedProviderBudgetReservation,
+        finalize_served_provider_budget,
+    )
+    from tinyassets.storage import db_path
+
+    authority = _claude_authority(tmp_path)  # provider irrelevant to finalize
+    reservation = ServedProviderBudgetReservation(
+        reservation_id="r-reconciled",
+        binding_id=authority.binding_id,
+        binding_generation=authority.binding_generation,
+        output_tokens=50,
+        reserved_total_tokens=100,
+        reserved_cost_microunits=10_000,
+    )
+    conn = sqlite3.connect(db_path(tmp_path))
+    try:
+        pa._ensure_served_budget_schema(conn)
+        # The reconciler already settled this row as succeeded.
+        conn.execute(
+            "INSERT INTO served_provider_budget_reservations "
+            "(reservation_id, binding_id, binding_generation, state, "
+            "reserved_total_tokens, reserved_cost_microunits, "
+            "actual_total_tokens, actual_cost_microunits, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ("r-reconciled", authority.binding_id, authority.binding_generation,
+             "succeeded", 100, 10_000, 100, 10_000, 1.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Already-reconciled: returns without raising.
+    finalize_served_provider_budget(
+        str(tmp_path),
+        authority=authority,
+        reservation=reservation,
+        input_tokens=10,
+        output_tokens=40,
+        cost_microunits=5_000,
+    )
+
+    # A truly missing reservation is still an accounting anomaly.
+    missing = ServedProviderBudgetReservation(
+        reservation_id="r-missing",
+        binding_id=authority.binding_id,
+        binding_generation=authority.binding_generation,
+        output_tokens=50,
+        reserved_total_tokens=100,
+        reserved_cost_microunits=10_000,
+    )
+    with pytest.raises(ProviderAuthorityHeldError, match="accounting failed"):
+        finalize_served_provider_budget(
+            str(tmp_path),
+            authority=authority,
+            reservation=missing,
+            input_tokens=10,
+            output_tokens=40,
+            cost_microunits=5_000,
+        )
