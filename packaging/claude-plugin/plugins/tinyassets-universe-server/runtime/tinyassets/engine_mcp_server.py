@@ -66,37 +66,67 @@ _RUN_GRAPH_RATE_WINDOW_S = 3600
 _RUN_GRAPH_RATE_MAX = 20
 
 
-def _recent_engine_run_count() -> tuple[bool, int]:
-    """(over_limit, recent_count) of runs this universe triggered in the window.
+def _bearer_ok(authorization_header, secret) -> bool:
+    """Constant-time check that the header carries exactly ``Bearer <secret>``.
 
-    Counts rows in the runs ledger authored by ``universe:<graph>`` whose
-    ``started_at`` is within the window. Fail-OPEN on any read error (never block
-    a legitimate run because the ledger could not be read) — the allowlist +
-    approved-source gate are the primary controls; this is a spam bound.
+    Module-level so the HTTP auth (Codex gate #6) is unit-testable. Empty secret
+    is never OK — the listener refuses to serve without one.
+    """
+    import hmac
+
+    if not secret:
+        return False
+    return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
+
+
+def _engine_run_admit() -> bool:
+    """Atomically admit one engine-triggered run under the rolling cap, or refuse.
+
+    A dedicated engine-admission ledger (NOT the shared runs table, which would
+    over-limit legitimate browser/scheduled runs — Codex 2026-08-19 (b)). The
+    count-and-insert run inside a single ``BEGIN IMMEDIATE`` transaction, so two
+    parallel run_graph calls cannot both slip past the cap (atomic admission,
+    closing the TOCTOU race). Old rows are pruned opportunistically so the table
+    stays bounded. Fail-OPEN on any DB error: this is a spam bound, not the
+    primary control (the allowlist + approved-source gate are).
     """
     import sqlite3
     import time as _time
     from pathlib import Path as _P
 
     data_dir = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip() or "."
-    runs_db = _P(data_dir) / ".runs.db"
-    if not runs_db.is_file():
-        return (False, 0)
-    cutoff = _time.time() - _RUN_GRAPH_RATE_WINDOW_S
+    db = _P(data_dir) / ".engine_run_admissions.db"
+    now = _time.time()
+    cutoff = now - _RUN_GRAPH_RATE_WINDOW_S
     try:
-        conn = sqlite3.connect(str(runs_db))
+        conn = sqlite3.connect(str(db), timeout=10)
         try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM runs "
-                "WHERE actor = ? AND started_at >= ?",
-                (f"universe:{_GRAPH_ID}", cutoff),
-            ).fetchone()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS admissions "
+                "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            n = conn.execute(
+                "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
+                (_GRAPH_ID, cutoff),
+            ).fetchone()[0]
+            if int(n) >= _RUN_GRAPH_RATE_MAX:
+                conn.rollback()
+                return False
+            conn.execute(
+                "INSERT INTO admissions (universe_id, ts) VALUES (?, ?)",
+                (_GRAPH_ID, now),
+            )
+            conn.execute(
+                "DELETE FROM admissions WHERE ts < ?",
+                (cutoff - _RUN_GRAPH_RATE_WINDOW_S,),
+            )
+            conn.commit()
+            return True
         finally:
             conn.close()
     except sqlite3.Error:
-        return (False, 0)
-    count = int(row[0]) if row else 0
-    return (count >= _RUN_GRAPH_RATE_MAX, count)
+        return True  # fail open — spam bound, not the primary control
 
 
 def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
@@ -264,11 +294,10 @@ def run_graph(
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
     # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
-    over, recent = _recent_engine_run_count()
-    if over:
+    if not _engine_run_admit():
         return json.dumps({
             "error": (
-                f"run_graph rate limit reached ({recent} runs in the last "
+                f"run_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
                 f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
             ),
         })
@@ -307,8 +336,6 @@ if __name__ == "__main__":
         # secret the launcher injected (and the provider puts in the turn's
         # --mcp-config headers, invisible to the LLM). FAIL CLOSED: no secret ->
         # do not serve unauthenticated.
-        import hmac as _hmac
-
         import uvicorn as _uvicorn
 
         _secret = (
@@ -319,22 +346,26 @@ if __name__ == "__main__":
                 "engine MCP HTTP refuses to serve without "
                 "TINYASSETS_ENGINE_MCP_HTTP_SECRET"
             )
-        _expected = "Bearer " + _secret
         _inner_app = mcp.http_app()
 
         class _BearerAuth:
-            """Reject any HTTP request lacking the exact bearer secret (401)."""
+            """Reject any HTTP request lacking the exact bearer secret (401).
+
+            Only ``http`` and ``lifespan`` scopes are handled; anything else
+            (e.g. a future ``websocket`` route) is refused (Codex 2026-08-19).
+            """
 
             def __init__(self, app):
                 self.app = app
 
             async def __call__(self, scope, receive, send):
-                if scope.get("type") == "http":
+                stype = scope.get("type")
+                if stype == "http":
                     headers = dict(scope.get("headers") or [])
                     provided = headers.get(b"authorization", b"").decode(
                         "latin-1"
                     )
-                    if not _hmac.compare_digest(provided, _expected):
+                    if not _bearer_ok(provided, _secret):
                         await send({
                             "type": "http.response.start",
                             "status": 401,
@@ -345,6 +376,8 @@ if __name__ == "__main__":
                             "body": b"unauthorized",
                         })
                         return
+                elif stype != "lifespan":
+                    return  # refuse websocket / unknown transports
                 await self.app(scope, receive, send)
 
         _uvicorn.run(

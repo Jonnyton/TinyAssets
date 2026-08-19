@@ -10,7 +10,19 @@ from __future__ import annotations
 import importlib
 import sqlite3
 
-import pytest
+# ── per-request HTTP bearer auth (Codex #6) ──────────────────────────────────
+
+def test_bearer_ok_rejects_missing_wrong_and_empty(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-tiny")
+    import tinyassets.engine_mcp_server as ems
+    ems = importlib.reload(ems)
+
+    assert ems._bearer_ok("Bearer s3cret", "s3cret") is True
+    assert ems._bearer_ok("Bearer wrong", "s3cret") is False
+    assert ems._bearer_ok("", "s3cret") is False
+    assert ems._bearer_ok(None, "s3cret") is False
+    assert ems._bearer_ok("s3cret", "s3cret") is False  # missing the scheme
+    assert ems._bearer_ok("Bearer x", "") is False  # no server secret -> never ok
 
 
 # ── allowlist scope gate (Codex #2 single-founder confinement) ───────────────
@@ -39,23 +51,25 @@ def test_run_graph_refuses_when_universe_not_allowlisted(monkeypatch, tmp_path):
     assert "not enabled for this universe" in out
 
 
-# ── effect-spam rate limit (Codex #5) ────────────────────────────────────────
+# ── atomic effect-spam admission (Codex #5) ──────────────────────────────────
 
-def _make_runs_db(path, universe, n, ts):
-    conn = sqlite3.connect(str(path))
-    conn.execute(
-        "CREATE TABLE runs (run_id TEXT, branch_def_id TEXT, run_name TEXT, "
-        "status TEXT, started_at REAL, actor TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO runs VALUES (?,?,?,?,?,?)",
-        [(f"r{i}", "b", "n", "completed", ts, f"universe:{universe}") for i in range(n)],
-    )
-    conn.commit()
-    conn.close()
+def test_engine_run_admit_caps_and_is_atomic(monkeypatch, tmp_path):
+    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-tiny")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    import tinyassets.engine_mcp_server as ems
+    ems = importlib.reload(ems)
+
+    admits = [ems._engine_run_admit() for _ in range(ems._RUN_GRAPH_RATE_MAX + 5)]
+    assert admits.count(True) == ems._RUN_GRAPH_RATE_MAX  # exactly the cap
+    assert admits[ems._RUN_GRAPH_RATE_MAX:] == [False] * 5  # then refused
+
+    # A different universe has its own independent budget.
+    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-other")
+    ems = importlib.reload(ems)
+    assert ems._engine_run_admit() is True
 
 
-def test_rate_limit_trips_over_threshold(monkeypatch, tmp_path):
+def test_engine_run_admit_ages_out_old_admissions(monkeypatch, tmp_path):
     import time
 
     monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-tiny")
@@ -63,25 +77,19 @@ def test_rate_limit_trips_over_threshold(monkeypatch, tmp_path):
     import tinyassets.engine_mcp_server as ems
     ems = importlib.reload(ems)
 
-    now = time.time()
-    _make_runs_db(tmp_path / ".runs.db", "u-tiny", ems._RUN_GRAPH_RATE_MAX, now)
-    over, count = ems._recent_engine_run_count()
-    assert over is True and count == ems._RUN_GRAPH_RATE_MAX
-
-    # Old runs (outside the window) do not count.
-    (tmp_path / ".runs.db").unlink()
-    _make_runs_db(tmp_path / ".runs.db", "u-tiny",
-                  ems._RUN_GRAPH_RATE_MAX, now - ems._RUN_GRAPH_RATE_WINDOW_S - 10)
-    over2, count2 = ems._recent_engine_run_count()
-    assert over2 is False and count2 == 0
-
-
-def test_rate_limit_fails_open_without_ledger(monkeypatch, tmp_path):
-    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-tiny")
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))  # no .runs.db
-    import tinyassets.engine_mcp_server as ems
-    ems = importlib.reload(ems)
-    assert ems._recent_engine_run_count() == (False, 0)
+    # Pre-seed the cap's worth of OLD admissions (outside the window).
+    db = tmp_path / ".engine_run_admissions.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE admissions (universe_id TEXT, ts REAL)")
+    old = time.time() - ems._RUN_GRAPH_RATE_WINDOW_S - 10
+    conn.executemany(
+        "INSERT INTO admissions VALUES (?,?)",
+        [("u-tiny", old) for _ in range(ems._RUN_GRAPH_RATE_MAX)],
+    )
+    conn.commit()
+    conn.close()
+    # Old admissions do not count -> a fresh run is admitted.
+    assert ems._engine_run_admit() is True
 
 
 # ── served-budget boot reconciliation + retention (Codex P1 / #7) ────────────

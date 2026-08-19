@@ -152,8 +152,17 @@ def _write_routes(root: Path, servers) -> None:
         for s in servers
     }
     path = root / ROUTES_FILENAME
+    # Atomic publish: write a private temp then rename, so a concurrent turn
+    # never reads a half-written map or a URL without its secret (Codex
+    # 2026-08-19 — race-free publication).
+    tmp = path.with_suffix(".json.tmp")
     try:
-        path.write_text(json.dumps(routes), encoding="utf-8")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, json.dumps(routes).encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(str(tmp), str(path))
         os.chmod(path, 0o600)  # secrets — never world-readable
     except OSError:
         logger.exception("engine http: could not write route map")
@@ -179,11 +188,6 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
     root = Path(data_dir() if base is None else base)
     data_dir_env = os.environ.get("TINYASSETS_DATA_DIR", str(root))
 
-    desired = _desired_owners(root)
-    if not desired:
-        _write_routes(root, [])
-        return []
-
     servers: dict[str, _EngineServer] = {}
     used_ports: set[int] = set()
 
@@ -194,7 +198,14 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
         used_ports.add(port)
         return port
 
-    for universe_id, owner in desired.items():
+    def _retire(uid: str) -> None:
+        srv = servers.pop(uid, None)
+        if srv is not None:
+            srv.stop()
+            used_ports.discard(srv.port)  # release the port (Codex 2026-08-19 d3)
+
+    # Initial servers for whatever is serving now.
+    for universe_id, owner in _desired_owners(root).items():
         srv = _EngineServer(universe_id, owner, _next_port(), data_dir_env)
         if srv.start():
             servers[universe_id] = srv
@@ -208,7 +219,12 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
                 changed = False
                 # Retire universes that stopped serving / left the allowlist.
                 for uid in [u for u in servers if u not in current]:
-                    servers.pop(uid).stop()
+                    _retire(uid)
+                    changed = True
+                # Retire+replace a universe whose OWNER changed (a stale founder
+                # pin would answer as the wrong identity — Codex 2026-08-19 d2).
+                for uid in [u for u in servers if servers[u].owner != current.get(u)]:
+                    _retire(uid)
                     changed = True
                 # Respawn crashed servers for still-desired universes.
                 for uid, srv in servers.items():
@@ -216,7 +232,7 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
                         logger.warning("engine http: respawning dead server %s", uid)
                         srv.start()
                         changed = True
-                # Stand up servers for newly-serving allowlisted universes.
+                # Stand up servers for newly-serving (or re-owned) universes.
                 for uid, owner in current.items():
                     if uid not in servers:
                         srv = _EngineServer(uid, owner, _next_port(), data_dir_env)
@@ -228,6 +244,8 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
             except Exception:  # noqa: BLE001 - the supervisor must never die
                 logger.exception("engine http: supervisor tick failed")
 
+    # ALWAYS start the supervisor — even when nothing is serving yet at boot — so
+    # a universe that begins serving later gets a server (Codex 2026-08-19 d1).
     threading.Thread(
         target=_supervise, name="engine-mcp-supervisor", daemon=True
     ).start()
