@@ -296,14 +296,20 @@ def deliver_app_event(
             )
             capability = claim_provider_request(reserve, tool_name="slack_event")
             try:
+                # The routed binding is the CONFIGURED persona the founder
+                # mapping recognises (used above for recognition). It is NOT the
+                # serving binding: serving (the LLM credential) is a separate
+                # binding resolved by converse itself. Passing the persona here
+                # made converse's `status == "serving"` gate reject every turn
+                # once the two were distinct bindings, which is what silently
+                # broke Slack conversation (2026-08-19). Leave serving
+                # resolution to converse, exactly as the connector path does.
                 reply = converse(
                     routed.universe_id,
                     prompt,
                     actor_id=_actor_id(workspace_id, external_sender_id),
                     founder_grant=grant,
                     conversation_history=history,
-                    agent_binding_id=routed.agent_binding_id,
-                    binding_revision=routed.binding_revision,
                 )
             finally:
                 revoke_provider_request(capability)

@@ -1075,7 +1075,7 @@ def snapshot_llm_subscription_credential(
     """Copy current credential bytes into one immutable launch directory."""
 
     universe = Path(universe_dir).resolve(strict=True)
-    if custody.universe_id != universe.name or custody.service != "codex":
+    if custody.universe_id != universe.name or custody.service not in ("codex", "claude"):
         raise PermissionError("credential snapshot root is not current")
     record = _usable_subscription_record(universe, custody.service)
     material = _subscription_material(universe, custody.service, record)

@@ -169,17 +169,31 @@ def reserve_served_provider_budget(
             """,
             (authority.binding_id, authority.binding_generation),
         ).fetchall()
-        if len(rows) >= authority.max_invocations:
+        # The budget bounds IN-FLIGHT (unsettled) reserved spend — a concurrency
+        # + per-turn runaway guard — NOT a cumulative lifetime ceiling.
+        #
+        # Long-term fix shape (2026-08-19): a SETTLED reservation ('succeeded' or
+        # 'exceeded') already spent on the founder's OWN deposited subscription,
+        # which Anthropic itself metered and rate-limits. Counting settled rows
+        # against a fixed per-generation ceiling made the binding permanently
+        # BRICK after ~max_tokens of lifetime serving and demand a manual
+        # re-bind — the opposite of "24/7 on the resources the user gave it," and
+        # the reason this cap kept being raised as a band-aid. Only UNSETTLED
+        # holds ('reserved'/'indeterminate') consume budget now, so each settled
+        # turn RELEASES and the binding serves indefinitely, bounded per-turn by
+        # ``max_tokens`` (a single turn cannot reserve more) and overall by the
+        # user's real subscription limits. The per-reservation cap + release-on-
+        # no-output fix still bound a single call and reclaim a failed one.
+        # FOLLOW-UP for full 24/7 robustness: expire stale 'reserved' rows left
+        # by a crashed turn, and reconcile long-lived 'indeterminate' rows, so
+        # neither can slowly re-accumulate a hold.
+        _IN_FLIGHT_STATES = ("reserved", "indeterminate")
+        in_flight = [row for row in rows if row[0] in _IN_FLIGHT_STATES]
+        if len(in_flight) >= authority.max_invocations:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
-        used_tokens = sum(
-            int(row[3]) if row[0] == "succeeded" else int(row[1])
-            for row in rows
-        )
-        used_cost = sum(
-            int(row[4]) if row[0] == "succeeded" else int(row[2])
-            for row in rows
-        )
+        used_tokens = sum(int(row[1]) for row in in_flight)
+        used_cost = sum(int(row[2]) for row in in_flight)
         remaining_tokens = authority.max_tokens - used_tokens
         remaining_cost = authority.max_cost_microunits - used_cost
         affordable_total_tokens = remaining_cost // _SERVED_COST_MICROUNITS_PER_TOKEN
@@ -295,7 +309,14 @@ def abandon_served_provider_budget(
     base_path: str | Path,
     reservation: ServedProviderBudgetReservation,
 ) -> None:
-    """Conservatively consume a reservation when provider usage is unknown."""
+    """Conservatively consume a reservation when provider usage is unknown.
+
+    Use ONLY when the provider call began and could have spent tokens before
+    dying. A call that never reached the provider (:class:`ProviderUnavailableError`)
+    consumed nothing and must be RELEASED instead — see
+    :func:`release_served_provider_budget` — or a flaky provider permanently
+    exhausts its own budget one failed turn at a time.
+    """
 
     conn = sqlite3.connect(db_path(base_path), isolation_level=None)
     try:
@@ -304,6 +325,35 @@ def abandon_served_provider_budget(
         conn.execute(
             """
             UPDATE served_provider_budget_reservations SET state = 'indeterminate'
+             WHERE reservation_id = ? AND state = 'reserved'
+            """,
+            (reservation.reservation_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def release_served_provider_budget(
+    base_path: str | Path,
+    reservation: ServedProviderBudgetReservation,
+) -> None:
+    """Release a reservation for a call that provably produced no output.
+
+    A provider that never became available spent nothing, so its reservation
+    must not count against the binding's budget at all. Deleting the still-
+    ``reserved`` row (never a ``succeeded``/``exceeded``/``indeterminate`` one,
+    which record real or possible usage) is the difference between a flaky
+    provider that recovers and one that reads as permanently "budget exhausted".
+    """
+
+    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_served_budget_schema(conn)
+        conn.execute(
+            """
+            DELETE FROM served_provider_budget_reservations
              WHERE reservation_id = ? AND state = 'reserved'
             """,
             (reservation.reservation_id,),
@@ -833,6 +883,7 @@ __all__ = [
     "ServedProviderAuthority",
     "ServedProviderBudgetReservation",
     "abandon_served_provider_budget",
+    "release_served_provider_budget",
     "authorize_served_provider_call",
     "ensure_provider_assignment_schema",
     "load_provider_assignment",
