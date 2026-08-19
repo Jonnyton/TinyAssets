@@ -884,3 +884,126 @@ def test_binding_generation_high_water_blocks_runaway_across_requests(
     finally:
         revoke_provider_request(runaway_capability)
     assert provider.calls == 4
+
+
+def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypatch):
+    """The runaway guard is a ROLLING WINDOW: it blocks a burst but ages out.
+
+    The invocation ceiling counts only rows created within `_RUNAWAY_WINDOW_S`,
+    so a burst is held while recent (runaway prevention) but once those
+    invocations fall outside the window the binding serves again — it never
+    permanently bricks a 24/7 binding (Codex reject #3). Contrast the old
+    lifetime count, which stayed tripped forever.
+    """
+    import sqlite3
+
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.storage import db_path
+
+    monkeypatch.setattr(serving_binding, "_MAX_BINDING_INVOCATIONS", 4)
+    universe_dir, serving, original_capability, _ = _served_context(tmp_path)
+    revoke_provider_request(original_capability)
+    provider = _RecordingProvider("codex")
+    router = ProviderRouter({"codex": provider})
+
+    # Fill the window to the cap (2 turns x 2 calls = 4).
+    for turn in range(2):
+        capability, context = _fresh_served_request(
+            universe_dir, serving, request_id=f"fill-{turn}"
+        )
+        try:
+            for prompt in ("reply", "learning"):
+                asyncio.run(
+                    router.call(
+                        "writer", prompt, "system",
+                        operation="converse", universe_context=context,
+                    )
+                )
+        finally:
+            revoke_provider_request(capability)
+    assert provider.calls == 4
+
+    # 5th call is blocked while all 4 invocations are inside the window.
+    cap5, ctx5 = _fresh_served_request(universe_dir, serving, request_id="blocked")
+    try:
+        with pytest.raises(ProviderAuthorityHeldError, match="budget"):
+            asyncio.run(
+                router.call(
+                    "writer", "fifth", "system",
+                    operation="converse", universe_context=ctx5,
+                )
+            )
+    finally:
+        revoke_provider_request(cap5)
+    assert provider.calls == 4
+
+    # Age the recorded invocations out of the rolling window.
+    conn = sqlite3.connect(db_path(universe_dir.parent))
+    try:
+        conn.execute(
+            "UPDATE served_provider_budget_reservations "
+            "SET created_at = created_at - ?",
+            (2 * 3600.0,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # The binding serves again — the guard did not permanently brick it.
+    cap6, ctx6 = _fresh_served_request(universe_dir, serving, request_id="recovered")
+    try:
+        asyncio.run(
+            router.call(
+                "writer", "sixth", "system",
+                operation="converse", universe_context=ctx6,
+            )
+        )
+    finally:
+        revoke_provider_request(cap6)
+    assert provider.calls == 5
+
+
+def test_claude_serving_held_by_default_without_optin(tmp_path, monkeypatch):
+    """claude-code serving stays HELD unless the host explicitly opts in.
+
+    The OpenSpec design forbids silently bypassing the role-completeness hold
+    merely because converse asks only for writer (Codex reject #2). The default
+    (no flag) must therefore refuse claude-code serving.
+    """
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
+    with pytest.raises(PermissionError, match="held by default"):
+        bind_serving_provider(
+            base_path=str(tmp_path),
+            universe_dir=str(tmp_path),
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id="binding-1",
+            expected_revision=1,
+            provider="claude-code",
+        )
+
+
+def test_claude_serving_optin_clears_the_hold(tmp_path, monkeypatch):
+    """With the explicit opt-in AND writer-only serving scope, the hold clears.
+
+    Proven by getting PAST the claude hold to the next validation (missing
+    owner -> ValueError, NOT the PermissionError hold).
+    """
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    with pytest.raises(ValueError):
+        bind_serving_provider(
+            base_path=str(tmp_path),
+            universe_dir=str(tmp_path),
+            owner_user_id="",  # cleared the claude hold; fails later on owner
+            universe_id="u-owner",
+            agent_binding_id="binding-1",
+            expected_revision=1,
+            provider="claude-code",
+        )

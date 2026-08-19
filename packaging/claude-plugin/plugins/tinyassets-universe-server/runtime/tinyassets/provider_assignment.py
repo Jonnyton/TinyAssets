@@ -83,8 +83,24 @@ class ServedProviderBudgetReservation:
 _SERVED_COST_MICROUNITS_PER_TOKEN = 100
 
 #: Cap on retained SETTLED served-budget rows (Codex gate #7 — bounded growth).
-#: Open rows are never pruned; only the oldest settled history beyond this.
+#: Open rows are never pruned, nor is any row still inside the runaway window;
+#: only the oldest settled history beyond both the window and this cap.
 _SETTLED_RETENTION_ROWS = 5000
+
+#: Rolling window for the invocation runaway guard (Codex 2026-08-19 reject #3).
+#: The per-binding-generation invocation ceiling counts only rows CREATED within
+#: this window, so it bounds a runaway self-invoking loop WITHOUT ever
+#: permanently bricking a 24/7 binding — old invocations age out. This replaces
+#: the retention-dependent lifetime count that was simultaneously a routine brick
+#: (~2500 conversations) and a restart-resettable runaway guard.
+_RUNAWAY_WINDOW_S = 3600.0
+
+#: Lease after which an UNSETTLED reservation is assumed orphaned by a crashed or
+#: hung turn and is conservatively settled by the periodic reconciler (Codex
+#: reject #4 — mid-run brick). A served ``claude -p`` / ``codex exec`` turn is
+#: bounded by a much shorter provider timeout, so a still-``reserved`` /
+#: ``indeterminate`` row older than this cannot be a live turn.
+_UNSETTLED_LEASE_S = 900.0
 
 
 def _ensure_served_budget_schema(conn: sqlite3.Connection) -> None:
@@ -101,10 +117,21 @@ def _ensure_served_budget_schema(conn: sqlite3.Connection) -> None:
             reserved_cost_microunits INTEGER NOT NULL
                 CHECK (reserved_cost_microunits >= 1),
             actual_total_tokens INTEGER,
-            actual_cost_microunits INTEGER
+            actual_cost_microunits INTEGER,
+            created_at REAL
         )
         """
     )
+    # Migration for pre-existing tables: add created_at if missing. Old rows keep
+    # NULL, which the runaway window treats as "outside the window" (safely
+    # ancient) and the lease reconciler treats as reconcilable — both fail safe.
+    cols = {row[1] for row in conn.execute(
+        "PRAGMA table_info(served_provider_budget_reservations)"
+    ).fetchall()}
+    if "created_at" not in cols:
+        conn.execute(
+            "ALTER TABLE served_provider_budget_reservations ADD COLUMN created_at REAL"
+        )
 
 
 def reconcile_orphaned_reservations_on_boot(base_path: str | Path) -> int:
@@ -129,6 +156,7 @@ def reconcile_orphaned_reservations_on_boot(base_path: str | Path) -> int:
     try:
         with store.connection() as conn:
             _ensure_served_budget_schema(conn)
+            window_start = time.time() - _RUNAWAY_WINDOW_S
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 """
@@ -141,30 +169,86 @@ def reconcile_orphaned_reservations_on_boot(base_path: str | Path) -> int:
                  WHERE state IN ('reserved', 'indeterminate')
                 """
             )
-            # Bounded retention (Codex gate #7): settled rows are never counted
-            # against the in-flight budget, but they accumulate forever —
-            # unbounded SQLite growth is a slow DoS. Cap the SETTLED history to
-            # the newest _SETTLED_RETENTION_ROWS (by rowid), pruning the oldest.
-            # Open rows are never pruned. Runs at boot only, so it is cheap and
-            # never races an in-flight reservation.
-            conn.execute(
-                """
-                DELETE FROM served_provider_budget_reservations
-                 WHERE state IN ('succeeded', 'exceeded')
-                   AND reservation_id NOT IN (
-                       SELECT reservation_id
-                         FROM served_provider_budget_reservations
-                        WHERE state IN ('succeeded', 'exceeded')
-                        ORDER BY rowid DESC
-                        LIMIT ?
-                   )
-                """,
-                (_SETTLED_RETENTION_ROWS,),
-            )
+            _prune_settled_history(conn, window_start)
             conn.commit()
             return int(cur.rowcount or 0)
     except sqlite3.Error:
         logger.exception("served budget: boot reconciliation failed")
+        return 0
+
+
+def _prune_settled_history(conn: sqlite3.Connection, window_start: float) -> None:
+    """Bound SETTLED-row growth WITHOUT touching runaway-window integrity.
+
+    Settled rows are never counted against the in-flight token budget, but they
+    accumulate forever — unbounded SQLite growth is a slow DoS (Codex gate #7).
+    Cap the settled history to the newest ``_SETTLED_RETENTION_ROWS``, BUT never
+    prune a row still inside the runaway window: the rolling-window guard must
+    count every recent invocation regardless of how retention happens to fall, so
+    the guard is INDEPENDENT of retention (Codex reject #3). A NULL created_at is
+    ancient and therefore prunable. Open rows are never pruned.
+    """
+    conn.execute(
+        """
+        DELETE FROM served_provider_budget_reservations
+         WHERE state IN ('succeeded', 'exceeded')
+           AND (created_at IS NULL OR created_at < ?)
+           AND reservation_id NOT IN (
+               SELECT reservation_id
+                 FROM served_provider_budget_reservations
+                WHERE state IN ('succeeded', 'exceeded')
+                ORDER BY rowid DESC
+                LIMIT ?
+           )
+        """,
+        (window_start, _SETTLED_RETENTION_ROWS),
+    )
+
+
+def reconcile_served_budget_leases(base_path: str | Path) -> int:
+    """Settle UNSETTLED reservations whose lease expired; return count settled.
+
+    The token budget bounds only IN-FLIGHT ('reserved'/'indeterminate') rows, so
+    a turn that crashed or hung mid-call leaves a hold that never settles during a
+    healthy long-lived process — one near-full orphaned reservation can brick
+    serving until the next reboot (Codex reject #4: boot-only recovery is not
+    enough). This runs PERIODICALLY (not just at boot). A ``reserved`` /
+    ``indeterminate`` row older than ``_UNSETTLED_LEASE_S`` cannot be a live turn
+    — served ``claude -p`` / ``codex exec`` turns are bounded by a much shorter
+    provider timeout — so it is conservatively settled (actual = reserved),
+    releasing the hold while never minting free spend. A NULL created_at is
+    treated as ancient (reconcilable). Fresh in-flight rows (within the lease) are
+    left untouched so a genuinely running turn is never charged early.
+    """
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(base_path)
+    try:
+        with store.connection() as conn:
+            _ensure_served_budget_schema(conn)
+            now = time.time()
+            lease_cutoff = now - _UNSETTLED_LEASE_S
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                UPDATE served_provider_budget_reservations
+                   SET state = 'succeeded',
+                       actual_total_tokens = COALESCE(
+                           actual_total_tokens, reserved_total_tokens),
+                       actual_cost_microunits = COALESCE(
+                           actual_cost_microunits, reserved_cost_microunits)
+                 WHERE state IN ('reserved', 'indeterminate')
+                   AND (created_at IS NULL OR created_at < ?)
+                """,
+                (lease_cutoff,),
+            )
+            _prune_settled_history(conn, now - _RUNAWAY_WINDOW_S)
+            conn.commit()
+            return int(cur.rowcount or 0)
+    except sqlite3.Error:
+        logger.exception("served budget: lease reconciliation failed")
         return 0
 
 
@@ -228,10 +312,11 @@ def reserve_served_provider_budget(
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
         _ensure_served_budget_schema(conn)
+        now = time.time()
         rows = conn.execute(
             """
             SELECT state, reserved_total_tokens, reserved_cost_microunits,
-                   actual_total_tokens, actual_cost_microunits
+                   actual_total_tokens, actual_cost_microunits, created_at
               FROM served_provider_budget_reservations
              WHERE binding_id = ? AND binding_generation = ?
             """,
@@ -241,17 +326,20 @@ def reserve_served_provider_budget(
         # decoupled 2026-08-19 — folding them together silently deleted the
         # runaway guard while "fixing the budget cap" (Codex-gated area).
         #
-        # (1) INVOCATION HIGH-WATER (runaway guard) — a per-binding-generation
-        #     ceiling on how many times this generation may reach the provider.
-        #     Counts ALL rows (settled + in-flight). At 10_000 it is a runaway
-        #     SAFETY CEILING, not a routine cap, so it MUST survive settlement:
-        #     if it only counted in-flight rows, a fast-settling self-invoking
-        #     loop (e.g. run_graph triggering itself) could call the provider
-        #     without bound. The engine-run path has its own rolling rate limit
-        #     (`_engine_run_admit`, 20/hr); this is the coarser binding-level
-        #     backstop. FOLLOW-UP (multi-tenant gate): replace this lifetime
-        #     ceiling with a true ROLLING-WINDOW cumulative budget so it bounds
-        #     runaway without ever permanently bricking a 24/7 binding.
+        # (1) INVOCATION RUNAWAY GUARD — a ROLLING-WINDOW ceiling on how many
+        #     times this binding generation may reach the provider within the
+        #     last ``_RUNAWAY_WINDOW_S``. Counts ALL rows created in the window
+        #     (settled + in-flight), so it survives settlement and bounds a
+        #     fast-settling self-invoking loop (e.g. run_graph triggering
+        #     itself). Because it only looks at the recent window, old
+        #     invocations AGE OUT and it NEVER permanently bricks a 24/7 binding —
+        #     unlike the earlier lifetime count, which was at once a routine
+        #     brick (~2500 conversations) and, since it depended on how many
+        #     settled audit rows retention happened to keep, a restart-resettable
+        #     runaway guard (Codex reject #3). Rows with a NULL created_at
+        #     (pre-migration) are treated as ancient and excluded — fail-safe.
+        #     The engine-run path has its own tighter rolling rate limit
+        #     (`_engine_run_admit`, 20/hr); this is the coarser binding backstop.
         #
         # (2) TOKEN / COST BUDGET — bounds only IN-FLIGHT (unsettled) reserved
         #     spend: a concurrency + per-turn runaway guard, NOT a cumulative
@@ -264,13 +352,21 @@ def reserve_served_provider_budget(
         #     and the reason THIS cap kept being raised as a band-aid. Only
         #     UNSETTLED holds consume token budget now, so each settled turn
         #     RELEASES and the binding serves indefinitely, bounded per-turn by
-        #     ``max_tokens`` (one turn cannot reserve more) and overall by the
-        #     user's real subscription limits. The per-reservation cap +
-        #     release-on-no-output fix still bound a single call and reclaim a
-        #     failed one. FOLLOW-UP: expire stale 'reserved' rows left by a
-        #     crashed turn, and reconcile long-lived 'indeterminate' rows, so
-        #     neither can slowly re-accumulate a hold.
-        if len(rows) >= authority.max_invocations:
+        #     ``max_tokens`` and overall by the user's real subscription limits.
+        #     Stale unsettled rows left by a crashed/hung turn are settled by the
+        #     periodic lease reconciler (`reconcile_served_budget_leases`), so a
+        #     dead turn's hold cannot slowly re-accumulate into a mid-run brick
+        #     (Codex reject #4). NOTE (Codex reject #1): ``max_tokens`` is not a
+        #     HARD cap — the CLI subprocess is not passed a token limit and Claude
+        #     reports no usage, so settlement is a best-effort byte estimate. The
+        #     real spend bound is the user's own metered subscription; this ledger
+        #     is best-effort accounting + runaway detection, not a hard boundary.
+        window_start = now - _RUNAWAY_WINDOW_S
+        in_window = [
+            row for row in rows
+            if row[5] is not None and float(row[5]) >= window_start
+        ]
+        if len(in_window) >= authority.max_invocations:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
         _IN_FLIGHT_STATES = ("reserved", "indeterminate")
@@ -302,8 +398,8 @@ def reserve_served_provider_budget(
             """
             INSERT INTO served_provider_budget_reservations (
                 reservation_id, binding_id, binding_generation, state,
-                reserved_total_tokens, reserved_cost_microunits
-            ) VALUES (?, ?, ?, 'reserved', ?, ?)
+                reserved_total_tokens, reserved_cost_microunits, created_at
+            ) VALUES (?, ?, ?, 'reserved', ?, ?, ?)
             """,
             (
                 reservation.reservation_id,
@@ -311,6 +407,7 @@ def reserve_served_provider_budget(
                 reservation.binding_generation,
                 reservation.reserved_total_tokens,
                 reservation.reserved_cost_microunits,
+                now,
             ),
         )
         conn.commit()
@@ -421,13 +518,17 @@ def release_served_provider_budget(
     base_path: str | Path,
     reservation: ServedProviderBudgetReservation,
 ) -> None:
-    """Release a reservation for a call that provably produced no output.
+    """Settle a reservation as NO-SPEND for a call that produced no output.
 
-    A provider that never became available spent nothing, so its reservation
-    must not count against the binding's budget at all. Deleting the still-
-    ``reserved`` row (never a ``succeeded``/``exceeded``/``indeterminate`` one,
-    which record real or possible usage) is the difference between a flaky
-    provider that recovers and one that reads as permanently "budget exhausted".
+    A provider that never became available spent no tokens, so its reservation
+    must not count against the TOKEN budget — but the row must NOT be deleted.
+    Deleting it also erased the invocation from the runaway guard, and
+    ``ProviderUnavailableError`` is only a heuristic (a launched subprocess that
+    exited quickly), not proof the provider was never reached (Codex reject #5).
+    So SETTLE it as a zero-spend 'succeeded' row: the launch still counts toward
+    the rolling-window runaway guard, while the released in-flight hold means a
+    flaky provider does not read as permanently "budget exhausted". Rolling-
+    window aging then keeps even a burst of failed launches from bricking.
     """
 
     conn = sqlite3.connect(db_path(base_path), isolation_level=None)
@@ -436,7 +537,10 @@ def release_served_provider_budget(
         _ensure_served_budget_schema(conn)
         conn.execute(
             """
-            DELETE FROM served_provider_budget_reservations
+            UPDATE served_provider_budget_reservations
+               SET state = 'succeeded',
+                   actual_total_tokens = 0,
+                   actual_cost_microunits = 0
              WHERE reservation_id = ? AND state = 'reserved'
             """,
             (reservation.reservation_id,),
@@ -967,6 +1071,7 @@ __all__ = [
     "ServedProviderBudgetReservation",
     "abandon_served_provider_budget",
     "release_served_provider_budget",
+    "reconcile_served_budget_leases",
     "authorize_served_provider_call",
     "ensure_provider_assignment_schema",
     "load_provider_assignment",
