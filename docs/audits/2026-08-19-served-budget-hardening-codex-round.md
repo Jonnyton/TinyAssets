@@ -94,6 +94,57 @@ The follow-up Codex re-review (of the pinned hardening commit) confirmed finding
   **serve-time re-check in `reserve_served_provider_budget`**, making the opt-in
   a true kill switch for existing bindings too.
 
+## Round 3 (final re-review) — one reproduced defect + two tightenings
+
+The final Codex re-review confirmed findings 1–5 resolved and both claude gates
+fail-closed, but reproduced ONE remaining code defect plus two minor items:
+
+- **Critical (blocker) — NULL prune vs guard contradiction.** The guard counts
+  NULL `created_at` as in-window (fail-safe), but `_prune_settled_history`
+  treated NULL as ancient/prunable — so 10,000 NULL settled rows pruned to 5,000
+  and re-admitted a runaway. → FIXED: the prune now deletes only rows with a
+  KNOWN old timestamp (`created_at IS NOT NULL AND < window_start`); NULL rows
+  are never pruned, so guard and prune agree NULL is present. Regression test
+  added (`test_prune_never_evicts_null_timestamp_rows`).
+- **Finalize tolerance too broad.** It accepted `indeterminate` (not a
+  reconciler-settled state). → Tightened to `succeeded`/`exceeded` only.
+- **Boot reconcile + reconciler thread were streamable-http-only.** → Hoisted to
+  run for ALL transports (sse/stdio included) before the transport branch.
+
+Accepted / documented (not code defects):
+- The per-call lease uses persisted wall-clock (`time.time()`), so a large
+  forward clock correction could settle a live call early. Inherent to a
+  persisted lease (monotonic clocks are not comparable across processes/restarts).
+- An owner-set absurd timeout holds that reservation's budget for its own
+  timeout+margin. Acceptable for owner-controlled single-founder serving; the
+  renewable-lease refinement is multi-tenant work.
+
+## Round 4 (fix re-review of the blocker fix) — APPROVE
+
+Codex adversarially re-reviewed the round-4 fix commit (`0c197491`, tree
+`278a6453`; landed via the single-commit branch `land-null-prune-fix`) and
+returned **approve — no blocking findings**:
+
+- **NULL consistency.** The guard counts `NULL` and `created_at >=
+  window_start`; the prune deletes only non-NULL values `< window_start`.
+  Boundary values remain; backfilled `0` rows stay prunable. A concrete
+  5,004-row matrix passed, including a fifth-launch rejection *after* NULL-row
+  pruning — i.e. the runaway guard is no longer defeated by retention.
+- **Finalize.** boot/lease reconcilers and release write `succeeded`; finalize
+  writes `succeeded`/`exceeded`; only `abandon` writes `indeterminate` and then
+  re-raises. The legitimate reconciler race stays tolerated; the over-broad
+  `indeterminate` acceptance is correctly gone.
+- **Startup.** Exactly one reconciler thread per `main()` for every transport,
+  not duplicated in the HTTP lifespan.
+- **Growth.** Production inserts always supply `time.time()`; only an
+  old/rollback binary can create NULLs, which are fail-safe counted and bounded
+  per binding generation.
+
+Verdict verbatim: *"approve: NULL guard/prune predicates now agree, reconciler
+states remain accepted, and all transports start one process-lifetime
+reconciler thread."* This is the opposite-provider approval gating the merge;
+obtained before push, unlike #2434/#2438 which auto-merged before the verdict.
+
 ## Founder decision / deferred (NOT resolvable in code)
 - **claude-serving spec legitimacy (Critical 2b).** The OpenSpec design
   (`byo-llm-connect-flow/design.md`) explicitly forbids relaxing the

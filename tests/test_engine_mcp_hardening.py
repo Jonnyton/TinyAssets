@@ -135,17 +135,20 @@ def test_boot_reconcile_settles_open_reservations(tmp_path):
 
 
 def test_boot_reconcile_prunes_settled_history(tmp_path):
+    import time
+
     from tinyassets import provider_assignment as pa
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,
     )
 
+    ancient = time.time() - pa._RUNAWAY_WINDOW_S - 1000  # known-old, prunable
     store = SQLiteProviderWorkAuthorityStore(str(tmp_path))
     over = pa._SETTLED_RETENTION_ROWS + 25
     with store.connection() as conn:
         pa._ensure_served_budget_schema(conn)
         for i in range(over):
-            _insert_reservation(conn, f"s{i}", "succeeded")
+            _insert_reservation_at(conn, f"s{i}", "succeeded", ancient)
         conn.commit()
 
     pa.reconcile_orphaned_reservations_on_boot(str(tmp_path))
@@ -154,6 +157,36 @@ def test_boot_reconcile_prunes_settled_history(tmp_path):
             "SELECT COUNT(*) FROM served_provider_budget_reservations"
         ).fetchone()[0]
     assert remaining == pa._SETTLED_RETENTION_ROWS
+
+
+def test_prune_never_evicts_null_timestamp_rows(tmp_path):
+    """NULL created_at rows are counted IN-window by the runaway guard, so the
+    prune must NOT delete them — else pruning to the retention cap silently
+    re-admits a runaway (reproduced by the final Codex re-review 2026-08-19: an
+    old/rollback binary's fast-settling NULL rows evaded the guard). Guard and
+    prune must agree that NULL is present, not ancient.
+    """
+    from tinyassets import provider_assignment as pa
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(str(tmp_path))
+    over = pa._SETTLED_RETENTION_ROWS + 100
+    with store.connection() as conn:
+        pa._ensure_served_budget_schema(conn)
+        for i in range(over):
+            _insert_reservation_at(conn, f"n{i}", "succeeded", None)
+        conn.commit()
+
+    pa.reconcile_orphaned_reservations_on_boot(str(tmp_path))
+    with store.connection() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM served_provider_budget_reservations"
+        ).fetchone()[0]
+    # Every NULL-timestamp row is retained — the guard still counts them all, so
+    # a runaway of NULL rows stays blocked instead of pruning back under the cap.
+    assert remaining == over
 
 
 # ── rolling-window runaway guard + lease reconciliation (Codex reject #3/#4/#5) ─
