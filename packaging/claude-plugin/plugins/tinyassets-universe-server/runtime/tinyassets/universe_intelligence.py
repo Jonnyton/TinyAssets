@@ -440,6 +440,13 @@ def extract_learning(
         universe_context=ctx,
         config=_sandboxed_config(ctx),
         operation="converse",
+        # Learning extraction runs AFTER the reply is already produced but BEFORE
+        # `converse` returns it, so a synchronous tenacity backoff here (call.py's
+        # 2/4/8s waits on transient exhaustion) would delay the founder's visible
+        # reply (blocker G). The interactive path must NEVER sleep: extraction is
+        # best-effort and its failure never breaks the turn, so no backoff is
+        # warranted here.
+        retry_on_exhaustion=False,
     )
     return _parse_learning_json(raw)
 
@@ -624,54 +631,52 @@ def _conversation_history_block(
         return ""
 
 
-#: Ride out a TRANSIENT writer exhaustion. The universe runs on the founder's own
-#: subscription (claude-code) with codex as the only other subscription writer
-#: (API-key providers are off by default); when BOTH are briefly rate-limited or
-#: cooling at once, the router raises immediately without waiting the cooldown
-#: out — so a momentary double-cooldown killed the turn and u-tiny told the
-#: founder "my writer hit its rate limit" (live 2026-08-09, twice). We wait out
-#: the cooldown and retry before giving up; a genuinely sustained limit still
-#: falls through to the honest-notice path. Kept subscription-only (no policy
-#: change) — this only rides out the transient window.
-_WRITER_RETRY_BACKOFFS_S = (30.0, 60.0)
+def _call_writer(turn_input, *, system, universe_context, config):
+    """Run one served writer turn; retry ONCE immediately only if nothing ran.
 
-
-def _call_writer_with_backoff(turn_input, *, system, universe_context, config):
-    """``call_provider(role="writer")`` with bounded retry on provider exhaustion."""
-    import time as _time
-
+    Streamed attempts now classify their own outcome (idle-timeout /
+    interactive-deadline / rate-limit) and the router no longer cools the sole
+    served writer on a transient attempt timeout, so the old 30/60s synchronous
+    backoff sleeps are gone — the interactive request must NEVER block a worker
+    slot on a sleep (design.md § "Router health/cooldown model"). The sole-writer
+    retry policy is: one immediate FRESH-process retry only when every provider
+    was SKIPPED (pure cooldown/quota, nothing executed, no possible side effect);
+    otherwise end the turn honestly and let the caller post an accurate notice.
+    """
     from tinyassets.exceptions import AllProvidersExhaustedError
 
-    for backoff in (*_WRITER_RETRY_BACKOFFS_S, None):
-        try:
-            return call_provider(
-                turn_input,
-                system=system,
-                role="writer",
-                universe_context=universe_context,
-                config=config,
-                operation="converse",
-            )
-        except AllProvidersExhaustedError as exc:
-            # Codex 2026-08-09: the writer call is an AGENTIC loop (it runs
-            # tools), so retrying blindly could re-execute tools it already ran.
-            # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
-            # cooldown/quota), so no provider ever executed and nothing ran. If
-            # any provider actually attempted (status != skipped), a tool may have
-            # fired — re-raise instead, and let the founder's memory-backed "try
-            # again" re-run cleanly.
-            attempts = getattr(exc, "attempts", None) or []
-            all_skipped = bool(attempts) and all(
-                getattr(a, "status", "") == "skipped" for a in attempts
-            )
-            if backoff is None or not all_skipped:
-                raise  # sustained/limit or unsafe-to-retry → caller's honest notice
-            logger.warning(
-                "writer chain fully cooled (all providers skipped, nothing ran); "
-                "backing off %.0fs then retrying",
-                backoff,
-            )
-            _time.sleep(backoff)
+    def _attempt():
+        return call_provider(
+            turn_input,
+            system=system,
+            role="writer",
+            universe_context=universe_context,
+            config=config,
+            operation="converse",
+            # The interactive path must not sleep on aggregated exhaustion; the
+            # tenacity backoff in call.py is disabled here (retry policy below).
+            retry_on_exhaustion=False,
+        )
+
+    try:
+        return _attempt()
+    except AllProvidersExhaustedError as exc:
+        # Codex 2026-08-09: the writer call is an AGENTIC loop (it may run
+        # tools), so retrying blindly could re-execute tools it already ran.
+        # Retry ONLY the provably-safe case: every provider was SKIPPED (pure
+        # cooldown/quota), so nothing ran and no side effect is possible. Any
+        # actual attempt (status != skipped) → re-raise for the honest notice.
+        attempts = getattr(exc, "attempts", None) or []
+        all_skipped = bool(attempts) and all(
+            getattr(a, "status", "") == "skipped" for a in attempts
+        )
+        if not all_skipped:
+            raise  # something ran / real failure class → caller's honest notice
+        logger.warning(
+            "writer chain fully cooled (all providers skipped, nothing ran); "
+            "one immediate fresh-process retry (no sleep)",
+        )
+        return _attempt()
 
 
 def converse(
@@ -793,7 +798,7 @@ def converse(
     # _sandboxed_config + Codex REJECT 2026-08-13 #1. No verified capability (or a
     # non-founder turn) → no principal → engine MCP fails closed to WebFetch-only.
     founder_principal = capability.principal_id if capability is not None else ""
-    reply = _call_writer_with_backoff(
+    reply = _call_writer(
         turn_input,
         system=system,
         universe_context=ctx,

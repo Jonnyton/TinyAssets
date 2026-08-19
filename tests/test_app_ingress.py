@@ -392,9 +392,12 @@ def test_an_empty_reply_tells_the_founder_instead_of_going_silent(base):
 
 
 def test_a_failed_turn_posts_an_honest_notice_not_silence(base):
-    # The live 2026-08-09 outage: the writer model hit its rate limit, the turn
-    # raised, and the founder got only silence for minutes. Now the daemon says
-    # so honestly (it holds the token) and stays handled.
+    # The live 2026-08-09 outage: the writer turn raised and the founder got only
+    # silence for minutes. Now the daemon posts an honest notice and stays
+    # handled. An UNCLASSIFIED exhaustion (no failure_class) must NOT be
+    # mislabeled "capacity"/"rate limit" — that guess was the exact bug the
+    # stream-and-classify change removes; a real rate-limit now arrives WITH its
+    # class (see the classified case below).
     binding = _make_universe(base, "u-ingress-a")
     _bind(base, "u-ingress-a", binding)
 
@@ -406,8 +409,34 @@ def test_a_failed_turn_posts_an_honest_notice_not_silence(base):
     result, calls = _deliver(converse=_boom)
     assert result.handled is True
     body = calls["post"][-1]["body"].lower()
-    # Names the real cause (capacity / rate limit) rather than vanishing.
-    assert "capacity" in body or "rate limit" in body
+    # Not silence: a notice was posted.
+    assert body.strip()
+    # Honest: an unclassified failure is a generic error, never a fabricated
+    # "capacity" story.
+    assert "capacity" not in body
+    assert "rate limit" not in body
+    assert "error finishing that turn" in body
+
+
+def test_a_classified_rate_limit_turn_names_the_real_cause(base):
+    # A turn that fails with a REAL classified rate-limit surfaces the true cause
+    # (and retry-after) — the honest path a genuine limit takes.
+    binding = _make_universe(base, "u-ingress-rl")
+    _bind(base, "u-ingress-rl", binding)
+
+    def _boom(*a, **k):
+        from tinyassets.exceptions import AllProvidersExhaustedError
+
+        raise AllProvidersExhaustedError(
+            "Served provider exhausted",
+            failure_class="provider_rate_limited",
+            retry_after=30,
+        )
+
+    result, calls = _deliver(converse=_boom)
+    assert result.handled is True
+    body = calls["post"][-1]["body"].lower()
+    assert "rate-limited" in body
 
 
 #: A 1:1 DM channel id (Slack DM ids start with "D"). Durable memory is only
@@ -753,3 +782,87 @@ def test_a_non_founder_dm_gets_no_founder_history(base, monkeypatch):
     _, calls = _deliver(channel_id=_DM, text="<@U0BOT> hi", event_id="Ev-nofdr-1")
     history = calls["converse"][0]["conversation_history"] or []
     assert history == [], "an ungranted DM must load no history"
+
+
+def test_a_failure_notice_is_not_recorded_as_a_completed_universe_message(
+    base, monkeypatch
+):
+    """Blocker H (fail-closed): a failure NOTICE is not a terminal provider
+    result, so it must NEVER be recorded as a completed universe utterance. The
+    founder HEARS it (it is posted), but the durable store must not gain a
+    fabricated "the universe said X" row that would ride into the next turn's
+    conversation history.
+
+    Mutation-check: restore ``_record_universe(notice, receipt)`` in the failure
+    path of ``deliver_app_event`` and this goes red.
+    """
+    binding = _make_universe(base, "u-ingress-hnotice")
+    _bind(base, "u-ingress-hnotice", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.exceptions import ProviderIdleTimeoutError
+
+    conv_dir = _universe_dir("u-ingress-hnotice")
+    session = f"slack:{_DM}"
+    monkeypatch.setattr(
+        sat, "load_thread_history",
+        lambda **_kwargs: [
+            {"speaker": "founder", "text": "do the thing",
+             "ts": "1700000000.000100"}
+        ],
+    )
+
+    def _idle(*_a, **_k):
+        # An idle-timeout turn: a real classified failure, not silence.
+        raise ProviderIdleTimeoutError("idle watchdog fired")
+
+    result, calls = _deliver(
+        channel_id=_DM, converse=_idle,
+        text="<@U0BOT> do the thing", event_id="Ev-hnotice-1",
+    )
+    assert result.handled is True
+    # The notice was posted (the founder is not left in silence)...
+    body = calls["post"][-1]["body"].lower()
+    assert "progress" in body  # the honest idle-timeout wording
+
+    # ...but the store recorded NO universe turn — only the founder's message.
+    stored = cs.load_recent(conv_dir, session, limit=50)
+    speakers = [m.speaker for m in stored]
+    assert "universe" not in speakers, "a failure notice must not be a universe turn"
+    assert "founder" in speakers, "the founder's own message is still recorded"
+
+
+def test_an_empty_reply_notice_is_not_recorded_as_a_universe_message(
+    base, monkeypatch
+):
+    """Same fail-closed rule for the empty-reply path (blocker H): an empty turn
+    produced no terminal result, so its notice is posted but never stored as the
+    universe's completed reply."""
+    binding = _make_universe(base, "u-ingress-empty")
+    _bind(base, "u-ingress-empty", binding)
+    _grant_founder(monkeypatch)
+
+    import tinyassets.conversation_store as cs
+    import tinyassets.effectors.slack_agent_turn as sat
+    from tinyassets.api.helpers import _universe_dir
+
+    conv_dir = _universe_dir("u-ingress-empty")
+    session = f"slack:{_DM}"
+    monkeypatch.setattr(
+        sat, "load_thread_history",
+        lambda **_kwargs: [
+            {"speaker": "founder", "text": "say something",
+             "ts": "1700000000.000100"}
+        ],
+    )
+
+    result, _ = _deliver(
+        channel_id=_DM, converse=lambda *a, **k: "   ",
+        text="<@U0BOT> say something", event_id="Ev-empty-1",
+    )
+    assert result.handled is True
+    stored = cs.load_recent(conv_dir, session, limit=50)
+    assert "universe" not in [m.speaker for m in stored]

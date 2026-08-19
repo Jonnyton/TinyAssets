@@ -250,22 +250,20 @@ def _call_router_with_retry(
     config: Any = None,
     universe_context: Any = None,
     operation: str | None = None,
+    retry_on_exhaustion: bool = True,
 ) -> str:
-    """Call the installed router with tenacity retry on transient exhaustion.
+    """Call the installed router, optionally retrying on transient exhaustion.
 
-    Retries up to 3 times with exponential backoff (2s, 4s, 8s) when all
-    providers are temporarily exhausted (rate-limit cooldowns expiring between
-    attempts).
+    When ``retry_on_exhaustion`` is True (default, batch/graph callers) it
+    retries up to 3 times with exponential backoff (2s, 4s, 8s) as rate-limit
+    cooldowns expire between attempts. The INTERACTIVE served path passes
+    ``retry_on_exhaustion=False``: it must NEVER sleep while holding the inbound
+    request or a turn-worker slot (design.md § "Router health/cooldown model");
+    its sole-writer retry policy lives in ``universe_intelligence._call_writer``.
     """
     from tinyassets.exceptions import AllProvidersExhaustedError
 
-    @retry(
-        retry=retry_if_exception_type(AllProvidersExhaustedError),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        reraise=True,
-    )
-    def _attempt() -> str:
+    def _once() -> str:
         global _last_provider
         # Only forward config / universe_context when set, so existing
         # routers/stubs with the 3-arg call_sync signature keep working
@@ -282,6 +280,18 @@ def _call_router_with_retry(
         _last_provider = result.provider
         return result.text
 
+    if not retry_on_exhaustion:
+        return _once()
+
+    @retry(
+        retry=retry_if_exception_type(AllProvidersExhaustedError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=8),
+        reraise=True,
+    )
+    def _attempt() -> str:
+        return _once()
+
     return _attempt()
 
 
@@ -294,6 +304,7 @@ def call_provider(
     config: Any = None,
     universe_context: Any = None,
     operation: str | None = None,
+    retry_on_exhaustion: bool = True,
 ) -> str:
     """Call an LLM provider with automatic fallback.
 
@@ -322,6 +333,11 @@ def call_provider(
     operation:
         Optional server-owned operation bound to a provider authority carrier.
         Omit for ordinary unarmed calls.
+    retry_on_exhaustion:
+        When True (default) the router call is wrapped in a tenacity backoff
+        that sleeps between retries on transient ``AllProvidersExhaustedError``.
+        The interactive served path passes ``False`` so the inbound request is
+        never blocked on a synchronous sleep.
     """
     governed = operation is not None or universe_context is not None
     if _force_mock:
@@ -338,6 +354,7 @@ def call_provider(
         try:
             return _call_router_with_retry(
                 role, prompt, system, config, universe_context, operation,
+                retry_on_exhaustion,
             )
         except Exception as e:
             from tinyassets.exceptions import ProviderAuthorityHeldError

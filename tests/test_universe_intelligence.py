@@ -439,7 +439,8 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
     assert "Alex" in (udir / "founder.md").read_text(encoding="utf-8")
 
 
-# -- writer rate-limit backoff (live 2026-08-09: u-tiny hit its writer limit) --
+# -- interactive sole-writer retry policy (no synchronous sleep on the ingress
+#    path; the router no longer cools the sole writer on a transient timeout) --
 
 def _exhausted(*statuses):
     """AllProvidersExhaustedError carrying attempts with the given statuses."""
@@ -453,30 +454,32 @@ def _exhausted(*statuses):
     )
 
 
-def test_writer_backoff_retries_when_all_providers_were_skipped(monkeypatch):
+def test_writer_retries_once_when_all_providers_were_skipped(monkeypatch):
     """A TRANSIENT double-cooldown (all providers SKIPPED, nothing ran) is the
-    provably-safe case to retry — it rides the cooldown out."""
+    provably-safe case: ONE immediate fresh-process retry (no sleep)."""
     import tinyassets.universe_intelligence as ui
 
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
     calls = {"n": 0}
 
     def flaky(turn_input, system="", *, role="writer", universe_context=None,
-              config=None, operation=None):
+              config=None, operation=None, retry_on_exhaustion=True):
         assert operation == "converse"
+        assert retry_on_exhaustion is False  # interactive path disables backoff
         calls["n"] += 1
         if calls["n"] < 2:
             raise _exhausted("skipped", "skipped")
         return "recovered"
 
     monkeypatch.setattr(ui, "call_provider", flaky)
-    monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
-    out = ui._call_writer_with_backoff("hi", system="s", universe_context=None,
-                                       config=None)
+    out = ui._call_writer("hi", system="s", universe_context=None, config=None)
     assert out == "recovered"
     assert calls["n"] == 2
+    assert slept == []  # never sleeps on the interactive path
 
 
-def test_writer_backoff_does_NOT_retry_if_a_provider_actually_ran(monkeypatch):
+def test_writer_does_NOT_retry_if_a_provider_actually_ran(monkeypatch):
     """Codex 2026-08-09: if a provider attempted (status != skipped) a tool may
     have fired — retrying could duplicate it, so re-raise immediately."""
     import pytest
@@ -484,41 +487,101 @@ def test_writer_backoff_does_NOT_retry_if_a_provider_actually_ran(monkeypatch):
     import tinyassets.universe_intelligence as ui
     from tinyassets.exceptions import AllProvidersExhaustedError
 
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
     calls = {"n": 0}
 
     def ran_then_failed(turn_input, system="", *, role="writer",
-                        universe_context=None, config=None, operation=None):
+                        universe_context=None, config=None, operation=None,
+                        retry_on_exhaustion=True):
         assert operation == "converse"
         calls["n"] += 1
         raise _exhausted("failed", "skipped")  # one provider executed
 
     monkeypatch.setattr(ui, "call_provider", ran_then_failed)
-    monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
     with pytest.raises(AllProvidersExhaustedError):
-        ui._call_writer_with_backoff("hi", system="s", universe_context=None,
-                                     config=None)
+        ui._call_writer("hi", system="s", universe_context=None, config=None)
     assert calls["n"] == 1  # no retry — exactly one attempt
+    assert slept == []
 
 
-def test_writer_backoff_gives_up_on_sustained_cooldown(monkeypatch):
-    """All-skipped but never recovers -> surfaces after the bounded retries so the
-    caller posts the honest notice."""
+def test_writer_gives_up_after_one_retry_on_sustained_cooldown(monkeypatch):
+    """All-skipped but never recovers -> ONE immediate retry then surface, so the
+    caller posts the honest notice. No sleep, ever."""
     import pytest
 
     import tinyassets.universe_intelligence as ui
     from tinyassets.exceptions import AllProvidersExhaustedError
 
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
     calls = {"n": 0}
 
     def always(turn_input, system="", *, role="writer", universe_context=None,
-               config=None, operation=None):
+               config=None, operation=None, retry_on_exhaustion=True):
         assert operation == "converse"
         calls["n"] += 1
         raise _exhausted("skipped", "skipped")
 
     monkeypatch.setattr(ui, "call_provider", always)
-    monkeypatch.setattr(ui, "_WRITER_RETRY_BACKOFFS_S", (0.0, 0.0))
     with pytest.raises(AllProvidersExhaustedError):
-        ui._call_writer_with_backoff("hi", system="s", universe_context=None,
-                                     config=None)
-    assert calls["n"] == 3  # 2 backoffs + final attempt, then give up
+        ui._call_writer("hi", system="s", universe_context=None, config=None)
+    assert calls["n"] == 2  # one immediate retry, then give up
+    assert slept == []
+
+
+def test_full_converse_extract_learning_never_sleeps_on_the_reply_path(
+    tmp_path, monkeypatch
+):
+    """Blocker G, end-to-end through the REAL call.py bridge.
+
+    The writer turn succeeds and produces the reply; the SEPARATE
+    learning-extraction call then hits provider exhaustion. Because
+    ``extract_learning`` passes ``retry_on_exhaustion=False``, call.py must NOT
+    engage its tenacity backoff — so the founder's already-produced reply is
+    returned WITHOUT any synchronous sleep on the reply critical path. (The
+    learning failure is swallowed; the turn still answers.)
+    """
+    # Blocker G, at the REAL call.py bridge, deterministically (the earlier
+    # full-`converse` form was order-dependent: a prior test's global force-mock
+    # state leaked into converse's governed path on CI — test-suite-is-order-
+    # dependent). This drives call_provider directly with the SAME flag
+    # extract_learning passes, proving the load-bearing behavior: with
+    # retry_on_exhaustion=False, an AllProvidersExhaustedError does NOT engage
+    # call.py's tenacity backoff (no synchronous sleep on the reply path), while
+    # the default (True) DOES retry — so the flag is what removes the sleep.
+    import tinyassets.providers.call as call_mod
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    slept: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+
+    class _ExhaustedRouter:
+        def __init__(self):
+            self.calls = 0
+
+        def call_sync(self, role, prompt, system, config=None, *,
+                      universe_context=None, operation=None):
+            self.calls += 1
+            raise AllProvidersExhaustedError("exhausted for role=writer")
+
+    # No force-mock, real bridge, an ungoverned call (no universe_context/operation)
+    # so the deterministic behavior is exactly call.py's retry decision.
+    monkeypatch.setattr(call_mod, "_force_mock", False)
+
+    r_nosleep = _ExhaustedRouter()
+    monkeypatch.setattr(call_mod, "_real_router", r_nosleep)
+    with pytest.raises(AllProvidersExhaustedError):
+        call_mod.call_provider(
+            "prompt", "system", role="writer", retry_on_exhaustion=False,
+        )
+    assert slept == []            # reply path never sleeps
+    assert r_nosleep.calls == 1   # exactly one attempt, no retry loop
+
+    # Control: the DEFAULT path DOES back off (proving the flag is load-bearing).
+    r_retry = _ExhaustedRouter()
+    monkeypatch.setattr(call_mod, "_real_router", r_retry)
+    with pytest.raises(AllProvidersExhaustedError):
+        call_mod.call_provider("prompt", "system", role="writer")
+    assert slept, "default retry_on_exhaustion=True must back off (sleep)"
+    assert r_retry.calls > 1

@@ -328,7 +328,11 @@ def deliver_app_event(
             routed=routed, channel_id=channel_id, body=notice,
             thread_ts=thread_ts, transport=transport,
         )
-        _record_universe(notice, receipt)
+        # FAIL-CLOSED (blocker H): a failure notice is NOT a terminal provider
+        # result, so it must NOT be recorded as a completed universe utterance —
+        # doing so would let a fabricated "the universe said X" turn ride into the
+        # next turn's conversation history. The founder still HEARS it (it was
+        # posted above); the durable store only ever records a real reply.
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
     if not isinstance(reply, str) or not reply.strip():
@@ -342,7 +346,8 @@ def deliver_app_event(
             routed=routed, channel_id=channel_id, body=notice,
             thread_ts=thread_ts, transport=transport,
         )
-        _record_universe(notice, receipt)
+        # Same fail-closed rule (blocker H): an empty turn produced no terminal
+        # result, so the notice is posted but NEVER recorded as a universe reply.
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
     receipt = _post(
@@ -360,19 +365,64 @@ def deliver_app_event(
 def _failure_notice(exc: BaseException) -> str:
     """An honest, first-person notice for a turn that could not produce a reply.
 
-    Capacity (the universe's own writer model at its rate limit) is the common
-    case and gets its own wording — the universe runs on its founder's LLM
-    subscription, so "at capacity" is the true story, not a platform fault.
+    Derived from the structured ``failure_class`` when present (streamed-attempt
+    taxonomy), so a timeout is NEVER mislabeled as capacity. Only a genuine
+    ``provider_rate_limited`` / ``provider_overloaded`` (classified from the real
+    stream) gets rate-limit / overload wording; an UNCLASSIFIED exhaustion gets an
+    honest generic error, never a substring-guessed "capacity" story.
     """
-    name = type(exc).__name__
-    text = str(exc).lower()
-    if "exhausted" in name.lower() or "exhausted" in text or "rate limit" in text:
+    failure_class = getattr(exc, "failure_class", None)
+    retry_after = getattr(exc, "retry_after", None)
+
+    if failure_class == "provider_idle_timeout":
         return (
-            "I'm at my model's capacity right now (my writer hit its rate "
-            "limit), so I couldn't finish that turn — I didn't want to leave you "
-            "on silence. I've kept your message; give it a minute and "
+            "I started working on that but stopped making progress, so I ended "
+            "the attempt rather than hang on you (no model cooldown — your next "
+            "message goes through normally). I've kept your message; say 'try "
+            "again' and I'll pick it right back up."
+        )
+    if failure_class == "interactive_deadline":
+        return (
+            "That reply ran past my interactive window, so I stopped rather than "
+            "claim I finished — I didn't want to leave you on silence. I've kept "
+            "your message; say 'try again' and I'll take another pass."
+        )
+    if failure_class == "provider_rate_limited":
+        when = ""
+        if isinstance(retry_after, (int, float)) and retry_after > 0:
+            when = f" (retry available in about {int(retry_after)}s)"
+        return (
+            "My connected model is rate-limited right now" + when + ", so I "
+            "couldn't finish that turn. I've kept your message; give it a moment "
+            "and say the word (or 'try again') and I'll pick it right back up."
+        )
+    if failure_class == "provider_overloaded":
+        # Overload is the provider being TEMPORARILY at capacity, not your quota
+        # being spent — give it its own honest wording (blocker I) rather than
+        # calling it "rate-limited".
+        when = ""
+        if isinstance(retry_after, (int, float)) and retry_after > 0:
+            when = f" (worth another try in about {int(retry_after)}s)"
+        return (
+            "My connected model is temporarily overloaded" + when + ", so that "
+            "turn didn't go through. I've kept your message; give it a moment and "
             "say the word (or 'try again') and I'll pick it right back up."
         )
+    if failure_class == "authority_held":
+        return (
+            "My served-writer authorization is unavailable or was revoked, so I "
+            "can't run a turn until it's reconnected. I've kept your message — "
+            "reconnect your model and say 'try again'."
+        )
+
+    # An exhaustion with NO structured failure_class means we genuinely do not
+    # know it was a capacity/rate-limit event — so we must NOT claim it was one
+    # (Codex re-review blocker I; the old substring "exhausted"/"rate limit" ->
+    # "at my model's capacity" heuristic is exactly the mislabel this change
+    # removes). A real rate-limit/overload now arrives WITH its class (the router
+    # aggregates the classified attempt), so only a truly unclassified failure
+    # reaches here — render an honest generic error, never a fabricated capacity
+    # story.
     return (
         "I hit an error finishing that turn and didn't want to go quiet on you. "
         "Your message is saved — try me again in a moment."
