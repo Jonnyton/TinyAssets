@@ -361,7 +361,19 @@ def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     assert provider.calls == 0
 
 
-def test_served_budget_overrun_is_accounted_and_holds_future_calls(tmp_path, monkeypatch):
+def test_served_budget_overrun_is_per_call_and_releases_after_settle(tmp_path, monkeypatch):
+    """An overrun is caught at ITS OWN settlement and does not brick the binding.
+
+    The token/cost budget bounds only IN-FLIGHT reserved spend (2026-08-19 fix):
+    a turn that overruns its reservation is held at that turn's settlement, but
+    once it SETTLES the hold is RELEASED, so the next turn is admitted fresh
+    (bounded per-turn by its own ``max_tokens``) instead of being permanently
+    bricked. Under the old cumulative-lifetime semantics a single settled overrun
+    held every future call at reservation time (``provider.calls == 1``); now both
+    turns reach the provider and are each independently caught (``== 2``). The
+    separate cumulative runaway guard is the invocation high-water — see
+    ``test_binding_generation_high_water_blocks_runaway_across_requests``.
+    """
     import tinyassets.provider_serving_binding as serving_binding
     from tinyassets.auth.middleware import revoke_provider_request
     from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -388,6 +400,7 @@ def test_served_budget_overrun_is_accounted_and_holds_future_calls(tmp_path, mon
     provider = _OverBudgetProvider("codex")
     router = ProviderRouter({"codex": provider})
     try:
+        # Turn 1 overruns its reservation -> held at ITS settlement.
         with pytest.raises(ProviderAuthorityHeldError, match="budget"):
             asyncio.run(
                 router.call(
@@ -399,6 +412,9 @@ def test_served_budget_overrun_is_accounted_and_holds_future_calls(tmp_path, mon
                     universe_context=context,
                 )
             )
+        # The settled overrun RELEASED its in-flight hold, so turn 2 is admitted
+        # fresh (not permanently bricked). It overruns again and is likewise held
+        # -- but only AFTER reaching the provider, at its own settlement.
         with pytest.raises(ProviderAuthorityHeldError, match="budget"):
             asyncio.run(
                 router.call(
@@ -412,7 +428,10 @@ def test_served_budget_overrun_is_accounted_and_holds_future_calls(tmp_path, mon
             )
     finally:
         revoke_provider_request(capability)
-    assert provider.calls == 1
+    # Both turns REACHED the provider: a settled overrun does not pre-block the
+    # next call. (Old cumulative-lifetime semantics held turn 2 at reservation
+    # time with provider.calls == 1.)
+    assert provider.calls == 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="bubblewrap is a POSIX sandbox")

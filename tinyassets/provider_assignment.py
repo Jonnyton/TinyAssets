@@ -237,29 +237,44 @@ def reserve_served_provider_budget(
             """,
             (authority.binding_id, authority.binding_generation),
         ).fetchall()
-        # The budget bounds IN-FLIGHT (unsettled) reserved spend — a concurrency
-        # + per-turn runaway guard — NOT a cumulative lifetime ceiling.
+        # Two INDEPENDENT guards share this one row scan. They were deliberately
+        # decoupled 2026-08-19 — folding them together silently deleted the
+        # runaway guard while "fixing the budget cap" (Codex-gated area).
         #
-        # Long-term fix shape (2026-08-19): a SETTLED reservation ('succeeded' or
-        # 'exceeded') already spent on the founder's OWN deposited subscription,
-        # which Anthropic itself metered and rate-limits. Counting settled rows
-        # against a fixed per-generation ceiling made the binding permanently
-        # BRICK after ~max_tokens of lifetime serving and demand a manual
-        # re-bind — the opposite of "24/7 on the resources the user gave it," and
-        # the reason this cap kept being raised as a band-aid. Only UNSETTLED
-        # holds ('reserved'/'indeterminate') consume budget now, so each settled
-        # turn RELEASES and the binding serves indefinitely, bounded per-turn by
-        # ``max_tokens`` (a single turn cannot reserve more) and overall by the
-        # user's real subscription limits. The per-reservation cap + release-on-
-        # no-output fix still bound a single call and reclaim a failed one.
-        # FOLLOW-UP for full 24/7 robustness: expire stale 'reserved' rows left
-        # by a crashed turn, and reconcile long-lived 'indeterminate' rows, so
-        # neither can slowly re-accumulate a hold.
-        _IN_FLIGHT_STATES = ("reserved", "indeterminate")
-        in_flight = [row for row in rows if row[0] in _IN_FLIGHT_STATES]
-        if len(in_flight) >= authority.max_invocations:
+        # (1) INVOCATION HIGH-WATER (runaway guard) — a per-binding-generation
+        #     ceiling on how many times this generation may reach the provider.
+        #     Counts ALL rows (settled + in-flight). At 10_000 it is a runaway
+        #     SAFETY CEILING, not a routine cap, so it MUST survive settlement:
+        #     if it only counted in-flight rows, a fast-settling self-invoking
+        #     loop (e.g. run_graph triggering itself) could call the provider
+        #     without bound. The engine-run path has its own rolling rate limit
+        #     (`_engine_run_admit`, 20/hr); this is the coarser binding-level
+        #     backstop. FOLLOW-UP (multi-tenant gate): replace this lifetime
+        #     ceiling with a true ROLLING-WINDOW cumulative budget so it bounds
+        #     runaway without ever permanently bricking a 24/7 binding.
+        #
+        # (2) TOKEN / COST BUDGET — bounds only IN-FLIGHT (unsettled) reserved
+        #     spend: a concurrency + per-turn runaway guard, NOT a cumulative
+        #     lifetime ceiling. A SETTLED reservation ('succeeded'/'exceeded')
+        #     already spent on the founder's OWN deposited subscription, which
+        #     Anthropic itself meters and rate-limits. Counting settled tokens
+        #     against a fixed per-generation ceiling made the binding permanently
+        #     BRICK after ~max_tokens of lifetime serving and demand a manual
+        #     re-bind — the opposite of "24/7 on the resources the user gave it,"
+        #     and the reason THIS cap kept being raised as a band-aid. Only
+        #     UNSETTLED holds consume token budget now, so each settled turn
+        #     RELEASES and the binding serves indefinitely, bounded per-turn by
+        #     ``max_tokens`` (one turn cannot reserve more) and overall by the
+        #     user's real subscription limits. The per-reservation cap +
+        #     release-on-no-output fix still bound a single call and reclaim a
+        #     failed one. FOLLOW-UP: expire stale 'reserved' rows left by a
+        #     crashed turn, and reconcile long-lived 'indeterminate' rows, so
+        #     neither can slowly re-accumulate a hold.
+        if len(rows) >= authority.max_invocations:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
+        _IN_FLIGHT_STATES = ("reserved", "indeterminate")
+        in_flight = [row for row in rows if row[0] in _IN_FLIGHT_STATES]
         used_tokens = sum(int(row[1]) for row in in_flight)
         used_cost = sum(int(row[2]) for row in in_flight)
         remaining_tokens = authority.max_tokens - used_tokens
