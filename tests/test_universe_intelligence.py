@@ -542,41 +542,46 @@ def test_full_converse_extract_learning_never_sleeps_on_the_reply_path(
     returned WITHOUT any synchronous sleep on the reply critical path. (The
     learning failure is swallowed; the turn still answers.)
     """
+    # Blocker G, at the REAL call.py bridge, deterministically (the earlier
+    # full-`converse` form was order-dependent: a prior test's global force-mock
+    # state leaked into converse's governed path on CI — test-suite-is-order-
+    # dependent). This drives call_provider directly with the SAME flag
+    # extract_learning passes, proving the load-bearing behavior: with
+    # retry_on_exhaustion=False, an AllProvidersExhaustedError does NOT engage
+    # call.py's tenacity backoff (no synchronous sleep on the reply path), while
+    # the default (True) DOES retry — so the flag is what removes the sleep.
+    import tinyassets.providers.call as call_mod
     from tinyassets.exceptions import AllProvidersExhaustedError
-    from tinyassets.providers.base import ProviderResponse
-
-    udir = _seed(tmp_path)
 
     slept: list[float] = []
     monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
 
-    class _FakeRouter:
+    class _ExhaustedRouter:
         def __init__(self):
-            self.learning_calls = 0
+            self.calls = 0
 
         def call_sync(self, role, prompt, system, config=None, *,
                       universe_context=None, operation=None):
-            if "strict JSON" in system:  # the learning-extraction call
-                self.learning_calls += 1
-                # Transient exhaustion — the case that WOULD sleep under the
-                # default retry_on_exhaustion=True.
-                raise AllProvidersExhaustedError("exhausted for role=writer")
-            return ProviderResponse(
-                text="Hello, founder. I'm your universe.",
-                provider="claude-code", model="claude", family="anthropic",
-                latency_ms=1.0,
-            )
+            self.calls += 1
+            raise AllProvidersExhaustedError("exhausted for role=writer")
 
-    fake = _FakeRouter()
-
-    import tinyassets.providers.call as call_mod
+    # No force-mock, real bridge, an ungoverned call (no universe_context/operation)
+    # so the deterministic behavior is exactly call.py's retry decision.
     monkeypatch.setattr(call_mod, "_force_mock", False)
-    monkeypatch.setattr(call_mod, "_real_router", fake)
-    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
-    monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
 
-    reply = ui.converse("u-test", "Hi, I'm Alex.", tier=interlocutor.FOUNDER)
+    r_nosleep = _ExhaustedRouter()
+    monkeypatch.setattr(call_mod, "_real_router", r_nosleep)
+    with pytest.raises(AllProvidersExhaustedError):
+        call_mod.call_provider(
+            "prompt", "system", role="writer", retry_on_exhaustion=False,
+        )
+    assert slept == []            # reply path never sleeps
+    assert r_nosleep.calls == 1   # exactly one attempt, no retry loop
 
-    assert reply == "Hello, founder. I'm your universe."  # reply still returned
-    assert fake.learning_calls == 1  # extraction ran exactly once (no retry loop)
-    assert slept == []  # NEVER sleeps on the reply path
+    # Control: the DEFAULT path DOES back off (proving the flag is load-bearing).
+    r_retry = _ExhaustedRouter()
+    monkeypatch.setattr(call_mod, "_real_router", r_retry)
+    with pytest.raises(AllProvidersExhaustedError):
+        call_mod.call_provider("prompt", "system", role="writer")
+    assert slept, "default retry_on_exhaustion=True must back off (sleep)"
+    assert r_retry.calls > 1
