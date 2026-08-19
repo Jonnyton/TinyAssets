@@ -201,6 +201,21 @@ def run_graph(
     err = _binding_error()
     if err is not None:
         return err
+    # Single-founder scope gate (Codex ADAPT 2026-08-19): run_graph is a
+    # WRITE+COSTLY effect surface whose confinement is only proven for one
+    # isolated founder. Refuse unless THIS universe is on the explicit allowlist,
+    # even if a server was somehow started for it. Defense in depth alongside
+    # engine_mcp_http, which only starts a server for allowlisted universes.
+    from tinyassets.engine_mcp_http import run_graph_allowlist
+
+    if _GRAPH_ID not in run_graph_allowlist():
+        return json.dumps({
+            "error": (
+                "run_graph is not enabled for this universe yet; it is limited "
+                "to a vetted founder while its multi-tenant confinement is "
+                "hardened."
+            ),
+        })
     bid = (branch_def_id or "").strip()
     if not bid:
         return json.dumps({

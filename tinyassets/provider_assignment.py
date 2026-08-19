@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -20,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tinyassets.storage import db_path
+
+logger = logging.getLogger(__name__)
 
 _WINDOWS_LOCK_RETRY_ATTEMPTS = 100
 _WINDOWS_LOCK_RETRY_SECONDS = 0.01
@@ -98,6 +101,47 @@ def _ensure_served_budget_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def reconcile_orphaned_reservations_on_boot(base_path: str | Path) -> int:
+    """Settle every OPEN served-budget reservation at daemon boot; return count.
+
+    The served budget bounds IN-FLIGHT (``reserved`` / ``indeterminate``)
+    reservations. A turn that crashed or was killed mid-call leaves its row open
+    forever, permanently consuming capacity — the stuck-reservation DoS a
+    cross-family review flagged (Codex P1 2026-08-19). At BOOT there are no
+    CURRENT in-flight turns yet, so any open row is ORPHANED from a process that
+    no longer exists and is safe to settle (its provider request cannot still be
+    running — the process holding it is gone). We charge them conservatively
+    (actual = reserved) so a crash-loop cannot mint free spend once a rolling
+    cumulative budget is added, while releasing the hold so serving resumes. Run
+    once, early in daemon startup, before any turn is served.
+    """
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(base_path)
+    try:
+        with store.connection() as conn:
+            _ensure_served_budget_schema(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                UPDATE served_provider_budget_reservations
+                   SET state = 'succeeded',
+                       actual_total_tokens = COALESCE(
+                           actual_total_tokens, reserved_total_tokens),
+                       actual_cost_microunits = COALESCE(
+                           actual_cost_microunits, reserved_cost_microunits)
+                 WHERE state IN ('reserved', 'indeterminate')
+                """
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+    except sqlite3.Error:
+        logger.exception("served budget: boot reconciliation failed")
+        return 0
 
 
 def reserve_served_provider_budget(

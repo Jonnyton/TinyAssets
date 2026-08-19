@@ -51,6 +51,23 @@ def _engine_mcp_enabled() -> bool:
     )
 
 
+def run_graph_allowlist() -> frozenset[str]:
+    """Universe ids for which the WRITE/COSTLY ``run_graph`` handle is allowed.
+
+    Cross-family review (Codex 2026-08-19) ADAPT: the run_graph confinement
+    (author-gate + universe pin + loopback env-pinned server) is safe for a
+    SINGLE isolated founder but NOT yet for multi-tenant — the loopback server
+    has no per-request auth, run_graph does not verify a SAME-universe branch
+    binding or execute an immutable version, and the served budget has DoS
+    edges (settled-row growth, stuck reservations). Until that 8-point gate is
+    met, run_graph and its HTTP engine server are limited to this explicit
+    allowlist (empty = fully dark). Set ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES``
+    (comma-separated) to the vetted test founder(s) only.
+    """
+    raw = os.environ.get("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "")
+    return frozenset(u.strip() for u in raw.split(",") if u.strip())
+
+
 def _serving_universe_owners(base: Path) -> list[tuple[str, str]]:
     """``[(universe_id, owner_actor_id)]`` for universes with a serving binding.
 
@@ -95,7 +112,18 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list[subpro
     from tinyassets.storage import data_dir
 
     root = Path(data_dir() if base is None else base)
-    owners = _serving_universe_owners(root)
+    # Only stand up an engine server for a universe on the run_graph allowlist.
+    # A pinned loopback server has no per-request auth, so limiting it to the
+    # single vetted founder keeps the multi-tenant cross-universe-read surface
+    # closed until the Codex hardening gate lands (see run_graph_allowlist).
+    allow = run_graph_allowlist()
+    if not allow:
+        try:
+            (root / ROUTES_FILENAME).write_text("{}", encoding="utf-8")
+        except OSError:
+            pass
+        return []
+    owners = [(u, o) for (u, o) in _serving_universe_owners(root) if u in allow]
     data_dir_env = os.environ.get("TINYASSETS_DATA_DIR", str(root))
 
     routes: dict[str, str] = {}

@@ -2899,6 +2899,25 @@ def main(
         # read from this repo. A no-op when unconfigured.
         from tinyassets.app_ingress_http import serve_in_background
 
+        # Boot reconciliation: settle served-budget reservations orphaned by a
+        # crashed/killed prior process. At boot nothing is in-flight yet, so any
+        # open row is dead and safe to release — without this, a stuck reservation
+        # permanently consumes serving capacity (Codex P1 2026-08-19).
+        try:
+            from tinyassets.provider_assignment import (
+                reconcile_orphaned_reservations_on_boot,
+            )
+            from tinyassets.storage import data_dir as _data_dir
+
+            _reclaimed = reconcile_orphaned_reservations_on_boot(_data_dir())
+            if _reclaimed:
+                logger.info(
+                    "served budget: released %d orphaned reservation(s) at boot",
+                    _reclaimed,
+                )
+        except Exception:  # noqa: BLE001 - boot must not fail on reconciliation
+            logger.exception("served budget: boot reconciliation skipped")
+
         serve_in_background()
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
