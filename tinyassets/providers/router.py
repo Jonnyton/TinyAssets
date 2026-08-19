@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import math
 import os
 from collections.abc import Callable
 from dataclasses import replace
@@ -17,8 +18,13 @@ from typing import TYPE_CHECKING
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
+    InteractiveDeadlineError,
     ProviderAuthorityHeldError,
     ProviderError,
+    ProviderIdleTimeoutError,
+    ProviderOverloadedError,
+    ProviderProtocolError,
+    ProviderRateLimitedError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
@@ -35,6 +41,8 @@ from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
     build_chain_state,
     classify_unavailable,
+    dominant_failure_class,
+    dominant_retry_after_s,
 )
 from tinyassets.providers.quota import (
     COOLDOWN_OTHER,
@@ -170,6 +178,56 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 _JUDGE_PROVIDERS: list[str] = [
     "codex", "gemini-free", "groq-free", "grok-free", "ollama-local",
 ]
+
+
+def _rate_limit_cooldown_s(exc: BaseException) -> int:
+    """Cooldown seconds for a genuine rate-limit / overload outcome.
+
+    Honors the provider's own ``retry_after`` (+1s margin) when present; else
+    falls back to the fixed unavailable cooldown.
+    """
+    retry_after = getattr(exc, "retry_after", None)
+    if (
+        isinstance(retry_after, (int, float))
+        and math.isfinite(retry_after)
+        and retry_after > 0
+    ):
+        return int(retry_after) + 1
+    return COOLDOWN_UNAVAILABLE
+
+
+def _sync_call_timeout_s(cfg: ModelConfig) -> float:
+    """Timeout for a sync-wrapper call: at least the stream absolute cap.
+
+    The streaming served path is judged by its idle watchdog + absolute cap
+    (``stream_timeout_profile().absolute_cap_s``, default 600s), NOT the legacy
+    ``timeout`` scalar. A sync wrapper firing at ``timeout + 30`` (330s by
+    default) would return failure while the subprocess kept streaming up to the
+    600s cap (blocker L). Take the larger of the legacy timeout and the absolute
+    cap, plus a margin for async overhead + the in-band reap.
+    """
+    try:
+        absolute_cap = cfg.stream_timeout_profile().absolute_cap_s
+    except Exception:  # noqa: BLE001 - a malformed cfg falls back to the legacy path
+        absolute_cap = 0.0
+    legacy = float(getattr(cfg, "timeout", 0) or 0)
+    return max(legacy, absolute_cap) + 30.0
+
+
+def _side_effect_from(exc: BaseException) -> str | None:
+    """Read the streamed-attempt ``side_effect_state`` off a raised exception.
+
+    The streaming reader attaches an ``attempt_telemetry`` snapshot (blocker K);
+    surfacing ``side_effect_state`` into the ProviderAttemptDiagnostic lets the
+    sole-writer retry policy know whether a tool may have run before the attempt
+    failed. ``None`` for non-streaming raises (dropped from the diagnostic dict).
+    """
+    tele = getattr(exc, "attempt_telemetry", None)
+    if isinstance(tele, dict):
+        state = tele.get("side_effect_state")
+        if isinstance(state, str):
+            return state
+    return None
 
 
 _LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama-local"})
@@ -702,6 +760,55 @@ class ProviderRouter:
                 self._quota.record_success(provider_name)
             except ProviderAuthorityHeldError:
                 raise
+            except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
+                # A genuine rate-limit / overload IS real capacity: cool the
+                # provider until its own retry-after (+margin), keeping fallback
+                # forbidden for the sole served writer.
+                cd = _rate_limit_cooldown_s(exc)
+                self._quota.cooldown(provider_name, cd)
+                logger.warning(
+                    "Provider %s rate-limited/overloaded (%s), cooldown %ds",
+                    provider_name, exc.failure_class, cd,
+                )
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed",
+                    skip_class=classify_unavailable(exc),
+                    detail=str(exc)[:200],
+                    failure_class=exc.failure_class,
+                    retry_after_s=getattr(exc, "retry_after", None),
+                    side_effect_state=_side_effect_from(exc),
+                ))
+                continue
+            except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
+                # A transient attempt timeout is NOT proof the credential is
+                # down. Do NOT cool the sole served writer — the next turn stays
+                # eligible. The process was already killed by the provider.
+                logger.warning(
+                    "Provider %s ended on %s (no provider cooldown)",
+                    provider_name, exc.failure_class,
+                )
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed",
+                    skip_class="timed_out",
+                    detail=str(exc)[:200],
+                    failure_class=exc.failure_class,
+                    side_effect_state=_side_effect_from(exc),
+                ))
+                continue
+            except ProviderProtocolError as exc:
+                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
+                logger.warning(
+                    "Provider %s protocol error, cooldown %ds",
+                    provider_name, COOLDOWN_OTHER,
+                )
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed",
+                    skip_class="provider_error",
+                    detail=str(exc)[:200],
+                    failure_class=exc.failure_class,
+                    side_effect_state=_side_effect_from(exc),
+                ))
+                continue
             except ProviderUnavailableError as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -779,12 +886,16 @@ class ProviderRouter:
                 f"Served provider {served_authority.provider!r} exhausted; "
                 "universe authority forbids fallback widening.",
                 attempts=attempts,
+                failure_class=dominant_failure_class(attempts),
+                retry_after=dominant_retry_after_s(attempts),
             )
         if invocation_carrier is not None:
             raise AllProvidersExhaustedError(
                 f"Armed provider {invocation_carrier.provider!r} exhausted; "
                 "provider authority forbids fallback widening.",
                 attempts=attempts,
+                failure_class=dominant_failure_class(attempts),
+                retry_after=dominant_retry_after_s(attempts),
             )
         if is_pinned_writer:
             # Hard pin must fail loudly rather than silently falling through
@@ -792,7 +903,10 @@ class ProviderRouter:
             raise AllProvidersExhaustedError(
                 f"Pinned writer provider {pin_writer!r} exhausted. "
                 "TINYASSETS_PIN_WRITER disables fallback — clear the env var "
-                "to re-enable the default chain."
+                "to re-enable the default chain.",
+                attempts=attempts,
+                failure_class=dominant_failure_class(attempts),
+                retry_after=dominant_retry_after_s(attempts),
             )
 
         # Chain-drain detection (BUG-029 Part A): when all API providers are
@@ -828,6 +942,8 @@ class ProviderRouter:
             "Daemon should retry with backoff.",
             attempts=attempts,
             chain_state=chain_state,
+            failure_class=dominant_failure_class(attempts),
+            retry_after=dominant_retry_after_s(attempts),
         )
 
     # ------------------------------------------------------------------
@@ -978,6 +1094,16 @@ class ProviderRouter:
 
         # Try policy-derived providers
         tried = 0
+        # Track the classifed failure of the last executed policy provider so the
+        # aggregate we raise below carries an honest failure_class/retry_after
+        # (Codex re-review blockers F/I/K): the notice must never fall back to a
+        # substring "capacity" guess.
+        last_fc: str | None = None
+        last_ra: float | None = None
+        # Full attempt telemetry of the last executed provider, carried onto the
+        # aggregate so terminal/TTFT/progress-age/exit are not lost when the
+        # original classified exception is replaced (Codex re-review blocker K).
+        last_tele: dict | None = None
         for provider_name in attempt_order:
             provider = self._providers.get(provider_name)
             if provider is None:
@@ -999,6 +1125,43 @@ class ProviderRouter:
                 )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
+            except ProviderAuthorityHeldError:
+                # Serving authority unavailable/revoked is NOT a provider fault to
+                # swallow as generic error + cooldown; preserve it on the policy
+                # path exactly like the role chain (blocker F) so the caller gets
+                # the honest "connect your provider" outcome, not a fallthrough.
+                raise
+            except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
+                # New failure-class cooldown semantics on the policy path too
+                # (blocker F): a genuine rate-limit/overload cools until the
+                # provider's own retry-after (+margin), NOT a fixed unavailable
+                # window — otherwise a documented 30s wait is over/under-cooled.
+                cd = _rate_limit_cooldown_s(exc)
+                self._quota.cooldown(provider_name, cd)
+                last_fc = exc.failure_class
+                last_ra = getattr(exc, "retry_after", None)
+                last_tele = getattr(exc, "attempt_telemetry", None)
+                logger.warning(
+                    "Policy provider %s rate-limited/overloaded (%s), cooldown %ds",
+                    provider_name, exc.failure_class, cd,
+                )
+            except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
+                # A transient attempt timeout is NOT proof the credential is down.
+                # Do NOT cool the provider on the policy path either (blocker F);
+                # the next turn stays eligible. The process was already killed.
+                last_fc = exc.failure_class
+                last_tele = getattr(exc, "attempt_telemetry", None)
+                logger.warning(
+                    "Policy provider %s ended on %s (no provider cooldown)",
+                    provider_name, exc.failure_class,
+                )
+            except ProviderProtocolError:
+                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
+                last_fc = "provider_protocol_error"
+                logger.warning(
+                    "Policy provider %s protocol error, cooldown %ds",
+                    provider_name, COOLDOWN_OTHER,
+                )
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -1021,14 +1184,53 @@ class ProviderRouter:
                 self._quota.cooldown(provider_name, COOLDOWN_OTHER)
                 logger.exception("Unexpected error from policy provider %s", provider_name)
 
-        # All policy providers exhausted — fall through to role-based chain
+        # Fall-through-to-self.call() is the DOCUMENTED policy fallback (e.g. a
+        # preferred Claude that is unavailable should still let a healthy Codex
+        # role-chain provider answer). We must preserve it (Codex re-review #2
+        # caught an over-broad `if tried > 0: raise` that suppressed Codex
+        # fallback entirely). The ONE case where re-executing is dangerous is a
+        # possible SIDE EFFECT: an idle/deadline attempt that had already started
+        # a tool did NOT cool the provider, so the role chain would re-run the
+        # SAME provider and could duplicate that effect (Codex re-review #1
+        # blocker F). Suppress the fall-through ONLY then; otherwise fall through
+        # so genuine cross-provider fallback still works.
+        last_side_effect = (
+            last_tele.get("side_effect_state")
+            if isinstance(last_tele, dict) else None
+        )
+        if tried > 0 and last_side_effect in ("possible", "committed"):
+            agg = AllProvidersExhaustedError(
+                f"All policy providers exhausted for role={role}.",
+                failure_class=last_fc,
+                retry_after=last_ra,
+            )
+            if last_tele is not None:
+                agg.attempt_telemetry = last_tele
+            raise agg
+        # Fall through to the role chain (a preferred provider that failed cleanly
+        # — e.g. rate-limited/unavailable, no possible side effect — must still let
+        # a healthy role-chain provider answer). If the role chain ALSO exhausts,
+        # preserve THIS policy attempt's classification on the aggregate (Codex
+        # re-review #3 regression: a real rate-limit was otherwise downgraded to a
+        # generic "error" notice after fallthrough because the role-chain aggregate
+        # carried failure_class=None).
         logger.info(
             "Policy providers exhausted for role=%s; falling through to role chain",
             role,
         )
-        resp = await self.call(
-            role, prompt, system, cfg, universe_context=universe_context,
-        )
+        try:
+            resp = await self.call(
+                role, prompt, system, cfg, universe_context=universe_context,
+            )
+        except AllProvidersExhaustedError as chain_exc:
+            if last_fc is not None and chain_exc.failure_class is None:
+                chain_exc.failure_class = last_fc
+                chain_exc.retry_after = last_ra
+                if last_tele is not None and getattr(
+                    chain_exc, "attempt_telemetry", None,
+                ) is None:
+                    chain_exc.attempt_telemetry = last_tele
+            raise
         return resp.text, resp.provider, self._call_meta(resp, attempts=tried + 1)
 
     def call_with_policy_sync(
@@ -1045,7 +1247,10 @@ class ProviderRouter:
     ) -> tuple[str, str, dict]:
         """Synchronous wrapper for :meth:`call_with_policy`."""
         cfg = config or _default_config(_resolve_universe_config(universe_context))
-        sync_timeout = cfg.timeout + 30
+        # See call_sync (blocker L): enforce the timeout INSIDE the async task so
+        # a timeout cancels the coroutine and kills the streaming subprocess, and
+        # never fire below the stream absolute cap.
+        inner_timeout = _sync_call_timeout_s(cfg)
 
         # Capture universe_context in the closure so it survives the hop into
         # the ThreadPoolExecutor worker thread (no ContextVar — a ContextVar
@@ -1054,25 +1259,34 @@ class ProviderRouter:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
-                    self.call_with_policy(
-                        role, prompt, system, policy, cfg, difficulty,
-                        operation=operation,
-                        universe_context=universe_context,
+                    asyncio.wait_for(
+                        self.call_with_policy(
+                            role, prompt, system, policy, cfg, difficulty,
+                            operation=operation,
+                            universe_context=universe_context,
+                        ),
+                        timeout=inner_timeout,
                     )
+                )
+            except asyncio.TimeoutError:
+                raise ProviderTimeoutError(
+                    f"call_with_policy_sync exceeded {inner_timeout:.0f}s for "
+                    f"role={role} (subprocess cancelled/killed)"
                 )
             finally:
                 loop.close()
 
         future = self._thread_pool.submit(_run)
         try:
-            return future.result(timeout=sync_timeout)
+            return future.result(timeout=inner_timeout + 30)
         except concurrent.futures.TimeoutError:
             logger.warning(
-                "call_with_policy_sync timed out after %ds for role=%s",
-                sync_timeout, role,
+                "call_with_policy_sync backstop fired after %.0fs for role=%s",
+                inner_timeout + 30, role,
             )
             raise ProviderTimeoutError(
-                f"call_with_policy_sync exceeded {sync_timeout}s for role={role}"
+                f"call_with_policy_sync exceeded {inner_timeout + 30:.0f}s "
+                f"backstop for role={role}"
             )
 
     # ------------------------------------------------------------------
@@ -1106,33 +1320,48 @@ class ProviderRouter:
         per-universe routing state is threaded EXPLICITLY, not via ContextVar.
         """
         cfg = config or _default_config(_resolve_universe_config(universe_context))
-        # Allow the subprocess timeout to fire first (+30s margin for
-        # async overhead, fallback attempts, etc.)
-        sync_timeout = cfg.timeout + 30
+        # The streaming served path has its OWN absolute cap (default 600s); the
+        # sync wrapper MUST NOT fire below it (blocker L) or it would return
+        # failure while the subprocess keeps streaming (possible side effects).
+        # Enforce the cap INSIDE the async task via ``asyncio.wait_for`` so a
+        # timeout CANCELS ``call`` → ``complete`` → ``_read_stream``'s finally,
+        # which kills the subprocess. ``future.result`` keeps a slightly larger
+        # backstop only for a wedged event loop.
+        inner_timeout = _sync_call_timeout_s(cfg)
 
         def _run() -> ProviderResponse:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
-                    self.call(
-                        role, prompt, system, cfg,
-                        operation=operation,
-                        universe_context=universe_context,
+                    asyncio.wait_for(
+                        self.call(
+                            role, prompt, system, cfg,
+                            operation=operation,
+                            universe_context=universe_context,
+                        ),
+                        timeout=inner_timeout,
                     )
+                )
+            except asyncio.TimeoutError:
+                # wait_for already cancelled the coroutine (subprocess killed).
+                raise ProviderTimeoutError(
+                    f"call_sync exceeded {inner_timeout:.0f}s for role={role} "
+                    "(subprocess cancelled/killed)"
                 )
             finally:
                 loop.close()
 
         future = self._thread_pool.submit(_run)
         try:
-            return future.result(timeout=sync_timeout)
+            return future.result(timeout=inner_timeout + 30)
         except concurrent.futures.TimeoutError:
             logger.warning(
-                "call_sync timed out after %ds for role=%s",
-                sync_timeout, role,
+                "call_sync backstop fired after %.0fs for role=%s (event loop "
+                "wedged)", inner_timeout + 30, role,
             )
             raise ProviderTimeoutError(
-                f"call_sync exceeded {sync_timeout}s hard timeout for role={role}"
+                f"call_sync exceeded {inner_timeout + 30:.0f}s hard backstop "
+                f"for role={role}"
             )
 
     # ------------------------------------------------------------------

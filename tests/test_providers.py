@@ -771,21 +771,78 @@ class TestProviderRegistration:
 # =====================================================================
 
 
+class _FakeClaudeStdout:
+    """Replays a list of (delay_s, bytes) stdout lines for the stream reader."""
+
+    def __init__(self, items):
+        self._items = list(items)
+        self._idx = 0
+
+    async def readline(self):
+        if self._idx >= len(self._items):
+            return b""
+        delay, data = self._items[self._idx]
+        self._idx += 1
+        if delay:
+            await asyncio.sleep(delay)
+        return data
+
+
+class _FakeClaudeStderr:
+    def __init__(self, data=b""):
+        self._data = data
+        self._sent = False
+
+    async def read(self, _n):
+        if self._sent:
+            return b""
+        self._sent = True
+        return self._data
+
+
+class _FakeClaudeStdin:
+    def write(self, _b): ...
+    async def drain(self): ...
+    def close(self): ...
+
+
+class _FakeClaudeProc:
+    def __init__(self, stdout_items, *, stderr=b"", returncode=0):
+        self.stdout = _FakeClaudeStdout(stdout_items)
+        self.stderr = _FakeClaudeStderr(stderr)
+        self.stdin = _FakeClaudeStdin()
+        self.returncode = returncode
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+
+    async def wait(self):
+        return self.returncode
+
+
+def _cl(obj) -> bytes:
+    import json as _json
+
+    return (_json.dumps(obj) + "\n").encode("utf-8")
+
+
 class TestClaudeProvider:
     @pytest.mark.asyncio
     async def test_success(self):
         from tinyassets.providers.claude_provider import ClaudeProvider
 
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"Hello world", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
+        proc = _FakeClaudeProc([
+            (0.0, _cl({"type": "system", "subtype": "init"})),
+            (0.0, _cl({"type": "assistant",
+                       "message": {"content": [{"type": "text", "text": "Hello world"}]}})),
+            (0.0, _cl({"type": "result", "subtype": "success", "result": "Hello world"})),
+        ])
 
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
         ):
             provider = ClaudeProvider()
             resp = await provider.complete("prompt", "system", ModelConfig())
@@ -798,16 +855,12 @@ class TestClaudeProvider:
     async def test_exit_code_1_quick_triggers_unavailable(self):
         from tinyassets.providers.claude_provider import ClaudeProvider
 
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"unavailable"))
-        mock_proc.returncode = 1
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
+        proc = _FakeClaudeProc([], stderr=b"unavailable", returncode=1)
 
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
         ):
             provider = ClaudeProvider()
             with pytest.raises(ProviderUnavailableError):
@@ -817,20 +870,26 @@ class TestClaudeProvider:
     async def test_timeout_kills_process(self):
         from tinyassets.providers.claude_provider import ClaudeProvider
 
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
+        # init, then a long stall past the (injected short) idle interval — the
+        # idle watchdog ends the turn as a ProviderTimeoutError subclass.
+        proc = _FakeClaudeProc([
+            (0.0, _cl({"type": "system", "subtype": "init"})),
+            (10.0, _cl({"type": "result", "subtype": "success", "result": "late"})),
+        ])
+        fast = ModelConfig(
+            init_timeout_s=0.1, first_progress_s=0.1, idle_timeout_s=0.1,
+            absolute_cap_s=2.0,
+        )
 
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
         ):
             provider = ClaudeProvider()
             with pytest.raises(ProviderTimeoutError):
-                await provider.complete("prompt", "system", ModelConfig(timeout=1))
+                await provider.complete("prompt", "system", fast)
+        assert proc.killed is True
 
 
 # =====================================================================
