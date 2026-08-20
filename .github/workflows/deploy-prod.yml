@@ -150,6 +150,31 @@ jobs:
           echo "prev_image=${prev}" >> "$GITHUB_OUTPUT"
           echo "current prod image: ${prev:-<none>}"
 
+      - name: Sync deploy/compose.yml to the deployed revision
+        # /opt/tinyassets/compose.yml is a symlink -> the git checkout's
+        # deploy/compose.yml (DEPLOY.md § Compose layout). The fail-safe swap
+        # only pins TINYASSETS_IMAGE in /etc/tinyassets/env and restarts — it
+        # does NOT update compose.yml, so a compose `environment:` change (a
+        # feature flag landed with the image) would otherwise stay inert until
+        # a MANUAL ssh `git pull`. That manual step is the exact "depends on a
+        # laptop" gap that let config drift from code. Check out ONLY
+        # compose.yml at the deployed revision so config ships atomically with
+        # the image, cloud-natively. Runs BEFORE the swap: if it fails, the job
+        # aborts here with prod untouched (no image mutation yet).
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "set -euo pipefail
+             cd /opt/tinyassets
+             git config --global --add safe.directory /opt/tinyassets 2>/dev/null || true
+             git fetch --no-tags --prune origin main
+             git fetch --no-tags origin '${TARGET_REVISION}' 2>/dev/null || true
+             git checkout --quiet '${TARGET_REVISION}' -- deploy/compose.yml
+             echo \"synced deploy/compose.yml@${TARGET_REVISION}\"
+             test -L /opt/tinyassets/compose.yml && readlink -f /opt/tinyassets/compose.yml"
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
