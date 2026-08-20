@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 VAULT_FILENAME = ".credential-vault.json"
 CREDENTIAL_ARTIFACT_DIR = ".credentials"
 VALID_CREDENTIAL_TYPES = frozenset(
-    {"social", "llm_subscription", "llm_api_key", "vcs"}
+    # "http" is the general outbound-connection credential (channel-agnostic
+    # outbound): a single token/secret for a user-declared HTTP connection,
+    # resolved by connection id via `outbound_connections._GeneralVaultCredentialResolver`.
+    {"social", "llm_subscription", "llm_api_key", "vcs", "http"}
 )
 
 # Map a deposited llm_api_key record's ``service`` to the provider-subprocess
