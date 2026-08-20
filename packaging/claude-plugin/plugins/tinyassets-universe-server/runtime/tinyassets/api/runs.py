@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import (
@@ -100,7 +101,35 @@ def _run_actor_for_kwargs(kwargs: dict[str, Any]) -> str:
     return branch_run_actor(str(kwargs.get("universe_id") or ""))
 
 
+#: Owner-scoped inbound-trigger ops (mint/revoke/list a webhook, create/revoke/list a
+#: Source). They mutate or disclose a universe's inbound ingress secrets, so — like a
+#: branch run — they are gated to a caller with WRITE access to their OWN universe
+#: (Floor-1 Codex #1/#5: the ops became run_graph-reachable, so the same universe-scope
+#: gate that guards run_branch must guard them, or a request could mint/list another
+#: universe's tokens). Listing is gated on WRITE too because it discloses live tokens.
+_WEBHOOK_OWNER_ACTIONS: frozenset[str] = frozenset({
+    "mint_webhook", "revoke_webhook", "list_webhooks",
+    "create_source", "revoke_source", "list_sources",
+})
+
+
 def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
+    if action in _WEBHOOK_OWNER_ACTIONS:
+        from tinyassets.api.permissions import (
+            universe_access_allows,
+            universe_access_error,
+        )
+
+        uid = _request_universe(str(kwargs.get("universe_id") or ""))
+        if not uid or not universe_access_allows(uid, write=True):
+            return json.dumps(universe_access_error(
+                universe_id=uid,
+                write=True,
+                action=action,
+                surface="extensions",
+            ))
+        return None
+
     if action not in {"run_branch", "run_branch_version"}:
         return None
 
@@ -762,6 +791,114 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         result["suggested_action"] = error_annotation[1]
         result["actionable_by"] = _actionable_by(error_annotation[0])
     return json.dumps(result)
+
+
+def enqueue_universe_branch_run(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    branch_def_id: str,
+    inputs: dict[str, Any],
+    run_name: str = "",
+) -> str:
+    """Enqueue a run of ``branch_def_id`` as ``universe:<universe_id>``.
+
+    The single audited path used by trigger sources that carry their OWN authority
+    (the inbound webhook token, an event-bus subscription) rather than an MCP request
+    identity. It is deliberately NOT reachable with a request-derived actor: it enqueues
+    ONLY as the bound universe, and FAILS CLOSED if the universe is empty — so a trigger
+    can never fall back to an ambient/host identity (Floor-1 Codex #1). It mirrors
+    ``_action_run_branch``'s resolve → validate → provider-bind → execute, and appends a
+    global-ledger entry for parity with the MCP dispatch path (which the direct
+    ``execute_branch_async`` call would otherwise skip).
+    """
+    from tinyassets.api.branches import (
+        _append_global_ledger,
+        _resolve_branch_id,
+    )
+    from tinyassets.api.permissions import branch_run_actor
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.runs import execute_branch_async
+
+    uid = (universe_id or "").strip()
+    if not uid:
+        # Never enqueue a triggered run under a non-universe (ambient/host) actor.
+        raise ValueError("enqueue_universe_branch_run requires a non-empty universe_id")
+
+    actor = branch_run_actor(uid)
+    if not actor.startswith("universe:"):
+        raise ValueError(f"refusing to enqueue as non-universe actor {actor!r}")
+
+    bid = _resolve_branch_id(branch_def_id, str(base_path))
+    branch = BranchDefinition.from_dict(
+        get_branch_definition(base_path, branch_def_id=bid)
+    )
+    errors = branch.validate()
+    if errors:
+        raise ValueError(f"branch {bid} failed validation: {errors}")
+
+    provider_call: Any = None
+    try:
+        from tinyassets.providers.call import call_provider
+
+        provider_call = _bind_run_provider_call(call_provider, uid)
+    except ImportError:
+        provider_call = None
+
+    outcome = execute_branch_async(
+        base_path,
+        branch=branch,
+        inputs=inputs,
+        run_name=run_name or "trigger",
+        actor=actor,
+        provider_call=provider_call,
+        _enqueue_universe_id=uid,
+    )
+    try:
+        _append_global_ledger(
+            "run_branch",
+            actor=actor,
+            target=str(outcome.run_id),
+            summary=f"trigger run_name={run_name or 'trigger'} branch={bid}",
+            payload=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - ledger loss must not fail the enqueue
+        logger.warning("trigger enqueue ledger write failed: %s", exc)
+    return outcome.run_id
+
+
+def terminal_run_ids_for_universe(base_path: str | Path, universe_id: str) -> set[str]:
+    """Run ids for a universe that have reached a TERMINAL state.
+
+    The inbound back-pressure reservation counter (Codex #5, in webhook_hooks) reconciles
+    against this: a reservation linked to a terminal run is released. Read straight from the
+    runs DB so it survives a restart. Kept small — only non-active runs matter for release.
+    """
+    uid = (universe_id or "").strip()
+    if not uid:
+        return set()
+    from tinyassets.runs import (
+        RUN_STATUS_CANCELLED,
+        RUN_STATUS_COMPLETED,
+        RUN_STATUS_FAILED,
+        RUN_STATUS_INTERRUPTED,
+        _connect,
+        initialize_runs_db,
+    )
+
+    terminal = (
+        RUN_STATUS_COMPLETED, RUN_STATUS_FAILED,
+        RUN_STATUS_CANCELLED, RUN_STATUS_INTERRUPTED,
+    )
+    initialize_runs_db(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT run_id FROM runs WHERE queue_universe_id = ? "
+            f"AND status IN ({','.join('?' * len(terminal))})",
+            (uid, *terminal),
+        ).fetchall()
+    return {r[0] for r in rows}
 
 
 def _branch_name_for_run(run_record: dict[str, Any]) -> str:
@@ -1931,6 +2068,13 @@ def _action_get_rollback_history(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+from tinyassets.api.webhook_ops import _action_create_source as _source_create  # noqa: E402
+from tinyassets.api.webhook_ops import _action_list_sources as _source_list  # noqa: E402
+from tinyassets.api.webhook_ops import _action_list_webhooks as _webhook_list  # noqa: E402
+from tinyassets.api.webhook_ops import _action_mint_webhook as _webhook_mint  # noqa: E402
+from tinyassets.api.webhook_ops import _action_revoke_source as _source_revoke  # noqa: E402
+from tinyassets.api.webhook_ops import _action_revoke_webhook as _webhook_revoke  # noqa: E402
+
 _RUN_ACTIONS: dict[str, Any] = {
     "run_branch": _action_run_branch,
     "run_branch_version": _action_run_branch_version,
@@ -1950,11 +2094,18 @@ _RUN_ACTIONS: dict[str, Any] = {
     "get_memory_scope_status": _action_get_memory_scope_status,
     "rollback_merge": _action_rollback_merge,
     "get_rollback_history": _action_get_rollback_history,
+    "mint_webhook": _webhook_mint,
+    "revoke_webhook": _webhook_revoke,
+    "list_webhooks": _webhook_list,
+    "create_source": _source_create,
+    "revoke_source": _source_revoke,
+    "list_sources": _source_list,
 }
 
 _RUN_WRITE_ACTIONS: frozenset[str] = frozenset(
     {"run_branch", "run_branch_version", "cancel_run", "resume_run",
-     "rollback_merge", "attach_existing_child_run", "record_run_receipt"}
+     "rollback_merge", "attach_existing_child_run", "record_run_receipt",
+     "mint_webhook", "revoke_webhook", "create_source", "revoke_source"}
 )
 
 

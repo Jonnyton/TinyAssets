@@ -1129,6 +1129,66 @@ _mcp_write_graph = _register_structured_tool(
 )
 
 
+def _inbound_event_run_fn(
+    branch_def_id: str, actor: str, inputs: dict, run_name: str,
+) -> None:
+    """Scheduler run_fn for inbound (Source-node) events. Fires the bound branch as the
+    universe carried by the subscription's owner_actor. FAILS CLOSED on a non-universe
+    actor so an event can never run a branch under an ambient/host identity. Links the
+    in-flight reservation (reserved atomically in handle_hook) to the run, so it is released
+    on run completion; releases it if the run cannot be created (Codex round-2 #5)."""
+    from tinyassets.storage import data_dir, webhook_hooks
+    from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
+
+    inputs = dict(inputs or {})
+    reservation_id = inputs.pop(RESERVATION_INPUT_KEY, "") or ""
+    base = data_dir()
+
+    def _release() -> None:
+        if reservation_id:
+            try:
+                webhook_hooks.release_dispatch(base, reservation_id=reservation_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("event bus: reservation release failed")
+
+    if not actor.startswith("universe:"):
+        logger.error("event bus: refusing to fire branch as non-universe actor %r", actor)
+        _release()
+        return
+    uid = actor[len("universe:"):].strip()
+    if not uid:
+        logger.error("event bus: empty universe in actor %r", actor)
+        _release()
+        return
+    from tinyassets.api.runs import enqueue_universe_branch_run
+
+    try:
+        run_id = enqueue_universe_branch_run(
+            base,
+            universe_id=uid,
+            branch_def_id=branch_def_id,
+            inputs=inputs,
+            run_name=run_name,
+        )
+        if reservation_id:
+            webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
+    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
+        logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
+        _release()
+
+
+_WEBHOOK_OP_ACTIONS = {
+    "mint": "mint_webhook",
+    "revoke": "revoke_webhook",
+    "list": "list_webhooks",
+}
+_SOURCE_OP_ACTIONS = {
+    "create": "create_source",
+    "revoke": "revoke_source",
+    "list": "list_sources",
+}
+
+
 def run_graph(
     branch_def_id: str = "",
     inputs_json: str = "",
@@ -1136,8 +1196,13 @@ def run_graph(
     graph_id: str = "",
     recursion_limit_override: int = 0,
     goal_id: str = "",
+    webhook_op: str = "",
+    source_op: str = "",
+    token: str = "",
+    source_id: str = "",
 ) -> str:
-    """Run a TinyAssets graph branch or the caller's Goal canonical.
+    """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
+    inbound triggers that let an external channel run a branch.
 
     Args:
         branch_def_id: Branch definition identifier to run. Leave empty when
@@ -1148,7 +1213,44 @@ def run_graph(
         recursion_limit_override: Optional per-run recursion limit.
         goal_id: Optional Goal whose current caller-scoped canonical should run.
             The caller's personal binding is preferred before the Goal default.
+        webhook_op: Manage a per-branch inbound webhook URL for YOUR OWN universe:
+            ``mint`` (needs branch_def_id) returns a stable
+            ``https://<domain>/hooks/<token>`` URL any channel can POST to run the
+            branch; ``revoke`` (needs token) disables one; ``list`` shows active ones.
+        source_op: Manage a Source (a live inbound source = a webhook + an
+            event-trigger) for YOUR OWN universe: ``create`` (needs branch_def_id),
+            ``revoke`` (needs source_id), ``list``.
+        token: The webhook token to revoke (with ``webhook_op="revoke"``).
+        source_id: The source to revoke (with ``source_op="revoke"``).
     """
+    if webhook_op:
+        action = _WEBHOOK_OP_ACTIONS.get(webhook_op)
+        if action is None:
+            return json.dumps({
+                "error": "unknown_webhook_op",
+                "webhook_op": webhook_op,
+                "valid": sorted(_WEBHOOK_OP_ACTIONS),
+            })
+        return _extensions_impl(
+            action=action,
+            branch_def_id=branch_def_id,
+            token=token,
+            universe_id=graph_id,
+        )
+    if source_op:
+        action = _SOURCE_OP_ACTIONS.get(source_op)
+        if action is None:
+            return json.dumps({
+                "error": "unknown_source_op",
+                "source_op": source_op,
+                "valid": sorted(_SOURCE_OP_ACTIONS),
+            })
+        return _extensions_impl(
+            action=action,
+            branch_def_id=branch_def_id,
+            source_id=source_id,
+            universe_id=graph_id,
+        )
     if goal_id:
         if branch_def_id:
             return json.dumps({
@@ -2863,6 +2965,22 @@ def create_streamable_http_app() -> Starlette:
         # Raises loudly (fail-fast boot) on an undeclared remainder.
         from tinyassets.api.visibility import run_visibility_startup_gate
 
+        # Channel-agnostic inbound (Floor 1/3): ONE master switch,
+        # ``TINYASSETS_INBOUND_ENABLED``, gates the entire inbound path (Codex #2) — it
+        # both keeps the `/hooks/*` route unmounted (below) and keeps the event bus stopped
+        # here. DARK by default; tests drive the Scheduler + handle_hook directly.
+        from tinyassets.webhook_inbound import inbound_enabled
+
+        _event_bus_on = inbound_enabled()
+        if _event_bus_on:
+            try:
+                from tinyassets.scheduler import get_or_create_scheduler
+
+                get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
+                logger.info("inbound event bus started")
+            except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
+                logger.exception("inbound event bus failed to start")
+
         try:
             run_visibility_startup_gate()
             async with AsyncExitStack() as stack:
@@ -2871,6 +2989,13 @@ def create_streamable_http_app() -> Starlette:
                 )
                 yield
         finally:
+            if _event_bus_on:
+                try:
+                    from tinyassets.scheduler import shutdown_scheduler
+
+                    shutdown_scheduler()
+                except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
+                    logger.exception("inbound event bus shutdown failed")
             # Drain the app-ingress turn executor on graceful shutdown so accepted
             # Slack turns are not dropped on a restart. uvicorn.run for THIS app is
             # on the main thread, so its signal-driven shutdown runs this finally;
@@ -2895,11 +3020,55 @@ def create_streamable_http_app() -> Starlette:
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
     # match before any MCP catch-all route. In WorkOS mode the Protected
     # Resource Metadata advertises AuthKit as the authorization server.
-    from tinyassets.auth.wellknown import starlette_discovery_routes
+    # Universal inbound webhook (channel-agnostic inbound, Floor 1): a per-branch
+    # `POST /hooks/<token>` lets ANY channel trigger a branch with zero per-channel
+    # platform code. The token alone authorizes + selects (universe, branch); the run
+    # is enqueued as that universe. The route is mounted ONLY when the master flag
+    # ``TINYASSETS_INBOUND_ENABLED`` is set (Codex #2 — dark means the path is absent,
+    # not merely un-tunneled); handle_hook re-checks the flag as defense in depth. Going
+    # live additionally requires the Cloudflare tunnel to route `/hooks/*` (today `/mcp`).
+    from starlette.responses import JSONResponse as _HookJSON
+    from starlette.routing import Route as _HookRoute
 
+    from tinyassets.auth.wellknown import starlette_discovery_routes
+    from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
+
+    async def _hooks_endpoint(request):
+        from tinyassets.webhook_inbound import MAX_BODY_BYTES, handle_hook
+
+        # Enforce the size cap BEFORE buffering the whole body (Codex #2): reject an
+        # oversized declared Content-Length up front, then stream-count and abort the
+        # moment the actual bytes exceed the cap (chunked requests omit Content-Length).
+        clen = request.headers.get("content-length")
+        if clen is not None:
+            try:
+                if int(clen) > MAX_BODY_BYTES:
+                    return _HookJSON({"error": "too_large"}, status_code=413)
+            except ValueError:
+                return _HookJSON({"error": "bad_request"}, status_code=400)
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > MAX_BODY_BYTES:
+                return _HookJSON({"error": "too_large"}, status_code=413)
+            chunks.append(chunk)
+        status, payload = handle_hook(
+            token=str(request.path_params.get("token", "")),
+            body=b"".join(chunks),
+            headers=dict(request.headers),
+        )
+        return _HookJSON(payload, status_code=status)
+
+    _inbound_routes = (
+        [_HookRoute("/hooks/{token}", _hooks_endpoint, methods=["POST"])]
+        if _inbound_enabled()
+        else []
+    )
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            *_inbound_routes,
             *canonical_app.routes,
         ],
         lifespan=lifespan,
@@ -3002,6 +3171,17 @@ def main(
         from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
 
         _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
+        # Async action-result delivery: a periodic daemon-thread tick posts the
+        # terminal result of an app-originated background run back to its Slack
+        # conversation as a governed follow-up. Inert + safe over an empty outbox, so
+        # starting it unconditionally is fine (Slice 3).
+        try:
+            from tinyassets.action_result_delivery_tick import start_delivery_loop
+            from tinyassets.storage import data_dir as _ar_data_dir
+
+            start_delivery_loop(_ar_data_dir())
+        except Exception:  # noqa: BLE001 - boot must not fail on delivery maintenance
+            logger.exception("action-result: delivery loop not started")
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
         return

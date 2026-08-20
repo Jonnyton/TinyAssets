@@ -166,6 +166,21 @@ VALID_EVENT_TYPES = frozenset({
     "pr_open",
 })
 
+#: A Source node emits a namespaced ``source:<source_id>`` event. These are open-ended
+#: (one per user-created Source), so they are admitted by PREFIX past the closed
+#: ``VALID_EVENT_TYPES`` allowlist rather than enumerated (design Floor 3).
+_SOURCE_EVENT_PREFIX = "source:"
+_MAX_EVENT_TYPE_LEN = 320
+
+
+def _is_valid_event_type(event_type: str) -> bool:
+    if event_type in VALID_EVENT_TYPES:
+        return True
+    if not event_type.startswith(_SOURCE_EVENT_PREFIX):
+        return False
+    source_id = event_type[len(_SOURCE_EVENT_PREFIX):]
+    return bool(source_id) and len(event_type) <= _MAX_EVENT_TYPE_LEN
+
 # ─── Schema helpers (called from runs.initialize_runs_db) ────────────────────
 
 SCHEDULER_SCHEMA = """
@@ -414,9 +429,10 @@ def register_subscription(
     inputs_mapping: dict[str, Any] | None = None,
 ) -> str:
     """Register an event subscription. Returns subscription_id."""
-    if event_type not in VALID_EVENT_TYPES:
+    if not _is_valid_event_type(event_type):
         raise ValueError(
-            f"unknown event_type {event_type!r}; valid: {sorted(VALID_EVENT_TYPES)}"
+            f"unknown event_type {event_type!r}; valid: {sorted(VALID_EVENT_TYPES)} "
+            f"or a '{_SOURCE_EVENT_PREFIX}<id>' source event"
         )
     db = _runs_db(base_path)
     with _connect(db) as conn:
@@ -491,6 +507,11 @@ def emit_event(event: SchedulerEvent) -> None:
     s = _SINGLETON
     if s is not None:
         s._event_queue.put(event)
+
+
+def is_running() -> bool:
+    """Whether the global event bus is up (a Source delivery can be published)."""
+    return _SINGLETON is not None
 
 
 # ─── Scheduler singleton ──────────────────────────────────────────────────────
@@ -658,6 +679,22 @@ class Scheduler:
             except Exception:
                 logger.exception("scheduler: event dispatch error for %s", event.event_id)
 
+    def _subscription_active(self, subscription_id: str) -> bool:
+        """Whether a subscription is still active RIGHT NOW (Codex #3 revocation re-check)."""
+        db = _runs_db(self._base_path)
+        try:
+            with _connect(db) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM branch_subscriptions "
+                    "WHERE subscription_id=? AND active=1",
+                    (subscription_id,),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            # Fail closed: if we cannot confirm it is active, do not fire.
+            logger.exception("scheduler: active re-check failed for %s", subscription_id)
+            return False
+
     def _dispatch_event(self, event: SchedulerEvent) -> None:
         db = _runs_db(self._base_path)
         try:
@@ -702,9 +739,27 @@ class Scheduler:
                     continue
 
             inputs_mapping = json.loads(sub["inputs_mapping_json"] or "{}")
-            inputs = {k: event.payload.get(v, v) for k, v in inputs_mapping.items()}
-            actor = f"subscriber:{sub['owner_actor']}"
+            if inputs_mapping:
+                inputs = {k: event.payload.get(v, v) for k, v in inputs_mapping.items()}
+            elif event.event_type.startswith(_SOURCE_EVENT_PREFIX):
+                # A Source event carries the branch inputs verbatim under "inputs".
+                raw_inputs = event.payload.get("inputs")
+                inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
+            else:
+                inputs = {}
+            # A subscription owned by a universe fires its branch AS that universe (the
+            # correct branch_run actor), never wrapped as a "subscriber:" identity. Legacy
+            # (non-universe) owners keep the subscriber prefix.
+            owner = str(sub["owner_actor"])
+            actor = owner if owner.startswith("universe:") else f"subscriber:{owner}"
             run_name = f"event:{event.event_type}:{sub_id[:8]}"
+            # Codex #3 revocation race: re-check the subscription is STILL active
+            # immediately before firing. A revoke (create_source→revoke_source, or
+            # unsubscribe) that landed after the snapshot above now takes effect, so an
+            # in-flight event for a revoked source does not run.
+            if not self._subscription_active(sub_id):
+                logger.info("scheduler: subscription %s revoked before fire; skipping", sub_id)
+                continue
             try:
                 self._run_fn(sub["branch_def_id"], actor, inputs, run_name)
                 logger.info(
@@ -739,8 +794,8 @@ _SINGLETON: Scheduler | None = None
 _SINGLETON_LOCK = threading.Lock()
 
 
-def _runs_db(base_path: Path) -> Path:
-    return base_path / ".runs.db"
+def _runs_db(base_path: str | Path) -> Path:
+    return Path(base_path) / ".runs.db"
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
