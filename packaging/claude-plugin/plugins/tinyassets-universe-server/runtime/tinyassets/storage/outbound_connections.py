@@ -28,7 +28,55 @@ AuthenticatedPrincipalVerifier = Callable[[], str]
 
 
 @dataclass(frozen=True)
+class OutboundEndpoint:
+    """One allowlisted egress target for an ``http`` connection (design.md D2/D3).
+
+    ``host`` is an exact hostname (lower-cased), ``path_template`` a ``/``-rooted
+    template, ``methods`` the HTTP verbs permitted. The allowlist is the REAL
+    confidentiality/egress boundary — a caller-supplied URL that does not match
+    one of these is refused before any socket is opened.
+
+    A ``{param}`` segment does NOT match "any non-empty segment": every
+    placeholder MUST carry a declared value pattern in ``param_patterns`` (name →
+    anchored regex the whole segment must full-match), so a tenant/target/id in a
+    path segment cannot silently address a different account (Codex FIX 3).
+    ``allowed_query`` names the ONLY query parameters permitted — an undeclared
+    query parameter is REFUSED, never dropped — and ``query_patterns`` optionally
+    constrains a declared query value. ``param_patterns``/``query_patterns`` are
+    stored as sorted ``(name, regex)`` pairs so the dataclass stays hashable.
+    """
+
+    host: str
+    path_template: str
+    methods: tuple[str, ...]
+    param_patterns: tuple[tuple[str, str], ...] = ()
+    allowed_query: tuple[str, ...] = ()
+    query_patterns: tuple[tuple[str, str], ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "host": self.host,
+            "path_template": self.path_template,
+            "methods": list(self.methods),
+            "param_patterns": {name: pat for name, pat in self.param_patterns},
+            "allowed_query": list(self.allowed_query),
+            "query_patterns": {name: pat for name, pat in self.query_patterns},
+        }
+
+
+@dataclass(frozen=True, repr=False)
 class ConnectionResource:
+    """Credential-BEARING connection record — for trusted server-internal use.
+
+    Carries ``credential_ref`` (the vault reference) and MUST NOT be returned to
+    an adapter/graph/CRUD/list/evidence surface — those use :class:`ConnectionView`
+    (no ``credential_ref``). Redaction is made STRUCTURAL, not conventional
+    (Codex): ``__repr__`` masks ``credential_ref`` so stringifying/logging a
+    resource (into an exception, evidence dict, or log line) never reveals it,
+    while the attribute stays reachable for the broker child and the internal
+    ownership/conflict checks that must compare it explicitly.
+    """
+
     connection_id: str
     owner_user_id: str
     connection_class: str
@@ -37,6 +85,86 @@ class ConnectionResource:
     destination: str
     credential_ref: str
     revoked_at: float | None
+    #: The channel-type registry key (design.md D2). Empty for legacy
+    #: github/slack connections that predate the descriptor; "http" selects the
+    #: general SSRF-hardened driver.
+    connection_type: str = ""
+    #: How the child applies the credential (design.md D5): "bearer" | "basic" |
+    #: "header" | "none". Empty for legacy connections.
+    auth_scheme: str = ""
+    #: The per-connection egress allowlist (design.md D3). Empty ⇒ no call.
+    allowed_endpoints: tuple[OutboundEndpoint, ...] = ()
+
+    def __repr__(self) -> str:
+        return (
+            "ConnectionResource("
+            f"connection_id={self.connection_id!r}, "
+            f"owner_user_id={self.owner_user_id!r}, "
+            f"connection_class={self.connection_class!r}, "
+            f"scopes={self.scopes!r}, "
+            f"provider={self.provider!r}, "
+            f"destination={self.destination!r}, "
+            "credential_ref='***redacted***', "
+            f"revoked_at={self.revoked_at!r}, "
+            f"connection_type={self.connection_type!r}, "
+            f"auth_scheme={self.auth_scheme!r}, "
+            f"allowed_endpoints={self.allowed_endpoints!r})"
+        )
+
+    def to_view(self) -> ConnectionView:
+        """The ONLY shape any caller/CRUD/list/evidence path may see (design.md D2).
+
+        ``credential_ref`` — the vault reference — is deliberately dropped so no
+        projection can leak it.
+        """
+        return ConnectionView(
+            connection_id=self.connection_id,
+            owner_user_id=self.owner_user_id,
+            connection_class=self.connection_class,
+            scopes=self.scopes,
+            provider=self.provider,
+            connection_type=self.connection_type,
+            auth_scheme=self.auth_scheme,
+            allowed_endpoints=self.allowed_endpoints,
+            destination=self.destination,
+            revoked_at=self.revoked_at,
+        )
+
+
+@dataclass(frozen=True)
+class ConnectionView:
+    """Redacted connection projection — carries NO ``credential_ref``/secret.
+
+    Everything a caller/CRUD/list/evidence path may see EXCEPT the vault
+    ``credential_ref``: there is no such field, so ``vars()``/``asdict()``/repr
+    cannot expose it (Codex FIX 3, structural redaction). ``provider`` is not a
+    secret and is included so existing owner projections keep working.
+    """
+
+    connection_id: str
+    owner_user_id: str
+    connection_class: str
+    scopes: tuple[str, ...]
+    provider: str
+    connection_type: str
+    auth_scheme: str
+    allowed_endpoints: tuple[OutboundEndpoint, ...]
+    destination: str
+    revoked_at: float | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "connection_id": self.connection_id,
+            "owner_user_id": self.owner_user_id,
+            "connection_class": self.connection_class,
+            "scopes": list(self.scopes),
+            "provider": self.provider,
+            "connection_type": self.connection_type,
+            "auth_scheme": self.auth_scheme,
+            "allowed_endpoints": [ep.as_dict() for ep in self.allowed_endpoints],
+            "destination": self.destination,
+            "revoked_at": self.revoked_at,
+        }
 
 
 @dataclass(frozen=True)
@@ -199,6 +327,58 @@ _SSRF_CHILD_ENV_DENYLIST = (
 def _sanitize_child_environment() -> None:
     for name in _SSRF_CHILD_ENV_DENYLIST:
         os.environ.pop(name, None)
+
+
+#: Default-OFF flag gating the general ``http`` connection path. Until a
+#: deployment sets this truthy, an ``http`` connection fails closed even if one
+#: is created — nothing routes through the general driver by default.
+_OUTBOUND_HTTP_FLAG = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
+
+#: The only connection_type values a connection may be created with. Empty is the
+#: legacy/untyped github/slack shape; "http" is the general typed connection. Any
+#: other value is refused at creation AND fails closed at dispatch (FIX 1).
+_KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
+
+#: The ONLY credential_ref scheme an ``http`` connection may reference. Binding
+#: the credential's scheme to the connection type is what stops a confused-deputy
+#: exfil (an http connection referencing a `workos-pipes://github/...` token and
+#: POSTing it to an attacker's endpoint) — Codex FIX 1.
+_HTTP_CREDENTIAL_REF_PREFIX = "vault://http/"
+
+
+def _validate_connection_credential_scheme(
+    connection_type: str, credential_ref: str
+) -> None:
+    """Enforce the type<->credential-scheme biconditional (creation AND dispatch).
+
+    An ``http`` connection may reference ONLY a ``vault://http/`` credential, and
+    a non-http (legacy) connection may NEVER reference one. Applying the SAME rule
+    at DISPATCH to the freshly re-read row — not only at creation — closes the
+    connection-row mutation TOCTOU: a proxy started for one type whose row is
+    later mutated to a different type/scheme (e.g. legacy-github -> http with an
+    attacker allowlist) is refused before any credential is resolved, so no
+    foreign-scheme token can be vended to the current-type driver (Codex FIX 1,
+    TOCTOU).
+    """
+    ctype = (connection_type or "").strip().lower()
+    is_http_ref = (credential_ref or "").strip().startswith(_HTTP_CREDENTIAL_REF_PREFIX)
+    if ctype == "http" and not is_http_ref:
+        raise SsrfValidationError(
+            "an http connection credential_ref must be a vault://http/ reference"
+        )
+    if ctype != "http" and is_http_ref:
+        raise SsrfValidationError(
+            "a non-http connection must not use a vault://http/ credential_ref"
+        )
+
+
+def _outbound_http_enabled() -> bool:
+    return os.environ.get(_OUTBOUND_HTTP_FLAG, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _run_proxy_worker(
@@ -377,7 +557,17 @@ class CredentialBlindBroker:
                 f"verb {verb!r} is outside the granted connection scope"
             )
         try:
-            credential = self._resolve_credential(resource.credential_ref)
+            # Re-validate the CURRENT row's type<->credential-scheme match (the row
+            # was just re-read and may have been mutated after proxy start), then
+            # resolve the credential selecting the resolver by the CURRENT type —
+            # not the type frozen at proxy start. Together these refuse a mutated
+            # row before any foreign-scheme token can be vended (Codex FIX 1 TOCTOU).
+            _validate_connection_credential_scheme(
+                resource.connection_type, resource.credential_ref
+            )
+            credential = self._resolve_credential(
+                resource.credential_ref, resource.connection_type
+            )
         except Exception:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError(
@@ -391,6 +581,9 @@ class CredentialBlindBroker:
                 credential=credential,
                 provider=resource.provider,
                 destination=resource.destination,
+                connection_type=resource.connection_type,
+                auth_scheme=resource.auth_scheme,
+                allowed_endpoints=resource.allowed_endpoints,
                 verb=verb,
                 request=request,
             )
@@ -525,32 +718,117 @@ class _WorkOSPipesCredentialResolver:
         return WorkOSPipesClient().vend_credential(user_id=self._owner_user_id)
 
 
-class _TrustedCredentialResolver:
-    """Select fixture or production resolution without an adapter callback."""
+class _GeneralVaultCredentialResolver:
+    """Resolve a general (non-github) connection credential from the vault.
 
-    __slots__ = ("_fixture", "_production", "_pipes", "_provider")
+    NEVER parses the destination as a github repo (Codex FIX 4): the github
+    resolver's ``__init__`` runs ``_github_repository_from_destination`` on the
+    destination, which raises for a normal http host like ``api.example.com`` and
+    crashed the broker at startup. An ``http`` connection's ``credential_ref``
+    (``vault://http/<key>``) names a per-universe vault record; its secret is
+    returned, or fail closed. A general typed-bundle resolver in
+    ``credential_vault.py`` is task 1.8 (deferred); this reads the single value.
+    """
+
+    __slots__ = ("_universe_dir",)
+
+    def __init__(self, *, universe_dir: str | Path) -> None:
+        self._universe_dir = Path(universe_dir)
+
+    def __call__(self, credential_ref: str) -> str:
+        ref = (credential_ref or "").strip()
+        prefix = "vault://http/"
+        if not ref.startswith(prefix):
+            raise RuntimeError("credential reference has no trusted resolver")
+        record_key = ref[len(prefix):].strip()
+        if not record_key:
+            raise RuntimeError("credential reference is unavailable")
+        from tinyassets.credential_vault import load_credential_vault
+
+        for record in load_credential_vault(self._universe_dir):
+            if str(record.get("credential_type") or "").strip().lower() != "http":
+                continue
+            if str(record.get("destination") or "").strip() != record_key:
+                continue
+            for key in ("token", "access_token", "secret", "api_key"):
+                value = record.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            raise RuntimeError("credential reference is unavailable")
+        raise RuntimeError("credential reference is unavailable")
+
+
+class _TrustedCredentialResolver:
+    """Select the correct credential resolver INSIDE the broker child.
+
+    Constructing this must never crash (Codex FIX 4): the github resolver — whose
+    ``__init__`` parses the destination as a repo — is built LAZILY, only on the
+    explicit github path, so an ``http`` connection never touches it. An http
+    connection resolves through the GENERAL vault path, never the repo parser.
+    """
+
+    __slots__ = (
+        "_allow_test_fixtures",
+        "_connection_type",
+        "_destination",
+        "_owner_user_id",
+        "_provider",
+        "_universe_dir",
+    )
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._provider = str(config["provider"])
-        self._fixture = _TestFixtureCredentialResolver(
-            allow_test_fixtures=bool(config["allow_test_fixtures"]),
-        )
-        self._production = _ProductionVaultCredentialResolver(
-            universe_dir=config["universe_dir"],
-            provider=self._provider,
-            destination=str(config["destination"]),
-        )
-        self._pipes = _WorkOSPipesCredentialResolver(
-            owner_user_id=str(config["owner_user_id"]),
-            provider=self._provider,
-        )
+        self._connection_type = str(config.get("connection_type", "") or "").strip().lower()
+        self._allow_test_fixtures = bool(config["allow_test_fixtures"])
+        self._universe_dir = config["universe_dir"]
+        self._destination = str(config["destination"])
+        self._owner_user_id = str(config["owner_user_id"])
 
-    def __call__(self, credential_ref: str) -> str:
-        if self._provider.startswith("test-fixture."):
-            return self._fixture(credential_ref)
-        if credential_ref.startswith("workos-pipes://"):
-            return self._pipes(credential_ref)
-        return self._production(credential_ref)
+    def __call__(self, credential_ref: str, connection_type: str | None = None) -> str:
+        ref = credential_ref or ""
+        # Select by the CURRENT connection_type the caller supplies (the broker
+        # passes the freshly re-read row's type), falling back to the type frozen
+        # at proxy start only when none is given — so a post-start row mutation
+        # cannot force resolution through the wrong (stale) resolver (Codex FIX 1
+        # TOCTOU).
+        effective_type = (
+            connection_type if connection_type is not None else self._connection_type
+        )
+        effective_type = (effective_type or "").strip().lower()
+        # CONNECTION-TYPE-FIRST (Codex FIX 1 — confused-deputy exfiltration). An
+        # http connection resolves its credential ONLY through the general vault
+        # resolver — NEVER a scheme-specific (github/workos/slack) or fixture
+        # resolver. This is what stops a forged/mismatched credential_ref (e.g.
+        # `workos-pipes://github/victim` on an http connection) from vending a
+        # FOREIGN token that the http driver would then POST to an attacker's
+        # allowlisted endpoint. The general resolver accepts only vault://http/
+        # refs and fails closed on anything else.
+        if effective_type == "http":
+            return _GeneralVaultCredentialResolver(
+                universe_dir=self._universe_dir
+            )(credential_ref)
+        # Legacy/untyped connections keep their existing scheme-based routing.
+        # Test-fixture refs resolve through the fixture resolver — a REAL gated
+        # component, not a mock — for the legacy test paths only.
+        if (
+            self._provider.startswith("test-fixture.")
+            or ref == "test-fixture://nonsecret"
+            or ref.startswith(("test-vault-file:", "test-vault-error:"))
+        ):
+            return _TestFixtureCredentialResolver(
+                allow_test_fixtures=self._allow_test_fixtures
+            )(credential_ref)
+        if ref.startswith("workos-pipes://"):
+            return _WorkOSPipesCredentialResolver(
+                owner_user_id=self._owner_user_id, provider=self._provider
+            )(credential_ref)
+        # Legacy github path: constructed LAZILY so a non-github destination is
+        # never parsed as a repo (which crashed the broker at startup, FIX 4).
+        return _ProductionVaultCredentialResolver(
+            universe_dir=self._universe_dir,
+            provider=self._provider,
+            destination=self._destination,
+        )(credential_ref)
 
 
 class _TestFixtureNetworkDriver:
@@ -838,6 +1116,35 @@ _SSRF_HOSTNAME_RE = re.compile(
 _SSRF_FORBIDDEN_URL_CHARS = re.compile(r"[\x00-\x20\x7f-\x9f\\]")
 #: Control chars (but NOT space) in a header name/value — CR/LF injection guard.
 _SSRF_FORBIDDEN_HEADER_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+#: HTTP methods a connection may declare and a caller may invoke.
+_SSRF_ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+#: An allowlist path-template placeholder segment (``{name}``). It matches EXACTLY
+#: one non-empty, non-traversal path segment when the concrete URL is checked.
+_SSRF_ENDPOINT_PLACEHOLDER_RE = re.compile(r"^\{[a-z0-9_]+\}$")
+#: A literal path-template segment: ordinary URL-path characters only. Encoded
+#: dot/slash and dot-segments are rejected separately so a template cannot smuggle
+#: traversal, and the concrete URL is already dot-segment-free (canonical parse).
+_SSRF_ENDPOINT_LITERAL_RE = re.compile(r"^[A-Za-z0-9._~%!$&'()*+,;=:@-]*$")
+#: DNS resolution runs in a worker thread bounded by this timeout so a hanging
+#: ``getaddrinfo`` (a blocking OS call the request deadline cannot interrupt
+#: mid-flight) is abandoned rather than escaping the budget (residual #3). Kept
+#: at/under the per-op + total request budget.
+_SSRF_DNS_TIMEOUT_SECONDS = 5.0
+#: One percent-encoded octet. Used to reject any encoding of a path separator or
+#: dot-segment that an origin would decode AFTER our allowlist match — `%2e` (.),
+#: `%2f` (/), `%5c` (\), plus control (<0x20, except the legal `%20` space) and
+#: high/overlong bytes (>=0x7f — overlong-UTF-8 forms of separators always use
+#: high lead/continuation bytes). `%25` (double-encoding) is rejected separately.
+_SSRF_PERCENT_ENC_RE = re.compile(r"%([0-9A-Fa-f]{2})")
+_SSRF_UNSAFE_ENCODED_BYTES = frozenset({0x2E, 0x2F, 0x5C})
+#: A permitted query-parameter NAME in an endpoint allowlist declaration.
+_SSRF_QUERY_NAME_RE = re.compile(r"^[A-Za-z0-9_.\[\]-]{1,64}$")
+#: A concrete path segment / query value longer than this is refused before the
+#: declared regex runs — bounds catastrophic-backtracking exposure on a
+#: user-declared pattern (per-universe self-inflicted at worst, but capped).
+_SSRF_MAX_MATCH_SEGMENT = 512
+#: A declared param/query value pattern longer than this is rejected at authoring.
+_SSRF_MAX_PATTERN_LEN = 256
 
 
 class ConnectionSecretBundle:
@@ -933,6 +1240,24 @@ class _CanonicalOutboundUrl:
     is_ip_literal: bool
 
 
+def _reject_unsafe_encoded_path(path: str) -> None:
+    """Refuse any percent-encoding that decodes to a hidden separator (FIX 2).
+
+    A raw dot-segment is caught by the caller; this catches the *encoded* forms
+    an origin would decode AFTER the allowlist template matches — `%2e` (.),
+    `%2f` (/), and `%5c`/`%5C` (\\, a Windows/IIS separator missed pre-fix), plus
+    overlong-UTF-8 spellings of those (which always use high bytes >=0x7f) and
+    encoded control chars. `%20` (space) stays legal so real paths still parse;
+    `%25` (double-encoding) is rejected by the caller before this runs.
+    """
+    for match in _SSRF_PERCENT_ENC_RE.finditer(path):
+        byte = int(match.group(1), 16)
+        if byte in _SSRF_UNSAFE_ENCODED_BYTES or byte < 0x20 or byte >= 0x7F:
+            raise SsrfValidationError(
+                "outbound url path contains an unsafe encoded byte"
+            )
+
+
 def _parse_canonical_https_url(
     url: str,
     *,
@@ -972,15 +1297,7 @@ def _parse_canonical_https_url(
     path = parsed.path or "/"
     if any(segment in (".", "..") for segment in path.split("/")):
         raise SsrfValidationError("outbound url path must not contain dot-segments")
-    # Percent-encoded dot/slash survives the raw dot-segment check but the origin
-    # decodes it, so `/public/%2e%2e/admin` bypasses a path-template allowlist
-    # (Codex-found). Reject encoded dots/slashes specifically — this leaves an
-    # ordinary encoded space (%20) legal, so real paths still parse.
-    lowered_path = path.lower()
-    if "%2e" in lowered_path or "%2f" in lowered_path:
-        raise SsrfValidationError(
-            "outbound url path must not contain encoded dot-segments"
-        )
+    _reject_unsafe_encoded_path(path)
     try:
         ipaddress.ip_address(host)
         is_ip_literal = True
@@ -995,6 +1312,240 @@ def _parse_canonical_https_url(
         path_qs=path_qs,
         is_ip_literal=is_ip_literal,
     )
+
+
+def _validate_endpoint_methods(methods: Any) -> tuple[str, ...]:
+    if isinstance(methods, str) or not isinstance(methods, (list, tuple)):
+        raise SsrfValidationError("endpoint methods must be a list")
+    seen: list[str] = []
+    for method in methods:
+        verb = str(method).strip().upper()
+        if verb not in _SSRF_ALLOWED_METHODS:
+            raise SsrfValidationError("endpoint method is not permitted")
+        if verb not in seen:
+            seen.append(verb)
+    if not seen:
+        raise SsrfValidationError("endpoint must permit at least one method")
+    return tuple(seen)
+
+
+def _placeholder_names(path_template: str) -> list[str]:
+    return [
+        segment[1:-1]
+        for segment in path_template.split("/")
+        if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(segment)
+    ]
+
+
+def _validate_path_template(path_template: Any) -> str:
+    """Validate a stored allowlist path template (traversal-free, ``/``-rooted)."""
+    if not isinstance(path_template, str) or not path_template.startswith("/"):
+        raise SsrfValidationError("endpoint path_template must be an absolute path")
+    if _SSRF_FORBIDDEN_URL_CHARS.search(path_template):
+        raise SsrfValidationError("endpoint path_template contains forbidden characters")
+    if "%25" in path_template:
+        raise SsrfValidationError("endpoint path_template must not be double-encoded")
+    # Same encoded-separator guard the concrete URL gets (FIX 2): reject
+    # %2e/%2f/%5c and overlong/control encodings a stored template could smuggle.
+    _reject_unsafe_encoded_path(path_template)
+    for segment in path_template.split("/")[1:]:
+        if segment in (".", ".."):
+            raise SsrfValidationError("endpoint path_template must not contain dot-segments")
+        if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(segment):
+            continue
+        if not _SSRF_ENDPOINT_LITERAL_RE.match(segment):
+            raise SsrfValidationError("endpoint path_template segment is not permitted")
+    return path_template
+
+
+def _compile_declared_pattern(pattern: Any) -> str:
+    """Validate one declared value pattern (compiles, bounded), return its text."""
+    if not isinstance(pattern, str) or not pattern:
+        raise SsrfValidationError("endpoint value pattern must be a non-empty string")
+    if len(pattern) > _SSRF_MAX_PATTERN_LEN:
+        raise SsrfValidationError("endpoint value pattern is too long")
+    try:
+        re.compile(pattern)
+    except re.error:
+        raise SsrfValidationError("endpoint value pattern is invalid") from None
+    return pattern
+
+
+def _validate_param_patterns(
+    path_template: str, raw: Any
+) -> tuple[tuple[str, str], ...]:
+    """Every ``{param}`` MUST declare a value pattern; no stray patterns (FIX 3)."""
+    placeholders = _placeholder_names(path_template)
+    if len(set(placeholders)) != len(placeholders):
+        raise SsrfValidationError("endpoint path_template has duplicate placeholders")
+    placeholder_set = set(placeholders)
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SsrfValidationError("endpoint param_patterns must be an object")
+    declared = {str(name) for name in raw}
+    if declared != placeholder_set:
+        raise SsrfValidationError(
+            "endpoint param_patterns must declare exactly the path placeholders"
+        )
+    return tuple(
+        (name, _compile_declared_pattern(raw[name]))
+        for name in sorted(placeholder_set)
+    )
+
+
+def _validate_query_rules(
+    allowed_raw: Any, patterns_raw: Any
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+    """Declared query names + optional value patterns; undeclared names refused."""
+    if allowed_raw is None:
+        allowed_raw = []
+    if isinstance(allowed_raw, str) or not isinstance(allowed_raw, (list, tuple)):
+        raise SsrfValidationError("endpoint allowed_query must be a list")
+    allowed: list[str] = []
+    for name in allowed_raw:
+        text = str(name).strip()
+        if not _SSRF_QUERY_NAME_RE.match(text):
+            raise SsrfValidationError("endpoint allowed_query name is not permitted")
+        if text not in allowed:
+            allowed.append(text)
+    if patterns_raw is None:
+        patterns_raw = {}
+    if not isinstance(patterns_raw, dict):
+        raise SsrfValidationError("endpoint query_patterns must be an object")
+    patterns: list[tuple[str, str]] = []
+    for name, pattern in patterns_raw.items():
+        text = str(name).strip()
+        if text not in allowed:
+            raise SsrfValidationError(
+                "endpoint query_patterns names must be in allowed_query"
+            )
+        patterns.append((text, _compile_declared_pattern(pattern)))
+    return tuple(allowed), tuple(sorted(patterns))
+
+
+def _validate_endpoint(raw: Any) -> OutboundEndpoint:
+    """Coerce+validate one stored/authored allowlist endpoint, or fail closed."""
+    if isinstance(raw, OutboundEndpoint):
+        raw = raw.as_dict()
+    if not isinstance(raw, dict):
+        raise SsrfValidationError("endpoint must be an object")
+    host = str(raw.get("host", "")).strip().lower()
+    if not host or "%" in host or not _SSRF_HOSTNAME_RE.match(host):
+        # Allowlist hosts are real DNS hostnames only — never IP literals, never
+        # single-label names — matching the transport's own hostname policy.
+        raise SsrfValidationError("endpoint host is not a permitted hostname")
+    path_template = _validate_path_template(raw.get("path_template"))
+    allowed_query, query_patterns = _validate_query_rules(
+        raw.get("allowed_query"), raw.get("query_patterns")
+    )
+    return OutboundEndpoint(
+        host=host,
+        path_template=path_template,
+        methods=_validate_endpoint_methods(raw.get("methods")),
+        param_patterns=_validate_param_patterns(path_template, raw.get("param_patterns")),
+        allowed_query=allowed_query,
+        query_patterns=query_patterns,
+    )
+
+
+def _parse_allowed_endpoints(raw: Any) -> tuple[OutboundEndpoint, ...]:
+    """Parse the allowlist from create input or stored JSON; each is validated."""
+    if raw is None or raw == "":
+        return ()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raise SsrfValidationError("stored endpoint allowlist is invalid") from None
+    if isinstance(raw, (list, tuple)):
+        return tuple(_validate_endpoint(item) for item in raw)
+    raise SsrfValidationError("endpoint allowlist must be a list")
+
+
+def _segment_matches_pattern(segment: str, pattern: str) -> bool:
+    """Full-match one concrete segment/value against a declared pattern, bounded."""
+    if not segment or segment in (".", ".."):
+        return False
+    if len(segment) > _SSRF_MAX_MATCH_SEGMENT:
+        return False
+    return re.fullmatch(pattern, segment) is not None
+
+
+def _path_matches_template(
+    path: str, template: str, param_patterns: dict[str, str]
+) -> bool:
+    """Segment-wise match; each ``{param}`` must full-match its DECLARED pattern.
+
+    A placeholder with no declared pattern fails closed (an over-broad "any
+    non-empty segment" match is exactly the FIX 3 bypass).
+    """
+    concrete = path.split("/")
+    pattern = template.split("/")
+    if len(concrete) != len(pattern):
+        return False
+    for got, want in zip(concrete, pattern):
+        if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(want):
+            declared = param_patterns.get(want[1:-1])
+            if declared is None or not _segment_matches_pattern(got, declared):
+                return False
+            continue
+        if got != want:
+            return False
+    return True
+
+
+def _query_permitted(query_items: list[tuple[str, str]], endpoint: OutboundEndpoint) -> bool:
+    """Refuse any query parameter not DECLARED in the endpoint (FIX 3).
+
+    Queries are no longer discarded before matching: an undeclared parameter (or
+    a declared one whose value fails its pattern) refuses the whole request, so a
+    tenant/target/operation cannot ride in a query string to escape the
+    connection's destination.
+    """
+    allowed = set(endpoint.allowed_query)
+    patterns = dict(endpoint.query_patterns)
+    for name, value in query_items:
+        if name not in allowed:
+            return False
+        declared = patterns.get(name)
+        if declared is not None and not _segment_matches_pattern(value, declared):
+            return False
+    return True
+
+
+def _enforce_endpoint_allowlist(
+    canonical: _CanonicalOutboundUrl,
+    method: str,
+    endpoints: tuple[OutboundEndpoint, ...],
+) -> None:
+    """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
+
+    This is the real egress boundary: an EMPTY allowlist permits nothing, and a
+    URL whose host, method, path, OR query does not match a declared endpoint is
+    refused before any socket is opened.
+    """
+    if not endpoints:
+        raise SsrfValidationError("connection has no permitted endpoints")
+    host = canonical.hostname.strip().lower()
+    verb = (method or "").strip().upper()
+    raw_path, _, raw_query = canonical.path_qs.partition("?")
+    query_items = (
+        urllib.parse.parse_qsl(raw_query, keep_blank_values=True) if raw_query else []
+    )
+    for endpoint in endpoints:
+        if endpoint.host != host:
+            continue
+        if verb not in endpoint.methods:
+            continue
+        if not _path_matches_template(
+            raw_path, endpoint.path_template, dict(endpoint.param_patterns)
+        ):
+            continue
+        if not _query_permitted(query_items, endpoint):
+            continue
+        return
+    raise SsrfValidationError("outbound endpoint is not on the connection allowlist")
 
 
 def _classify_global_address(ip_text: str) -> str:
@@ -1050,6 +1601,65 @@ def _default_dns_resolver(hostname: str, port: int) -> list[str]:
             seen.add(addr)
             ordered.append(addr)
     return ordered
+
+
+def _threaded_dns_resolve(
+    hostname: str,
+    port: int,
+    *,
+    base_resolver: Callable[[str, int], list[str]],
+    timeout: float,
+) -> list[str]:
+    """Resolve ``hostname`` in a worker thread bounded by ``timeout`` (residual #3).
+
+    ``getaddrinfo`` is a blocking OS call the request's monotonic deadline cannot
+    interrupt once it is stuck, so a hostile/black-hole resolver could hang the
+    child indefinitely BEFORE the deadline machinery (which starts at connect
+    time) is armed. Running it in a daemon thread we abandon on timeout closes
+    that: on timeout the thread is left to die with the process and the request
+    FAILS CLOSED. The abandoned thread never mutates request state — its result
+    is read only if it finished in time.
+    """
+    outcome: dict[str, Any] = {}
+    done = threading.Event()
+
+    def _work() -> None:
+        try:
+            outcome["addresses"] = base_resolver(hostname, port)
+        except BaseException as exc:  # noqa: BLE001 - carried, re-raised on the caller thread
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(
+        target=_work,
+        name="outbound-dns-resolve",
+        daemon=True,
+    )
+    worker.start()
+    if not done.wait(max(0.0, float(timeout))):
+        # Abandon the hung getaddrinfo thread; fail closed within the budget.
+        raise SsrfValidationError("outbound host resolution exceeded the deadline")
+    error = outcome.get("error")
+    if error is not None:
+        if isinstance(error, SsrfValidationError):
+            raise error
+        raise SsrfValidationError("outbound host resolution failed") from None
+    return list(outcome.get("addresses", []))
+
+
+def _make_default_resolver(timeout: float) -> Callable[[str, int], list[str]]:
+    """The production resolver: ``getaddrinfo`` wrapped in the threaded deadline."""
+
+    def _resolver(hostname: str, port: int) -> list[str]:
+        return _threaded_dns_resolve(
+            hostname,
+            port,
+            base_resolver=_default_dns_resolver,
+            timeout=timeout,
+        )
+
+    return _resolver
 
 
 def _resolve_pinned_addresses(
@@ -1563,8 +2173,12 @@ class _SsrfHardenedHttpDriver:
         max_body_bytes: int = _SSRF_MAX_BODY_BYTES,
         max_header_count: int = _SSRF_MAX_HEADER_COUNT,
         max_header_bytes: int = _SSRF_MAX_HEADER_BYTES,
+        dns_timeout: float = _SSRF_DNS_TIMEOUT_SECONDS,
     ) -> None:
-        self._resolver = resolver or _default_dns_resolver
+        # An injected resolver is used verbatim (tests drive controlled ones);
+        # the production default wraps getaddrinfo in the threaded deadline so a
+        # hanging resolver is abandoned instead of escaping the budget.
+        self._resolver = resolver or _make_default_resolver(dns_timeout)
         self._validator = validator or _classify_global_address
         self._open_socket = open_socket or _default_open_socket
         self._ssl_context = ssl_context if ssl_context is not None else _default_ssl_context()
@@ -1585,13 +2199,22 @@ class _SsrfHardenedHttpDriver:
         headers: Any = None,
         body: Any = None,
         header_name: str = "",
+        allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
         verb = (method or "").strip().upper()
-        if verb not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        if verb not in _SSRF_ALLOWED_METHODS:
             raise SsrfValidationError("outbound method is not permitted")
         canonical = _parse_canonical_https_url(url, allowed_ports=self._allowed_ports)
+        # The per-connection endpoint allowlist is the real egress boundary
+        # (design.md D3). When supplied, the concrete host/method/path must match
+        # a declared endpoint BEFORE any resolution/socket. ``None`` means the
+        # caller is exercising the raw transport (the driver's own adversarial
+        # tests); every production call through _TrustedNetworkDriver passes a
+        # non-empty allowlist, and an empty one refuses.
+        if allowed_endpoints is not None:
+            _enforce_endpoint_allowlist(canonical, verb, allowed_endpoints)
         request_headers = _validated_request_headers(headers)
         auth_headers = _ssrf_auth_headers(auth_scheme, bundle, header_name=header_name)
         request_headers.update(auth_headers)
@@ -1632,10 +2255,40 @@ class _SsrfHardenedHttpDriver:
         return result
 
 
-class _TrustedNetworkDriver:
-    """Select fixture or production transport entirely inside the broker."""
+def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSecretBundle:
+    """Build the typed bundle for an ``http`` connection INSIDE the child (D2/D5).
 
-    __slots__ = ("_fixture", "_production")
+    The broker resolves ONE opaque credential string from the vault; this maps it
+    to the named bundle shape the auth scheme needs. ``basic`` stores the pair as
+    ``username:password`` and is split on the FIRST colon (a password may itself
+    contain colons). ``bearer``/``header`` carry a single token. The bundle never
+    crosses the process boundary and is scrubbed from the response.
+    """
+    scheme = (auth_scheme or "none").strip().lower()
+    if scheme in ("bearer", "header"):
+        return ConnectionSecretBundle(token=credential)
+    if scheme == "basic":
+        if ":" not in credential:
+            raise SsrfValidationError("basic credential must be username:password")
+        username, password = credential.split(":", 1)
+        return ConnectionSecretBundle(username=username, password=password)
+    if scheme == "none":
+        return ConnectionSecretBundle()
+    raise SsrfValidationError("auth scheme is not supported")
+
+
+class _TrustedNetworkDriver:
+    """Select fixture, github, or general http transport inside the broker child.
+
+    Routing is EXPLICIT and fails closed (Codex FIX 1). ``connection_type=="http"``
+    → the general driver (behind the default-OFF ``allow_http_connections`` flag);
+    the EMPTY legacy type → the existing fixture/github routing; ANY other
+    (unknown/unsupported) type is REFUSED — it never falls through to the legacy
+    hardcoded-destination GitHub driver, which is reachable only on the explicit
+    legacy github path.
+    """
+
+    __slots__ = ("_allow_http", "_fixture", "_http", "_production")
 
     def __init__(self, config: dict[str, Any], runtime_root: Path) -> None:
         self._fixture = _TestFixtureNetworkDriver(
@@ -1643,12 +2296,64 @@ class _TrustedNetworkDriver:
             allow_test_fixtures=bool(config["allow_test_fixtures"]),
         )
         self._production = _ProductionGitHubNetworkDriver()
+        self._allow_http = bool(config.get("allow_http_connections", False))
+        self._http = _SsrfHardenedHttpDriver()
 
     def __call__(self, **kwargs: Any) -> Any:
-        provider = str(kwargs.get("provider", ""))
-        if provider.startswith("test-fixture."):
-            return self._fixture(**kwargs)
-        return self._production(**kwargs)
+        # Pop the descriptor fields so the legacy fixture/github drivers keep
+        # their exact fixed signatures — only the http path consumes them.
+        connection_type = str(kwargs.pop("connection_type", "") or "").strip().lower()
+        auth_scheme = str(kwargs.pop("auth_scheme", "") or "")
+        allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
+        if connection_type == "http":
+            return self._dispatch_http(
+                auth_scheme=auth_scheme,
+                allowed_endpoints=tuple(allowed_endpoints),
+                credential=kwargs.get("credential", ""),
+                verb=str(kwargs.get("verb", "")),
+                request=kwargs.get("request"),
+            )
+        if connection_type == "":
+            # Legacy untyped connections only. The GitHub driver is reachable
+            # ONLY on the explicit github provider path — never as a catch-all
+            # else, so an unknown type can never smuggle a call to api.github.com.
+            provider = str(kwargs.get("provider", ""))
+            if provider.startswith("test-fixture."):
+                return self._fixture(**kwargs)
+            if provider == "github":
+                return self._production(**kwargs)
+            raise ProxyRequestError("outbound provider has no trusted transport")
+        # Unknown / unsupported connection_type: FAIL CLOSED.
+        raise ProxyRequestError("outbound connection type is not supported")
+
+    def _dispatch_http(
+        self,
+        *,
+        auth_scheme: str,
+        allowed_endpoints: tuple[OutboundEndpoint, ...],
+        credential: str,
+        verb: str,
+        request: object,
+    ) -> Any:
+        if not self._allow_http:
+            # Fail closed until a deployment enables the general http path.
+            raise ProxyRequestError("outbound http connections are not enabled")
+        if not allowed_endpoints:
+            # No allowlist ⇒ no reachable destination (the real egress boundary).
+            raise SsrfValidationError("connection has no permitted endpoints")
+        if not isinstance(request, dict):
+            raise SsrfValidationError("outbound http request shape is not permitted")
+        bundle = _build_http_secret_bundle(auth_scheme, credential)
+        return self._http(
+            bundle=bundle,
+            auth_scheme=auth_scheme,
+            method=str(verb),
+            url=request.get("url"),
+            headers=request.get("headers"),
+            body=request.get("body"),
+            header_name=str(request.get("header_name", "") or ""),
+            allowed_endpoints=allowed_endpoints,
+        )
 
 
 class _JsonlAuditWriter:
@@ -1705,7 +2410,10 @@ CREATE TABLE IF NOT EXISTS outbound_connections (
     provider        TEXT NOT NULL,
     destination     TEXT NOT NULL,
     credential_ref  TEXT NOT NULL,
-    revoked_at      REAL
+    revoked_at      REAL,
+    connection_type TEXT NOT NULL DEFAULT '',
+    auth_scheme     TEXT NOT NULL DEFAULT '',
+    allowed_endpoints_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS outbound_connection_grants (
@@ -1747,6 +2455,30 @@ def _required(name: str, value: str) -> str:
     if not normalized:
         raise ValueError(f"{name} must be non-empty")
     return normalized
+
+
+def _resource_from_row(row: sqlite3.Row) -> ConnectionResource:
+    """Build a ``ConnectionResource`` from an ``outbound_connections`` row.
+
+    The descriptor columns are read through ``.keys()`` guards so a row selected
+    before the ALTER-migration ran (should not happen — every ledger __init__
+    backfills them — but defensive) reads back as a legacy connection.
+    """
+    columns = set(row.keys())
+    endpoints_raw = row["allowed_endpoints_json"] if "allowed_endpoints_json" in columns else "[]"
+    return ConnectionResource(
+        connection_id=row["connection_id"],
+        owner_user_id=row["owner_user_id"],
+        connection_class=row["connection_class"],
+        scopes=tuple(json.loads(row["scopes_json"])),
+        provider=row["provider"],
+        destination=row["destination"],
+        credential_ref=row["credential_ref"],
+        revoked_at=row["revoked_at"],
+        connection_type=(row["connection_type"] if "connection_type" in columns else "") or "",
+        auth_scheme=(row["auth_scheme"] if "auth_scheme" in columns else "") or "",
+        allowed_endpoints=_parse_allowed_endpoints(endpoints_raw),
+    )
 
 
 def _json_object(name: str, value: dict[str, Any]) -> dict[str, Any]:
@@ -1802,6 +2534,24 @@ class ConnectionLedger:
                     "ALTER TABLE outbound_connection_grants "
                     "ADD COLUMN unprompted_action_cap_json TEXT"
                 )
+            # Backfill the channel descriptor columns onto pre-descriptor DBs.
+            # Legacy rows read back as connection_type='' (routes to the existing
+            # github/slack drivers) with an empty allowlist.
+            connection_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(outbound_connections)"
+                )
+            }
+            for column, ddl in (
+                ("connection_type", "TEXT NOT NULL DEFAULT ''"),
+                ("auth_scheme", "TEXT NOT NULL DEFAULT ''"),
+                ("allowed_endpoints_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if column not in connection_columns:
+                    connection.execute(
+                        f"ALTER TABLE outbound_connections ADD COLUMN {column} {ddl}"
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, timeout=30.0)
@@ -1846,7 +2596,28 @@ class ConnectionLedger:
         provider: str,
         destination: str,
         credential_ref: str,
-    ) -> ConnectionResource:
+        connection_type: str = "",
+        auth_scheme: str = "",
+        allowed_endpoints: Any = (),
+    ) -> ConnectionView:
+        endpoints = _parse_allowed_endpoints(allowed_endpoints)
+        normalized_type = (connection_type or "").strip().lower()
+        normalized_scheme = (auth_scheme or "").strip().lower()
+        if normalized_type not in _KNOWN_CONNECTION_TYPES:
+            # Reject unknown types at creation so a bogus type can never be stored
+            # and later fall through to a hardcoded-destination driver (FIX 1).
+            raise SsrfValidationError("connection_type is not supported")
+        # The credential SCHEME must match the connection type — the SAME rule
+        # dispatch re-checks against the current row (Codex FIX 1 + TOCTOU).
+        _validate_connection_credential_scheme(normalized_type, credential_ref)
+        if normalized_type == "http":
+            # A general http connection is only safe with a declared allowlist
+            # and a supported auth scheme (the bundle builder enforces the rest).
+            if not endpoints:
+                raise SsrfValidationError(
+                    "an http connection requires at least one allowed endpoint"
+                )
+            _build_http_secret_bundle(normalized_scheme, "credential:probe")
         resource = ConnectionResource(
             connection_id=_required("connection_id", connection_id),
             owner_user_id=_required("owner_user_id", owner_user_id),
@@ -1856,14 +2627,18 @@ class ConnectionLedger:
             destination=_required("destination", destination),
             credential_ref=_required("credential_ref", credential_ref),
             revoked_at=None,
+            connection_type=normalized_type,
+            auth_scheme=normalized_scheme,
+            allowed_endpoints=endpoints,
         )
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO outbound_connections (
                     connection_id, owner_user_id, connection_class, scopes_json,
-                    provider, destination, credential_ref, revoked_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                    provider, destination, credential_ref, revoked_at,
+                    connection_type, auth_scheme, allowed_endpoints_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
                 """,
                 (
                     resource.connection_id,
@@ -1873,11 +2648,27 @@ class ConnectionLedger:
                     resource.provider,
                     resource.destination,
                     resource.credential_ref,
+                    resource.connection_type,
+                    resource.auth_scheme,
+                    json.dumps([ep.as_dict() for ep in resource.allowed_endpoints]),
                 ),
             )
-        return resource
+        # Return the REDACTED view — no caller (not even the creator) gets
+        # credential_ref back from the default read/create API (Codex FIX 3).
+        return resource.to_view()
 
-    def get_connection(self, connection_id: str) -> ConnectionResource | None:
+    def _get_connection_resource(
+        self, connection_id: str
+    ) -> ConnectionResource | None:
+        """Credential-BEARING read for TRUSTED internal use only.
+
+        Returns the full ``ConnectionResource`` including ``credential_ref``. The
+        public ``get_connection`` returns a redacted :class:`ConnectionView`
+        instead (Codex FIX 3); this method is the explicit, named seam the broker
+        child and the internal ownership/conflict checks use when they must see
+        the credential reference. Never expose its result to an adapter/graph/CRUD
+        surface.
+        """
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM outbound_connections WHERE connection_id = ?",
@@ -1885,16 +2676,45 @@ class ConnectionLedger:
             ).fetchone()
         if row is None:
             return None
-        return ConnectionResource(
-            connection_id=row["connection_id"],
-            owner_user_id=row["owner_user_id"],
-            connection_class=row["connection_class"],
-            scopes=tuple(json.loads(row["scopes_json"])),
-            provider=row["provider"],
-            destination=row["destination"],
-            credential_ref=row["credential_ref"],
-            revoked_at=row["revoked_at"],
-        )
+        return _resource_from_row(row)
+
+    def get_connection(self, connection_id: str) -> ConnectionView | None:
+        """Redacted connection read — the default public projection (Codex FIX 3).
+
+        Returns a :class:`ConnectionView` with NO ``credential_ref`` field — the
+        redaction is structural, not a repr convention: the returned object has no
+        attribute, ``vars()``, or ``asdict()`` key for the credential reference.
+        Trusted internal code that needs the reference uses
+        ``_get_connection_resource``.
+        """
+        resource = self._get_connection_resource(connection_id)
+        return resource.to_view() if resource is not None else None
+
+    def get_connection_view(self, connection_id: str) -> ConnectionView | None:
+        """Explicit redacted-view accessor (same result as ``get_connection``)."""
+        return self.get_connection(connection_id)
+
+    def list_connection_views(
+        self,
+        *,
+        owner_user_id: str,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> list[ConnectionView]:
+        """List one owner's connections as redacted views (no credential_ref)."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM outbound_connections
+                 WHERE owner_user_id = ?
+                   AND (? = 0 OR revoked_at IS NULL)
+                 ORDER BY connection_id LIMIT ?
+                """,
+                (_required("owner_user_id", owner_user_id), int(active_only), limit),
+            ).fetchall()
+        return [_resource_from_row(row).to_view() for row in rows]
 
     def grant_connection(
         self,
@@ -1906,7 +2726,7 @@ class ConnectionLedger:
         granted_at: float | None = None,
         unprompted_action_cap: ActionCap | None = None,
     ) -> ConnectionGrant:
-        resource = self.get_connection(connection_id)
+        resource = self._get_connection_resource(connection_id)
         if resource is None:
             raise LookupError("connection resource does not exist")
         owner = _required("owner_user_id", owner_user_id)
@@ -2053,6 +2873,7 @@ class ConnectionLedger:
                 SELECT g.grant_id, g.revoked_at AS grant_revoked_at,
                        c.owner_user_id,
                        c.provider, c.destination, c.scopes_json,
+                       c.connection_type,
                        c.revoked_at AS connection_revoked_at
                   FROM outbound_connection_grants AS g
                   JOIN outbound_connections AS c
@@ -2082,6 +2903,7 @@ class ConnectionLedger:
         if len(active) != 1:
             raise GrantResolutionError("ambiguous outbound connection grants")
         row = active[0]
+        columns = set(row.keys())
         return self._start_scoped_proxy(
             grant_id=row["grant_id"],
             universe_id=universe_id,
@@ -2089,6 +2911,9 @@ class ConnectionLedger:
             destination=row["destination"],
             scopes=tuple(json.loads(row["scopes_json"])),
             owner_user_id=row["owner_user_id"],
+            connection_type=(
+                (row["connection_type"] if "connection_type" in columns else "") or ""
+            ),
         )
 
     def resolve_exact_scoped_proxy(
@@ -2101,7 +2926,7 @@ class ConnectionLedger:
         """Resolve one named current grant and connection for the principal."""
         owner_user_id = self.require_authenticated_principal_id()
         grant = self.require_active_grant(_required("grant_id", grant_id))
-        resource = self.get_connection(_required("connection_id", connection_id))
+        resource = self._get_connection_resource(_required("connection_id", connection_id))
         if resource is None:
             raise GrantResolutionError("absent outbound connection resource")
         exact = (
@@ -2120,6 +2945,7 @@ class ConnectionLedger:
             destination=resource.destination,
             scopes=resource.scopes,
             owner_user_id=resource.owner_user_id,
+            connection_type=resource.connection_type,
         )
 
     def _start_scoped_proxy(
@@ -2131,6 +2957,7 @@ class ConnectionLedger:
         destination: str,
         scopes: tuple[str, ...],
         owner_user_id: str,
+        connection_type: str = "",
     ) -> ScopedConnectionProxy:
         factory_reference = "credential_broker_v1"
         grant_runtime_id = hashlib.sha256(
@@ -2138,10 +2965,12 @@ class ConnectionLedger:
         ).hexdigest()
         factory_config = {
             "allow_test_fixtures": self._allow_test_fixtures,
+            "allow_http_connections": _outbound_http_enabled(),
             "ledger_db_path": str(self._db_path.resolve()),
             "universe_dir": str((self._db_path.parent / universe_id).resolve()),
             "provider": provider,
             "destination": destination,
+            "connection_type": (connection_type or "").strip().lower(),
             "owner_user_id": owner_user_id,
             "runtime_root": str(
                 (
@@ -2205,16 +3034,7 @@ class ConnectionLedger:
             ).fetchone()
         if row is None:
             return None
-        return ConnectionResource(
-            connection_id=row["connection_id"],
-            owner_user_id=row["owner_user_id"],
-            connection_class=row["connection_class"],
-            scopes=tuple(json.loads(row["scopes_json"])),
-            provider=row["provider"],
-            destination=row["destination"],
-            credential_ref=row["credential_ref"],
-            revoked_at=row["revoked_at"],
-        )
+        return _resource_from_row(row)
 
     def require_active_grant(self, grant_id: str) -> ConnectionGrant:
         """Return a grant only while both it and its connection are current."""

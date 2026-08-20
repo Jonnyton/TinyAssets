@@ -20,6 +20,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import re
 import socket
 import ssl
 import threading
@@ -29,6 +30,7 @@ import pytest
 
 from tinyassets.storage.outbound_connections import (
     ConnectionSecretBundle,
+    OutboundEndpoint,
     ProxyRequestError,
     SsrfValidationError,
     _classify_global_address,
@@ -36,6 +38,8 @@ from tinyassets.storage.outbound_connections import (
     _parse_canonical_https_url,
     _sanitize_child_environment,
     _SsrfHardenedHttpDriver,
+    _threaded_dns_resolve,
+    _TrustedNetworkDriver,
 )
 
 
@@ -827,3 +831,537 @@ def test_fast_response_succeeds_within_a_short_deadline(stub_server):
     )
     assert result["status"] == 200
     assert result["body"] == '{"ok": true}'
+
+
+# --------------------------------------------------------------------------- #
+# Per-connection endpoint allowlist — the real egress boundary (residual #1)
+# --------------------------------------------------------------------------- #
+def _endpoint(
+    host="public.example",
+    path_template="/api/send",
+    methods=("GET", "POST"),
+    param_patterns=None,
+    allowed_query=(),
+    query_patterns=(),
+):
+    # Every {param} in the template needs a DECLARED value pattern (FIX 3); auto-
+    # fill a permissive-but-declared one unless the test overrides it.
+    if param_patterns is None:
+        names = re.findall(r"\{([a-z0-9_]+)\}", path_template)
+        param_patterns = tuple((name, r"[A-Za-z0-9._-]+") for name in names)
+    elif isinstance(param_patterns, dict):
+        param_patterns = tuple(sorted(param_patterns.items()))
+    if isinstance(query_patterns, dict):
+        query_patterns = tuple(sorted(query_patterns.items()))
+    return OutboundEndpoint(
+        host=host,
+        path_template=path_template,
+        methods=tuple(methods),
+        param_patterns=tuple(param_patterns),
+        allowed_query=tuple(allowed_query),
+        query_patterns=tuple(query_patterns),
+    )
+
+
+def test_allowlisted_call_succeeds_through_ssrf_and_pinning(stub_server):
+    stub_server.stub.update(status=200, body=b'{"ok": true}')
+    driver, calls, context, port = _local_driver(stub_server)
+
+    result = driver(
+        bundle=ConnectionSecretBundle(token="tok-not-in-response"),
+        auth_scheme="bearer",
+        method="POST",
+        url=f"https://public.example:{port}/api/send",
+        allowed_endpoints=(_endpoint(path_template="/api/send", methods=("POST",)),),
+    )
+
+    assert result["status"] == 200
+    # The allowlisted call went out through the pinned, hostname-verified path.
+    assert calls["open_socket"] == [("127.0.0.1", port)]
+    assert context.captured_server_hostname == "public.example"
+
+
+def test_call_to_non_allowlisted_host_is_refused():
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://not-allowed.example/api/send",
+            allowed_endpoints=(_endpoint(host="public.example"),),
+        )
+
+
+def test_call_to_non_allowlisted_path_is_refused():
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/api/delete",
+            allowed_endpoints=(_endpoint(path_template="/api/send"),),
+        )
+
+
+def test_method_not_permitted_by_endpoint_is_refused():
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="DELETE",
+            url="https://public.example/api/send",
+            allowed_endpoints=(_endpoint(path_template="/api/send", methods=("GET",)),),
+        )
+
+
+def test_empty_allowlist_permits_nothing():
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="no permitted endpoints"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/api/send",
+            allowed_endpoints=(),
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://public.example/public/%2e%2e/admin",  # encoded traversal
+        "https://public.example/public/../admin",  # raw traversal
+        "https://public.example/public/%2e%2e%2fadmin",  # encoded dot+slash
+    ],
+)
+def test_traversal_against_an_allowlisted_prefix_is_refused(url):
+    # /public/{doc} would bind a single segment, but a traversal token is
+    # rejected at canonical parse BEFORE the allowlist — no call goes out either
+    # way. Prove the combined guard refuses.
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url=url,
+            allowed_endpoints=(_endpoint(path_template="/public/{doc}", methods=("GET",)),),
+        )
+
+
+def test_path_template_placeholder_binds_exactly_one_segment(stub_server):
+    stub_server.stub.update(status=200, body=b"ok")
+    driver, _calls, _context, port = _local_driver(stub_server)
+    result = driver(
+        bundle=ConnectionSecretBundle(token="tok-not-in-response"),
+        auth_scheme="bearer",
+        method="GET",
+        url=f"https://public.example:{port}/public/report-7",
+        allowed_endpoints=(_endpoint(path_template="/public/{doc}", methods=("GET",)),),
+    )
+    assert result["status"] == 200
+
+
+def test_path_template_rejects_a_different_segment_count():
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/public/a/b",
+            allowed_endpoints=(_endpoint(path_template="/public/{doc}", methods=("GET",)),),
+        )
+
+
+def test_none_allowlist_is_the_raw_transport_path_and_skips_enforcement(stub_server):
+    # allowed_endpoints=None (the default) is the raw-transport path the driver's
+    # own adversarial suite uses; it does NOT enforce an allowlist. Every
+    # production call goes through _TrustedNetworkDriver, which always supplies a
+    # non-empty allowlist (empty refuses).
+    stub_server.stub.update(status=200, body=b"ok")
+    driver, _calls, _context, port = _local_driver(stub_server)
+    result = driver(
+        bundle=ConnectionSecretBundle(token="tok-not-in-response"),
+        auth_scheme="bearer",
+        method="GET",
+        url=f"https://public.example:{port}/anything/at/all",
+    )
+    assert result["status"] == 200
+
+
+# --------------------------------------------------------------------------- #
+# Threaded DNS resolver bounded by its own timeout (residual #3)
+# --------------------------------------------------------------------------- #
+def test_threaded_resolver_returns_addresses_when_fast():
+    result = _threaded_dns_resolve(
+        "public.example",
+        443,
+        base_resolver=lambda _h, _p: ["93.184.216.34", "93.184.216.35"],
+        timeout=1.0,
+    )
+    assert result == ["93.184.216.34", "93.184.216.35"]
+
+
+def test_threaded_resolver_abandons_a_hanging_getaddrinfo():
+    entered = threading.Event()
+
+    def hang(_host, _port):
+        entered.set()
+        time.sleep(30)  # a black-hole resolver
+        return ["10.0.0.5"]
+
+    started = time.monotonic()
+    with pytest.raises(SsrfValidationError, match="deadline"):
+        _threaded_dns_resolve("public.example", 443, base_resolver=hang, timeout=0.2)
+    assert entered.is_set()
+    assert time.monotonic() - started < 3.0  # abandoned, did not hang
+
+
+def test_threaded_resolver_fails_closed_on_base_error():
+    def boom(_host, _port):
+        raise OSError("name resolution failed")
+
+    with pytest.raises(SsrfValidationError, match="resolution failed"):
+        _threaded_dns_resolve("public.example", 443, base_resolver=boom, timeout=1.0)
+
+
+def test_driver_default_resolver_is_threaded_and_deadline_bounded(monkeypatch):
+    import tinyassets.storage.outbound_connections as mod
+
+    def hang(*_args, **_kwargs):
+        time.sleep(30)
+
+    # The production default resolver wraps getaddrinfo in the threaded deadline.
+    monkeypatch.setattr(mod.socket, "getaddrinfo", hang)
+    driver = _SsrfHardenedHttpDriver(
+        validator=lambda addr: addr,
+        open_socket=_never_dial,
+        ssl_context=_PassThroughTLS(),
+        dns_timeout=0.2,
+    )
+    started = time.monotonic()
+    with pytest.raises(SsrfValidationError, match="deadline"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/x",
+        )
+    assert time.monotonic() - started < 3.0
+
+
+# --------------------------------------------------------------------------- #
+# _TrustedNetworkDriver wiring: http path behind a default-OFF flag
+# --------------------------------------------------------------------------- #
+def _trusted(tmp_path, *, allow_http):
+    return _TrustedNetworkDriver(
+        {"allow_test_fixtures": True, "allow_http_connections": allow_http},
+        tmp_path,
+    )
+
+
+def test_http_path_fails_closed_when_flag_disabled(tmp_path):
+    driver = _trusted(tmp_path, allow_http=False)
+    with pytest.raises(ProxyRequestError, match="not enabled"):
+        driver(
+            credential="c",
+            provider="http",
+            destination="d",
+            connection_type="http",
+            auth_scheme="bearer",
+            allowed_endpoints=(_endpoint(path_template="/x", methods=("GET",)),),
+            verb="GET",
+            request={"url": "https://public.example/x"},
+        )
+
+
+def test_http_path_refuses_empty_allowlist_even_when_enabled(tmp_path):
+    driver = _trusted(tmp_path, allow_http=True)
+    with pytest.raises(SsrfValidationError, match="no permitted endpoints"):
+        driver(
+            credential="c",
+            provider="http",
+            destination="d",
+            connection_type="http",
+            auth_scheme="bearer",
+            allowed_endpoints=(),
+            verb="GET",
+            request={"url": "https://public.example/x"},
+        )
+
+
+def test_http_path_builds_typed_bundle_and_forwards_the_allowlist(tmp_path):
+    driver = _trusted(tmp_path, allow_http=True)
+    captured: dict = {}
+
+    def fake_http(**kwargs):
+        captured.update(kwargs)
+        return {"status": 200, "reason": "OK", "headers": {}, "body": "ok"}
+
+    driver._http = fake_http
+    endpoints = (_endpoint(path_template="/x", methods=("GET",)),)
+    result = driver(
+        credential="s3cr3t-http-token",
+        provider="http",
+        destination="d",
+        connection_type="http",
+        auth_scheme="bearer",
+        allowed_endpoints=endpoints,
+        verb="GET",
+        request={"url": "https://public.example/x", "headers": {"X-Trace": "1"}},
+    )
+    assert result["status"] == 200
+    # The single vault credential became a typed bundle INSIDE the child.
+    assert isinstance(captured["bundle"], ConnectionSecretBundle)
+    assert captured["bundle"].get("token") == "s3cr3t-http-token"
+    assert captured["method"] == "GET"
+    assert captured["allowed_endpoints"] == endpoints
+    assert captured["url"] == "https://public.example/x"
+
+
+def test_basic_scheme_splits_credential_into_username_and_password(tmp_path):
+    driver = _trusted(tmp_path, allow_http=True)
+    captured: dict = {}
+
+    def fake_http(**kwargs):
+        captured.update(kwargs)
+        return {"status": 200, "reason": "OK", "headers": {}, "body": "ok"}
+
+    driver._http = fake_http
+    driver(
+        credential="admin:p4ss:with:colons",
+        provider="http",
+        destination="d",
+        connection_type="http",
+        auth_scheme="basic",
+        allowed_endpoints=(_endpoint(path_template="/x", methods=("GET",)),),
+        verb="GET",
+        request={"url": "https://public.example/x"},
+    )
+    bundle = captured["bundle"]
+    assert bundle.get("username") == "admin"
+    # Split on the FIRST colon only — a password may contain colons.
+    assert bundle.get("password") == "p4ss:with:colons"
+
+
+def test_legacy_connection_ignores_descriptor_and_routes_to_fixture(tmp_path):
+    # A legacy connection (connection_type="") with the new descriptor kwargs
+    # present still routes to the fixture driver with its fixed signature.
+    driver = _trusted(tmp_path, allow_http=True)
+    result = driver(
+        credential="c",
+        provider="test-fixture.created",
+        destination="github.com/acme/widgets",
+        connection_type="",
+        auth_scheme="",
+        allowed_endpoints=(),
+        verb="pull_requests:write",
+        request={"title": "Ship"},
+    )
+    assert result == {"status": "created"}
+
+
+# --------------------------------------------------------------------------- #
+# FIX 1 — fail-OPEN on unknown connection_type (Codex REJECT)
+# --------------------------------------------------------------------------- #
+def test_unknown_connection_type_never_reaches_the_github_driver(tmp_path):
+    # Repro: connection_type="htpt" (typo), provider="github", empty allowlist,
+    # flag off. Pre-fix this FELL THROUGH to the legacy github driver
+    # (destination api.github.com) — an endpoint on no allowlist. It must fail
+    # closed and never touch the production driver.
+    driver = _trusted(tmp_path, allow_http=False)
+    reached = {"github": False}
+
+    def spy(**_kwargs):
+        reached["github"] = True
+        return {"status": "created"}
+
+    driver._production = spy
+    with pytest.raises(ProxyRequestError, match="not supported"):
+        driver(
+            credential="c",
+            provider="github",
+            destination="github.com/acme/widgets",
+            connection_type="htpt",
+            auth_scheme="",
+            allowed_endpoints=(),
+            verb="pull_requests:write",
+            request={"title": "x"},
+        )
+    assert reached["github"] is False
+
+
+def test_legacy_untyped_non_github_provider_is_refused(tmp_path):
+    # The github driver is reachable ONLY on the explicit github provider path,
+    # never as a catch-all else for a legacy (empty-type) connection.
+    driver = _trusted(tmp_path, allow_http=False)
+    reached = {"github": False}
+
+    def spy(**_kwargs):
+        reached["github"] = True
+        return {"status": "created"}
+
+    driver._production = spy
+    with pytest.raises(ProxyRequestError, match="no trusted transport"):
+        driver(
+            credential="c",
+            provider="slack",
+            destination="d",
+            connection_type="",
+            auth_scheme="",
+            allowed_endpoints=(),
+            verb="GET",
+            request={},
+        )
+    assert reached["github"] is False
+
+
+# --------------------------------------------------------------------------- #
+# FIX 2 — encoded backslash + overlong-UTF-8 separator traversal (Codex REJECT)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://public.example/public/%5c../admin",  # encoded backslash
+        "https://public.example/public/%5C../admin",  # uppercase encoded backslash
+        "https://public.example/public/%c0%af/admin",  # overlong-UTF-8 slash
+        "https://public.example/public/%c0%ae%c0%ae/admin",  # overlong dots
+        "https://public.example/public/%255c../admin",  # double-encoded backslash
+    ],
+)
+def test_encoded_backslash_or_overlong_traversal_is_refused(url):
+    # A Windows/IIS origin decodes %5c as a path separator; overlong UTF-8 spells
+    # a separator with high bytes. Both must be refused at canonical parse before
+    # the allowlist template ({doc}) can bind the segment.
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url=url,
+            allowed_endpoints=(
+                _endpoint(path_template="/public/{doc}/admin", methods=("GET",)),
+            ),
+        )
+
+
+def test_encoded_space_still_allowed_after_fix2():
+    # The tighter scan must still leave a legitimate %20 legal (positive control).
+    parsed = _parse_canonical_https_url(
+        "https://api.example.com/a%20b/c", allowed_ports=frozenset({443})
+    )
+    assert parsed.path_qs == "/a%20b/c"
+
+
+# --------------------------------------------------------------------------- #
+# FIX 3 — over-broad placeholders + query smuggling (Codex REJECT)
+# --------------------------------------------------------------------------- #
+def test_placeholder_without_declared_pattern_fails_closed():
+    # A raw endpoint whose {account_id} has NO declared pattern must not match
+    # "any non-empty segment" — that was the FIX 3 bypass (victim != self).
+    endpoint = OutboundEndpoint(
+        host="public.example",
+        path_template="/v1/accounts/{account_id}/secrets",
+        methods=("GET",),
+    )
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/v1/accounts/victim/secrets",
+            allowed_endpoints=(endpoint,),
+        )
+
+
+def test_declared_pattern_binds_the_tenant_and_refuses_others(stub_server):
+    endpoint = _endpoint(
+        host="public.example",
+        path_template="/v1/accounts/{account_id}/secrets",
+        methods=("GET",),
+        param_patterns={"account_id": "self"},  # ONLY "self"
+    )
+    stub_server.stub.update(status=200, body=b"ok")
+    driver, _calls, _ctx, port = _local_driver(stub_server)
+    ok = driver(
+        bundle=ConnectionSecretBundle(token="tok-not-in-response"),
+        auth_scheme="bearer",
+        method="GET",
+        url=f"https://public.example:{port}/v1/accounts/self/secrets",
+        allowed_endpoints=(endpoint,),
+    )
+    assert ok["status"] == 200
+
+    refuser = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        refuser(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/v1/accounts/victim/secrets",
+            allowed_endpoints=(endpoint,),
+        )
+
+
+def test_undeclared_query_parameter_is_refused():
+    # /v1/export?account=victim&mode=admin passed a /v1/export allowlist pre-fix
+    # because queries were discarded before matching. Now undeclared params refuse.
+    endpoint = _endpoint(path_template="/v1/export", methods=("GET",))  # allowed_query=()
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/v1/export?account=victim&mode=admin",
+            allowed_endpoints=(endpoint,),
+        )
+
+
+def test_undeclared_query_param_refused_even_beside_a_declared_one():
+    endpoint = _endpoint(path_template="/v1/export", methods=("GET",), allowed_query=("mode",))
+    driver = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        driver(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/v1/export?account=victim&mode=safe",
+            allowed_endpoints=(endpoint,),
+        )
+
+
+def test_declared_query_value_pattern_is_enforced(stub_server):
+    endpoint = _endpoint(
+        path_template="/v1/export",
+        methods=("GET",),
+        allowed_query=("mode",),
+        query_patterns={"mode": "safe"},
+        host="public.example",
+    )
+    stub_server.stub.update(status=200, body=b"ok")
+    driver, _calls, _ctx, port = _local_driver(stub_server)
+    ok = driver(
+        bundle=ConnectionSecretBundle(token="tok-not-in-response"),
+        auth_scheme="bearer",
+        method="GET",
+        url=f"https://public.example:{port}/v1/export?mode=safe",
+        allowed_endpoints=(endpoint,),
+    )
+    assert ok["status"] == 200
+
+    refuser = _SsrfHardenedHttpDriver(open_socket=_never_dial)
+    with pytest.raises(SsrfValidationError, match="allowlist"):
+        refuser(
+            bundle=ConnectionSecretBundle(token="t"),
+            auth_scheme="bearer",
+            method="GET",
+            url="https://public.example/v1/export?mode=admin",
+            allowed_endpoints=(endpoint,),
+        )
