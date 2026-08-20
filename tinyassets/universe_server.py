@@ -3036,6 +3036,8 @@ def create_streamable_http_app() -> Starlette:
     from starlette.responses import JSONResponse as _HookJSON
     from starlette.routing import Route as _HookRoute
 
+    from tinyassets.onboarding import onboarding_routes
+
     from tinyassets.auth.wellknown import starlette_discovery_routes
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
 
@@ -3075,6 +3077,10 @@ def create_streamable_http_app() -> Starlette:
         routes=[
             *starlette_discovery_routes(),
             *_inbound_routes,
+            # Onboarding SPA at /mcp/app — same-origin to /mcp, dark-flagged
+            # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
+            # before the MCP transport so the exact path resolves first.
+            *onboarding_routes(),
             *canonical_app.routes,
         ],
         lifespan=lifespan,
