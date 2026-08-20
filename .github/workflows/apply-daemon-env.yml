@@ -1,0 +1,113 @@
+name: Apply daemon env flag
+
+# Cloud-native config-apply primitive. Sets one non-secret TINYASSETS_* feature
+# flag in /etc/tinyassets/env on the prod droplet and restarts the daemon so it
+# takes effect — no by-hand SSH from a laptop.
+#
+# Why this exists: a compose/env config change does NOT reach the droplet on its
+# own (DEPLOY.md § "a config commit does NOT trigger a deploy"; the fail-safe
+# deploy only pins TINYASSETS_IMAGE). The documented fix was a manual
+# `ssh … git pull`, which is a laptop dependency. This workflow delivers a flag
+# through the SAME atomic helper the fail-safe uses (install-tinyassets-env.sh:
+# perm-restore + ENV-UNREADABLE marker), to the persistent host env file, so the
+# value SURVIVES container recreate with zero hosts online.
+#
+# Scope guard: feature flags only. Secret-shaped keys are refused — those go
+# through the vault / keepalive path, never a plaintext workflow input.
+#
+# Host-mutation safety: the remote mutation runs under the shared host-mutation
+# flock (/var/lock/tinyassets-host-mutation.lock) that deploy_fail_safe.sh and
+# the watchdog take, and the GH concurrency group is `deploy-prod`, so this can
+# never race a live deploy at either layer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      key:
+        description: 'Env var name — non-secret feature flag, must match ^TINYASSETS_[A-Z0-9_]+$'
+        required: true
+        type: string
+      value:
+        description: 'Value to set (e.g. 1 / 0 / enforce)'
+        required: true
+        type: string
+
+concurrency:
+  # Serialize with Deploy prod at the workflow layer; the host flock is the
+  # second layer. Never cancel an in-flight host mutation.
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST || vars.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER || vars.DO_SSH_USER }}
+      DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+      INPUT_KEY: ${{ inputs.key }}
+      INPUT_VALUE: ${{ inputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate key (non-secret feature flag only)
+        run: |
+          set -euo pipefail
+          if [[ ! "${INPUT_KEY}" =~ ^TINYASSETS_[A-Z0-9_]+$ ]]; then
+            echo "::error::key must match ^TINYASSETS_[A-Z0-9_]+\$ (got: ${INPUT_KEY})"; exit 1
+          fi
+          case "${INPUT_KEY}" in
+            *TOKEN*|*SECRET*|*KEY*|*PASSWORD*|*CREDENTIAL*|*OAUTH*)
+              echo "::error::secret-shaped keys are refused here — use the vault / keepalive path"; exit 1 ;;
+          esac
+          echo "flag ${INPUT_KEY} accepted"
+
+      - name: Verify SSH settings present
+        run: |
+          set -euo pipefail
+          : "${DO_DROPLET_HOST:?DO_DROPLET_HOST missing}"
+          : "${DO_SSH_USER:?DO_SSH_USER missing}"
+          [ -n "${DO_SSH_KEY}" ] || { echo "::error::DO_SSH_KEY missing"; exit 1; }
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s' "$DO_SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Set flag in /etc/tinyassets/env (atomic helper) + restart daemon
+        run: |
+          set -euo pipefail
+          # Ship the current helper so `set` semantics match this commit,
+          # not whatever revision the droplet checkout happens to be at.
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          # Value travels on stdin (never interpolated into the command, so no
+          # injection); the whole set+restart runs under the shared host flock.
+          printf '%s' "${INPUT_VALUE}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo flock /var/lock/tinyassets-host-mutation.lock bash -c '
+                 set -euo pipefail
+                 bash /tmp/install-tinyassets-env.sh set \"${INPUT_KEY}\"
+                 systemctl reset-failed tinyassets-daemon 2>/dev/null || true
+                 systemctl restart tinyassets-daemon
+               '"
+          echo "set ${INPUT_KEY} and restarted the daemon"
+
+      - name: Public MCP canary (--assert-handles)
+        run: |
+          set -euo pipefail
+          # Give the daemon a moment to come healthy after the restart.
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles; then
+              echo "canary green after applying ${INPUT_KEY}"; exit 0
+            fi
+            echo "waiting for daemon to come healthy (attempt $i)…"; sleep 10
+          done
+          echo "::error::public canary still red 120s after applying ${INPUT_KEY}"; exit 1
