@@ -82,6 +82,15 @@ services:
       TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE: "enforce"
       # Pass through anything in the env file.
       TINYASSETS_MCP_CANARY_URL: ${TINYASSETS_MCP_CANARY_URL:-https://tinyassets.io/mcp}
+      # MVP go-live (founder directive 2026-08-20): un-dark the two surfaces the
+      # onboarding funnel needs — the daemon-served onboarding SPA at /mcp/app, and
+      # claude serving so the universe answers on the founder's deposited subscription.
+      # Baked here (compose `environment` wins over the env_file) so they ship with
+      # the deploy — no droplet SSH / env-file edit needed. Inbound webhook + outbound
+      # http connections stay DARK (not needed for the deposit→chat onboarding; their
+      # deep hardening is post-live per AGENTS.md § Review sequencing).
+      TINYASSETS_ONBOARDING_APP: "1"
+      TINYASSETS_ALLOW_CLAUDE_SERVING: "1"
     env_file:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env
