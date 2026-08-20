@@ -39,6 +39,39 @@ def test_canonical_mcp_server_uses_exact_public_name() -> None:
     assert mcp.name == "TinyAssets"
 
 
+def test_lifespan_shutdown_drains_the_ingress_executor(monkeypatch) -> None:
+    """Codex #1: the app-ingress executor's graceful drain is only useful if the
+    daemon actually calls it on shutdown. Drive the REAL app lifespan (startup +
+    teardown via ``with TestClient(...)``) and assert the drain runs on teardown.
+
+    The lifespan imports ``shutdown_ingress_executor`` fresh in its ``finally``, so
+    patching the module attribute is picked up at teardown time.
+    """
+    import tinyassets.app_ingress_workers as workers
+
+    # Isolate from any singleton other test modules left behind: start from a fresh,
+    # clean executor so the lifespan drains real (empty) state and returns cleanly.
+    # (The test asserts the lifespan CALLS the drain — the wiring — not that it drains
+    # arbitrary accumulated global state.)
+    monkeypatch.setattr(workers, "_EXECUTOR", None, raising=False)
+    workers.get_ingress_executor()  # a fresh, pre-warmed, idle singleton (running=0)
+
+    calls = {"n": 0}
+    real = workers.shutdown_ingress_executor
+
+    def _spy(wait: bool = True) -> int:
+        calls["n"] += 1
+        return real(wait=wait)
+
+    monkeypatch.setattr(workers, "shutdown_ingress_executor", _spy)
+
+    with TestClient(create_streamable_http_app()):
+        pass  # lifespan startup, then teardown on exit
+
+    assert calls["n"] >= 1  # the daemon lifecycle drained the ingress executor
+    monkeypatch.setattr(workers, "_EXECUTOR", None, raising=False)  # leave it clean
+
+
 @pytest.mark.parametrize("path", RETIRED_DIRECTORY_PATHS)
 @pytest.mark.parametrize("method", HTTP_METHODS)
 def test_retired_directory_paths_are_ordinary_404s(

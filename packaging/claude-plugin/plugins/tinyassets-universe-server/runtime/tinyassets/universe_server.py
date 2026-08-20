@@ -1057,6 +1057,20 @@ def write_graph(
                 expected_revision=expected_revision,
             )
         )
+    if normalized == "source_channel":
+        # Owner self-serve source-channel approval + policy (re-applied
+        # 2026-08-19 after the fe1aaf32 deploy dropped this hot-patch). A
+        # GENERAL primitive: a source_code node is a code channel, a
+        # github_pull_request sink is an effector channel.
+        from tinyassets.api.source_channel import (
+            source_channel as _source_channel_impl,
+        )
+        return _source_channel_impl(
+            action=operation,
+            universe_id=graph_id,
+            branch_id=branch_id,
+            payload=payload_json,
+        )
     return _unknown_target(
         "write_graph",
         target,
@@ -1069,6 +1083,7 @@ def write_graph(
             "connection",
             "agent",
             "agent_binding",
+            "source_channel",
         ),
     )
 
@@ -2831,6 +2846,25 @@ def create_streamable_http_app() -> Starlette:
                 )
                 yield
         finally:
+            # Drain the app-ingress turn executor on graceful shutdown so accepted
+            # Slack turns are not dropped on a restart. uvicorn.run for THIS app is
+            # on the main thread, so its signal-driven shutdown runs this finally;
+            # the ingress listener itself is a daemon thread that never sees the
+            # signal, which is why the drain is hooked here (Codex #1). Best-effort
+            # + never raising: a shutdown fault must not mask the real teardown.
+            try:
+                from tinyassets.app_ingress_workers import (
+                    shutdown_ingress_executor,
+                )
+
+                _abandoned = shutdown_ingress_executor(wait=True)
+                if _abandoned:
+                    logger.warning(
+                        "app ingress: %d accepted turn(s) abandoned at shutdown",
+                        _abandoned,
+                    )
+            except Exception:  # noqa: BLE001 - shutdown drain must not mask teardown
+                logger.exception("app ingress: executor drain at shutdown failed")
             writer_barrier.release()
 
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
@@ -2873,6 +2907,56 @@ def main(
         host, port, transport,
     )
 
+    # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
+    # boot reconcile + the lease reconciler were streamable-http-only, so sse/
+    # stdio startup skipped the promised orphan cleanup). Boot reconciliation
+    # settles reservations orphaned by a crashed/killed prior process (at boot
+    # nothing is in-flight, so any open row is dead and safe to release); the
+    # periodic reconciler then settles per-call-lease-expired holds mid-run so a
+    # crashed turn's hold never bricks serving until the next reboot. Cheap +
+    # idempotent + a no-op when there are no reservations.
+    try:
+        import threading as _threading
+
+        from tinyassets.provider_assignment import (
+            reconcile_orphaned_reservations_on_boot,
+            reconcile_served_budget_leases,
+        )
+        from tinyassets.storage import data_dir as _sb_data_dir
+
+        _reclaimed = reconcile_orphaned_reservations_on_boot(_sb_data_dir())
+        if _reclaimed:
+            logger.info(
+                "served budget: released %d orphaned reservation(s) at boot",
+                _reclaimed,
+            )
+
+        def _served_budget_lease_loop() -> None:
+            import time as _time
+
+            while True:
+                _time.sleep(300.0)
+                try:
+                    _n = reconcile_served_budget_leases(_sb_data_dir())
+                    if _n:
+                        logger.info(
+                            "served budget: lease-reconciled %d stale "
+                            "reservation(s)",
+                            _n,
+                        )
+                except Exception:  # noqa: BLE001 - loop must never die
+                    logger.exception(
+                        "served budget: lease reconciliation tick failed"
+                    )
+
+        _threading.Thread(
+            target=_served_budget_lease_loop,
+            name="served-budget-lease-reconciler",
+            daemon=True,
+        ).start()
+    except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
+        logger.exception("served budget: maintenance not started")
+
     # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
@@ -2885,6 +2969,14 @@ def main(
         from tinyassets.app_ingress_http import serve_in_background
 
         serve_in_background()
+        # Founder-scoped engine MCP over HTTP: start one loopback server per
+        # serving universe so the universe agent's `run_graph`/`read_graph`
+        # tools are available on EVERY served turn after a clean boot — no
+        # manual step, surviving container recreate. No-op when the engine-MCP
+        # flag is off. Held alive by this (daemon) process for its lifetime.
+        from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
+
+        _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
         return

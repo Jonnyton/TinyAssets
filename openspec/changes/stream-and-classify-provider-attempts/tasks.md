@@ -1,0 +1,33 @@
+# Tasks — Stream and classify provider attempts (Slice 1)
+
+## 1. Types + config (base)
+- [x] 1.1 `providers/base.py`: add a timeout PROFILE to ModelConfig (idle_timeout_s, first_progress_s, init_timeout_s, soft_slo_s, absolute_cap_s) with the design defaults + backward-compat from legacy `timeout` (fields default None → `stream_timeout_profile()` fills the design defaults). Add normalized `StreamEventKind`/`LIVENESS_EVENT_KINDS` + `FailureClass` enum + `StreamTimeoutProfile`.
+- [x] 1.2 Keep `ProviderResponse` as the terminal outcome; add optional attempt-telemetry fields (failure_class, ttft_ms, last_progress_age_ms, tool_phase, exit_code, side_effect_state).
+
+## 2. Streaming reader (claude provider)
+- [x] 2.1 `claude_provider.py::complete`: launch `-p --output-format stream-json --verbose --include-partial-messages`; read stdout NDJSON line-by-line (`_read_stream`), drain stderr concurrently; assemble final text from assistant text deltas; terminal `result` = canonical response. No `communicate()`.
+- [x] 2.2 Idle watchdog: reset deadline only on real protocol events; fire `provider_idle_timeout` on idle; `interactive_deadline` on the absolute cap. Kill the process on either. Keep exit-1-<5s / crash-code / bwrap handling.
+- [x] 2.3 Classify `provider_rate_limited`/`provider_overloaded`/`authority_held`/`provider_protocol_error` from `system/api_retry` + exit.
+- [x] 2.4 Do NOT relay internal reasoning/thinking to the assembled reply.
+
+## 3. Router health/cooldown (quota + router)
+- [x] 3.1 `router.py` + `quota.py`: cooldown map by failure_class — idle/deadline → NO provider-wide cooldown; rate_limited/overloaded → cooldown until retry_after (`_rate_limit_cooldown_s`); authority_held → re-raised (quarantine). (Circuit-breaker for repeated launch failure is a later hardening — see design.md; single idle timeout is the scope here.)
+- [x] 3.2 Remove synchronous interactive sleeps: `universe_intelligence._call_writer` (was 30/60s backoff) + `call.py` gains `retry_on_exhaustion=False` for the interactive path. Sole-writer: one immediate fresh-process retry only if all providers were skipped (nothing ran / no side-effect); else end honestly.
+
+## 4. Honest notice
+- [x] 4.1 `app_ingress.py::_failure_notice`: map `failure_class` → truthful text (timeout ≠ capacity). An UNCLASSIFIED (`failure_class is None`) exhaustion renders an honest GENERIC error — it must NOT substring-guess "capacity"/"rate limit" (the exact mislabel this change removes). Real rate-limit/overload now arrives WITH its class via the router aggregate.
+
+## 5. Tests
+- [x] 5.1 Stream-fixture behavior parity: recorded stream-json → same final text (terminal result canonical + assistant-delta fallback).
+- [x] 5.2 Idle watchdog: streams with gaps → alive while progressing; idle → `provider_idle_timeout`; long-but-progressing → not failed; absolute cap → `interactive_deadline`.
+- [x] 5.3 Failure taxonomy from api_retry/exit/malformed fixtures.
+- [x] 5.4 Router: idle/deadline → no cooldown (next turn eligible); rate_limited/overloaded → cooldown w/ retry_after.
+- [x] 5.5 No-sleep assertion on the interactive path (`_call_writer` + `call_provider(retry_on_exhaustion=False)`).
+- [x] 5.6 `_failure_notice` mapping (timeout ≠ capacity; retry_after surfaced).
+- [x] 5.7 Backward-safe: a non-streaming/other provider (codex, claude `complete_json`) still returns a terminal ProviderResponse.
+
+## 6. Review + land
+- [ ] 6.1 Codex cross-family review of the implementation; resolve approve/adapt.
+- [ ] 6.2 ruff, targeted pytest green (Linux CI authoritative), plugin mirror parity.
+- [ ] 6.3 Land to main (own PR); sync delta + archive.
+- [ ] 6.4 Durable deploy to prod (founder decision) with `TINYASSETS_ALLOW_CLAUDE_SERVING=1`; verify the live capacity-mislabel is gone.

@@ -54,6 +54,17 @@ class ProviderAttemptDiagnostic:
     skip_class: SkipClass
     detail: str = ""
     cooldown_remaining_s: int | None = None
+    # Streamed-attempt taxonomy (Slice 1). ``skip_class`` stays the coarse
+    # operator-facing bucket for backward-compat; ``failure_class`` carries the
+    # precise streamed-attempt class (provider_idle_timeout / interactive_deadline
+    # / provider_rate_limited / …). Both optional + dropped from to_dict when None.
+    failure_class: str | None = None
+    retry_after_s: float | None = None
+    # Streamed-attempt side-effect state (Slice 1 blocker K): none|possible|
+    # committed — whether a tool may have run before the attempt failed. Lets the
+    # sole-writer retry policy avoid re-running a turn that already committed a
+    # side effect. Optional + dropped from to_dict when None.
+    side_effect_state: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize, dropping ``None`` fields for compactness."""
@@ -88,6 +99,37 @@ def build_chain_state(
     if allowlist is not None:
         out["allowlist"] = list(allowlist)
     return out
+
+
+def dominant_failure_class(
+    attempts: list[ProviderAttemptDiagnostic] | None,
+) -> str | None:
+    """Return the ``failure_class`` of the last FAILED attempt, or ``None``.
+
+    A single-provider chain (served / pinned / armed) exhausts by looping to
+    its one failed attempt and then raising ``AllProvidersExhaustedError``. This
+    picks out the precise streamed-attempt class so the honest user notice can
+    say *why* (idle timeout != capacity) rather than substring-matching the
+    aggregate message. Skips (never-tried providers) carry no failure_class.
+    """
+    if not attempts:
+        return None
+    for attempt in reversed(attempts):
+        if attempt.status == "failed" and attempt.failure_class:
+            return attempt.failure_class
+    return None
+
+
+def dominant_retry_after_s(
+    attempts: list[ProviderAttemptDiagnostic] | None,
+) -> float | None:
+    """Return the ``retry_after_s`` of the last failed attempt that carried one."""
+    if not attempts:
+        return None
+    for attempt in reversed(attempts):
+        if attempt.status == "failed" and attempt.retry_after_s is not None:
+            return attempt.retry_after_s
+    return None
 
 
 def classify_unavailable(error: BaseException) -> SkipClass:

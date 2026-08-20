@@ -406,13 +406,62 @@ def _make_proc_mock(returncode: int, stdout: bytes, stderr: bytes) -> MagicMock:
     return proc
 
 
+def _make_stream_proc(returncode: int, stdout_lines: list[bytes], stderr: bytes):
+    """A streaming-reader-compatible fake subprocess (ClaudeProvider.complete now
+    reads ``proc.stdout.readline()`` NDJSON + drains ``proc.stderr.read()`` instead
+    of ``communicate()``). bwrap detection still fires on the drained stderr."""
+
+    class _Stdout:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        async def readline(self):
+            return self._lines.pop(0) if self._lines else b""
+
+    class _Stderr:
+        def __init__(self, data):
+            self._data = data
+            self._sent = False
+
+        async def read(self, _n):
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._data
+
+    class _Stdin:
+        def write(self, _b): ...
+        async def drain(self): ...
+        def close(self): ...
+
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.kill = MagicMock()
+    proc.stdout = _Stdout(stdout_lines)
+    proc.stderr = _Stderr(stderr)
+    proc.stdin = _Stdin()
+
+    async def _wait():
+        return returncode
+
+    proc.wait = _wait
+    return proc
+
+
+def _sj(obj: dict) -> bytes:
+    return (json.dumps(obj) + "\n").encode("utf-8")
+
+
 class TestClaudeProviderBwrapDetection:
     def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
+        # ClaudeProvider.complete now STREAMS (stream-json reader), so use a
+        # streaming-compatible fake. bwrap detection still fires on drained stderr.
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.claude_provider import ClaudeProvider
 
         bwrap_stderr = b"bwrap: No permissions to create a new namespace\n"
-        proc = _make_proc_mock(returncode=0, stdout=b"some output", stderr=bwrap_stderr)
+        # stdout EOF immediately; stderr carries the bwrap failure signature.
+        proc = _make_stream_proc(returncode=0, stdout_lines=[], stderr=bwrap_stderr)
 
         async def fake_exec(*args, **kwargs):
             return proc
@@ -429,7 +478,15 @@ class TestClaudeProviderBwrapDetection:
         from tinyassets.providers.base import ModelConfig
         from tinyassets.providers.claude_provider import ClaudeProvider
 
-        proc = _make_proc_mock(returncode=0, stdout=b"response text", stderr=b"normal warning")
+        # A well-formed stream-json turn (init + terminal result) with benign stderr.
+        proc = _make_stream_proc(
+            returncode=0,
+            stdout_lines=[
+                _sj({"type": "system", "subtype": "init", "session_id": "s"}),
+                _sj({"type": "result", "subtype": "success", "result": "response text"}),
+            ],
+            stderr=b"normal warning",
+        )
 
         async def fake_exec(*args, **kwargs):
             return proc

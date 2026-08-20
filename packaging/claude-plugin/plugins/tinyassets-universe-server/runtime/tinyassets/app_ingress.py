@@ -296,14 +296,20 @@ def deliver_app_event(
             )
             capability = claim_provider_request(reserve, tool_name="slack_event")
             try:
+                # The routed binding is the CONFIGURED persona the founder
+                # mapping recognises (used above for recognition). It is NOT the
+                # serving binding: serving (the LLM credential) is a separate
+                # binding resolved by converse itself. Passing the persona here
+                # made converse's `status == "serving"` gate reject every turn
+                # once the two were distinct bindings, which is what silently
+                # broke Slack conversation (2026-08-19). Leave serving
+                # resolution to converse, exactly as the connector path does.
                 reply = converse(
                     routed.universe_id,
                     prompt,
                     actor_id=_actor_id(workspace_id, external_sender_id),
                     founder_grant=grant,
                     conversation_history=history,
-                    agent_binding_id=routed.agent_binding_id,
-                    binding_revision=routed.binding_revision,
                 )
             finally:
                 revoke_provider_request(capability)
@@ -318,11 +324,24 @@ def deliver_app_event(
     except Exception as exc:  # noqa: BLE001 - honesty beats silence
         logger.warning("app ingress: turn failed, posting honest notice: %s", exc)
         notice = _failure_notice(exc)
-        receipt = _post(
-            routed=routed, channel_id=channel_id, body=notice,
-            thread_ts=thread_ts, transport=transport,
-        )
-        _record_universe(notice, receipt)
+        try:
+            receipt = _post(
+                routed=routed, channel_id=channel_id, body=notice,
+                thread_ts=thread_ts, transport=transport,
+            )
+        except Exception:  # noqa: BLE001
+            # The honest-notice post itself failed. Do NOT propagate: a propagated
+            # exception makes the CALLER post another notice, and we cannot tell
+            # whether Slack committed this one before raising — a double-post is
+            # worse than a log, and we cannot notify over the transport that just
+            # failed (Codex #3: at most one user-facing post per turn).
+            logger.exception("app ingress: failure-notice post failed")
+            return AppEventDelivery(handled=True)
+        # FAIL-CLOSED (blocker H): a failure notice is NOT a terminal provider
+        # result, so it must NOT be recorded as a completed universe utterance —
+        # doing so would let a fabricated "the universe said X" turn ride into the
+        # next turn's conversation history. The founder still HEARS it (it was
+        # posted above); the durable store only ever records a real reply.
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
     if not isinstance(reply, str) or not reply.strip():
@@ -332,41 +351,154 @@ def deliver_app_event(
             "I came back empty on that one and didn't want to leave you hanging "
             "— mind saying it again? (I've kept your message.)"
         )
-        receipt = _post(
-            routed=routed, channel_id=channel_id, body=notice,
-            thread_ts=thread_ts, transport=transport,
-        )
-        _record_universe(notice, receipt)
+        try:
+            receipt = _post(
+                routed=routed, channel_id=channel_id, body=notice,
+                thread_ts=thread_ts, transport=transport,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("app ingress: empty-reply notice post failed")
+            return AppEventDelivery(handled=True)
+        # Same fail-closed rule (blocker H): an empty turn produced no terminal
+        # result, so the notice is posted but NEVER recorded as a universe reply.
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
-    receipt = _post(
-        routed=routed,
-        channel_id=channel_id,
-        body=reply,
-        thread_ts=thread_ts,
-        transport=transport,
-    )
-    # Record the universe's reply ONLY after it was delivered.
+    try:
+        receipt = _post(
+            routed=routed,
+            channel_id=channel_id,
+            body=reply,
+            thread_ts=thread_ts,
+            transport=transport,
+        )
+    except Exception:  # noqa: BLE001
+        # The reply post failed. We cannot tell whether Slack committed before
+        # raising, so we must NOT post a second (notice) message — and cannot
+        # notify over the transport that just failed. Do not record an undelivered
+        # reply. Silence + a loud log beats a possible double-post (Codex #3).
+        logger.exception("app ingress: reply post failed; not double-posting")
+        return AppEventDelivery(handled=False)
+    # Record the universe's reply ONLY after it was delivered (``_record_universe``
+    # is never-raise by contract, so it cannot surface a storage fault to the user
+    # nor propagate to trigger a second post).
     _record_universe(reply, receipt)
+    return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
+
+#: A truthful, first-person notice for the rare condition where the ingress is
+#: over capacity and refuses a turn rather than queue it unbounded (Slice 2,
+#: Codex adapt #3). It does NOT claim the message was saved — the turn was
+#: refused, so the honest ask is to resend.
+OVERLOADED_NOTICE = (
+    "I'm handling too much at once right now and couldn't start on that one, so "
+    "I stopped rather than leave you waiting on a reply that wasn't coming. "
+    "Please send it again in a moment and I'll pick it up."
+)
+
+
+def deliver_app_notice(
+    *,
+    api_app_id: str,
+    workspace_id: str,
+    channel_id: str,
+    notice: str,
+    thread_ts: str = "",
+    transport: Callable[..., Any] | None = None,
+    **_ignored: Any,
+) -> AppEventDelivery:
+    """Post a plain, SERVER-composed notice to a conversation — NO model turn.
+
+    This is how the ingress tells a user about a condition it hit BEFORE or
+    AROUND a turn rather than inside one: the executor was overloaded and refused
+    the turn, or a delivery escaped its own failure notice. It routes exactly the
+    way a real reply would (so it can only ever land where a real reply would
+    have) and, like the fail-closed failure/empty paths, NEVER records the notice
+    as a universe utterance — a server notice is not the universe speaking.
+
+    Accepts and ignores the rest of an event ``fields`` dict (``**_ignored``) so a
+    caller can splat the same fields it would pass to ``deliver_app_event``; the
+    notice text is a distinct ``notice=`` argument, not the event's ``text``.
+    """
+    if not api_app_id or not workspace_id or not channel_id or not (notice or "").strip():
+        return AppEventDelivery(handled=False)
+    routed = _route(
+        api_app_id=api_app_id,
+        workspace_id=workspace_id,
+        channel_id=channel_id,
+    )
+    if routed is None:
+        # No universe routes here, so there is nowhere this notice could
+        # legitimately be posted. Silence beats guessing, same as a real turn.
+        logger.info("app ingress: no universe routes this notice, ignoring")
+        return AppEventDelivery(handled=False)
+    receipt = _post(
+        routed=routed, channel_id=channel_id, body=notice,
+        thread_ts=thread_ts, transport=transport,
+    )
     return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
 
 def _failure_notice(exc: BaseException) -> str:
     """An honest, first-person notice for a turn that could not produce a reply.
 
-    Capacity (the universe's own writer model at its rate limit) is the common
-    case and gets its own wording — the universe runs on its founder's LLM
-    subscription, so "at capacity" is the true story, not a platform fault.
+    Derived from the structured ``failure_class`` when present (streamed-attempt
+    taxonomy), so a timeout is NEVER mislabeled as capacity. Only a genuine
+    ``provider_rate_limited`` / ``provider_overloaded`` (classified from the real
+    stream) gets rate-limit / overload wording; an UNCLASSIFIED exhaustion gets an
+    honest generic error, never a substring-guessed "capacity" story.
     """
-    name = type(exc).__name__
-    text = str(exc).lower()
-    if "exhausted" in name.lower() or "exhausted" in text or "rate limit" in text:
+    failure_class = getattr(exc, "failure_class", None)
+    retry_after = getattr(exc, "retry_after", None)
+
+    if failure_class == "provider_idle_timeout":
         return (
-            "I'm at my model's capacity right now (my writer hit its rate "
-            "limit), so I couldn't finish that turn — I didn't want to leave you "
-            "on silence. I've kept your message; give it a minute and "
+            "I started working on that but stopped making progress, so I ended "
+            "the attempt rather than hang on you (no model cooldown — your next "
+            "message goes through normally). I've kept your message; say 'try "
+            "again' and I'll pick it right back up."
+        )
+    if failure_class == "interactive_deadline":
+        return (
+            "That reply ran past my interactive window, so I stopped rather than "
+            "claim I finished — I didn't want to leave you on silence. I've kept "
+            "your message; say 'try again' and I'll take another pass."
+        )
+    if failure_class == "provider_rate_limited":
+        when = ""
+        if isinstance(retry_after, (int, float)) and retry_after > 0:
+            when = f" (retry available in about {int(retry_after)}s)"
+        return (
+            "My connected model is rate-limited right now" + when + ", so I "
+            "couldn't finish that turn. I've kept your message; give it a moment "
+            "and say the word (or 'try again') and I'll pick it right back up."
+        )
+    if failure_class == "provider_overloaded":
+        # Overload is the provider being TEMPORARILY at capacity, not your quota
+        # being spent — give it its own honest wording (blocker I) rather than
+        # calling it "rate-limited".
+        when = ""
+        if isinstance(retry_after, (int, float)) and retry_after > 0:
+            when = f" (worth another try in about {int(retry_after)}s)"
+        return (
+            "My connected model is temporarily overloaded" + when + ", so that "
+            "turn didn't go through. I've kept your message; give it a moment and "
             "say the word (or 'try again') and I'll pick it right back up."
         )
+    if failure_class == "authority_held":
+        return (
+            "My served-writer authorization is unavailable or was revoked, so I "
+            "can't run a turn until it's reconnected. I've kept your message — "
+            "reconnect your model and say 'try again'."
+        )
+
+    # An exhaustion with NO structured failure_class means we genuinely do not
+    # know it was a capacity/rate-limit event — so we must NOT claim it was one
+    # (Codex re-review blocker I; the old substring "exhausted"/"rate limit" ->
+    # "at my model's capacity" heuristic is exactly the mislabel this change
+    # removes). A real rate-limit/overload now arrives WITH its class (the router
+    # aggregates the classified attempt), so only a truly unclassified failure
+    # reaches here — render an honest generic error, never a fabricated capacity
+    # story.
     return (
         "I hit an error finishing that turn and didn't want to go quiet on you. "
         "Your message is saved — try me again in a moment."

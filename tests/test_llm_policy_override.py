@@ -277,9 +277,13 @@ def test_node_policy_overrides_branch_default():
     assert calls[0]["policy"]["preferred"]["provider"] == "codex"
 
 
-def test_fallback_fires_when_preferred_exhausted():
-    """When policy providers all fail, call_with_policy_sync falls through
-    to the role chain (tested via router's own fallback, here mocked)."""
+def test_graph_propagates_exhaustion_when_all_providers_fail():
+    """A GRAPH-level test: when the router raises AllProvidersExhaustedError,
+    the compiled branch surfaces it rather than swallowing it. (This mocks the
+    router — it does NOT exercise router fallback; the real router fall-through
+    is covered by ``test_policy_clean_failure_still_falls_back_to_the_role_chain``
+    in ``test_provider_stream_and_classify.py``, which drives the real
+    classifier.)"""
     from tinyassets.exceptions import AllProvidersExhaustedError
 
     policy = {

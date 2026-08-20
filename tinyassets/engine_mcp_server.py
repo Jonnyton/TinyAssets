@@ -51,11 +51,89 @@ _GRAPH_ID = (os.environ.get("TINYASSETS_ENGINE_GRAPH_ID") or "").strip()
 # submission, which this slice deliberately does not expose. ``user_id`` is the
 # founder, so an ACL read of the universe's OWN (possibly private) graph passes.
 _READ_CAPABILITIES = ("read", "list")
+# Slice 2 (2026-08-19): running a branch is a WRITE + submit + COSTLY action
+# (run_branch consumes model/execution budget and fires effects), so it needs the
+# founder's full capability set. `costly` is REQUIRED — without it run_branch
+# fails "Missing OAuth scope: tinyassets.extensions.costly" (verified live: the
+# agent's run_graph call reached the server and found the branch, then hit
+# exactly this gap). This matches _AUTHENTICATED_BASE_CAPABILITIES for a founder.
+# Bound ONLY for the run_graph handler, never the read handlers — least privilege.
+_RUN_CAPABILITIES = ("read", "list", "write", "submit_request", "costly")
+
+#: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
+#: engine-triggered runs per universe per rolling window.
+_RUN_GRAPH_RATE_WINDOW_S = 3600
+_RUN_GRAPH_RATE_MAX = 20
 
 
-def _bind_founder_identity():
-    """Bind ``_current_identity`` to the founder (read caps) for one call.
+def _bearer_ok(authorization_header, secret) -> bool:
+    """Constant-time check that the header carries exactly ``Bearer <secret>``.
 
+    Module-level so the HTTP auth (Codex gate #6) is unit-testable. Empty secret
+    is never OK — the listener refuses to serve without one.
+    """
+    import hmac
+
+    if not secret:
+        return False
+    return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
+
+
+def _engine_run_admit() -> bool:
+    """Atomically admit one engine-triggered run under the rolling cap, or refuse.
+
+    A dedicated engine-admission ledger (NOT the shared runs table, which would
+    over-limit legitimate browser/scheduled runs — Codex 2026-08-19 (b)). The
+    count-and-insert run inside a single ``BEGIN IMMEDIATE`` transaction, so two
+    parallel run_graph calls cannot both slip past the cap (atomic admission,
+    closing the TOCTOU race). Old rows are pruned opportunistically so the table
+    stays bounded. Fail-OPEN on any DB error: this is a spam bound, not the
+    primary control (the allowlist + approved-source gate are).
+    """
+    import sqlite3
+    import time as _time
+    from pathlib import Path as _P
+
+    data_dir = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip() or "."
+    db = _P(data_dir) / ".engine_run_admissions.db"
+    now = _time.time()
+    cutoff = now - _RUN_GRAPH_RATE_WINDOW_S
+    try:
+        conn = sqlite3.connect(str(db), timeout=10)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS admissions "
+                "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            n = conn.execute(
+                "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
+                (_GRAPH_ID, cutoff),
+            ).fetchone()[0]
+            if int(n) >= _RUN_GRAPH_RATE_MAX:
+                conn.rollback()
+                return False
+            conn.execute(
+                "INSERT INTO admissions (universe_id, ts) VALUES (?, ?)",
+                (_GRAPH_ID, now),
+            )
+            conn.execute(
+                "DELETE FROM admissions WHERE ts < ?",
+                (cutoff - _RUN_GRAPH_RATE_WINDOW_S,),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return True  # fail open — spam bound, not the primary control
+
+
+def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
+    """Bind ``_current_identity`` to the founder for one call.
+
+    ``capabilities`` defaults to the read-only set; the run_graph handler passes
+    ``_RUN_CAPABILITIES`` so a run can submit while reads stay least-privilege.
     Returns the ContextVar token so the caller can reset it. Fail-closed: with no
     actor_id we bind ANONYMOUS, and the handlers refuse private-universe reads.
     """
@@ -67,7 +145,7 @@ def _bind_founder_identity():
     identity = Identity(
         user_id=_ACTOR_ID,
         username=_ACTOR_ID,
-        capabilities=list(_READ_CAPABILITIES),
+        capabilities=list(capabilities),
     )
     return _current_identity.set(identity)
 
@@ -160,5 +238,153 @@ def get_status() -> str:
         _current_identity.reset(token)
 
 
+@mcp.tool
+def run_graph(
+    branch_def_id: str = "",
+    run_name: str = "",
+    inputs_json: str = "",
+) -> str:
+    """Run one of YOUR OWN universe's graph branches end-to-end.
+
+    This FIRES the branch's effects — e.g. an effect-only delivery branch opens a
+    real GitHub pull request. Use it to actually DO the thing you built a graph
+    for, rather than describing it: read your graph with ``read_graph
+    target="graph"`` to find the branch, then run it here.
+
+    Confinement (slice 2, 2026-08-19): the run executes as the FOUNDER and is
+    author-gated by ``run_branch`` — a branch your universe did not author is
+    refused, never run. The run is pinned to YOUR universe (its effects and
+    records land under your universe, not another). Spend is bounded by the
+    served-provider budget reservation and the per-run recursion limit; an
+    effect-only branch spends no provider budget at all.
+
+    Args:
+        branch_def_id: The branch definition id to run (from ``read_graph
+            target="graph"``). Required.
+        run_name: Optional display label for this run.
+        inputs_json: Optional JSON object of run inputs.
+    """
+    import json
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    # Single-founder scope gate (Codex ADAPT 2026-08-19): run_graph is a
+    # WRITE+COSTLY effect surface whose confinement is only proven for one
+    # isolated founder. Refuse unless THIS universe is on the explicit allowlist,
+    # even if a server was somehow started for it. Defense in depth alongside
+    # engine_mcp_http, which only starts a server for allowlisted universes.
+    from tinyassets.engine_mcp_http import run_graph_allowlist
+
+    if _GRAPH_ID not in run_graph_allowlist():
+        return json.dumps({
+            "error": (
+                "run_graph is not enabled for this universe yet; it is limited "
+                "to a vetted founder while its multi-tenant confinement is "
+                "hardened."
+            ),
+        })
+    bid = (branch_def_id or "").strip()
+    if not bid:
+        return json.dumps({
+            "error": "branch_def_id is required to run a graph.",
+        })
+
+    # Effect-spam rate limit (Codex gate #5): a prompt-injected engine could spam
+    # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
+    # the runs THIS universe can trigger via the engine per rolling window. The
+    # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
+    if not _engine_run_admit():
+        return json.dumps({
+            "error": (
+                f"run_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+            ),
+        })
+
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.universe_server import run_graph as _impl
+
+    # Run capabilities (write + submit_request) bound ONLY for this call. The
+    # graph_id is PINNED to this universe so the run records under it; the
+    # branch_def_id is author-gated by run_branch under the founder identity, so
+    # a branch the founder did not author is refused rather than run (this closes
+    # the run_graph IDOR the read-only slice deferred).
+    token = _bind_founder_identity(_RUN_CAPABILITIES)
+    try:
+        return _impl(
+            branch_def_id=bid,
+            graph_id=_GRAPH_ID,
+            run_name=(run_name or "").strip(),
+            inputs_json=(inputs_json or "").strip(),
+        )
+    finally:
+        _current_identity.reset(token)
+
+
 if __name__ == "__main__":
-    mcp.run()  # stdio transport (default) — spawned by claude -p via --mcp-config
+    # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
+    # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
+    # else stdio (spawned by claude -p via --mcp-config). Identity stays pinned
+    # to this ONE (actor, graph) via env, so the HTTP listener serves exactly one
+    # universe's own handles on loopback.
+    import os as _os2
+    _http_port = (_os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_PORT") or "").strip()
+    if _http_port:
+        # Per-request auth (Codex gate #6): the loopback listener is reachable by
+        # any in-container process, so every request must carry the shared bearer
+        # secret the launcher injected (and the provider puts in the turn's
+        # --mcp-config headers, invisible to the LLM). FAIL CLOSED: no secret ->
+        # do not serve unauthenticated.
+        import uvicorn as _uvicorn
+
+        _secret = (
+            _os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_SECRET") or ""
+        ).strip()
+        if not _secret:
+            raise SystemExit(
+                "engine MCP HTTP refuses to serve without "
+                "TINYASSETS_ENGINE_MCP_HTTP_SECRET"
+            )
+        _inner_app = mcp.http_app()
+
+        class _BearerAuth:
+            """Reject any HTTP request lacking the exact bearer secret (401).
+
+            Only ``http`` and ``lifespan`` scopes are handled; anything else
+            (e.g. a future ``websocket`` route) is refused (Codex 2026-08-19).
+            """
+
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                stype = scope.get("type")
+                if stype == "http":
+                    headers = dict(scope.get("headers") or [])
+                    provided = headers.get(b"authorization", b"").decode(
+                        "latin-1"
+                    )
+                    if not _bearer_ok(provided, _secret):
+                        await send({
+                            "type": "http.response.start",
+                            "status": 401,
+                            "headers": [(b"content-type", b"text/plain")],
+                        })
+                        await send({
+                            "type": "http.response.body",
+                            "body": b"unauthorized",
+                        })
+                        return
+                elif stype != "lifespan":
+                    return  # refuse websocket / unknown transports
+                await self.app(scope, receive, send)
+
+        _uvicorn.run(
+            _BearerAuth(_inner_app),
+            host="127.0.0.1",
+            port=int(_http_port),
+            log_level="warning",
+        )
+    else:
+        mcp.run()  # stdio transport (default)

@@ -12,7 +12,7 @@ import os
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from tinyassets.auth.middleware import ProviderRequestCarrier
@@ -21,6 +21,77 @@ if TYPE_CHECKING:
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Streamed-attempt taxonomy (Slice 1: stream-and-classify-provider-attempts)
+# ---------------------------------------------------------------------------
+
+#: Normalized kinds a raw provider stream line collapses to. Only the "real
+#: protocol event" kinds reset the idle watchdog; ``ignored`` (whitespace,
+#: internal reasoning/thinking, unknown-but-well-formed) never does.
+StreamEventKind = Literal[
+    "init",            # system/init — CLI + MCP came up
+    "text_delta",      # assistant text produced (partial delta or full message)
+    "tool_use",        # a tool call started
+    "tool_result",     # a tool call returned
+    "api_retry",       # documented provider retry event (rate-limit/overload/…)
+    "heartbeat",       # any OTHER recognized protocol event (thinking, hooks,
+                       # status, notification, stream framing, tool_progress,
+                       # tool_heartbeat, an informational rate_limit_event) — it
+                       # proves the CLI is alive and working, so it resets the
+                       # idle watchdog, but its content is NEVER relayed.
+    "result",          # terminal result event (canonical response)
+    "ignored",         # whitespace / unparseable-suppressed / non-liveness —
+                       # do NOT reset
+]
+
+#: The event kinds that count as real progress (reset the idle deadline). Note
+#: ``heartbeat`` is included: a reasoning-only stretch emits ONLY thinking +
+#: framing events (verified against a real Claude 2.1.236 trace), so excluding
+#: them false-killed a working turn at the idle boundary. They are liveness,
+#: never relayed.
+LIVENESS_EVENT_KINDS: frozenset[str] = frozenset({
+    "init", "text_delta", "tool_use", "tool_result", "api_retry",
+    "heartbeat", "result",
+})
+
+#: Structured failure classes derived from the stream + process exit. These
+#: replace the substring ``"exhausted" -> capacity`` heuristic.
+FailureClass = Literal[
+    "provider_rate_limited",
+    "provider_overloaded",
+    "authority_held",
+    "provider_idle_timeout",
+    "interactive_deadline",
+    "provider_protocol_error",
+]
+
+# Idle-watchdog profile defaults (seconds) — a PROFILE, not one wall-clock.
+# The deadline resets only on a real protocol event; a progressing turn is
+# never failed for total elapsed time. See design.md § "Idle watchdog".
+DEFAULT_INIT_TIMEOUT_S = 10.0          # process -> valid system/init
+DEFAULT_FIRST_PROGRESS_S = 20.0        # init -> first useful progress
+DEFAULT_IDLE_TIMEOUT_S = 30.0          # inter-event idle (hung completion/tool)
+DEFAULT_SOFT_SLO_S = 60.0              # status only; NOT a failure
+# A GENEROUS safety net, not a total wall-clock deadline. Idle (30s) is the
+# primary fast-hang control; this only bounds a turn that keeps streaming
+# progress for an unreasonable duration. Set well past 300s so a long but
+# genuinely progressing reply is never failed for elapsed time (the old 300s
+# total deadline was the live capacity-mislabel root cause). Reaching it is an
+# ``interactive_deadline`` — it does NOT cool the provider.
+DEFAULT_ABSOLUTE_CAP_S = 600.0         # end the turn; NO provider cooldown
+
+
+@dataclass(frozen=True, slots=True)
+class StreamTimeoutProfile:
+    """Resolved idle-watchdog thresholds for one streamed attempt."""
+
+    init_s: float = DEFAULT_INIT_TIMEOUT_S
+    first_progress_s: float = DEFAULT_FIRST_PROGRESS_S
+    idle_s: float = DEFAULT_IDLE_TIMEOUT_S
+    soft_slo_s: float = DEFAULT_SOFT_SLO_S
+    absolute_cap_s: float = DEFAULT_ABSOLUTE_CAP_S
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +120,33 @@ class ModelConfig:
     """Configuration passed to every provider call."""
 
     timeout: int = 300
-    """Subprocess / HTTP timeout in seconds."""
+    """Legacy subprocess / HTTP total timeout in seconds.
+
+    Still honored by non-streaming providers (``complete_json``, codex, ollama)
+    and by the sync router wrappers' outer margin. The STREAMING served-writer
+    path (``ClaudeProvider.complete``) no longer uses this as a total
+    wall-clock deadline — it uses the idle-watchdog profile below (which falls
+    back to the design defaults when its fields are left ``None``)."""
+
+    idle_timeout_s: float | None = None
+    """Idle-watchdog inter-event idle interval (default 30s). ``None`` = use the
+    design default; a caller may tighten/loosen a single knob without touching
+    the others (backward-compat from the legacy ``timeout`` scalar)."""
+
+    first_progress_s: float | None = None
+    """Deadline for the first useful progress after ``system/init`` (default 20s)."""
+
+    init_timeout_s: float | None = None
+    """Deadline from process start to a valid ``system/init`` (default 10s)."""
+
+    soft_slo_s: float | None = None
+    """Interactive soft SLO (default 60s). Status only — never a failure."""
+
+    absolute_cap_s: float | None = None
+    """Absolute interactive safety cap (default 600s — a generous backstop, NOT a
+    total wall-clock deadline; idle (30s) is the primary fast-hang control).
+    Reaching it ENDS the turn (``interactive_deadline``) but does NOT cool the
+    provider."""
 
     max_tokens: int | None = None
     """Optional token cap (provider-specific interpretation)."""
@@ -113,6 +210,30 @@ class ModelConfig:
     """Internal per-launch credential snapshot. Served adapters must use this
     immutable copy instead of resolving mutable vault paths at use time."""
 
+    def stream_timeout_profile(self) -> StreamTimeoutProfile:
+        """Resolve the idle-watchdog profile, filling ``None`` knobs with the
+        design defaults. Backward-compat: a config that only ever set the legacy
+        ``timeout`` scalar gets the standard profile (the streaming path does
+        not treat ``timeout`` as a total wall-clock deadline)."""
+        def _pos(value: float | None, default: float) -> float:
+            try:
+                v = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return default
+            # Non-finite / non-positive knobs fall back to the default rather
+            # than silently disabling a deadline (same hardening class as the
+            # auth-probe window below).
+            import math
+            return v if math.isfinite(v) and v > 0 else default
+
+        return StreamTimeoutProfile(
+            init_s=_pos(self.init_timeout_s, DEFAULT_INIT_TIMEOUT_S),
+            first_progress_s=_pos(self.first_progress_s, DEFAULT_FIRST_PROGRESS_S),
+            idle_s=_pos(self.idle_timeout_s, DEFAULT_IDLE_TIMEOUT_S),
+            soft_slo_s=_pos(self.soft_slo_s, DEFAULT_SOFT_SLO_S),
+            absolute_cap_s=_pos(self.absolute_cap_s, DEFAULT_ABSOLUTE_CAP_S),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderResponse:
@@ -127,6 +248,22 @@ class ProviderResponse:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_microunits: int | None = None
+    # --- Optional streamed-attempt telemetry (Slice 1) -------------------
+    # All default None so every existing construction site and non-streaming
+    # provider stays a valid terminal ProviderResponse (backward-safe).
+    failure_class: str | None = None
+    """Set only on a degraded/telemetry envelope; a successful terminal result
+    leaves this ``None``."""
+    ttft_ms: float | None = None
+    """Time-to-first-token (first assistant text delta) in ms."""
+    last_progress_age_ms: float | None = None
+    """Age of the last real protocol event when the stream ended, in ms."""
+    tool_phase: str | None = None
+    """The last tool phase observed (``tool_use`` / ``tool_result``) or None."""
+    exit_code: int | None = None
+    """The subprocess exit code, when the stream came from a subprocess."""
+    side_effect_state: str | None = None
+    """``none`` | ``possible`` | ``committed`` — whether a tool may have run."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -452,7 +589,33 @@ def subprocess_env_for_provider(
             if provider_name == "codex":
                 env["CODEX_HOME"] = str(snapshot)
             else:
-                env["CLAUDE_CONFIG_DIR"] = str(snapshot)
+                # The sealed snapshot stores the claude OAuth token in
+                # auth.json. Claude Code authenticates from
+                # CLAUDE_CODE_OAUTH_TOKEN (see entrypoint).
+                try:
+                    _tok = (snapshot / "auth.json").read_text(
+                        encoding="utf-8"
+                    ).strip()
+                except OSError:
+                    _tok = ""
+                if _tok.startswith("sk-ant-"):
+                    # Raw-token credential: authenticate via the ENV token and
+                    # KEEP CLAUDE_CONFIG_DIR on the clean isolated dir that
+                    # _provider_child_runtime_env already set — do NOT point it
+                    # at the snapshot. The snapshot is a codex-format credential
+                    # dir (config.toml + bare auth.json); pointing the claude
+                    # CLI at a non-claude config dir SILENTLY stops it from
+                    # spawning --mcp-config MCP servers, which broke the
+                    # founder-scoped engine tools (read_graph/run_graph) on every
+                    # SERVED turn while a manual `claude -p` with the same flags
+                    # worked (isolated live 2026-08-19: the engine MCP server
+                    # never launched). The token env fully authenticates, so the
+                    # config dir only needs to be a clean claude config home.
+                    env["CLAUDE_CODE_OAUTH_TOKEN"] = _tok
+                else:
+                    # JSON (.credentials.json) material: leave auth to
+                    # CLAUDE_CONFIG_DIR resolution against the snapshot.
+                    env["CLAUDE_CONFIG_DIR"] = str(snapshot)
             return env
         from tinyassets.credential_vault import (
             apply_provider_auth_env,
