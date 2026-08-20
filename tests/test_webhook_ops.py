@@ -16,7 +16,10 @@ def _wire(monkeypatch, tmp_path, *, universe="u-a", branch_exists=True):
     def _get_branch(base, *, branch_def_id):
         if not branch_exists:
             raise KeyError("no such branch")
-        return {"id": branch_def_id}
+        # Authored by the universe actor, so the author-gate (Codex #1) is satisfied for
+        # this universe's own branch. Cross-author rejection is proven end-to-end in
+        # test_webhook_inbound_hardened.py against a REAL authored branch + real identities.
+        return {"id": branch_def_id, "author": f"universe:{universe}"}
 
     monkeypatch.setattr("tinyassets.daemon_server.get_branch_definition", _get_branch)
 
@@ -28,9 +31,9 @@ def test_mint_returns_a_url_for_an_owned_branch(monkeypatch, tmp_path):
     ))
     assert out["branch_def_id"] == "b-1"
     assert out["url"].endswith("/hooks/" + out["token"])
-    # the token resolves in the store to this universe + branch
+    # the token resolves in the store to this universe + branch (no source binding)
     assert webhook_hooks.resolve(tmp_path, token=out["token"]) == {
-        "universe_id": "u-a", "branch_def_id": "b-1",
+        "universe_id": "u-a", "branch_def_id": "b-1", "source_id": None,
     }
 
 
@@ -73,4 +76,5 @@ def test_list_shows_only_your_active_hooks(monkeypatch, tmp_path):
     out = json.loads(webhook_ops._action_list_webhooks({"universe_id": "u-a"}))
     assert out["count"] == 1                                   # only the active u-a hook
     assert out["webhooks"][0]["branch_def_id"] == "b-1"
-    assert out["webhooks"][0]["url"].startswith("https://")
+    # list returns a non-secret prefix, never the raw token / full URL (Codex #6)
+    assert out["webhooks"][0]["token_prefix"] and "url" not in out["webhooks"][0]

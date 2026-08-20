@@ -54,3 +54,47 @@ works for any channel able to POST to the URL.
 - **WHEN** a caller requests an inbound webhook for a branch owned by a different universe
 - **THEN** the request is refused; a token can only be minted for a branch the caller's own
   universe owns
+
+#### Scenario: Managing inbound triggers is reachable through the advertised run handle
+
+- **WHEN** an owner drives `run_graph` with `webhook_op` (mint/revoke/list) or `source_op`
+  (create/revoke/list)
+- **THEN** the operation dispatches to the corresponding owner-scoped action without adding any
+  new advertised MCP handle, so a leaked token can always be revoked through the same surface
+
+### Requirement: The inbound rate bound is durable and per-universe aggregate
+
+The receiver SHALL bound inbound requests by BOTH a per-token and a per-universe aggregate rate
+over a sliding window, using a durable store so the bound survives a daemon restart and is shared
+across workers. A request that exceeds either bound SHALL be refused without enqueuing or emitting.
+
+#### Scenario: The aggregate bound holds across a restart
+
+- **WHEN** a token's window is filled and the process restarts (in-memory state cleared)
+- **THEN** the next request in the same window is still refused, because the admission log is durable
+
+#### Scenario: One universe's storm cannot starve another
+
+- **WHEN** one universe exhausts its per-universe aggregate over the window
+- **THEN** a different universe's inbound request in the same window is still admitted
+
+### Requirement: A Source turns a channel into a user-composed graph object with an event trigger
+
+A universe's founder SHALL be able to create a Source — a live inbound source bound to one of
+their own branches — which mints an inbound webhook and registers an event trigger. An inbound POST
+to a Source's URL SHALL publish an event that fires the bound branch as the owning universe, at most
+once per delivery, via subscription fan-out. Creating, listing, and revoking a Source SHALL be
+owner-scoped and require no per-channel platform code.
+
+#### Scenario: A Source delivery fires the bound branch as the owning universe, once per delivery
+
+- **WHEN** a POST arrives at a Source's `/hooks/<token>` URL
+- **THEN** an event is published that fires exactly the bound branch, as the owning universe (never a
+  subscriber/host identity), with the request body as input
+- **AND** a channel retry carrying the same delivery id fires the branch at most once
+
+#### Scenario: Revoking a Source stops future deliveries
+
+- **WHEN** a founder revokes a Source they own
+- **THEN** the hook is revoked (its URL 404s indistinctly) AND the event trigger is deactivated, so a
+  later delivery runs nothing; a caller from another universe cannot revoke it

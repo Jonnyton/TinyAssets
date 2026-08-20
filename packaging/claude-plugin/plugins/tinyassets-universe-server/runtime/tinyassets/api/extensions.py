@@ -443,6 +443,8 @@ def _extensions_impl(
     skip_if_running: bool = False,
     subscription_id: str = "",
     active_only: bool = True,
+    token: str = "",
+    source_id: str = "",
     outcome_id: str = "",
     evidence_url: str = "",
     gate_event_id: str = "",
@@ -568,6 +570,9 @@ def _extensions_impl(
         "payload_json": payload_json,
         "subject_id": subject_id,
         "universe_id": universe_id,
+        # Inbound-trigger ops (webhook mint/revoke/list, source create/revoke/list).
+        "token": token,
+        "source_id": source_id,
         # Surgical-rollback args (Task #22 Phase B).
         "reason": reason,
         "severity": severity,

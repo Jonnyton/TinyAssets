@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,35 @@ def _uid(kwargs: dict[str, Any]) -> str:
     return _request_universe(kwargs.get("universe_id") or "")
 
 
-def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
+def _resolve_owned_branch(base: str, branch_def_id: str, uid: str) -> tuple[str, str | None]:
+    """Resolve ``branch_def_id`` and verify the CALLER authored it (Codex #1).
+
+    Returns ``(bid, error_json_or_None)``. The author-gate is the real ownership check:
+    verifying the branch merely EXISTS is not enough — an attacker with write to their own
+    universe could otherwise mint a token for a victim's public branch. Ownership holds when
+    the branch's author is the authenticated caller, or the caller's own universe actor
+    (agent-authored branches). Indistinct error so a non-owner learns nothing.
+    """
     from tinyassets.api.branches import _resolve_branch_id
-    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.permissions import current_request_actor_id
     from tinyassets.daemon_server import get_branch_definition
+
+    not_found = json.dumps({"error": f"branch not found in your universe: {branch_def_id}"})
+    bid = _resolve_branch_id(branch_def_id, base)
+    try:
+        branch = get_branch_definition(base, branch_def_id=bid)
+    except Exception:  # noqa: BLE001
+        return bid, not_found
+    author = (branch.get("author") or "").strip()
+    caller = (current_request_actor_id() or "").strip()
+    owners = {caller, f"universe:{uid}"} - {"", "anonymous"}
+    if author not in owners:
+        return bid, not_found
+    return bid, None
+
+
+def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api.helpers import _base_path
     from tinyassets.storage import webhook_hooks
 
     uid = _uid(kwargs)
@@ -43,14 +69,9 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "branch_def_id is required."})
 
     base = _base_path()
-    bid = _resolve_branch_id(branch_def_id, base)
-    try:
-        # Resolving the definition confirms the branch exists and is reachable to this
-        # (already write-authorized) universe — a branch the universe does not own is not
-        # mintable, and the eventual run is author-gated identically to run_graph.
-        get_branch_definition(base, branch_def_id=bid)
-    except Exception:  # noqa: BLE001
-        return json.dumps({"error": f"branch not found in your universe: {branch_def_id}"})
+    bid, err = _resolve_owned_branch(base, branch_def_id, uid)
+    if err is not None:
+        return err
 
     token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid)
     url = f"{_public_base_url()}/hooks/{token}"
@@ -95,14 +116,129 @@ def _action_list_webhooks(kwargs: dict[str, Any]) -> str:
     base = _base_path()
     rows = webhook_hooks.list_for_universe(base, universe_id=uid)
     active = [r for r in rows if r.get("revoked_at") is None]
-    base_url = _public_base_url()
+    # The raw token is never stored, so the full URL cannot be reconstructed (Codex #6);
+    # show the non-secret prefix for identification. The full URL is shown once at mint.
     hooks = [{
         "branch_def_id": r["branch_def_id"],
-        "url": f"{base_url}/hooks/{r['token']}",
+        "token_prefix": r.get("token_prefix", ""),
         "created_at": r["created_at"],
-    } for r in active]
+    } for r in active if not r.get("source_id")]
     return json.dumps({
-        "text": f"You have {len(hooks)} active inbound webhook(s).",
+        "text": (
+            f"You have {len(hooks)} active inbound webhook(s). The full URL is shown only "
+            "once at creation; revoke and re-mint if you need a new one."
+        ),
         "webhooks": hooks,
         "count": len(hooks),
     })
+
+
+# ── Source nodes (Floor 2/3): a live inbound source = a hook + an event-trigger ──────
+#
+# A Source is a user-composed graph object that turns "a channel that emits events" into
+# a first-class thing: creating one MINTS a webhook token (bound to universe+branch, with a
+# source_id) AND REGISTERS a `source:<id>` event-trigger subscription. An inbound POST then
+# publishes to the event bus, which fires the bound branch as the owning universe with
+# at-most-once dedupe. Ownership is enforced by the same universe-write dispatch gate that
+# guards mint_webhook (see `_WEBHOOK_OWNER_ACTIONS`), so a Source can only ever be created,
+# listed, or revoked for the caller's OWN universe.
+
+
+def _event_type_for(source_id: str) -> str:
+    return f"source:{source_id}"
+
+
+def _action_create_source(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.scheduler import register_subscription
+    from tinyassets.storage import webhook_hooks
+
+    uid = _uid(kwargs)
+    if not uid:
+        return json.dumps({"error": "create_source requires a universe_id (your own universe)."})
+    branch_def_id = str(kwargs.get("branch_def_id", "")).strip()
+    if not branch_def_id:
+        return json.dumps({"error": "branch_def_id is required."})
+
+    base = _base_path()
+    bid, err = _resolve_owned_branch(base, branch_def_id, uid)
+    if err is not None:
+        return err
+
+    source_id = uuid.uuid4().hex
+    # Register the event-trigger FIRST so a delivery can never arrive before a subscriber
+    # exists (an event with no subscription is silently dropped). Owner is the universe, so
+    # the fired run's actor is `universe:<uid>` — the correct branch-run identity.
+    try:
+        register_subscription(
+            base,
+            branch_def_id=bid,
+            owner_actor=f"universe:{uid}",
+            event_type=_event_type_for(source_id),
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid, source_id=source_id)
+    url = f"{_public_base_url()}/hooks/{token}"
+    return json.dumps({
+        "text": (
+            "Inbound source created. Paste this URL into the channel's webhook settings; "
+            f"each delivery fires this branch (deduped per delivery):\n{url}"
+        ),
+        "url": url,
+        "token": token,
+        "source_id": source_id,
+        "branch_def_id": bid,
+    })
+
+
+def _action_list_sources(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.storage import webhook_hooks
+
+    uid = _uid(kwargs)
+    if not uid:
+        return json.dumps({"error": "list_sources requires a universe_id (your own universe)."})
+    base = _base_path()
+    rows = webhook_hooks.list_for_universe(base, universe_id=uid)
+    sources = [{
+        "source_id": r["source_id"],
+        "branch_def_id": r["branch_def_id"],
+        "token_prefix": r.get("token_prefix", ""),
+        "created_at": r["created_at"],
+    } for r in rows if r.get("source_id") and r.get("revoked_at") is None]
+    return json.dumps({
+        "text": f"You have {len(sources)} active inbound source(s).",
+        "sources": sources,
+        "count": len(sources),
+    })
+
+
+def _action_revoke_source(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.scheduler import list_scheduler_subscriptions, unregister_subscription
+    from tinyassets.storage import webhook_hooks
+
+    uid = _uid(kwargs)
+    source_id = str(kwargs.get("source_id", "")).strip()
+    if not uid or not source_id:
+        return json.dumps({"error": "revoke_source requires a universe_id and a source_id."})
+    base = _base_path()
+    # Revoke the source's hook scoped to (universe, source_id) — never by raw token, which
+    # we no longer store (Codex #6), and never another universe's source. Indistinct no-op
+    # when there is no matching active source for THIS universe.
+    revoked = webhook_hooks.revoke_source(base, universe_id=uid, source_id=source_id)
+    if not revoked:
+        return json.dumps({"text": "No matching source to revoke.", "revoked": False})
+
+    owner = f"universe:{uid}"
+    for sub in list_scheduler_subscriptions(
+        base, owner_actor=owner, event_type=_event_type_for(source_id)
+    ):
+        try:
+            unregister_subscription(
+                base, sub["subscription_id"], requesting_actor=owner,
+            )
+        except Exception:  # noqa: BLE001 - hook is already revoked; best-effort trigger teardown
+            logger.exception("revoke_source: failed to deactivate subscription for %s", source_id)
+    return json.dumps({"text": "Source revoked.", "revoked": True, "source_id": source_id})

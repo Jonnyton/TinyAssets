@@ -3,25 +3,34 @@
 A single public endpoint — ``POST /hooks/<token>`` — lets ANY channel that can fire an
 HTTP webhook trigger a branch, with zero platform code per channel. The token is the
 only authority: it was minted by a universe's founder for one of that universe's own
-branches, so an inbound POST can only ever run THAT branch as THAT universe, using that
-universe's own credentials. Nothing in the request selects identity.
+branches (which the founder authored), so an inbound POST can only ever run THAT branch
+as THAT universe, using that universe's own credentials. Nothing in the request selects
+identity.
 
 Security posture:
-- Unknown / revoked / malformed token -> 404, identical body (no enumeration signal).
-- The run's actor is ``universe:<uid>`` from the token binding; no header/body redirects it.
-- Body size-capped; per-token rate-limited; body + a filtered header subset are passed as
-  run input verbatim (user data authoritative) but never interpreted as identity.
-- Dark until the tunnel exposes ``/hooks/*`` (today ``/mcp`` only) — landing the code is safe.
+- DARK unless ``TINYASSETS_INBOUND_ENABLED`` is truthy: the flag gates the ENTIRE inbound
+  execution path (the route is not mounted, and even a direct call refuses) — dark means
+  no run can be triggered, not merely un-tunneled (Codex #2).
+- Caller-facing response is UNIFORM across all non-deliverable states — unknown, revoked,
+  malformed, disabled, un-runnable — all return 404 with an identical body (Codex #7); the
+  real reason is logged LOUDLY internally. Deliverable → 202. Load states: 429 (rate),
+  503 (saturated).
+- Replay is deduped SERVER-side on (token, exact body), never a caller header (Codex #4);
+  a replay never consumes rate budget (Codex #5) and fires at most once.
+- Admission is durable + per-token AND per-universe (Codex #3); execution is back-pressured
+  per-universe (Codex #5) so a valid-token storm cannot build unbounded run backlog.
+- The run's actor is ``universe:<uid>`` from the binding, fail-closed (Codex #1); no
+  header/body redirects it. Only an ALLOWLIST of safe headers reaches branch state; no
+  credential header and no raw token is ever forwarded or stored (Codex #6).
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
-import threading
-import time
-from collections import defaultdict, deque
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -34,33 +43,71 @@ MAX_BODY_BYTES = 256 * 1024
 _RATE_MAX = 60
 _RATE_WINDOW_S = 60.0
 
-#: Request headers never forwarded to the branch (generic transport auth / cookies). Channel
-#: verification headers (e.g. X-Hub-Signature, X-GitHub-Event) ARE forwarded so a branch can
-#: verify the sender itself — they are the channel's, not the universe's secrets.
-_HEADER_DENYLIST = frozenset({"authorization", "cookie", "proxy-authorization", "set-cookie"})
+#: Per-universe aggregate cap over the same window: many tokens minted by one universe
+#: cannot together exceed this (Codex #3 — minting had no aggregate quota). Set comfortably
+#: above the per-token cap so a single well-behaved token is never starved.
+_UNIVERSE_RATE_MAX = 600
 
-_rate_lock = threading.Lock()
-_rate_hits: dict[str, deque] = defaultdict(deque)
+#: Concurrency (not rate) back-pressure (Codex #5): the max number of in-flight (queued or
+#: running) inbound-triggered runs one universe may have at once. Beyond this the receiver
+#: fails closed (503) instead of accumulating unbounded executor backlog under slow runs.
+_MAX_INFLIGHT_PER_UNIVERSE = 20
+
+#: Replay dedupe window: a delivery repeated within this window fires the branch at most once.
+_DEDUPE_WINDOW_S = 600.0
+
+#: TTL for an ABANDONED in-flight reservation (reserved but never linked to a run because
+#: enqueue failed / the process died). Linked reservations are released on run termination.
+_RESERVATION_TTL_S = 120.0
+
+#: The ONLY request headers forwarded into branch state (Codex #6). An allowlist, not a
+#: denylist: a proxy-injected Access/OIDC assertion or an API key must never reach durable
+#: run input. These are channel content-type + verification headers a branch legitimately
+#: needs (e.g. to verify a GitHub/Stripe/GitLab signature over the raw body).
+_HEADER_ALLOWLIST = frozenset({
+    "content-type",
+    "user-agent",
+    "x-github-event",
+    "x-github-hook-id",
+    "x-github-delivery",
+    "x-hub-signature",
+    "x-hub-signature-256",
+    "x-gitlab-event",
+    "x-gitlab-instance",
+    "x-event-key",
+    "x-stripe-signature",
+    "stripe-signature",
+    "x-slack-signature",
+    "x-slack-request-timestamp",
+    "x-shopify-topic",
+    "x-shopify-hmac-sha256",
+})
+
+#: The uniform "not deliverable" response. Unknown / revoked / malformed / disabled /
+#: un-runnable all answer identically so a caller learns nothing about token existence or
+#: usability (Codex #7). The real reason is logged internally at the decision point.
+_NOT_DELIVERABLE: tuple[int, dict[str, Any]] = (404, {"error": "not_found"})
 
 
-def _admit(token: str, *, now: float | None = None) -> bool:
-    ts = time.time() if now is None else now
-    with _rate_lock:
-        hits = _rate_hits[token]
-        while hits and hits[0] <= ts - _RATE_WINDOW_S:
-            hits.popleft()
-        if len(hits) >= _RATE_MAX:
-            return False
-        hits.append(ts)
-        return True
+def inbound_enabled() -> bool:
+    """Whether the inbound webhook execution path is enabled (Codex #2). DARK by default."""
+    return os.environ.get("TINYASSETS_INBOUND_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _delivery_key(token: str, body: bytes) -> str:
+    """Server-side idempotency key for one delivery — a hash of (token, exact body). NEVER
+    derived from a caller header, so an attacker cannot alter it to force a re-run (Codex #4)."""
+    return "sha256:" + hashlib.sha256(token.encode("utf-8") + b"\x00" + body).hexdigest()
 
 
 def _safe_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Forward ONLY allowlisted headers; drop everything else (Codex #6)."""
     out: dict[str, str] = {}
     for k, v in headers.items():
-        if str(k).lower() in _HEADER_DENYLIST:
-            continue
-        out[str(k)] = str(v)
+        if str(k).lower() in _HEADER_ALLOWLIST:
+            out[str(k)] = str(v)
     return out
 
 
@@ -80,44 +127,132 @@ def handle_hook(
     headers: Mapping[str, str],
     base_path: str | Path | None = None,
     enqueue: Callable[..., str] | None = None,
+    emit: Callable[..., None] | None = None,
     now: float | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    """Authenticate a webhook by its token and enqueue the bound branch. Returns
+    """Authenticate a webhook by its token and trigger the bound branch. Returns
     ``(status, payload)``. Transport-agnostic so the security decisions are testable
-    without a server."""
+    without a server. Every internal error is caught and normalized to the uniform 404
+    (Codex #7): a valid token hitting a DB fault must not answer differently from an
+    unknown one."""
+    try:
+        return _handle_hook_inner(
+            token=token, body=body, headers=headers, base_path=base_path,
+            enqueue=enqueue, emit=emit, now=now,
+        )
+    except Exception:  # noqa: BLE001 - uniform response even on an unexpected internal fault
+        logger.exception("webhook: unhandled internal error; answering uniform 404")
+        return _NOT_DELIVERABLE
+
+
+def _handle_hook_inner(
+    *,
+    token: str,
+    body: bytes,
+    headers: Mapping[str, str],
+    base_path: str | Path | None,
+    enqueue: Callable[..., str] | None,
+    emit: Callable[..., None] | None,
+    now: float | None,
+) -> tuple[int, dict[str, Any]]:
+    """The pipeline. Ordered ATOMIC gates that hold under concurrency (Codex round-2):
+    size → enabled → resolve → **dedupe (atomic, FIRST)** → rate → **reserve (atomic:
+    active-check + in-flight cap)** → dispatch → link. Every non-deliverable exit logs its
+    real reason and returns the uniform 404; load states return 429/503."""
     if len(body) > MAX_BODY_BYTES:
         return 413, {"error": "too_large"}
 
+    if not inbound_enabled():
+        logger.info("webhook: refused — inbound disabled (dark)")
+        return _NOT_DELIVERABLE
+
+    from tinyassets.api.runs import terminal_run_ids_for_universe
     from tinyassets.storage import webhook_hooks
 
     base = Path(base_path) if base_path is not None else _default_base()
     binding = webhook_hooks.resolve(base, token=token)
     if binding is None:
-        # Unknown / revoked / malformed all answer identically — no enumeration.
-        return 404, {"error": "not_found"}
+        logger.info("webhook: refused — unknown/revoked/malformed token")
+        return _NOT_DELIVERABLE
 
-    if not _admit(token, now=now):
-        return 429, {"error": "rate_limited"}
+    universe_id = str(binding["universe_id"]).strip()
+    branch_def_id = str(binding["branch_def_id"]).strip()
+    source_id = (binding.get("source_id") or "").strip() or None
+    if not universe_id:
+        logger.error("webhook: refused — binding for a valid token had an empty universe_id")
+        return _NOT_DELIVERABLE
 
-    universe_id = str(binding["universe_id"])
-    branch_def_id = str(binding["branch_def_id"])
-    # Preserve the EXACT signed bytes (base64) alongside a parsed convenience value, so a
-    # branch can verify a channel signature (GitHub X-Hub-Signature, Stripe, …) over the
-    # original body — the forwarded verification headers are useless without them (Codex #4).
-    inputs = {"webhook": {
-        "payload": _decode_body(body),
-        "raw_base64": base64.b64encode(body).decode("ascii"),
-        "headers": _safe_headers(headers),
-    }}
+    dedupe_key = _delivery_key(token, body)
 
+    # ── Gate 1: dedupe FIRST, atomically (Codex #4/#5). N concurrent identical deliveries
+    # produce exactly ONE claim winner; losers get 202-replay WITHOUT consuming any budget.
+    if not webhook_hooks.claim_delivery(
+        base, dedupe_key=dedupe_key, window_s=_DEDUPE_WINDOW_S, now=now,
+    ):
+        logger.info("webhook: deduped replay for universe %s", universe_id)
+        return 202, {"queued": True, "deduped": True}
+
+    reservation_id: str | None = None
     try:
+        # ── Gate 2: durable atomic RATE admission (Codex #3).
+        if not webhook_hooks.admit(
+            base, token=token, universe_id=universe_id,
+            token_max=_RATE_MAX, universe_max=_UNIVERSE_RATE_MAX,
+            window_s=_RATE_WINDOW_S, now=now,
+        ):
+            webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
+            logger.info("webhook: rate-limited for universe %s", universe_id)
+            return 429, {"error": "rate_limited"}
+
+        # ── Gate 3: ONE atomic transaction — re-check the token is ACTIVE (serializes with a
+        # concurrent revoke) AND reserve an in-flight slot under the cap (Codex #3 + #5).
+        terminal = terminal_run_ids_for_universe(base, universe_id)
+        reservation_id, reason = webhook_hooks.reserve_dispatch(
+            base, token=token, universe_id=universe_id,
+            cap=_MAX_INFLIGHT_PER_UNIVERSE, ttl_s=_RESERVATION_TTL_S,
+            terminal_run_ids=terminal, now=now,
+        )
+        if reservation_id is None:
+            webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
+            if reason == "busy":
+                logger.info("webhook: at in-flight cap for universe %s", universe_id)
+                return 503, {"error": "busy"}
+            logger.info("webhook: token revoked at reserve for universe %s", universe_id)
+            return _NOT_DELIVERABLE
+
+        inputs = {"webhook": {
+            "payload": _decode_body(body),
+            "raw_base64": base64.b64encode(body).decode("ascii"),
+            "headers": _safe_headers(headers),
+        }}
+
+        if source_id is not None:
+            # The reservation is HELD (not released here): the bus fires the run later and
+            # `_inbound_event_run_fn` links + releases it. On emit failure, release below.
+            (emit or _emit_source_event)(
+                source_id=source_id, universe_id=universe_id,
+                dedupe_key=dedupe_key, inputs=inputs, reservation_id=reservation_id,
+            )
+            return 202, {"queued": True, "via": "event"}
+
         run_id = (enqueue or _enqueue_branch_run)(
             base, universe_id=universe_id, branch_def_id=branch_def_id, inputs=inputs,
         )
-    except Exception:  # noqa: BLE001 - never leak internal detail to a public caller
-        logger.exception("webhook: enqueue failed for branch %s", branch_def_id)
-        return 500, {"error": "enqueue_failed"}
-    return 202, {"queued": True, "run_id": run_id}
+        webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
+        return 202, {"queued": True}
+    except Exception:
+        # Roll back BOTH the reservation and the delivery claim so a legitimate retry works,
+        # then re-raise into the uniform-404 boundary (Codex #7).
+        if reservation_id is not None:
+            try:
+                webhook_hooks.release_dispatch(base, reservation_id=reservation_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("webhook: reservation release failed")
+        try:
+            webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
+        except Exception:  # noqa: BLE001
+            logger.exception("webhook: delivery release failed")
+        raise
 
 
 def _default_base() -> Path:
@@ -131,38 +266,51 @@ def _enqueue_branch_run(
 ) -> str:
     """Enqueue a run of ``branch_def_id`` as ``universe:<universe_id>``.
 
-    The token already proved this branch belongs to this universe (verified at mint time),
-    so the run is enqueued directly as the universe — exactly the same background run path
-    the MCP ``run_graph`` uses, with the same provider binding — never as a host identity.
+    Enqueued via the SHARED audited trigger path (``enqueue_universe_branch_run``), which
+    fails closed on an empty universe, uses the same provider binding as ``run_graph``, and
+    ledgers the run. Never a host identity.
     """
-    from tinyassets.api.branches import _resolve_branch_id
-    from tinyassets.api.permissions import branch_run_actor
-    from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import execute_branch_async
+    from tinyassets.api.runs import enqueue_universe_branch_run
 
-    bid = _resolve_branch_id(branch_def_id, str(base_path))
-    branch = BranchDefinition.from_dict(get_branch_definition(base_path, branch_def_id=bid))
-    errors = branch.validate()
-    if errors:
-        raise ValueError(f"branch {bid} failed validation: {errors}")
-
-    provider_call: Any = None
-    try:
-        from tinyassets.api.runs import _bind_run_provider_call
-        from tinyassets.providers.call import call_provider
-
-        provider_call = _bind_run_provider_call(call_provider, universe_id)
-    except ImportError:
-        provider_call = None
-
-    outcome = execute_branch_async(
+    return enqueue_universe_branch_run(
         base_path,
-        branch=branch,
+        universe_id=universe_id,
+        branch_def_id=branch_def_id,
         inputs=inputs,
         run_name="webhook",
-        actor=branch_run_actor(universe_id),
-        provider_call=provider_call,
-        _enqueue_universe_id=universe_id,
     )
-    return outcome.run_id
+
+
+#: Private key under which the dispatch reservation id rides inside the event's run inputs.
+#: `_inbound_event_run_fn` pops it (so it never reaches the branch) to link + release the
+#: in-flight reservation to the run the bus fires.
+RESERVATION_INPUT_KEY = "__inbound_reservation__"
+
+
+def _emit_source_event(
+    *,
+    source_id: str,
+    universe_id: str,
+    dedupe_key: str,
+    inputs: dict[str, Any],
+    reservation_id: str,
+) -> None:
+    """Publish a Source-node inbound event onto the scheduler bus.
+
+    The event carries the run inputs only (never credentials/identity); ``event_id`` is the
+    SERVER-side dedupe key so the bus also dedupes at-most-once (Codex #4). Identity is NOT
+    in the event — the subscription carries the universe binding. The in-flight reservation
+    id rides under a private inputs key so the fired run can link + release it.
+    """
+    from tinyassets.scheduler import SchedulerEvent, emit_event, is_running
+
+    if not is_running():
+        # Fail loud internally; the caller sees the uniform 404 (Codex #7). A Source hook
+        # with the bus off is a misconfiguration — never a silent drop.
+        raise RuntimeError("inbound event bus is not running; cannot publish source event")
+    payload_inputs = {**inputs, RESERVATION_INPUT_KEY: reservation_id}
+    emit_event(SchedulerEvent(
+        event_type=f"source:{source_id}",
+        event_id=dedupe_key,
+        payload={"universe_id": universe_id, "inputs": payload_inputs},
+    ))
