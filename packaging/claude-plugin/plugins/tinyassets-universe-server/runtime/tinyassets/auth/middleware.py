@@ -463,6 +463,13 @@ def _auth_challenge_path(path: str) -> bool:
     """
     if ".well-known" in path:
         return False
+    if path == "/mcp/app":
+        # The onboarding SPA (tinyassets/onboarding) is a public static page that
+        # MUST load before sign-in and exposes no protected tool — its own /mcp
+        # tool calls are still challenged. Exempt it in every auth mode (mirrors
+        # the .well-known carve-out) so onboarding is reachable regardless of
+        # WORKOS_REQUIRE_AUTH; its dark flag still returns a bare 404 when off.
+        return False
     return path == "/mcp" or path.startswith("/mcp/")
 
 

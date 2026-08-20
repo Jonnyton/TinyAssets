@@ -177,6 +177,9 @@
       scope:CFG.scopes, state, code_challenge:challenge, code_challenge_method:"S256",
       resource:CFG.resource,
     });
+    // After an explicit sign-out, force AuthKit to re-authenticate so a shared
+    // device can't silently ride the prior user's surviving SSO session.
+    if(sessionStorage.getItem("ta_force_login")){ p.set("prompt","login"); sessionStorage.removeItem("ta_force_login"); }
     window.location.href = CFG.authorization_endpoint + "?" + p.toString();
   }
 
@@ -349,18 +352,20 @@
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-connect").addEventListener("click",showConnect);
     $("btn-connect-back").addEventListener("click",()=>showView("chat"));
-    $("btn-signout").addEventListener("click",enterSignedOut);
+    $("btn-signout").addEventListener("click",()=>{ sessionStorage.setItem("ta_force_login","1"); enterSignedOut(); });
     $("btn-deposit").addEventListener("click",async()=>{
-      const service=$("connect-service").value, material=$("connect-material").value.trim(), out=$("connect-result");
+      const service=$("connect-service").value, out=$("connect-result");
+      const materialEl=$("connect-material"), material=materialEl.value.trim(), btn=$("btn-deposit");
       out.hidden=false;
       if(!material){ out.textContent="Enter your subscription credential first."; return; }
-      out.textContent="Depositing securely...";
+      materialEl.value="";  // clear the secret from the DOM BEFORE any await, on every path
+      btn.disabled=true; out.textContent="Depositing securely...";
       try{
         const b64=btoa(unescape(encodeURIComponent(material)));
         const payload=await MCP.connectLLM(service,b64);
-        $("connect-material").value="";
         out.textContent=JSON.stringify(payload,null,2);
-      }catch(err){ if(err.authRequired) return enterSignedOut(); out.textContent="Deposit failed: "+err.message; }
+      }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Deposit failed: "+err.message; }
+      finally{ btn.disabled=false; }
     });
   }
 

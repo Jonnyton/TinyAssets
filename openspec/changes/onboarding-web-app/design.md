@@ -108,6 +108,21 @@ other tool is invented or called.
   code reaches logs. The SPA strips the query immediately (`history.replaceState`)
   and PKCE makes a logged code unusable without the browser-only verifier. Confirm
   the daemon does not retain `/mcp/app` query strings at deploy.
+- **Token in `sessionStorage`, apex-origin blast radius (accepted).** The founder
+  directive requires the browser to hold the token and call `/mcp` directly (no
+  token-holding backend/BFF), so the access token lives in `sessionStorage` on the
+  `tinyassets.io` origin. Any same-origin compromise elsewhere on the apex in the
+  same tab could read it. Mitigations: the SPA has no DOM-XSS sink (all untrusted
+  text via text nodes) and a strict CSP; the token is short-lived and tab-scoped
+  (cleared on tab close and on sign-out). A BFF with an HttpOnly cookie would
+  shrink the blast radius but is exactly the token-holding backend the directive
+  rejects, so it is out of scope. Accepted tradeoff.
+- **Sign-out does not end the WorkOS SSO session (mitigated).** AuthKit advertises
+  no `end_session_endpoint`, so the SPA cannot RP-initiate a logout. Sign-out
+  clears the local token; to stop a shared device from silently re-authenticating
+  as the prior user through a surviving SSO cookie, sign-out sets a marker that
+  makes the next authorization request use `prompt=login` (forced re-auth). Normal
+  first sign-in stays silent.
 
 ## Open questions
 
