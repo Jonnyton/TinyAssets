@@ -2871,10 +2871,15 @@ def create_streamable_http_app() -> Starlette:
     # match before any MCP catch-all route. In WorkOS mode the Protected
     # Resource Metadata advertises AuthKit as the authorization server.
     from tinyassets.auth.wellknown import starlette_discovery_routes
+    from tinyassets.onboarding import onboarding_routes
 
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            # Onboarding SPA at /mcp/app — same-origin to /mcp, dark-flagged
+            # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
+            # before the MCP transport so the exact path resolves first.
+            *onboarding_routes(),
             *canonical_app.routes,
         ],
         lifespan=lifespan,

@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>TinyAssets</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%236c7bf2'/%3E%3C/svg%3E" />
+  <style nonce="__TA_NONCE__">
+    :root{--bg:#0f1020;--surface:#17182b;--surface-2:#1f2138;--ink:#eef0ff;--ink-dim:#a6a9c8;
+      --accent:#6c7bf2;--accent-ink:#fff;--universe:#8ee6c8;--ok:#46d18a;--warn:#f2b95b;--err:#f2708a;
+      --line:#2a2c48;--radius:14px}
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+      font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+    .app{height:100dvh;display:flex;flex-direction:column}
+    .view{flex:1;min-height:0;display:flex;flex-direction:column}
+    [hidden]{display:none!important}
+    /* sign-in */
+    .view--signin{align-items:center;justify-content:center;padding:1.5rem}
+    .card{width:100%;max-width:26rem;text-align:center;background:var(--surface);
+      border:1px solid var(--line);border-radius:var(--radius);padding:2.5rem 1.75rem}
+    .brand{font-size:1.35rem;font-weight:650;display:inline-flex;align-items:center;gap:.5rem}
+    .brand-dot{width:.7rem;height:.7rem;border-radius:50%;background:var(--accent);box-shadow:0 0 16px var(--accent)}
+    .lede{color:var(--ink-dim);margin:1rem 0 1.75rem}
+    .notice{color:var(--warn);font-size:.85rem;margin-top:1rem;min-height:1rem}
+    /* buttons */
+    .btn{font:inherit;border:0;border-radius:10px;padding:.7rem 1.1rem;cursor:pointer}
+    .btn--primary{background:var(--accent);color:var(--accent-ink);font-weight:600}
+    .btn--primary:hover{filter:brightness(1.08)}
+    .btn--ghost{background:var(--surface-2);color:var(--ink);border:1px solid var(--line)}
+    .btn--link{background:none;color:var(--accent);padding:.4rem .3rem;font-size:.88rem}
+    .btn--link:hover{text-decoration:underline}
+    .btn:disabled{opacity:.5;cursor:default}
+    /* chat */
+    .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
+      border-bottom:1px solid var(--line);background:var(--surface);padding-top:max(.8rem,env(safe-area-inset-top))}
+    .chat-title{display:flex;align-items:center;gap:.55rem;font-weight:600}
+    .universe-name{max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .chat-actions{display:flex;gap:.3rem}
+    .dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--ink-dim);flex:none}
+    .dot--ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+    .dot--warn{background:var(--warn)}
+    .dot--err{background:var(--err)}
+    .thread{flex:1;min-height:0;overflow-y:auto;padding:1.1rem;display:flex;flex-direction:column;gap:.9rem}
+    .thread-empty{margin:auto;text-align:center;color:var(--ink-dim)}
+    .waking{font-size:1.15rem;color:var(--ink)}
+    .waking-sub{margin-top:.35rem;font-size:.9rem}
+    .msg{max-width:min(38rem,88%);padding:.7rem .9rem;border-radius:var(--radius);white-space:pre-wrap;word-wrap:break-word}
+    .msg--founder{align-self:flex-end;background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:4px}
+    .msg--universe{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line);border-bottom-left-radius:4px}
+    .msg--system{align-self:center;background:transparent;color:var(--warn);font-size:.85rem;text-align:center;max-width:90%}
+    .msg-role{display:block;font-size:.72rem;letter-spacing:.3px;margin-bottom:.25rem;opacity:.85}
+    .msg--universe .msg-role{color:var(--universe)}
+    .setup-cta{margin-top:.6rem}
+    .composer{display:flex;gap:.5rem;padding:.7rem 1rem;border-top:1px solid var(--line);background:var(--surface);
+      padding-bottom:max(.7rem,env(safe-area-inset-bottom))}
+    .composer-input{flex:1;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
+      border-radius:12px;padding:.7rem .8rem;font:inherit;resize:none;max-height:40vh}
+    .btn--send{align-self:flex-end}
+    .status-line{min-height:1.15rem;padding:0 1rem .4rem;font-size:.78rem;color:var(--ink-dim);text-align:center}
+    /* connect */
+    .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
+    .connect-status{margin:1rem 0;padding:.9rem 1rem;border-radius:10px;background:var(--surface-2);
+      border:1px solid var(--line);color:var(--ink-dim);font-size:.9rem}
+    .connect-advanced{margin-top:1.25rem;border-top:1px solid var(--line);padding-top:1rem}
+    .connect-advanced summary{cursor:pointer;color:var(--ink-dim)}
+    .field{display:block;margin:.8rem 0}
+    .field>span{display:block;font-size:.82rem;color:var(--ink-dim);margin-bottom:.35rem}
+    textarea,select{width:100%;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
+      border-radius:10px;padding:.6rem .7rem;font:inherit;resize:vertical}
+    .result{background:#0b0c17;border:1px solid var(--line);border-radius:10px;padding:.8rem;
+      overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
+    .dev-note{color:var(--ink-dim);font-size:.8rem}
+    code{background:var(--surface-2);padding:.1rem .35rem;border-radius:6px;font-size:.85em}
+  </style>
+</head>
+<body>
+  <main id="app" class="app" aria-live="polite">
+    <!-- Signed-out: minimal brand, one action. -->
+    <section id="view-signin" class="view view--signin" hidden>
+      <div class="card">
+        <div class="brand"><span class="brand-dot"></span> TinyAssets</div>
+        <p class="lede">Your universe lives here. Sign in and meet the mind you're raising.</p>
+        <button id="btn-signin" class="btn btn--primary">Sign in</button>
+        <div id="signin-notice" class="notice" role="alert"></div>
+      </div>
+    </section>
+
+    <!-- Signed-in: the single chat thread. -->
+    <section id="view-chat" class="view view--chat" hidden>
+      <header class="chat-header">
+        <div class="chat-title">
+          <span id="dot" class="dot" title="checking..."></span>
+          <span id="universe-name" class="universe-name">Your universe</span>
+        </div>
+        <nav class="chat-actions">
+          <button id="btn-connect" class="btn btn--link">Connect subscription</button>
+          <button id="btn-signout" class="btn btn--link">Sign out</button>
+        </nav>
+      </header>
+      <div id="thread" class="thread">
+        <div id="thread-empty" class="thread-empty">
+          <div class="waking">Your universe is waking up.</div>
+          <div class="waking-sub">Say hello to begin.</div>
+        </div>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="composer-input" class="composer-input" rows="1"
+                  placeholder="Message your universe" autocomplete="off"></textarea>
+        <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
+      </form>
+      <div id="status-line" class="status-line"></div>
+    </section>
+
+    <!-- Connect subscription (secondary). -->
+    <section id="view-connect" class="view view--connect" hidden>
+      <header class="chat-header">
+        <div class="chat-title">Connect your subscription</div>
+        <nav class="chat-actions">
+          <button id="btn-connect-back" class="btn btn--link">Back to chat</button>
+        </nav>
+      </header>
+      <div class="connect-body">
+        <p>Your universe thinks on <strong>your own</strong> Claude or Codex subscription. It never
+        runs on anyone else's account. Connect one and it starts speaking on the very next turn.</p>
+        <div id="connect-status" class="connect-status" role="status"></div>
+        <details class="connect-advanced">
+          <summary>Advanced: deposit now</summary>
+          <p class="dev-note">The secure deposit sends your subscription credential straight to the
+          connector over TLS &mdash; never through chat, never logged. This calls
+          <code>write_graph connect_llm</code>. If the deposit backend isn't live yet, you'll see the
+          connector's honest response below.</p>
+          <label class="field"><span>Service</span>
+            <select id="connect-service"><option value="claude">Claude</option><option value="codex">Codex</option></select>
+          </label>
+          <label class="field"><span>Subscription credential</span>
+            <textarea id="connect-material" rows="3" placeholder="OAuth token / credential material"></textarea>
+          </label>
+          <button id="btn-deposit" class="btn btn--primary">Deposit securely</button>
+          <pre id="connect-result" class="result" hidden></pre>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <script nonce="__TA_NONCE__">
+  "use strict";
+  // Server-injected config (client_id, AuthKit endpoints, resource). Public values only.
+  const CFG = window.__TA_ONBOARDING__ || __TA_ONBOARDING_CONFIG__;
+  const TOKEN_KEY = "ta_access_token";
+  const PKCE_KEY = "ta_pkce";
+
+  // ---- PKCE helpers (in-browser; public client, no secret) ----
+  function b64url(bytes){
+    let s = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+    return s.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  }
+  function randToken(n){ const a=new Uint8Array(n); crypto.getRandomValues(a); return b64url(a); }
+  async function challengeFor(verifier){
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    return b64url(digest);
+  }
+  function redirectUri(){ return window.location.origin + window.location.pathname; }
+
+  async function beginSignIn(){
+    if(!CFG.configured){
+      document.getElementById("signin-notice").textContent =
+        "This app isn't configured yet (missing WorkOS client). Ask the host to set it.";
+      return;
+    }
+    const verifier = randToken(48);
+    const state = randToken(18);
+    sessionStorage.setItem(PKCE_KEY, JSON.stringify({verifier, state}));
+    const challenge = await challengeFor(verifier);
+    const p = new URLSearchParams({
+      response_type:"code", client_id:CFG.client_id, redirect_uri:redirectUri(),
+      scope:CFG.scopes, state, code_challenge:challenge, code_challenge_method:"S256",
+      resource:CFG.resource,
+    });
+    window.location.href = CFG.authorization_endpoint + "?" + p.toString();
+  }
+
+  async function completeSignInIfCallback(){
+    const q = new URLSearchParams(window.location.search);
+    if(q.get("error")){
+      document.getElementById("signin-notice").textContent =
+        q.get("error_description") || q.get("error");
+      history.replaceState({}, "", redirectUri());
+      return false;
+    }
+    const code = q.get("code");
+    if(!code) return false;
+    const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || "{}");
+    history.replaceState({}, "", redirectUri());   // strip code/state from the URL
+    if(!saved.verifier || saved.state !== q.get("state")){
+      document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
+      return false;
+    }
+    const body = new URLSearchParams({
+      grant_type:"authorization_code", code, redirect_uri:redirectUri(),
+      client_id:CFG.client_id, code_verifier:saved.verifier, resource:CFG.resource,
+    });
+    let tokens;
+    try{
+      const r = await fetch(CFG.token_endpoint, {
+        method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body,
+      });
+      tokens = await r.json();
+    }catch(e){
+      document.getElementById("signin-notice").textContent = "Token exchange failed: " + e.message;
+      return false;
+    }
+    sessionStorage.removeItem(PKCE_KEY);
+    if(!tokens.access_token){
+      document.getElementById("signin-notice").textContent =
+        "Token exchange failed: " + (tokens.error_description || tokens.error || "no token");
+      return false;
+    }
+    sessionStorage.setItem(TOKEN_KEY, tokens.access_token);
+    return true;
+  }
+
+  function token(){ return sessionStorage.getItem(TOKEN_KEY); }
+
+  // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
+  const MCP = {
+    sessionId:null, nextId:1,
+    _parse(text){
+      const t=(text||"").trim();
+      if(!t) throw new Error("empty MCP response");
+      if(t[0]==="{"||t[0]==="[") return JSON.parse(t);
+      for(const line of t.split(/\r?\n/)){
+        const s=line.trim();
+        if(s.startsWith("data:")){ const p=s.slice(5).trim(); if(p) return JSON.parse(p); }
+      }
+      throw new Error("no JSON or SSE frame");
+    },
+    async _rpc(method, params, opts){
+      opts=opts||{};
+      const frame={jsonrpc:"2.0", method, params:params||{}};
+      if(opts.expectResult!==false) frame.id=this.nextId++;
+      const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
+      const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
+      if(this.sessionId) headers["mcp-session-id"]=this.sessionId;
+      const resp=await fetch("/mcp",{method:"POST",headers,body:JSON.stringify(frame)});
+      if(resp.status===401){ const e=new Error("authentication_required"); e.authRequired=true; throw e; }
+      const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
+      if(opts.expectResult===false) return null;
+      const rpc=this._parse(await resp.text());
+      if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
+      return rpc.result;
+    },
+    async ensureInit(){
+      if(this.sessionId) return;
+      await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
+        clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}});
+      await this._rpc("notifications/initialized",{},{expectResult:false});
+    },
+    async callTool(name,args){
+      await this.ensureInit();
+      const r=await this._rpc("tools/call",{name,arguments:args||{}});
+      if(r&&typeof r.structuredContent==="object"&&r.structuredContent) return r.structuredContent;
+      const block=(r&&r.content||[]).find(c=>c&&c.type==="text"&&typeof c.text==="string");
+      if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
+      return {};
+    },
+    converse(message){ return this.callTool("converse",{message}); },
+    getStatus(){ return this.callTool("get_status",{}); },
+    connectLLM(service,materialB64){
+      return this.callTool("write_graph",{target:"connection",operation:"connect_llm",
+        payload_json:JSON.stringify({service,auth_material_b64:materialB64})});
+    },
+  };
+
+  // ---- UI ----
+  const $=(id)=>document.getElementById(id);
+  const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect")};
+  function showView(n){ for(const k in views) views[k].hidden=(k!==n); }
+  let hasMessages=false, statusTimer=null;
+
+  function appendMessage(role,text,extra){
+    if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
+    const thread=$("thread"), el=document.createElement("div");
+    el.className="msg msg--"+role;
+    if(role!=="system"){ const l=document.createElement("span"); l.className="msg-role";
+      l.textContent=role==="universe"?"Universe":"You"; el.appendChild(l); }
+    el.appendChild(document.createTextNode(text));
+    if(extra) el.appendChild(extra);
+    thread.appendChild(el); thread.scrollTop=thread.scrollHeight;
+  }
+  function setStatusLine(t){ $("status-line").textContent=t||""; }
+
+  function renderConverse(payload){
+    if(payload&&typeof payload.reply==="string"){ appendMessage("universe",payload.reply); return; }
+    if(payload&&payload.status==="held"&&payload.reason==="setup_required"){
+      const cta=document.createElement("div"); cta.className="setup-cta";
+      const b=document.createElement("button"); b.className="btn btn--ghost";
+      b.textContent="Connect your subscription"; b.addEventListener("click",showConnect);
+      cta.appendChild(b);
+      appendMessage("universe", payload.note||"This universe has no engine yet.", cta); return;
+    }
+    if(payload&&payload.error){ appendMessage("system",payload.error); return; }
+    appendMessage("system","Your universe returned an unexpected response.");
+  }
+
+  async function sendTurn(message){
+    appendMessage("founder",message);
+    const input=$("composer-input"); input.value=""; input.style.height="auto";
+    $("btn-send").disabled=true; setStatusLine("Your universe is thinking...");
+    try{
+      renderConverse(await MCP.converse(message)); setStatusLine("");
+    }catch(err){
+      if(err.authRequired){ setStatusLine(""); return enterSignedOut(); }
+      appendMessage("system","Couldn't reach your universe: "+err.message); setStatusLine("");
+    }finally{ $("btn-send").disabled=false; }
+  }
+
+  async function pollStatus(){
+    try{
+      const s=await MCP.getStatus(); const dot=$("dot");
+      const host=s.active_host, alive=host&&host!=="none";
+      dot.className="dot "+(alive?"dot--ok":"dot--warn");
+      dot.title=alive?("host: "+host):"no active host";
+      const name=s.universe_name||s.universe||s.universe_id||"";
+      if(name) $("universe-name").textContent=name;
+    }catch(err){
+      if(err.authRequired) return enterSignedOut();
+      const dot=$("dot"); dot.className="dot dot--err"; dot.title="status unavailable";
+    }
+  }
+  function startHeartbeat(){ pollStatus(); clearInterval(statusTimer); statusTimer=setInterval(pollStatus,30000); }
+
+  function enterSignedIn(){ showView("chat"); startHeartbeat(); $("composer-input").focus(); }
+  function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
+    sessionStorage.removeItem(TOKEN_KEY); showView("signin"); }
+  function showConnect(){ showView("connect");
+    $("connect-status").textContent="The secure deposit sends your credential straight to the "+
+      "connector, never through chat. If the deposit backend isn't live yet, the advanced deposit "+
+      "below shows the connector's honest response."; }
+
+  function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
+
+  function wire(){
+    $("btn-signin").addEventListener("click",beginSignIn);
+    $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
+      const m=$("composer-input").value.trim(); if(m) sendTurn(m); });
+    const input=$("composer-input");
+    input.addEventListener("input",()=>autoGrow(input));
+    input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
+    $("btn-connect").addEventListener("click",showConnect);
+    $("btn-connect-back").addEventListener("click",()=>showView("chat"));
+    $("btn-signout").addEventListener("click",enterSignedOut);
+    $("btn-deposit").addEventListener("click",async()=>{
+      const service=$("connect-service").value, material=$("connect-material").value.trim(), out=$("connect-result");
+      out.hidden=false;
+      if(!material){ out.textContent="Enter your subscription credential first."; return; }
+      out.textContent="Depositing securely...";
+      try{
+        const b64=btoa(unescape(encodeURIComponent(material)));
+        const payload=await MCP.connectLLM(service,b64);
+        $("connect-material").value="";
+        out.textContent=JSON.stringify(payload,null,2);
+      }catch(err){ if(err.authRequired) return enterSignedOut(); out.textContent="Deposit failed: "+err.message; }
+    });
+  }
+
+  async function boot(){
+    wire();
+    const signedInNow = await completeSignInIfCallback();
+    if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
+  }
+  boot();
+  </script>
+</body>
+</html>
