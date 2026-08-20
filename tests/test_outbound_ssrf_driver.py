@@ -782,6 +782,40 @@ def test_chunked_trailer_drip_aborts_at_the_total_deadline():
         stop.set()
 
 
+def test_slow_connect_aborts_at_the_total_deadline():
+    # A slow TCP connect happens BEFORE _DeadlineSocket is installed; it must still
+    # be bounded by the total deadline (Codex-found: 29s connect + 5s TLS beats a
+    # 30s deadline). The post-connect deadline check in connect() closes this.
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def slow_open_socket(_address, _timeout, _source_address):
+        time.sleep(0.5)  # a slow connect, longer than the 0.3s total deadline
+        return socket.create_connection(("127.0.0.1", port), timeout=1.0)
+
+    driver = _SsrfHardenedHttpDriver(
+        resolver=lambda _h, _p: ["127.0.0.1"],
+        validator=lambda addr: addr,
+        open_socket=slow_open_socket,
+        ssl_context=_PassThroughTLS(),
+        allowed_ports=frozenset({port}),
+        timeout=1.0,
+        max_total_seconds=0.3,
+    )
+    try:
+        with pytest.raises(SsrfValidationError, match="total deadline"):
+            driver(
+                bundle=ConnectionSecretBundle(token="tok-not-in-response"),
+                auth_scheme="bearer",
+                method="GET",
+                url=f"https://public.example:{port}/x",
+            )
+    finally:
+        listener.close()
+
+
 def test_fast_response_succeeds_within_a_short_deadline(stub_server):
     stub_server.stub.update(status=200, body=b'{"ok": true}')
     driver, _calls, _context, port = _local_driver(stub_server, max_total_seconds=0.5)

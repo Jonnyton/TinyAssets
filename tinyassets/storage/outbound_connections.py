@@ -772,6 +772,13 @@ _SSRF_READ_CHUNK = 65536
 #     ordinary global-unicast space (e.g. 2001:db8:1::/96 -> 10.0.0.1), which
 #     reads as global here. Activation needs deployment-aware prefix rejection or
 #     an egress firewall denying translated private destinations.
+#   - DNS resolution is NOT inside the total deadline: getaddrinfo runs before the
+#     deadline is created and is a blocking OS call a deadline cannot interrupt
+#     mid-flight. TCP connect + TLS handshake ARE now deadline-bounded (see
+#     _PinnedHTTPSConnection.connect), and all post-handshake parsing is bounded by
+#     _DeadlineSocket, so a slow-but-returning resolver only lets DNS time escape
+#     the budget; a truly hanging resolver is bounded only by the OS. Fully bounding
+#     DNS needs a threaded resolver with its own timeout — an activation-slice item.
 # Decompression bound: the driver NEVER decompresses. It sends no
 # Accept-Encoding and does not gunzip, so a `Content-Encoding: gzip` body is
 # returned as raw bytes capped by _SSRF_MAX_BODY_BYTES — a zip bomb can never
@@ -1214,15 +1221,33 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._deadline = deadline
 
     def connect(self) -> None:  # noqa: D102 - overrides http.client
+        # Bound the TCP connect by the remaining TOTAL budget, not just the per-op
+        # timeout: the deadline otherwise only covers post-handshake reads, so a
+        # slow-connect + slow-TLS peer could push the request well past it
+        # (Codex-found: 29s connect + 5s handshake beats a 30s deadline).
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise _TotalDeadlineExceeded
+        connect_timeout = (
+            remaining if self.timeout is None else min(self.timeout, remaining)
+        )
         sock = self._open_socket(
             (self._pinned_address, self.port),
-            self.timeout,
+            connect_timeout,
             self.source_address,
         )
         try:
             peer = sock.getpeername()[0]
             if _normalize_ip(peer) != _normalize_ip(self._pinned_address):
                 raise SsrfValidationError("connected peer is not the pinned address")
+            # Bound the TLS handshake by the remaining budget too — the raw socket's
+            # timeout governs the handshake reads before _DeadlineSocket is installed.
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                raise _TotalDeadlineExceeded
+            sock.settimeout(
+                remaining if self.timeout is None else min(self.timeout, remaining)
+            )
         except BaseException:
             try:
                 sock.close()
