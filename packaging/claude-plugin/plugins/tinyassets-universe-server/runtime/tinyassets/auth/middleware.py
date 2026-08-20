@@ -15,6 +15,8 @@ import secrets
 import threading
 import weakref
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -456,12 +458,46 @@ def auth_middleware(token: str | None) -> Identity:
     return identity
 
 
+def connect_deposit_routes_enabled() -> bool:
+    """Whether the browser deposit flow (``/mcp/connect/*``) is enabled.
+
+    Dark by default: off unless ``TINYASSETS_CONNECT_DEPOSIT_ENABLED`` is truthy.
+    Gates BOTH the route registration (``register_connect_routes``) and the narrow
+    auth exemption below, so a default deployment gets neither the routes nor any
+    change to the MCP bearer challenge.
+    """
+    return os.environ.get(
+        "TINYASSETS_CONNECT_DEPOSIT_ENABLED", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_connect_deposit_path(path: str) -> bool:
+    """Exactly the browser deposit routes: ``/mcp/connect`` and ``/mcp/connect/*``.
+
+    Case-sensitive and traversal-safe so the exemption can NEVER cover a path that
+    normalizes to a target outside the connect subtree:
+    - Reject any ``..`` segment or empty segment (``//``): ``/mcp/connect/../tools``
+      normalizes to ``/mcp/tools`` and MUST stay challenged, not be exempted here.
+    - Case-sensitive: ``/MCP/connect`` / ``/mcp/Connect`` are not this route.
+    - A sibling like ``/mcp/connectxyz`` is not matched (anchored on the boundary).
+    """
+    if ".." in path or "//" in path:
+        return False
+    return path == "/mcp/connect" or path.startswith("/mcp/connect/")
+
+
 def _auth_challenge_path(path: str) -> bool:
     """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
     Discovery routes stay public so the client can still find the authorization
     server, and unrelated paths are not swept in.
     """
     if ".well-known" in path:
+        return False
+    # Narrow, ordered exemption for the browser deposit flow: when enabled, its
+    # own signed-state / signed-session validation is the sole boundary for these
+    # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
+    # /mcp/connect(/*) — no other /mcp path is opened.
+    if connect_deposit_routes_enabled() and _is_connect_deposit_path(path):
         return False
     return path == "/mcp" or path.startswith("/mcp/")
 
@@ -634,6 +670,25 @@ def current_identity() -> Identity:
     Returns ANONYMOUS if no auth context has been set.
     """
     return _current_identity.get() or ANONYMOUS
+
+
+@contextmanager
+def identity_context(identity: Identity) -> Iterator[None]:
+    """Run a block as *identity* — set the request-local identity contextvar and
+    restore the prior value after.
+
+    For non-MCP-bearer entry points (e.g. the browser deposit form) that
+    authenticate a subject out-of-band and then invoke the same identity-scoped
+    tool logic the MCP path uses, so ``permissions.current_actor_id()`` resolves
+    to that subject and every downstream ACL/ownership gate runs against it. The
+    set/use/reset all happen synchronously in the caller's thread, so it is safe
+    inside a worker thread dispatched via ``run_in_threadpool``.
+    """
+    token = _current_identity.set(identity)
+    try:
+        yield
+    finally:
+        _current_identity.reset(token)
 
 
 def current_bearer_present() -> bool:
