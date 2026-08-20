@@ -96,14 +96,20 @@ API keys) byte-for-byte intact.
 - **THEN** only the single Claude `llm_subscription` slot is replaced
 - **AND** the Codex, GitHub, and Slack credentials are preserved unchanged
 
-### Requirement: Deposited secrets never appear in responses, transcripts, logs, or graph state
+### Requirement: The deposit response, logs, exceptions, and graph state carry no secret
 
-The deposit operation SHALL return only a non-secret projection — status, service, a
-next-step hint, and the target `agent_binding_id` plus the current `expected_revision`
-needed to chain the serving re-point. It SHALL NOT return, log, or echo the token
-bytes, the decoded material, or any credential digest, and error and exception
-messages SHALL NOT carry secret material. The base64 transport value SHALL NOT be
-persisted into graph state, request text, or run evidence.
+The deposit operation SHALL NOT leak the credential anywhere beyond the chatbot
+transport's own inherent exposure. On the chatbot transport the base64
+`auth_material_b64` unavoidably appears in the MCP request and the model/connector
+context — the caller pastes it into the chat — which is inherent to the chatbot path
+and is the reason the secure browser transport is a prerequisite for multi-tenant use
+(see the requirement below). Beyond that inherent exposure, the operation SHALL return
+only a non-secret projection — status, service, a next-step hint, and the target
+`agent_binding_id` plus the current `expected_revision` needed to chain the serving
+re-point. It SHALL NOT return, log, or echo the token bytes, the decoded material, or
+any credential digest, and error and exception messages SHALL NOT carry secret
+material. The server SHALL NOT itself persist the base64 value into graph state, run
+evidence, or any store other than the owner-scoped credential vault.
 
 #### Scenario: Deposit response and logs carry no secret
 
@@ -128,3 +134,24 @@ current binding revision so the caller can supply the post-bind revision to
   post-bind revision
 - **THEN** the universe serves conversational turns on the owner's deposited
   subscription and never on an ambient host credential
+
+### Requirement: The chatbot transport is gated to a single founder until the secure browser transport ships
+
+The chatbot `connect_llm` transport SHALL be treated as a single-founder self-risk
+surface and SHALL NOT be relied upon for any second user, because it necessarily
+exposes the pasted credential to the MCP request and model/connector context. The
+secure browser transport (`byo-llm-deposit-browser-form`, WorkOS AuthKit, no
+token-in-chat) is an **enforceable prerequisite** — not a recommendation — and MUST be
+the deposit entry point before the deposit surface is offered to, or usable by, any
+principal other than the vetted single founder. Multi-tenant deposit SHALL remain
+blocked until that browser transport is the deposit entry point for non-founder
+principals. This gate is normative: it is a MUST, not a SHOULD.
+
+#### Scenario: A second user cannot be onboarded through the chatbot transport
+
+- **WHEN** the platform is prepared to onboard a principal other than the vetted single
+  founder to deposit their own subscription
+- **THEN** the secure browser transport is required as that principal's deposit entry
+  point, and the chatbot `connect_llm` path is not offered to them
+- **AND** the single-founder dogfood window is the only context in which the chatbot
+  transport is an accepted deposit path

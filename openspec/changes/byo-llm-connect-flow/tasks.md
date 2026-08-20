@@ -27,8 +27,13 @@ recall+reply proof completes once slice 1 lands.
 
 ## Slice 2 — one-click provider-OAuth connect UX + vault capture
 - [ ] 2.1 "Connect Claude" / "Connect ChatGPT/Codex" federating to each provider's
-      own OAuth/device-flow; capture the returned credential as requester-owned into
-      the universe's vault. API-key paste as the alternate for API-key providers.
+      own OAuth/device-flow. RECONCILED with `byo-llm-deposit-surface` (R2-item7):
+      the OAuth/device flow OBTAINS the credential, then federates it into
+      `byo-llm-deposit-surface`'s `llm_deposit` handler for the owner-scoped
+      `llm_subscription` vault write — this slice does NOT write the vault itself, so
+      there is exactly one canonical `llm_subscription` writer. The `llm_api_key`
+      paste is separately scoped (retired for MCP deposit by
+      `retire-mcp-provider-secret-deposit`), not part of this OAuth capture.
 - [ ] 2.2 A `connections` entry per connected provider (Anthropic/OpenAI), surfaced
       in `read_graph target=connections`; connect once → mint bindings (slice 1) from it.
 - [ ] 2.3 Generic "point this universe at its GitHub project" binding — available to

@@ -714,6 +714,9 @@ def write_graph(
             With target=branch, create/remix/patch/publish. Create and remix
             consume a complete Branch spec in payload_json; remix uses its
             fork_from field. Publish freezes the named branch_id.
+            With target=connection, connect_llm deposits the authenticated
+            owner's own Claude/Codex subscription into this universe's private
+            vault (owner-only; see payload_json).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -744,6 +747,14 @@ def write_graph(
         agent_binding_id: Existing private binding for operation=update.
         agent_stage_id: Private import stage for operation=publish_stage.
         payload_json: Agent definition, portable import, or private binding JSON.
+            For target=connection operation=connect_llm, pass
+            {"service": "claude"|"codex", "auth_material_b64": "<base64>"} to
+            deposit YOUR OWN subscription into this universe's private vault so
+            the universe can serve on it. Owner-only. base64 is transport: for
+            claude it decodes to your OAuth token; for codex it is the base64 of
+            your auth.json. The secret is stored in the per-universe vault and is
+            never echoed back. After a successful deposit, re-point serving with
+            target=agent_binding operation=bind_serving_provider then set_serving.
             For target=automation operation=create, pass
             {"definition": {"repository": "owner/repository",
             "accepted_spec_ref": "openspec/specs/capability/spec.md",
@@ -944,6 +955,20 @@ def write_graph(
             )
         )
     if normalized == "connection":
+        # LLM subscription deposit is an owner-scoped operation under the pinned
+        # write_graph handle (byo-llm-deposit-surface). It routes to its own
+        # owner-scoped handler; cloud_connections stays GitHub-only. Adds no
+        # advertised handle — the live tool catalog stays pinned.
+        connection_operation = (operation or "").strip().lower()
+        if connection_operation == "connect_llm":
+            from tinyassets.api.llm_deposit import connect_llm
+
+            return json.dumps(
+                connect_llm(
+                    universe_id=graph_id,
+                    payload=payload_json,
+                )
+            )
         return json.dumps(
             _cloud_connections_impl(
                 action=operation,

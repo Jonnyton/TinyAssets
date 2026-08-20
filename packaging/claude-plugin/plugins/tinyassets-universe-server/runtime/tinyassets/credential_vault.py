@@ -316,22 +316,27 @@ def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     return _records_from_payload(payload)
 
 
-def _write_credential_vault_unlocked(
+def _prepare_credential_write(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
-) -> dict[str, Any]:
-    """Validate and write a per-universe credential vault.
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate + merge incoming credentials and return ``(records, summary)``
+    WITHOUT touching the vault file.
 
     Against an existing valid vault, a single record is read-modify-write
     upserted into its logical slot and all matching duplicates collapse at their
     first position. Subscription fields merge; other credential types replace
     the whole slot. Two-or-more records replace the stored list exactly, and an
     empty payload clears it. A malformed existing vault blocks a single upsert.
-    Returns a non-secret summary suitable for logs/status surfaces, including
-    redundant matches collapsed and VCS purpose slots dropped by an upsert.
+
+    The returned ``records`` are what the caller persists as the LAST mutation of
+    a deposit (after the owner-row DB commit, via ``_persist_credential_vault_file``)
+    so the credential file is never visible before its ownership row is committed.
+    The only filesystem access here is a read of the existing vault to compute a
+    single-record upsert; nothing is written. The summary is non-secret and
+    suitable for logs/status surfaces.
     """
     universe = Path(universe_dir)
-    universe.mkdir(parents=True, exist_ok=True)
     records = _records_from_payload(credentials)
     path = credential_vault_path(universe)
     collapsed_credential_count = 0
@@ -360,15 +365,6 @@ def _write_credential_vault_unlocked(
                     "purposes": sorted(dropped_purposes),
                 })
         records = _merge_single_record(existing, incoming)
-    tmp = path.with_name(f"{path.name}.tmp")
-    payload = {"schema_version": 1, "credentials": records}
-    tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    _chmod_best_effort(tmp, 0o600)
-    tmp.replace(path)
-    _chmod_best_effort(path, 0o600)
     credential_types = sorted({str(r["credential_type"]) for r in records})
     # Sanitised, not echoed. This summary is explicitly "suitable for logs and
     # status surfaces", and `service` is arbitrary vault content — a review put
@@ -382,7 +378,7 @@ def _write_credential_vault_unlocked(
             if (name := _safe_service_name(r.get("service") or r.get("provider")))
         }
     )
-    return {
+    summary = {
         "path": str(path),
         "credential_count": len(records),
         "credential_types": credential_types,
@@ -390,6 +386,127 @@ def _write_credential_vault_unlocked(
         "collapsed_credential_count": collapsed_credential_count,
         "dropped_credential_slots": dropped_credential_slots,
     }
+    return records, summary
+
+
+def _fsync_file(path: Path) -> None:
+    """fsync a file's contents to disk. May raise OSError.
+
+    Opened ``r+b`` (writable): Windows' ``os.fsync`` requires a handle open for
+    writing and raises ``EBADF`` on a read-only one. No bytes are written.
+    """
+    with open(path, "r+b") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    """fsync a directory so a rename inside it is persisted. May raise OSError.
+
+    No-op on Windows, which has no portable directory-fsync via ``os.open`` here.
+    """
+    if os.name == "nt":
+        return
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _post_commit_durability(vault_file: Path, universe: Path) -> None:
+    """Best-effort durability AFTER the commit point (fsync file + directory).
+
+    Kept as one seam so the caller can treat any failure here as non-fatal — the
+    deposit has already taken effect once the vault file is replaced.
+    """
+    _fsync_file(vault_file)
+    _fsync_directory(universe)
+
+
+def _persist_credential_vault_file(
+    universe_dir: str | Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Atomically replace the vault file with *records*.
+
+    This is the LAST mutation of a deposit — the owner-row DB commit has already
+    landed — so a concurrent unlocked reader never observes a credential before
+    its ownership row exists.
+
+    The successful ``Path.replace`` is the COMMIT POINT. Everything BEFORE it (the
+    temp write, ``handle.flush``, the replace itself) may raise, and such a
+    pre-commit failure leaves the prior file intact (``Path.replace`` is atomic)
+    so the caller compensates the owner rows. Everything AFTER it — chmod, fsync
+    file + directory, the fd close inside them — is best-effort DURABILITY: the
+    new credential is already visible, so a failure there MUST NOT raise (a raise
+    would wrongly fail an effective deposit and trigger owner-row compensation);
+    it is logged loudly and swallowed.
+    """
+    universe = Path(universe_dir)
+    universe.mkdir(parents=True, exist_ok=True)
+    path = credential_vault_path(universe)
+    tmp = path.with_name(f"{path.name}.tmp")
+    data = (
+        json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
+        + "\n"
+    )
+    # Pre-commit: write the temp file. A write/flush failure here is before the
+    # commit point and propagates. The temp fsync is durability only — log loudly
+    # on failure but do not abort a deposit whose bytes are already written.
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(data)
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except OSError as exc:
+            logger.warning(
+                "credential vault temp fsync failed pre-commit (%s)",
+                type(exc).__name__,
+            )
+    _chmod_best_effort(tmp, 0o600)
+
+    # COMMIT POINT: the atomic rename. A failure here leaves the prior file intact.
+    tmp.replace(path)
+
+    # Past the commit point: DURABILITY ONLY. Never raise — the deposit already
+    # took effect, so a durability failure must not fail it or trigger compensation.
+    _chmod_best_effort(path, 0o600)
+    try:
+        _post_commit_durability(path, universe)
+    except Exception as exc:  # noqa: BLE001 - durability is best-effort post-commit
+        logger.warning(
+            "credential vault durability flush failed after commit (%s); "
+            "deposit already took effect",
+            type(exc).__name__,
+        )
+
+
+def _restore_owner_rows(
+    conn: sqlite3.Connection,
+    universe_id: str,
+    prior_rows: list[Any],
+) -> None:
+    """Compensating transaction: restore the owner rows for *universe_id* to
+    *prior_rows*.
+
+    Used only when the owner-row DB change already committed but the subsequent
+    vault-file replace failed, so no committed-but-ineffective ownership survives.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
+        (universe_id,),
+    )
+    for row in prior_rows:
+        conn.execute(
+            """
+            INSERT INTO llm_credential_deposit_owners (
+                universe_id, service, owner_user_id
+            ) VALUES (?, ?, ?)
+            """,
+            (universe_id, str(row[0]), str(row[1])),
+        )
+    conn.commit()
 
 
 def write_credential_vault(
@@ -416,6 +533,14 @@ def write_credential_vault(
         raise ValueError("credential owner must be a non-empty server principal")
     if uid != universe.name:
         raise ValueError("credential universe does not match its canonical directory")
+
+    # Validate the payload BEFORE acquiring the exclusive lock. Entering the lock
+    # creates the universe directory AND the admission lock file
+    # (provider_assignment.py), so validating first means a malformed deposit
+    # (e.g. bad Codex base64) mutates NOTHING — no directory, no lock, no schema,
+    # no vault file. Pure, side-effect-free; the merge below re-runs it.
+    _records_from_payload(credentials)
+
     with provider_assignment_admission().exclusive(universe):
         conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
         try:
@@ -433,14 +558,31 @@ def write_credential_vault(
                     raise PermissionError(
                         "credential ownership transfer requires a dedicated flow"
                     )
-            summary = _write_credential_vault_unlocked(universe, credentials)
-            records = load_credential_vault(universe)
+
+            # Compute the final merged records + summary IN MEMORY. The vault file
+            # is the LAST mutation (below), never written before the owner-row
+            # commit, so a concurrent unlocked reader can never observe a
+            # credential before its ownership row exists.
+            final_records, summary = _prepare_credential_write(universe, credentials)
             services = {
                 _service(record)
-                for record in records
+                for record in final_records
                 if record.get("credential_type") == "llm_subscription"
                 and _service(record) in {"claude", "codex"}
             }
+
+            # Snapshot the prior owner rows so a (rare) file-replace failure AFTER
+            # the DB commit can be compensated below.
+            prior_owner_rows = conn.execute(
+                """
+                SELECT service, owner_user_id
+                  FROM llm_credential_deposit_owners
+                 WHERE universe_id = ?
+                """,
+                (uid,),
+            ).fetchall()
+
+            # 1. Owner-row DB transaction FIRST, and commit it.
             conn.execute("BEGIN IMMEDIATE")
             placeholders = ",".join("?" for _ in services)
             if services:
@@ -469,6 +611,27 @@ def write_credential_vault(
                         (uid, service_name, owner),
                     )
             conn.commit()
+
+            # 2. ONLY after the DB commit, atomically replace the vault file.
+            #    _persist_credential_vault_file raises ONLY for a pre-commit failure
+            #    (the vault file was NOT replaced — Path.replace is atomic — so the
+            #    prior file is intact); it never raises once the file is visible.
+            try:
+                _persist_credential_vault_file(universe, final_records)
+            except BaseException as persist_error:
+                # 3. Pre-commit failure: the file did not change. Compensate by
+                #    restoring the prior owner rows so no committed-but-ineffective
+                #    ownership survives, then re-raise.
+                try:
+                    _restore_owner_rows(conn, uid, prior_owner_rows)
+                except Exception as compensation_error:  # noqa: BLE001
+                    # Double failure: the file write failed AND the owner-row
+                    # commit could not be undone. Fail loud, chaining both — do
+                    # not swallow. Residual: a committed owner row with no vault
+                    # file is a benign phantom (the owner cannot act — there is no
+                    # credential — and a re-deposit reconciles).
+                    raise compensation_error from persist_error
+                raise
             return summary
         finally:
             conn.close()
