@@ -41,8 +41,12 @@ run. Built + verified items are checked; deploy-side and acceptance items remain
       test.
 - [x] 4.4 Unit tests: dark flag, handler 200/404, config injection + escaping,
       per-request nonce, no-secret-leak, route shape (17 tests).
-- [ ] 4.5 Cross-family (Codex) adversarial review of the daemon-served build;
-      apply any `adapt` fixes before treating the surface as landed.
+- [x] 4.5 Cross-family (Codex) adversarial review of the daemon-served build:
+      no DOM-XSS/nonce/JSON-breakout issues. Adapt fixes applied — `/mcp/app`
+      exempted from the auth challenge so onboarding loads in every auth mode
+      (`_auth_challenge_path`), deposit credential cleared from the DOM before any
+      await, sign-out forces `prompt=login` next authorize; token-in-sessionStorage
+      documented as a directive-mandated tradeoff. ASGI-level middleware test added.
 
 ## Slice 5 — deploy + acceptance (host / real user)
 - [ ] 5.1 Host: register/confirm a WorkOS public client with `redirect_uris`
