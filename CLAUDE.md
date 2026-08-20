@@ -72,6 +72,19 @@ Do NOT dispatch for routine edits, lookups, doc changes, or every verdict-shaped
 sentence. Ask it to re-check sources/actual code or refute the claim; log
 `approve`/`adapt`/`reject` in the lane artifact.
 
+**Sequencing — one shape pass pre-live, hardening rounds post-live (AGENTS.md §
+Review sequencing, founder directive 2026-08-20).** For a first-draft MVP the
+pre-live Codex dispatch is a SINGLE shape/approach pass (right architecture?
+fail-closed vs fail-open? right authority/ownership model? + any basic-safety
+hole that leaks/exfils/bypasses for one founder). Do NOT run multiple adversarial
+hardening rounds before the change ships live and is user-tested — that is
+hardening a shape the live user path may change. The deep "refute this
+concurrency / TOCTOU / durability / timing edge" rounds come AFTER live-MVP user
+testing validates the shape. If a reject→reject trend is narrowing onto edges
+that only bite multi-tenant / concurrent / crash on a dark, un-shipped path, that
+is the signal to STOP reviewing and SHIP — record the residuals in `REVIEW.md`
+and defer them to post-live hardening.
+
 Mechanics: prefer background offload on Codex's quota — `python
 scripts/codex_review.py --out <lane-local-file> --prompt "<ask>"` in a
 background Bash call (fixed 2026-08-02: the wrapper now feeds Codex via stdin
