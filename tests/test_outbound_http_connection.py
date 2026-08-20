@@ -194,7 +194,7 @@ def test_http_connection_rejects_unsupported_auth_scheme(tmp_path):
             destination="api.example.com",
             credential_ref="vault://http/ref",
             connection_type="http",
-            auth_scheme="oauth1a",  # not implemented in this slice
+            auth_scheme="digest",  # not a supported http auth scheme
             allowed_endpoints=_http_endpoints(),
         )
 
