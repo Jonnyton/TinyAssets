@@ -2846,6 +2846,25 @@ def create_streamable_http_app() -> Starlette:
                 )
                 yield
         finally:
+            # Drain the app-ingress turn executor on graceful shutdown so accepted
+            # Slack turns are not dropped on a restart. uvicorn.run for THIS app is
+            # on the main thread, so its signal-driven shutdown runs this finally;
+            # the ingress listener itself is a daemon thread that never sees the
+            # signal, which is why the drain is hooked here (Codex #1). Best-effort
+            # + never raising: a shutdown fault must not mask the real teardown.
+            try:
+                from tinyassets.app_ingress_workers import (
+                    shutdown_ingress_executor,
+                )
+
+                _abandoned = shutdown_ingress_executor(wait=True)
+                if _abandoned:
+                    logger.warning(
+                        "app ingress: %d accepted turn(s) abandoned at shutdown",
+                        _abandoned,
+                    )
+            except Exception:  # noqa: BLE001 - shutdown drain must not mask teardown
+                logger.exception("app ingress: executor drain at shutdown failed")
             writer_barrier.release()
 
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths

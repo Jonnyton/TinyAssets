@@ -475,3 +475,249 @@ def test_a_stale_credential_request_expires():
 
     assert status == 401
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: the async /app-events route OFFLOADS the deliver turn to a bounded
+# per-conversation worker (it must not block the event loop) and acks fast.
+# ---------------------------------------------------------------------------
+
+
+def test_app_events_offloads_the_turn_and_acks_without_blocking(monkeypatch):
+    import threading
+
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv(http.HMAC_ENV, KEY_B64)
+    # Fresh executor so this test is isolated from module singleton state.
+    monkeypatch.setattr(
+        "tinyassets.app_ingress_workers._EXECUTOR", None, raising=False,
+    )
+
+    delivered = threading.Event()
+    seen: dict = {}
+
+    def _spy_deliver(**fields):
+        # The turn runs on a WORKER thread — the authenticated-transport
+        # ContextVar must be set there (Slice 2 sets it inside the worker fn).
+        seen["ctx"] = http._authenticated_app_transport.get()
+        seen["fields"] = fields
+        delivered.set()
+        return _Result()
+
+    monkeypatch.setattr("tinyassets.app_ingress.deliver_app_event", _spy_deliver)
+
+    app = http.create_app_ingress_app()
+    client = TestClient(app)
+    raw, headers = _signed(timestamp=str(int(__import__("time").time())))
+    resp = client.post("/app-events", content=raw, headers=headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"handled": True, "queued": True}   # fast ack, not the turn result
+    assert delivered.wait(5)                                   # the turn ran on a worker
+    assert seen["ctx"] is True                                 # ContextVar set in the worker
+    assert seen["fields"]["external_sender_id"] == "U0WIRE00001"
+
+
+def test_app_events_returns_503_without_awaiting_the_notice(monkeypatch):
+    import threading
+
+    from starlette.testclient import TestClient
+
+    import tinyassets.app_ingress_http as h
+    from tinyassets.app_ingress import OVERLOADED_NOTICE
+
+    monkeypatch.setenv(http.HMAC_ENV, KEY_B64)
+    # Fresh notifier for isolation.
+    monkeypatch.setattr(h, "_NOTIFIER", None, raising=False)
+    monkeypatch.setattr(h, "_NOTIFIER_INFLIGHT", 0, raising=False)
+
+    class _FullExecutor:
+        def submit(self, key, fn):
+            return False  # backlog saturated
+
+    monkeypatch.setattr(
+        "tinyassets.app_ingress_workers.get_ingress_executor",
+        lambda: _FullExecutor(),
+    )
+    ran = {"n": 0}
+    monkeypatch.setattr(
+        "tinyassets.app_ingress.deliver_app_event",
+        lambda **k: ran.__setitem__("n", ran["n"] + 1),
+    )
+    # The notice BLOCKS. If the 503 awaited it, client.post would not return until
+    # the notice finished — so proving the 503 comes back while the notice is STILL
+    # blocked is a real decoupling proof (Codex: an instant spy would pass either
+    # way). The bounded release keeps a regression from hanging CI forever.
+    started = threading.Event()
+    done = threading.Event()
+    release = threading.Event()
+    notices: list = []
+
+    def _blocking_notice(**k):
+        notices.append(k)
+        started.set()
+        release.wait(10)
+        done.set()
+        return _Result()
+
+    monkeypatch.setattr("tinyassets.app_ingress.deliver_app_notice", _blocking_notice)
+
+    app = http.create_app_ingress_app()
+    client = TestClient(app)
+    raw, headers = _signed(timestamp=str(int(__import__("time").time())))
+    resp = client.post("/app-events", content=raw, headers=headers)
+
+    assert resp.status_code == 503                            # returned...
+    assert resp.json() == {"handled": False, "overloaded": True}
+    assert ran["n"] == 0                                       # turn not run
+    assert started.wait(5)                                    # the notice WAS scheduled
+    assert not done.is_set()                                  # ...503 came back BEFORE it finished
+    release.set()                                             # let the notice complete
+    assert done.wait(5)
+    assert notices[0]["notice"] == OVERLOADED_NOTICE
+    assert notices[0]["channel_id"] == BODY["channel_id"]     # routed to the sender
+
+
+def _spin(pred, timeout=5.0):
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if pred():
+            return True
+        _t.sleep(0.005)
+    return pred()
+
+
+def test_the_notifier_drops_when_saturated_and_recovers(monkeypatch):
+    import threading
+
+    import tinyassets.app_ingress_http as h
+
+    monkeypatch.setattr(h, "_NOTIFIER", None, raising=False)
+    monkeypatch.setattr(h, "_NOTIFIER_INFLIGHT", 0, raising=False)
+
+    release = threading.Event()
+
+    def _blocking():
+        release.wait(5)
+
+    # Fill to the in-flight cap; every one is admitted.
+    for _ in range(h._NOTIFIER_MAX_INFLIGHT):
+        assert h._fire_best_effort_notice(_blocking) is True
+    # The next is DROPPED (returns False) rather than queued unbounded.
+    assert h._fire_best_effort_notice(_blocking) is False
+
+    # Recovery: once the blocked notices drain, in-flight returns to 0 and a fresh
+    # notice is admitted again — the drop is transient, not a permanent wedge.
+    release.set()
+    assert _spin(lambda: h._NOTIFIER_INFLIGHT == 0)
+    assert h._fire_best_effort_notice(lambda: None) is True
+    assert _spin(lambda: h._NOTIFIER_INFLIGHT == 0)
+
+
+def test_the_notifier_scheduling_failure_is_leak_free_and_non_raising(monkeypatch):
+    import tinyassets.app_ingress_http as h
+
+    monkeypatch.setattr(h, "_NOTIFIER_INFLIGHT", 0, raising=False)
+
+    class _RejectingPool:
+        def submit(self, fn):
+            raise RuntimeError("cannot schedule (no thread / shutting down)")
+
+    monkeypatch.setattr(h, "_NOTIFIER", _RejectingPool(), raising=False)
+
+    # A scheduling failure must NOT raise (the 503 path depends on it), must return
+    # False, and must NOT leak a permit — else repeated failures permanently consume
+    # all permits and silently drop every future notice (Codex #3).
+    for _ in range(20):
+        assert h._fire_best_effort_notice(lambda: None) is False
+        assert h._NOTIFIER_INFLIGHT == 0
+
+
+def test_the_notifier_permit_release_is_idempotent_after_partial_enqueue(monkeypatch):
+    import tinyassets.app_ingress_http as h
+
+    monkeypatch.setattr(h, "_NOTIFIER_INFLIGHT", 0, raising=False)
+
+    class _PartialEnqueuePool:
+        # Mimics CPython: `submit` ENQUEUES the work item (which later RUNS and
+        # releases the permit via `_wrapped`'s finally) and THEN thread creation
+        # raises (which our except path also handles). Both must not double-release.
+        def submit(self, wrapped):
+            wrapped()  # the queued work item runs later -> releases the permit
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(h, "_NOTIFIER", _PartialEnqueuePool(), raising=False)
+
+    # Released EXACTLY ONCE despite both paths firing — not -1 (Codex round-4 #1).
+    assert h._fire_best_effort_notice(lambda: None) is False
+    assert h._NOTIFIER_INFLIGHT == 0
+    # Repeatable: the counter never drifts below 0, so the cap stays enforceable.
+    for _ in range(20):
+        assert h._fire_best_effort_notice(lambda: None) is False
+        assert h._NOTIFIER_INFLIGHT == 0
+
+
+def test_app_events_surfaces_an_escaped_turn_failure_to_the_user(monkeypatch):
+    import threading
+
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv(http.HMAC_ENV, KEY_B64)
+    monkeypatch.setattr(
+        "tinyassets.app_ingress_workers._EXECUTOR", None, raising=False,
+    )
+
+    posted = threading.Event()
+    notices: list = []
+
+    def _boom(**fields):
+        # A delivery that escapes its OWN failure notice (a routing/post fault),
+        # not an ordinary in-turn failure.
+        raise RuntimeError("delivery escaped")
+
+    def _spy_notice(**k):
+        notices.append(k)
+        posted.set()
+        return _Result()
+
+    monkeypatch.setattr("tinyassets.app_ingress.deliver_app_event", _boom)
+    monkeypatch.setattr("tinyassets.app_ingress.deliver_app_notice", _spy_notice)
+
+    app = http.create_app_ingress_app()
+    client = TestClient(app)
+    raw, headers = _signed(timestamp=str(int(__import__("time").time())))
+    resp = client.post("/app-events", content=raw, headers=headers)
+
+    # The ack is still fast (the turn is offloaded); the escape is surfaced on the
+    # worker, not swallowed with only a log line.
+    assert resp.status_code == 200
+    assert posted.wait(5)
+    assert len(notices) == 1
+    assert notices[0]["channel_id"] == BODY["channel_id"]
+    assert notices[0]["notice"]  # a non-empty honest notice, not silence
+
+
+def test_app_events_still_401s_a_bad_signature_synchronously(monkeypatch):
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv(http.HMAC_ENV, KEY_B64)
+    monkeypatch.setattr(
+        "tinyassets.app_ingress_workers._EXECUTOR", None, raising=False,
+    )
+    ran = {"n": 0}
+    monkeypatch.setattr(
+        "tinyassets.app_ingress.deliver_app_event",
+        lambda **k: ran.__setitem__("n", ran["n"] + 1),
+    )
+
+    app = http.create_app_ingress_app()
+    client = TestClient(app)
+    raw = json.dumps(BODY).encode("utf-8")
+    resp = client.post(
+        "/app-events", content=raw,
+        headers={http.SIGNATURE_HEADER: "deadbeef", http.TIMESTAMP_HEADER: "0"},
+    )
+    assert resp.status_code == 401
+    assert ran["n"] == 0  # auth still gates BEFORE any offload

@@ -324,10 +324,19 @@ def deliver_app_event(
     except Exception as exc:  # noqa: BLE001 - honesty beats silence
         logger.warning("app ingress: turn failed, posting honest notice: %s", exc)
         notice = _failure_notice(exc)
-        receipt = _post(
-            routed=routed, channel_id=channel_id, body=notice,
-            thread_ts=thread_ts, transport=transport,
-        )
+        try:
+            receipt = _post(
+                routed=routed, channel_id=channel_id, body=notice,
+                thread_ts=thread_ts, transport=transport,
+            )
+        except Exception:  # noqa: BLE001
+            # The honest-notice post itself failed. Do NOT propagate: a propagated
+            # exception makes the CALLER post another notice, and we cannot tell
+            # whether Slack committed this one before raising — a double-post is
+            # worse than a log, and we cannot notify over the transport that just
+            # failed (Codex #3: at most one user-facing post per turn).
+            logger.exception("app ingress: failure-notice post failed")
+            return AppEventDelivery(handled=True)
         # FAIL-CLOSED (blocker H): a failure notice is NOT a terminal provider
         # result, so it must NOT be recorded as a completed universe utterance —
         # doing so would let a fabricated "the universe said X" turn ride into the
@@ -342,23 +351,90 @@ def deliver_app_event(
             "I came back empty on that one and didn't want to leave you hanging "
             "— mind saying it again? (I've kept your message.)"
         )
-        receipt = _post(
-            routed=routed, channel_id=channel_id, body=notice,
-            thread_ts=thread_ts, transport=transport,
-        )
+        try:
+            receipt = _post(
+                routed=routed, channel_id=channel_id, body=notice,
+                thread_ts=thread_ts, transport=transport,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("app ingress: empty-reply notice post failed")
+            return AppEventDelivery(handled=True)
         # Same fail-closed rule (blocker H): an empty turn produced no terminal
         # result, so the notice is posted but NEVER recorded as a universe reply.
         return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
-    receipt = _post(
-        routed=routed,
-        channel_id=channel_id,
-        body=reply,
-        thread_ts=thread_ts,
-        transport=transport,
-    )
-    # Record the universe's reply ONLY after it was delivered.
+    try:
+        receipt = _post(
+            routed=routed,
+            channel_id=channel_id,
+            body=reply,
+            thread_ts=thread_ts,
+            transport=transport,
+        )
+    except Exception:  # noqa: BLE001
+        # The reply post failed. We cannot tell whether Slack committed before
+        # raising, so we must NOT post a second (notice) message — and cannot
+        # notify over the transport that just failed. Do not record an undelivered
+        # reply. Silence + a loud log beats a possible double-post (Codex #3).
+        logger.exception("app ingress: reply post failed; not double-posting")
+        return AppEventDelivery(handled=False)
+    # Record the universe's reply ONLY after it was delivered (``_record_universe``
+    # is never-raise by contract, so it cannot surface a storage fault to the user
+    # nor propagate to trigger a second post).
     _record_universe(reply, receipt)
+    return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
+
+
+#: A truthful, first-person notice for the rare condition where the ingress is
+#: over capacity and refuses a turn rather than queue it unbounded (Slice 2,
+#: Codex adapt #3). It does NOT claim the message was saved — the turn was
+#: refused, so the honest ask is to resend.
+OVERLOADED_NOTICE = (
+    "I'm handling too much at once right now and couldn't start on that one, so "
+    "I stopped rather than leave you waiting on a reply that wasn't coming. "
+    "Please send it again in a moment and I'll pick it up."
+)
+
+
+def deliver_app_notice(
+    *,
+    api_app_id: str,
+    workspace_id: str,
+    channel_id: str,
+    notice: str,
+    thread_ts: str = "",
+    transport: Callable[..., Any] | None = None,
+    **_ignored: Any,
+) -> AppEventDelivery:
+    """Post a plain, SERVER-composed notice to a conversation — NO model turn.
+
+    This is how the ingress tells a user about a condition it hit BEFORE or
+    AROUND a turn rather than inside one: the executor was overloaded and refused
+    the turn, or a delivery escaped its own failure notice. It routes exactly the
+    way a real reply would (so it can only ever land where a real reply would
+    have) and, like the fail-closed failure/empty paths, NEVER records the notice
+    as a universe utterance — a server notice is not the universe speaking.
+
+    Accepts and ignores the rest of an event ``fields`` dict (``**_ignored``) so a
+    caller can splat the same fields it would pass to ``deliver_app_event``; the
+    notice text is a distinct ``notice=`` argument, not the event's ``text``.
+    """
+    if not api_app_id or not workspace_id or not channel_id or not (notice or "").strip():
+        return AppEventDelivery(handled=False)
+    routed = _route(
+        api_app_id=api_app_id,
+        workspace_id=workspace_id,
+        channel_id=channel_id,
+    )
+    if routed is None:
+        # No universe routes here, so there is nowhere this notice could
+        # legitimately be posted. Silence beats guessing, same as a real turn.
+        logger.info("app ingress: no universe routes this notice, ignoring")
+        return AppEventDelivery(handled=False)
+    receipt = _post(
+        routed=routed, channel_id=channel_id, body=notice,
+        thread_ts=thread_ts, transport=transport,
+    )
     return AppEventDelivery(handled=True, provider_receipt_ref=receipt)
 
 
