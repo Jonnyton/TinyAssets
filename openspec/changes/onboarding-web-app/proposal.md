@@ -72,7 +72,10 @@ lives in the client (design note `2026-06-30-tinyassets-universe-app-experience`
   `tests/test_onboarding_app.py`.
 - Modified: `tinyassets/universe_server.py` `create_streamable_http_app()` — the
   `/mcp/app` route registered before the MCP transport (mirrors the discovery
-  routes). Claude-plugin runtime mirror rebuilt.
+  routes). `tinyassets/auth/middleware.py` — `/mcp/app` exempted from the OAuth
+  challenge (mirrors the `.well-known` carve-out) so the SPA loads in every auth
+  mode; its own `/mcp` tool calls stay challenged. Claude-plugin runtime mirror
+  rebuilt.
 - Deploy-side host-actions (no local step): register/confirm a WorkOS public
   client whose `redirect_uris` include `https://tinyassets.io/mcp/app`, set
   `TINYASSETS_ONBOARDING_APP_CLIENT_ID`, and set `TINYASSETS_ONBOARDING_APP=1`.
