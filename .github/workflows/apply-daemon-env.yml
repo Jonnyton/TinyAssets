@@ -1,0 +1,145 @@
+name: Apply daemon env flag
+
+# Cloud-native config-apply primitive. Sets ONE allowlisted, non-secret
+# TINYASSETS_* feature flag in /etc/tinyassets/env on the prod droplet and
+# restarts the daemon so it takes effect — no by-hand SSH from a laptop.
+#
+# Why this exists: a compose/env config change does NOT reach the droplet on its
+# own (DEPLOY.md § "a config commit does NOT trigger a deploy"; the fail-safe
+# deploy only pins TINYASSETS_IMAGE). The documented fix was a manual
+# `ssh … git pull` — a laptop dependency. This delivers a flag through the SAME
+# atomic helper the fail-safe uses (install-tinyassets-env.sh: perm-restore +
+# ENV-UNREADABLE marker), to the persistent host env file, so the value SURVIVES
+# container recreate with zero hosts online.
+#
+# Safety (Codex review 2026-08-20):
+# - EXPLICIT key→value allowlist, not a regex. TINYASSETS_IMAGE and every
+#   secret/deploy-critical key are NOT settable here — this is a feature-flag
+#   surface, never an arbitrary-config or image-swap surface.
+# - Single-line values only (CR/LF rejected) so a multiline value cannot inject
+#   a second env assignment.
+# - Capture-then-rollback: the prior value is snapshotted; if the restart or the
+#   public canary fails, the previous value is restored (or the key deleted) and
+#   the daemon restarted again, so a bad flag can never wedge prod.
+# - Effectiveness proof: after restart, `docker exec … printenv KEY` must equal
+#   the requested value (a green handles-canary alone does not prove the flag
+#   took effect — compose `environment:` / a later env_file could override it).
+# - The mutation runs under the shared host flock
+#   (/var/lock/tinyassets-host-mutation.lock, flock -w 120) that
+#   deploy_fail_safe.sh takes, and GH group `deploy-prod`, so it cannot race a
+#   live deploy. The staged helper is checksum-verified inside the lock.
+#
+# Known systemic follow-ups (NOT unique to this workflow, tracked separately):
+# watchdog/autoheal restart paths do not yet share the host flock; SSH host
+# identity is ssh-keyscan TOFU across every droplet workflow (needs a pinned
+# DO_SSH_KNOWN_HOSTS secret).
+
+on:
+  workflow_dispatch:
+    inputs:
+      key:
+        description: 'Allowlisted feature flag (see the case block below)'
+        required: true
+        type: string
+      value:
+        description: 'Value to set (must match the per-key allowlist)'
+        required: true
+        type: string
+
+concurrency:
+  # Serialize with Deploy prod at the workflow layer; the host flock is layer 2.
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST || vars.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER || vars.DO_SSH_USER }}
+      DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+      INPUT_KEY: ${{ inputs.key }}
+      INPUT_VALUE: ${{ inputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate against the feature-flag allowlist
+        run: |
+          set -euo pipefail
+          # Per-key value pattern. A key absent here is refused — TINYASSETS_IMAGE,
+          # secrets, and all deploy-critical config are deliberately not present.
+          case "${INPUT_KEY}" in
+            TINYASSETS_ONBOARDING_APP|TINYASSETS_ALLOW_CLAUDE_SERVING)
+              vpat='^[01]$' ;;
+            TINYASSETS_ONBOARDING_APP_CLIENT_ID)
+              vpat='^client_[A-Za-z0-9]+$' ;;
+            *)
+              echo "::error::key ${INPUT_KEY} is not in the feature-flag allowlist (this workflow cannot set images, secrets, or deploy config)"; exit 1 ;;
+          esac
+          # Reject any CR/LF so a value cannot smuggle a second env assignment.
+          # (bash pattern, not grep — grep strips the trailing line delimiter and
+          # would miss a lone LF.)
+          if [[ "${INPUT_VALUE}" == *$'\r'* || "${INPUT_VALUE}" == *$'\n'* ]]; then
+            echo "::error::value must be single-line"; exit 1
+          fi
+          if [[ ! "${INPUT_VALUE}" =~ $vpat ]]; then
+            echo "::error::value ${INPUT_VALUE} is not allowed for ${INPUT_KEY} (must match ${vpat})"; exit 1
+          fi
+          echo "flag ${INPUT_KEY}=${INPUT_VALUE} accepted"
+
+      - name: Verify SSH settings present
+        run: |
+          set -euo pipefail
+          : "${DO_DROPLET_HOST:?DO_DROPLET_HOST missing}"
+          : "${DO_SSH_USER:?DO_SSH_USER missing}"
+          [ -n "${DO_SSH_KEY}" ] || { echo "::error::DO_SSH_KEY missing"; exit 1; }
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s' "$DO_SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          # TOFU host identity (systemic across all droplet workflows; a pinned
+          # DO_SSH_KNOWN_HOSTS secret is the tracked follow-up).
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Stage the atomic helper + remote applier (checksum-pinned)
+        id: stage
+        run: |
+          set -euo pipefail
+          helper_sha="$(sha256sum deploy/install-tinyassets-env.sh | awk '{print $1}')"
+          echo "helper_sha=${helper_sha}" >> "$GITHUB_OUTPUT"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              deploy/apply-daemon-env-remote.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+
+      - name: Apply flag under host flock (capture → set → restart → verify → rollback)
+        env:
+          HELPER_SHA: ${{ steps.stage.outputs.helper_sha }}
+        run: |
+          set -euo pipefail
+          # KEY and VALUE are strictly validated above (allowlist + single-line +
+          # per-key pattern), so passing them as positional args is injection-safe.
+          # All host mutation runs under the shared flock in the remote script.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock \
+               bash /tmp/apply-daemon-env-remote.sh \
+               '${INPUT_KEY}' '${INPUT_VALUE}' /tmp/install-tinyassets-env.sh '${HELPER_SHA}'"
+
+      - name: Public MCP canary (--assert-handles)
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6; do
+            if python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles; then
+              echo "public surface green after applying ${INPUT_KEY}"; exit 0
+            fi
+            echo "waiting for public surface (attempt $i)…"; sleep 10
+          done
+          echo "::error::public canary still red after applying ${INPUT_KEY}"; exit 1
