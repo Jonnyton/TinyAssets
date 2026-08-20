@@ -11,14 +11,19 @@
 #   HELPER_PATH staged install-tinyassets-env.sh (the atomic env writer)
 #   HELPER_SHA  expected sha256 of HELPER_PATH (integrity check inside the lock)
 #
-# Behaviour: snapshot prior value -> set new -> restart daemon -> require healthy
-# AND the value live in the running process -> on any failure restore the prior
-# value (or delete the key) and restart again. Never leaves prod wedged on a bad
-# flag.
+# Behaviour: snapshot prior value -> set new -> restart daemon -> ACCEPT only when
+# the daemon is healthy AND the tunnel is up AND the value is live in the running
+# process. On ANY failure of that chain — including a failed `systemctl restart` —
+# restore the prior value (or delete the key) and restart again, then verify the
+# rollback is itself accepted. A bad flag can never wedge prod.
 #
-# Exit: 0 applied+effective; 2 rolled back (prod healthy on prior value);
-#       1 bad invocation / integrity; 3 rollback itself unhealthy (loud).
-set -euo pipefail
+# Snapshot note: this reads the prior value with a canonical `^KEY=` match, which
+# is exactly the format install-tinyassets-env.sh `set` writes. These flags are
+# only ever set through that helper, so the snapshot round-trips faithfully.
+#
+# Exit: 0 applied+effective; 2 rolled back (prod accepted on prior value);
+#       1 bad invocation / integrity; 3 rollback itself not accepted (loud).
+set -uo pipefail
 
 KEY="${1:?KEY required}"
 VAL="${2?VALUE required}"
@@ -27,11 +32,15 @@ WANT_SHA="${4:?HELPER_SHA required}"
 
 ENV_FILE=/etc/tinyassets/env
 UNIT=tinyassets-daemon
+DAEMON_CONTAINER=tinyassets-daemon
+TUNNEL_CONTAINER=tinyassets-tunnel
 HEALTH_TRIES=24
 HEALTH_INTERVAL=5
+TUNNEL_TRIES=6
 
 err() { printf '::error::%s\n' "$*" >&2; }
 
+# --- integrity + preconditions (before any mutation) ----------------------
 [ -r "$HELPER" ] || { err "staged helper ${HELPER} not readable"; exit 1; }
 got_sha="$(sha256sum "$HELPER" | awk '{print $1}')"
 [ "$got_sha" = "$WANT_SHA" ] || { err "staged helper checksum mismatch (got ${got_sha}, want ${WANT_SHA})"; exit 1; }
@@ -54,7 +63,7 @@ restart_daemon() {
 daemon_healthy() {
   local i state
   for i in $(seq 1 "$HEALTH_TRIES"); do
-    state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$UNIT" 2>/dev/null || echo error)"
+    state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DAEMON_CONTAINER" 2>/dev/null || echo error)"
     [ "$state" = healthy ] && return 0
     case "$state" in dead|exited) err "daemon terminal state ${state}"; return 1 ;; esac
     sleep "$HEALTH_INTERVAL"
@@ -63,37 +72,70 @@ daemon_healthy() {
   return 1
 }
 
-restore_prior() {
+tunnel_up() {
+  local i s
+  for i in $(seq 1 "$TUNNEL_TRIES"); do
+    s="$(docker inspect -f '{{.State.Status}}' "$TUNNEL_CONTAINER" 2>/dev/null || echo missing)"
+    [ "$s" = running ] && return 0
+    sleep "$HEALTH_INTERVAL"
+  done
+  err "cloudflared tunnel not running (public surface down)"
+  return 1
+}
+
+value_live() {  # the requested value must actually be live in the running process
+  local live
+  live="$(docker exec "$DAEMON_CONTAINER" printenv "$1" 2>/dev/null || true)"
+  [ "$live" = "$2" ] && return 0
+  err "${1} is '${live}', not '${2}' — a compose/env override is winning"
+  return 1
+}
+
+# apply_and_accept and roll_back_and_accept are invoked in `if` conditions so a
+# failed restart (or any inner command) surfaces as a return code and funnels to
+# rollback, rather than aborting the script mid-mutation.
+apply_and_accept() {
+  printf '%s' "$VAL" | bash "$HELPER" set "$KEY" || { err "env write failed"; return 1; }
+  restart_daemon || { err "daemon restart failed"; return 1; }
+  daemon_healthy || return 1
+  tunnel_up || return 1
+  value_live "$KEY" "$VAL" || return 1
+  return 0
+}
+
+roll_back_and_accept() {
   if [ "$HAD_PRIOR" = 1 ]; then
-    printf '%s' "$PRIOR_VAL" | bash "$HELPER" set "$KEY"
+    printf '%s' "$PRIOR_VAL" | bash "$HELPER" set "$KEY" || { err "restore write failed"; return 1; }
   else
-    bash "$HELPER" delete "$KEY" || true
+    bash "$HELPER" delete "$KEY" || { err "restore delete failed"; return 1; }
   fi
-  restart_daemon
+  restart_daemon || { err "restart during rollback failed"; return 1; }
+  daemon_healthy || return 1
+  tunnel_up || return 1
+  # Verify the restored state actually took (absent, or the prior value).
+  if [ "$HAD_PRIOR" = 1 ]; then
+    value_live "$KEY" "$PRIOR_VAL" || return 1
+  elif docker exec "$DAEMON_CONTAINER" printenv "$KEY" >/dev/null 2>&1; then
+    err "rollback did not remove ${KEY} from the running process"; return 1
+  fi
+  return 0
 }
 
 # --- apply -----------------------------------------------------------------
-printf '%s' "$VAL" | bash "$HELPER" set "$KEY"
-restart_daemon
-
-# Require healthy AND the value live in the running process. A compose
-# `environment:` entry or a later env_file could override the env file, making a
-# green health check a silent no-op — printenv proves the value is effective.
-if daemon_healthy; then
-  live="$(docker exec "$UNIT" printenv "$KEY" 2>/dev/null || true)"
-  if [ "$live" = "$VAL" ]; then
-    echo "applied ${KEY}=${VAL}; live in the running daemon"
-    exit 0
-  fi
-  err "daemon healthy but ${KEY} is '${live}', not '${VAL}' — a compose/env override is winning; rolling back"
+if apply_and_accept; then
+  echo "applied ${KEY}=${VAL}; live in the running daemon + public path up"
+  exit 0
 fi
 
 # --- rollback --------------------------------------------------------------
-err "apply of ${KEY}=${VAL} not effective; restoring prior value"
-restore_prior
-if daemon_healthy; then
-  echo "rolled back ${KEY} (prior: ${HAD_PRIOR:+set}); daemon healthy"
+if [ "$HAD_PRIOR" = 1 ]; then
+  err "apply of ${KEY}=${VAL} not accepted; restoring prior value ${PRIOR_VAL}"
+else
+  err "apply of ${KEY}=${VAL} not accepted; removing the key (had no prior value)"
+fi
+if roll_back_and_accept; then
+  echo "rolled back ${KEY}; prod accepted on the prior state"
   exit 2
 fi
-err "rollback of ${KEY} did not reach healthy — manual intervention required"
+err "rollback of ${KEY} was not accepted — manual intervention required"
 exit 3

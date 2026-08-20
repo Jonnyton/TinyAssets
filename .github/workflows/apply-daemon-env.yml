@@ -81,7 +81,9 @@ jobs:
               echo "::error::key ${INPUT_KEY} is not in the feature-flag allowlist (this workflow cannot set images, secrets, or deploy config)"; exit 1 ;;
           esac
           # Reject any CR/LF so a value cannot smuggle a second env assignment.
-          if printf '%s' "${INPUT_VALUE}" | grep -qP '[\r\n]'; then
+          # (bash pattern, not grep — grep strips the trailing line delimiter and
+          # would miss a lone LF.)
+          if [[ "${INPUT_VALUE}" == *$'\r'* || "${INPUT_VALUE}" == *$'\n'* ]]; then
             echo "::error::value must be single-line"; exit 1
           fi
           if [[ ! "${INPUT_VALUE}" =~ $vpat ]]; then
