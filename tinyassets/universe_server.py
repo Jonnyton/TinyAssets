@@ -2951,6 +2951,12 @@ class _MCPDiscoveryMiddleware:
 
 def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
+    # Browser deposit flow (byo-llm-deposit-browser-form) — dark by default, gated
+    # on TINYASSETS_CONNECT_DEPOSIT_ENABLED. Registered BEFORE http_app() so the
+    # /mcp/connect* routes are included in canonical_app.routes; idempotent.
+    from tinyassets.connect_deposit import register_connect_routes
+
+    register_connect_routes(mcp)
     canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
 
     @asynccontextmanager
