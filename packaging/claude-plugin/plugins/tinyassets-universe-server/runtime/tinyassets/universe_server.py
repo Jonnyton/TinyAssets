@@ -2094,6 +2094,8 @@ def extensions(
       get_run, get_run_output, list_run_receipts, list_runs, query_runs,
       record_run_receipt, resume_run, rollback_merge, run_branch,
       run_branch_version, stream_run, wait_for_run.
+    - Inbound channels: mint_webhook, revoke_webhook, list_webhooks,
+      create_source, revoke_source, list_sources.
     - Judgments: compare_runs, get_node_output, judge_run, list_judgments,
       list_node_versions, rollback_node, suggest_node_edit.
     - Project memory: project_memory_get, project_memory_list,

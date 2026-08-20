@@ -14,6 +14,7 @@ This test file exercises:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,8 @@ _REPO = Path(__file__).resolve().parent.parent
 _ENTRYPOINT = _REPO / "deploy" / "docker-entrypoint.sh"
 _SYSTEMD_UNIT = _REPO / "deploy" / "tinyassets-daemon.service"
 _DEPLOY_YAML = _REPO / ".github" / "workflows" / "deploy-prod.yml"
+_FAILSAFE = _REPO / "deploy" / "deploy_fail_safe.sh"
+_ENV_HELPER = _REPO / "deploy" / "install-tinyassets-env.sh"
 _TRIAGE_YAML = _REPO / ".github" / "workflows" / "p0-outage-triage.yml"
 
 CANONICAL_MARKER = "ENV-UNREADABLE"
@@ -243,52 +246,67 @@ def test_systemd_start_limit_is_in_unit_section_not_service_section():
     assert "StartLimitBurst" not in service_section
 
 
-def test_deploy_prod_yaml_sed_sites_emit_canonical_marker():
-    """Helper-mediated invariant: every env-mutation site in the YAML
-    invokes ``deploy/install-tinyassets-env.sh``, and the helper itself
-    emits the canonical ``ENV-UNREADABLE`` marker on the readability
-    failure path.
+def test_deploy_prod_env_mutation_routes_through_helper_with_marker():
+    """Helper-mediated invariant, after the fail-safe-swap rewrite
+    (fe83fbc9): the ENV-mutation logic moved OUT of inline
+    deploy-prod.yml heredocs and INTO ``deploy/deploy_fail_safe.sh``,
+    which mutates ``/etc/tinyassets/env`` *only* through
+    ``deploy/install-tinyassets-env.sh``. The helper's
+    ``assert_readable()`` emits the canonical ``ENV-UNREADABLE`` marker
+    after every write. The invariant that prevents the 2026-04-21 P0
+    perm-regression class is unchanged; only its location moved (and
+    tightened to a single mutation site).
 
-    Task #9 Fix A centralized the marker into
-    ``deploy/install-tinyassets-env.sh::assert_readable()`` — replacing
-    the prior pattern of three inline marker emits in deploy-prod.yml
-    (scrub + deploy heredoc + rollback heredoc). The standalone
-    "Assert /etc/tinyassets/env readable by daemon user" step in the
-    YAML still emits the marker directly. So the new invariant is
-    cross-file: YAML invokes the helper from each mutation site AND
-    the helper file contains the marker.
+    The new cross-file invariant:
+      1. the helper still carries the marker on its readability-fail path;
+      2. deploy-prod.yml ships the helper to the droplet AND runs the
+         fail-safe script (so the helper is present where the swap runs);
+      3. the fail-safe script mutates the env file ONLY via the helper —
+         no raw ``sed -i`` / ``>`` / ``tee`` write to ``$ENV_FILE`` that
+         would bypass the perm-restore + marker path.
     """
     yaml_text = _DEPLOY_YAML.read_text(encoding="utf-8")
-    helper_path = _REPO / "deploy" / "install-tinyassets-env.sh"
-    helper_text = helper_path.read_text(encoding="utf-8")
+    helper_text = _ENV_HELPER.read_text(encoding="utf-8")
+    failsafe_text = _FAILSAFE.read_text(encoding="utf-8")
 
-    # Cross-file: helper carries the marker on its readability-fail path.
+    # (1) Helper carries the marker on its readability-fail path.
     assert CANONICAL_MARKER in helper_text, (
         f"deploy/install-tinyassets-env.sh must contain the canonical "
         f"{CANONICAL_MARKER!r} marker so post-write readability failures "
-        f"surface in journalctl with the same token as the standalone "
-        f"assertions and the entrypoint."
+        f"surface in journalctl with the same token as the entrypoint."
     )
 
-    # Within YAML: every env-mutation site routes through the helper.
-    # Three known mutation sites (scrub TINYASSETS_WIKI_PATH + deploy pin + rollback)
-    # plus the standalone assertion step that still inlines the marker.
-    helper_invocations = yaml_text.count("install-tinyassets-env.sh")
-    assert helper_invocations >= 3, (
-        f"expected ≥3 invocations of install-tinyassets-env.sh in "
-        f"deploy-prod.yml (scrub + deploy + rollback); got "
-        f"{helper_invocations}. A new sed-i site that mutates "
-        f"/etc/tinyassets/env without going through the helper would "
-        f"reintroduce the 2026-04-21 P0 perm-regression class."
+    # (2) deploy-prod.yml delivers the helper to the droplet AND runs the
+    # fail-safe swap. Both are required: the fail-safe script hard-refuses
+    # if the helper is not present (`ENV_HELPER missing`), so shipping it
+    # is load-bearing, not incidental.
+    assert "install-tinyassets-env.sh" in yaml_text, (
+        "deploy-prod.yml must scp deploy/install-tinyassets-env.sh to the "
+        "droplet so the fail-safe swap can mutate the env file through it."
+    )
+    assert "deploy_fail_safe.sh" in yaml_text, (
+        "deploy-prod.yml must run deploy/deploy_fail_safe.sh (the fail-safe "
+        "swap that replaced the inline stop-writer-fence heredocs)."
     )
 
-    # The standalone "Assert ... readable by daemon user" step still
-    # emits the marker directly (it's not a mutation site, just a
-    # steady-state canary). Confirm the YAML still carries the marker
-    # in at least one place so the standalone-assert path is intact.
-    assert CANONICAL_MARKER in yaml_text, (
-        f"deploy-prod.yml must still carry {CANONICAL_MARKER!r} for the "
-        f"standalone post-restart assertion step."
+    # (3) The fail-safe script mutates the env file ONLY through the helper.
+    # It writes the image pin via `bash "$ENV_HELPER" set TINYASSETS_IMAGE`;
+    # there must be no un-helpered write to $ENV_FILE that would bypass the
+    # perm-restore + marker path and reintroduce the P0 perm-regression class.
+    assert 'bash "$ENV_HELPER" set' in failsafe_text, (
+        "deploy/deploy_fail_safe.sh must mutate the env file through the "
+        "helper (`bash \"$ENV_HELPER\" set ...`), not via a raw write."
+    )
+    unhelpered_write = re.search(
+        r'(?:sed\s+-i|>>?|tee)\s*[^\n]*\$(?:ENV_FILE|\{ENV_FILE\})',
+        failsafe_text,
+    )
+    assert unhelpered_write is None, (
+        f"deploy/deploy_fail_safe.sh writes to $ENV_FILE without going "
+        f"through the helper: {unhelpered_write.group(0)!r}. Every env "
+        f"mutation must route through install-tinyassets-env.sh so perms "
+        f"are restored and the {CANONICAL_MARKER!r} marker fires — this is "
+        f"the 2026-04-21 P0 perm-regression guard."
     )
 
 
