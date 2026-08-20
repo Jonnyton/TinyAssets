@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import http.client
 import io
 import ipaddress
@@ -12,6 +13,7 @@ import math
 import multiprocessing
 import os
 import re
+import secrets
 import socket
 import sqlite3
 import ssl
@@ -338,6 +340,12 @@ _OUTBOUND_HTTP_FLAG = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
 #: legacy/untyped github/slack shape; "http" is the general typed connection. Any
 #: other value is refused at creation AND fails closed at dispatch (FIX 1).
 _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
+
+#: Auth schemes an ``http`` connection may declare. ``oauth1a`` (Twitter) signs
+#: with the four OAuth secrets carried in the bundle; the rest use one token.
+_SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
+    {"none", "bearer", "basic", "header", "oauth1a"}
+)
 
 #: The ONLY credential_ref scheme an ``http`` connection may reference. Binding
 #: the credential's scheme to the connection type is what stops a confused-deputy
@@ -1197,11 +1205,70 @@ def _reject_forbidden_header_name(name: str) -> None:
         raise SsrfValidationError("header name is not permitted")
 
 
+def _oauth1a_percent(value: str) -> str:
+    return urllib.parse.quote(str(value), safe="~-._")
+
+
+def _oauth1a_authorization(
+    bundle: ConnectionSecretBundle, *, method: str, url: str
+) -> str:
+    """OAuth 1.0a HMAC-SHA1 ``Authorization`` built INSIDE the child (Twitter).
+
+    Lifted verbatim from ``effectors/twitter_post._oauth_header`` (the migration
+    ORACLE) so the general primitive signs a byte-identical header, but reading
+    the four OAuth secrets from the typed ``ConnectionSecretBundle`` — the auth
+    material is applied where the credential already legitimately lives, never at
+    the adapter. The bundle is ``{api_key, api_secret, access_token,
+    access_token_secret}``; a missing member fails closed via ``bundle.get``.
+    """
+    oauth_params = {
+        "oauth_consumer_key": bundle.get("api_key"),
+        "oauth_nonce": secrets.token_urlsafe(24),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": bundle.get("access_token"),
+        "oauth_version": "1.0",
+    }
+    parsed = urllib.parse.urlparse(url)
+    base_url = urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
+    )
+    query_params = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    signature_params = {**query_params, **oauth_params}
+    encoded_pairs = [
+        f"{_oauth1a_percent(key)}={_oauth1a_percent(value)}"
+        for key, value in sorted(signature_params.items())
+    ]
+    normalized = "&".join(encoded_pairs)
+    base_string = "&".join([
+        method.upper(),
+        _oauth1a_percent(base_url),
+        _oauth1a_percent(normalized),
+    ])
+    signing_key = (
+        f"{_oauth1a_percent(bundle.get('api_secret'))}&"
+        f"{_oauth1a_percent(bundle.get('access_token_secret'))}"
+    )
+    digest = hmac.new(
+        signing_key.encode("utf-8"),
+        base_string.encode("utf-8"),
+        hashlib.sha1,
+    ).digest()
+    oauth_params["oauth_signature"] = base64.b64encode(digest).decode("ascii")
+    rendered = ", ".join(
+        f'{_oauth1a_percent(key)}="{_oauth1a_percent(value)}"'
+        for key, value in sorted(oauth_params.items())
+    )
+    return f"OAuth {rendered}"
+
+
 def _ssrf_auth_headers(
     auth_scheme: str,
     bundle: ConnectionSecretBundle,
     *,
     header_name: str = "",
+    method: str = "",
+    url: str = "",
 ) -> dict[str, str]:
     """Build the auth header(s) INSIDE the child from the typed bundle (D5)."""
     scheme = (auth_scheme or "none").strip().lower()
@@ -1218,10 +1285,13 @@ def _ssrf_auth_headers(
             raise SsrfValidationError("custom auth header name is not permitted")
         _reject_forbidden_header_name(name)
         result = {name: bundle.get("token")}
+    elif scheme == "oauth1a":
+        # OAuth 1.0a (Twitter): the signature is over the request method + URL, so
+        # they are threaded in from the driver. Signed entirely in the child.
+        result = {
+            "Authorization": _oauth1a_authorization(bundle, method=method, url=url)
+        }
     else:
-        # oauth1a (Twitter) is intentionally NOT implemented in this dark slice;
-        # it lands with the Twitter migration (tasks.md §4) by lifting the
-        # existing signer verbatim into an ``oauth1a`` handler.
         raise SsrfValidationError("auth scheme is not supported")
     # Validate the auth-DERIVED values too, not just caller headers: a bundle
     # token carrying CR/LF (obs-fold) would otherwise emit a folded header line
@@ -1238,6 +1308,19 @@ class _CanonicalOutboundUrl:
     port: int
     path_qs: str
     is_ip_literal: bool
+
+
+def _canonical_request_url(canonical: _CanonicalOutboundUrl) -> str:
+    """The exact https URL the driver puts on the wire (also what oauth1a signs)."""
+    host_for_url = (
+        f"[{canonical.hostname}]"
+        if canonical.is_ip_literal and ":" in canonical.hostname
+        else canonical.hostname
+    )
+    url = f"https://{host_for_url}"
+    if canonical.port != 443:
+        url += f":{canonical.port}"
+    return url + canonical.path_qs
 
 
 def _reject_unsafe_encoded_path(path: str) -> None:
@@ -1950,15 +2033,7 @@ def _execute_pinned_https_request(
 ) -> dict[str, Any]:
     """Fire ONE request: no ambient proxies, no redirects, bounded response."""
     deadline = time.monotonic() + max_total_seconds
-    host_for_url = (
-        f"[{canonical.hostname}]"
-        if canonical.is_ip_literal and ":" in canonical.hostname
-        else canonical.hostname
-    )
-    url = f"https://{host_for_url}"
-    if canonical.port != 443:
-        url += f":{canonical.port}"
-    url += canonical.path_qs
+    url = _canonical_request_url(canonical)
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
 
     opener = urllib.request.OpenerDirector()
@@ -2216,7 +2291,16 @@ class _SsrfHardenedHttpDriver:
         if allowed_endpoints is not None:
             _enforce_endpoint_allowlist(canonical, verb, allowed_endpoints)
         request_headers = _validated_request_headers(headers)
-        auth_headers = _ssrf_auth_headers(auth_scheme, bundle, header_name=header_name)
+        # oauth1a signs over the method + the exact request URL, so pass the
+        # reconstructed URL (identical to the one _execute_pinned_https_request
+        # sends). Other schemes ignore method/url.
+        auth_headers = _ssrf_auth_headers(
+            auth_scheme,
+            bundle,
+            header_name=header_name,
+            method=verb,
+            url=_canonical_request_url(canonical),
+        )
         request_headers.update(auth_headers)
         # Everything to scrub from the response: raw bundle members AND the exact
         # auth values placed on the wire (e.g. the base64 blob of a Basic
@@ -2261,8 +2345,13 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
     The broker resolves ONE opaque credential string from the vault; this maps it
     to the named bundle shape the auth scheme needs. ``basic`` stores the pair as
     ``username:password`` and is split on the FIRST colon (a password may itself
-    contain colons). ``bearer``/``header`` carry a single token. The bundle never
-    crosses the process boundary and is scrubbed from the response.
+    contain colons). ``bearer``/``header`` carry a single token. ``oauth1a``
+    (Twitter) needs FOUR named values, so its single vault string is a JSON object
+    ``{api_key, api_secret, access_token, access_token_secret}`` parsed here — see
+    the SHAPE FINDING in the migration notes: a first-class multi-named-secret
+    vault resolver (task 1.3) is the cleaner home for this than a JSON-in-one-slot
+    encoding. The bundle never crosses the process boundary and is scrubbed from
+    the response.
     """
     scheme = (auth_scheme or "none").strip().lower()
     if scheme in ("bearer", "header"):
@@ -2272,6 +2361,19 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
             raise SsrfValidationError("basic credential must be username:password")
         username, password = credential.split(":", 1)
         return ConnectionSecretBundle(username=username, password=password)
+    if scheme == "oauth1a":
+        try:
+            values = json.loads(credential)
+        except (TypeError, ValueError):
+            raise SsrfValidationError(
+                "oauth1a credential must be a JSON object of the four OAuth values"
+            ) from None
+        if not isinstance(values, dict):
+            raise SsrfValidationError("oauth1a credential must be a JSON object")
+        required = ("api_key", "api_secret", "access_token", "access_token_secret")
+        if any(not isinstance(values.get(name), str) or not values.get(name) for name in required):
+            raise SsrfValidationError("oauth1a credential is missing a required value")
+        return ConnectionSecretBundle(**{name: values[name] for name in required})
     if scheme == "none":
         return ConnectionSecretBundle()
     raise SsrfValidationError("auth scheme is not supported")
@@ -2612,12 +2714,14 @@ class ConnectionLedger:
         _validate_connection_credential_scheme(normalized_type, credential_ref)
         if normalized_type == "http":
             # A general http connection is only safe with a declared allowlist
-            # and a supported auth scheme (the bundle builder enforces the rest).
+            # and a supported auth scheme (the bundle builder enforces the
+            # per-scheme credential FORMAT later, inside the child).
             if not endpoints:
                 raise SsrfValidationError(
                     "an http connection requires at least one allowed endpoint"
                 )
-            _build_http_secret_bundle(normalized_scheme, "credential:probe")
+            if normalized_scheme not in _SUPPORTED_HTTP_AUTH_SCHEMES:
+                raise SsrfValidationError("auth scheme is not supported")
         resource = ConnectionResource(
             connection_id=_required("connection_id", connection_id),
             owner_user_id=_required("owner_user_id", owner_user_id),
