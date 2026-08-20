@@ -143,7 +143,11 @@ def cloud_connections(
             universe_id=uid,
             destination=destination,
         )
-        resource = ledger.get_connection(connection_id)
+        # Credential-bearing read: this idempotency/conflict check must compare
+        # the stored credential_ref, which the redacted get_connection view no
+        # longer exposes (outbound redaction is structural now). Trusted server
+        # code only — the ref never reaches a caller projection (`_project` below).
+        resource = ledger._get_connection_resource(connection_id)
         if resource is None:
             resource = ledger.create_connection(
                 connection_id=connection_id,

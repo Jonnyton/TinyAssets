@@ -15,6 +15,28 @@ non-negotiable verification gate before any "done" claim.
 health*, even if imperfect. Don't block because it isn't how you'd have written
 it. Perfect code doesn't exist; the goal is continuous improvement.
 
+## Review sequencing — shape before hardening (founder directive 2026-08-20)
+
+Reviews run in order, and the order is load-bearing:
+
+1. **Pre-first-build / first-draft review = SHAPE + APPROACH.** One pass, not a
+   gauntlet — right architecture, fail-closed vs fail-open, one general primitive
+   vs per-channel spaghetti, the right authority/ownership model, plus any
+   basic-safety hole that leaks/exfils/bypasses even for a single user.
+2. **Ship LIVE as MVP** (flip the dark flags on, deploy) and **test as a real
+   user** through Slack / the app / the chatbot connector — the live user path is
+   the shape oracle; only it proves the shape + UX flow are right.
+3. **THEN the deep security-hardening rounds** — concurrency, TOCTOU,
+   durability/crash, timing side-channels, migrations of hypothetical prior
+   state, abuse-at-scale — AFTER live-MVP user testing.
+
+Do NOT gate a first-draft MVP behind multiple hardening rounds; that hardens a
+shape live testing may change. Split: a hole that leaks/exfils/bypasses for ONE
+founder = fix pre-live; an edge that only bites multi-tenant / concurrent / crash
+= defer to post-live, tracked in the change's `REVIEW.md`. A reject→reject trend
+narrowing onto ever-deeper edges on a dark, un-shipped path is the signal to
+SHIP, not to review again. (AGENTS.md § Review sequencing.)
+
 ---
 
 ## Verification before completion (the gate)

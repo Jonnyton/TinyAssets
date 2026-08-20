@@ -227,10 +227,33 @@ capture conventions, build/ship pipeline, and FUSE quirks.
 
 ### Quality Gates
 
+**Review sequencing — shape before hardening (founder directive 2026-08-20).**
+Reviews run in a fixed order, and the order is load-bearing:
+1. **Pre-first-build / first-draft review = SHAPE + APPROACH.** One pass, not a
+   gauntlet. It catches architecture/approach problems (fail-closed vs fail-open,
+   one general primitive vs per-channel spaghetti, the right authority/ownership
+   model) and basic-safety holes that leak/exfil/bypass even for a single user.
+   Architectural reviews and rebuilds belong here.
+2. **Ship LIVE as MVP** — flip the dark flags on, deploy — and **test as a real
+   user** through Slack / the app / the chatbot connector. The live user path is
+   the shape oracle: it is the only thing that proves the shape + UX flow are
+   right.
+3. **THEN the deep security-hardening rounds** — concurrency, TOCTOU,
+   durability/crash, timing side-channels, migrations of hypothetical prior
+   state, abuse-at-scale. These run AFTER live-MVP user testing.
+Do NOT gate a first-draft MVP behind multiple hardening rounds — that is
+"endless hardening of the wrong shape," and only live users reveal whether the
+shape is right. The split: a hole that leaks/exfils/bypasses for ONE founder =
+fix pre-live (basic-safety); an edge that only bites multi-tenant / concurrent /
+crash = defer to post-live hardening, tracked in the change's `REVIEW.md`.
+
 **Verification is structural.** Substantive changes need test/check evidence
-plus an independent review path before they count as landed. Self-review alone
-is never enough for public-surface, storage, auth, migration, concurrency, or
-data-loss-risk changes.
+plus an independent review path before they count as landed. The PRE-live review
+is the shape/approach pass above (one round); the multi-round adversarial
+hardening is post-live-MVP. Self-review alone is never enough for public-surface,
+storage, auth, migration, concurrency, or data-loss-risk changes — but for a
+first-draft MVP the pre-live bar is shape + basic-safety, and deep hardening
+follows live user testing.
 
 **`main` enforces a behavioural test gate (live 2026-08-03).** Required contexts
 are `policy`, `Diff scope declared`, and `required-tests`, with `strict` on. So:
@@ -255,7 +278,9 @@ Inconvenience or disagreement does not activate this fallback.
 migration, concurrency, public-surface, and data-loss-risk PRs open as drafts
 so auto-enrollment cannot merge them ahead of review. Ready only after an
 approval artifact names the unchanged head SHA; any head-changing update
-converts back to draft until fresh exact-head approval.
+converts back to draft until fresh exact-head approval. For a first-draft MVP
+that approval is the SHAPE + basic-safety pass (§ Review sequencing) — not a
+completed hardening gauntlet; the deep hardening rounds re-run post-live.
 
 **Final chatbot-surface verification is a rendered chatbot conversation**
 through the live connector at `https://tinyassets.io/mcp` (`ui-test` skill)
