@@ -68,6 +68,24 @@ change's handler.
    `write_graph`, exactly as the `chat_surface` caller was added
    (`universe_server.py:954`), so `mcp_public_canary.py --assert-handles` (Hard
    Rule #11) stays green.
+4. **Canonical `llm_subscription` vault writer (R2-item7).** This change's
+   `llm_deposit` handler is the **single canonical writer** of `llm_subscription`
+   vault records via `write_credential_vault([record], owner_user_id=…, universe_id=…)`.
+   No sibling change ships a parallel `llm_subscription` deposit writer. Concretely
+   this reconciles the overlap with `byo-llm-connect-flow` **task 2.1** (which claims
+   "capture the returned credential as requester-owned into the universe's vault …
+   API-key paste as the alternate"): connect-flow 2.1 is re-scoped to **federate its
+   provider OAuth/device-flow result into this handler** (the OAuth/device flow
+   obtains the material; this handler performs the owner-scoped `llm_subscription`
+   write) rather than writing the vault itself, and its `llm_api_key` paste is
+   separated out (already retired for MCP deposit by `retire-mcp-provider-secret-
+   deposit`, which is scoped to `llm_api_key`). `byo-llm-connect-flow` **task 2.2**
+   (the per-provider `connections` inventory/read model surfaced in
+   `read_graph target=connections`) is unchanged and remains its own read model. This
+   also satisfies connect-flow's custody requirement, because custody adoption relies
+   on the server-recorded depositor that **this** handler binds. `byo-llm-connect-flow`
+   is **not implemented here** — only the writer ownership is declared so no duplicate
+   writer is built.
 
 Non-goals: the secure-browser transport (own change
 `byo-llm-deposit-browser-form`); provider-OAuth federation and credential *minting*
