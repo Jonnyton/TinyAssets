@@ -1931,6 +1931,10 @@ def _action_get_rollback_history(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+from tinyassets.api.webhook_ops import _action_list_webhooks as _webhook_list  # noqa: E402
+from tinyassets.api.webhook_ops import _action_mint_webhook as _webhook_mint  # noqa: E402
+from tinyassets.api.webhook_ops import _action_revoke_webhook as _webhook_revoke  # noqa: E402
+
 _RUN_ACTIONS: dict[str, Any] = {
     "run_branch": _action_run_branch,
     "run_branch_version": _action_run_branch_version,
@@ -1950,11 +1954,15 @@ _RUN_ACTIONS: dict[str, Any] = {
     "get_memory_scope_status": _action_get_memory_scope_status,
     "rollback_merge": _action_rollback_merge,
     "get_rollback_history": _action_get_rollback_history,
+    "mint_webhook": _webhook_mint,
+    "revoke_webhook": _webhook_revoke,
+    "list_webhooks": _webhook_list,
 }
 
 _RUN_WRITE_ACTIONS: frozenset[str] = frozenset(
     {"run_branch", "run_branch_version", "cancel_run", "resume_run",
-     "rollback_merge", "attach_existing_child_run", "record_run_receipt"}
+     "rollback_merge", "attach_existing_child_run", "record_run_receipt",
+     "mint_webhook", "revoke_webhook"}
 )
 
 

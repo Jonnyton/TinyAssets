@@ -1,0 +1,76 @@
+"""Tests for the user-facing mint/revoke/list webhook operations (Floor 1)."""
+
+from __future__ import annotations
+
+import json
+
+from tinyassets.api import webhook_ops
+from tinyassets.storage import webhook_hooks
+
+
+def _wire(monkeypatch, tmp_path, *, universe="u-a", branch_exists=True):
+    monkeypatch.setattr("tinyassets.api.runs._request_universe", lambda x: universe)
+    monkeypatch.setattr("tinyassets.api.helpers._base_path", lambda: str(tmp_path))
+    monkeypatch.setattr("tinyassets.api.branches._resolve_branch_id", lambda b, base: b)
+
+    def _get_branch(base, *, branch_def_id):
+        if not branch_exists:
+            raise KeyError("no such branch")
+        return {"id": branch_def_id}
+
+    monkeypatch.setattr("tinyassets.daemon_server.get_branch_definition", _get_branch)
+
+
+def test_mint_returns_a_url_for_an_owned_branch(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path)
+    out = json.loads(webhook_ops._action_mint_webhook(
+        {"universe_id": "u-a", "branch_def_id": "b-1"},
+    ))
+    assert out["branch_def_id"] == "b-1"
+    assert out["url"].endswith("/hooks/" + out["token"])
+    # the token resolves in the store to this universe + branch
+    assert webhook_hooks.resolve(tmp_path, token=out["token"]) == {
+        "universe_id": "u-a", "branch_def_id": "b-1",
+    }
+
+
+def test_mint_refuses_a_branch_not_in_the_universe(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, branch_exists=False)
+    out = json.loads(webhook_ops._action_mint_webhook(
+        {"universe_id": "u-a", "branch_def_id": "b-nope"},
+    ))
+    assert "error" in out and "not found" in out["error"]
+
+
+def test_mint_requires_a_universe_and_branch(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, universe="")
+    assert "error" in json.loads(webhook_ops._action_mint_webhook({"branch_def_id": "b"}))
+    _wire(monkeypatch, tmp_path, universe="u-a")
+    assert "error" in json.loads(webhook_ops._action_mint_webhook({"universe_id": "u-a"}))
+
+
+def test_revoke_only_affects_your_own_token(monkeypatch, tmp_path):
+    # u-b's token cannot be revoked by u-a (indistinct "no matching").
+    tok_b = webhook_hooks.mint(tmp_path, universe_id="u-b", branch_def_id="b-b")
+    _wire(monkeypatch, tmp_path, universe="u-a")
+    out = json.loads(webhook_ops._action_revoke_webhook({"universe_id": "u-a", "token": tok_b}))
+    assert out["revoked"] is False
+    assert webhook_hooks.resolve(tmp_path, token=tok_b) is not None   # still active
+
+    # u-a can revoke its own token.
+    tok_a = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-a")
+    out2 = json.loads(webhook_ops._action_revoke_webhook({"universe_id": "u-a", "token": tok_a}))
+    assert out2["revoked"] is True
+    assert webhook_hooks.resolve(tmp_path, token=tok_a) is None
+
+
+def test_list_shows_only_your_active_hooks(monkeypatch, tmp_path):
+    webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    revoked = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-2")
+    webhook_hooks.revoke(tmp_path, token=revoked)
+    webhook_hooks.mint(tmp_path, universe_id="u-b", branch_def_id="b-3")
+    _wire(monkeypatch, tmp_path, universe="u-a")
+    out = json.loads(webhook_ops._action_list_webhooks({"universe_id": "u-a"}))
+    assert out["count"] == 1                                   # only the active u-a hook
+    assert out["webhooks"][0]["branch_def_id"] == "b-1"
+    assert out["webhooks"][0]["url"].startswith("https://")

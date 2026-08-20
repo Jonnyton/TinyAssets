@@ -2870,11 +2870,48 @@ def create_streamable_http_app() -> Starlette:
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
     # match before any MCP catch-all route. In WorkOS mode the Protected
     # Resource Metadata advertises AuthKit as the authorization server.
+    # Universal inbound webhook (channel-agnostic inbound, Floor 1): a per-branch
+    # `POST /hooks/<token>` lets ANY channel trigger a branch with zero per-channel
+    # platform code. The token alone authorizes + selects (universe, branch); the run
+    # is enqueued as that universe. Mounted before the MCP catch-all. NOTE: reachable
+    # publicly only once the Cloudflare tunnel routes `/hooks/*` (today `/mcp` only) —
+    # until then this route exists but is dark to the internet (safe to land).
+    from starlette.responses import JSONResponse as _HookJSON
+    from starlette.routing import Route as _HookRoute
+
     from tinyassets.auth.wellknown import starlette_discovery_routes
+
+    async def _hooks_endpoint(request):
+        from tinyassets.webhook_inbound import MAX_BODY_BYTES, handle_hook
+
+        # Enforce the size cap BEFORE buffering the whole body (Codex #2): reject an
+        # oversized declared Content-Length up front, then stream-count and abort the
+        # moment the actual bytes exceed the cap (chunked requests omit Content-Length).
+        clen = request.headers.get("content-length")
+        if clen is not None:
+            try:
+                if int(clen) > MAX_BODY_BYTES:
+                    return _HookJSON({"error": "too_large"}, status_code=413)
+            except ValueError:
+                return _HookJSON({"error": "bad_request"}, status_code=400)
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > MAX_BODY_BYTES:
+                return _HookJSON({"error": "too_large"}, status_code=413)
+            chunks.append(chunk)
+        status, payload = handle_hook(
+            token=str(request.path_params.get("token", "")),
+            body=b"".join(chunks),
+            headers=dict(request.headers),
+        )
+        return _HookJSON(payload, status_code=status)
 
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            _HookRoute("/hooks/{token}", _hooks_endpoint, methods=["POST"]),
             *canonical_app.routes,
         ],
         lifespan=lifespan,
@@ -2977,6 +3014,17 @@ def main(
         from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
 
         _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
+        # Async action-result delivery: a periodic daemon-thread tick posts the
+        # terminal result of an app-originated background run back to its Slack
+        # conversation as a governed follow-up. Inert + safe over an empty outbox, so
+        # starting it unconditionally is fine (Slice 3).
+        try:
+            from tinyassets.action_result_delivery_tick import start_delivery_loop
+            from tinyassets.storage import data_dir as _ar_data_dir
+
+            start_delivery_loop(_ar_data_dir())
+        except Exception:  # noqa: BLE001 - boot must not fail on delivery maintenance
+            logger.exception("action-result: delivery loop not started")
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
         return
