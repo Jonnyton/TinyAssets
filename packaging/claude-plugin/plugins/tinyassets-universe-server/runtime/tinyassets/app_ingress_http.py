@@ -34,7 +34,9 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import Any, Callable, Mapping
 
@@ -50,6 +52,73 @@ def authenticated_app_transport() -> bool:
     """Whether the current delivery crossed the signed ingress boundary."""
 
     return _authenticated_app_transport.get()
+
+
+# --- best-effort, BOUNDED user-notice sender --------------------------------
+# Notices for conditions AROUND a turn (an overload refusal, a fault that escaped
+# the turn's own notice) must never block the event loop, never tie up a turn
+# worker, and never let an unreachable Slack amplify a request flood into thread-
+# pool exhaustion (Codex #4). They run on a tiny dedicated pool with a hard
+# in-flight cap; past the cap a notice is DROPPED with a log rather than queued
+# unbounded — a best-effort courtesy, never a correctness dependency.
+_NOTIFIER: ThreadPoolExecutor | None = None
+_NOTIFIER_LOCK = threading.Lock()
+_NOTIFIER_INFLIGHT = 0
+_NOTIFIER_MAX_WORKERS = 2
+_NOTIFIER_MAX_INFLIGHT = 8
+
+
+def _fire_best_effort_notice(fn: Callable[[], Any]) -> bool:
+    """Run ``fn`` (a notice post) off the loop, bounded + drop-on-saturation.
+
+    Returns True if scheduled, False if dropped because the notifier is saturated.
+    """
+    global _NOTIFIER, _NOTIFIER_INFLIGHT
+    with _NOTIFIER_LOCK:
+        if _NOTIFIER_INFLIGHT >= _NOTIFIER_MAX_INFLIGHT:
+            logger.warning("app ingress: dropping a user notice (notifier saturated)")
+            return False
+        if _NOTIFIER is None:
+            _NOTIFIER = ThreadPoolExecutor(
+                max_workers=_NOTIFIER_MAX_WORKERS,
+                thread_name_prefix="ingress-notice",
+            )
+        _NOTIFIER_INFLIGHT += 1
+        pool = _NOTIFIER
+
+    # Release the reserved permit EXACTLY ONCE. `pool.submit` in CPython enqueues
+    # the work item BEFORE it starts a worker thread, so a thread-creation failure
+    # can both raise (our except path) AND later run `_wrapped` (its finally) — the
+    # permit would be released twice, driving the counter negative and defeating
+    # the cap (Codex round-4 #1). A shared, lock-guarded latch makes it idempotent.
+    released = [False]
+
+    def _release() -> None:
+        global _NOTIFIER_INFLIGHT
+        with _NOTIFIER_LOCK:
+            if released[0]:
+                return
+            released[0] = True
+            _NOTIFIER_INFLIGHT -= 1
+
+    def _wrapped() -> None:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - a notice is best-effort
+            logger.exception("app ingress: best-effort notice failed")
+        finally:
+            _release()
+
+    try:
+        pool.submit(_wrapped)
+    except Exception:  # noqa: BLE001 - scheduling failed (pool saturated / no thread)
+        # Release the permit (idempotently — a partially-enqueued `_wrapped` may
+        # still run and release it too) and DO NOT raise: the caller (the overload
+        # path) must still return its 503 immediately (Codex #3/#4-r4).
+        _release()
+        logger.exception("app ingress: could not schedule a user notice")
+        return False
+    return True
 
 #: Shared secret, canonical single-line standard base64 of >=32 random bytes —
 #: the same encoding the other daemon secrets use. Held by the daemon and the
@@ -176,6 +245,41 @@ def handle_request(
     that can tell "no key configured" from "bad signature" from "stale
     timestamp" learns about the deployment; the specific reason is logged.
     """
+    accepted = _authenticate_and_accept(
+        body=body, headers=headers, env=env, now=now,
+    )
+    if isinstance(accepted, tuple):  # (status, error_payload)
+        return accepted
+    fields = accepted
+
+    if deliver is None:
+        from tinyassets.app_ingress import deliver_app_event as deliver
+
+    transport_token = _authenticated_app_transport.set(True)
+    try:
+        result = deliver(**fields)
+    finally:
+        _authenticated_app_transport.reset(transport_token)
+    return 200, {
+        "handled": bool(getattr(result, "handled", False)),
+        "provider_receipt_ref": str(getattr(result, "provider_receipt_ref", "")),
+    }
+
+
+def _authenticate_and_accept(
+    *,
+    body: bytes,
+    headers: Mapping[str, str],
+    env: Mapping[str, str] | None = None,
+    now: float | None = None,
+) -> dict[str, Any] | tuple[int, dict[str, Any]]:
+    """The FAST, synchronous half of ingress: HMAC-verify + parse the event.
+
+    Returns the accepted ``fields`` dict on success, or a ``(status, payload)``
+    error tuple (401 unauthenticated / 400 malformed). Split out (Slice 2) so the
+    ingress can authenticate+parse on the event loop and then offload the SLOW
+    ``deliver`` turn to a bounded worker instead of blocking the loop.
+    """
     lowered = {str(k).lower(): v for k, v in headers.items()}
     try:
         key = load_key(env)
@@ -194,23 +298,24 @@ def handle_request(
         payload = json.loads(body.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("body must be a JSON object")
-        fields = _accepted(payload)
+        return _accepted(payload)
     except Exception:  # noqa: BLE001
         logger.warning("app ingress: malformed body")
         return 400, {"error": "malformed"}
 
-    if deliver is None:
-        from tinyassets.app_ingress import deliver_app_event as deliver
 
-    transport_token = _authenticated_app_transport.set(True)
-    try:
-        result = deliver(**fields)
-    finally:
-        _authenticated_app_transport.reset(transport_token)
-    return 200, {
-        "handled": bool(getattr(result, "handled", False)),
-        "provider_receipt_ref": str(getattr(result, "provider_receipt_ref", "")),
-    }
+def _conversation_key(fields: Mapping[str, Any]) -> tuple[str, str, str]:
+    """The per-conversation FIFO key: (workspace, channel, thread) (Slice 2).
+
+    Turns for the same channel+thread execute in arrival order; different
+    conversations run concurrently. A thread reply groups under its thread; a
+    top-level message keys on the channel itself.
+    """
+    return (
+        str(fields.get("workspace_id") or ""),
+        str(fields.get("channel_id") or ""),
+        str(fields.get("thread_ts") or fields.get("channel_id") or ""),
+    )
 
 
 #: Where the internal listener binds.
@@ -387,9 +492,65 @@ def create_app_ingress_app():
     from starlette.routing import Route
 
     async def _app_events(request):
+        # Slice 2: authenticate + parse on the event loop (fast, so 401/400 stay
+        # synchronous), then OFFLOAD the slow deliver-turn to a bounded per-
+        # conversation worker so one long turn never head-of-line-blocks another
+        # conversation. The daemon posts the reply to Slack itself, so the turn
+        # can run after this ack.
         body = await request.body()
-        status, payload = handle_request(body=body, headers=dict(request.headers))
-        return JSONResponse(payload, status_code=status)
+        headers = dict(request.headers)
+        accepted = _authenticate_and_accept(body=body, headers=headers)
+        if isinstance(accepted, tuple):  # (status, error_payload) — 401 / 400
+            return JSONResponse(accepted[1], status_code=accepted[0])
+        fields = accepted
+
+        def _run_turn() -> None:
+            # ContextVars do NOT cross threads — set the authenticated-transport
+            # marker INSIDE the worker, not on the event loop.
+            from tinyassets.app_ingress import (
+                _failure_notice,
+                deliver_app_event,
+                deliver_app_notice,
+            )
+            token = _authenticated_app_transport.set(True)
+            try:
+                deliver_app_event(**fields)
+            except Exception as exc:  # noqa: BLE001
+                # deliver_app_event owns its own honest notice AND posts at most
+                # once per turn, swallowing post/record faults; so reaching here is
+                # a genuine PRE-post fault (nothing was posted). Surface it (Codex
+                # adapt #3) — off the worker via the bounded notifier so a down
+                # Slack cannot tie up this turn slot, and never double-posting
+                # (Codex #3: the only escapes left are pre-post).
+                logger.exception("app ingress: turn escaped before any post")
+                exc_for_notice = exc
+                _fire_best_effort_notice(
+                    lambda: deliver_app_notice(
+                        **fields, notice=_failure_notice(exc_for_notice),
+                    )
+                )
+            finally:
+                _authenticated_app_transport.reset(token)
+
+        from tinyassets.app_ingress_workers import get_ingress_executor
+        admitted = get_ingress_executor().submit(
+            _conversation_key(fields), _run_turn,
+        )
+        if not admitted:
+            # Bounded backlog full — truthful overload, NOT a silent drop. Tell the
+            # USER (Codex adapt #3): a 503 the transport swallows leaves the user on
+            # silence. Fire the busy notice best-effort + bounded and return the 503
+            # IMMEDIATELY (Codex #4) — never awaiting Slack, so an unreachable Slack
+            # cannot stall ingress or exhaust the shared threadpool.
+            logger.warning("app ingress: overloaded, refusing turn (backlog full)")
+            from tinyassets.app_ingress import OVERLOADED_NOTICE, deliver_app_notice
+            _fire_best_effort_notice(
+                lambda: deliver_app_notice(**fields, notice=OVERLOADED_NOTICE)
+            )
+            return JSONResponse(
+                {"handled": False, "overloaded": True}, status_code=503,
+            )
+        return JSONResponse({"handled": True, "queued": True}, status_code=200)
 
     async def _app_credentials(request):
         body = await request.body()

@@ -647,15 +647,42 @@ def test_the_reply_is_recorded_only_after_it_is_posted(base, monkeypatch):
     def _post_boom(destination, body, *, thread_ts=""):
         raise RuntimeError("slack post 500")
 
-    with pytest.raises(RuntimeError):
-        _deliver(
-            channel_id=_DM, transport=_post_boom,
-            text="<@U0BOT> hello there", event_id="Ev-por-1",
-        )
+    # A failed reply post no longer PROPAGATES (Codex #3: propagating made the
+    # caller post a second message, risking a double-post against an ambiguous
+    # commit). It returns handled=False and records nothing — the undelivered
+    # reply must never enter history.
+    result, _calls = _deliver(
+        channel_id=_DM, transport=_post_boom,
+        text="<@U0BOT> hello there", event_id="Ev-por-1",
+    )
+    assert result.handled is False
 
     stored = [m.text for m in cs.load_recent(conv_dir, session)]
     assert "the universe answers" not in stored  # undelivered reply not recorded
     assert "hello there" in stored  # the founder's message WAS recorded pre-converse
+
+
+def test_a_reply_post_that_commits_then_raises_never_double_posts(base, monkeypatch):
+    """Codex #3: if the reply post commits to Slack and THEN raises (e.g. the
+    response is lost while reading the receipt), deliver must NOT attempt a second
+    (notice) post — a double-post is worse than silence and we cannot know the
+    commit happened. It posts exactly once and returns handled=False."""
+    binding = _make_universe(base, "u-ingress-dp")
+    _bind(base, "u-ingress-dp", binding)
+    _grant_founder(monkeypatch)
+
+    posts: list[str] = []
+
+    def _commit_then_raise(destination, body, *, thread_ts=""):
+        posts.append(body)  # Slack accepted (committed) ...
+        raise RuntimeError("lost the response reading the receipt")  # ... then raised
+
+    result, _calls = _deliver(
+        channel_id=_DM, transport=_commit_then_raise,
+        text="<@U0BOT> hello", event_id="Ev-dp-1",
+    )
+    assert result.handled is False       # not claimed as delivered
+    assert posts == ["the universe answers"]  # posted ONCE — no second notice
 
 
 def test_a_reply_record_failure_after_post_never_escapes(base, monkeypatch):
