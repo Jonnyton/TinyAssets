@@ -3071,7 +3071,7 @@ def create_streamable_http_app() -> Starlette:
         return _HookJSON(payload, status_code=status)
 
     _inbound_routes = (
-        [_HookRoute("/hooks/{token}", _hooks_endpoint, methods=["POST"])]
+        [_HookRoute("/mcp/hooks/{token}", _hooks_endpoint, methods=["POST"])]
         if _inbound_enabled()
         else []
     )

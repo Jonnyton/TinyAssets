@@ -190,7 +190,7 @@ def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
 
     monkeypatch.setattr("tinyassets.webhook_inbound.handle_hook", _spy)
     client = TestClient(create_streamable_http_app())   # no `with` -> skip lifespan
-    resp = client.post("/hooks/abc123", content=b'{"x":1}', headers={"X-Test": "y"})
+    resp = client.post("/mcp/hooks/abc123", content=b'{"x":1}', headers={"X-Test": "y"})
     assert resp.status_code == 202
     assert seen["token"] == "abc123" and seen["body"] == b'{"x":1}'
     assert seen["headers"]["x-test"] == "y"
@@ -203,7 +203,7 @@ def test_the_route_is_absent_when_disabled(monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "0")
     client = TestClient(create_streamable_http_app())
-    resp = client.post("/hooks/abc123", content=b"{}")
+    resp = client.post("/mcp/hooks/abc123", content=b"{}")
     assert resp.status_code == 404          # route not mounted at all
 
 
@@ -222,7 +222,7 @@ def test_the_route_rejects_an_oversized_content_length_before_reading(monkeypatc
     monkeypatch.setattr("tinyassets.webhook_inbound.handle_hook", _spy)
     client = TestClient(create_streamable_http_app())
     resp = client.post(
-        "/hooks/abc", content=b"x" * 10,
+        "/mcp/hooks/abc", content=b"x" * 10,
         headers={"Content-Length": str(wh.MAX_BODY_BYTES + 1)},
     )
     assert resp.status_code == 413 and called["n"] == 0
