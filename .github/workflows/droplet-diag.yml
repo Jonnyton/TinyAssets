@@ -7,10 +7,10 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  probe:
+  deploy_fix:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH probe compose failure
+      - name: SSH deploy cba8fac9 + reconcile systemd
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
@@ -22,11 +22,20 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== TINYASSETS_IMAGE ====="; grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env
-          echo "===== is that image present locally? ====="; docker images --digests --format '{{.Repository}}@{{.Digest}} ({{.Size}})' 2>&1 | grep -i tinyassets | head
-          echo "===== compose config valid? ====="; docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml config 2>&1 | head -3; echo "config rc=$?"
-          echo "===== MANUAL: docker compose up -d (the exact 125 error) ====="; docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d 2>&1 | tail -25; echo "up rc=$?"
-          echo "===== docker ps after ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
-          echo "===== local probe ====="; sleep 8; curl -s -o /dev/null -w "localhost:8001/mcp -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8001/mcp 2>&1
+          NEWIMG="ghcr.io/jonnyton/tinyassets-daemon@sha256:335b78f027f9322b0a6ee84cb02dd3255cdfbcd6bda6b7026ff8e33cd5d1c563"
+          C="docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml"
+          echo "===== UNIT FILE (ExecStart/ExecStop/StartLimit) ====="; grep -E "ExecStart|ExecStop|Restart|StartLimit|RemainAfterExit|Type=" /etc/systemd/system/tinyassets-daemon.service 2>&1
+          echo "===== swap TINYASSETS_IMAGE -> cba8fac9 (perm-preserving) ====="
+          cp -a /etc/tinyassets/env /etc/tinyassets/env.bak
+          { grep -v '^TINYASSETS_IMAGE=' /etc/tinyassets/env.bak; echo "TINYASSETS_IMAGE=${NEWIMG}"; } > /tmp/env.new
+          chown --reference=/etc/tinyassets/env.bak /tmp/env.new; chmod --reference=/etc/tinyassets/env.bak /tmp/env.new
+          mv /tmp/env.new /etc/tinyassets/env && echo "env updated"; grep '^TINYASSETS_IMAGE=' /etc/tinyassets/env
+          echo "===== up -d (deploy cba8fac9) ====="; $C up -d 2>&1 | tail -12
+          sleep 15; echo "===== ps ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
+          echo "===== reconcile systemd (reset-failed + restart) ====="; systemctl reset-failed tinyassets-daemon.service 2>&1; systemctl restart tinyassets-daemon.service 2>&1; echo "restart rc=$?"; sleep 40
+          echo "===== systemd active? ====="; systemctl is-active tinyassets-daemon.service 2>&1
+          echo "===== SAFETY NET up -d ====="; $C up -d 2>&1 | tail -6; sleep 10
+          echo "===== FINAL ps ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
+          echo "===== local token proxy probe ====="; curl -s -o /dev/null -w "localhost:8001/mcp/app/token -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8001/mcp/app/token 2>&1
           echo "===== DONE ====="
           REMOTE
