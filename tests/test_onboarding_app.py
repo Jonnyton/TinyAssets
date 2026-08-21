@@ -158,8 +158,13 @@ def test_response_sets_security_headers(monkeypatch):
 def test_route_is_mcp_app_get(monkeypatch):
     routes = onboarding.onboarding_routes()
     by_path = {r.path: r for r in routes}
-    # The SPA page (GET) + its same-origin PKCE token-exchange proxy (POST).
-    assert set(by_path) == {"/mcp/app", "/mcp/app/token"}
+    # The SPA page (GET) + its same-origin PKCE token-exchange proxy (POST) +
+    # the one-tap OpenAI device-auth broker (POST only, identity-gated).
+    assert set(by_path) == {
+        "/mcp/app", "/mcp/app/token",
+        "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
+    }
     assert "GET" in by_path["/mcp/app"].methods
-    assert "POST" in by_path["/mcp/app/token"].methods
-    assert "GET" not in by_path["/mcp/app/token"].methods
+    for post_only in ("/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll"):
+        assert "POST" in by_path[post_only].methods
+        assert "GET" not in by_path[post_only].methods

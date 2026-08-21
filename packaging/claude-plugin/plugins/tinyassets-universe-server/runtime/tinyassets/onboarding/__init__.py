@@ -204,6 +204,108 @@ async def _handle_token(request: Any) -> Any:
     return JSONResponse({"access_token": access}, headers={"Cache-Control": "no-store"})
 
 
+async def _read_small_json(request: Any) -> dict[str, Any] | None:
+    """Bounded JSON object body, or None when malformed/oversized."""
+    import json as _json
+
+    raw = await request.body()
+    if len(raw) > 4096:
+        return None
+    try:
+        data = _json.loads(raw or b"{}")
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _app_identity_required() -> Any:
+    """401 JSON when the request carries no resolved (non-anonymous) identity.
+
+    The auth middleware resolves the app's bearer into the request identity
+    contextvar before the handler runs; ``connect_llm`` re-checks it too."""
+    from starlette.responses import JSONResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.auth.provider import ANONYMOUS
+
+    ident = current_identity()
+    if ident is ANONYMOUS or not getattr(ident, "user_id", "") or ident.user_id == "anonymous":
+        return JSONResponse({"error": "authentication_required"}, status_code=401)
+    return None
+
+
+async def _handle_openai_device_start(request: Any) -> Any:
+    """Begin the one-tap OpenAI link: returns the user code + approval URL."""
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.onboarding.openai_device import DeviceAuthError, start_device_auth
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    try:
+        started = await start_device_auth()
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    return JSONResponse(started, headers={"Cache-Control": "no-store"})
+
+
+async def _handle_openai_device_poll(request: Any) -> Any:
+    """One poll of the pending OpenAI approval. On approval the tokens are
+    exchanged and deposited server-side as the signed-in user; the response
+    carries only a status — never the credential."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.onboarding.openai_device import (
+        DeviceAuthError,
+        deposit_codex_auth_json,
+        poll_device_auth,
+    )
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    try:
+        outcome = await poll_device_auth(
+            device_auth_id=str(data.get("device_auth_id", "")),
+            user_code=str(data.get("user_code", "")),
+        )
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    if outcome is None:
+        return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})
+
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "")).strip()[:128]
+
+    def _deposit() -> dict[str, Any]:
+        # Re-pin the identity inside the worker thread (same pattern as the
+        # browser deposit form) so connect_llm's actor resolution sees the user.
+        with identity_context(identity):
+            return deposit_codex_auth_json(outcome["auth_json"], universe_id=universe_id)
+
+    result = await run_in_threadpool(_deposit)
+    if not isinstance(result, dict) or result.get("error"):
+        err = "deposit_failed"
+        if isinstance(result, dict) and result.get("error"):
+            err = str(result["error"])
+        status = 401 if err == "authentication_required" else 400
+        return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    return JSONResponse(
+        {"status": "connected", "service": "codex"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -216,6 +318,8 @@ def onboarding_routes() -> list[Any]:
     return [
         Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
+        Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
+        Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
     ]
 
 

@@ -62,6 +62,11 @@
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .connect-status{margin:1rem 0;padding:.9rem 1rem;border-radius:10px;background:var(--surface-2);
       border:1px solid var(--line);color:var(--ink-dim);font-size:.9rem}
+    .provider-card{border:1px solid var(--line);border-radius:12px;padding:1rem;margin:1rem 0;background:var(--surface-2)}
+    .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
+    .muted{color:var(--ink-dim);font-size:.9em}
+    .bigcode{display:inline-block;font-size:1.5rem;letter-spacing:.12em;padding:.3rem .6rem;border-radius:8px;background:var(--surface);border:1px solid var(--line)}
+    .provider-card textarea{width:100%;box-sizing:border-box;margin:.5rem 0}
     .connect-advanced{margin-top:1.25rem;border-top:1px solid var(--line);padding-top:1rem}
     .connect-advanced summary{cursor:pointer;color:var(--ink-dim)}
     .field{display:block;margin:.8rem 0}
@@ -121,17 +126,41 @@
         </nav>
       </header>
       <div class="connect-body">
-        <p>Your universe thinks on <strong>your own</strong> Claude or Codex subscription. It never
+        <p>Your universe thinks on <strong>your own</strong> Claude or OpenAI subscription. It never
         runs on anyone else's account. Connect one and it starts speaking on the very next turn.</p>
         <div id="connect-status" class="connect-status" role="status"></div>
+
+        <div class="provider-card">
+          <div class="provider-head"><strong>OpenAI</strong> <span class="muted">ChatGPT Plus / Pro / Team</span></div>
+          <p>Tap Connect, approve on the OpenAI page that opens, and you're linked. Nothing to
+          generate, copy, or paste.</p>
+          <button id="btn-openai-connect" class="btn btn--primary">Connect OpenAI</button>
+          <div id="openai-flow" hidden>
+            <p>Your code: <code id="openai-code" class="bigcode"></code></p>
+            <p class="muted">If OpenAI asks for a code, enter the one above (it's already copied).
+            Waiting for your approval&hellip;</p>
+            <button id="btn-openai-open" class="btn btn--ghost">Open OpenAI again</button>
+          </div>
+          <div id="openai-result" class="notice" role="status"></div>
+        </div>
+
+        <div class="provider-card">
+          <div class="provider-head"><strong>Claude</strong> <span class="muted">Pro / Max</span></div>
+          <p>Anthropic only allows Claude Code itself to sign you in, so this one takes a computer:
+          in Claude Code run <code>claude setup-token</code>, then paste the token here.</p>
+          <textarea id="claude-material" rows="3" placeholder="Paste the token from claude setup-token"></textarea>
+          <button id="btn-claude-connect" class="btn btn--primary">Connect Claude</button>
+          <div id="claude-result" class="notice" role="status"></div>
+        </div>
+
         <details class="connect-advanced">
-          <summary>Advanced: deposit now</summary>
+          <summary>Advanced: raw credential deposit</summary>
           <p class="dev-note">The secure deposit sends your subscription credential straight to the
           connector over TLS &mdash; never through chat, never logged. This calls
           <code>write_graph connect_llm</code>. If the deposit backend isn't live yet, you'll see the
           connector's honest response below.</p>
           <label class="field"><span>Service</span>
-            <select id="connect-service"><option value="claude">Claude</option><option value="codex">Codex</option></select>
+            <select id="connect-service"><option value="claude">Claude</option><option value="codex">OpenAI</option></select>
           </label>
           <label class="field"><span>Subscription credential</span>
             <textarea id="connect-material" rows="3" placeholder="OAuth token / credential material"></textarea>
@@ -162,6 +191,29 @@
   }
   function redirectUri(){ return window.location.origin + window.location.pathname; }
 
+  // ---- Native app shell (Capacitor) ----
+  // Inside the Android app, sign-in must NOT run in the WebView: Google refuses
+  // to sign in inside embedded WebViews, which punted users to the system
+  // browser and never brought them back ("timed out", second tap "worked").
+  // Native opens every OAuth page in an in-app Chrome tab and the callback
+  // bounces back into the app through the tinyassets:// scheme.
+  const NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform==="function" && window.Capacitor.isNativePlatform());
+  const APP_STATE_PREFIX = "app.";
+  const APP_RETURN_SCHEME = "tinyassets://auth";
+  const ANDROID_PACKAGE = "io.tinyassets.app";
+  function nativePlugin(name){ const P=window.Capacitor&&window.Capacitor.Plugins; return (P&&P[name])||null; }
+  // PKCE state lives in localStorage on native (survives the WebView being
+  // backgrounded behind the tab) and sessionStorage on the web.
+  const pkceStore = NATIVE ? localStorage : sessionStorage;
+  async function openExternal(url){
+    const B = NATIVE ? nativePlugin("Browser") : null;
+    if(B){ try{ await B.open({url, presentationStyle:"popover"}); return; }catch(_e){} }
+    if(NATIVE){ window.location.href = url; return; }
+    window.open(url, "_blank", "noopener");
+  }
+  async function closeExternal(){ const B=NATIVE?nativePlugin("Browser"):null; if(B){ try{ await B.close(); }catch(_e){} } }
+  function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
   async function beginSignIn(){
     if(!CFG.configured){
       document.getElementById("signin-notice").textContent =
@@ -169,8 +221,10 @@
       return;
     }
     const verifier = randToken(48);
-    const state = randToken(18);
-    sessionStorage.setItem(PKCE_KEY, JSON.stringify({verifier, state}));
+    // An app-initiated sign-in is marked in `state` so the callback page (which
+    // lands in the in-app tab, NOT the WebView) knows to bounce the code back.
+    const state = (NATIVE ? APP_STATE_PREFIX : "") + randToken(18);
+    pkceStore.setItem(PKCE_KEY, JSON.stringify({verifier, state}));
     const challenge = await challengeFor(verifier);
     const p = new URLSearchParams({
       response_type:"code", client_id:CFG.client_id, redirect_uri:redirectUri(),
@@ -180,7 +234,60 @@
     // After an explicit sign-out, force AuthKit to re-authenticate so a shared
     // device can't silently ride the prior user's surviving SSO session.
     if(sessionStorage.getItem("ta_force_login")){ p.set("prompt","login"); sessionStorage.removeItem("ta_force_login"); }
-    window.location.href = CFG.authorization_endpoint + "?" + p.toString();
+    const url = CFG.authorization_endpoint + "?" + p.toString();
+    if(NATIVE){
+      document.getElementById("signin-notice").textContent = "Finish signing in, and you'll land right back here.";
+      await openExternal(url);
+      return;
+    }
+    window.location.href = url;
+  }
+
+  // The AuthKit callback landed in a real browser tab for an APP-initiated
+  // sign-in (state carries the app marker, and this page is not the app's
+  // WebView). The PKCE verifier lives only in the app, so do NOT exchange here:
+  // hand the code back to the app via its scheme. Android's Chrome honours an
+  // intent:// navigation from the redirect chain; the button is the fallback.
+  function bounceToApp(code, state){
+    const qs = "code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
+    const deep = APP_RETURN_SCHEME + "?" + qs;
+    const intent = "intent://auth?" + qs + "#Intent;scheme=tinyassets;package=" + ANDROID_PACKAGE + ";end";
+    const notice = document.getElementById("signin-notice");
+    notice.textContent = "";
+    const p = document.createElement("p"); p.textContent = "Signed in. Returning you to the TinyAssets app…";
+    const a = document.createElement("a"); a.className = "btn btn--primary"; a.href = deep; a.textContent = "Open the TinyAssets app";
+    notice.appendChild(p); notice.appendChild(a);
+    try{ window.location.href = intent; }catch(_e){}
+    setTimeout(()=>{ try{ window.location.href = deep; }catch(_e){} }, 700);
+  }
+
+  async function exchangeCode(code, state){
+    const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
+    if(!saved.verifier || saved.state !== state){
+      document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
+      return false;
+    }
+    return finishExchange(code, saved);
+  }
+
+  // Native: the app was (re)opened through tinyassets://auth?code=…&state=…
+  async function handleAppReturn(url){
+    let u; try{ u = new URL(url); }catch(_e){ return false; }
+    if(!(u.protocol === "tinyassets:" && (u.host === "auth" || u.pathname.replace(/^\/+/,"") === "auth"))) return false;
+    const code = u.searchParams.get("code"), state = u.searchParams.get("state") || "";
+    if(!code) return false;
+    await closeExternal();
+    const ok = await exchangeCode(code, state);
+    if(ok) enterSignedIn();
+    return ok;
+  }
+  function wireNativeReturn(){
+    if(!NATIVE) return;
+    const A = nativePlugin("App");
+    if(!A) return;
+    try{ A.addListener("appUrlOpen", (ev)=>{ if(ev && ev.url) handleAppReturn(ev.url); }); }catch(_e){}
+    // Cold start from the callback intent (the app was killed behind the tab).
+    try{ if(typeof A.getLaunchUrl==="function") A.getLaunchUrl().then((r)=>{ if(r && r.url) handleAppReturn(r.url); }).catch(()=>{}); }catch(_e){}
   }
 
   async function completeSignInIfCallback(){
@@ -193,12 +300,18 @@
     }
     const code = q.get("code");
     if(!code) return false;
-    const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || "{}");
+    const state = q.get("state") || "";
     history.replaceState({}, "", redirectUri());   // strip code/state from the URL
-    if(!saved.verifier || saved.state !== q.get("state")){
+    if(!NATIVE && state.startsWith(APP_STATE_PREFIX)){ bounceToApp(code, state); return false; }
+    const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
+    if(!saved.verifier || saved.state !== state){
       document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
       return false;
     }
+    return finishExchange(code, saved);
+  }
+
+  async function finishExchange(code, saved){
     // Exchange the code SAME-ORIGIN through the daemon proxy (/mcp/app/token).
     // The cross-origin AuthKit token endpoint fails inside an app WebView
     // ("Failed to fetch"); the proxy does the PKCE exchange server-side and
@@ -214,7 +327,7 @@
       document.getElementById("signin-notice").textContent = "Token exchange failed: " + e.message;
       return false;
     }
-    sessionStorage.removeItem(PKCE_KEY);
+    pkceStore.removeItem(PKCE_KEY);
     if(!tokens.access_token){
       document.getElementById("signin-notice").textContent =
         "Token exchange failed: " + (tokens.error_description || tokens.error || "no token");
@@ -338,13 +451,76 @@
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
     sessionStorage.removeItem(TOKEN_KEY); showView("signin"); }
   function showConnect(){ showView("connect");
-    $("connect-status").textContent="The secure deposit sends your credential straight to the "+
-      "connector, never through chat. If the deposit backend isn't live yet, the advanced deposit "+
-      "below shows the connector's honest response."; }
+    $("connect-status").textContent="Credentials go straight to the connector over TLS — never through chat, never logged."; }
 
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
+  function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
+
+  // ---- One-tap OpenAI link (device authorization, brokered by the daemon) ----
+  // The daemon talks to OpenAI and deposits the resulting credential as the
+  // signed-in user; this page only ever sees a status. See
+  // tinyassets/onboarding/openai_device.py.
+  let openaiBusy=false;
+  async function connectOpenAI(){
+    if(openaiBusy) return; openaiBusy=true;
+    const btn=$("btn-openai-connect"), res=$("openai-result"), flow=$("openai-flow");
+    btn.disabled=true; res.textContent="Contacting OpenAI…";
+    let started;
+    try{
+      const r=await fetch("/mcp/app/openai/device/start",{method:"POST",headers:authHeaders()});
+      if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+      started=await r.json();
+      if(!r.ok||!started.user_code) throw new Error(started.error||"could not start");
+    }catch(e){ res.textContent="Couldn't reach OpenAI: "+e.message; btn.disabled=false; openaiBusy=false; return; }
+    $("openai-code").textContent=started.user_code; flow.hidden=false;
+    try{ await navigator.clipboard.writeText(started.user_code); }catch(_e){}
+    const url=started.verification_url+"?user_code="+encodeURIComponent(started.user_code);
+    $("btn-openai-open").onclick=()=>openExternal(url);
+    res.textContent="Approve on the OpenAI page, then come back here.";
+    await openExternal(url);
+    const deadline=Date.now()+15*60*1000, every=Math.max(2,started.interval||5)*1000;
+    const body=JSON.stringify({device_auth_id:started.device_auth_id,user_code:started.user_code});
+    while(Date.now()<deadline){
+      await sleep(every);
+      let r, doc;
+      try{
+        r=await fetch("/mcp/app/openai/device/poll",{method:"POST",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body});
+        doc=await r.json();
+      }catch(_e){ continue; }
+      if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+      if(doc.status==="pending") continue;
+      if(doc.status==="connected"){
+        await closeExternal();
+        flow.hidden=true; btn.textContent="OpenAI connected ✓"; btn.disabled=false; openaiBusy=false;
+        res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn.";
+        return;
+      }
+      res.textContent="Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.";
+      break;
+    }
+    if(Date.now()>=deadline) res.textContent="That took too long — tap Connect OpenAI to try again.";
+    flow.hidden=true; btn.disabled=false; openaiBusy=false;
+  }
+
+  async function connectClaude(){
+    const el=$("claude-material"), btn=$("btn-claude-connect"), res=$("claude-result");
+    const material=el.value.trim();
+    if(!material){ res.textContent="Paste the token from `claude setup-token` first."; return; }
+    el.value="";  // clear the secret from the DOM BEFORE any await
+    btn.disabled=true; res.textContent="Connecting…";
+    try{
+      const payload=await MCP.connectLLM("claude", btoa(unescape(encodeURIComponent(material))));
+      if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); }
+      else{ res.textContent="Claude connected. Your universe thinks on it from the next turn."; btn.textContent="Claude connected ✓"; }
+    }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } res.textContent="Couldn't connect: "+err.message; }
+    finally{ btn.disabled=false; }
+  }
+
   function wire(){
+    $("btn-openai-connect").addEventListener("click",connectOpenAI);
+    $("btn-claude-connect").addEventListener("click",connectClaude);
     $("btn-signin").addEventListener("click",beginSignIn);
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
       const m=$("composer-input").value.trim(); if(m) sendTurn(m); });
@@ -372,6 +548,7 @@
 
   async function boot(){
     wire();
+    wireNativeReturn();
     const signedInNow = await completeSignInIfCallback();
     if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
   }

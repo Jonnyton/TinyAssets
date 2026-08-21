@@ -5,8 +5,7 @@
   "server": {
     "url": "https://tinyassets.io/mcp/app",
     "allowNavigation": [
-      "tinyassets.io",
-      "*.authkit.app"
+      "tinyassets.io"
     ],
     "androidScheme": "https",
     "cleartext": false
