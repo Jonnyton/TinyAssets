@@ -44,14 +44,14 @@ RemainAfterExit=yes
 User=tinyassets
 Group=tinyassets
 WorkingDirectory=/opt/tinyassets
-# HOME must be set explicitly (2026-08-21 P0 fix): systemd runs the unit with an
-# empty environment, so the docker CLI could not resolve its config/plugin path
-# and `docker compose` fell back to legacy, failing with "unknown flag:
-# --env-file". The tinyassets account's home is /opt/tinyassets (getent passwd);
-# `sudo -u tinyassets` sets this and works. The compose plugin itself lives at
-# the system path /usr/libexec/docker/cli-plugins/docker-compose.
+# NO EnvironmentFile= here (2026-08-21 root cause): /etc/tinyassets/env is the
+# CONTAINER's env and carries HOME=/app. EnvironmentFile= always overrides
+# Environment= (systemd.exec), whatever the order, so the docker CLI ran with
+# HOME=/app, could not read /app/.docker/config.json, skipped plugin discovery,
+# and `docker compose` died with "unknown flag: --env-file" (journal evidence).
+# Compose receives that file through --env-file; the unit only needs the HOST
+# account's HOME so the CLI finds /usr/libexec/docker/cli-plugins.
 Environment=HOME=/opt/tinyassets
-EnvironmentFile=/etc/tinyassets/env
 
 # Pre-check: the compose env_file lives at /etc/tinyassets/env and must be
 # readable by this unit's User=tinyassets. If not, docker compose fails
@@ -66,10 +66,17 @@ ExecStartPre=/bin/sh -c 'meta=$$(stat -c "%%U:%%G %%a" /etc/tinyassets/request-i
 
 # `up -d` starts the stack detached and returns once it is up + healthy (the
 # tunnel depends_on the daemon's healthcheck), so systemd never watches a
-# long-lived foreground CLI. --remove-orphans clears any half-created container
-# from a prior crashed attempt (the exit-125 class this fix removes).
-ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d --remove-orphans
-ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml down --timeout 30
+# long-lived foreground CLI. The THREE production services are named
+# explicitly: compose.yml also defines unprofiled worker services, and an
+# unqualified `up -d` would start all of them on the host (Codex review).
+#
+# Deliberately NO ExecStop=: this is a bootstrap/converge unit, not the
+# container lifetime. A `compose down` here meant every `systemctl restart`
+# (watchdog, operator, env apply) tore down daemon + tunnel + logs together and
+# a failed restart left production down. Stopping the unit leaves the
+# containers to docker's restart policy; restarting it re-converges. The
+# watchdog restarts the daemon CONTAINER, daemon-scoped (daemon-watchdog.sh).
+ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d daemon cloudflared logs
 
 # Restart posture. on-failure (NOT always — with RemainAfterExit, `always` would
 # re-run a SUCCESSFUL oneshot). 10s delay + the [Unit] start-limit cap avoids a hot-loop;
@@ -79,8 +86,6 @@ RestartSec=10s
 
 # TimeoutStartSec > the up -d + healthcheck-wait budget (daemon health ~30s).
 TimeoutStartSec=200s
-# TimeoutStopSec > the cloudflared + daemon graceful-shutdown budgets.
-TimeoutStopSec=60s
 
 # Hardening NOTE (2026-08-21 P0 fix): the previous ProtectHome=yes +
 # ProtectSystem=strict masked the tinyassets user's docker config + compose CLI

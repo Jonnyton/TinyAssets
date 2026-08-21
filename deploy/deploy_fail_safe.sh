@@ -9,7 +9,7 @@
 # a plain, fail-safe image swap:
 #
 #   lock  ->  record current image  ->  pull new  ->  prove it loads (ephemeral)
-#     ->  swap TINYASSETS_IMAGE + restart  ->  health-check (fail-fast)
+#     ->  swap TINYASSETS_IMAGE + compose up -d  ->  health + running-image check
 #     ->  roll back to the recorded image if unhealthy
 #
 # It NEVER leaves prod stopped: the worst case restores the previous healthy
@@ -51,6 +51,7 @@ NEW_IMAGE="${1:-}"
 ENV_FILE=/etc/tinyassets/env
 ENV_HELPER=/tmp/install-tinyassets-env.sh
 UNIT=tinyassets-daemon
+COMPOSE_FILE=/opt/tinyassets/compose.yml
 DAEMON_CONTAINER=tinyassets-daemon
 TUNNEL_CONTAINER=tinyassets-tunnel
 # Shared host-mutation lock (same path the watchdog uses); serializes all
@@ -114,16 +115,61 @@ tunnel_up() {
 
 set_image() { printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE; }
 
-accept() {  # daemon healthy AND tunnel up
+# The container must actually be RUNNING the requested image. A healthy daemon
+# is not proof: when the systemd unit could not start (2026-08-21), the OLD
+# container kept running under docker's restart policy, health_ok passed, and
+# every deploy reported "healthy" while changing nothing - a false green with a
+# success receipt. Compare image ids, not health.
+running_image_matches() {
+  local want have
+  want="$(docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true)"
+  have="$(docker inspect -f '{{.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || true)"
+  [ -n "$want" ] && [ "$want" = "$have" ]
+}
+
+accept() {  # daemon healthy AND running the requested image AND tunnel up
+  local want="$1"
   health_ok || return 1
+  if ! running_image_matches "$want"; then
+    err "daemon is healthy but NOT running ${want} (running: $(docker inspect -f '{{.Config.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || echo unknown))"
+    return 1
+  fi
   local i
   for i in 1 2 3 4 5 6; do tunnel_up && return 0; sleep 5; done
   err "daemon healthy but cloudflared tunnel not running (public surface down)"
   return 1
 }
 
+# Converge the production services onto TINYASSETS_IMAGE. Drives docker
+# compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
+# never depends on the systemd unit being startable; the unit is then asked to
+# track the new state best-effort so `systemctl status` stays truthful. Only
+# the three production services are named: compose.yml also defines
+# unprofiled worker services that an unqualified `up -d` would start. `up -d`
+# recreates only the services whose image changed (the tunnel keeps running).
+restart_stack() {
+  systemctl reset-failed "$UNIT" 2>/dev/null || true
+  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d daemon cloudflared logs; then
+    err "docker compose up -d failed"
+    return 1
+  fi
+  systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
+  return 0
+}
+
 # --- 1. record the current (rollback) image -------------------------------
-PREV_IMAGE="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+# The rollback target is what is actually RUNNING, not what the env file says:
+# after a failed deploy the env file already names the failed image (the
+# 2026-08-21 incident state), so rolling back to it would change nothing.
+# Captured as an IMMUTABLE repo digest (repo@sha256:...), never a tag: the
+# rollback ref is written to the env file and must be re-pullable as exactly
+# the bytes that were running.
+PREV_IMAGE="$(docker inspect -f '{{.Image}}' "$DAEMON_CONTAINER" 2>/dev/null \
+  | xargs -r docker image inspect -f '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+case "$PREV_IMAGE" in
+  *@sha256:*) ;;
+  *) PREV_IMAGE="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)" ;;
+esac
 log "previous image: ${PREV_IMAGE:-<none>}"
 log "target image:   ${NEW_IMAGE}"
 
@@ -140,13 +186,16 @@ fi
 log "candidate image loads cleanly"
 
 # --- 4. swap + restart ----------------------------------------------------
-log "swapping TINYASSETS_IMAGE and restarting ${UNIT}"
-set_image "$NEW_IMAGE"
-systemctl reset-failed "$UNIT" 2>/dev/null || true
-systemctl restart "$UNIT"
+log "swapping TINYASSETS_IMAGE and converging the stack"
+if ! set_image "$NEW_IMAGE"; then
+  err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}; nothing mutated"
+  echo "deploy_result=failed_env_write"
+  exit 1
+fi
+restart_stack || true
 
-# --- 5. accept the new image (daemon healthy + tunnel up) -----------------
-if accept; then
+# --- 5. accept the new image (healthy + RUNNING it + tunnel up) -----------
+if accept "$NEW_IMAGE"; then
   log "deploy healthy on ${NEW_IMAGE}"
   echo "deploy_result=deployed"
   echo "deployed_image=${NEW_IMAGE}"
@@ -160,10 +209,13 @@ if [ -z "$PREV_IMAGE" ]; then
   echo "deploy_result=failed_no_rollback_target"
   exit 3
 fi
-set_image "$PREV_IMAGE"
-systemctl reset-failed "$UNIT" 2>/dev/null || true
-systemctl restart "$UNIT"
-if accept; then
+if ! set_image "$PREV_IMAGE"; then
+  err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"
+  echo "deploy_result=rollback_env_write_failed"
+  exit 3
+fi
+restart_stack || true
+if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
   echo "deploy_result=rolled_back"
   echo "deployed_image=${PREV_IMAGE}"
