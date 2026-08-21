@@ -1,6 +1,4 @@
 name: Droplet diagnostics
-# One-off P0 diagnostic: SSH to the droplet and dump daemon health, logs, disk,
-# and memory so we can see why the daemon won't become healthy. Read-only.
 on:
   workflow_dispatch: {}
 permissions:
@@ -24,15 +22,10 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== DISK ====="; df -h / /var/lib/docker 2>/dev/null
-          echo "===== MEM ====="; free -m
-          echo "===== DOCKER PS -A ====="; docker ps -a --format '{{.Names}} | {{.Status}} | {{.Image}}' 2>&1 | head -20
-          CN=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -i tinyassets | head -1)
-          echo "container=$CN"
-          echo "===== INSPECT ====="; docker inspect --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} exit={{.State.ExitCode}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' "$CN" 2>&1
-          echo "===== HEALTHCHECK LAST OUTPUT ====="; docker inspect --format '{{if .State.Health}}{{range .State.Health.Log}}{{.ExitCode}}: {{.Output}}{{end}}{{end}}' "$CN" 2>&1 | tail -5
-          echo "===== DAEMON LOGS (last 120) ====="; docker logs "$CN" --tail 120 2>&1 | tail -120
-          echo "===== TINYASSETS_IMAGE ====="; grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>&1
-          echo "===== ENV KEYS (no values) ====="; grep -oE '^[A-Z_]+=' /etc/tinyassets/env 2>/dev/null | tr '\n' ' '; echo
+          echo "===== UPTIME (did droplet reboot?) ====="; uptime; echo "boot: $(who -b 2>/dev/null)"
+          echo "===== RESTART POLICIES ====="; for c in tinyassets-daemon tinyassets-tunnel tinyassets-logs; do echo "$c: $(docker inspect --format '{{.HostConfig.RestartPolicy.Name}} status={{.State.Status}} exit={{.State.ExitCode}} finishedAt={{.State.FinishedAt}}' $c 2>&1)"; done
+          echo "===== DAEMON LOGS (last 100) ====="; docker logs tinyassets-daemon --tail 100 2>&1 | tail -100
+          echo "===== COMPOSE FILE ====="; ls -la /opt/tinyassets/compose.yml /etc/tinyassets/*.yml 2>&1 | head
+          echo "===== systemd unit? ====="; systemctl list-units --type=service 2>/dev/null | grep -iE "tinyassets|docker" | head
           echo "===== DONE ====="
           REMOTE
