@@ -27,11 +27,15 @@ restart_daemon() {
     # If the container does not exist at all, re-converge the unit instead.
     log "restarting daemon container: ${reason}"
     if docker inspect tinyassets-daemon >/dev/null 2>&1; then
-        docker restart tinyassets-daemon
-    else
-        systemctl reset-failed "${SERVICE_UNIT}" >/dev/null 2>&1 || true
-        systemctl restart "${SERVICE_UNIT}"
+        # A hung-but-"healthy" daemon needs an actual container restart;
+        # `up -d` alone would leave an unchanged container running.
+        docker restart tinyassets-daemon || true
     fi
+    # Then re-converge the unit: with no ExecStop this is a safe `up -d` of
+    # the three production services, which (re)starts the tunnel/logs if they
+    # are down and restores an inactive unit so the timer does not loop.
+    systemctl reset-failed "${SERVICE_UNIT}" >/dev/null 2>&1 || true
+    systemctl restart "${SERVICE_UNIT}"
 }
 
 container_running() {

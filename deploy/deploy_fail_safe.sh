@@ -161,10 +161,15 @@ restart_stack() {
 # The rollback target is what is actually RUNNING, not what the env file says:
 # after a failed deploy the env file already names the failed image (the
 # 2026-08-21 incident state), so rolling back to it would change nothing.
-PREV_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || true)"
-if [ -z "$PREV_IMAGE" ] || ! docker image inspect "$PREV_IMAGE" >/dev/null 2>&1; then
-  PREV_IMAGE="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
-fi
+# Captured as an IMMUTABLE repo digest (repo@sha256:...), never a tag: the
+# rollback ref is written to the env file and must be re-pullable as exactly
+# the bytes that were running.
+PREV_IMAGE="$(docker inspect -f '{{.Image}}' "$DAEMON_CONTAINER" 2>/dev/null \
+  | xargs -r docker image inspect -f '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+case "$PREV_IMAGE" in
+  *@sha256:*) ;;
+  *) PREV_IMAGE="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)" ;;
+esac
 log "previous image: ${PREV_IMAGE:-<none>}"
 log "target image:   ${NEW_IMAGE}"
 
