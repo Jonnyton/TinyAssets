@@ -230,10 +230,11 @@ def _drive(route_path: str, body: dict | None, *, identity=None, enabled=True, m
 
 
 def _home(monkeypatch, home="u-home"):
-    """Pin the server-resolved home the routes deposit into."""
+    """Pin the server-resolved home: the POST routes bootstrap it, the GET reads it."""
     import tinyassets.onboarding as onboarding
 
     monkeypatch.setattr(onboarding, "_bootstrap_home", lambda identity: home)
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity: home)
 
 
 def _user(sub="user_123"):
@@ -870,3 +871,52 @@ def test_bootstrap_home_uses_first_contact_provisioning(monkeypatch):
         fc, "ensure_founder_home", lambda b, f: (_ for _ in ()).throw(RuntimeError("x"))
     )
     assert _bootstrap_home(_user("f9")) == ""
+
+
+def test_me_is_read_only_and_bootstrap_happens_on_begin(monkeypatch):
+    """Codex round-3 #2: a status GET must not create a universe; provisioning
+    belongs to the POST the user acts on."""
+    import tinyassets.onboarding as onboarding
+
+    calls = []
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity: "")
+    monkeypatch.setattr(
+        onboarding, "_bootstrap_home", lambda identity: calls.append("boot") or "u-new"
+    )
+    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    assert (status, doc["home_bound"], calls) == (200, False, [])
+    od._reset_pending_for_tests()
+    _verifier, challenge = _pkce()
+    body = {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"}
+    status, doc = _drive(
+        "/mcp/app/openai/begin", body, identity=_user("f1"), monkeypatch=monkeypatch
+    )
+    assert status == 200 and calls == ["boot"]
+    assert od.lookup_flow(doc["flow"], user_id="f1").universe_id == "u-new"
+
+
+def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
+    """Codex round-3 #3: a non-ASCII / short verifier is refused up front and
+    the flow stays usable (not leased, not consumed)."""
+    od._reset_pending_for_tests()
+    _home(monkeypatch, "u-mine")
+    _verifier, challenge = _pkce()
+    status, doc = _drive(
+        "/mcp/app/openai/begin",
+        {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"},
+        identity=_user("u1"),
+        monkeypatch=monkeypatch,
+    )
+    handle = doc["flow"]
+    for bad in ("short", "v" * 43 + "\u00e9", "v" * 200):
+        status, doc = _drive(
+            "/mcp/app/openai/exchange",
+            {"flow": handle, "code": "c", "code_verifier": bad},
+            identity=_user("u1"),
+            monkeypatch=monkeypatch,
+        )
+        assert (status, doc) == (400, {"error": "invalid_code_verifier"})
+    assert (
+        od.lookup_flow(handle, user_id="u1").leased is True
+    )  # still there, lease free before this
+    assert od.verifier_matches_challenge("v" * 43 + "\u00e9", challenge) is False

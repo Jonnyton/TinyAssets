@@ -60,10 +60,20 @@ public class LocalCallbackPlugin extends Plugin {
         final ServerSocket s = server;
         Thread t = new Thread(() -> {
             while (!s.isClosed()) {
-                try (Socket c = s.accept()) {
-                    handle(c);
+                Socket c;
+                try {
+                    c = s.accept();
                 } catch (IOException e) {
-                    break;
+                    break;   // the server socket closed (stop/destroy/valid callback)
+                }
+                // A misbehaving client (silent connect, slow headers, timeout)
+                // must never end the accept loop - that would let any local
+                // process preempt the real callback by connecting first.
+                try {
+                    handle(c);
+                } catch (Exception ignored) {
+                } finally {
+                    try { c.close(); } catch (IOException ignored) { }
                 }
             }
         }, "tinyassets-local-callback");
@@ -91,6 +101,8 @@ public class LocalCallbackPlugin extends Plugin {
      */
     private void handle(Socket c) throws IOException {
         c.setSoTimeout(SOCKET_TIMEOUT_MS);
+        // Only the request line matters; read it with a hard cap and stop at
+        // the first CRLF so header size (Chrome sends plenty) is irrelevant.
         byte[] buf = new byte[MAX_REQUEST_BYTES];
         int n = 0;
         java.io.InputStream in = c.getInputStream();
@@ -98,7 +110,7 @@ public class LocalCallbackPlugin extends Plugin {
             int r = in.read(buf, n, buf.length - n);
             if (r < 0) break;
             n += r;
-            if (indexOfCrlfCrlf(buf, n) >= 0) break;
+            if (indexOfCrlf(buf, n) >= 0) break;
         }
         String head = new String(buf, 0, n, StandardCharsets.ISO_8859_1);
         int eol = head.indexOf("\r\n");
@@ -132,14 +144,19 @@ public class LocalCallbackPlugin extends Plugin {
         stopServer();   // one valid callback per start()
     }
 
-    private static int indexOfCrlfCrlf(byte[] b, int len) {
-        for (int i = 0; i + 3 < len; i++) {
-            if (b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') return i;
+    private static int indexOfCrlf(byte[] b, int len) {
+        for (int i = 0; i + 1 < len; i++) {
+            if (b[i] == '\r' && b[i + 1] == '\n') return i;
         }
         return -1;
     }
 
-    /** Exact path, and a query whose `state` equals the one this flow started with. */
+    /**
+     * Exact path, and a query whose `state` equals the one this flow started
+     * with, carrying either a `code` (success) or an `error` (the user denied,
+     * or OpenAI refused) - both must reach the web layer so it can finish the
+     * flow instead of leaving the user on a blank page until timeout.
+     */
     private boolean isExpectedCallback(String target) {
         if (target == null || target.isEmpty()) return false;
         int q = target.indexOf('?');
@@ -149,16 +166,16 @@ public class LocalCallbackPlugin extends Plugin {
         String query = target.substring(q + 1);
         int hash = query.indexOf('#');
         if (hash >= 0) query = query.substring(0, hash);
-        boolean stateOk = false, hasCode = false;
+        boolean stateOk = false, hasOutcome = false;
         for (String kv : query.split("&")) {
             int eq = kv.indexOf('=');
             String k = eq >= 0 ? kv.substring(0, eq) : kv;
             String v = eq >= 0 ? kv.substring(eq + 1) : "";
             try { v = java.net.URLDecoder.decode(v, "UTF-8"); } catch (Exception e) { return false; }
             if (k.equals("state")) stateOk = v.equals(expectedState);
-            if (k.equals("code") && !v.isEmpty()) hasCode = true;
+            if ((k.equals("code") || k.equals("error")) && !v.isEmpty()) hasOutcome = true;
         }
-        return stateOk && hasCode;
+        return stateOk && hasOutcome;
     }
 
     private void bringToFront() {

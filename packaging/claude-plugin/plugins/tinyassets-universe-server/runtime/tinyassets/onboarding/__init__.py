@@ -270,6 +270,23 @@ def _app_identity_required() -> Any:
     return None
 
 
+def _read_home(identity: Any) -> str:
+    """The signed-in user's OWN complete home universe id, or "" — read-only
+    (no provisioning, no ledger write). For the status GET."""
+    from tinyassets.api.first_contact import home_is_complete
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.daemon_server import get_founder_home
+
+    with identity_context(identity):
+        try:
+            base = _base_path()
+            home = get_founder_home(base, identity.user_id) or ""
+            return home if home and home_is_complete(base, home) else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+
 def _bootstrap_home(identity: Any) -> str:
     """The signed-in user's OWN home universe id, created on first contact if
     it does not exist yet (the same ``ensure_founder_home`` the conversation
@@ -427,11 +444,11 @@ async def _handle_me(request: Any) -> Any:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.api.universe import universe_has_assigned_engine
 
-        # Only the user's OWN home counts — created now if this is their first
-        # contact, so the Connect gate always has a destination. The
-        # identity-neutral public landing universe has an engine of its own
+        # Only the user's OWN home counts, read-only: a GET never creates a
+        # universe (the POST begin/start routes bootstrap it when the user acts).
+        # The identity-neutral public landing universe has an engine of its own
         # and must never read as "you're connected".
-        home = _bootstrap_home(identity)
+        home = _read_home(identity)
         if not home:
             return {"universe_id": "", "home_bound": False, "engine_connected": False}
         with identity_context(identity):
@@ -525,7 +542,11 @@ async def _handle_openai_exchange(request: Any) -> Any:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
     identity = current_identity()
     handle = str(data.get("flow", ""))[:128]
-    code_verifier = str(data.get("code_verifier", ""))[:512]
+    code_verifier = str(data.get("code_verifier", ""))
+    # RFC 7636 §4.1 shape, checked BEFORE the flow is leased so a malformed
+    # verifier can never 500 with the lease held.
+    if not _re.fullmatch(r"[A-Za-z0-9\-._~]{43,128}", code_verifier):
+        return JSONResponse({"error": "invalid_code_verifier"}, status_code=400)
     try:
         flow = lookup_flow(handle, user_id=identity.user_id)
     except DeviceAuthError as exc:

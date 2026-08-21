@@ -369,7 +369,10 @@ def verifier_matches_challenge(code_verifier: str, code_challenge: str) -> bool:
 
     if not code_verifier or not code_challenge:
         return False
-    digest = hashlib.sha256(code_verifier.encode("ascii", "strict")).digest()
+    try:
+        digest = hashlib.sha256(code_verifier.encode("ascii", "strict")).digest()
+    except UnicodeEncodeError:
+        return False  # non-ASCII can never match an S256 challenge
     expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return hmac.compare_digest(expected, code_challenge.strip())
 

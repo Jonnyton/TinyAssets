@@ -546,7 +546,10 @@
       handle = await LC.addListener("callback", async (ev)=>{
         let u; try{ u=new URL(ev.url); }catch(_e){ return; }
         const code=u.searchParams.get("code"), st=u.searchParams.get("state")||"";
-        if(!code || st!==state){ return finish(false, "Sign-in came back without a valid code. Tap Connect to try again."); }
+        const oauthErr=u.searchParams.get("error");
+        if(st!==state){ return finish(false, "Sign-in came back for a different attempt. Tap Connect to try again."); }
+        if(oauthErr){ await closeExternal(); return finish(false, "OpenAI didn't complete the sign-in ("+(u.searchParams.get("error_description")||oauthErr)+"). Tap Connect to try again."); }
+        if(!code){ return finish(false, "Sign-in came back without a code. Tap Connect to try again."); }
         await closeExternal();
         res.textContent="Linking your subscription…";
         let r, doc;
@@ -556,7 +559,7 @@
             body:JSON.stringify({flow, code, code_verifier:verifier})});
           doc=await r.json();
         }catch(e){ return finish(false, "Couldn't reach the connector: "+e.message); }
-        if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+        if(r.status===401){ await finish(false, "Your sign-in expired."); return enterSignedOut(); }
         if(doc.status==="connected") return finish(true);
         return finish(false, "Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.");
       });
