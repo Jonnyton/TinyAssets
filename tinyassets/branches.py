@@ -394,9 +394,13 @@ class NodeDefinition:
 
     # PR-122 Phase 1 — external-write effect declarations. Each string names
     # a sink the node's outputs should be routed to after the run completes.
-    # Today: "github_pull_request" is the only supported sink (see
-    # tinyassets.effectors.github_pr). The node's output_keys must contain
-    # at least one value parseable as an ``external_write_packet`` shape
+    # The platform is channel-agnostic: the general sink is
+    # "authenticated_external_call" (a credential-blind call over a
+    # user-configured connection — see
+    # tinyassets.effectors.authenticated_external_call); "wiki_write_back" is
+    # the internal write-back. There is no per-channel sink — channels are
+    # user-built graph nodes over the generic call. The node's output_keys must
+    # contain at least one value parseable as an ``external_write_packet`` shape
     # (sink, payload, idempotency_hint?, expected_evidence_keys?).
     # Convention only — this is NOT a new substrate primitive; the
     # effector reads the packet shape out of run_state at completion time.

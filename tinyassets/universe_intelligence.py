@@ -685,7 +685,6 @@ def converse(
     *,
     actor_id: str = "",
     tier: str | None = None,
-    founder_grant: object | None = None,
     conversation_history: "list | None" = None,
     agent_binding_id: str = "",
     binding_revision: int = 0,
@@ -715,12 +714,6 @@ def converse(
     udir = _universe_dir(uid)
     if not udir.is_dir():
         raise ValueError(f"Universe {uid!r} not found")
-
-    if founder_grant is not None:
-        if tier is not None:
-            # Two sources of authority for one turn is never a legitimate call.
-            raise ValueError("pass either founder_grant or tier, never both")
-        tier = _tier_from_grant(founder_grant, universe_id=uid)
 
     # Cross-family review finding 2 (Codex REJECT 2026-07-25): an omitted tier
     # used to default to FOUNDER on the grounds that the only production caller
@@ -827,74 +820,3 @@ def converse(
         except Exception:  # persistence must never break the conversation turn
             logger.exception("converse: learning persistence failed for %s", uid)
     return reply
-
-
-#: What a chat surface's sender is when the platform did not recognise them as
-#: the founder. `T0` rather than `T1` because a Slack/Discord/Teams sender holds
-#: no TinyAssets OAuth subject at all — they are the anonymous reader. The two
-#: tiers are treated identically everywhere below `T2` today; `T0` is simply the
-#: honest one, and the tighter one if that ever stops being true.
-EXTERNAL_SENDER_FLOOR = interlocutor.T0
-
-
-def _tier_from_grant(founder_grant: object, *, universe_id: str) -> str:
-    """Map a founder grant to a tier, failing closed on anything suspect.
-
-    A forged object, a grant for a different universe, or anything that is not
-    a sealed :class:`~tinyassets.founder_grant.FounderGrant` yields the floor
-    rather than an error. Downgrading IS the fail-closed behaviour, and it
-    denies an attacker the ability to distinguish "rejected" from "unknown".
-    """
-    from tinyassets.founder_grant import is_founder_grant
-
-    if not is_founder_grant(founder_grant):
-        logger.warning("converse: discarding a non-sealed founder grant for %s", universe_id)
-        return EXTERNAL_SENDER_FLOOR
-    if founder_grant.universe_id != universe_id:
-        logger.warning(
-            "converse: founder grant is for another universe (%s != %s)",
-            founder_grant.universe_id,
-            universe_id,
-        )
-        return EXTERNAL_SENDER_FLOOR
-    return interlocutor.FOUNDER
-
-
-def converse_as_external_sender(
-    universe_id: str,
-    message: str,
-    *,
-    founder_grant: object | None = None,
-    actor_id: str = "",
-    conversation_history: "list | None" = None,
-    agent_binding_id: str = "",
-    binding_revision: int = 0,
-) -> str:
-    """The entry point for every external chat surface — Slack, Discord, Teams.
-
-    There is deliberately no ``tier`` parameter. Authority policy does not
-    belong in a transport: a constant like ``SLACK_SENDER_TIER = T1`` is wrong
-    twice — hardcoded, and in the wrong layer, where each new surface grows its
-    own copy of the rule. A surface's job is to hand over an authenticated
-    external identity; the platform decides what that identity means.
-
-    Because the parameter does not exist, a surface *cannot* claim a tier even
-    by mistake. It passes the grant the recognizer minted, or it passes nothing.
-    """
-    return converse(
-        universe_id,
-        message,
-        actor_id=actor_id,
-        founder_grant=founder_grant,
-        conversation_history=conversation_history,
-        agent_binding_id=agent_binding_id,
-        binding_revision=binding_revision,
-    ) if founder_grant is not None else converse(
-        universe_id,
-        message,
-        actor_id=actor_id,
-        tier=EXTERNAL_SENDER_FLOOR,
-        conversation_history=conversation_history,
-        agent_binding_id=agent_binding_id,
-        binding_revision=binding_revision,
-    )

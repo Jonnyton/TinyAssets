@@ -1168,19 +1168,12 @@ def test_legacy_connection_ignores_descriptor_and_routes_to_fixture(tmp_path):
 # --------------------------------------------------------------------------- #
 # FIX 1 — fail-OPEN on unknown connection_type (Codex REJECT)
 # --------------------------------------------------------------------------- #
-def test_unknown_connection_type_never_reaches_the_github_driver(tmp_path):
-    # Repro: connection_type="htpt" (typo), provider="github", empty allowlist,
-    # flag off. Pre-fix this FELL THROUGH to the legacy github driver
-    # (destination api.github.com) — an endpoint on no allowlist. It must fail
-    # closed and never touch the production driver.
+def test_unknown_connection_type_fails_closed(tmp_path):
+    # An unknown connection_type (e.g. a typo) must fail closed. There is no
+    # per-channel (github/…) transport to fall through to — the only paths are
+    # the general http driver ("http") and the gated test fixture ("" +
+    # test-fixture provider); everything else is refused.
     driver = _trusted(tmp_path, allow_http=False)
-    reached = {"github": False}
-
-    def spy(**_kwargs):
-        reached["github"] = True
-        return {"status": "created"}
-
-    driver._production = spy
     with pytest.raises(ProxyRequestError, match="not supported"):
         driver(
             credential="c",
@@ -1192,20 +1185,12 @@ def test_unknown_connection_type_never_reaches_the_github_driver(tmp_path):
             verb="pull_requests:write",
             request={"title": "x"},
         )
-    assert reached["github"] is False
 
 
-def test_legacy_untyped_non_github_provider_is_refused(tmp_path):
-    # The github driver is reachable ONLY on the explicit github provider path,
-    # never as a catch-all else for a legacy (empty-type) connection.
+def test_legacy_untyped_non_fixture_provider_is_refused(tmp_path):
+    # A legacy (empty-type) connection routes ONLY to the gated test fixture;
+    # any other provider is refused — there is no per-channel transport at all.
     driver = _trusted(tmp_path, allow_http=False)
-    reached = {"github": False}
-
-    def spy(**_kwargs):
-        reached["github"] = True
-        return {"status": "created"}
-
-    driver._production = spy
     with pytest.raises(ProxyRequestError, match="no trusted transport"):
         driver(
             credential="c",
@@ -1217,7 +1202,6 @@ def test_legacy_untyped_non_github_provider_is_refused(tmp_path):
             verb="GET",
             request={},
         )
-    assert reached["github"] is False
 
 
 # --------------------------------------------------------------------------- #

@@ -678,59 +678,6 @@ class _TestFixtureCredentialResolver:
         raise RuntimeError("credential reference has no trusted resolver")
 
 
-class _ProductionVaultCredentialResolver:
-    """Resolve one exact connection-ledger reference inside the broker child."""
-
-    __slots__ = ("_destination", "_provider", "_repository", "_universe_dir")
-
-    def __init__(
-        self,
-        *,
-        universe_dir: str | Path,
-        provider: str,
-        destination: str,
-    ) -> None:
-        self._universe_dir = Path(universe_dir)
-        self._provider = provider.strip().lower()
-        self._destination = destination.strip().lower()
-        self._repository = _github_repository_from_destination(self._destination)
-
-    def __call__(self, credential_ref: str) -> str:
-        if self._provider != "github":
-            raise RuntimeError("credential reference has no trusted resolver")
-        expected_reference = f"vault://github/{self._repository}"
-        if credential_ref != expected_reference:
-            raise RuntimeError("credential reference does not match the connection")
-        from tinyassets.credential_vault import resolve_github_token
-
-        credential = resolve_github_token(
-            self._universe_dir,
-            self._repository,
-            purpose="write",
-        )
-        if not credential:
-            raise RuntimeError("credential reference is unavailable")
-        return credential
-
-
-class _WorkOSPipesCredentialResolver:
-    """Resolve an owner-bound Pipes reference only inside the broker child."""
-
-    __slots__ = ("_owner_user_id", "_provider")
-
-    def __init__(self, *, owner_user_id: str, provider: str) -> None:
-        self._owner_user_id = owner_user_id.strip()
-        self._provider = provider.strip().lower()
-
-    def __call__(self, credential_ref: str) -> str:
-        expected = f"workos-pipes://github/{self._owner_user_id}"
-        if self._provider != "github" or credential_ref != expected:
-            raise RuntimeError("credential reference does not match the connection")
-        from tinyassets.workos_pipes import WorkOSPipesClient
-
-        return WorkOSPipesClient().vend_credential(user_id=self._owner_user_id)
-
-
 class _GeneralVaultCredentialResolver:
     """Resolve a general (non-github) connection credential from the vault.
 
@@ -816,13 +763,18 @@ class _TrustedCredentialResolver:
         # FOREIGN token that the http driver would then POST to an attacker's
         # allowlisted endpoint. The general resolver accepts only vault://http/
         # refs and fails closed on anything else.
+        # CONNECTION-TYPE-FIRST (Codex FIX 1 — confused-deputy exfiltration). An
+        # http connection resolves its credential ONLY through the general vault
+        # resolver (vault://http/<key>), which fails closed on anything else. This
+        # is the single channel-agnostic egress credential path; there is no
+        # scheme-specific (github/slack/workos) resolver — channels are user-built
+        # nodes over the generic http connection, not platform code.
         if effective_type == "http":
             return _GeneralVaultCredentialResolver(
                 universe_dir=self._universe_dir
             )(credential_ref)
-        # Legacy/untyped connections keep their existing scheme-based routing.
         # Test-fixture refs resolve through the fixture resolver — a REAL gated
-        # component, not a mock — for the legacy test paths only.
+        # component, not a mock — for the test paths only.
         if (
             self._provider.startswith("test-fixture.")
             or ref == "test-fixture://nonsecret"
@@ -831,17 +783,7 @@ class _TrustedCredentialResolver:
             return _TestFixtureCredentialResolver(
                 allow_test_fixtures=self._allow_test_fixtures
             )(credential_ref)
-        if ref.startswith("workos-pipes://"):
-            return _WorkOSPipesCredentialResolver(
-                owner_user_id=self._owner_user_id, provider=self._provider
-            )(credential_ref)
-        # Legacy github path: constructed LAZILY so a non-github destination is
-        # never parsed as a repo (which crashed the broker at startup, FIX 4).
-        return _ProductionVaultCredentialResolver(
-            universe_dir=self._universe_dir,
-            provider=self._provider,
-            destination=self._destination,
-        )(credential_ref)
+        raise RuntimeError("credential reference has no trusted resolver")
 
 
 class _TestFixtureNetworkDriver:
@@ -905,139 +847,6 @@ class _TestFixtureNetworkDriver:
         if outcome == "created":
             return {"status": "created"}
         return {"issue_id": 17}
-
-
-def _github_repository_from_destination(destination: str) -> str:
-    normalized = destination.strip().lower().removeprefix("https://")
-    normalized = normalized.removeprefix("http://").strip("/")
-    normalized = normalized.removeprefix("github.com/")
-    parts = normalized.split("/")
-    if (
-        len(parts) != 2
-        or re.fullmatch(r"[\w.-]+/[\w.-]+", normalized) is None
-        or any(part in {".", ".."} for part in parts)
-    ):
-        raise PermissionError("GitHub destination does not identify one repository")
-    return normalized
-
-
-def _read_for_commit_via_connection(
-    *, repository: str, intended_head_sha: str, per_page: int, credential: str
-) -> list:
-    """PRs-for-commit read through the SSRF-hardened driver + the destination-bound
-    github allowlist (channel-agnostic-outbound: the one egress path).
-
-    Reproduces the legacy read's semantics byte-for-byte: the broker's own
-    ``tinyassets-outbound-broker/1.0`` User-Agent + header set is preserved (the
-    driver injects the Bearer from a one-member bundle), and any transport /
-    allowlist refusal, non-2xx status, non-JSON body, or non-list payload raises a
-    secret-free ``ProxyRequestError`` — exactly what the legacy ``urlopen`` path
-    surfaces. On 2xx it returns the parsed PR list.
-    """
-    from tinyassets.effectors.outbound_channel_adapter import github_allowed_endpoints
-
-    path = (
-        f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
-        + urllib.parse.urlencode({"per_page": per_page})
-    )
-    try:
-        result = _SsrfHardenedHttpDriver()(
-            bundle=ConnectionSecretBundle(token=credential),
-            auth_scheme="bearer",
-            method="GET",
-            url=f"https://api.github.com{path}",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "tinyassets-outbound-broker/1.0",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            body=None,
-            allowed_endpoints=github_allowed_endpoints(repository),
-        )
-    except (SsrfValidationError, ProxyRequestError):
-        raise ProxyRequestError("GitHub destination read failed") from None
-    # Reject every non-2xx (Codex): redirects are disabled, so a 3xx is a failure,
-    # not a body to parse — exactly what the legacy urlopen path surfaces (it
-    # raises on >=400 and would follow, never return, a 3xx).
-    if not 200 <= int(result["status"]) < 300:
-        raise ProxyRequestError("GitHub destination read failed") from None
-    try:
-        payload = json.loads(result["body"])
-    except (TypeError, ValueError):
-        raise ProxyRequestError("GitHub destination read failed") from None
-    if not isinstance(payload, list):
-        raise ProxyRequestError("GitHub destination returned an invalid response")
-    return payload
-
-
-class _ProductionGitHubNetworkDriver:
-    """Trusted credential-bearing GitHub read transport for scoped proxies."""
-
-    __slots__ = ()
-
-    def __call__(
-        self,
-        *,
-        credential: str,
-        provider: str,
-        destination: str,
-        verb: str,
-        request: object,
-    ) -> Any:
-        if provider != "github":
-            raise PermissionError("provider verb has no trusted outbound transport")
-        repository = _github_repository_from_destination(destination)
-        if verb == "pull_requests:write":
-            if not isinstance(request, dict):
-                raise PermissionError("GitHub write request shape is not permitted")
-            requested_repository = str(request.get("repository", "")).strip().lower()
-            if requested_repository != repository:
-                raise PermissionError("GitHub request repository is outside the grant")
-            from tinyassets.effectors.github_pr import (
-                _prepare_scoped_github_commit,
-                _publish_scoped_github_pull_request,
-            )
-
-            operation = request.get("operation")
-            if operation == "prepare_commit":
-                return _prepare_scoped_github_commit(
-                    request=request,
-                    destination=repository,
-                    capability_token=credential,
-                )
-            if operation == "publish_pull_request":
-                return _publish_scoped_github_pull_request(
-                    request=request,
-                    destination=repository,
-                    capability_token=credential,
-                )
-            raise PermissionError("GitHub write operation is not permitted")
-        if verb != "pull_requests:read_for_commit":
-            raise PermissionError("provider verb has no trusted outbound transport")
-        if not isinstance(request, dict) or set(request) != {
-            "repository",
-            "intended_head_sha",
-            "per_page",
-        }:
-            raise PermissionError("GitHub request shape is not permitted")
-        requested_repository = str(request["repository"]).strip().lower()
-        if requested_repository != repository:
-            raise PermissionError("GitHub request repository is outside the grant")
-        intended_head_sha = str(request["intended_head_sha"]).strip().lower()
-        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", intended_head_sha) is None:
-            raise PermissionError("GitHub request commit is invalid")
-        per_page = request["per_page"]
-        if not isinstance(per_page, int) or isinstance(per_page, bool) or not 1 <= per_page <= 100:
-            raise PermissionError("GitHub request page size is invalid")
-        # The PRs-for-commit read always egresses through the SSRF-hardened driver +
-        # destination-bound github allowlist (channel-agnostic-outbound: one egress
-        # path, no legacy urllib fallback).
-        return _read_for_commit_via_connection(
-            repository=repository,
-            intended_head_sha=intended_head_sha,
-            per_page=per_page,
-            credential=credential,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -2545,30 +2354,30 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
 
 
 class _TrustedNetworkDriver:
-    """Select fixture, github, or general http transport inside the broker child.
+    """Select the fixture or general http transport inside the broker child.
 
     Routing is EXPLICIT and fails closed (Codex FIX 1). ``connection_type=="http"``
-    → the general driver (behind the default-OFF ``allow_http_connections`` flag);
-    the EMPTY legacy type → the existing fixture/github routing; ANY other
-    (unknown/unsupported) type is REFUSED — it never falls through to the legacy
-    hardcoded-destination GitHub driver, which is reachable only on the explicit
-    legacy github path.
+    → the general credential-blind SSRF-hardened driver (the single
+    channel-agnostic egress, behind the ``allow_http_connections`` deployment
+    flag); the EMPTY legacy type routes ONLY to the gated test fixture; ANY other
+    (unknown/unsupported) type is REFUSED. There is no per-channel (github/slack/…)
+    transport — channels are user-built graph nodes over the generic http
+    connection, never platform code.
     """
 
-    __slots__ = ("_allow_http", "_fixture", "_http", "_production")
+    __slots__ = ("_allow_http", "_fixture", "_http")
 
     def __init__(self, config: dict[str, Any], runtime_root: Path) -> None:
         self._fixture = _TestFixtureNetworkDriver(
             runtime_root,
             allow_test_fixtures=bool(config["allow_test_fixtures"]),
         )
-        self._production = _ProductionGitHubNetworkDriver()
         self._allow_http = bool(config.get("allow_http_connections", False))
         self._http = _SsrfHardenedHttpDriver()
 
     def __call__(self, **kwargs: Any) -> Any:
-        # Pop the descriptor fields so the legacy fixture/github drivers keep
-        # their exact fixed signatures — only the http path consumes them.
+        # Pop the descriptor fields so the fixture driver keeps its exact fixed
+        # signature — only the http path consumes them.
         connection_type = str(kwargs.pop("connection_type", "") or "").strip().lower()
         auth_scheme = str(kwargs.pop("auth_scheme", "") or "")
         allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
@@ -2581,14 +2390,11 @@ class _TrustedNetworkDriver:
                 request=kwargs.get("request"),
             )
         if connection_type == "":
-            # Legacy untyped connections only. The GitHub driver is reachable
-            # ONLY on the explicit github provider path — never as a catch-all
-            # else, so an unknown type can never smuggle a call to api.github.com.
+            # Legacy untyped connections route ONLY to the gated test fixture —
+            # never to any real network destination.
             provider = str(kwargs.get("provider", ""))
             if provider.startswith("test-fixture."):
                 return self._fixture(**kwargs)
-            if provider == "github":
-                return self._production(**kwargs)
             raise ProxyRequestError("outbound provider has no trusted transport")
         # Unknown / unsupported connection_type: FAIL CLOSED.
         raise ProxyRequestError("outbound connection type is not supported")
