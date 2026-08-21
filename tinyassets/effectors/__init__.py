@@ -1,83 +1,68 @@
-"""External-write effectors — PR-122 Phase 1.
+"""External-write effectors — channel-agnostic dispatch.
 
 Effectors translate ``external_write_packet``-shaped outputs from a node's
-``output_keys`` into real-world side effects (open a GitHub PR, post a
-tweet, etc.). They are NOT a new substrate primitive type; they are
-glue that reads a documented packet shape out of a run's final state
-and invokes an external tool.
+``output_keys`` into real-world side effects. They are NOT a new substrate
+primitive type; they are glue that reads a documented packet shape out of a
+run's final state and invokes a generic, credential-blind external call (or an
+internal wiki write-back). Per the canonical 6+5 vocabulary, ``effects`` is a
+``NodeDefinition`` attribute, not a fifth primitive. These functions are called
+from the run-completion path in ``tinyassets.runs``; errors are captured into
+the run's metadata, never raised to the user.
 
-Per the canonical 6+5 vocabulary, ``effects`` is a NodeDefinition
-attribute, not a fifth primitive. The effector functions in this
-package are called from the run-completion path in ``tinyassets.runs``;
-errors are captured into the run's metadata, never raised to the user.
-
-See: pages/patch-requests/pr-122-external-write-primitive-needed-for-
-user-buildable-loop-2-to.md
+**The platform is channel-agnostic and ships with NO per-channel effector.** A
+universe reaches any external service through the single generic
+``authenticated_external_call`` sink over a user-configured connection — the
+credential is applied inside an isolated worker process, never in this process.
+Channels (GitHub, Slack, X, or anything not yet imagined) are user-built graph
+nodes over that one primitive, not platform code. There is not a single channel
+in the platform until a user builds one.
 """
 
 from __future__ import annotations
 
-from tinyassets.effectors.github_merge import (
-    EXTERNAL_WRITE_SINK_GITHUB_MERGE,
-    run_github_merge_effector,
-)
-from tinyassets.effectors.github_pr import (
-    EXTERNAL_WRITE_SINK_GITHUB_PR,
-    run_github_pr_effector,
-)
-from tinyassets.effectors.github_pr import (
-    run_effects_for_branch as _run_github_pr_effects_for_branch,
-)
-from tinyassets.effectors.github_read import (
-    read_repo_files,
-    register_read_repo_files,
-)
-from tinyassets.effectors.github_search import (
-    register_search_repo_files,
-    search_repo_files,
-)
-from tinyassets.effectors.outbound_channel_adapter import (
-    EXTERNAL_WRITE_SINK_TWITTER_POST,
-    run_twitter_post_effector,
-)
-from tinyassets.effectors.validate_patch import (
-    register_validate_patch,
-    validate_patch,
+from tinyassets.effectors.authenticated_external_call import (
+    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    run_authenticated_external_call_effector,
 )
 from tinyassets.effectors.wiki_write_back import (
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
     run_wiki_write_back_effector,
 )
-from tinyassets.effectors.windows_desktop import (
-    EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
-    run_windows_desktop_effector,
-)
-
-# Register the opaque domain callables at package import so a branch that uses
-# them resolves a body at compile time (read + search side of the loop).
-register_read_repo_files()
-register_search_repo_files()
-register_validate_patch()
 
 
-def _branch_without_github_merge(branch):
-    """Return a branch-like view with github_merge removed from effects."""
-    from types import SimpleNamespace
+def _authenticated_call_adapter(
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run
+):
+    return run_authenticated_external_call_effector(
+        node_id=node_id,
+        output_keys=output_keys,
+        run_state=run_state,
+        base_path=base_path,
+        run_id=run_id,
+        dry_run=dry_run,
+    )
 
-    filtered_nodes = []
-    for node in getattr(branch, "node_defs", None) or []:
-        effects = list(getattr(node, "effects", None) or [])
-        kept = [sink for sink in effects if sink != EXTERNAL_WRITE_SINK_GITHUB_MERGE]
-        if not kept:
-            continue
-        filtered_nodes.append(
-            SimpleNamespace(
-                node_id=getattr(node, "node_id", ""),
-                output_keys=list(getattr(node, "output_keys", None) or []),
-                effects=kept,
-            )
-        )
-    return SimpleNamespace(node_defs=filtered_nodes)
+
+def _wiki_write_back_adapter(
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run
+):
+    del dry_run  # internal write-back has no dry-run gate
+    return run_wiki_write_back_effector(
+        node_id=node_id,
+        output_keys=output_keys,
+        run_state=run_state,
+        base_path=base_path,
+        run_id=run_id,
+    )
+
+
+# Every external-write sink the platform knows -> its effector adapter. Only
+# channel-agnostic sinks exist: the generic authenticated call and the internal
+# wiki write-back. No GitHub/Slack/X/desktop sink lives here by design.
+_EFFECTORS = {
+    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL: _authenticated_call_adapter,
+    EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK: _wiki_write_back_adapter,
+}
 
 
 def run_effects_for_branch(
@@ -89,56 +74,52 @@ def run_effects_for_branch(
     dry_run=None,
     cloud_effect_session=None,
 ):
-    """Dispatch all branch effects, including the PR-175 merge effector."""
-    evidence_map = _run_github_pr_effects_for_branch(
-        branch=_branch_without_github_merge(branch),
-        run_state=run_state,
-        base_path=base_path,
-        run_id=run_id,
-        dry_run=dry_run,
-        cloud_effect_session=cloud_effect_session,
-    )
+    """Dispatch every node's external-write effects.
+
+    Reads each node's ``effects`` (a list of sink names), runs the matching
+    effector adapter, and collects per-node evidence keyed by sink. An unknown
+    sink is recorded as a structured error; an effector crash is captured, never
+    raised to the completion path.
+    """
+    del cloud_effect_session  # no per-channel cloud session; kept for call-site compat
+    evidence_map: dict[str, dict] = {}
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
-        if EXTERNAL_WRITE_SINK_GITHUB_MERGE not in effects:
+        if not effects:
             continue
         node_id = getattr(node, "node_id", "")
         output_keys = list(getattr(node, "output_keys", None) or [])
         per_node = evidence_map.setdefault(node_id, {})
-        try:
-            result = run_github_merge_effector(
-                node_id=node_id,
-                output_keys=output_keys,
-                run_state=run_state,
-                base_path=base_path,
-                run_id=run_id,
-                dry_run=bool(dry_run),
-            )
-        except Exception as exc:  # defensive: never raise from completion path
-            result = {
-                "error": f"effector crashed: {exc}",
-                "error_kind": "effector_crashed",
-            }
-        per_node[EXTERNAL_WRITE_SINK_GITHUB_MERGE] = result
+        for sink in effects:
+            adapter = _EFFECTORS.get(sink)
+            if adapter is None:
+                per_node[sink] = {
+                    "error": f"unknown effect sink: {sink}",
+                    "error_kind": "unknown_sink",
+                }
+                continue
+            try:
+                result = adapter(
+                    node_id=node_id,
+                    output_keys=output_keys,
+                    run_state=run_state,
+                    base_path=base_path,
+                    run_id=run_id,
+                    dry_run=bool(dry_run),
+                )
+            except Exception as exc:  # defensive: never raise from completion path
+                result = {
+                    "error": f"effector crashed: {exc}",
+                    "error_kind": "effector_crashed",
+                }
+            per_node[sink] = result
     return evidence_map
 
 
 __all__ = [
-    "EXTERNAL_WRITE_SINK_GITHUB_MERGE",
-    "EXTERNAL_WRITE_SINK_GITHUB_PR",
-    "EXTERNAL_WRITE_SINK_TWITTER_POST",
-    "EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME",
+    "EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL",
     "EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK",
-    "read_repo_files",
-    "register_read_repo_files",
-    "search_repo_files",
-    "register_search_repo_files",
-    "validate_patch",
-    "register_validate_patch",
-    "run_github_merge_effector",
-    "run_github_pr_effector",
-    "run_twitter_post_effector",
-    "run_windows_desktop_effector",
+    "run_authenticated_external_call_effector",
     "run_wiki_write_back_effector",
     "run_effects_for_branch",
 ]
