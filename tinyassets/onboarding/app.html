@@ -500,7 +500,7 @@
     setTimeout(()=>{ showView("chat"); startHeartbeat(); $("composer-input").focus(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
-    sessionStorage.removeItem(TOKEN_KEY); showView("signin"); }
+    sessionStorage.removeItem(TOKEN_KEY); clearOpenAIPending(); showView("signin"); }
   function showConnect(asGate){ showView("connect");
     $("openai-web-note").hidden = NATIVE;   // device-code caveat is web-only
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
@@ -533,7 +533,15 @@
   // callback page's "Open TinyAssets" link) can still complete it.
   const OPENAI_FLOW_KEY="ta_openai_flow";
   let openaiPending=null;   // {flow, verifier, state, handle, timer}
-  function loadOpenAIPending(){ try{ return JSON.parse(localStorage.getItem(OPENAI_FLOW_KEY)||"null"); }catch(_e){ return null; } }
+  const OPENAI_FLOW_TTL_MS = 15*60*1000;   // matches the daemon's flow TTL
+  function loadOpenAIPending(){
+    try{
+      const v = JSON.parse(localStorage.getItem(OPENAI_FLOW_KEY)||"null");
+      if(v && typeof v.expires==="number" && v.expires > Date.now()) return v;
+      if(v) localStorage.removeItem(OPENAI_FLOW_KEY);   // stale: never keep a verifier around
+    }catch(_e){}
+    return null;
+  }
   function clearOpenAIPending(){ try{ localStorage.removeItem(OPENAI_FLOW_KEY); }catch(_e){} openaiPending=null; }
 
   async function finishOpenAI(ok,msg){
@@ -560,7 +568,13 @@
     const res=$("openai-result");
     const code=params.get("code"), st=params.get("state")||"", oauthErr=params.get("error");
     try{
-      if(st!==pend.state){ await finishOpenAI(false, "Sign-in came back for a different attempt. Tap Connect to try again."); return false; }
+      if(st!==pend.state){
+        // The deep link is exported: any app can invoke it with a made-up
+        // state. Ignore it — only a callback carrying THIS flow's state may
+        // complete or end the flow.
+        trace("openai.complete", "state-mismatch-ignored");
+        return false;
+      }
       if(oauthErr){ await closeExternal(); await finishOpenAI(false, "OpenAI didn't complete the sign-in ("+(params.get("error_description")||oauthErr)+"). Tap Connect to try again."); return false; }
       if(!code){ await finishOpenAI(false, "Sign-in came back without a code. Tap Connect to try again."); return false; }
       await closeExternal();
@@ -611,7 +625,7 @@
       flow=doc.flow;
     }catch(e){ res.textContent="Couldn't reach the connector: "+e.message; btn.disabled=false; openaiBusy=false; return; }
     openaiPending={flow, verifier, state, handle:null, timer:null};
-    try{ localStorage.setItem(OPENAI_FLOW_KEY, JSON.stringify({flow, verifier, state})); }catch(_e){}
+    try{ localStorage.setItem(OPENAI_FLOW_KEY, JSON.stringify({flow, verifier, state, expires: Date.now()+OPENAI_FLOW_TTL_MS})); }catch(_e){}
     // 2. Listen on loopback for OpenAI's redirect (the listener only accepts
     //    the exact callback path carrying THIS state).
     try{
@@ -723,6 +737,7 @@
   async function boot(){
     wire();
     wireNativeReturn();
+    loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start
     const signedInNow = await completeSignInIfCallback();
     if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
   }

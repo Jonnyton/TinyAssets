@@ -922,22 +922,54 @@ def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
     assert od.verifier_matches_challenge("v" * 43 + "\u00e9", challenge) is False
 
 
-def test_trace_route_is_identity_scoped_and_sanitized(monkeypatch, caplog):
+def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch, caplog):
     import logging
 
-    assert _drive("/mcp/app/trace", {"step": "x"}, monkeypatch=monkeypatch)[0] == 401
+    import tinyassets.onboarding as onboarding
+
+    onboarding._trace_buckets.clear()
+    assert _drive("/mcp/app/trace", {"step": "openai.finish"}, monkeypatch=monkeypatch)[0] == 401
     with caplog.at_level(logging.INFO, logger="tinyassets.onboarding"):
         status, doc = _drive(
             "/mcp/app/trace",
-            {"step": "openai.callback<script>", "detail": "code\nerror\x00 " + "d" * 500},
+            {"step": "openai.callback", "detail": "code\nerror\x00 " + "d" * 500},
             identity=_user("f1"),
             monkeypatch=monkeypatch,
         )
     assert (status, doc) == (200, {"ok": True})
     line = next(r.getMessage() for r in caplog.records if "app-trace" in r.getMessage())
-    assert "user=f1 step=openai.callbackscript detail=code error" in line
+    assert "user=f1 step=openai.callback detail=code error" in line
     assert "\n" not in line and len(line) < 320
+    # only known steps
     assert (
-        _drive("/mcp/app/trace", {"step": ""}, identity=_user("f1"), monkeypatch=monkeypatch)[0]
+        _drive(
+            "/mcp/app/trace", {"step": "x<script>"}, identity=_user("f1"), monkeypatch=monkeypatch
+        )[0]
         == 400
+    )
+    # per-identity window
+    for _ in range(onboarding._TRACE_BUCKET_MAX):
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f2"),
+            monkeypatch=monkeypatch,
+        )
+    assert (
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f2"),
+            monkeypatch=monkeypatch,
+        )[0]
+        == 429
+    )
+    assert (
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f3"),
+            monkeypatch=monkeypatch,
+        )[0]
+        == 200
     )

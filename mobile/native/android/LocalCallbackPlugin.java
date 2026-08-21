@@ -41,7 +41,14 @@ public class LocalCallbackPlugin extends Plugin {
     private ServerSocket server6;
     private volatile String expectedPath = "/auth/callback";
     private volatile String expectedState = "";
-    private volatile String lastValidTarget = null;
+    // Accepted exactly once per start() across both listeners; afterwards only
+    // an identical request (a reload of the same callback URL) is re-served.
+    private final java.util.concurrent.atomic.AtomicReference<String> accepted =
+        new java.util.concurrent.atomic.AtomicReference<>(null);
+    // Generation token: a linger thread from an older start() must never close
+    // a newer listener.
+    private final java.util.concurrent.atomic.AtomicInteger generation =
+        new java.util.concurrent.atomic.AtomicInteger(0);
 
     @PluginMethod
     public void start(PluginCall call) {
@@ -54,7 +61,8 @@ public class LocalCallbackPlugin extends Plugin {
         }
         expectedPath = path;
         expectedState = state;
-        lastValidTarget = null;
+        accepted.set(null);
+        generation.incrementAndGet();
         stopServer();
         // Chrome may resolve "localhost" to ::1 before 127.0.0.1; listen on
         // BOTH loopbacks so the redirect never waits on a dead address. IPv6
@@ -144,11 +152,17 @@ public class LocalCallbackPlugin extends Plugin {
         String[] parts = requestLine.split(" ");
         String target = (parts.length >= 2 && "GET".equals(parts[0])) ? parts[1] : "";
 
-        boolean valid = isExpectedCallback(target);
-        // A reload of the callback page after the valid callback: re-serve it
-        // (same page, same deep link) instead of refusing the connection.
-        boolean replay = !valid && lastValidTarget != null && target.startsWith(expectedPath);
-        String page = valid ? target : (replay ? lastValidTarget : null);
+        // Exactly one acceptance per start(), atomically across the v4 and v6
+        // listeners. After that, ONLY a byte-identical request (the tab
+        // reloading the same callback URL) gets the page again; any other
+        // local client asking for the path learns nothing and triggers
+        // nothing.
+        boolean first = false;
+        if (isExpectedCallback(target)) {
+            first = accepted.compareAndSet(null, target);
+        }
+        boolean replay = !first && target.length() > 0 && target.equals(accepted.get());
+        String page = (first || replay) ? target : null;
         String body = page != null ? callbackPage(page) : "<!doctype html><html><body></body></html>";
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         OutputStream out = c.getOutputStream();
@@ -158,14 +172,13 @@ public class LocalCallbackPlugin extends Plugin {
             + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         out.write(bytes);
         out.flush();
-        if (!valid) return;   // ignored / replayed; keep listening
+        if (!first) return;   // ignored or replayed; the web layer is notified once
 
-        lastValidTarget = target;
         JSObject ev = new JSObject();
         ev.put("url", "http://localhost" + target);
         notifyListeners("callback", ev, true);
         bringToFront();
-        scheduleLingerStop();
+        scheduleLingerStop(generation.get());
     }
 
     /**
@@ -178,7 +191,20 @@ public class LocalCallbackPlugin extends Plugin {
     private static String callbackPage(String target) {
         int q = target.indexOf('?');
         String query = q >= 0 ? target.substring(q + 1) : "";
-        String deep = "intent://auth?provider=openai&" + htmlEscape(query)
+        // Rebuild the deep link from an allowlist of fields, re-encoded: the
+        // raw query never flows into the page or the intent.
+        StringBuilder rebuilt = new StringBuilder("provider=openai");
+        for (String kv : query.split("&")) {
+            int eq = kv.indexOf('=');
+            String k = eq >= 0 ? kv.substring(0, eq) : kv;
+            String v = eq >= 0 ? kv.substring(eq + 1) : "";
+            if (!(k.equals("code") || k.equals("state") || k.equals("error") || k.equals("error_description"))) continue;
+            try {
+                v = java.net.URLDecoder.decode(v, "UTF-8");
+                rebuilt.append('&').append(k).append('=').append(java.net.URLEncoder.encode(v, "UTF-8"));
+            } catch (Exception ignored) { }
+        }
+        String deep = "intent://auth?" + htmlEscape(rebuilt.toString())
             + "#Intent;scheme=tinyassets;package=io.tinyassets.app;end";
         return "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             + "<meta http-equiv=\"refresh\" content=\"1;url=" + deep + "\"></head>"
@@ -193,10 +219,12 @@ public class LocalCallbackPlugin extends Plugin {
         return s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
-    private void scheduleLingerStop() {
+    private void scheduleLingerStop(final int gen) {
         Thread t = new Thread(() -> {
             try { Thread.sleep(LINGER_MS); } catch (InterruptedException ignored) { }
-            stopServer();
+            // Only close the listener this linger belongs to; a newer start()
+            // (higher generation) owns fresh sockets and must stay up.
+            if (generation.get() == gen) stopServer();
         }, "tinyassets-local-callback-linger");
         t.setDaemon(true);
         t.start();
