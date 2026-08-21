@@ -5,21 +5,25 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  envtest:
+  reapply:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH empirical env test
+      - uses: actions/checkout@v4
+      - name: Re-apply + confirm HOME registered
         env: { SSH_KEY: "${{ secrets.DO_SSH_KEY }}" }
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh; printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy; chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new deploy/tinyassets-daemon.service "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/u.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          F="--env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml"
-          echo "A minimal+HOME:";        sudo -u tinyassets env -i HOME=/opt/tinyassets /usr/bin/docker compose $F config >/dev/null 2>/tmp/a; echo "  rc=$? $(tail -1 /tmp/a)"
-          echo "B +PATH:";               sudo -u tinyassets env -i HOME=/opt/tinyassets PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/docker compose $F config >/dev/null 2>/tmp/b; echo "  rc=$? $(tail -1 /tmp/b)"
-          echo "C +DOCKER_CONFIG:";       sudo -u tinyassets env -i HOME=/opt/tinyassets DOCKER_CONFIG=/opt/tinyassets/.docker /usr/bin/docker compose $F config >/dev/null 2>/tmp/c; echo "  rc=$? $(tail -1 /tmp/c)"
-          echo "D +PATH+DOCKER_CONFIG:";  sudo -u tinyassets env -i HOME=/opt/tinyassets PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin DOCKER_CONFIG=/opt/tinyassets/.docker /usr/bin/docker compose $F config >/dev/null 2>/tmp/d; echo "  rc=$? $(tail -1 /tmp/d)"
+          echo "installed HOME line:"; grep -n "Environment=HOME" /tmp/u.service
+          cp /tmp/u.service /etc/systemd/system/tinyassets-daemon.service; systemctl daemon-reload; systemctl reset-failed tinyassets-daemon.service
+          echo "systemd sees Environment: $(systemctl show tinyassets-daemon.service -p Environment --value)"
+          echo "===== start ====="; systemctl start tinyassets-daemon.service 2>&1; echo "rc=$?"; sleep 22
+          echo "active=$(systemctl is-active tinyassets-daemon.service) sub=$(systemctl show -p SubState --value tinyassets-daemon.service)"
+          echo "journalctl:"; journalctl -u tinyassets-daemon.service -n 5 --no-pager 2>&1 | tail -5
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E "daemon|tunnel"
           echo "===== DONE ====="
           REMOTE
