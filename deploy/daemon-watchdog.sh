@@ -21,9 +21,17 @@ log() {
 
 restart_daemon() {
     local reason="$1"
-    log "restarting ${SERVICE_UNIT}: ${reason}"
-    systemctl reset-failed "${SERVICE_UNIT}" >/dev/null 2>&1 || true
-    systemctl restart "${SERVICE_UNIT}"
+    # Daemon-scoped: restart the daemon CONTAINER, never the whole unit. The
+    # unit's restart used to run `compose down`, taking the tunnel and logs
+    # down with the daemon on every watchdog fire (2026-08-21 Codex review).
+    # If the container does not exist at all, re-converge the unit instead.
+    log "restarting daemon container: ${reason}"
+    if docker inspect tinyassets-daemon >/dev/null 2>&1; then
+        docker restart tinyassets-daemon
+    else
+        systemctl reset-failed "${SERVICE_UNIT}" >/dev/null 2>&1 || true
+        systemctl restart "${SERVICE_UNIT}"
+    fi
 }
 
 container_running() {

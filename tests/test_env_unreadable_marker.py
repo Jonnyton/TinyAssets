@@ -230,9 +230,24 @@ def test_systemd_unit_execstartpre_emits_canonical_marker():
 
 
 def test_systemd_unit_compose_loads_tinyassets_env_for_interpolation():
+    """Compose gets /etc/tinyassets/env via --env-file ONLY. The unit must NOT
+    also EnvironmentFile= it: that file is the CONTAINER env (HOME=/app) and
+    EnvironmentFile= overrides Environment= regardless of order, which broke
+    the docker CLI's plugin discovery under systemd (2026-08-21). Only the
+    three production services are started (compose.yml has unprofiled
+    workers), and there is no ExecStop: a `compose down` on restart took the
+    tunnel down with the daemon."""
     text = _SYSTEMD_UNIT.read_text(encoding="utf-8")
-    assert "ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env" in text
-    assert "ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env" in text
+    service_section = text.split("[Service]", 1)[1].split("[Install]", 1)[0]
+    directives = [ln for ln in service_section.splitlines() if ln and not ln.startswith("#")]
+    assert any(
+        ln.startswith("ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env")
+        and ln.endswith("up -d daemon cloudflared logs")
+        for ln in directives
+    ), directives
+    assert not any(ln.startswith("EnvironmentFile=") for ln in directives), directives
+    assert not any(ln.startswith("ExecStop=") for ln in directives), directives
+    assert "Environment=HOME=/opt/tinyassets" in directives
 
 
 def test_systemd_start_limit_is_in_unit_section_not_service_section():

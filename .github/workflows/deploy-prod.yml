@@ -145,10 +145,25 @@ jobs:
         id: capture
         run: |
           set -euo pipefail
+          # What is RUNNING, not what the env file says: after a failed deploy
+          # the env file already names the failed image. Fall back to the env
+          # ref only when no daemon container exists.
           prev="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                 "grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env | head -1 | cut -d= -f2-")"
+                 "docker inspect -f '{{.Config.Image}}' tinyassets-daemon 2>/dev/null \
+                  || grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env | head -1 | cut -d= -f2-")"
           echo "prev_image=${prev}" >> "$GITHUB_OUTPUT"
-          echo "current prod image: ${prev:-<none>}"
+          echo "current prod image (running): ${prev:-<none>}"
+
+      - name: Install the daemon systemd unit from this checkout
+        # The unit is part of the deploy, not a one-time bootstrap: a stale or
+        # broken installed unit is exactly how 2026-08-21's false-green deploys
+        # happened. Reload only; the fail-safe script converges the stack.
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/tinyassets-daemon.service \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service && sudo systemctl daemon-reload && echo 'unit installed + reloaded'"
 
       - name: Run fail-safe deploy on the droplet
         id: deploy

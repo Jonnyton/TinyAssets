@@ -140,14 +140,16 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up
   return 1
 }
 
-# Converge the stack onto TINYASSETS_IMAGE. Drives docker compose DIRECTLY
-# (root, proven in the 2026-08-21 recovery) so the deploy never depends on the
-# systemd unit being startable; the unit is then asked to track the new state
-# best-effort so `systemctl status` stays truthful. `up -d` recreates only the
-# services whose image changed (the tunnel keeps running).
+# Converge the production services onto TINYASSETS_IMAGE. Drives docker
+# compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
+# never depends on the systemd unit being startable; the unit is then asked to
+# track the new state best-effort so `systemctl status` stays truthful. Only
+# the three production services are named: compose.yml also defines
+# unprofiled worker services that an unqualified `up -d` would start. `up -d`
+# recreates only the services whose image changed (the tunnel keeps running).
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
-  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans; then
+  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d daemon cloudflared logs; then
     err "docker compose up -d failed"
     return 1
   fi
@@ -156,7 +158,13 @@ restart_stack() {
 }
 
 # --- 1. record the current (rollback) image -------------------------------
-PREV_IMAGE="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+# The rollback target is what is actually RUNNING, not what the env file says:
+# after a failed deploy the env file already names the failed image (the
+# 2026-08-21 incident state), so rolling back to it would change nothing.
+PREV_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || true)"
+if [ -z "$PREV_IMAGE" ] || ! docker image inspect "$PREV_IMAGE" >/dev/null 2>&1; then
+  PREV_IMAGE="$(grep -E '^TINYASSETS_IMAGE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+fi
 log "previous image: ${PREV_IMAGE:-<none>}"
 log "target image:   ${NEW_IMAGE}"
 
@@ -174,7 +182,11 @@ log "candidate image loads cleanly"
 
 # --- 4. swap + restart ----------------------------------------------------
 log "swapping TINYASSETS_IMAGE and converging the stack"
-set_image "$NEW_IMAGE"
+if ! set_image "$NEW_IMAGE"; then
+  err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}; nothing mutated"
+  echo "deploy_result=failed_env_write"
+  exit 1
+fi
 restart_stack || true
 
 # --- 5. accept the new image (healthy + RUNNING it + tunnel up) -----------
@@ -192,7 +204,11 @@ if [ -z "$PREV_IMAGE" ]; then
   echo "deploy_result=failed_no_rollback_target"
   exit 3
 fi
-set_image "$PREV_IMAGE"
+if ! set_image "$PREV_IMAGE"; then
+  err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"
+  echo "deploy_result=rollback_env_write_failed"
+  exit 3
+fi
 restart_stack || true
 if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
