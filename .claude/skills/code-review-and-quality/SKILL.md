@@ -58,7 +58,7 @@ Run the command, read the output, then claim.
    authz/authn where needed; parameterized queries; external data treated as
    untrusted. Deep guidance: `security-and-hardening`.
 5. **Performance** — no N+1, unbounded loops/fetches, missing pagination, or
-   heavy work in hot paths. Deep guidance: `performance-optimization`.
+   heavy work in hot paths. Measure before optimizing.
 
 ### Severity labels (required on every comment)
 

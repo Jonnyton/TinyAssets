@@ -1,0 +1,38 @@
+name: Droplet diagnostics
+# One-off P0 diagnostic: SSH to the droplet and dump daemon health, logs, disk,
+# and memory so we can see why the daemon won't become healthy. Read-only.
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH diagnostics
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
+          set +e
+          echo "===== DISK ====="; df -h / /var/lib/docker 2>/dev/null
+          echo "===== MEM ====="; free -m
+          echo "===== DOCKER PS -A ====="; docker ps -a --format '{{.Names}} | {{.Status}} | {{.Image}}' 2>&1 | head -20
+          CN=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -i tinyassets | head -1)
+          echo "container=$CN"
+          echo "===== INSPECT ====="; docker inspect --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} exit={{.State.ExitCode}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' "$CN" 2>&1
+          echo "===== HEALTHCHECK LAST OUTPUT ====="; docker inspect --format '{{if .State.Health}}{{range .State.Health.Log}}{{.ExitCode}}: {{.Output}}{{end}}{{end}}' "$CN" 2>&1 | tail -5
+          echo "===== DAEMON LOGS (last 120) ====="; docker logs "$CN" --tail 120 2>&1 | tail -120
+          echo "===== TINYASSETS_IMAGE ====="; grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>&1
+          echo "===== ENV KEYS (no values) ====="; grep -oE '^[A-Z_]+=' /etc/tinyassets/env 2>/dev/null | tr '\n' ' '; echo
+          echo "===== DONE ====="
+          REMOTE

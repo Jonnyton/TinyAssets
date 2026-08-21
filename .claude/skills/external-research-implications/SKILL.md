@@ -46,15 +46,14 @@ When importing outside ideas:
 
 ### 1. Orient And Claim
 
-1. Read `STATUS.md` first.
-2. Run `python scripts/claim_check.py --provider <provider>`.
-3. Run `python scripts/provider_context_feed.py --provider <provider> --phase claim`
-   so prior-provider memories, idea-feed items, pending implications, and
-   automation notes are visible before scoping.
-4. If you will write a durable artifact, run `claim_check.py --check-files`.
-5. Claim a narrow write-set in `STATUS.md` before editing.
-6. Load `PLAN.md` sections relevant to the study. Full-load only when the
-   outside work could affect platform architecture or product direction.
+1. Run the standard session-start checklist and claim a narrow write-set —
+   `AGENTS.md` § *Parallel Dispatch*, full procedure in
+   `docs/reference/parallel-dispatch.md`. Do not restate it here.
+2. Research-specific additions to that checklist:
+   - The `--phase claim` feed matters more than usual for this skill: prior-provider
+     memories and pending implications are exactly what a study duplicates.
+   - Load `PLAN.md` sections relevant to the study. Full-load only when the outside
+     work could affect platform architecture or product direction.
 
 ### 2. Canonicalize The Outside Source
 

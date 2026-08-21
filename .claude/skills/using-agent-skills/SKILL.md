@@ -13,11 +13,27 @@ memory. Keep this file thin — specialist guidance lives in the specialist skil
 
 ## The discipline (invoke skills before acting)
 
-If there is even a ~1% chance a skill applies to what you're doing, invoke it
-before responding or acting — including before asking clarifying questions. If an
-invoked skill turns out to be wrong for the situation, you don't have to use it.
-User instructions in `AGENTS.md` / `CLAUDE.md` always take precedence over a
-skill where they conflict.
+**Invoke a skill when it would change what you do next.** Concretely, before
+acting on a task, check the router below and invoke the matching skill if either
+holds:
+
+- The task is one the skill names in its `description` trigger, **and** you would
+  otherwise work from memory rather than from its process; or
+- The work is about to become hard to reverse — a push, a merge, a deploy, a
+  schema or public-surface change — and a skill governs that gate.
+
+Skip it when you already know the skill's answer and the step is trivially
+reversible (a typo fix, a one-line comment, a lookup). Say so in one line if the
+call is close, so the skip is visible rather than silent.
+
+If an invoked skill turns out to be wrong for the situation, you don't have to
+use it. User instructions in `AGENTS.md` / `CLAUDE.md` always take precedence
+over a skill where they conflict.
+
+> This replaced a "~1% chance it applies → always invoke" rule on 2026-08-07. A
+> usage audit found 25 of 33 skills had never been dispatched across 332 sessions:
+> the absolute form was being ignored wholesale rather than followed, which is
+> worse than a narrower rule that actually gets applied.
 
 ## Discovery
 
@@ -30,31 +46,22 @@ Task arrives
     |-- Outside repo, paper, project implications? --> external-research-implications
     |-- Vague idea / design not approved yet? -------> idea-refine
     |-- Domain terms drifting / concept integrity? --> domain-model
-    |-- New feature / change with no spec? ----------> spec-driven-development
-    |   `-- Using the OpenSpec CLI for it? ----------> openspec
+    |-- New feature / change with no spec? ----------> openspec
     |-- Have a spec, need tasks / executing a plan? -> planning-and-task-breakdown
     |-- Independent tasks / plan via subagents? -----> subagent-driven-development
     |-- Implementing code? --------------------------> incremental-implementation
-    |   |-- UI work? --------------------------------> frontend-ui-engineering
-    |   |-- Game or interactive prototype? ----------> game-prototyping
-    |   |-- Restore/emulate/prove an OLD game? ------> classic-game-design-test
     |   |-- TinyAssets website edit? ------------------> website-editing
-    |   |-- API / interface work? -------------------> api-and-interface-design
     |   `-- Mostly simplification / least code? -----> code-simplification
     |-- Need better context loaded? -----------------> context-engineering
     |-- Writing or running tests? -------------------> test-driven-development
-    |   |-- Conditional-edge branch routing? --------> conditional-edge-testing
     |   |-- Browser runtime verification? -----------> browser-testing-with-devtools
     |   `-- Live Claude.ai phone-surface test? ------> ui-test
     |-- Something broke? ----------------------------> debugging-and-error-recovery
     |-- Reviewing code / verifying completion? ------> code-review-and-quality
-    |   |-- Security-sensitive? ---------------------> security-and-hardening
-    |   `-- Performance-sensitive? ------------------> performance-optimization
-    |-- Removing legacy systems or aliases? ---------> deprecation-and-migration
+    |   `-- Security-sensitive? ---------------------> security-and-hardening
     |-- Committing / branching / worktrees / merge? -> git-workflow-and-versioning
     |-- CI gates / deploy / launch / rollout? -------> shipping-and-launch
     |-- Cloudflare / GoDaddy / DNS / domain ops? ----> infra-ops
-    |-- Loop cannot self-heal its own break? --------> loop-uptime-maintenance
     |-- Writing docs or rationale? ------------------> documentation-and-adrs
     |-- Create/update a skill? ----------------------> skill-authoring
     `-- Recurring agent failure / tune the team? ----> auto-iterate
@@ -88,7 +95,7 @@ Task arrives
 A common sequence for larger work (not every task needs every step):
 
 ```text
-idea-refine -> spec-driven-development (or openspec) -> planning-and-task-breakdown
+idea-refine -> openspec -> planning-and-task-breakdown
 -> context-engineering -> incremental-implementation -> test-driven-development
 -> code-review-and-quality -> documentation-and-adrs -> git-workflow-and-versioning
 -> shipping-and-launch
@@ -106,31 +113,22 @@ code-review-and-quality`.
 | Orient | peer-agents | Dispatch work to the Claude or Codex CLI on that subscription's budget |
 | Define | idea-refine | Refine an idea into an approved design before building |
 | Define | domain-model | Stress-test concepts/invariants and harden terminology |
-| Define | spec-driven-development | Write requirements and acceptance criteria before code |
 | Define | openspec | CLI-managed multi-session spec lifecycle |
 | Plan | planning-and-task-breakdown | Decompose into bite-sized tasks and execute them |
 | Plan | subagent-driven-development | Execute via fresh subagents; parallel-dispatch independent work |
 | Build | incremental-implementation | Ship thin vertical slices |
 | Build | context-engineering | Load the right context at the right time |
-| Build | frontend-ui-engineering | Build production-quality UIs |
-| Build | game-prototyping | Build playable game-like prototypes |
-| Build | classic-game-design-test | Restore/emulate/port/prove playability of old games |
 | Build | website-editing | TinyAssets site preview / capture / ship conventions |
-| Build | api-and-interface-design | Design stable interfaces and contracts |
 | Build | code-simplification | Write the least code that works; simplify existing code |
 | Verify | test-driven-development | Write failing tests first, then make them pass |
-| Verify | conditional-edge-testing | Compile+invoke coverage for conditional-edge branches |
 | Verify | browser-testing-with-devtools | Verify behavior with real browser runtime evidence |
 | Verify | ui-test | Exercise the live Claude.ai user surface |
 | Verify | debugging-and-error-recovery | Reproduce, find root cause, fix, guard regressions |
 | Review | code-review-and-quality | Conduct/request/receive review; gate completion on evidence |
 | Review | security-and-hardening | Least privilege and hostile-input thinking |
-| Review | performance-optimization | Measure first, then optimize what matters |
-| Change | deprecation-and-migration | Remove or migrate legacy systems deliberately |
 | Ship | git-workflow-and-versioning | Commits, branches, worktrees, branch completion |
 | Ship | shipping-and-launch | CI gates, staged rollout, monitoring, rollback |
 | Ship | documentation-and-adrs | Record durable design context and rationale |
 | Ops | infra-ops | Cloudflare/GoDaddy DNS, domains, Workers, SSL |
-| Ops | loop-uptime-maintenance | Handle loop outages that can't self-heal via the loop |
 | Meta | skill-authoring | Create/update project skills correctly |
 | Meta | auto-iterate | Ratchet recurring failures into guards; tune the agent team |

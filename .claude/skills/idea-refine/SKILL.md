@@ -77,8 +77,8 @@ If executing now: write the validated design to a spec doc, self-review with
 fresh eyes (placeholder scan, internal consistency, scope, ambiguity — fix
 inline), then ask the user to review the written spec before proceeding. Once
 approved, hand off to `planning-and-task-breakdown` to create the implementation
-plan — that's the only next step. (Heavier spec-driven projects may route through
-`spec-driven-development` or the `openspec` CLI instead.)
+plan — that's the only next step. (Heavier spec-driven projects route through the
+`openspec` CLI instead.)
 
 If not executing now: save the one-pager under `ideas/` (INBOX.md or
 PIPELINE.md) so other sessions can see it.
