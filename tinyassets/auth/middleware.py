@@ -520,12 +520,13 @@ def _auth_challenge_path(path: str) -> bool:
     """
     if ".well-known" in path:
         return False
-    if path == "/mcp/app":
-        # The onboarding SPA (tinyassets/onboarding) is a public static page that
-        # MUST load before sign-in and exposes no protected tool — its own /mcp
-        # tool calls are still challenged. Exempt it in every auth mode (mirrors
-        # the .well-known carve-out) so onboarding is reachable regardless of
-        # WORKOS_REQUIRE_AUTH; its dark flag still returns a bare 404 when off.
+    if path == "/mcp/app" or path == "/mcp/app/token":
+        # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
+        # load before sign-in, and /mcp/app/token is its same-origin PKCE
+        # token-exchange proxy — both run BEFORE any bearer exists, so neither may
+        # be swept into the /mcp bearer 401 (mirrors the .well-known carve-out).
+        # Their own authenticated /mcp tool calls are still challenged; the dark
+        # flag still returns a bare 404 when the app is off.
         return False
     # Narrow, ordered exemption for the browser deposit flow: when enabled, its
     # own signed-state / signed-session validation is the sole boundary for these
