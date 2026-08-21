@@ -132,18 +132,31 @@
 
         <div class="provider-card">
           <div class="provider-head"><strong>OpenAI</strong> <span class="muted">ChatGPT Plus / Pro / Team</span></div>
-          <p>Tap Connect, sign in to ChatGPT on the page that opens, and you're back here
+          <p id="openai-lede">Tap Connect, sign in to ChatGPT on the page that opens, and you're back here
           linked. Nothing to generate, copy, or paste.</p>
-          <p id="openai-web-note" class="muted" hidden>On the web this uses OpenAI's device code. OpenAI
-          keeps that switched off by default: in ChatGPT open <strong>Settings &rsaquo; Security</strong>
-          and turn on <strong>Device code authorization</strong> first, then tap Connect. (The phone
-          app doesn't need this.)</p>
           <button id="btn-openai-connect" class="btn btn--primary">Connect OpenAI</button>
+          <button id="btn-openai-code" class="btn btn--link">Having trouble? Use a code instead</button>
+
+          <!-- Guided device-code path (OpenAI's own fallback for when the
+               browser hand-off can't reach the app). OpenAI keeps device
+               codes OFF per account; step 1 is that switch, with the exact
+               page opened for the user. -->
+          <div id="openai-setup" hidden>
+            <p><strong>Step 1 of 2 &mdash; turn on the switch in ChatGPT.</strong><br>
+            On the page that opens, sign in with the same account, then under
+            <strong>Security</strong> turn on <strong>&ldquo;Enable device code authorization for Codex&rdquo;</strong>.
+            It's off by default; you only do this once.</p>
+            <button id="btn-openai-settings" class="btn btn--ghost">Open ChatGPT security settings</button>
+            <p class="muted">Already on? Go straight to step 2.</p>
+            <button id="btn-openai-setup-done" class="btn btn--primary">Step 2 &mdash; get my code</button>
+          </div>
           <div id="openai-flow" hidden>
-            <p>Your code: <code id="openai-code" class="bigcode"></code></p>
-            <p class="muted">If OpenAI asks for a code, enter the one above (it's already copied).
-            Waiting for your approval&hellip;</p>
-            <button id="btn-openai-open" class="btn btn--ghost">Open OpenAI again</button>
+            <p><strong>Step 2 of 2 &mdash; approve with this code.</strong></p>
+            <p>Your code: <code id="openai-code" class="bigcode"></code> <span class="muted">(copied)</span></p>
+            <p class="muted">On the OpenAI page that opened, enter the code above, sign in if asked, and tap
+            Approve. This screen finishes by itself. If OpenAI says device code authorization is off, go
+            back to step 1.</p>
+            <button id="btn-openai-open" class="btn btn--ghost">Open the OpenAI code page again</button>
           </div>
           <div id="openai-result" class="notice" role="status"></div>
         </div>
@@ -500,9 +513,10 @@
     setTimeout(()=>{ showView("chat"); startHeartbeat(); $("composer-input").focus(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
-    sessionStorage.removeItem(TOKEN_KEY); clearOpenAIPending(); showView("signin"); }
+    sessionStorage.removeItem(TOKEN_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate){ showView("connect");
-    $("openai-web-note").hidden = NATIVE;   // device-code caveat is web-only
+    // Web has no loopback listener: the guided device-code path IS the path.
+    if(!openaiBusy) resetOpenAIUI();
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
     $("connect-status").textContent = asGate
       ? "Your universe needs a mind to think with. Connect the subscription it should run on — credentials go straight to the connector over TLS, never through chat, never logged."
@@ -520,7 +534,17 @@
   async function connectOpenAI(){
     if(openaiBusy) return;
     if(NATIVE && nativePlugin("LocalCallback") && CFG.openai){ return connectOpenAIBrowser(); }
-    return connectOpenAIDevice();
+    return showOpenAISetup();
+  }
+  // Guided device-code path: step 1 is OpenAI's per-account switch (opened at
+  // its exact page), step 2 the code. Used on the web, on "Use a code instead",
+  // and automatically when the browser hand-off fails on the phone.
+  const CHATGPT_SECURITY_URL = "https://chatgpt.com/security-settings";
+  function showOpenAISetup(msg){
+    $("openai-setup").hidden=false; $("openai-flow").hidden=true;
+    $("btn-openai-connect").hidden=true; $("btn-openai-code").hidden=true;
+    if(msg) $("openai-result").textContent=msg;
+    trace("openai.complete", "setup-shown");
   }
 
   // Native: the SAME browser sign-in `codex login` does on a desktop. The app
@@ -544,15 +568,41 @@
   }
   function clearOpenAIPending(){ try{ localStorage.removeItem(OPENAI_FLOW_KEY); }catch(_e){} openaiPending=null; }
 
+  // Tear down any in-flight browser flow (listener, foreground service,
+  // timers, pending record, external tab) WITHOUT reporting an outcome. Used
+  // on sign-out, when the user switches to the code method, and on auth loss.
+  async function cancelOpenAIFlow(){
+    const LC=nativePlugin("LocalCallback");
+    const pend=openaiPending; clearOpenAIPending();
+    openaiAttempt++;   // invalidate any in-flight attempt
+    try{ if(pend&&pend.hintTimer) clearTimeout(pend.hintTimer); }catch(_e){}
+    try{ if(pend&&pend.handle) pend.handle.remove(); }catch(_e){}
+    try{ if(pend&&pend.timer) clearTimeout(pend.timer); }catch(_e){}
+    try{ if(LC) await LC.stop(); }catch(_e){}
+    await closeExternal();
+    openaiBusy=false;
+  }
+  // Every OpenAI control back to its initial state (the Connect button and,
+  // on the phone, the "use a code" link), e.g. after a sign-out/re-sign-in.
+  function resetOpenAIUI(){
+    const b=$("btn-openai-connect"); b.hidden=false; b.disabled=false; b.textContent="Connect OpenAI";
+    $("btn-openai-code").hidden = !(NATIVE && nativePlugin("LocalCallback"));
+    $("openai-setup").hidden=true; $("openai-flow").hidden=true;
+    $("btn-openai-setup-done").disabled=false;
+    $("openai-result").textContent="";
+  }
+
   async function finishOpenAI(ok,msg){
     const btn=$("btn-openai-connect"), res=$("openai-result"), LC=nativePlugin("LocalCallback");
     const pend=openaiPending; clearOpenAIPending();
+    openaiAttempt++;   // invalidate any in-flight attempt
+    try{ if(pend&&pend.hintTimer) clearTimeout(pend.hintTimer); }catch(_e){}
     try{ if(pend&&pend.handle) pend.handle.remove(); }catch(_e){}
     try{ if(pend&&pend.timer) clearTimeout(pend.timer); }catch(_e){}
     try{ if(LC) await LC.stop(); }catch(_e){}
     btn.disabled=false; openaiBusy=false;
     if(ok){ btn.textContent="OpenAI connected ✓"; res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn."; onEngineConnected(); }
-    else res.textContent=msg;
+    else showOpenAISetup(msg+" The code method below always works.");
     trace("openai.finish", ok ? "ok" : msg);
   }
 
@@ -600,8 +650,11 @@
   // plugin (a loopback listener inside the app) catches the redirect. The
   // daemon then exchanges code+verifier and deposits as the signed-in user.
   // No per-account ChatGPT "device code" setting is involved.
+  let openaiAttempt=0;   // cancellation token: bumped by cancel/finish; stale coroutines stop after every await
   async function connectOpenAIBrowser(){
     openaiBusy=true;
+    const attempt=++openaiAttempt;
+    const alive=()=>openaiAttempt===attempt;
     const btn=$("btn-openai-connect"), res=$("openai-result"), LC=nativePlugin("LocalCallback");
     btn.disabled=true; res.textContent="Opening OpenAI sign-in…";
     const verifier=randToken(48), state=randToken(18);
@@ -616,8 +669,10 @@
       const r=await fetch("/mcp/app/openai/begin",{method:"POST",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify({code_challenge:challenge, redirect_uri:redirectUri})});
+      if(!alive()) return;
       if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
       const doc=await r.json();
+      if(!alive()) return;
       if(!r.ok||!doc.flow){
         const why = doc.error==="no_home_universe" ? "Your universe isn't ready yet — send it one message first, then connect." : (doc.error||"could not start");
         res.textContent=why; btn.disabled=false; openaiBusy=false; return;
@@ -634,32 +689,41 @@
         trace("openai.callback", (u.searchParams.get("code")?"code":"")+(u.searchParams.get("error")?" error":""));
         completeOpenAI(u.searchParams);
       });
+      if(!alive()) return;
       const started = await LC.start({port, path, state});
+      if(!alive()){ try{ await LC.stop(); }catch(_e){} return; }
       trace("openai.listener", "started "+JSON.stringify(started||{}));
-    }catch(e){ trace("openai.listener", "failed "+(e.message||e)); return finishOpenAI(false, "Couldn't start the sign-in listener: "+(e.message||e)); }
+    }catch(e){ if(!alive()) return; trace("openai.listener", "failed "+(e.message||e)); return finishOpenAI(false, "Couldn't start the sign-in listener: "+(e.message||e)); }
     const p=new URLSearchParams({
       response_type:"code", client_id:CFG.openai.client_id, redirect_uri:redirectUri,
       scope:CFG.openai.scope, code_challenge:challenge, code_challenge_method:"S256",
       id_token_add_organizations:"true", codex_cli_simplified_flow:"true", state, originator:"codex_cli_rs",
     });
+    if(!alive()) return;
     await openExternal(CFG.openai.authorize_url+"?"+p.toString());
+    if(!alive()) return;
     trace("openai.browser", "opened");
     res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here.";
-    openaiPending.timer=setTimeout(()=>{ if(openaiPending) finishOpenAI(false, "That took too long — tap Connect OpenAI to try again."); }, 10*60*1000);
+    // Safety net: if the phone still blocks the localhost hop, the stuck page
+    // keeps the sign-in result in its address bar — Share it to TinyAssets.
+    openaiPending.hintTimer=setTimeout(()=>{ if(openaiPending&&alive()) res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here. If it ends on a \u201ccan\u2019t be reached\u201d page instead, tap that page\u2019s Share button (top right) and choose TinyAssets \u2014 that finishes the link."; }, 25*1000);
+    openaiPending.timer=setTimeout(()=>{ if(openaiPending&&alive()) finishOpenAI(false, "That took too long — tap Connect OpenAI to try again."); }, 10*60*1000);
   }
 
   async function connectOpenAIDevice(){
+    if(openaiBusy) return;
     openaiBusy=true;
-    const btn=$("btn-openai-connect"), res=$("openai-result"), flow=$("openai-flow");
+    const btn=$("btn-openai-setup-done"), res=$("openai-result"), flow=$("openai-flow");
+    $("openai-setup").hidden=true;
     btn.disabled=true; res.textContent="Contacting OpenAI…";
     let started;
     try{
       const r=await fetch("/mcp/app/openai/device/start",{method:"POST",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:"{}"});
-      if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
       started=await r.json();
       if(!r.ok||!started.user_code||!started.flow) throw new Error(started.error||"could not start");
-    }catch(e){ res.textContent="Couldn't reach OpenAI: "+e.message; btn.disabled=false; openaiBusy=false; return; }
+    }catch(e){ res.textContent="Couldn't reach OpenAI: "+e.message; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false; return; }
     $("openai-code").textContent=started.user_code; flow.hidden=false;
     try{ await navigator.clipboard.writeText(started.user_code); }catch(_e){}
     const url=started.verification_url+"?user_code="+encodeURIComponent(started.user_code);
@@ -676,20 +740,21 @@
           headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body});
         doc=await r.json();
       }catch(_e){ continue; }
-      if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
       if(doc.status==="pending") continue;
       if(doc.status==="connected"){
         await closeExternal();
-        flow.hidden=true; btn.textContent="OpenAI connected ✓"; btn.disabled=false; openaiBusy=false;
+        flow.hidden=true; $("openai-setup").hidden=true; $("btn-openai-connect").hidden=false;
+        $("btn-openai-connect").textContent="OpenAI connected ✓"; btn.disabled=false; openaiBusy=false;
         res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn.";
         onEngineConnected();
         return;
       }
-      res.textContent="Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.";
+      res.textContent="Link failed: "+(doc.error||"unknown error")+". Try step 2 again.";
       break;
     }
-    if(Date.now()>=deadline) res.textContent="That took too long — tap Connect OpenAI to try again.";
-    flow.hidden=true; btn.disabled=false; openaiBusy=false;
+    if(Date.now()>=deadline) res.textContent="That took too long — try step 2 again.";
+    flow.hidden=true; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false;
   }
 
   async function connectClaude(){
@@ -708,6 +773,9 @@
 
   function wire(){
     $("btn-openai-connect").addEventListener("click",connectOpenAI);
+    $("btn-openai-code").addEventListener("click",async()=>{ await cancelOpenAIFlow(); showOpenAISetup(); });
+    $("btn-openai-settings").addEventListener("click",()=>{ trace("openai.complete","settings-opened"); openExternal(CHATGPT_SECURITY_URL); });
+    $("btn-openai-setup-done").addEventListener("click",connectOpenAIDevice);
     $("btn-claude-connect").addEventListener("click",connectClaude);
     $("btn-signin").addEventListener("click",beginSignIn);
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();

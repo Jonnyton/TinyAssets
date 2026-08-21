@@ -929,7 +929,7 @@ def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch
 
     onboarding._trace_buckets.clear()
     assert _drive("/mcp/app/trace", {"step": "openai.finish"}, monkeypatch=monkeypatch)[0] == 401
-    with caplog.at_level(logging.INFO, logger="tinyassets.onboarding"):
+    with caplog.at_level(logging.WARNING, logger="tinyassets.onboarding"):
         status, doc = _drive(
             "/mcp/app/trace",
             {"step": "openai.callback", "detail": "code\nerror\x00 " + "d" * 500},
