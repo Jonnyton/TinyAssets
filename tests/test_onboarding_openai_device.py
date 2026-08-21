@@ -920,3 +920,24 @@ def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
         od.lookup_flow(handle, user_id="u1").leased is True
     )  # still there, lease free before this
     assert od.verifier_matches_challenge("v" * 43 + "\u00e9", challenge) is False
+
+
+def test_trace_route_is_identity_scoped_and_sanitized(monkeypatch, caplog):
+    import logging
+
+    assert _drive("/mcp/app/trace", {"step": "x"}, monkeypatch=monkeypatch)[0] == 401
+    with caplog.at_level(logging.INFO, logger="tinyassets.onboarding"):
+        status, doc = _drive(
+            "/mcp/app/trace",
+            {"step": "openai.callback<script>", "detail": "code\nerror\x00 " + "d" * 500},
+            identity=_user("f1"),
+            monkeypatch=monkeypatch,
+        )
+    assert (status, doc) == (200, {"ok": True})
+    line = next(r.getMessage() for r in caplog.records if "app-trace" in r.getMessage())
+    assert "user=f1 step=openai.callbackscript detail=code error" in line
+    assert "\n" not in line and len(line) < 320
+    assert (
+        _drive("/mcp/app/trace", {"step": ""}, identity=_user("f1"), monkeypatch=monkeypatch)[0]
+        == 400
+    )

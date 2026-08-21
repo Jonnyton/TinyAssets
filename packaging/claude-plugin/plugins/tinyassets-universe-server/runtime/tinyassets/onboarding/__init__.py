@@ -591,6 +591,35 @@ async def _handle_openai_exchange(request: Any) -> Any:
     )
 
 
+async def _handle_trace(request: Any) -> Any:
+    """Identity-scoped step trace from the app's OAuth hand-offs → daemon log.
+
+    Bounded fields, no secret ever (the app sends step names + error text),
+    so a phone test can be debugged from the log instead of a narration."""
+    import logging
+
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request, 1024)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    step = _re.sub(r"[^A-Za-z0-9._-]", "", str(data.get("step", "")))[:64]
+    detail = _re.sub(r"[\x00-\x1f\x7f]", " ", str(data.get("detail", "")))[:200]
+    if not step:
+        return JSONResponse({"error": "missing_fields"}, status_code=400)
+    logging.getLogger("tinyassets.onboarding").info(
+        "app-trace user=%s step=%s detail=%s", current_identity().user_id, step, detail
+    )
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -608,6 +637,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
         Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
+        Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
     ]
 
 
