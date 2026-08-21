@@ -4,7 +4,7 @@ node_modules/
 # Generated native Android project (regenerate with `npx cap add android`).
 # If you customize it (icons, signing config, native code) and want it tracked,
 # remove this line and commit the android/ directory.
-android/
+/android/
 
 # Build outputs
 *.apk
