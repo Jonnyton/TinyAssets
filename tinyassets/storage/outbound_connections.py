@@ -44,8 +44,12 @@ class OutboundEndpoint:
     path segment cannot silently address a different account (Codex FIX 3).
     ``allowed_query`` names the ONLY query parameters permitted — an undeclared
     query parameter is REFUSED, never dropped — and ``query_patterns`` optionally
-    constrains a declared query value. ``param_patterns``/``query_patterns`` are
-    stored as sorted ``(name, regex)`` pairs so the dataclass stays hashable.
+    constrains a declared query value. ``required_query`` names query parameters
+    that MUST be present EXACTLY ONCE (a subset of ``allowed_query``), so an
+    endpoint whose semantics depend on a validated parameter (github's contents
+    ``?ref=`` — Codex FIX: "require exactly one validated ref query") cannot be
+    called without it or with a duplicate. ``param_patterns``/``query_patterns``
+    are stored as sorted ``(name, regex)`` pairs so the dataclass stays hashable.
     """
 
     host: str
@@ -54,6 +58,7 @@ class OutboundEndpoint:
     param_patterns: tuple[tuple[str, str], ...] = ()
     allowed_query: tuple[str, ...] = ()
     query_patterns: tuple[tuple[str, str], ...] = ()
+    required_query: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -63,6 +68,7 @@ class OutboundEndpoint:
             "param_patterns": {name: pat for name, pat in self.param_patterns},
             "allowed_query": list(self.allowed_query),
             "query_patterns": {name: pat for name, pat in self.query_patterns},
+            "required_query": list(self.required_query),
         }
 
 
@@ -916,6 +922,70 @@ def _github_repository_from_destination(destination: str) -> str:
     return normalized
 
 
+def _github_outbound_via_connection_enabled() -> bool:
+    """Whether the DARK github egress-unification flag is truthy (slice 2B).
+
+    Delegates to the adapter's canonical reader so the flag NAME lives in ONE
+    place; lazy-imported to avoid a module-load import cycle (the adapter imports
+    this module). The broker child inherits the flag from the parent env — it is
+    not on the child env denylist — so this gate works inside the spawned proxy.
+    """
+    from tinyassets.effectors.outbound_channel_adapter import (
+        github_outbound_via_connection_enabled,
+    )
+
+    return github_outbound_via_connection_enabled()
+
+
+def _read_for_commit_via_connection(
+    *, repository: str, intended_head_sha: str, per_page: int, credential: str
+) -> list:
+    """Flag-ON PRs-for-commit read through the SSRF-hardened driver + the
+    destination-bound github allowlist (channel-agnostic-outbound slice 2B, DARK).
+
+    Reproduces the legacy read's semantics byte-for-byte: the broker's own
+    ``tinyassets-outbound-broker/1.0`` User-Agent + header set is preserved (the
+    driver injects the Bearer from a one-member bundle), and any transport /
+    allowlist refusal, non-2xx status, non-JSON body, or non-list payload raises a
+    secret-free ``ProxyRequestError`` — exactly what the legacy ``urlopen`` path
+    surfaces. On 2xx it returns the parsed PR list.
+    """
+    from tinyassets.effectors.outbound_channel_adapter import github_allowed_endpoints
+
+    path = (
+        f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
+        + urllib.parse.urlencode({"per_page": per_page})
+    )
+    try:
+        result = _SsrfHardenedHttpDriver()(
+            bundle=ConnectionSecretBundle(token=credential),
+            auth_scheme="bearer",
+            method="GET",
+            url=f"https://api.github.com{path}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "tinyassets-outbound-broker/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            body=None,
+            allowed_endpoints=github_allowed_endpoints(repository),
+        )
+    except (SsrfValidationError, ProxyRequestError):
+        raise ProxyRequestError("GitHub destination read failed") from None
+    # Reject every non-2xx (Codex): redirects are disabled, so a 3xx is a failure,
+    # not a body to parse — exactly what the legacy urlopen path surfaces (it
+    # raises on >=400 and would follow, never return, a 3xx).
+    if not 200 <= int(result["status"]) < 300:
+        raise ProxyRequestError("GitHub destination read failed") from None
+    try:
+        payload = json.loads(result["body"])
+    except (TypeError, ValueError):
+        raise ProxyRequestError("GitHub destination read failed") from None
+    if not isinstance(payload, list):
+        raise ProxyRequestError("GitHub destination returned an invalid response")
+    return payload
+
+
 class _ProductionGitHubNetworkDriver:
     """Trusted credential-bearing GitHub read transport for scoped proxies."""
 
@@ -975,6 +1045,16 @@ class _ProductionGitHubNetworkDriver:
         per_page = request["per_page"]
         if not isinstance(per_page, int) or isinstance(per_page, bool) or not 1 <= per_page <= 100:
             raise PermissionError("GitHub request page size is invalid")
+        if _github_outbound_via_connection_enabled():
+            # DARK egress-unification (slice 2B): route this read through the
+            # SSRF-hardened driver + destination-bound allowlist. Flag-off keeps
+            # the verbatim raw-urllib path below.
+            return _read_for_commit_via_connection(
+                repository=repository,
+                intended_head_sha=intended_head_sha,
+                per_page=per_page,
+                credential=credential,
+            )
         path = (
             f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
             + urllib.parse.urlencode({"per_page": per_page})
@@ -1153,6 +1233,30 @@ _SSRF_QUERY_NAME_RE = re.compile(r"^[A-Za-z0-9_.\[\]-]{1,64}$")
 _SSRF_MAX_MATCH_SEGMENT = 512
 #: A declared param/query value pattern longer than this is rejected at authoring.
 _SSRF_MAX_PATTERN_LEN = 256
+#: A multi-segment ("rest") placeholder — ``{name+}`` — permitted ONLY as the
+#: FINAL template segment and at most once. It captures one OR MORE concrete path
+#: segments (github contents sub-paths, slash-bearing branch refs) as a single
+#: value. The captured tail is split on literal ``/``; each segment is rejected if
+#: empty / ``.`` / ``..`` / over-long, the whole tail is bounded (segments + total
+#: length), and the ``/``-joined tail must full-match the endpoint's declared
+#: pattern for that rest-param. Encoded separators (%2e/%2f/%5c), ``%25``,
+#: controls, and overlong bytes are ALREADY rejected on the concrete URL by
+#: ``_parse_canonical_https_url`` -> ``_reject_unsafe_encoded_path`` before any
+#: match, and the canonical path is already literal-dot-segment-free — so a
+#: rest-tail cannot smuggle a traversal an origin would decode later. The declared
+#: rest-pattern is the endpoint-specific tightening (repo-relative path for
+#: contents; git ref-name shape for branches) on top of those invariants.
+_SSRF_ENDPOINT_REST_PLACEHOLDER_RE = re.compile(r"^\{[a-z0-9_]+\+\}$")
+#: A concrete rest-tail may span at most this many segments / this many chars.
+_SSRF_MAX_REST_SEGMENTS = 40
+_SSRF_MAX_REST_TAIL_LEN = 1024
+#: Bounds on the raw query string parsed at allowlist time. Without these a
+#: duplicate-field flood (``?ref=a&ref=a&...``) forces ``parse_qsl`` to build a
+#: huge list before the exactly-once/undeclared checks can reject it — a cheap
+#: memory/CPU amplifier on the egress path (Codex). ``max_num_fields`` makes
+#: ``parse_qsl`` itself fail closed past the bound.
+_SSRF_MAX_QUERY_LEN = 4096
+_SSRF_MAX_QUERY_FIELDS = 32
 
 
 class ConnectionSecretBundle:
@@ -1420,6 +1524,21 @@ def _placeholder_names(path_template: str) -> list[str]:
     ]
 
 
+def _rest_placeholder_name(path_template: str) -> str | None:
+    """The name of the final ``{name+}`` rest placeholder, or ``None``.
+
+    A rest placeholder is permitted ONLY as the final segment and at most once —
+    ``_validate_path_template`` enforces that at authoring, so at match time this
+    trusts the stored template. ``{name+}`` strips to ``name`` (drop ``{`` and
+    ``+}``).
+    """
+    segments = path_template.split("/")
+    last = segments[-1] if segments else ""
+    if _SSRF_ENDPOINT_REST_PLACEHOLDER_RE.match(last):
+        return last[1:-2]
+    return None
+
+
 def _validate_path_template(path_template: Any) -> str:
     """Validate a stored allowlist path template (traversal-free, ``/``-rooted)."""
     if not isinstance(path_template, str) or not path_template.startswith("/"):
@@ -1431,10 +1550,20 @@ def _validate_path_template(path_template: Any) -> str:
     # Same encoded-separator guard the concrete URL gets (FIX 2): reject
     # %2e/%2f/%5c and overlong/control encodings a stored template could smuggle.
     _reject_unsafe_encoded_path(path_template)
-    for segment in path_template.split("/")[1:]:
+    segments = path_template.split("/")[1:]
+    for index, segment in enumerate(segments):
         if segment in (".", ".."):
             raise SsrfValidationError("endpoint path_template must not contain dot-segments")
         if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(segment):
+            continue
+        if _SSRF_ENDPOINT_REST_PLACEHOLDER_RE.match(segment):
+            # A multi-segment tail is only sound as the FINAL segment — anywhere
+            # else it would swallow later fixed segments and defeat the
+            # destination pin (`/repos/<owner>/<repo>/...`).
+            if index != len(segments) - 1:
+                raise SsrfValidationError(
+                    "endpoint rest placeholder must be the final path segment"
+                )
             continue
         if not _SSRF_ENDPOINT_LITERAL_RE.match(segment):
             raise SsrfValidationError("endpoint path_template segment is not permitted")
@@ -1457,11 +1586,13 @@ def _compile_declared_pattern(pattern: Any) -> str:
 def _validate_param_patterns(
     path_template: str, raw: Any
 ) -> tuple[tuple[str, str], ...]:
-    """Every ``{param}`` MUST declare a value pattern; no stray patterns (FIX 3)."""
+    """Every ``{param}`` / ``{param+}`` MUST declare a value pattern; no strays (FIX 3)."""
     placeholders = _placeholder_names(path_template)
-    if len(set(placeholders)) != len(placeholders):
+    rest_name = _rest_placeholder_name(path_template)
+    all_names = placeholders + ([rest_name] if rest_name else [])
+    if len(set(all_names)) != len(all_names):
         raise SsrfValidationError("endpoint path_template has duplicate placeholders")
-    placeholder_set = set(placeholders)
+    placeholder_set = set(all_names)
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
@@ -1478,9 +1609,14 @@ def _validate_param_patterns(
 
 
 def _validate_query_rules(
-    allowed_raw: Any, patterns_raw: Any
-) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
-    """Declared query names + optional value patterns; undeclared names refused."""
+    allowed_raw: Any, patterns_raw: Any, required_raw: Any
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Declared query names + optional value patterns + required names.
+
+    ``required_query`` names must be a subset of ``allowed_query`` and are each
+    enforced present EXACTLY ONCE at match time (Codex FIX: exactly-one ref).
+    Undeclared names are refused; declared names may be pattern-constrained.
+    """
     if allowed_raw is None:
         allowed_raw = []
     if isinstance(allowed_raw, str) or not isinstance(allowed_raw, (list, tuple)):
@@ -1504,7 +1640,20 @@ def _validate_query_rules(
                 "endpoint query_patterns names must be in allowed_query"
             )
         patterns.append((text, _compile_declared_pattern(pattern)))
-    return tuple(allowed), tuple(sorted(patterns))
+    if required_raw is None:
+        required_raw = []
+    if isinstance(required_raw, str) or not isinstance(required_raw, (list, tuple)):
+        raise SsrfValidationError("endpoint required_query must be a list")
+    required: list[str] = []
+    for name in required_raw:
+        text = str(name).strip()
+        if text not in allowed:
+            raise SsrfValidationError(
+                "endpoint required_query names must be in allowed_query"
+            )
+        if text not in required:
+            required.append(text)
+    return tuple(allowed), tuple(sorted(patterns)), tuple(sorted(required))
 
 
 def _validate_endpoint(raw: Any) -> OutboundEndpoint:
@@ -1519,8 +1668,8 @@ def _validate_endpoint(raw: Any) -> OutboundEndpoint:
         # single-label names — matching the transport's own hostname policy.
         raise SsrfValidationError("endpoint host is not a permitted hostname")
     path_template = _validate_path_template(raw.get("path_template"))
-    allowed_query, query_patterns = _validate_query_rules(
-        raw.get("allowed_query"), raw.get("query_patterns")
+    allowed_query, query_patterns, required_query = _validate_query_rules(
+        raw.get("allowed_query"), raw.get("query_patterns"), raw.get("required_query")
     )
     return OutboundEndpoint(
         host=host,
@@ -1529,6 +1678,7 @@ def _validate_endpoint(raw: Any) -> OutboundEndpoint:
         param_patterns=_validate_param_patterns(path_template, raw.get("param_patterns")),
         allowed_query=allowed_query,
         query_patterns=query_patterns,
+        required_query=required_query,
     )
 
 
@@ -1555,18 +1705,16 @@ def _segment_matches_pattern(segment: str, pattern: str) -> bool:
     return re.fullmatch(pattern, segment) is not None
 
 
-def _path_matches_template(
-    path: str, template: str, param_patterns: dict[str, str]
+def _fixed_segments_match(
+    concrete: list[str], pattern: list[str], param_patterns: dict[str, str]
 ) -> bool:
-    """Segment-wise match; each ``{param}`` must full-match its DECLARED pattern.
+    """Match a run of concrete segments against fixed/``{param}`` template segments.
 
-    A placeholder with no declared pattern fails closed (an over-broad "any
-    non-empty segment" match is exactly the FIX 3 bypass).
+    Each ``{param}`` must full-match its DECLARED single-segment pattern; a
+    placeholder with no declared pattern fails closed (an over-broad "any
+    non-empty segment" match is exactly the FIX 3 bypass). Literals must be
+    byte-equal. Lengths must already be equal.
     """
-    concrete = path.split("/")
-    pattern = template.split("/")
-    if len(concrete) != len(pattern):
-        return False
     for got, want in zip(concrete, pattern):
         if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(want):
             declared = param_patterns.get(want[1:-1])
@@ -1578,21 +1726,71 @@ def _path_matches_template(
     return True
 
 
+def _path_matches_template(
+    path: str, template: str, param_patterns: dict[str, str]
+) -> bool:
+    """Segment-wise match; each ``{param}``/``{param+}`` full-matches its pattern.
+
+    Fixed-arity templates require equal segment counts. A template ending in a
+    ``{name+}`` rest placeholder matches its fixed prefix segment-for-segment,
+    then captures the REMAINING concrete segments (>=1) as the rest-tail — each
+    tail segment rejected if empty / ``.`` / ``..`` / over-long, the whole tail
+    bounded, and the ``/``-joined tail full-matched against the rest-param's
+    DECLARED endpoint-specific pattern. The concrete URL is already canonical,
+    literal-dot-segment-free, and stripped of encoded separators (%2e/%2f/%5c)
+    upstream, so the rest-tail cannot smuggle a decoded traversal.
+    """
+    concrete = path.split("/")
+    pattern = template.split("/")
+    rest_name = _rest_placeholder_name(template)
+    if rest_name is None:
+        if len(concrete) != len(pattern):
+            return False
+        return _fixed_segments_match(concrete, pattern, param_patterns)
+
+    prefix = pattern[:-1]
+    # The rest placeholder captures one OR MORE segments.
+    if len(concrete) < len(prefix) + 1:
+        return False
+    if not _fixed_segments_match(concrete[: len(prefix)], prefix, param_patterns):
+        return False
+    tail_segments = concrete[len(prefix):]
+    if len(tail_segments) > _SSRF_MAX_REST_SEGMENTS:
+        return False
+    for seg in tail_segments:
+        if not seg or seg in (".", "..") or len(seg) > _SSRF_MAX_MATCH_SEGMENT:
+            return False
+    tail = "/".join(tail_segments)
+    if len(tail) > _SSRF_MAX_REST_TAIL_LEN:
+        return False
+    declared = param_patterns.get(rest_name)
+    if declared is None:
+        return False
+    return re.fullmatch(declared, tail) is not None
+
+
 def _query_permitted(query_items: list[tuple[str, str]], endpoint: OutboundEndpoint) -> bool:
     """Refuse any query parameter not DECLARED in the endpoint (FIX 3).
 
     Queries are no longer discarded before matching: an undeclared parameter (or
     a declared one whose value fails its pattern) refuses the whole request, so a
     tenant/target/operation cannot ride in a query string to escape the
-    connection's destination.
+    connection's destination. A ``required_query`` name must additionally appear
+    EXACTLY ONCE (Codex FIX: exactly-one validated ref) — zero occurrences or a
+    duplicate refuses the request.
     """
     allowed = set(endpoint.allowed_query)
     patterns = dict(endpoint.query_patterns)
+    counts: dict[str, int] = {}
     for name, value in query_items:
         if name not in allowed:
             return False
         declared = patterns.get(name)
         if declared is not None and not _segment_matches_pattern(value, declared):
+            return False
+        counts[name] = counts.get(name, 0) + 1
+    for required in endpoint.required_query:
+        if counts.get(required, 0) != 1:
             return False
     return True
 
@@ -1613,9 +1811,22 @@ def _enforce_endpoint_allowlist(
     host = canonical.hostname.strip().lower()
     verb = (method or "").strip().upper()
     raw_path, _, raw_query = canonical.path_qs.partition("?")
-    query_items = (
-        urllib.parse.parse_qsl(raw_query, keep_blank_values=True) if raw_query else []
-    )
+    if len(raw_query) > _SSRF_MAX_QUERY_LEN:
+        raise SsrfValidationError("outbound url query is too long")
+    try:
+        query_items = (
+            urllib.parse.parse_qsl(
+                raw_query,
+                keep_blank_values=True,
+                max_num_fields=_SSRF_MAX_QUERY_FIELDS,
+            )
+            if raw_query
+            else []
+        )
+    except ValueError:
+        # parse_qsl raises when the field count exceeds the bound; treat a
+        # flood as a refused request rather than an unbounded parse.
+        raise SsrfValidationError("outbound url query has too many fields") from None
     for endpoint in endpoints:
         if endpoint.host != host:
             continue
