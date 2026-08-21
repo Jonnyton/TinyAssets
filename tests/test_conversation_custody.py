@@ -2895,10 +2895,11 @@ def test_custody_adds_no_public_handle_or_production_consumer() -> None:
     for path in (root / "tinyassets").rglob("*.py"):
         if path not in owners and "conversation_custody" in path.read_text(encoding="utf-8"):
             consumers.append(path.relative_to(root).as_posix())
-    assert consumers == [
-        "tinyassets/app_conversation_authority.py",
-        "tinyassets/app_reply_authority.py",
-    ]
+    # The two former consumers (app_conversation_authority.py, app_reply_authority.py)
+    # were deleted in the channel-agnostic rip; conversation_custody now has ZERO
+    # production consumers, which is even more aligned with this test's intent (no
+    # public handle, no production consumer).
+    assert consumers == []
     custody = _custody()
     assert not hasattr(custody, "_issue_operation_grant")
     source = (root / "tinyassets" / "conversation_custody.py").read_text(encoding="utf-8")

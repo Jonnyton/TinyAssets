@@ -9,12 +9,11 @@ from types import SimpleNamespace
 from tinyassets.api.wiki import _ensure_wiki_scaffold
 from tinyassets.branches import NodeDefinition
 from tinyassets.effectors import (
-    EXTERNAL_WRITE_SINK_GITHUB_PR,
+    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
-    read_repo_files,
+    run_authenticated_external_call_effector,
     run_effects_for_branch,
     run_wiki_write_back_effector,
-    search_repo_files,
     wiki_write_back,
 )
 from tinyassets.storage.effector_consents import grant_consent
@@ -55,10 +54,10 @@ def _packet(**overrides):
     return packet
 
 
-def test_effectors_package_preserves_existing_exports():
-    assert EXTERNAL_WRITE_SINK_GITHUB_PR == "github_pull_request"
-    assert callable(read_repo_files)
-    assert callable(search_repo_files)
+def test_effectors_package_exports_channel_agnostic_surface():
+    assert EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL == "authenticated_external_call"
+    assert EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK == "wiki_write_back"
+    assert callable(run_authenticated_external_call_effector)
     assert callable(run_wiki_write_back_effector)
 
 
