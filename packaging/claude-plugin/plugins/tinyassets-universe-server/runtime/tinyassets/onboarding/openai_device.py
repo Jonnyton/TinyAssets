@@ -340,6 +340,10 @@ __all__ = [
     "consume_flow",
     "CODEX_CLIENT_ID",
     "OPENAI_ISSUER",
+    "BROWSER_AUTHORIZE_URL",
+    "browser_authorize_params",
+    "valid_loopback_redirect",
+    "exchange_browser_code",
     "VERIFICATION_URL",
     "DeviceAuthError",
     "start_device_auth",
@@ -347,3 +351,108 @@ __all__ = [
     "build_codex_auth_json",
     "deposit_codex_auth_json",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Browser sign-in (authorization code + PKCE) — the flow `codex login` uses by
+# default. Unlike the device flow it needs NO per-account ChatGPT security
+# setting ("Enable device code authorization for Codex" is off by default and
+# blocked the founder's first attempt, 2026-08-21). The app opens the
+# authorize URL in an in-app tab with redirect_uri http://localhost:1455/auth/
+# callback, catches the redirect on a loopback listener inside the app, and
+# hands (code, verifier) to the daemon, which exchanges and deposits exactly
+# like the device path. The verifier never leaves the user's device except
+# over TLS to this daemon, and the daemon never sees the user's password.
+# ---------------------------------------------------------------------------
+
+BROWSER_AUTHORIZE_URL = f"{OPENAI_ISSUER}/oauth/authorize"
+BROWSER_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+BROWSER_REDIRECT_PATH = "/auth/callback"
+BROWSER_DEFAULT_PORT = 1455
+
+
+def browser_authorize_params(
+    *, redirect_uri: str, code_challenge: str, state: str
+) -> dict[str, str]:
+    """The exact query the Codex CLI builds (``build_authorize_url`` in
+    ``codex-rs/login/src/server.rs``). Public values only."""
+    return {
+        "response_type": "code",
+        "client_id": CODEX_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "scope": BROWSER_SCOPE,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "state": state,
+        "originator": "codex_cli_rs",
+    }
+
+
+def valid_loopback_redirect(redirect_uri: str) -> bool:
+    """Only the loopback redirect the Codex client is registered for."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(redirect_uri)
+    except ValueError:
+        return False
+    if parts.scheme != "http" or parts.hostname not in ("localhost", "127.0.0.1"):
+        return False
+    if parts.path != BROWSER_REDIRECT_PATH or parts.query or parts.fragment:
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    return port is not None and 1024 <= port <= 65535
+
+
+async def exchange_browser_code(
+    *,
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+    client_factory: ClientFactory = _default_client,
+) -> dict[str, Any]:
+    """PKCE exchange for the browser flow; returns ``{"auth_json": ...}``."""
+    code = _opaque(code, 2048)
+    code_verifier = _opaque(code_verifier, 512)
+    if not code or not code_verifier:
+        raise DeviceAuthError("missing_fields", 400)
+    if not valid_loopback_redirect(redirect_uri):
+        raise DeviceAuthError("invalid_redirect_uri", 400)
+    try:
+        async with client_factory() as client:
+            tok = await client.post(
+                _OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": CODEX_CLIENT_ID,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except httpx.HTTPError:
+        raise DeviceAuthError("openai_unreachable") from None
+    if tok.status_code >= 400:
+        raise DeviceAuthError("token_exchange_failed", 400)
+    try:
+        tdoc = tok.json()
+    except ValueError:
+        raise DeviceAuthError("token_response_invalid") from None
+    if not isinstance(tdoc, dict):
+        raise DeviceAuthError("token_response_invalid")
+    id_token = str(tdoc.get("id_token") or "")
+    access_token = str(tdoc.get("access_token") or "")
+    refresh_token = str(tdoc.get("refresh_token") or "")
+    if not (id_token and access_token and refresh_token):
+        raise DeviceAuthError("token_response_invalid")
+    return {
+        "auth_json": build_codex_auth_json(
+            id_token=id_token, access_token=access_token, refresh_token=refresh_token
+        )
+    }

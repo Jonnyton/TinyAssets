@@ -50,6 +50,7 @@ def app_config() -> dict[str, Any]:
     drift from what ``/mcp`` itself accepts. Contains public values only.
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
+    from tinyassets.onboarding import openai_device as _openai
 
     prm = protected_resource_metadata()
     resource = str(prm.get("resource", "")).rstrip("/")
@@ -67,6 +68,16 @@ def app_config() -> dict[str, Any]:
         # registered public client id are present; otherwise the page renders an
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
+        # One-tap OpenAI (browser flow, native app): public client + authorize
+        # endpoint; the app builds PKCE locally and catches the loopback redirect.
+        "openai": {
+            "authorize_url": _openai.BROWSER_AUTHORIZE_URL,
+            "client_id": _openai.CODEX_CLIENT_ID,
+            "scope": _openai.BROWSER_SCOPE,
+            "redirect_port": _openai.BROWSER_DEFAULT_PORT,
+            "redirect_path": _openai.BROWSER_REDIRECT_PATH,
+            "device_verification_url": _openai.VERIFICATION_URL,
+        },
     }
 
 
@@ -371,6 +382,101 @@ async def _handle_openai_device_poll(request: Any) -> Any:
     )
 
 
+async def _handle_me(request: Any) -> Any:
+    """What the signed-in user's app needs to route on: which universe they
+    speak to and whether it has a mind (engine) connected yet. Login lands on
+    the Connect screen until ``engine_connected`` is true (founder 2026-08-21:
+    connecting a subscription is part of signing in, not a thing to discover
+    after the first failed message)."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+
+    def _read() -> dict[str, Any]:
+        from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+        from tinyassets.api.universe import universe_has_assigned_engine
+        from tinyassets.daemon_server import get_founder_home
+
+        with identity_context(identity):
+            # Only the user's OWN bound home counts. Before first contact there
+            # is no home yet; the identity-neutral public landing universe has
+            # an engine of its own and must not read as "you're connected".
+            home = get_founder_home(_base_path(), identity.user_id) or ""
+            if not home or not (_base_path() / home).is_dir():
+                return {"universe_id": "", "home_bound": False, "engine_connected": False}
+            uid = _request_universe(home)
+            return {
+                "universe_id": uid,
+                "home_bound": True,
+                "engine_connected": bool(universe_has_assigned_engine(_universe_dir(uid))),
+            }
+
+    try:
+        doc = await run_in_threadpool(_read)
+    except Exception:  # noqa: BLE001 - never let a storage hiccup 500 the app shell
+        doc = {"universe_id": "", "home_bound": False, "engine_connected": False, "degraded": True}
+    return JSONResponse(doc, headers={"Cache-Control": "no-store"})
+
+
+async def _handle_openai_exchange(request: Any) -> Any:
+    """Browser sign-in completion: the app caught OpenAI's redirect on its
+    loopback listener and sends (code, verifier, redirect_uri). The daemon
+    exchanges with PKCE and deposits as the signed-in user; the response
+    carries only a status."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.onboarding.openai_device import (
+        DeviceAuthError,
+        deposit_codex_auth_json,
+        exchange_browser_code,
+    )
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "")).strip()[:128]
+    try:
+        outcome = await exchange_browser_code(
+            code=str(data.get("code", "")),
+            code_verifier=str(data.get("code_verifier", "")),
+            redirect_uri=str(data.get("redirect_uri", "")),
+        )
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+
+    def _deposit() -> dict[str, Any]:
+        with identity_context(identity):
+            return deposit_codex_auth_json(outcome["auth_json"], universe_id=universe_id)
+
+    result = await run_in_threadpool(_deposit)
+    if not isinstance(result, dict) or result.get("error"):
+        err = "deposit_failed"
+        if isinstance(result, dict) and result.get("error"):
+            err = str(result["error"])
+        status = 401 if err == "authentication_required" else 400
+        return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    return JSONResponse(
+        {"status": "connected", "service": "codex"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -385,6 +491,8 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
         Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
         Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
+        Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
+        Route("/mcp/app/me", _handle_me, methods=["GET"]),
     ]
 
 

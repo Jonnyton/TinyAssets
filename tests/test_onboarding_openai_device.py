@@ -571,3 +571,163 @@ def test_poll_route_releases_lease_on_unexpected_exception(monkeypatch):
         )
     # The flow is still pending (not consumed) and NOT leased: a retry proceeds.
     assert od.lookup_flow(handle, user_id=_user().user_id).leased is True
+
+
+# ------------------------------------------------ browser (loopback) flow ----
+
+
+def test_loopback_redirect_validation():
+    ok = od.valid_loopback_redirect
+    assert ok("http://localhost:1455/auth/callback")
+    assert ok("http://127.0.0.1:2000/auth/callback")
+    assert not ok("https://localhost:1455/auth/callback")  # scheme
+    assert not ok("http://evil.example:1455/auth/callback")  # host
+    assert not ok("http://localhost/auth/callback")  # no port
+    assert not ok("http://localhost:80/auth/callback")  # privileged port
+    assert not ok("http://localhost:1455/other")  # path
+    assert not ok("http://localhost:1455/auth/callback?x=1")  # query
+
+
+def test_browser_authorize_params_match_codex_cli():
+    q = od.browser_authorize_params(
+        redirect_uri="http://localhost:1455/auth/callback", code_challenge="c", state="s"
+    )
+    assert q["client_id"] == od.CODEX_CLIENT_ID
+    assert q["code_challenge_method"] == "S256"
+    assert q["codex_cli_simplified_flow"] == "true"
+    assert q["id_token_add_organizations"] == "true"
+    assert q["originator"] == "codex_cli_rs"
+    assert "offline_access" in q["scope"]
+
+
+def test_exchange_browser_code_posts_pkce_and_builds_auth_json():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/oauth/token"
+        seen["form"] = dict(p.split("=", 1) for p in req.content.decode().split("&"))
+        return httpx.Response(
+            200, json={"id_token": "t", "access_token": "a", "refresh_token": "r"}
+        )
+
+    out = asyncio.run(
+        od.exchange_browser_code(
+            code="c1",
+            code_verifier="v1",
+            redirect_uri="http://localhost:1455/auth/callback",
+            client_factory=_client_with(handler),
+        )
+    )
+    assert seen["form"]["grant_type"] == "authorization_code"
+    assert seen["form"]["code"] == "c1" and seen["form"]["code_verifier"] == "v1"
+    assert seen["form"]["redirect_uri"] == "http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
+    assert json.loads(out["auth_json"])["tokens"]["refresh_token"] == "r"
+
+
+def test_exchange_browser_code_rejects_bad_redirect_before_network():
+    def handler(req):
+        raise AssertionError("must not reach the network")
+
+    with pytest.raises(od.DeviceAuthError) as ei:
+        asyncio.run(
+            od.exchange_browser_code(
+                code="c",
+                code_verifier="v",
+                redirect_uri="https://evil/auth/callback",
+                client_factory=_client_with(handler),
+            )
+        )
+    assert ei.value.code == "invalid_redirect_uri"
+
+
+def test_exchange_route_deposits_as_user(monkeypatch):
+    async def fake_exchange(**kw):
+        assert kw["redirect_uri"] == "http://localhost:1455/auth/callback"
+        return {
+            "auth_json": od.build_codex_auth_json(id_token="t", access_token="a", refresh_token="r")
+        }
+
+    monkeypatch.setattr(od, "exchange_browser_code", fake_exchange)
+    captured = {}
+    import tinyassets.api.llm_deposit as ld
+
+    def fake_connect_llm(*, universe_id="", payload=None):
+        from tinyassets.auth.middleware import current_identity
+
+        captured["actor"] = current_identity().user_id
+        return {"ok": True}
+
+    monkeypatch.setattr(ld, "connect_llm", fake_connect_llm)
+    body = {
+        "code": "c",
+        "code_verifier": "v",
+        "redirect_uri": "http://localhost:1455/auth/callback",
+    }
+    status, doc = _drive(
+        "/mcp/app/openai/exchange", body, identity=_user("u9"), monkeypatch=monkeypatch
+    )
+    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert captured["actor"] == "u9"
+    assert _drive("/mcp/app/openai/exchange", body, monkeypatch=monkeypatch)[0] == 401
+
+
+# ------------------------------------------------------------ /mcp/app/me ----
+
+
+def _drive_get(path, *, identity=None, monkeypatch):
+    from starlette.requests import Request
+
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.onboarding import onboarding_routes
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    route = next(r for r in onboarding_routes() if r.path == path)
+    scope = {"type": "http", "method": "GET", "path": path, "headers": [], "query_string": b""}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def run():
+        req = Request(scope, receive)
+        if identity is not None:
+            with identity_context(identity):
+                return await route.endpoint(req)
+        return await route.endpoint(req)
+
+    resp = asyncio.run(run())
+    return resp.status_code, json.loads(resp.body or b"{}")
+
+
+def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
+    assert _drive_get("/mcp/app/me", monkeypatch=monkeypatch)[0] == 401
+
+    import tinyassets.api.helpers as helpers
+    import tinyassets.api.universe as uni
+    import tinyassets.daemon_server as ds
+
+    (tmp_path / "u-home").mkdir()
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(helpers, "_request_universe", lambda uid="": uid or "u-home")
+    # No bound home yet -> not connected (the public landing universe must NOT
+    # read as "you're connected").
+    monkeypatch.setattr(ds, "get_founder_home", lambda base, actor: "")
+    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: True)
+    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    assert (status, doc["home_bound"], doc["engine_connected"]) == (200, False, False)
+    # Bound home without an engine -> connect gate.
+    monkeypatch.setattr(ds, "get_founder_home", lambda base, actor: "u-home")
+    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: False)
+    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    assert (doc["home_bound"], doc["engine_connected"], doc["universe_id"]) == (
+        True,
+        False,
+        "u-home",
+    )
+    # Bound home with an engine -> straight to chat.
+    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: True)
+    assert (
+        _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)[1][
+            "engine_connected"
+        ]
+        is True
+    )

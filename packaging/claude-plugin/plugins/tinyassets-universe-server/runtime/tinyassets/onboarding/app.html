@@ -132,8 +132,12 @@
 
         <div class="provider-card">
           <div class="provider-head"><strong>OpenAI</strong> <span class="muted">ChatGPT Plus / Pro / Team</span></div>
-          <p>Tap Connect, approve on the OpenAI page that opens, and you're linked. Nothing to
-          generate, copy, or paste.</p>
+          <p>Tap Connect, sign in to ChatGPT on the page that opens, and you're back here
+          linked. Nothing to generate, copy, or paste.</p>
+          <p id="openai-web-note" class="muted" hidden>On the web this uses OpenAI's device code. OpenAI
+          keeps that switched off by default: in ChatGPT open <strong>Settings &rsaquo; Security</strong>
+          and turn on <strong>Device code authorization</strong> first, then tap Connect. (The phone
+          app doesn't need this.)</p>
           <button id="btn-openai-connect" class="btn btn--primary">Connect OpenAI</button>
           <div id="openai-flow" hidden>
             <p>Your code: <code id="openai-code" class="bigcode"></code></p>
@@ -412,7 +416,7 @@
     if(payload&&payload.status==="held"&&payload.reason==="setup_required"){
       const cta=document.createElement("div"); cta.className="setup-cta";
       const b=document.createElement("button"); b.className="btn btn--ghost";
-      b.textContent="Connect your subscription"; b.addEventListener("click",showConnect);
+      b.textContent="Connect your subscription"; b.addEventListener("click",()=>showConnect(true));
       cta.appendChild(b);
       appendMessage("universe", payload.note||"This universe has no engine yet.", cta); return;
     }
@@ -447,11 +451,41 @@
   }
   function startHeartbeat(){ pollStatus(); clearInterval(statusTimer); statusTimer=setInterval(pollStatus,30000); }
 
-  function enterSignedIn(){ showView("chat"); startHeartbeat(); $("composer-input").focus(); }
+  // Connecting a mind is part of signing in (founder 2026-08-21): until the
+  // user's universe has an engine, landing goes to Connect, not to a chat that
+  // can only answer "connect your subscription".
+  let engineConnected = null;   // null = unknown yet
+  async function fetchMe(){
+    try{
+      const r = await fetch("/mcp/app/me", {headers: authHeaders()});
+      if(r.status===401){ enterSignedOut(); return null; }
+      if(!r.ok) return null;
+      return await r.json();
+    }catch(_e){ return null; }
+  }
+  async function enterSignedIn(){
+    const me = await fetchMe();
+    if(me && me.engine_connected===false){
+      engineConnected = false;
+      showConnect(true);
+      return;
+    }
+    engineConnected = me ? !!me.engine_connected : null;
+    showView("chat"); startHeartbeat(); $("composer-input").focus();
+  }
+  function onEngineConnected(){
+    engineConnected = true;
+    $("btn-connect-back").textContent = "Go to your universe";
+    setTimeout(()=>{ showView("chat"); startHeartbeat(); $("composer-input").focus(); }, 1200);
+  }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
     sessionStorage.removeItem(TOKEN_KEY); showView("signin"); }
-  function showConnect(){ showView("connect");
-    $("connect-status").textContent="Credentials go straight to the connector over TLS — never through chat, never logged."; }
+  function showConnect(asGate){ showView("connect");
+    $("openai-web-note").hidden = NATIVE;   // device-code caveat is web-only
+    $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
+    $("connect-status").textContent = asGate
+      ? "Your universe needs a mind to think with. Connect the subscription it should run on — credentials go straight to the connector over TLS, never through chat, never logged."
+      : "Credentials go straight to the connector over TLS — never through chat, never logged."; }
 
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
@@ -463,7 +497,62 @@
   // tinyassets/onboarding/openai_device.py.
   let openaiBusy=false;
   async function connectOpenAI(){
-    if(openaiBusy) return; openaiBusy=true;
+    if(openaiBusy) return;
+    if(NATIVE && nativePlugin("LocalCallback") && CFG.openai){ return connectOpenAIBrowser(); }
+    return connectOpenAIDevice();
+  }
+
+  // Native: the SAME browser sign-in `codex login` does on a desktop. The app
+  // builds PKCE locally, opens OpenAI's authorize page in the in-app tab with
+  // redirect_uri http://localhost:1455/auth/callback, and the LocalCallback
+  // plugin (a loopback listener inside the app) catches the redirect. The
+  // daemon then exchanges code+verifier and deposits as the signed-in user.
+  // No per-account ChatGPT "device code" setting is involved.
+  async function connectOpenAIBrowser(){
+    openaiBusy=true;
+    const btn=$("btn-openai-connect"), res=$("openai-result"), LC=nativePlugin("LocalCallback");
+    btn.disabled=true; res.textContent="Opening OpenAI sign-in…";
+    const verifier=randToken(48), state=randToken(18);
+    const challenge=await challengeFor(verifier);
+    const port=CFG.openai.redirect_port||1455, path=CFG.openai.redirect_path||"/auth/callback";
+    const redirectUri="http://localhost:"+port+path;
+    let handle=null, done=false;
+    const finish=async(ok,msg)=>{ if(done) return; done=true; try{ if(handle) handle.remove(); }catch(_e){}
+      try{ await LC.stop(); }catch(_e){} btn.disabled=false; openaiBusy=false;
+      if(ok){ btn.textContent="OpenAI connected ✓"; res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn."; onEngineConnected(); }
+      else res.textContent=msg; };
+    try{
+      handle = await LC.addListener("callback", async (ev)=>{
+        let u; try{ u=new URL(ev.url); }catch(_e){ return; }
+        const code=u.searchParams.get("code"), st=u.searchParams.get("state")||"";
+        if(!code || st!==state){ return finish(false, "Sign-in came back without a valid code. Tap Connect to try again."); }
+        await closeExternal();
+        res.textContent="Linking your subscription…";
+        let r, doc;
+        try{
+          r=await fetch("/mcp/app/openai/exchange",{method:"POST",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify({code, code_verifier:verifier, redirect_uri:redirectUri})});
+          doc=await r.json();
+        }catch(e){ return finish(false, "Couldn't reach the connector: "+e.message); }
+        if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+        if(doc.status==="connected") return finish(true);
+        return finish(false, "Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.");
+      });
+      await LC.start({port, path});
+    }catch(e){ return finish(false, "Couldn't start the sign-in listener: "+(e.message||e)); }
+    const p=new URLSearchParams({
+      response_type:"code", client_id:CFG.openai.client_id, redirect_uri:redirectUri,
+      scope:CFG.openai.scope, code_challenge:challenge, code_challenge_method:"S256",
+      id_token_add_organizations:"true", codex_cli_simplified_flow:"true", state, originator:"codex_cli_rs",
+    });
+    await openExternal(CFG.openai.authorize_url+"?"+p.toString());
+    res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here.";
+    setTimeout(()=>finish(false, "That took too long — tap Connect OpenAI to try again."), 10*60*1000);
+  }
+
+  async function connectOpenAIDevice(){
+    openaiBusy=true;
     const btn=$("btn-openai-connect"), res=$("openai-result"), flow=$("openai-flow");
     btn.disabled=true; res.textContent="Contacting OpenAI…";
     let started;
@@ -496,6 +585,7 @@
         await closeExternal();
         flow.hidden=true; btn.textContent="OpenAI connected ✓"; btn.disabled=false; openaiBusy=false;
         res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn.";
+        onEngineConnected();
         return;
       }
       res.textContent="Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.";
@@ -514,7 +604,7 @@
     try{
       const payload=await MCP.connectLLM("claude", btoa(unescape(encodeURIComponent(material))));
       if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); }
-      else{ res.textContent="Claude connected. Your universe thinks on it from the next turn."; btn.textContent="Claude connected ✓"; }
+      else{ res.textContent="Claude connected. Your universe thinks on it from the next turn."; btn.textContent="Claude connected ✓"; onEngineConnected(); }
     }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } res.textContent="Couldn't connect: "+err.message; }
     finally{ btn.disabled=false; }
   }
@@ -528,8 +618,8 @@
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
-    $("btn-connect").addEventListener("click",showConnect);
-    $("btn-connect-back").addEventListener("click",()=>showView("chat"));
+    $("btn-connect").addEventListener("click",()=>showConnect(false));
+    $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); });
     $("btn-signout").addEventListener("click",()=>{ sessionStorage.setItem("ta_force_login","1"); enterSignedOut(); });
     $("btn-deposit").addEventListener("click",async()=>{
       const service=$("connect-service").value, out=$("connect-result");
