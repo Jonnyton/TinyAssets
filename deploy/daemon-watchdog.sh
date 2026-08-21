@@ -21,7 +21,19 @@ log() {
 
 restart_daemon() {
     local reason="$1"
-    log "restarting ${SERVICE_UNIT}: ${reason}"
+    # Daemon-scoped: restart the daemon CONTAINER, never the whole unit. The
+    # unit's restart used to run `compose down`, taking the tunnel and logs
+    # down with the daemon on every watchdog fire (2026-08-21 Codex review).
+    # If the container does not exist at all, re-converge the unit instead.
+    log "restarting daemon container: ${reason}"
+    if docker inspect tinyassets-daemon >/dev/null 2>&1; then
+        # A hung-but-"healthy" daemon needs an actual container restart;
+        # `up -d` alone would leave an unchanged container running.
+        docker restart tinyassets-daemon || true
+    fi
+    # Then re-converge the unit: with no ExecStop this is a safe `up -d` of
+    # the three production services, which (re)starts the tunnel/logs if they
+    # are down and restores an inactive unit so the timer does not loop.
     systemctl reset-failed "${SERVICE_UNIT}" >/dev/null 2>&1 || true
     systemctl restart "${SERVICE_UNIT}"
 }
