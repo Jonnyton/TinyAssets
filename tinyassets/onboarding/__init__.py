@@ -332,14 +332,21 @@ async def _handle_openai_device_poll(request: Any) -> Any:
     try:
         # Same identity that started the flow, or it does not exist.
         flow = lookup_flow(handle, user_id=identity.user_id)
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    try:
         outcome = await poll_device_auth(
             device_auth_id=flow.device_auth_id,
             user_code=flow.user_code,
         )
     except DeviceAuthError as exc:
-        if exc.code not in ("unknown_flow", "poll_in_progress"):
-            consume_flow(handle)  # a terminal failure ends the flow
+        consume_flow(handle)  # a terminal failure ends the flow
         return JSONResponse({"error": exc.code}, status_code=exc.status)
+    except BaseException:
+        # Anything unexpected (incl. client disconnect / task cancellation)
+        # hands the lease back so the flow is not stuck until expiry.
+        release_flow(handle)
+        raise
     if outcome is None:
         release_flow(handle)  # still pending: hand the lease back for the next poll
         return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})

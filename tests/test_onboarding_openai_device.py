@@ -550,3 +550,24 @@ def test_bounded_body_rejects_malformed_content_length():
     )  # superscript two: isdigit() True, int() raises
     assert asyncio.run(run(b"abc")) is None
     assert asyncio.run(run(b"2")) == b"{}"
+
+
+def test_poll_route_releases_lease_on_unexpected_exception(monkeypatch):
+    """Codex round-3: an unexpected error after the lease is taken must hand it
+    back, so the user's next poll works instead of 409-ing until expiry."""
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user())
+
+    async def boom(**kw):
+        raise RuntimeError("transport exploded")
+
+    monkeypatch.setattr(od, "poll_device_auth", boom)
+    with pytest.raises(RuntimeError):
+        _drive(
+            "/mcp/app/openai/device/poll",
+            {"flow": handle},
+            identity=_user(),
+            monkeypatch=monkeypatch,
+        )
+    # The flow is still pending (not consumed) and NOT leased: a retry proceeds.
+    assert od.lookup_flow(handle, user_id=_user().user_id).leased is True
