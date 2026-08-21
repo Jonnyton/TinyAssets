@@ -3,8 +3,8 @@ name: Android debug APK
 # Builds a sideloadable debug APK on GitHub's runners (JDK 17 + Android SDK
 # pre-installed) and uploads it as an artifact. Download it from the run's
 # Artifacts, transfer to an Android phone, enable "install unknown apps", and
-# open it — no local Android Studio / keystore / Play account needed to TRY it.
-# (The signed release .aab for Play is a separate, keystore-signed build — see
+# open it â€” no local Android Studio / keystore / Play account needed to TRY it.
+# (The signed release .aab for Play is a separate, keystore-signed build â€” see
 # mobile/README.md.)
 
 on:
@@ -15,7 +15,7 @@ on:
       - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
-# contents: write � a build from `main` replaces the APK on the latest GitHub
+# contents: write - a build from `main` replaces the APK on the latest GitHub
 # release, which is what the website's "Get the Android app" button downloads
 # (releases/latest/download/app-debug.apk).
 permissions:
