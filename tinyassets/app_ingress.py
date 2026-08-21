@@ -256,8 +256,8 @@ def deliver_app_event(
         # claim a reply the founder never received. record_turn is never-raise.
         #
         # The transport returns a COMPOSITE receipt `slack:<channel>:<ts>` (see
-        # slack_transport), but sync_tail dedups against the RAW Slack ts from the
-        # live timeline. Storing the composite as ext_id meant the reply never
+        # build_slack_transport), but sync_tail dedups against the RAW Slack ts from
+        # the live timeline. Storing the composite as ext_id meant the reply never
         # matched on re-sync and was re-recorded as a duplicate every time (Codex
         # FIX2 2026-08-10). Normalise to the raw ts so the write- and read-side
         # ids are identical.
@@ -613,7 +613,7 @@ def _post(*, routed, channel_id: str, body: str, thread_ts: str, transport) -> s
 
     if transport is None:
         from tinyassets.api.helpers import _universe_dir
-        from tinyassets.effectors.slack_transport import build_slack_transport
+        from tinyassets.effectors.outbound_channel_adapter import build_slack_transport
 
         transport = build_slack_transport(_universe_dir(routed.universe_id))
 

@@ -495,7 +495,7 @@ def test_a_rotated_user_token_is_refused_at_post_time(universe):
     so the agent silently impersonates whoever installed the app.
     """
     from tinyassets.app_reply_authority import ReplyDestination
-    from tinyassets.effectors.slack_transport import (
+    from tinyassets.effectors.outbound_channel_adapter import (
         SlackTransportError,
         build_slack_transport,
     )

@@ -30,6 +30,7 @@ from tinyassets.credential_vault import (
     resolve_slack_token,
     vault_exists,
 )
+from tinyassets.effectors.outbound_channel_adapter import build_slack_transport
 from tinyassets.effectors.slack_agent_turn import (
     SlackBinding,
     actor_id_for,
@@ -37,7 +38,6 @@ from tinyassets.effectors.slack_agent_turn import (
 )
 from tinyassets.effectors.slack_socket_mode import is_app_token
 from tinyassets.effectors.slack_socket_runner import run_socket_forever
-from tinyassets.effectors.slack_transport import build_slack_transport
 
 #: Slack bot tokens. A user token (``xoxp-``) posts under a human name.
 BOT_TOKEN_PREFIX = "xoxb-"

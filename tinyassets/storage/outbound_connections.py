@@ -19,7 +19,6 @@ import sqlite3
 import ssl
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -922,26 +921,11 @@ def _github_repository_from_destination(destination: str) -> str:
     return normalized
 
 
-def _github_outbound_via_connection_enabled() -> bool:
-    """Whether the DARK github egress-unification flag is truthy (slice 2B).
-
-    Delegates to the adapter's canonical reader so the flag NAME lives in ONE
-    place; lazy-imported to avoid a module-load import cycle (the adapter imports
-    this module). The broker child inherits the flag from the parent env — it is
-    not on the child env denylist — so this gate works inside the spawned proxy.
-    """
-    from tinyassets.effectors.outbound_channel_adapter import (
-        github_outbound_via_connection_enabled,
-    )
-
-    return github_outbound_via_connection_enabled()
-
-
 def _read_for_commit_via_connection(
     *, repository: str, intended_head_sha: str, per_page: int, credential: str
 ) -> list:
-    """Flag-ON PRs-for-commit read through the SSRF-hardened driver + the
-    destination-bound github allowlist (channel-agnostic-outbound slice 2B, DARK).
+    """PRs-for-commit read through the SSRF-hardened driver + the destination-bound
+    github allowlist (channel-agnostic-outbound: the one egress path).
 
     Reproduces the legacy read's semantics byte-for-byte: the broker's own
     ``tinyassets-outbound-broker/1.0`` User-Agent + header set is preserved (the
@@ -1045,45 +1029,15 @@ class _ProductionGitHubNetworkDriver:
         per_page = request["per_page"]
         if not isinstance(per_page, int) or isinstance(per_page, bool) or not 1 <= per_page <= 100:
             raise PermissionError("GitHub request page size is invalid")
-        if _github_outbound_via_connection_enabled():
-            # DARK egress-unification (slice 2B): route this read through the
-            # SSRF-hardened driver + destination-bound allowlist. Flag-off keeps
-            # the verbatim raw-urllib path below.
-            return _read_for_commit_via_connection(
-                repository=repository,
-                intended_head_sha=intended_head_sha,
-                per_page=per_page,
-                credential=credential,
-            )
-        path = (
-            f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
-            + urllib.parse.urlencode({"per_page": per_page})
+        # The PRs-for-commit read always egresses through the SSRF-hardened driver +
+        # destination-bound github allowlist (channel-agnostic-outbound: one egress
+        # path, no legacy urllib fallback).
+        return _read_for_commit_via_connection(
+            repository=repository,
+            intended_head_sha=intended_head_sha,
+            per_page=per_page,
+            credential=credential,
         )
-        outbound = urllib.request.Request(
-            f"https://api.github.com{path}",
-            method="GET",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {credential}",
-                "User-Agent": "tinyassets-outbound-broker/1.0",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
-        try:
-            with urllib.request.urlopen(outbound, timeout=30) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            TimeoutError,
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-        ) as exc:
-            raise ProxyRequestError("GitHub destination read failed") from exc
-        if not isinstance(payload, list):
-            raise ProxyRequestError("GitHub destination returned an invalid response")
-        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1318,11 +1272,11 @@ def _oauth1a_authorization(
 ) -> str:
     """OAuth 1.0a HMAC-SHA1 ``Authorization`` built INSIDE the child (Twitter).
 
-    Lifted verbatim from ``effectors/twitter_post._oauth_header`` (the migration
-    ORACLE) so the general primitive signs a byte-identical header, but reading
-    the four OAuth secrets from the typed ``ConnectionSecretBundle`` — the auth
-    material is applied where the credential already legitimately lives, never at
-    the adapter. The bundle is ``{api_key, api_secret, access_token,
+    The algorithm is the standard OAuth 1.0a HMAC-SHA1 signer (its byte-identical
+    reference oracle is pinned in ``tests/test_outbound_channel_migration.py``), but
+    it reads the four OAuth secrets from the typed ``ConnectionSecretBundle`` — the
+    auth material is applied where the credential already legitimately lives, never
+    at the adapter. The bundle is ``{api_key, api_secret, access_token,
     access_token_secret}``; a missing member fails closed via ``bundle.get``.
     """
     oauth_params = {
@@ -2288,9 +2242,9 @@ def _execute_pinned_https_request(
         raise SsrfValidationError("outbound request exceeded the total deadline")
     if response is None:
         # Raised OUTSIDE the except block on purpose: `raise ... from None` still
-        # leaves ``__context__`` populated (readable via ``exc.__context__`` —
-        # the slack_transport.py:89 leak, where a URLError/BadStatusLine can
-        # quote the reflected Authorization header). Raising here clears it.
+        # leaves ``__context__`` populated (readable via ``exc.__context__`` — the
+        # Authorization-echo leak class, where a URLError/BadStatusLine can quote
+        # the reflected Authorization header). Raising here clears it.
         raise ProxyRequestError("outbound request failed at destination")
 
     # Collect the sanitized result (or a bound-violation reason) inside the

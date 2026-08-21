@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import urllib.error
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -49,6 +48,7 @@ from tinyassets.storage.external_write_receipts import (
     lookup_receipt,
     record_receipt,
 )
+from tinyassets.storage.outbound_connections import ProxyRequestError
 
 _DESTINATION = "Jonnyton/TinyAssets"
 _HEAD_BRANCH = "auto/loop-2/cycle-001"
@@ -608,8 +608,8 @@ def test_gh_not_installed_and_api_unavailable_returns_structured_error(
             side_effect=FileNotFoundError("gh"),
         ),
         patch(
-            "tinyassets.effectors.github_pr.urllib.request.urlopen",
-            side_effect=urllib.error.URLError("offline"),
+            "tinyassets.effectors.github_pr.github_send_via_connection",
+            side_effect=ProxyRequestError("offline"),
         ),
     ):
         result = run_github_pr_effector(
@@ -629,41 +629,35 @@ def test_gh_not_installed_falls_back_to_github_api(
     _open_all_gates(universe_dir, monkeypatch)
     packet = _make_packet()
 
-    class FakeResponse:
-        headers = {}
-
-        def __init__(self, payload: dict):
-            self._payload = payload
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(self._payload).encode("utf-8")
-
     requests = []
 
-    def fake_urlopen(req, timeout):
-        requests.append((req, timeout, req.data))
-        if req.full_url.endswith("/pulls"):
-            body = json.loads(req.data.decode("utf-8"))
-            assert body["title"] == packet["payload"]["title"]
-            assert body["base"] == "main"
-            assert body["head"] == _HEAD_BRANCH
-            assert body["draft"] is True
-            assert req.headers["Authorization"] == "Bearer tok"
-            return FakeResponse({
-                "html_url": "https://github.com/Jonnyton/TinyAssets/pull/5678",
-                "number": 5678,
-            })
-        if req.full_url.endswith("/issues/5678/labels"):
-            body = json.loads(req.data.decode("utf-8"))
-            assert body == {"labels": ["writer:loop-2"]}
-            return FakeResponse({"labels": []})
-        raise AssertionError(f"unexpected URL {req.full_url}")
+    def fake_send(*, method, path, body, capability_token, destination):
+        # The PR-create + labels calls route through the ONE SSRF-hardened driver
+        # (github_send_via_connection); the Bearer token is applied INSIDE the
+        # driver, so here we assert the token FLOWS in (capability_token) and the
+        # request body/path are correct, and return the driver's sanitized shape.
+        requests.append({"method": method, "path": path, "body": body})
+        if path.endswith("/pulls"):
+            parsed = json.loads(body)
+            assert parsed["title"] == packet["payload"]["title"]
+            assert parsed["base"] == "main"
+            assert parsed["head"] == _HEAD_BRANCH
+            assert parsed["draft"] is True
+            assert capability_token == "tok"
+            return {
+                "status": 200,
+                "reason": "",
+                "headers": {},
+                "body": json.dumps({
+                    "html_url": "https://github.com/Jonnyton/TinyAssets/pull/5678",
+                    "number": 5678,
+                }),
+            }
+        if path.endswith("/issues/5678/labels"):
+            parsed = json.loads(body)
+            assert parsed == {"labels": ["writer:loop-2"]}
+            return {"status": 200, "reason": "", "headers": {}, "body": json.dumps({"labels": []})}
+        raise AssertionError(f"unexpected path {path}")
 
     with (
         _patch_materialize(),
@@ -671,7 +665,7 @@ def test_gh_not_installed_falls_back_to_github_api(
             "tinyassets.effectors.github_pr.subprocess.run",
             side_effect=FileNotFoundError("gh"),
         ) as mock_run,
-        patch("tinyassets.effectors.github_pr.urllib.request.urlopen", fake_urlopen),
+        patch("tinyassets.effectors.github_pr.github_send_via_connection", fake_send),
     ):
         result = run_github_pr_effector(
             node_id="emit",

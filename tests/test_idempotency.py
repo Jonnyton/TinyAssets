@@ -400,7 +400,7 @@ def test_system_identity_mode_fails_loudly_without_durable_fields(tmp_path):
     ("module_name", "reconciliation_supported"),
     [
         ("tinyassets.effectors.github_pr", False),
-        ("tinyassets.effectors.twitter_post", False),
+        ("tinyassets.effectors.outbound_channel_adapter", False),
         ("tinyassets.effectors.wiki_write_back", True),
         ("tinyassets.effectors.windows_desktop", False),
     ],

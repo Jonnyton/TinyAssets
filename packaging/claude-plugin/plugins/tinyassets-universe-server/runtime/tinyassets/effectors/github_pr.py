@@ -82,6 +82,7 @@ from __future__ import annotations
 import base64
 import email.message
 import hashlib
+import importlib
 import io
 import json
 import logging
@@ -92,7 +93,6 @@ import subprocess
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -106,7 +106,6 @@ from tinyassets.effectors.authority import (
     resolve_soul_effect_authority,
 )
 from tinyassets.effectors.outbound_channel_adapter import (
-    github_outbound_via_connection_enabled,
     github_send_via_connection,
 )
 from tinyassets.storage.outbound_connections import (
@@ -1107,15 +1106,16 @@ def _connection_http_error(
     )
 
 
-def _github_api_request_via_connection(
+def _github_api_request(
     *, path: str, capability_token: str, body: dict[str, Any], destination: str
 ) -> dict[str, Any]:
-    """Flag-ON POST via the credential-blind driver — reproduces ``_github_api_``
-    ``request``'s EXACT semantics: return the parsed JSON on 2xx; raise
-    ``urllib.error.HTTPError`` on >=400 (so callers surface ``exc.code`` + detail);
-    raise ``urllib.error.URLError`` on a transport/allowlist refusal (so the
-    ``(URLError, TimeoutError, OSError)`` catch fires, marking the outcome
-    ambiguous). The body is a default-``json.dumps`` string so the wire bytes match.
+    """POST to the GitHub API through the credential-blind SSRF-hardened driver +
+    the destination-bound endpoint allowlist (the ONE channel-agnostic egress path).
+
+    Returns the parsed JSON on 2xx; raises ``urllib.error.HTTPError`` on non-2xx (so
+    callers surface ``exc.code`` + detail); raises ``urllib.error.URLError`` on a
+    transport/allowlist refusal (so the ``(URLError, TimeoutError, OSError)`` catch
+    fires). The body is a default-``json.dumps`` string so the wire bytes are canonical.
     """
     try:
         result = github_send_via_connection(
@@ -1129,8 +1129,8 @@ def _github_api_request_via_connection(
         raise urllib.error.URLError(f"outbound connection refused: {exc}") from None
     status = int(result["status"])
     text = result["body"]
-    # Reject every non-2xx (Codex): redirects are disabled in the driver, so a
-    # 3xx is NOT a success to feed to json.loads — only 200..299 is a real body.
+    # Redirects are disabled in the driver, so a 3xx is NOT a success to parse —
+    # only 200..299 carries a real body.
     if not 200 <= status < 300:
         raise _connection_http_error(
             path=path, status=status, reason=str(result.get("reason", "")), text=text
@@ -1138,54 +1138,23 @@ def _github_api_request_via_connection(
     return json.loads(text)
 
 
-def _github_api_request(
-    *,
-    path: str,
-    capability_token: str,
-    body: dict[str, Any],
-    destination: str,
-) -> dict[str, Any]:
-    if github_outbound_via_connection_enabled():
-        return _github_api_request_via_connection(
-            path=path,
-            capability_token=capability_token,
-            body=body,
-            destination=destination,
-        )
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        f"{_GITHUB_API}{path}",
-        data=data,
-        method="POST",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {capability_token}",
-            "Content-Type": "application/json",
-            "User-Agent": "tinyassets-github-pr-effector/1.0",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=_GH_PR_TIMEOUT_S) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _git_data_api_via_connection(
+def _git_data_api(
     *,
     method: str,
     path: str,
     capability_token: str,
-    body: dict[str, Any] | None,
     destination: str,
+    body: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any] | None]:
-    """Flag-ON Git-Data call via the credential-blind driver — reproduces
-    ``_git_data_api``'s ``(parsed, error)`` contract byte-for-byte.
+    """Call the GitHub Git Data / REST API through the credential-blind SSRF-hardened
+    driver + the destination-bound allowlist (the ONE channel-agnostic egress path).
 
-    A >=400 status maps to ``{"http_status": status, "detail": body[:400]}``
-    (the driver already decoded the body with ``errors="replace"``, exactly as the
-    legacy ``exc.read().decode(..., errors="replace")[:400]``), preserving the
-    BUG-111 distinct-error_kind behavior (a 401/403/404 stays a scope failure via
-    ``_scope_or``). A transport/allowlist refusal maps to ``http_status=None`` (the
-    legacy URLError/OSError branch), so ``_scope_or`` keeps the step's own kind.
+    Returns ``(parsed, error)``. On success ``error`` is ``None`` and ``parsed`` is
+    the decoded JSON (``{}`` for empty bodies). On failure ``parsed`` is ``None`` and
+    ``error`` is ``{"http_status": int|None, "detail": str}`` so the caller maps it to
+    a step-specific ``error_kind`` (BUG-111: never collapse the materialize path into
+    a single ``gh_nonzero_exit``; a 401/403/404 stays a scope failure via
+    ``_scope_or``). A transport/allowlist refusal maps to ``http_status=None``.
     """
     try:
         result = github_send_via_connection(
@@ -1199,65 +1168,12 @@ def _git_data_api_via_connection(
         return None, {"http_status": None, "detail": str(exc)}
     status = int(result["status"])
     text = result["body"]
-    # Reject every non-2xx (Codex): a 3xx (redirects disabled) is a failure with a
-    # status, not a body to parse; preserve the status so _scope_or keeps its
-    # BUG-111 401/403/404 scope-upgrade on the real error codes.
+    # Redirects are disabled in the driver, so a 3xx is a failure with a status, not
+    # a body to parse; preserve the status so _scope_or keeps its BUG-111 upgrade.
     if not 200 <= status < 300:
         return None, {"http_status": status, "detail": text[:400]}
     try:
         return (json.loads(text) if text.strip() else {}), None
-    except (TypeError, ValueError) as exc:
-        return None, {"http_status": None, "detail": f"parse error: {exc}"}
-
-
-def _git_data_api(
-    *,
-    method: str,
-    path: str,
-    capability_token: str,
-    body: dict[str, Any] | None = None,
-    destination: str,
-) -> tuple[Any, dict[str, Any] | None]:
-    """Call the GitHub Git Data / REST API. Returns ``(parsed, error)``.
-
-    On success ``error`` is ``None`` and ``parsed`` is the decoded JSON
-    (``{}`` for empty bodies). On failure ``parsed`` is ``None`` and
-    ``error`` is ``{"http_status": int|None, "detail": str}`` so the
-    caller can map it to a step-specific ``error_kind`` (BUG-111 review
-    constraint 3: never collapse the materialize path into a single
-    ``gh_nonzero_exit``). A 401/403/404 on a write step signals a token
-    scope problem (constraint 1: Contents write must be present).
-    """
-    if github_outbound_via_connection_enabled():
-        return _git_data_api_via_connection(
-            method=method,
-            path=path,
-            capability_token=capability_token,
-            body=body,
-            destination=destination,
-        )
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(
-        f"{_GITHUB_API}{path}",
-        data=data,
-        method=method,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {capability_token}",
-            "Content-Type": "application/json",
-            "User-Agent": "tinyassets-github-pr-effector/1.0",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=_GH_PR_TIMEOUT_S) as resp:
-            raw = resp.read().decode("utf-8")
-            return (json.loads(raw) if raw.strip() else {}), None
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:400]
-        return None, {"http_status": exc.code, "detail": detail}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return None, {"http_status": None, "detail": str(exc)}
     except (TypeError, ValueError) as exc:
         return None, {"http_status": None, "detail": f"parse error: {exc}"}
 
@@ -2419,6 +2335,77 @@ def run_github_pr_effector(
     return evidence
 
 
+#: Registry-driven dispatch (design.md D1): a channel is a DATA entry, not an
+#: ``if sink == ...`` branch. Each value is
+#: ``(module_path, attribute, passes_cloud_effect_session)``, resolved lazily so
+#: the module graph stays acyclic (the adapter and these effectors import each
+#: other) — matching the previous ladder's per-branch imports. ``github_merge`` is
+#: DELIBERATELY absent: it must run AFTER the PR it merges lands, so
+#: ``effectors/__init__.run_effects_for_branch`` sequences it separately rather than
+#: fold it here (design.md §5.3). ``wiki_write_back`` (internal, no external HTTP)
+#: fits the uniform signature and is folded in.
+_EFFECTOR_REGISTRY: dict[str, tuple[str, str, bool]] = {
+    EXTERNAL_WRITE_SINK_GITHUB_PR: (
+        "tinyassets.effectors.github_pr",
+        "run_github_pr_effector",
+        True,
+    ),
+    "host_local.windows_desktop.install_classic_game": (
+        "tinyassets.effectors.windows_desktop",
+        "run_windows_desktop_effector",
+        False,
+    ),
+    "wiki_write_back": (
+        "tinyassets.effectors.wiki_write_back",
+        "run_wiki_write_back_effector",
+        False,
+    ),
+    "twitter_post": (
+        "tinyassets.effectors.outbound_channel_adapter",
+        "run_twitter_post_effector",
+        False,
+    ),
+}
+
+
+def _dispatch_one_effect(
+    *,
+    sink: str,
+    node_id: str,
+    output_keys: list[str],
+    run_state: dict[str, Any],
+    base_path: str | Path | None,
+    run_id: str,
+    cloud_effect_session: Any | None,
+) -> dict[str, Any]:
+    """Dispatch ONE declared effect through the registry. Never raises."""
+    entry = _EFFECTOR_REGISTRY.get(sink)
+    if entry is None:
+        return {
+            "error": f"unknown effect sink '{sink}'",
+            "error_kind": "unknown_sink",
+        }
+    module_path, attribute, passes_cloud = entry
+    try:
+        effector = getattr(importlib.import_module(module_path), attribute)
+        kwargs: dict[str, Any] = {
+            "node_id": node_id,
+            "output_keys": output_keys,
+            "run_state": run_state,
+            "base_path": base_path,
+            "run_id": run_id,
+        }
+        if passes_cloud:
+            kwargs["cloud_effect_session"] = cloud_effect_session
+        return effector(**kwargs)
+    except Exception as exc:  # defensive — never raise from the completion path
+        logger.exception("%s effector crashed for node %s", sink, node_id)
+        return {
+            "error": f"effector crashed: {exc}",
+            "error_kind": "effector_crashed",
+        }
+
+
 def run_effects_for_branch(
     *,
     branch: Any,
@@ -2432,7 +2419,8 @@ def run_effects_for_branch(
 
     Returns a dict keyed by ``node_id`` for every node that declared at
     least one effect. Each value is the evidence dict from the matching
-    effector. Nodes without ``effects`` are skipped entirely.
+    effector. Nodes without ``effects`` are skipped entirely. Dispatch is
+    registry-driven (``_EFFECTOR_REGISTRY``), not a per-sink code ladder.
 
     ``base_path`` + ``run_id`` are Phase 2 additions; when omitted the
     storage-backed gates (consent, idempotency) treat the universe as
@@ -2458,100 +2446,15 @@ def run_effects_for_branch(
         output_keys = list(getattr(node, "output_keys", None) or [])
         per_node: dict[str, Any] = {}
         for sink in effects:
-            if sink == EXTERNAL_WRITE_SINK_GITHUB_PR:
-                try:
-                    result = run_github_pr_effector(
-                        node_id=node_id,
-                        output_keys=output_keys,
-                        run_state=run_state,
-                        base_path=base_path,
-                        run_id=run_id,
-                        cloud_effect_session=cloud_effect_session,
-                    )
-                except Exception as exc:  # defensive — never raise
-                    logger.exception(
-                        "github_pr effector crashed for node %s",
-                        node_id,
-                    )
-                    result = {
-                        "error": f"effector crashed: {exc}",
-                        "error_kind": "effector_crashed",
-                    }
-                per_node[sink] = result
-            elif sink == "host_local.windows_desktop.install_classic_game":
-                try:
-                    from tinyassets.effectors.windows_desktop import (
-                        run_windows_desktop_effector,
-                    )
-
-                    result = run_windows_desktop_effector(
-                        node_id=node_id,
-                        output_keys=output_keys,
-                        run_state=run_state,
-                        base_path=base_path,
-                        run_id=run_id,
-                    )
-                except Exception as exc:  # defensive — never raise
-                    logger.exception(
-                        "windows_desktop effector crashed for node %s",
-                        node_id,
-                    )
-                    result = {
-                        "error": f"effector crashed: {exc}",
-                        "error_kind": "effector_crashed",
-                    }
-                per_node[sink] = result
-            elif sink == "wiki_write_back":
-                try:
-                    from tinyassets.effectors.wiki_write_back import (
-                        run_wiki_write_back_effector,
-                    )
-
-                    result = run_wiki_write_back_effector(
-                        node_id=node_id,
-                        output_keys=output_keys,
-                        run_state=run_state,
-                        base_path=base_path,
-                        run_id=run_id,
-                    )
-                except Exception as exc:  # defensive — never raise
-                    logger.exception(
-                        "wiki_write_back effector crashed for node %s",
-                        node_id,
-                    )
-                    result = {
-                        "error": f"effector crashed: {exc}",
-                        "error_kind": "effector_crashed",
-                    }
-                per_node[sink] = result
-            elif sink == "twitter_post":
-                try:
-                    from tinyassets.effectors.twitter_post import (
-                        run_twitter_post_effector,
-                    )
-
-                    result = run_twitter_post_effector(
-                        node_id=node_id,
-                        output_keys=output_keys,
-                        run_state=run_state,
-                        base_path=base_path,
-                        run_id=run_id,
-                    )
-                except Exception as exc:  # defensive — never raise
-                    logger.exception(
-                        "twitter_post effector crashed for node %s",
-                        node_id,
-                    )
-                    result = {
-                        "error": f"effector crashed: {exc}",
-                        "error_kind": "effector_crashed",
-                    }
-                per_node[sink] = result
-            else:
-                per_node[sink] = {
-                    "error": f"unknown effect sink '{sink}'",
-                    "error_kind": "unknown_sink",
-                }
+            per_node[sink] = _dispatch_one_effect(
+                sink=sink,
+                node_id=node_id,
+                output_keys=output_keys,
+                run_state=run_state,
+                base_path=base_path,
+                run_id=run_id,
+                cloud_effect_session=cloud_effect_session,
+            )
         if per_node:
             evidence_map[node_id] = per_node
     return evidence_map

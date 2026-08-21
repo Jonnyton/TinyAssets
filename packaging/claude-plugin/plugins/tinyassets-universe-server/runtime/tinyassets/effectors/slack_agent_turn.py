@@ -84,7 +84,7 @@ class SlackBinding:
 #: than guessing a universe.
 Resolver = Callable[[Mapping[str, Any]], SlackBinding | None]
 
-#: Posts one reply. Matches `effectors/slack_transport.build_slack_transport`.
+#: Posts one reply. Matches `outbound_channel_adapter.build_slack_transport`.
 Poster = Callable[[ReplyDestination, str], Any]
 
 

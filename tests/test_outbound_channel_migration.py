@@ -1,21 +1,29 @@
-"""Differential parity: the general-primitive path vs each channel's ORACLE.
+"""Wire-request spec for every channel that routes through the ONE adapter.
 
-Channel-agnostic-outbound tracks 2 + 5. Per design.md D6, a migration is proven by
-a SEMANTIC EQUIVALENCE MATRIX, not byte parity of the whole HTTP frame — but the
-load-bearing column is the NORMALIZED WIRE REQUEST: endpoint, method, body, and
-non-auth headers identical; auth material normalized (OAuth nonce/timestamp) but
-structurally equivalent. These tests keep each original effector VERBATIM as the
-oracle and assert the general-primitive path produces the same normalized request.
+Channel-agnostic-outbound (design.md D6). The legacy bespoke ``slack_transport`` and
+``twitter_post`` modules are GONE and there is no feature flag / legacy fallback, so
+these tests are no longer flag-ON/OFF differentials against a live oracle. They pin
+the SURVIVING invariant — the NORMALIZED WIRE REQUEST each channel puts on the wire
+through the real ``_SsrfHardenedHttpDriver`` — as the connection path's spec, asserted
+UNCONDITIONALLY: endpoint, method, body, and non-auth headers exact; auth material
+structurally equivalent (deterministic Bearer, or OAuth 1.0a modulo nonce/timestamp).
+
+For OAuth 1.0a the algorithm's executable oracle is kept VERBATIM in this file (the
+signer was lifted verbatim from the deleted ``twitter_post._oauth_header``), so the
+in-child signer is still differential-tested against a byte-identical reference.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import http.server
 import json
 import socket
 import ssl
 import threading
+import urllib.parse
 
 import pytest
 
@@ -48,7 +56,7 @@ from tinyassets.storage.outbound_connections import (
 
 
 # --------------------------------------------------------------------------- #
-# A loopback stub that records the request both paths send.
+# A loopback stub that records the request the connection path sends.
 # --------------------------------------------------------------------------- #
 class _RecordingHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -127,38 +135,10 @@ def _run_through_general_driver(stub, *, host, request, bundle, auth_scheme):
 
 
 # --------------------------------------------------------------------------- #
-# SLACK (track 2) — bearer token, spaced JSON body.
+# SLACK — bearer token, spaced JSON body. Asserted unconditionally (no oracle).
 # --------------------------------------------------------------------------- #
-def test_slack_migrated_wire_request_matches_the_oracle(stub, tmp_path):
-    from tinyassets.app_reply_authority import ReplyDestination
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.effectors.slack_transport import build_slack_transport
-
-    port = stub.server_address[1]
+def test_slack_connection_path_wire_request(stub):
     token = "xoxb-test-bot-token"
-    universe = tmp_path / "universe-1"
-    write_credential_vault(
-        universe,
-        [{
-            "credential_type": "social",
-            "service": "slack",
-            "destination": "slack-conn-1",
-            "bot_token": token,
-        }],
-    )
-
-    # ORACLE: the verbatim slack_transport effector, pointed at the stub.
-    oracle_transport = build_slack_transport(
-        universe, url=f"http://127.0.0.1:{port}/api/chat.postMessage"
-    )
-    oracle_transport(
-        ReplyDestination(provider="slack", connection_id="slack-conn-1", address="C123"),
-        "hello world",
-        thread_ts="1700000000.000001",
-    )
-    oracle = stub.recorded[-1]
-
-    # GENERAL PRIMITIVE: the same message as an http-connection request.
     migrated = _run_through_general_driver(
         stub,
         host="slack.com",
@@ -169,21 +149,70 @@ def test_slack_migrated_wire_request_matches_the_oracle(stub, tmp_path):
         auth_scheme="bearer",
     )
 
-    assert migrated["method"] == oracle["method"] == "POST"
-    assert migrated["path"] == oracle["path"] == "/api/chat.postMessage"
-    assert migrated["body"] == oracle["body"]  # byte-identical spaced JSON
-    assert migrated["headers"]["content-type"] == oracle["headers"]["content-type"]
-    # Bearer auth is deterministic: byte-identical Authorization.
-    assert migrated["headers"]["authorization"] == oracle["headers"]["authorization"]
+    assert migrated["method"] == "POST"
+    assert migrated["path"] == "/api/chat.postMessage"
+    # Slack's spaced json.dumps default separators — reproduced by the builder.
+    expected_body = json.dumps(
+        {"channel": "C123", "text": "hello world", "thread_ts": "1700000000.000001"}
+    ).encode("utf-8")
+    assert migrated["body"] == expected_body
+    assert migrated["headers"]["content-type"] == "application/json; charset=utf-8"
+    # Bearer auth is deterministic: byte-identical Authorization, driver-applied.
     assert migrated["headers"]["authorization"] == f"Bearer {token}"
 
 
 # --------------------------------------------------------------------------- #
-# TWITTER (track 5) — OAuth 1.0a signature + compact JSON body.
+# TWITTER — OAuth 1.0a signature + compact JSON body.
 # --------------------------------------------------------------------------- #
+def _percent(value: str) -> str:
+    return urllib.parse.quote(str(value), safe="~-._")
+
+
+def _reference_oauth1a(*, method, url, api_key, api_secret, access_token, access_token_secret):
+    """VERBATIM OAuth 1.0a oracle (was ``twitter_post._oauth_header``).
+
+    Kept in the test suite as the executable spec the in-child signer
+    (``_oauth1a_authorization``) is differential-tested against — the deleted
+    effector can no longer serve as the live oracle, so its algorithm lives here.
+    """
+    import secrets as _secrets
+    import time as _time
+
+    oauth_params = {
+        "oauth_consumer_key": api_key,
+        "oauth_nonce": _secrets.token_urlsafe(24),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(_time.time())),
+        "oauth_token": access_token,
+        "oauth_version": "1.0",
+    }
+    parsed = urllib.parse.urlparse(url)
+    base_url = urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
+    )
+    query_params = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    signature_params = {**query_params, **oauth_params}
+    encoded_pairs = [
+        f"{_percent(key)}={_percent(value)}"
+        for key, value in sorted(signature_params.items())
+    ]
+    normalized = "&".join(encoded_pairs)
+    base_string = "&".join([method.upper(), _percent(base_url), _percent(normalized)])
+    signing_key = f"{_percent(api_secret)}&{_percent(access_token_secret)}"
+    digest = hmac.new(
+        signing_key.encode("utf-8"), base_string.encode("utf-8"), hashlib.sha1
+    ).digest()
+    oauth_params["oauth_signature"] = base64.b64encode(digest).decode("ascii")
+    rendered = ", ".join(
+        f'{_percent(key)}="{_percent(value)}"'
+        for key, value in sorted(oauth_params.items())
+    )
+    return f"OAuth {rendered}"
+
+
 def _pin_oauth(monkeypatch):
-    # Pin nonce + timestamp in BOTH modules so the OAuth signatures are directly
-    # byte-comparable (normalizing exactly the two fields D6 allows to vary).
+    # Pin nonce + timestamp so the signatures are directly byte-comparable
+    # (normalizing exactly the two fields D6 allows to vary).
     import secrets as _secrets
     import time as _time
 
@@ -191,22 +220,19 @@ def _pin_oauth(monkeypatch):
     monkeypatch.setattr(_time, "time", lambda: 1_700_000_000.0)
 
 
-def test_twitter_oauth1a_signature_is_byte_identical_to_the_oracle(monkeypatch):
-    # The primitive's oauth1a handler is lifted verbatim from twitter_post; with a
-    # pinned nonce/timestamp, the SAME url + method + credentials yield a
-    # byte-identical Authorization (auth-material parity, design.md D6).
-    from tinyassets.effectors import twitter_post
-
+def test_twitter_oauth1a_signature_matches_the_verbatim_reference(monkeypatch):
+    # With a pinned nonce/timestamp, the in-child signer yields a byte-identical
+    # Authorization to the verbatim reference algorithm (auth-material parity, D6).
     _pin_oauth(monkeypatch)
-    creds = twitter_post.TwitterCredentials(
+    url = "https://api.x.com/2/tweets"
+    reference_header = _reference_oauth1a(
+        method="POST",
+        url=url,
         api_key="ck-consumer-key",
         api_secret="cs-consumer-secret",
         access_token="at-access-token",
         access_token_secret="ats-access-token-secret",
-        source="test",
     )
-    url = "https://api.x.com/2/tweets"
-    oracle_header = twitter_post._oauth_header(method="POST", url=url, credentials=creds)
     migrated_header = _oauth1a_authorization(
         ConnectionSecretBundle(
             api_key="ck-consumer-key",
@@ -217,34 +243,16 @@ def test_twitter_oauth1a_signature_is_byte_identical_to_the_oracle(monkeypatch):
         method="POST",
         url=url,
     )
-    assert migrated_header == oracle_header
+    assert migrated_header == reference_header
     assert migrated_header.startswith("OAuth ")
+    assert 'oauth_nonce="PINNED-NONCE-VALUE"' in migrated_header
+    assert 'oauth_timestamp="1700000000"' in migrated_header
 
 
-def test_twitter_migrated_wire_request_matches_the_oracle(stub, monkeypatch):
-    # Wire request (method/path/body/non-auth headers) parity vs the verbatim
-    # twitter_post._post_tweet oracle, both pointed at the loopback stub.
-    from tinyassets.effectors import twitter_post
-
-    port = stub.server_address[1]
-    monkeypatch.setattr(
-        twitter_post, "_TWEETS_URL", f"http://127.0.0.1:{port}/2/tweets"
-    )
+def test_twitter_connection_path_wire_request(stub):
     # Distinctive, non-colliding secret values (short tokens like "at" would
-    # substring-match the stub's JSON and trip the response scrub — a test
-    # artifact, not a real leak; real OAuth secrets are long random strings).
-    creds = twitter_post.TwitterCredentials(
-        api_key="consumer-key-9f3ac1",
-        api_secret="consumer-secret-9f3ac1",
-        access_token="access-token-9f3ac1",
-        access_token_secret="access-token-secret-9f3ac1",
-        source="test",
-    )
-    twitter_post._post_tweet(
-        text="hello x", reply_to_tweet_id="", quote_tweet_id="", credentials=creds
-    )
-    oracle = stub.recorded[-1]
-
+    # substring-match the stub's JSON and trip the response scrub — a test artifact,
+    # not a real leak; real OAuth secrets are long random strings).
     oauth_bundle = ConnectionSecretBundle(
         api_key="consumer-key-9f3ac1",
         api_secret="consumer-secret-9f3ac1",
@@ -259,28 +267,27 @@ def test_twitter_migrated_wire_request_matches_the_oracle(stub, monkeypatch):
         auth_scheme="oauth1a",
     )
 
-    assert migrated["method"] == oracle["method"] == "POST"
-    assert migrated["path"] == oracle["path"] == "/2/tweets"
-    assert migrated["body"] == oracle["body"]  # byte-identical compact JSON
-    for header in ("accept", "content-type", "user-agent"):
-        assert migrated["headers"][header] == oracle["headers"][header]
-    # Both carry an OAuth 1.0a Authorization (nonce/timestamp differ live; the
+    assert migrated["method"] == "POST"
+    assert migrated["path"] == "/2/tweets"
+    # Compact JSON body, reproduced by the builder.
+    assert migrated["body"] == json.dumps({"text": "hello x"}, separators=(",", ":")).encode()
+    assert migrated["headers"]["accept"] == "application/json"
+    assert migrated["headers"]["content-type"] == "application/json"
+    assert migrated["headers"]["user-agent"] == "tinyassets-twitter-post-effector/1.0"
+    # OAuth 1.0a Authorization signed in the driver (nonce/timestamp differ live;
     # byte-identical signer is proven in the dedicated auth-parity test above).
     assert migrated["headers"]["authorization"].startswith("OAuth ")
-    assert oracle["headers"]["authorization"].startswith("OAuth ")
 
 
 # --------------------------------------------------------------------------- #
-# GITHUB (track 3) — multi-call PR transaction, bearer token, spaced JSON body.
+# GITHUB — multi-call PR transaction, bearer token, spaced JSON body.
 #
-# The oracle is github_pr's OWN request construction, driven end-to-end against
-# a stateful loopback GitHub so no expected request is ever hand-written:
-#   * _materialize_branch        -> base-ref read, base-commit read, blob, tree,
-#                                   commit, ref (the git-data write sequence).
-#   * _invoke_github_api_pr_create -> PR create + labels.
-#   * _fetch_file_at_ref         -> contents read.
-# Each recorded wire request is compared to the corresponding builder driven
-# through the REAL _SsrfHardenedHttpDriver with the REAL GITHUB_ALLOWED_ENDPOINTS.
+# github_pr routes _github_api_request / _git_data_api through the ONE SSRF-hardened
+# driver UNCONDITIONALLY (no flag). These tests drive github_pr's REAL request
+# construction end-to-end against a stateful loopback GitHub (the driver is pointed
+# at the loopback socket via injected seams) and compare every recorded wire request
+# to the corresponding standalone builder driven through the SAME real driver + the
+# REAL GITHUB_ALLOWED_ENDPOINTS.
 # --------------------------------------------------------------------------- #
 _GH_TOKEN = "ghs_testcapabilitytoken_notinresponses"
 _GH_OWNER_REPO = "octocat/hello-world"
@@ -374,7 +381,7 @@ def github_stub():
 
 class _GitHubStatusHandler(http.server.BaseHTTPRequestHandler):
     """Like the recorder, but returns ``server.status_for(method, path)`` — used to
-    force a 4xx on a chosen step so the flag-ON/OFF error-shape mapping is proven.
+    force a 4xx on a chosen step so the error-shape mapping is proven.
     """
 
     protocol_version = "HTTP/1.1"
@@ -391,8 +398,7 @@ class _GitHubStatusHandler(http.server.BaseHTTPRequestHandler):
         )
         status = self.server.status_for(self.command, self.path)  # type: ignore[attr-defined]
         if status >= 400:
-            # A FIXED error body so flag-ON (driver replace-decode) and flag-OFF
-            # (exc.read() replace-decode) yield byte-identical detail strings.
+            # A FIXED error body so the driver's replace-decode yields a stable detail.
             payload = b'{"message":"Resource not accessible by integration"}'
         else:
             payload = json.dumps(_github_route(self.command, self.path)).encode("utf-8")
@@ -421,6 +427,31 @@ def github_stub_status():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _install_loopback_driver(monkeypatch, port):
+    """Point github_pr's UNCONDITIONAL driver at the loopback stub.
+
+    ``github_send_via_connection`` / the broker read build ``_SsrfHardenedHttpDriver()``
+    with production defaults (real DNS/TLS). Replace that constructor in BOTH modules
+    with a factory that injects the test seams (loopback socket, pass-through TLS,
+    port-443 allowlist), so the real driver + real allowlist run against the stub.
+    """
+
+    def open_socket(_address, timeout, _src):
+        return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+
+    def factory():
+        return _SsrfHardenedHttpDriver(
+            resolver=lambda _h, _p: ["127.0.0.1"],
+            validator=lambda addr: addr,
+            open_socket=open_socket,
+            ssl_context=_PassThroughTLS(),
+            allowed_ports=frozenset({443}),
+        )
+
+    monkeypatch.setattr(outbound_channel_adapter, "_SsrfHardenedHttpDriver", factory)
+    monkeypatch.setattr(outbound_connections, "_SsrfHardenedHttpDriver", factory)
 
 
 def _run_github_through_driver(github_stub, request: dict) -> dict:
@@ -461,13 +492,13 @@ def _assert_github_wire_identical(migrated: dict, oracle: dict) -> None:
     assert migrated["headers"]["authorization"] == f"Bearer {_GH_TOKEN}"
 
 
-def test_github_git_data_sequence_matches_the_oracle(github_stub, monkeypatch):
-    # Drive github_pr's REAL materialize sequence against the stub, then compare
-    # every recorded wire request to the matching builder.
+def test_github_git_data_sequence_matches_the_builders(github_stub, monkeypatch):
+    # Drive github_pr's REAL materialize sequence through the driver against the stub,
+    # then compare every recorded wire request to the matching standalone builder.
     from tinyassets.effectors import github_pr
 
     port = github_stub.server_address[1]
-    monkeypatch.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
+    _install_loopback_driver(monkeypatch, port)
 
     result = github_pr._materialize_branch(
         changes_json={_GH_CHANGE_PATH: _GH_CHANGE_CONTENT},
@@ -554,13 +585,13 @@ def test_github_git_data_sequence_matches_the_oracle(github_stub, monkeypatch):
     )
 
 
-def test_github_pr_create_and_labels_match_the_oracle(github_stub, monkeypatch):
-    # github_pr's REAL PR-create builder; the stub returns html_url+number so the
+def test_github_pr_create_and_labels_match_the_builders(github_stub, monkeypatch):
+    # github_pr's REAL PR-create path; the stub returns html_url+number so the
     # labels call fires too.
     from tinyassets.effectors import github_pr
 
     port = github_stub.server_address[1]
-    monkeypatch.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
+    _install_loopback_driver(monkeypatch, port)
 
     labels = ["cloud", "automation"]
     github_pr._invoke_github_api_pr_create(
@@ -603,14 +634,14 @@ def test_github_pr_create_and_labels_match_the_oracle(github_stub, monkeypatch):
     )
 
 
-def test_github_contents_read_matches_the_oracle(github_stub, monkeypatch):
-    # github_pr's REAL contents-read builder (_fetch_file_at_ref computes the
-    # quoting + path, then calls _git_data_api). The GET is recorded before the
-    # response is validated, so a plain stub response suffices.
+def test_github_contents_read_matches_the_builder(github_stub, monkeypatch):
+    # github_pr's REAL contents-read path (_fetch_file_at_ref computes the quoting +
+    # path, then calls _git_data_api). The GET is recorded before the response is
+    # validated, so a plain stub response suffices.
     from tinyassets.effectors import github_pr
 
     port = github_stub.server_address[1]
-    monkeypatch.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
+    _install_loopback_driver(monkeypatch, port)
 
     github_pr._fetch_file_at_ref(
         owner_repo=_GH_OWNER_REPO,
@@ -629,6 +660,144 @@ def test_github_contents_read_matches_the_oracle(github_stub, monkeypatch):
         ),
         oracle,
     )
+
+
+def test_github_contents_read_subdir_wire_and_result(github_stub, monkeypatch):
+    # Contents read of a SUBDIRECTORY file routes through the {path+} rest tail
+    # (slice 2A). Wire request + parsed result asserted unconditionally.
+    from tinyassets.effectors import github_pr
+
+    port = github_stub.server_address[1]
+    _install_loopback_driver(monkeypatch, port)
+
+    contents, err = github_pr._fetch_file_at_ref(
+        owner_repo=_GH_OWNER_REPO,
+        path="src/pkg/module.py",
+        ref=_GH_BASE_BRANCH,
+        capability_token=_GH_TOKEN,
+    )
+    assert err is None and contents == "file body\n"
+    assert len(github_stub.recorded) == 1
+    req = github_stub.recorded[0]
+    assert req["path"] == "/repos/octocat/hello-world/contents/src/pkg/module.py?ref=main"
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_contents_read_request(
+                owner_repo=_GH_OWNER_REPO, path="src/pkg/module.py", ref=_GH_BASE_BRANCH
+            ),
+        ),
+        req,
+    )
+
+
+def test_github_read_for_commit_routes_through_driver(github_stub, monkeypatch):
+    # The broker's OWN read_for_commit path (outbound_connections): it routes through
+    # the SSRF driver + destination-bound allowlist UNCONDITIONALLY and returns the
+    # parsed PR list, sending the broker's exact wire request (broker User-Agent, NO
+    # Content-Type — read_for_commit sends no body).
+    port = github_stub.server_address[1]
+    driver = outbound_connections._ProductionGitHubNetworkDriver()
+    _install_loopback_driver(monkeypatch, port)
+    payload = driver(
+        credential=_GH_TOKEN,
+        provider="github",
+        destination=_GH_OWNER_REPO,
+        verb="pull_requests:read_for_commit",
+        request={
+            "repository": _GH_OWNER_REPO,
+            "intended_head_sha": "a" * 40,
+            "per_page": 30,
+        },
+    )
+    assert isinstance(payload, list)
+    assert len(github_stub.recorded) == 1
+    req = github_stub.recorded[-1]
+    assert req["method"] == "GET"
+    assert req["path"].endswith(f"/commits/{'a' * 40}/pulls?per_page=30")
+    assert req["path"].startswith(f"/repos/{_GH_OWNER_REPO}/commits/")
+    assert req["headers"]["authorization"] == f"Bearer {_GH_TOKEN}"
+    assert req["headers"]["user-agent"] == "tinyassets-outbound-broker/1.0"
+    assert req["headers"]["accept"] == "application/vnd.github+json"
+    # read_for_commit sends no body, so no Content-Type — the driver must not add one.
+    assert "content-type" not in req["headers"]
+
+
+def test_github_error_shape_preserves_bug111_scope_upgrade(github_stub_status, monkeypatch):
+    # A 403 on the base-ref lookup maps back to _git_data_api's (parsed, error) shape
+    # and preserves BUG-111's 401/403/404 scope upgrade (github_contents_write_denied).
+    from tinyassets.effectors import github_pr
+
+    github_stub_status.status_for = lambda method, path: (  # type: ignore[attr-defined]
+        403 if "/git/ref/heads/" in path else 200
+    )
+    port = github_stub_status.server_address[1]
+    _install_loopback_driver(monkeypatch, port)
+    result = github_pr._materialize_branch(
+        changes_json={_GH_CHANGE_PATH: _GH_CHANGE_CONTENT},
+        destination=_GH_OWNER_REPO,
+        base_branch=_GH_BASE_BRANCH,
+        head_branch=_GH_HEAD_BRANCH,
+        commit_message=_GH_COMMIT_MESSAGE,
+        capability_token=_GH_TOKEN,
+        publish_ref=True,
+    )
+    assert result["error_kind"] == "github_contents_write_denied"
+
+
+def test_github_pr_create_http_error_shape(github_stub_status, monkeypatch):
+    # A 422 on the PR-create POST exercises _github_api_request's SYNTHESIZED
+    # urllib.error.HTTPError (the driver returns status/body; the caller catches
+    # HTTPError + reads exc.code). It maps to a github_api_error result naming 422.
+    from tinyassets.effectors import github_pr
+
+    github_stub_status.status_for = lambda method, path: (  # type: ignore[attr-defined]
+        422 if path.endswith("/pulls") else 200
+    )
+    port = github_stub_status.server_address[1]
+    _install_loopback_driver(monkeypatch, port)
+    result = github_pr._invoke_github_api_pr_create(
+        payload={
+            "title": "Add a thing",
+            "body": "PR body",
+            "base_branch": _GH_BASE_BRANCH,
+            "head_branch": _GH_HEAD_BRANCH,
+            "labels": [],
+            "draft": True,
+        },
+        destination=_GH_OWNER_REPO,
+        capability_token=_GH_TOKEN,
+    )
+    assert result["error_kind"] == "github_api_error"
+    assert "422" in result["error"]
+
+
+def test_github_pr_create_refusal_marked_ambiguous(monkeypatch):
+    # A driver refusal (SsrfValidationError/ProxyRequestError) maps to
+    # urllib.error.URLError so _invoke_github_api_pr_create marks the outcome
+    # ambiguous — the same branch a real network loss takes.
+    from tinyassets.effectors import github_pr
+
+    def factory():
+        def _boom(**_kwargs):
+            raise outbound_connections.ProxyRequestError("destination unreachable")
+        return _boom
+
+    monkeypatch.setattr(outbound_channel_adapter, "_SsrfHardenedHttpDriver", factory)
+    result = github_pr._invoke_github_api_pr_create(
+        payload={
+            "title": "Add a thing",
+            "body": "PR body",
+            "base_branch": _GH_BASE_BRANCH,
+            "head_branch": _GH_HEAD_BRANCH,
+            "labels": [],
+            "draft": True,
+        },
+        destination=_GH_OWNER_REPO,
+        capability_token=_GH_TOKEN,
+    )
+    assert result["error_kind"] == "github_api_error"
+    assert result.get("outcome_ambiguous") is True
 
 
 def test_github_allowlist_is_storage_valid_and_covers_the_pr_flow():
@@ -664,8 +833,7 @@ def test_github_allowlist_is_storage_valid_and_covers_the_pr_flow():
 
 def test_github_allowlist_is_destination_bound_to_one_repo():
     # A token scoped to octocat/hello-world can ONLY egress to /repos/octocat/
-    # hello-world/* — every attempt at another repo is refused (Codex finding 2:
-    # the slice-1 [\w.-]+ placeholders permitted ANY repo; that hole is closed).
+    # hello-world/* — every attempt at another repo is refused (Codex finding 2).
     eps = github_allowed_endpoints(_GH_OWNER_REPO)
 
     def refused(method, url):
@@ -684,8 +852,8 @@ def test_github_allowlist_is_destination_bound_to_one_repo():
 
 
 def test_github_allowlist_rest_tails_and_traversal_defenses():
-    # The {path+}/{ref+} rest tails ALLOW real multi-segment inputs but resist
-    # every traversal / encoded-separator / host-escape (slice 2A contract).
+    # The {path+}/{ref+} rest tails ALLOW real multi-segment inputs but resist every
+    # traversal / encoded-separator / host-escape (slice 2A contract).
     eps = github_allowed_endpoints(_GH_OWNER_REPO)
 
     def allowed(method, url):
@@ -740,293 +908,3 @@ def test_github_allowlist_refuses_non_ascii_repo():
     # literals. A non-ASCII owner/repo fails closed with a clear error (Codex).
     with pytest.raises(SsrfValidationError):
         github_allowed_endpoints("café/repo")
-
-
-# --------------------------------------------------------------------------- #
-# GITHUB slice 2B — flag-ON vs flag-OFF END-TO-END differential parity.
-#
-# Drive github_pr's OWN dispatch (the SAME operation) twice against the SAME
-# stateful loopback: once flag-OFF (legacy raw urllib) and once flag-ON (through
-# the REAL _SsrfHardenedHttpDriver + REAL github_allowed_endpoints). Assert BOTH
-# the recorded wire requests AND the parsed results / error shapes are identical
-# — that is the proof the DARK wiring is transparent.
-# --------------------------------------------------------------------------- #
-def _install_loopback_driver(monkeypatch, port):
-    """Point the flag-ON path's driver at the loopback stub.
-
-    ``github_send_via_connection`` builds ``_SsrfHardenedHttpDriver()`` with
-    production defaults (real DNS/TLS). Replace that constructor in BOTH modules
-    with a factory that injects the test seams (loopback socket, pass-through TLS,
-    port-443 allowlist), so the real driver + real allowlist run against the stub.
-    """
-
-    def open_socket(_address, timeout, _src):
-        return socket.create_connection(("127.0.0.1", port), timeout=timeout)
-
-    def factory():
-        return _SsrfHardenedHttpDriver(
-            resolver=lambda _h, _p: ["127.0.0.1"],
-            validator=lambda addr: addr,
-            open_socket=open_socket,
-            ssl_context=_PassThroughTLS(),
-            allowed_ports=frozenset({443}),
-        )
-
-    monkeypatch.setattr(outbound_channel_adapter, "_SsrfHardenedHttpDriver", factory)
-    monkeypatch.setattr(outbound_connections, "_SsrfHardenedHttpDriver", factory)
-
-
-def _run_materialize_capturing(github_stub, monkeypatch, *, flag_on):
-    from tinyassets.effectors import github_pr
-
-    port = github_stub.server_address[1]
-    github_stub.recorded.clear()
-    with monkeypatch.context() as m:
-        m.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
-        if flag_on:
-            m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-            _install_loopback_driver(m, port)
-        else:
-            m.delenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", raising=False)
-        result = github_pr._materialize_branch(
-            changes_json={_GH_CHANGE_PATH: _GH_CHANGE_CONTENT},
-            destination=_GH_OWNER_REPO,
-            base_branch=_GH_BASE_BRANCH,
-            head_branch=_GH_HEAD_BRANCH,
-            commit_message=_GH_COMMIT_MESSAGE,
-            capability_token=_GH_TOKEN,
-            publish_ref=True,
-        )
-    return result, list(github_stub.recorded)
-
-
-def test_github_materialize_flag_on_off_wire_and_result_identical(github_stub, monkeypatch):
-    off_result, off_reqs = _run_materialize_capturing(
-        github_stub, monkeypatch, flag_on=False
-    )
-    on_result, on_reqs = _run_materialize_capturing(
-        github_stub, monkeypatch, flag_on=True
-    )
-    assert off_result.get("materialized") is True, off_result
-    # Same operation ⇒ same parsed result.
-    assert on_result == off_result
-    # Same wire requests, request-for-request (method/path/body/non-auth headers +
-    # Bearer). Host/Accept-Encoding artifacts of the loopback are excluded by
-    # _assert_github_wire_identical, which compares only the github header set.
-    assert len(on_reqs) == len(off_reqs) == 6
-    for on_req, off_req in zip(on_reqs, off_reqs):
-        _assert_github_wire_identical(on_req, off_req)
-
-
-def test_github_pr_create_flag_on_off_identical(github_stub, monkeypatch):
-    from tinyassets.effectors import github_pr
-
-    port = github_stub.server_address[1]
-
-    def run(flag_on):
-        github_stub.recorded.clear()
-        with monkeypatch.context() as m:
-            m.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
-            if flag_on:
-                m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-                _install_loopback_driver(m, port)
-            else:
-                m.delenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", raising=False)
-            result = github_pr._invoke_github_api_pr_create(
-                payload={
-                    "title": "Add a thing",
-                    "body": "PR body <!-- marker -->",
-                    "base_branch": _GH_BASE_BRANCH,
-                    "head_branch": _GH_HEAD_BRANCH,
-                    "labels": ["cloud", "automation"],
-                    "draft": True,
-                },
-                destination=_GH_OWNER_REPO,
-                capability_token=_GH_TOKEN,
-            )
-        return result, list(github_stub.recorded)
-
-    off_result, off_reqs = run(False)
-    on_result, on_reqs = run(True)
-    assert on_result == off_result
-    assert on_result.get("pr_number") == 1
-    assert len(on_reqs) == len(off_reqs) == 2  # PR create + labels
-    for on_req, off_req in zip(on_reqs, off_reqs):
-        _assert_github_wire_identical(on_req, off_req)
-
-
-def test_github_contents_read_flag_on_off_identical_subdir(github_stub, monkeypatch):
-    # Contents read of a SUBDIRECTORY file — flag-ON routes it through the {path+}
-    # rest tail (slice 2A), where slice-1 REFUSED it. Wire + result must match.
-    from tinyassets.effectors import github_pr
-
-    port = github_stub.server_address[1]
-
-    def run(flag_on):
-        github_stub.recorded.clear()
-        with monkeypatch.context() as m:
-            m.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
-            if flag_on:
-                m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-                _install_loopback_driver(m, port)
-            else:
-                m.delenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", raising=False)
-            contents, err = github_pr._fetch_file_at_ref(
-                owner_repo=_GH_OWNER_REPO,
-                path="src/pkg/module.py",
-                ref=_GH_BASE_BRANCH,
-                capability_token=_GH_TOKEN,
-            )
-        return (contents, err), list(github_stub.recorded)
-
-    off_result, off_reqs = run(False)
-    on_result, on_reqs = run(True)
-    assert on_result == off_result
-    assert on_result[1] is None and on_result[0] == "file body\n"
-    assert len(on_reqs) == len(off_reqs) == 1
-    assert on_reqs[0]["path"] == "/repos/octocat/hello-world/contents/src/pkg/module.py?ref=main"
-    _assert_github_wire_identical(on_reqs[0], off_reqs[0])
-
-
-def test_github_error_shape_flag_on_off_identical(github_stub_status, monkeypatch):
-    # A 403 on the base-ref lookup must yield the SAME error dict flag-ON and
-    # flag-OFF — proving the driver's status/body maps back to _git_data_api's
-    # (parsed, error) shape and preserves BUG-111's 401/403/404 scope upgrade.
-    from tinyassets.effectors import github_pr
-
-    github_stub_status.status_for = lambda method, path: (  # type: ignore[attr-defined]
-        403 if "/git/ref/heads/" in path else 200
-    )
-    port = github_stub_status.server_address[1]
-
-    def run(flag_on):
-        github_stub_status.recorded.clear()
-        with monkeypatch.context() as m:
-            m.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
-            if flag_on:
-                m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-                _install_loopback_driver(m, port)
-            else:
-                m.delenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", raising=False)
-            return github_pr._materialize_branch(
-                changes_json={_GH_CHANGE_PATH: _GH_CHANGE_CONTENT},
-                destination=_GH_OWNER_REPO,
-                base_branch=_GH_BASE_BRANCH,
-                head_branch=_GH_HEAD_BRANCH,
-                commit_message=_GH_COMMIT_MESSAGE,
-                capability_token=_GH_TOKEN,
-                publish_ref=True,
-            )
-
-    off = run(False)
-    on = run(True)
-    assert off["error_kind"] == on["error_kind"] == "github_contents_write_denied"
-    assert on == off
-
-
-def test_github_pr_create_error_shape_flag_on_off_identical(github_stub_status, monkeypatch):
-    # A 422 on the PR-create POST exercises _github_api_request's SYNTHESIZED
-    # urllib.error.HTTPError on the flag-ON path (the driver returns status/body;
-    # the caller expects to catch HTTPError + read exc.code/exc.read()). Flag-ON
-    # and flag-OFF must map to the identical github_api_error result.
-    from tinyassets.effectors import github_pr
-
-    github_stub_status.status_for = lambda method, path: (  # type: ignore[attr-defined]
-        422 if path.endswith("/pulls") else 200
-    )
-    port = github_stub_status.server_address[1]
-
-    def run(flag_on):
-        github_stub_status.recorded.clear()
-        with monkeypatch.context() as m:
-            m.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
-            if flag_on:
-                m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-                _install_loopback_driver(m, port)
-            else:
-                m.delenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", raising=False)
-            return github_pr._invoke_github_api_pr_create(
-                payload={
-                    "title": "Add a thing",
-                    "body": "PR body",
-                    "base_branch": _GH_BASE_BRANCH,
-                    "head_branch": _GH_HEAD_BRANCH,
-                    "labels": [],
-                    "draft": True,
-                },
-                destination=_GH_OWNER_REPO,
-                capability_token=_GH_TOKEN,
-            )
-
-    off = run(False)
-    on = run(True)
-    assert off["error_kind"] == on["error_kind"] == "github_api_error"
-    assert "422" in off["error"] and "422" in on["error"]
-    assert on == off
-
-
-def test_github_pr_create_refusal_marked_ambiguous_flag_on(github_stub, monkeypatch):
-    # A driver refusal (SsrfValidationError/ProxyRequestError) on the flag-ON path
-    # maps to urllib.error.URLError so _invoke_github_api_pr_create marks the
-    # outcome ambiguous — the same branch a real network loss takes flag-OFF.
-    from tinyassets.effectors import github_pr
-
-    with monkeypatch.context() as m:
-        m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-
-        def factory():
-            def _boom(**_kwargs):
-                raise outbound_connections.ProxyRequestError("destination unreachable")
-            return _boom
-
-        m.setattr(outbound_channel_adapter, "_SsrfHardenedHttpDriver", factory)
-        result = github_pr._invoke_github_api_pr_create(
-            payload={
-                "title": "Add a thing",
-                "body": "PR body",
-                "base_branch": _GH_BASE_BRANCH,
-                "head_branch": _GH_HEAD_BRANCH,
-                "labels": [],
-                "draft": True,
-            },
-            destination=_GH_OWNER_REPO,
-            capability_token=_GH_TOKEN,
-        )
-    assert result["error_kind"] == "github_api_error"
-    assert result.get("outcome_ambiguous") is True
-
-
-def test_github_read_for_commit_flag_on_routes_through_driver(github_stub, monkeypatch):
-    # The broker's OWN read_for_commit path (outbound_connections.py:978): flag-ON
-    # routes through the SSRF driver + destination-bound allowlist and returns the
-    # parsed PR list, sending the broker's exact wire request (broker User-Agent,
-    # NO Content-Type — the flag-OFF legacy urllib path builds the same shape but
-    # is left untouched and cannot be pointed at a loopback without a global
-    # urlopen patch, so this asserts the flag-ON wiring is correct + faithful).
-    port = github_stub.server_address[1]
-    driver = outbound_connections._ProductionGitHubNetworkDriver()
-    with monkeypatch.context() as m:
-        m.setenv("TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION", "1")
-        _install_loopback_driver(m, port)
-        payload = driver(
-            credential=_GH_TOKEN,
-            provider="github",
-            destination=_GH_OWNER_REPO,
-            verb="pull_requests:read_for_commit",
-            request={
-                "repository": _GH_OWNER_REPO,
-                "intended_head_sha": "a" * 40,
-                "per_page": 30,
-            },
-        )
-    assert isinstance(payload, list)
-    assert len(github_stub.recorded) == 1
-    req = github_stub.recorded[-1]
-    assert req["method"] == "GET"
-    assert req["path"].endswith(f"/commits/{'a' * 40}/pulls?per_page=30")
-    assert req["path"].startswith(f"/repos/{_GH_OWNER_REPO}/commits/")
-    assert req["headers"]["authorization"] == f"Bearer {_GH_TOKEN}"
-    assert req["headers"]["user-agent"] == "tinyassets-outbound-broker/1.0"
-    assert req["headers"]["accept"] == "application/vnd.github+json"
-    # read_for_commit sends no body, so no Content-Type — the driver must not add one.
-    assert "content-type" not in req["headers"]
