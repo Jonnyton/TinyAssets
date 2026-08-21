@@ -7,10 +7,10 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  recover:
+  probe:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH recover daemon service
+      - name: SSH probe compose failure
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
@@ -22,12 +22,11 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== WHY IT FAILED (journalctl) ====="; journalctl -u tinyassets-daemon.service -n 45 --no-pager 2>&1 | tail -45
-          echo "===== RESET + RESTART ====="; systemctl reset-failed tinyassets-daemon.service 2>&1; systemctl restart tinyassets-daemon.service 2>&1; echo "restart rc=$?"
-          echo "waiting 50s for stack..."; sleep 50
-          echo "===== STATUS AFTER ====="; systemctl status tinyassets-daemon.service --no-pager 2>&1 | head -12
-          echo "===== DOCKER PS ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
-          echo "===== LOCAL DAEMON PROBE ====="; curl -s -o /dev/null -w "localhost:8001/mcp -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"p","version":"1"}}}' http://localhost:8001/mcp 2>&1
-          echo "===== FRESH DAEMON LOGS (post-restart) ====="; docker logs tinyassets-daemon --tail 30 2>&1 | tail -30
+          echo "===== TINYASSETS_IMAGE ====="; grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env
+          echo "===== is that image present locally? ====="; docker images --digests --format '{{.Repository}}@{{.Digest}} ({{.Size}})' 2>&1 | grep -i tinyassets | head
+          echo "===== compose config valid? ====="; docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml config 2>&1 | head -3; echo "config rc=$?"
+          echo "===== MANUAL: docker compose up -d (the exact 125 error) ====="; docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d 2>&1 | tail -25; echo "up rc=$?"
+          echo "===== docker ps after ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
+          echo "===== local probe ====="; sleep 8; curl -s -o /dev/null -w "localhost:8001/mcp -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8001/mcp 2>&1
           echo "===== DONE ====="
           REMOTE
