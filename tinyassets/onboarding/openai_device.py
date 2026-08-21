@@ -20,9 +20,11 @@ The client id is Codex's public OAuth client — OpenAI has not restricted
 third-party use of it (unlike Anthropic, whose terms forbid it; the Claude path
 therefore stays on Claude Code's own ``claude setup-token``).
 
-The broker is stateless: ``device_auth_id`` + ``user_code`` round-trip through
-the app between calls, exactly as the CLI keeps them in memory. Nothing from the
-flow is persisted except the final vault record.
+The (``device_auth_id``, ``user_code``) tuple is a bearer capability for the
+credential, so it never leaves the daemon: pending flows are held in memory,
+bound to the identity that started them, behind an opaque handle (see
+``register_flow``). Nothing from the flow is persisted except the final vault
+record.
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import json
+import secrets as _secrets
+import threading as _threading
+import time as _time
 from typing import Any, Callable
 
 import httpx
@@ -108,14 +113,22 @@ async def start_device_auth(client_factory: ClientFactory = _default_client) -> 
     }
 
 
-def _jwt_claim(token: str, claim: str) -> str:
-    """Read one claim from an (unverified) JWT payload — the Codex CLI derives
-    ``account_id`` from the id_token the same way. Returns "" on any problem."""
+_OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
+
+
+def _chatgpt_account_id(id_token: str) -> str:
+    """``chatgpt_account_id`` from the (unverified) id_token, exactly where the
+    Codex CLI reads it: nested under the ``https://api.openai.com/auth`` claim
+    (``AuthClaims`` in ``codex-rs/login/src/token_data.rs``). A top-level claim
+    is accepted as a fallback. Returns "" on any problem — never raises."""
     try:
-        payload = token.split(".")[1]
+        payload = id_token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
-        value = claims.get(claim, "")
+        nested = claims.get(_OPENAI_AUTH_CLAIM)
+        if isinstance(nested, dict) and isinstance(nested.get("chatgpt_account_id"), str):
+            return nested["chatgpt_account_id"]
+        value = claims.get("chatgpt_account_id", "")
         return value if isinstance(value, str) else ""
     except Exception:  # noqa: BLE001 - malformed token → no account id, never raise
         return ""
@@ -129,7 +142,7 @@ def build_codex_auth_json(*, id_token: str, access_token: str, refresh_token: st
         "access_token": access_token,
         "refresh_token": refresh_token,
     }
-    account_id = _jwt_claim(id_token, "chatgpt_account_id")
+    account_id = _chatgpt_account_id(id_token)
     if account_id:
         tokens["account_id"] = account_id
     doc = {
@@ -209,6 +222,84 @@ async def poll_device_auth(
     }
 
 
+# ---------------------------------------------------------------------------
+# Pending flows — bound to the identity that started them.
+#
+# The raw (device_auth_id, user_code) tuple is a bearer capability: whoever
+# polls it after approval gets the credential. So it never leaves the daemon.
+# The app holds only an opaque handle; poll requires the SAME user id that
+# started the flow; a flow is consumed on its first terminal outcome and
+# expires after the CLI's own 15-minute budget. In-memory is sufficient: one
+# daemon process serves the app, and a restart simply makes the user tap
+# Connect again.
+# ---------------------------------------------------------------------------
+
+FLOW_TTL_SECONDS = 15 * 60
+_MAX_PENDING_FLOWS = 1000
+_MAX_PENDING_PER_USER = 3
+
+
+class _PendingFlow:
+    __slots__ = ("user_id", "universe_id", "device_auth_id", "user_code", "expires_at")
+
+    def __init__(self, user_id: str, universe_id: str, device_auth_id: str, user_code: str) -> None:
+        self.user_id = user_id
+        self.universe_id = universe_id
+        self.device_auth_id = device_auth_id
+        self.user_code = user_code
+        self.expires_at = _time.monotonic() + FLOW_TTL_SECONDS
+
+
+_pending: dict[str, _PendingFlow] = {}
+_pending_lock = _threading.Lock()
+
+
+def _sweep_locked(now: float) -> None:
+    for handle in [h for h, f in _pending.items() if f.expires_at <= now]:
+        _pending.pop(handle, None)
+
+
+def register_flow(*, user_id: str, universe_id: str, device_auth_id: str, user_code: str) -> str:
+    """Bind a started flow to ``user_id`` and return its opaque handle."""
+    if not user_id:
+        raise DeviceAuthError("authentication_required", 401)
+    with _pending_lock:
+        now = _time.monotonic()
+        _sweep_locked(now)
+        mine = [h for h, f in _pending.items() if f.user_id == user_id]
+        # A user re-tapping Connect replaces their oldest pending flow; nobody
+        # can pin the table with abandoned flows.
+        while len(mine) >= _MAX_PENDING_PER_USER:
+            _pending.pop(mine.pop(0), None)
+        if len(_pending) >= _MAX_PENDING_FLOWS:
+            raise DeviceAuthError("too_many_pending_flows", 429)
+        handle = _secrets.token_urlsafe(32)
+        _pending[handle] = _PendingFlow(user_id, universe_id, device_auth_id, user_code)
+        return handle
+
+
+def lookup_flow(handle: str, *, user_id: str) -> _PendingFlow:
+    """The pending flow for ``handle`` — only for the identity that started it.
+    Unknown, expired, or foreign handles all answer the same way."""
+    with _pending_lock:
+        _sweep_locked(_time.monotonic())
+        flow = _pending.get(str(handle or ""))
+        if flow is None or not user_id or flow.user_id != user_id:
+            raise DeviceAuthError("unknown_flow", 404)
+        return flow
+
+
+def consume_flow(handle: str) -> None:
+    """Remove a flow on its first terminal outcome (success or failure)."""
+    with _pending_lock:
+        _pending.pop(str(handle or ""), None)
+
+
+def _reset_pending_for_tests() -> None:
+    with _pending_lock:
+        _pending.clear()
+
+
 def deposit_codex_auth_json(auth_json: str, *, universe_id: str = "") -> dict[str, Any]:
     """Deposit through the landed ``connect_llm`` handler under the CURRENT
     request identity (set by the auth middleware from the app's bearer). Every
@@ -225,6 +316,10 @@ def deposit_codex_auth_json(auth_json: str, *, universe_id: str = "") -> dict[st
 
 
 __all__ = [
+    "FLOW_TTL_SECONDS",
+    "register_flow",
+    "lookup_flow",
+    "consume_flow",
     "CODEX_CLIENT_ID",
     "OPENAI_ISSUER",
     "VERIFICATION_URL",

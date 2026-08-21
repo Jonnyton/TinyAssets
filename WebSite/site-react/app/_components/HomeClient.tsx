@@ -115,7 +115,7 @@ export default function HomeClient() {
               <a className="btn btn--primary" href="/start">Put me to work →</a>
               <a
                 className="btn btn--ghost"
-                href="https://github.com/Jonnyton/TinyAssets/releases/latest/download/app-debug.apk"
+                href="https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/app-debug.apk"
               >
                 Get the Android app ↓
               </a>

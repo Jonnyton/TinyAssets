@@ -103,7 +103,17 @@ def test_poll_pending_on_403_and_404():
 
 def test_poll_success_exchanges_with_pkce_and_builds_codex_auth_json():
     calls = []
-    id_token = _fake_jwt({"chatgpt_account_id": "acct_42", "email": "u@example.com"})
+    # Real Codex id_tokens nest the account id under the OpenAI auth claim
+    # (codex-rs/login/src/token_data.rs AuthClaims) — NOT at the top level.
+    id_token = _fake_jwt(
+        {
+            "email": "u@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_42",
+                "chatgpt_plan_type": "plus",
+            },
+        }
+    )
 
     def handler(req: httpx.Request) -> httpx.Response:
         calls.append(req)
@@ -195,7 +205,10 @@ def _drive(route_path: str, body: dict | None, *, identity=None, enabled=True, m
         "type": "http",
         "method": "POST",
         "path": route_path,
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(raw)).encode()),
+        ],
         "query_string": b"",
     }
 
@@ -238,17 +251,21 @@ def test_routes_401_without_identity(monkeypatch):
     assert (
         _drive(
             "/mcp/app/openai/device/poll",
-            {"device_auth_id": "d", "user_code": "c"},
+            {"flow": "x"},
             monkeypatch=monkeypatch,
         )[0]
         == 401
     )
 
 
-def test_start_route_returns_code_for_signed_in_user(monkeypatch):
+def test_start_route_returns_code_and_opaque_handle_only(monkeypatch):
+    """The raw device tuple must never reach the browser: the response carries
+    the user code (which the user must see) and an opaque flow handle."""
+    od._reset_pending_for_tests()
+
     async def fake_start():
         return {
-            "device_auth_id": "d",
+            "device_auth_id": "dev-secret",
             "user_code": "AB-CD",
             "verification_url": od.VERIFICATION_URL,
             "interval": 5,
@@ -259,23 +276,161 @@ def test_start_route_returns_code_for_signed_in_user(monkeypatch):
         "/mcp/app/openai/device/start", {}, identity=_user(), monkeypatch=monkeypatch
     )
     assert status == 200 and doc["user_code"] == "AB-CD"
+    assert set(doc) == {"flow", "user_code", "verification_url", "interval"}
+    assert "dev-secret" not in json.dumps(doc)
+    assert len(doc["flow"]) >= 32
+
+
+def _started(monkeypatch, *, user, device_auth_id="dev-1", user_code="AB-CD"):
+    """Start a flow as ``user`` through the route; return its opaque handle."""
+
+    async def fake_start():
+        return {
+            "device_auth_id": device_auth_id,
+            "user_code": user_code,
+            "verification_url": od.VERIFICATION_URL,
+            "interval": 5,
+        }
+
+    monkeypatch.setattr(od, "start_device_auth", fake_start)
+    status, doc = _drive("/mcp/app/openai/device/start", {}, identity=user, monkeypatch=monkeypatch)
+    assert status == 200
+    return doc["flow"]
+
+
+def test_poll_rejects_foreign_unknown_and_replayed_handles(monkeypatch):
+    """Codex finding 1: a flow is bound to the identity that started it and is
+    consumed on its first terminal outcome — a stolen or guessed handle, or a
+    different signed-in user, gets the same 'unknown_flow' answer."""
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user("victim"))
+    polled = []
+
+    async def fake_poll(**kw):
+        polled.append(kw)
+        return {
+            "auth_json": od.build_codex_auth_json(id_token="t", access_token="a", refresh_token="r")
+        }
+
+    monkeypatch.setattr(od, "poll_device_auth", fake_poll)
+    import tinyassets.api.llm_deposit as ld
+
+    monkeypatch.setattr(ld, "connect_llm", lambda **kw: {"ok": True})
+
+    # Another authenticated user presenting the victim's handle: refused, and
+    # OpenAI is never polled on their behalf.
+    status, doc = _drive(
+        "/mcp/app/openai/device/poll",
+        {"flow": handle},
+        identity=_user("attacker"),
+        monkeypatch=monkeypatch,
+    )
+    assert (status, doc) == (404, {"error": "unknown_flow"})
+    assert polled == []
+    # An unknown handle: same answer.
+    status, doc = _drive(
+        "/mcp/app/openai/device/poll",
+        {"flow": "nope"},
+        identity=_user("victim"),
+        monkeypatch=monkeypatch,
+    )
+    assert (status, doc) == (404, {"error": "unknown_flow"})
+    # The owner completes it — the daemon polled with the bound tuple…
+    status, doc = _drive(
+        "/mcp/app/openai/device/poll",
+        {"flow": handle},
+        identity=_user("victim"),
+        monkeypatch=monkeypatch,
+    )
+    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert polled == [{"device_auth_id": "dev-1", "user_code": "AB-CD"}]
+    # …and the handle is consumed: a replay cannot deposit again.
+    status, doc = _drive(
+        "/mcp/app/openai/device/poll",
+        {"flow": handle},
+        identity=_user("victim"),
+        monkeypatch=monkeypatch,
+    )
+    assert (status, doc) == (404, {"error": "unknown_flow"})
+
+
+def test_flow_registry_expires_and_caps_per_user(monkeypatch):
+    od._reset_pending_for_tests()
+    h = od.register_flow(user_id="u", universe_id="", device_auth_id="d", user_code="c")
+    assert od.lookup_flow(h, user_id="u").device_auth_id == "d"
+    with pytest.raises(od.DeviceAuthError):
+        od.lookup_flow(h, user_id="someone-else")
+    # expiry
+    monkeypatch.setattr(
+        od._time, "monotonic", lambda: od._time.time() + od.FLOW_TTL_SECONDS + 10**6
+    )
+    with pytest.raises(od.DeviceAuthError):
+        od.lookup_flow(h, user_id="u")
+    monkeypatch.undo()
+    # per-user cap: the oldest pending flow is replaced, never unbounded growth
+    od._reset_pending_for_tests()
+    handles = [
+        od.register_flow(user_id="u", universe_id="", device_auth_id=f"d{i}", user_code="c")
+        for i in range(5)
+    ]
+    alive = [h for h in handles if h in od._pending]
+    assert len(alive) == od._MAX_PENDING_PER_USER and alive == handles[-od._MAX_PENDING_PER_USER :]
+    with pytest.raises(od.DeviceAuthError):
+        od.register_flow(user_id="", universe_id="", device_auth_id="d", user_code="c")
+
+
+def test_bounded_body_rejects_oversized_before_buffering(monkeypatch):
+    """Codex finding 4: an oversized body is refused on its declared length, and
+    an undeclared one is cut off while streaming — never buffered whole."""
+    from starlette.requests import Request
+
+    from tinyassets.onboarding import _read_bounded_body
+
+    async def run(headers, chunks):
+        sent = list(chunks)
+
+        async def receive():
+            body = sent.pop(0)
+            return {"type": "http.request", "body": body, "more_body": bool(sent)}
+
+        req = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/x",
+                "headers": headers,
+                "query_string": b"",
+            },
+            receive,
+        )
+        return await _read_bounded_body(req, 16)
+
+    assert asyncio.run(run([(b"content-length", b"100")], [b"x" * 100])) is None
+    assert asyncio.run(run([], [b"x" * 10, b"y" * 10])) is None  # cut off mid-stream
+    assert asyncio.run(run([], [b"ok", b"!"])) == b"ok!"
 
 
 def test_poll_route_pending_passthrough(monkeypatch):
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user())
+
     async def fake_poll(**kw):
         return None
 
     monkeypatch.setattr(od, "poll_device_auth", fake_poll)
-    status, doc = _drive(
-        "/mcp/app/openai/device/poll",
-        {"device_auth_id": "d", "user_code": "c"},
-        identity=_user(),
-        monkeypatch=monkeypatch,
-    )
-    assert (status, doc) == (200, {"status": "pending"})
+    for _ in range(2):  # pending keeps the flow alive for the next poll
+        status, doc = _drive(
+            "/mcp/app/openai/device/poll",
+            {"flow": handle},
+            identity=_user(),
+            monkeypatch=monkeypatch,
+        )
+        assert (status, doc) == (200, {"status": "pending"})
 
 
 def test_poll_route_deposits_as_user_and_never_echoes_credential(monkeypatch):
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user("user_777"))
     """On approval the route deposits through the REAL connect_llm under the
     request identity; the response carries a status only. A user with no admin
     ACL on the target universe is refused by connect_llm's own gate — proving
@@ -305,7 +460,7 @@ def test_poll_route_deposits_as_user_and_never_echoes_credential(monkeypatch):
     monkeypatch.setattr(ld, "connect_llm", fake_connect_llm)
     status, doc = _drive(
         "/mcp/app/openai/device/poll",
-        {"device_auth_id": "d", "user_code": "c"},
+        {"flow": handle},
         identity=_user("user_777"),
         monkeypatch=monkeypatch,
     )
@@ -316,6 +471,9 @@ def test_poll_route_deposits_as_user_and_never_echoes_credential(monkeypatch):
 
 
 def test_poll_route_surfaces_connect_llm_refusal(monkeypatch):
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user())
+
     async def fake_poll(**kw):
         return {
             "auth_json": od.build_codex_auth_json(id_token="t", access_token="a", refresh_token="r")
@@ -329,7 +487,7 @@ def test_poll_route_surfaces_connect_llm_refusal(monkeypatch):
     )
     status, doc = _drive(
         "/mcp/app/openai/device/poll",
-        {"device_auth_id": "d", "user_code": "c"},
+        {"flow": handle},
         identity=_user(),
         monkeypatch=monkeypatch,
     )
@@ -337,13 +495,16 @@ def test_poll_route_surfaces_connect_llm_refusal(monkeypatch):
 
 
 def test_poll_route_maps_device_errors(monkeypatch):
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user())
+
     async def fake_poll(**kw):
         raise od.DeviceAuthError("openai_unreachable")
 
     monkeypatch.setattr(od, "poll_device_auth", fake_poll)
     status, doc = _drive(
         "/mcp/app/openai/device/poll",
-        {"device_auth_id": "d", "user_code": "c"},
+        {"flow": handle},
         identity=_user(),
         monkeypatch=monkeypatch,
     )

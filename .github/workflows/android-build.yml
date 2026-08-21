@@ -1,11 +1,18 @@
 name: Android debug APK
 
 # Builds a sideloadable debug APK on GitHub's runners (JDK 17 + Android SDK
-# pre-installed) and uploads it as an artifact. Download it from the run's
-# Artifacts, transfer to an Android phone, enable "install unknown apps", and
-# open it â€” no local Android Studio / keystore / Play account needed to TRY it.
-# (The signed release .aab for Play is a separate, keystore-signed build â€” see
-# mobile/README.md.)
+# pre-installed) and, on main, publishes it to the latest GitHub release - the
+# asset the website's "Get the Android app" button downloads
+# (releases/latest/download/app-debug.apk). (The Play-store .aab is a separate,
+# release-keystore-signed build - see mobile/README.md.)
+#
+# Shape (Codex review 2026-08-21): the build job is READ-ONLY - no git
+# credentials persist into the checkout, dependencies come from the lockfile
+# via `npm ci`, and repository write authority exists only in the small publish
+# job that merely uploads the already-built artifact. Signing uses a STABLE
+# debug keystore restored from a secret: with the runner's throwaway debug key
+# every build would carry a different signature and a new APK could not install
+# over the previous one (the user would have to uninstall first).
 
 on:
   push:
@@ -15,42 +22,63 @@ on:
       - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
-# contents: write - a build from `main` replaces the APK on the latest GitHub
-# release, which is what the website's "Get the Android app" button downloads
-# (releases/latest/download/app-debug.apk).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-debug-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install JS deps
+      - name: Install JS deps (lockfile-pinned)
         working-directory: mobile
-        run: npm install
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Add + sync Android platform
         working-directory: mobile
         run: |
-          npx --yes cap add android
-          npx --yes cap sync android
+          npx --no-install cap add android
+          npx --no-install cap sync android
 
       - name: Register the tinyassets:// deep link (in-app OAuth return)
         working-directory: mobile
         run: |
           python3 scripts/add_app_scheme.py
           grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
+
+      - name: Restore the stable debug signing key
+        # Android's debug signing config reads ~/.android/debug.keystore
+        # (alias androiddebugkey, store/key password "android"). Restoring the
+        # same keystore every build keeps the APK signature constant so updates
+        # install over prior installs. Without the secret the build still
+        # succeeds with a throwaway key - loudly, so nobody mistakes it.
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 not set - APK signed with a throwaway key; it will NOT update a prior install"
+            exit 0
+          fi
+          mkdir -p ~/.android
+          echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          keytool -list -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey >/dev/null
+          echo "stable debug keystore restored"
 
       - name: Build debug APK
         working-directory: mobile/android
@@ -63,15 +91,30 @@ jobs:
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Publish APK to the latest release (main only)
-        if: github.ref == 'refs/heads/main'
+  publish-apk:
+    # Only the built artifact crosses into this job; the checkout, node_modules
+    # and Gradle never run with write authority.
+    if: github.ref == 'refs/heads/main'
+    needs: build-debug-apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: android-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tinyassets-android-debug-apk
+          path: dist
+
+      - name: Publish APK to the latest release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          tag="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
-          if [ -z "$tag" ]; then
-            tag="android-latest"
-            gh release create "$tag" --title "TinyAssets Android (debug)" --notes "Sideloadable debug build from main. The website's Get-the-Android-app button downloads this asset."
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --title "TinyAssets Android (debug)" \
+              --notes "Sideloadable debug build from main. The website's Get-the-Android-app button downloads this asset."
           fi
-          gh release upload "$tag" mobile/android/app/build/outputs/apk/debug/app-debug.apk --clobber
-          echo "published app-debug.apk to release $tag"
+          gh release upload "$RELEASE_TAG" dist/app-debug.apk --clobber
+          echo "published app-debug.apk to release $RELEASE_TAG"

@@ -199,7 +199,6 @@
   // bounces back into the app through the tinyassets:// scheme.
   const NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform==="function" && window.Capacitor.isNativePlatform());
   const APP_STATE_PREFIX = "app.";
-  const APP_RETURN_SCHEME = "tinyassets://auth";
   const ANDROID_PACKAGE = "io.tinyassets.app";
   function nativePlugin(name){ const P=window.Capacitor&&window.Capacitor.Plugins; return (P&&P[name])||null; }
   // PKCE state lives in localStorage on native (survives the WebView being
@@ -246,19 +245,20 @@
   // The AuthKit callback landed in a real browser tab for an APP-initiated
   // sign-in (state carries the app marker, and this page is not the app's
   // WebView). The PKCE verifier lives only in the app, so do NOT exchange here:
-  // hand the code back to the app via its scheme. Android's Chrome honours an
-  // intent:// navigation from the redirect chain; the button is the fallback.
+  // hand the code back to the app. ONLY the package-qualified intent:// form is
+  // used — never a bare tinyassets:// URL, which any rogue app could register
+  // to harvest the (verifier-less, but still) code + state. Android's Chrome
+  // honours an intent:// navigation from the redirect chain; the button is the
+  // fallback when it wants a tap first.
   function bounceToApp(code, state){
     const qs = "code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
-    const deep = APP_RETURN_SCHEME + "?" + qs;
     const intent = "intent://auth?" + qs + "#Intent;scheme=tinyassets;package=" + ANDROID_PACKAGE + ";end";
     const notice = document.getElementById("signin-notice");
     notice.textContent = "";
     const p = document.createElement("p"); p.textContent = "Signed in. Returning you to the TinyAssets app…";
-    const a = document.createElement("a"); a.className = "btn btn--primary"; a.href = deep; a.textContent = "Open the TinyAssets app";
+    const a = document.createElement("a"); a.className = "btn btn--primary"; a.href = intent; a.textContent = "Open the TinyAssets app";
     notice.appendChild(p); notice.appendChild(a);
     try{ window.location.href = intent; }catch(_e){}
-    setTimeout(()=>{ try{ window.location.href = deep; }catch(_e){} }, 700);
   }
 
   async function exchangeCode(code, state){
@@ -327,12 +327,12 @@
       document.getElementById("signin-notice").textContent = "Token exchange failed: " + e.message;
       return false;
     }
-    pkceStore.removeItem(PKCE_KEY);
     if(!tokens.access_token){
       document.getElementById("signin-notice").textContent =
         "Token exchange failed: " + (tokens.error_description || tokens.error || "no token");
-      return false;
+      return false;   // keep the PKCE state: a retry of the same sign-in can still complete
     }
+    pkceStore.removeItem(PKCE_KEY);
     sessionStorage.setItem(TOKEN_KEY, tokens.access_token);
     return true;
   }
@@ -468,10 +468,11 @@
     btn.disabled=true; res.textContent="Contacting OpenAI…";
     let started;
     try{
-      const r=await fetch("/mcp/app/openai/device/start",{method:"POST",headers:authHeaders()});
+      const r=await fetch("/mcp/app/openai/device/start",{method:"POST",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:"{}"});
       if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
       started=await r.json();
-      if(!r.ok||!started.user_code) throw new Error(started.error||"could not start");
+      if(!r.ok||!started.user_code||!started.flow) throw new Error(started.error||"could not start");
     }catch(e){ res.textContent="Couldn't reach OpenAI: "+e.message; btn.disabled=false; openaiBusy=false; return; }
     $("openai-code").textContent=started.user_code; flow.hidden=false;
     try{ await navigator.clipboard.writeText(started.user_code); }catch(_e){}
@@ -480,7 +481,7 @@
     res.textContent="Approve on the OpenAI page, then come back here.";
     await openExternal(url);
     const deadline=Date.now()+15*60*1000, every=Math.max(2,started.interval||5)*1000;
-    const body=JSON.stringify({device_auth_id:started.device_auth_id,user_code:started.user_code});
+    const body=JSON.stringify({flow:started.flow});   // opaque handle; the device tuple never leaves the daemon
     while(Date.now()<deadline){
       await sleep(every);
       let r, doc;
