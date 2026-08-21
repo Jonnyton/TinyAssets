@@ -509,3 +509,44 @@ def test_poll_route_maps_device_errors(monkeypatch):
         monkeypatch=monkeypatch,
     )
     assert (status, doc) == (502, {"error": "openai_unreachable"})
+
+
+def test_poll_lease_blocks_concurrent_poll_and_releases_on_pending():
+    """Codex round-2: a second poll while one is in flight must not race into a
+    second deposit — it answers 409; a pending outcome hands the lease back."""
+    od._reset_pending_for_tests()
+    h = od.register_flow(user_id="u", universe_id="", device_auth_id="d", user_code="c")
+    od.lookup_flow(h, user_id="u")  # lease taken
+    with pytest.raises(od.DeviceAuthError) as ei:
+        od.lookup_flow(h, user_id="u")
+    assert (ei.value.code, ei.value.status) == ("poll_in_progress", 409)
+    od.release_flow(h)
+    assert od.lookup_flow(h, user_id="u").leased is True
+    od.consume_flow(h)
+    with pytest.raises(od.DeviceAuthError):
+        od.lookup_flow(h, user_id="u")
+
+
+def test_bounded_body_rejects_malformed_content_length():
+    from starlette.requests import Request
+
+    from tinyassets.onboarding import _read_bounded_body
+
+    async def run(value):
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/x",
+            "headers": [(b"content-length", value)],
+            "query_string": b"",
+        }
+        return await _read_bounded_body(Request(scope, receive), 16)
+
+    assert (
+        asyncio.run(run("\u00b2".encode("utf-8"))) is None
+    )  # superscript two: isdigit() True, int() raises
+    assert asyncio.run(run(b"abc")) is None
+    assert asyncio.run(run(b"2")) == b"{}"

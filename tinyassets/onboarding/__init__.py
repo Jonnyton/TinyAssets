@@ -23,6 +23,7 @@ endpoints, the MCP resource). No secret is ever injected or logged.
 from __future__ import annotations
 
 import os
+import re as _re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -213,8 +214,11 @@ async def _read_bounded_body(request: Any, limit: int) -> bytes | None:
     whole (Codex review: ``request.body()`` read everything before the check).
     """
     declared = request.headers.get("content-length", "")
-    if declared.strip().isdigit() and int(declared) > limit:
-        return None
+    if declared:
+        # Strict ASCII digits only: str.isdigit() accepts e.g. "²" and int()
+        # would then raise a 500 (Codex review). Malformed → refuse.
+        if not _re.fullmatch(r"[0-9]{1,12}", declared.strip()) or int(declared) > limit:
+            return None
     chunks: list[bytes] = []
     total = 0
     async for chunk in request.stream():
@@ -312,6 +316,7 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         deposit_codex_auth_json,
         lookup_flow,
         poll_device_auth,
+        release_flow,
     )
 
     if not onboarding_enabled():
@@ -332,10 +337,11 @@ async def _handle_openai_device_poll(request: Any) -> Any:
             user_code=flow.user_code,
         )
     except DeviceAuthError as exc:
-        if exc.code != "unknown_flow":
+        if exc.code not in ("unknown_flow", "poll_in_progress"):
             consume_flow(handle)  # a terminal failure ends the flow
         return JSONResponse({"error": exc.code}, status_code=exc.status)
     if outcome is None:
+        release_flow(handle)  # still pending: hand the lease back for the next poll
         return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})
     consume_flow(handle)  # approval reached: one-shot, whatever the deposit says
 

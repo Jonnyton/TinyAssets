@@ -240,7 +240,7 @@ _MAX_PENDING_PER_USER = 3
 
 
 class _PendingFlow:
-    __slots__ = ("user_id", "universe_id", "device_auth_id", "user_code", "expires_at")
+    __slots__ = ("user_id", "universe_id", "device_auth_id", "user_code", "expires_at", "leased")
 
     def __init__(self, user_id: str, universe_id: str, device_auth_id: str, user_code: str) -> None:
         self.user_id = user_id
@@ -248,6 +248,10 @@ class _PendingFlow:
         self.device_auth_id = device_auth_id
         self.user_code = user_code
         self.expires_at = _time.monotonic() + FLOW_TTL_SECONDS
+        # One poll at a time: taken under the lock by lookup_flow, released by
+        # release_flow (pending) or consume_flow (terminal). Two concurrent
+        # polls of the same handle can therefore never both reach the deposit.
+        self.leased = False
 
 
 _pending: dict[str, _PendingFlow] = {}
@@ -279,14 +283,27 @@ def register_flow(*, user_id: str, universe_id: str, device_auth_id: str, user_c
 
 
 def lookup_flow(handle: str, *, user_id: str) -> _PendingFlow:
-    """The pending flow for ``handle`` — only for the identity that started it.
-    Unknown, expired, or foreign handles all answer the same way."""
+    """Lease the pending flow for ``handle`` — only for the identity that started
+    it. Unknown, expired, or foreign handles all answer the same way; a flow
+    already mid-poll answers ``poll_in_progress`` (409) so concurrent polls
+    cannot race the lookup/await/consume window into two deposits."""
     with _pending_lock:
         _sweep_locked(_time.monotonic())
         flow = _pending.get(str(handle or ""))
         if flow is None or not user_id or flow.user_id != user_id:
             raise DeviceAuthError("unknown_flow", 404)
+        if flow.leased:
+            raise DeviceAuthError("poll_in_progress", 409)
+        flow.leased = True
         return flow
+
+
+def release_flow(handle: str) -> None:
+    """Return a still-pending flow to the table after a non-terminal poll."""
+    with _pending_lock:
+        flow = _pending.get(str(handle or ""))
+        if flow is not None:
+            flow.leased = False
 
 
 def consume_flow(handle: str) -> None:
@@ -319,6 +336,7 @@ __all__ = [
     "FLOW_TTL_SECONDS",
     "register_flow",
     "lookup_flow",
+    "release_flow",
     "consume_flow",
     "CODEX_CLIENT_ID",
     "OPENAI_ISSUER",
