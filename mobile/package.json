@@ -2,7 +2,7 @@
   "name": "tinyassets-mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "TinyAssets Android app — a Capacitor native shell over the live TinyAssets web app (https://tinyassets.io/mcp/app).",
+  "description": "TinyAssets Android app \u00e2\u20ac\u201d a Capacitor native shell over the live TinyAssets web app (https://tinyassets.io/mcp/app).",
   "scripts": {
     "add:android": "cap add android",
     "sync": "cap sync android",
@@ -14,6 +14,7 @@
   "dependencies": {
     "@capacitor/android": "^6.1.2",
     "@capacitor/app": "^6.0.1",
+    "@capacitor/browser": "^6.0.2",
     "@capacitor/core": "^6.1.2",
     "@capacitor/splash-screen": "^6.0.2",
     "@capacitor/status-bar": "^6.0.1"

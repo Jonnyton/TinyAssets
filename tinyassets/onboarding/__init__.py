@@ -23,6 +23,7 @@ endpoints, the MCP resource). No secret is ever injected or logged.
 from __future__ import annotations
 
 import os
+import re as _re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -145,8 +146,9 @@ async def _handle_token(request: Any) -> Any:
     if not cfg.get("configured"):
         return JSONResponse({"error": "not_configured"}, status_code=503)
 
-    raw = await request.body()
-    if len(raw) > 8192:  # a PKCE exchange body is tiny; reject anything larger
+    # A PKCE exchange body is tiny; anything larger is refused before buffering.
+    raw = await _read_bounded_body(request, 8192)
+    if raw is None:
         return JSONResponse({"error": "request_too_large"}, status_code=413)
     import json as _json
 
@@ -204,6 +206,171 @@ async def _handle_token(request: Any) -> Any:
     return JSONResponse({"access_token": access}, headers={"Cache-Control": "no-store"})
 
 
+async def _read_bounded_body(request: Any, limit: int) -> bytes | None:
+    """The request body, or None once it exceeds ``limit`` bytes.
+
+    Rejects on a declared Content-Length first, then stream-counts so an
+    undeclared/chunked body is cut off at the limit instead of being buffered
+    whole (Codex review: ``request.body()`` read everything before the check).
+    """
+    declared = request.headers.get("content-length", "")
+    if declared:
+        # Strict ASCII digits only: str.isdigit() accepts e.g. "²" and int()
+        # would then raise a 500 (Codex review). Malformed → refuse.
+        if not _re.fullmatch(r"[0-9]{1,12}", declared.strip()) or int(declared) > limit:
+            return None
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _read_small_json(request: Any, limit: int = 4096) -> dict[str, Any] | None:
+    """Bounded JSON object body, or None when malformed/oversized."""
+    import json as _json
+
+    raw = await _read_bounded_body(request, limit)
+    if raw is None:
+        return None
+    try:
+        data = _json.loads(raw or b"{}")
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _app_identity_required() -> Any:
+    """401 JSON when the request carries no resolved (non-anonymous) identity.
+
+    The auth middleware resolves the app's bearer into the request identity
+    contextvar before the handler runs; ``connect_llm`` re-checks it too."""
+    from starlette.responses import JSONResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.auth.provider import ANONYMOUS
+
+    ident = current_identity()
+    if ident is ANONYMOUS or not getattr(ident, "user_id", "") or ident.user_id == "anonymous":
+        return JSONResponse({"error": "authentication_required"}, status_code=401)
+    return None
+
+
+async def _handle_openai_device_start(request: Any) -> Any:
+    """Begin the one-tap OpenAI link: returns the user code + approval URL."""
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding.openai_device import (
+        DeviceAuthError,
+        register_flow,
+        start_device_auth,
+    )
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    universe_id = str(data.get("universe_id", "")).strip()[:128]
+    try:
+        started = await start_device_auth()
+        # The raw device tuple is a bearer capability for the credential; it
+        # stays in the daemon, bound to THIS user. The app gets an opaque handle.
+        handle = register_flow(
+            user_id=current_identity().user_id,
+            universe_id=universe_id,
+            device_auth_id=started["device_auth_id"],
+            user_code=started["user_code"],
+        )
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    return JSONResponse(
+        {
+            "flow": handle,
+            "user_code": started["user_code"],
+            "verification_url": started["verification_url"],
+            "interval": started["interval"],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _handle_openai_device_poll(request: Any) -> Any:
+    """One poll of the pending OpenAI approval. On approval the tokens are
+    exchanged and deposited server-side as the signed-in user; the response
+    carries only a status — never the credential."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.onboarding.openai_device import (
+        DeviceAuthError,
+        consume_flow,
+        deposit_codex_auth_json,
+        lookup_flow,
+        poll_device_auth,
+        release_flow,
+    )
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    identity = current_identity()
+    handle = str(data.get("flow", ""))[:128]
+    try:
+        # Same identity that started the flow, or it does not exist.
+        flow = lookup_flow(handle, user_id=identity.user_id)
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    try:
+        outcome = await poll_device_auth(
+            device_auth_id=flow.device_auth_id,
+            user_code=flow.user_code,
+        )
+    except DeviceAuthError as exc:
+        consume_flow(handle)  # a terminal failure ends the flow
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    except BaseException:
+        # Anything unexpected (incl. client disconnect / task cancellation)
+        # hands the lease back so the flow is not stuck until expiry.
+        release_flow(handle)
+        raise
+    if outcome is None:
+        release_flow(handle)  # still pending: hand the lease back for the next poll
+        return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})
+    consume_flow(handle)  # approval reached: one-shot, whatever the deposit says
+
+    def _deposit() -> dict[str, Any]:
+        # Re-pin the identity inside the worker thread (same pattern as the
+        # browser deposit form) so connect_llm's actor resolution sees the user.
+        with identity_context(identity):
+            return deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+
+    result = await run_in_threadpool(_deposit)
+    if not isinstance(result, dict) or result.get("error"):
+        err = "deposit_failed"
+        if isinstance(result, dict) and result.get("error"):
+            err = str(result["error"])
+        status = 401 if err == "authentication_required" else 400
+        return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    return JSONResponse(
+        {"status": "connected", "service": "codex"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -216,6 +383,8 @@ def onboarding_routes() -> list[Any]:
     return [
         Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
+        Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
+        Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
     ]
 
 

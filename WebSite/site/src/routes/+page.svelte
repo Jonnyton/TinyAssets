@@ -132,7 +132,7 @@
       </p>
       <div class="cover__actions">
         <a class="btn btn--primary" href="/start">Put me to work →</a>
-        <a class="btn btn--ghost" href="https://github.com/Jonnyton/TinyAssets/releases/latest/download/app-debug.apk">Get the Android app ↓</a>
+        <a class="btn btn--ghost" href="https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/app-debug.apk">Get the Android app ↓</a>
         <button type="button" class="urlchip" onclick={copyUrl} aria-label="Copy the MCP URL">
           <code>{MCP_URL.replace('https://', '')}</code>
           <span class="urlchip__copy">{copied ? 'copied ✓' : 'copy'}</span>
