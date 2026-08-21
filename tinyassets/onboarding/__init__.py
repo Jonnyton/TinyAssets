@@ -591,6 +591,65 @@ async def _handle_openai_exchange(request: Any) -> Any:
     )
 
 
+_TRACE_STEPS = frozenset({
+    "openai.listener", "openai.browser", "openai.callback", "openai.deeplink",
+    "openai.complete", "openai.exchange", "openai.finish",
+})
+_TRACE_BUCKET_MAX = 60          # lines per identity per window
+_TRACE_BUCKET_WINDOW = 600.0    # seconds
+_trace_buckets: dict[str, tuple[float, int]] = {}
+
+
+def _trace_allowed(user_id: str) -> bool:
+    """Per-identity fixed window so one bearer cannot flood the log."""
+    import time
+
+    now = time.monotonic()
+    start, count = _trace_buckets.get(user_id, (now, 0))
+    if now - start > _TRACE_BUCKET_WINDOW:
+        start, count = now, 0
+    if count >= _TRACE_BUCKET_MAX:
+        _trace_buckets[user_id] = (start, count)
+        return False
+    _trace_buckets[user_id] = (start, count + 1)
+    if len(_trace_buckets) > 5000:  # bounded memory: drop the oldest windows
+        for key in sorted(_trace_buckets, key=lambda k: _trace_buckets[k][0])[:1000]:
+            _trace_buckets.pop(key, None)
+    return True
+
+
+async def _handle_trace(request: Any) -> Any:
+    """Identity-scoped step trace from the app's OAuth hand-offs → daemon log.
+
+    Allowlisted step names, bounded sanitized detail, per-identity rate limit,
+    no secret ever (the app sends step names + error text), so a phone test
+    can be debugged from the log instead of a narration."""
+    import logging
+
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request, 1024)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    step = str(data.get("step", ""))[:64]
+    detail = _re.sub(r"[\x00-\x1f\x7f]", " ", str(data.get("detail", "")))[:200]
+    if step not in _TRACE_STEPS:
+        return JSONResponse({"error": "unknown_step"}, status_code=400)
+    if not _trace_allowed(current_identity().user_id):
+        return JSONResponse({"error": "rate_limited"}, status_code=429)
+    logging.getLogger("tinyassets.onboarding").info(
+        "app-trace user=%s step=%s detail=%s", current_identity().user_id, step, detail
+    )
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -608,6 +667,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
         Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
+        Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
     ]
 
 

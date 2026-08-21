@@ -920,3 +920,56 @@ def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
         od.lookup_flow(handle, user_id="u1").leased is True
     )  # still there, lease free before this
     assert od.verifier_matches_challenge("v" * 43 + "\u00e9", challenge) is False
+
+
+def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch, caplog):
+    import logging
+
+    import tinyassets.onboarding as onboarding
+
+    onboarding._trace_buckets.clear()
+    assert _drive("/mcp/app/trace", {"step": "openai.finish"}, monkeypatch=monkeypatch)[0] == 401
+    with caplog.at_level(logging.INFO, logger="tinyassets.onboarding"):
+        status, doc = _drive(
+            "/mcp/app/trace",
+            {"step": "openai.callback", "detail": "code\nerror\x00 " + "d" * 500},
+            identity=_user("f1"),
+            monkeypatch=monkeypatch,
+        )
+    assert (status, doc) == (200, {"ok": True})
+    line = next(r.getMessage() for r in caplog.records if "app-trace" in r.getMessage())
+    assert "user=f1 step=openai.callback detail=code error" in line
+    assert "\n" not in line and len(line) < 320
+    # only known steps
+    assert (
+        _drive(
+            "/mcp/app/trace", {"step": "x<script>"}, identity=_user("f1"), monkeypatch=monkeypatch
+        )[0]
+        == 400
+    )
+    # per-identity window
+    for _ in range(onboarding._TRACE_BUCKET_MAX):
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f2"),
+            monkeypatch=monkeypatch,
+        )
+    assert (
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f2"),
+            monkeypatch=monkeypatch,
+        )[0]
+        == 429
+    )
+    assert (
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f3"),
+            monkeypatch=monkeypatch,
+        )[0]
+        == 200
+    )
