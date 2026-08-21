@@ -7,21 +7,27 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  find:
+  apply:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH find compose plugin + home
+      - uses: actions/checkout@v4
+      - name: Apply HOME-fixed unit + verify start AND restart
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh; printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy; chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              deploy/tinyassets-daemon.service "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== tinyassets passwd ====="; getent passwd tinyassets
-          echo "===== HOME when run as tinyassets (sudo) ====="; sudo -u tinyassets sh -c 'echo HOME=$HOME; ls -la $HOME/.docker/cli-plugins/ 2>&1 | head'
-          echo "===== find docker-compose plugin ====="; find /usr /home /root /app /var/lib -maxdepth 6 -name 'docker-compose*' -path '*cli-plugins*' 2>/dev/null | head
-          echo "===== systemd exec HOME (what the unit sees) ====="; systemctl show tinyassets-daemon.service -p Environment 2>&1
+          cp /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service; systemctl daemon-reload; systemctl reset-failed tinyassets-daemon.service; systemctl enable tinyassets-daemon.service >/dev/null 2>&1
+          echo "===== START (up -d, no-op) ====="; systemctl start tinyassets-daemon.service 2>&1; echo "start rc=$?"; sleep 20
+          echo "state after start: active=$(systemctl is-active tinyassets-daemon.service) sub=$(systemctl show -p SubState --value tinyassets-daemon.service)"
+          echo "===== RESTART (deploy-path test: down + up -d) ====="; systemctl restart tinyassets-daemon.service 2>&1; echo "restart rc=$?"; sleep 45
+          echo "state after restart: active=$(systemctl is-active tinyassets-daemon.service) enabled=$(systemctl is-enabled tinyassets-daemon.service) nrestarts=$(systemctl show -p NRestarts --value tinyassets-daemon.service)"
+          echo "===== ps ====="; docker ps --format '{{.Names}} {{.Status}}' | grep -E "daemon|tunnel"
+          echo "===== local probe ====="; curl -s -o /dev/null -w "localhost:8001/mcp/app/token -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8001/mcp/app/token 2>&1
           echo "===== DONE ====="
           REMOTE

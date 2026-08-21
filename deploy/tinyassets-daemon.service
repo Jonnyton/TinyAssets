@@ -44,6 +44,13 @@ RemainAfterExit=yes
 User=tinyassets
 Group=tinyassets
 WorkingDirectory=/opt/tinyassets
+# HOME must be set explicitly (2026-08-21 P0 fix): systemd runs the unit with an
+# empty environment, so the docker CLI could not resolve its config/plugin path
+# and `docker compose` fell back to legacy, failing with "unknown flag:
+# --env-file". The tinyassets account's home is /opt/tinyassets (getent passwd);
+# `sudo -u tinyassets` sets this and works. The compose plugin itself lives at
+# the system path /usr/libexec/docker/cli-plugins/docker-compose.
+Environment=HOME=/opt/tinyassets
 EnvironmentFile=/etc/tinyassets/env
 
 # Pre-check: the compose env_file lives at /etc/tinyassets/env and must be
