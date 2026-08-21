@@ -75,12 +75,15 @@ TimeoutStartSec=200s
 # TimeoutStopSec > the cloudflared + daemon graceful-shutdown budgets.
 TimeoutStopSec=60s
 
-# Hardening — readonly-everything except what compose needs.
-# /var/lib/docker must remain writable for the Docker daemon's
-# storage; the tinyassets user only reads /opt/tinyassets.
-ProtectHome=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/docker /run/docker.sock /etc/tinyassets
+# Hardening NOTE (2026-08-21 P0 fix): the previous ProtectHome=yes +
+# ProtectSystem=strict masked the tinyassets user's docker config + compose CLI
+# plugin (~/.docker), so `docker compose` failed under systemd with
+# "unknown flag: --env-file" / "permission denied: /app/.docker/config.json" —
+# systemctl start/restart could never bring the stack up (the crash-loop that
+# took prod to 502). The daemon runs in a CONTAINER with its own isolation, so
+# host-level sandboxing of the compose CLI was defense-in-depth at the cost of
+# the unit actually working. Relaxed so `docker compose` resolves its plugin.
+NoNewPrivileges=yes
 
 # Journald captures compose stdout/stderr.
 StandardOutput=journal
