@@ -1,6 +1,6 @@
 # Floor 1 (inbound webhook) — cross-family review log (Codex)
 
-## Round 1 → VERDICT: adapt (before routing `/mcp/hooks/*` publicly)
+## Round 1 → VERDICT: adapt (before flipping TINYASSETS_INBOUND_ENABLED)
 
 Confirmed sound: a request cannot redirect a stored binding (actor/provider derive from the
 stored `universe_id`); unknown vs revoked tokens are indistinct with no timing oracle on a
@@ -33,8 +33,9 @@ Also: tokens are stored plaintext (a read-only DB disclosure grants invocation a
 consider hashing at rest); all non-Authorization/Cookie headers persist into tenant run input
 (a proxy-injected Access/OIDC assertion would too — tighten the forward set).
 
-Floor 1 is DARK until the tunnel routes `/mcp/hooks/*`, so these gate the PUBLIC-exposure step, not
-the code landing. Status: store + receiver + route + ops built, 20 tests (mock ownership/enqueue
+Floor 1 stays DARK until `TINYASSETS_INBOUND_ENABLED` is flipped; the receiver mounts at
+`/mcp/hooks/<token>` (under `/mcp`, reached by the EXISTING `/mcp/*` tunnel — no tunnel/infra
+change), so these gate the flag-flip step, not the code landing. Status: store + receiver + route + ops built, 20 tests (mock ownership/enqueue
 + streaming — Codex notes those boundaries are untested). Fixes owed before go-live.
 
 ## Round 2 → VERDICT: adapt (6 findings + tests were self-confirming). NOW RESOLVED.
@@ -140,4 +141,4 @@ NOT to be chased further before ship:
   of the side-channel is post-live.
 
 Gating to LIFT before PUBLIC (multi-tenant / publicly-routed) exposure: revisit each deferred item,
-and only then route `/mcp/hooks/*` on the tunnel + set `TINYASSETS_INBOUND_ENABLED`.
+and only then flip `TINYASSETS_INBOUND_ENABLED` (the /mcp/hooks receiver rides the existing /mcp tunnel — no tunnel change).

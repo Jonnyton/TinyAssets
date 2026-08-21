@@ -32,10 +32,21 @@ def _public_base_url() -> str:
 
     default = "https://tinyassets.io"
     raw = (os.environ.get("TINYASSETS_PUBLIC_BASE_URL") or default).rstrip("/")
-    parts = urlsplit(raw)
+    # A canonical origin carries no whitespace/control chars — reject outright
+    # (Codex: whitespace was accepted before) so it can't smuggle a header/URL.
+    if any(c.isspace() for c in raw):
+        logger.warning("TINYASSETS_PUBLIC_BASE_URL has whitespace; using %s", default)
+        return default
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname  # malformed host (e.g. "https://[bad") raises ValueError
+        _ = parts.port         # a non-numeric port raises ValueError
+    except ValueError:
+        logger.warning("TINYASSETS_PUBLIC_BASE_URL is malformed; using %s", default)
+        return default
     if (
         parts.scheme == "https"
-        and parts.hostname
+        and host
         and not parts.path
         and not parts.query
         and not parts.fragment
