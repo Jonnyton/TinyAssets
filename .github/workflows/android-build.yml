@@ -20,6 +20,12 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/android-build.yml"
+  # PR builds compile-check native changes (mobile/native, the injector) with
+  # no signing key and no publish - both are main-only below.
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
 permissions:
