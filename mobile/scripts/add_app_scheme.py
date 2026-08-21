@@ -125,7 +125,7 @@ def register_scheme() -> int:
     if 'android:scheme="tinyassets"' not in text:
         text = text.replace(marker, view_filter + "        " + marker, 1)
         added.append("tinyassets://auth")
-    if 'android.intent.action.SEND' not in text:
+    if 'android:label="Finish sign-in in TinyAssets"' not in text:
         text = text.replace(marker, send_filter + "        " + marker, 1)
         added.append("share-to-app")
     if added:
@@ -174,10 +174,17 @@ def install_plugin() -> int:
     if current == MAIN_ACTIVITY_SRC:
         print("MainActivity already current")
         return 0
-    # Replace any RECOGNIZED MainActivity (Capacitor's template or an earlier
-    # version written by this script) so upgrades pick up the share rewrite.
-    if current and not re.search(r"class MainActivity extends BridgeActivity", current):
-        print("unexpected MainActivity shape; refusing to overwrite", file=sys.stderr)
+    # Replace ONLY a recognized MainActivity: Capacitor's untouched template
+    # (an empty BridgeActivity subclass) or a version this script wrote earlier
+    # (carries its plugin registration). Anything hand-customized is left alone.
+    template = bool(re.fullmatch(
+        r"\s*package io\.tinyassets\.app;\s*import com\.getcapacitor\.BridgeActivity;\s*"
+        r"public class MainActivity extends BridgeActivity\s*\{\s*\}\s*",
+        current,
+    ))
+    ours = "registerPlugin(LocalCallbackPlugin.class)" in current
+    if current and not (template or ours):
+        print("customized MainActivity; refusing to overwrite", file=sys.stderr)
         return 1
     MAIN_ACTIVITY.write_text(MAIN_ACTIVITY_SRC, encoding="utf-8")
     print("installed LocalCallback plugin + MainActivity (plugin registration, share rewrite)")
