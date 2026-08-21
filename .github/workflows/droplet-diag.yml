@@ -7,26 +7,19 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  apply_unit:
+  why:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install fixed unit + settle (zero downtime)
+      - name: SSH why up -d fails under systemd
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh; printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy; chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-              deploy/tinyassets-daemon.service "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== compose restart policy (docker handles container crashes) ====="; grep -nE "restart:" /opt/tinyassets/compose.yml 2>&1 | head
-          echo "===== install fixed unit ====="; cp /etc/systemd/system/tinyassets-daemon.service /tmp/unit.bak 2>/dev/null; cp /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service && echo "installed"
-          echo "===== daemon-reload + reset-failed + enable ====="; systemctl daemon-reload 2>&1; systemctl reset-failed tinyassets-daemon.service 2>&1; systemctl enable tinyassets-daemon.service 2>&1
-          echo "===== START (up -d; no-op on already-running stack = zero downtime) ====="; systemctl start tinyassets-daemon.service 2>&1; echo "start rc=$?"; sleep 20
-          echo "===== systemd state (want active + enabled) ====="; echo "active=$(systemctl is-active tinyassets-daemon.service)  enabled=$(systemctl is-enabled tinyassets-daemon.service)  sub=$(systemctl show -p SubState --value tinyassets-daemon.service)"
-          echo "===== ps ====="; docker ps --format '{{.Names}} {{.Status}}' | grep -E "daemon|tunnel"
+          echo "===== journalctl (systemd up -d error) ====="; journalctl -u tinyassets-daemon.service -n 30 --no-pager 2>&1 | grep -ivE "ENV-UNREADABLE|password" | tail -30
+          echo "===== reproduce ExecStart AS tinyassets user ====="; sudo -u tinyassets /usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d --remove-orphans 2>&1 | tail -15; echo "rc=$?"
           echo "===== DONE ====="
           REMOTE
