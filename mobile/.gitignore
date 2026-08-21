@@ -1,6 +1,5 @@
-# Node / Capacitor CLI
+# Node / Capacitor CLI (package-lock.json IS tracked: CI installs with `npm ci`)
 node_modules/
-package-lock.json
 
 # Generated native Android project (regenerate with `npx cap add android`).
 # If you customize it (icons, signing config, native code) and want it tracked,
