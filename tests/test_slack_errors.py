@@ -220,7 +220,7 @@ def test_a_base64_credential_that_fails_to_decode_is_not_exposed(tmp_path):
     import json as _json
 
     from tinyassets.credential_vault import credential_vault_path
-    from tinyassets.effectors.slack_transport import resolve_slack_bot_token
+    from tinyassets.effectors.outbound_channel_adapter import resolve_slack_bot_token
 
     secret = b"xoxb-CHAIN-LEAK\xff"
     credential_vault_path(tmp_path).write_text(

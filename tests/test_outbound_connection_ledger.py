@@ -5,7 +5,6 @@ import hashlib
 import inspect
 import json
 import os
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -241,49 +240,82 @@ def test_production_vault_resolver_is_exact_to_universe_repo_and_reference(tmp_p
 
 
 def test_production_github_driver_reads_only_exact_commit_repository(monkeypatch):
-    seen = []
+    # read_for_commit routes through the SSRF-hardened driver + destination-bound
+    # allowlist UNCONDITIONALLY (channel-agnostic-outbound: no legacy urllib path).
+    # Point that driver at a loopback stub and assert the exact wire request; the
+    # repository-mismatch refusal is enforced BEFORE any network call.
+    import http.server
+    import socket
+    import ssl
+    import threading
 
-    class _Response:
-        def __enter__(self):
-            return self
+    from tinyassets.storage import outbound_connections as _oc
+    from tinyassets.storage.outbound_connections import _SsrfHardenedHttpDriver
 
-        def __exit__(self, *_args):
-            return None
+    recorded: list[dict] = []
 
-        def read(self):
-            return b'[{"number":17}]'
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
 
-    def fake_urlopen(request, timeout):
-        seen.append((request, timeout))
-        return _Response()
+        def log_message(self, *_a):
+            return
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    driver_type = getattr(
-        __import__(
-            "tinyassets.storage.outbound_connections",
-            fromlist=["_ProductionGitHubNetworkDriver"],
-        ),
-        "_ProductionGitHubNetworkDriver",
-    )
-    driver = driver_type()
-    result = driver(
-        credential="requester-owned-secret",
-        provider="github",
-        destination="github.com/acme/widgets",
-        verb="pull_requests:read_for_commit",
-        request={
-            "repository": "acme/widgets",
-            "intended_head_sha": "a" * 40,
-            "per_page": 100,
-        },
-    )
+        def do_GET(self):  # noqa: N802
+            recorded.append({"path": self.path})
+            payload = b'[{"number": 17}]'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    class _PassThroughTLS:
+        def __init__(self):
+            self.verify_mode = ssl.CERT_NONE
+            self.check_hostname = False
+
+        def wrap_socket(self, sock, server_hostname=None):  # noqa: ANN001
+            return sock
+
+    def open_socket(_address, timeout, _src):
+        return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+
+    def factory():
+        return _SsrfHardenedHttpDriver(
+            resolver=lambda _h, _p: ["127.0.0.1"],
+            validator=lambda addr: addr,
+            open_socket=open_socket,
+            ssl_context=_PassThroughTLS(),
+            allowed_ports=frozenset({443}),
+        )
+
+    monkeypatch.setattr(_oc, "_SsrfHardenedHttpDriver", factory)
+
+    driver = _oc._ProductionGitHubNetworkDriver()
+    try:
+        result = driver(
+            credential="requester-owned-secret",
+            provider="github",
+            destination="github.com/acme/widgets",
+            verb="pull_requests:read_for_commit",
+            request={
+                "repository": "acme/widgets",
+                "intended_head_sha": "a" * 40,
+                "per_page": 100,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
 
     assert result == [{"number": 17}]
-    request, timeout = seen[0]
-    assert request.full_url.endswith(
+    assert recorded[0]["path"].endswith(
         "/repos/acme/widgets/commits/" + "a" * 40 + "/pulls?per_page=100"
     )
-    assert timeout > 0
     with pytest.raises(PermissionError, match="repository"):
         driver(
             credential="requester-owned-secret",

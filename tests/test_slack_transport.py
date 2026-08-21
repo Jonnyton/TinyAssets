@@ -1,9 +1,12 @@
-"""Tests for the server-owned Slack transport.
+"""Tests for the server-owned Slack transport (channel-agnostic-outbound).
 
-Weighted toward the properties that make this safe to inject into the governed
-outbound boundary: the credential never crosses the boundary, a vault-bound
-universe never borrows an ambient token, and no reply content survives into the
-receipt or an error.
+The transport lives in ``effectors/outbound_channel_adapter`` now — the bespoke
+``slack_transport`` module was collapsed into the ONE channel adapter, and the tweet/
+message POST goes through the SSRF-hardened driver via ``slack_send_via_connection``.
+These tests stub that send in place of the removed ``_post`` and keep the properties
+that make the transport safe to inject into the governed outbound boundary: the
+credential never crosses the boundary, a vault-bound universe never borrows an ambient
+token, and no reply content survives into the receipt or an error.
 """
 
 from __future__ import annotations
@@ -14,11 +17,14 @@ from pathlib import Path
 import pytest
 
 from tinyassets.app_reply_authority import ReplyDestination
-from tinyassets.effectors.slack_transport import (
+from tinyassets.effectors.outbound_channel_adapter import (
     SlackTransportError,
     build_slack_transport,
     resolve_slack_bot_token,
 )
+from tinyassets.storage.outbound_connections import ProxyRequestError
+
+_SEND = "tinyassets.effectors.outbound_channel_adapter.slack_send_via_connection"
 
 
 def _vault(universe_dir: Path, records: list[dict]) -> None:
@@ -44,19 +50,24 @@ def _destination(connection_id: str = "conn-a", address: str = "C0123ABC") -> Re
     )
 
 
-class _StubSlack:
-    """Records the outgoing request and returns a canned Slack response."""
+class _StubSend:
+    """Records the send arguments and returns a canned driver result dict."""
 
-    def __init__(self, response: dict, status: int = 200) -> None:
-        self.response = response
+    def __init__(self, response_body: dict, status: int = 200) -> None:
+        self.response_body = response_body
         self.status = status
         self.calls: list[dict] = []
 
-    def __call__(self, url, payload, token, timeout):
+    def __call__(self, *, channel, text, thread_ts, bot_token):
         self.calls.append(
-            {"url": url, "payload": payload, "token": token, "timeout": timeout}
+            {"channel": channel, "text": text, "thread_ts": thread_ts, "bot_token": bot_token}
         )
-        return self.response
+        return {
+            "status": self.status,
+            "reason": "",
+            "headers": {},
+            "body": json.dumps(self.response_body),
+        }
 
 
 # --- the credential boundary -------------------------------------------------
@@ -95,17 +106,31 @@ def test_token_is_scoped_to_its_connection(tmp_path: Path):
 
 
 def test_credential_is_never_returned_to_the_caller(tmp_path: Path, monkeypatch):
-    """The token goes into the Authorization header and nowhere else."""
+    """The token goes into the driver bundle and nowhere else."""
     universe = tmp_path / "u-4"
     universe.mkdir()
     _vault(universe, [_slack_record("conn-a", "xoxb-secret-value")])
-    stub = _StubSlack({"ok": True, "ts": "1712345678.9", "channel": "C0123ABC"})
-    monkeypatch.setattr("tinyassets.effectors.slack_transport._post", stub)
+    stub = _StubSend({"ok": True, "ts": "1712345678.9", "channel": "C0123ABC"})
+    monkeypatch.setattr(_SEND, stub)
 
     receipt = build_slack_transport(universe)(_destination(), "hello")
 
     assert "xoxb-secret-value" not in receipt.provider_receipt_ref
-    assert stub.calls[0]["token"] == "xoxb-secret-value"
+    assert stub.calls[0]["bot_token"] == "xoxb-secret-value"
+
+
+def test_non_bot_token_is_refused(tmp_path: Path, monkeypatch):
+    """A user (xoxp-) token would post under a human's name — refuse it."""
+    universe = tmp_path / "u-xoxp"
+    universe.mkdir()
+    _vault(universe, [_slack_record("conn-a", "xoxp-user-token")])
+    stub = _StubSend({"ok": True, "ts": "1.0", "channel": "C"})
+    monkeypatch.setattr(_SEND, stub)
+
+    with pytest.raises(SlackTransportError) as exc:
+        build_slack_transport(universe)(_destination(), "hello")
+    assert "not a bot token" in str(exc.value)
+    assert stub.calls == [], "must refuse before spending a network round trip"
 
 
 # --- receipt shape -----------------------------------------------------------
@@ -116,8 +141,7 @@ def test_receipt_carries_an_identifier_not_content(tmp_path: Path, monkeypatch):
     universe.mkdir()
     _vault(universe, [_slack_record("conn-a")])
     monkeypatch.setattr(
-        "tinyassets.effectors.slack_transport._post",
-        _StubSlack({"ok": True, "ts": "1712345678.9", "channel": "C0123ABC"}),
+        _SEND, _StubSend({"ok": True, "ts": "1712345678.9", "channel": "C0123ABC"})
     )
 
     body = "a very distinctive reply body"
@@ -133,8 +157,8 @@ def test_slack_in_band_error_surfaces_the_code_not_the_payload(tmp_path: Path, m
     universe.mkdir()
     _vault(universe, [_slack_record("conn-a")])
     monkeypatch.setattr(
-        "tinyassets.effectors.slack_transport._post",
-        _StubSlack({"ok": False, "error": "channel_not_found", "message": "secret echo"}),
+        _SEND,
+        _StubSend({"ok": False, "error": "channel_not_found", "message": "secret echo"}),
     )
 
     with pytest.raises(SlackTransportError) as exc:
@@ -147,10 +171,7 @@ def test_accepted_without_identifier_is_an_error(tmp_path: Path, monkeypatch):
     universe = tmp_path / "u-7"
     universe.mkdir()
     _vault(universe, [_slack_record("conn-a")])
-    monkeypatch.setattr(
-        "tinyassets.effectors.slack_transport._post",
-        _StubSlack({"ok": True, "channel": "C0123ABC"}),
-    )
+    monkeypatch.setattr(_SEND, _StubSend({"ok": True, "channel": "C0123ABC"}))
 
     with pytest.raises(SlackTransportError):
         build_slack_transport(universe)(_destination(), "hello")
@@ -183,8 +204,8 @@ def test_oversized_reply_is_refused_before_the_round_trip(tmp_path: Path, monkey
     universe = tmp_path / "u-10"
     universe.mkdir()
     _vault(universe, [_slack_record("conn-a")])
-    stub = _StubSlack({"ok": True, "ts": "1.0", "channel": "C"})
-    monkeypatch.setattr("tinyassets.effectors.slack_transport._post", stub)
+    stub = _StubSend({"ok": True, "ts": "1.0", "channel": "C"})
+    monkeypatch.setattr(_SEND, stub)
 
     with pytest.raises(SlackTransportError):
         build_slack_transport(universe)(_destination(), "x" * 40_001)
@@ -198,124 +219,58 @@ def test_delivers_to_the_authorized_channel(tmp_path: Path, monkeypatch):
     universe = tmp_path / "u-11"
     universe.mkdir()
     _vault(universe, [_slack_record("conn-a")])
-    stub = _StubSlack({"ok": True, "ts": "1712345678.9", "channel": "C0123ABC"})
-    monkeypatch.setattr("tinyassets.effectors.slack_transport._post", stub)
+    stub = _StubSend({"ok": True, "ts": "1712345678.9", "channel": "C0123ABC"})
+    monkeypatch.setattr(_SEND, stub)
 
     receipt = build_slack_transport(universe)(_destination(), "hello there")
 
     assert receipt.provider_receipt_ref.startswith("slack:")
-    assert stub.calls[0]["payload"] == {"channel": "C0123ABC", "text": "hello there"}
-
-# --- Cross-family review: the bot token leaked here too ---------------------
-# Codex reproduced both of these against this module, after the identical two
-# bugs had already been fixed in slack_socket_mode and slack_socket_runner.
-# Third occurrence of one class -> shared helpers in effectors/slack_errors.
+    assert stub.calls[0]["channel"] == "C0123ABC"
+    assert stub.calls[0]["text"] == "hello there"
 
 
-def test_the_bot_token_never_reaches_a_traceback(monkeypatch, tmp_path):
-    """`raise ... from exc` kept a URLError whose message quoted the header."""
+def test_a_real_slack_error_code_is_still_reported(tmp_path: Path, monkeypatch):
+    """The allow-list must not blind us to the diagnostic we need."""
+    universe = tmp_path / "u-12"
+    universe.mkdir()
+    _vault(universe, [_slack_record("conn-a", "xoxb-EXAMPLE-NOT-A-REAL-TOKEN")])
+    monkeypatch.setattr(_SEND, _StubSend({"ok": False, "error": "channel_not_found"}))
+
+    with pytest.raises(SlackTransportError) as exc:
+        build_slack_transport(universe)(_destination(), "hello")
+    assert "channel_not_found" in str(exc.value)
+
+
+# --- credential-blindness of the transport wrapper --------------------------
+# The driver itself is proven credential-blind in tests/test_outbound_ssrf_driver.py
+# (the slack_transport.py:89 Authorization-leak class). Here we assert the transport
+# WRAPPER never lets a driver failure carry a token out on __context__.
+
+
+def test_transport_failure_is_token_free_and_has_no_context(tmp_path: Path, monkeypatch):
+    """A driver refusal collapses to a fixed, token-free error with a clean context."""
     import traceback as _tb
-    import urllib.error
 
-    from tinyassets.effectors import slack_transport as mod
-
+    universe = tmp_path / "u-13"
+    universe.mkdir()
     secret = "xoxb-VERY-SECRET-BOT"
+    _vault(universe, [_slack_record("conn-a", secret)])
 
-    def _boom(*_a, **_kw):
-        raise urllib.error.URLError(f"Authorization: Bearer {secret}")
+    def _boom(*, channel, text, thread_ts, bot_token):
+        # The real driver guarantees secret-free errors; even if it did not, the
+        # transport's `from None` must clear the context.
+        raise ProxyRequestError(f"leak attempt: {secret}")
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(_SEND, _boom)
 
-    with pytest.raises(mod.SlackTransportError) as exc:
-        mod._post("https://slack.invalid/x", {"channel": "C1"}, secret, 1.0)
+    with pytest.raises(SlackTransportError) as exc:
+        build_slack_transport(universe)(_destination(), "hello")
 
+    assert "unreachable" in str(exc.value)
+    assert secret not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
     rendered = "".join(
         _tb.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
     )
     assert secret not in rendered
-    assert "xoxb-" not in rendered
-
-
-def test_an_inband_slack_error_cannot_echo_the_token_back(monkeypatch, tmp_path):
-    """Slack reports failure in-band with HTTP 200, and `error` is upstream text."""
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.effectors import slack_transport as mod
-
-    secret = "xoxb-VERY-SECRET-BOT"
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "social",
-                "service": "slack",
-                "destination": "conn-1",
-                "bot_token": secret,
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        mod, "_post", lambda *_a, **_kw: {"ok": False, "error": f"invalid {secret}"}
-    )
-
-    post = mod.build_slack_transport(tmp_path)
-    destination = ReplyDestination(
-        provider="slack", connection_id="conn-1", address="C0123"
-    )
-
-    with pytest.raises(mod.SlackTransportError) as exc:
-        post(destination, "hello")
-
-    assert secret not in str(exc.value)
-    assert "unknown_error" in str(exc.value)
-
-
-def test_a_real_slack_error_code_is_still_reported(monkeypatch, tmp_path):
-    """The allow-list must not blind us to the diagnostic we need."""
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.effectors import slack_transport as mod
-
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "social",
-                "service": "slack",
-                "destination": "conn-1",
-                "bot_token": "xoxb-EXAMPLE-NOT-A-REAL-TOKEN",
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        mod, "_post", lambda *_a, **_kw: {"ok": False, "error": "channel_not_found"}
-    )
-
-    post = mod.build_slack_transport(tmp_path)
-    destination = ReplyDestination(
-        provider="slack", connection_id="conn-1", address="C0123"
-    )
-
-    with pytest.raises(mod.SlackTransportError) as exc:
-        post(destination, "hello")
-
-    assert "channel_not_found" in str(exc.value)
-
-
-def test_the_transport_error_holds_no_token_bearing_context(monkeypatch):
-    """Same round-3 finding, third file: __context__ outlived `from None`."""
-    import urllib.error
-
-    from tinyassets.effectors import slack_transport as mod
-
-    secret = "xoxb-VERY-SECRET-BOT"
-
-    def _boom(*_a, **_kw):
-        raise urllib.error.URLError(f"Authorization: Bearer {secret}")
-
-    monkeypatch.setattr(mod.urllib.request, "urlopen", _boom)
-
-    with pytest.raises(mod.SlackTransportError) as exc:
-        mod._post("https://slack.invalid/x", {"channel": "C1"}, secret, 1.0)
-
-    assert exc.value.__cause__ is None
-    assert exc.value.__context__ is None
-    assert secret not in repr(exc.value.__context__)

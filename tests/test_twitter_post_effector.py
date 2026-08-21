@@ -1,4 +1,11 @@
-"""PR-173 twitter_post external-write effector tests."""
+"""twitter_post external-write effector tests (channel-agnostic-outbound).
+
+The effector lives in ``effectors/outbound_channel_adapter`` now (the bespoke
+``twitter_post`` module was collapsed into the ONE channel adapter). Credentials come
+from the per-universe VAULT — the legacy ``TWITTER_*`` host-env path is gone — and the
+tweet POST goes through the SSRF-hardened driver via ``twitter_send_via_connection``,
+which these tests stub in place of the removed ``_post_tweet``.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from tinyassets.branches import NodeDefinition
+from tinyassets.credential_vault import write_credential_vault
 from tinyassets.effectors import (
     EXTERNAL_WRITE_SINK_TWITTER_POST,
     run_effects_for_branch,
@@ -17,6 +25,9 @@ from tinyassets.storage.external_write_receipts import (
     STATUS_SUCCEEDED,
     lookup_receipt,
 )
+
+_SEND = "tinyassets.effectors.outbound_channel_adapter.twitter_send_via_connection"
+_AUTHORITY = "tinyassets.effectors.outbound_channel_adapter.resolve_soul_effect_authority"
 
 
 def _packet(**overrides):
@@ -39,11 +50,22 @@ def _packet(**overrides):
     return packet
 
 
-def _set_credentials(monkeypatch):
-    monkeypatch.setenv("TWITTER_API_KEY", "api-key")
-    monkeypatch.setenv("TWITTER_API_SECRET", "api-secret")
-    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "access-token")
-    monkeypatch.setenv("TWITTER_ACCESS_TOKEN_SECRET", "access-secret")
+def _deposit_credentials(universe_dir, *, destination="x:self", api_key="api-key"):
+    """Deposit a per-universe vault twitter connection (the four OAuth values)."""
+    write_credential_vault(
+        universe_dir,
+        [
+            {
+                "credential_type": "social",
+                "service": "twitter",
+                "destination": destination,
+                "api_key": api_key,
+                "api_secret": "api-secret",
+                "access_token": "access-token",
+                "access_token_secret": "access-secret",
+            }
+        ],
+    )
 
 
 def test_package_exports_twitter_post_effector():
@@ -56,7 +78,7 @@ def test_twitter_post_dry_run_env_returns_would_post_before_network(
 ):
     monkeypatch.setenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", "1")
     post = Mock()
-    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr(_SEND, post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -75,12 +97,9 @@ def test_twitter_post_dry_run_env_returns_would_post_before_network(
 
 def test_twitter_post_authority_denied_fails_closed(tmp_path, monkeypatch):
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    monkeypatch.setattr(
-        "tinyassets.effectors.twitter_post.resolve_soul_effect_authority",
-        lambda *_args, **_kwargs: "denied",
-    )
+    monkeypatch.setattr(_AUTHORITY, lambda *_args, **_kwargs: "denied")
     post = Mock()
-    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr(_SEND, post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -105,7 +124,7 @@ def test_twitter_post_missing_consent_dry_runs_before_credentials(
 ):
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
     post = Mock()
-    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr(_SEND, post)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -121,9 +140,39 @@ def test_twitter_post_missing_consent_dry_runs_before_credentials(
     assert result["destination"] == "x:self"
 
 
+def test_twitter_post_missing_vault_credential_dry_runs(tmp_path, monkeypatch):
+    # Consent + authority present, but NO vault twitter connection → fail closed to a
+    # missing_credentials dry-run, never borrowing ambient env (the closed env hole).
+    monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
+    monkeypatch.setenv("TWITTER_API_KEY", "ambient-must-not-be-used")
+    monkeypatch.setenv("TWITTER_API_SECRET", "ambient")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "ambient")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN_SECRET", "ambient")
+    grant_consent(
+        tmp_path,
+        sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+        destination="x:self",
+        granted_by="tester",
+    )
+    post = Mock()
+    monkeypatch.setattr(_SEND, post)
+
+    result = run_twitter_post_effector(
+        node_id="emit",
+        output_keys=["packet"],
+        run_state={"packet": _packet()},
+        base_path=tmp_path,
+        run_id="run-no-vault",
+    )
+
+    post.assert_not_called()
+    assert result["dry_run"] is True
+    assert result["reason"] == "missing_credentials"
+
+
 def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    _set_credentials(monkeypatch)
+    _deposit_credentials(tmp_path)
     grant_consent(
         tmp_path,
         sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
@@ -131,14 +180,15 @@ def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
         granted_by="tester",
     )
 
-    def fake_post(*, text, reply_to_tweet_id, quote_tweet_id, credentials):
+    def fake_send(*, text, reply_to_tweet_id, quote_tweet_id, credentials):
         assert text.startswith("TinyAssets substrate")
         assert reply_to_tweet_id == ""
         assert quote_tweet_id == ""
         assert credentials.api_key == "api-key"
+        assert credentials.source == "vault"
         return {"data": {"id": "1234567890"}}
 
-    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", fake_post)
+    monkeypatch.setattr(_SEND, fake_send)
 
     result = run_twitter_post_effector(
         node_id="emit",
@@ -151,7 +201,7 @@ def test_twitter_post_success_records_post_evidence(tmp_path, monkeypatch):
     assert result["phase"] == "phase_2"
     assert result["post_id"] == "1234567890"
     assert result["post_url"] == "https://x.com/kwisatzh4derach/status/1234567890"
-    assert result["credential_source"] == "default"
+    assert result["credential_source"] == "vault"
 
     receipt = lookup_receipt(
         tmp_path,
@@ -167,7 +217,7 @@ def test_twitter_post_idempotency_dedup_uses_recorded_evidence(
     tmp_path, monkeypatch,
 ):
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    _set_credentials(monkeypatch)
+    _deposit_credentials(tmp_path)
     grant_consent(
         tmp_path,
         sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
@@ -175,7 +225,7 @@ def test_twitter_post_idempotency_dedup_uses_recorded_evidence(
         granted_by="tester",
     )
     post = Mock(return_value={"data": {"id": "first"}})
-    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr(_SEND, post)
 
     first = run_twitter_post_effector(
         node_id="emit",
@@ -202,17 +252,14 @@ def test_twitter_post_derives_idempotency_hint_when_omitted(
     tmp_path, monkeypatch,
 ):
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    _set_credentials(monkeypatch)
+    _deposit_credentials(tmp_path)
     grant_consent(
         tmp_path,
         sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
         destination="x:self",
         granted_by="tester",
     )
-    monkeypatch.setattr(
-        "tinyassets.effectors.twitter_post._post_tweet",
-        lambda **_kwargs: {"data": {"id": "derived"}},
-    )
+    monkeypatch.setattr(_SEND, lambda **_kwargs: {"data": {"id": "derived"}})
     packet = _packet(idempotency_hint="")
 
     result = run_twitter_post_effector(
@@ -230,35 +277,27 @@ def test_twitter_post_derives_idempotency_hint_when_omitted(
 def test_twitter_post_rejects_payload_handle_mismatch_with_destination(
     tmp_path, monkeypatch,
 ):
-    """A packet consented for destination 'x:self' must not be able to post
-    from a different account by supplying payload.handle='@other'.
+    """A packet consented for destination 'x:self' must not post from a different
+    account by supplying payload.handle='@other'.
 
-    Even with full authority + active consent for the authorized destination
-    AND daemon-env credentials present for the @other account, the divergent
-    payload handle must be REJECTED and no post attempted. This is the
+    The divergent payload handle is REJECTED before credential resolution, so no post
+    is attempted regardless of whether an @other credential exists. This is the
     PR-1374 authorization-bypass regression guard.
     """
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    # Active consent + authority for the authorized destination only.
     grant_consent(
         tmp_path,
         sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
         destination="x:self",
         granted_by="tester",
     )
-    monkeypatch.setattr(
-        "tinyassets.effectors.twitter_post.resolve_soul_effect_authority",
-        lambda *_args, **_kwargs: "undeclared",
-    )
-    # Daemon env carries valid per-handle credentials for the @other account
-    # — the exact precondition that made the bypass postable before the fix.
-    monkeypatch.setenv("TWITTER_OTHER_API_KEY", "other-api-key")
-    monkeypatch.setenv("TWITTER_OTHER_API_SECRET", "other-api-secret")
-    monkeypatch.setenv("TWITTER_OTHER_ACCESS_TOKEN", "other-access-token")
-    monkeypatch.setenv("TWITTER_OTHER_ACCESS_TOKEN_SECRET", "other-access-secret")
+    monkeypatch.setattr(_AUTHORITY, lambda *_args, **_kwargs: "undeclared")
+    # A vault credential for the @other account exists — the exact precondition that
+    # made the bypass postable before the fix. It must still never be reached.
+    _deposit_credentials(tmp_path, destination="@other")
 
     post = Mock()
-    monkeypatch.setattr("tinyassets.effectors.twitter_post._post_tweet", post)
+    monkeypatch.setattr(_SEND, post)
 
     packet = _packet(payload={"handle": "@other"})
     result = run_twitter_post_effector(
@@ -269,13 +308,11 @@ def test_twitter_post_rejects_payload_handle_mismatch_with_destination(
         run_id="run-handle-mismatch",
     )
 
-    # No post attempted, structured rejection naming both accounts.
     post.assert_not_called()
     assert result.get("error_kind") == "handle_authority_mismatch"
     assert result["authorized_handle"] == "@kwisatzh4derach"
     assert result["requested_handle"] == "@other"
     assert result["destination"] == "x:self"
-    # No success receipt was minted for the mismatched attempt.
     assert lookup_receipt(
         tmp_path,
         idempotency_hint="twitter-post-run-1",
@@ -287,20 +324,16 @@ def test_twitter_post_payload_handle_matching_destination_is_allowed(
     tmp_path, monkeypatch,
 ):
     """A payload handle that resolves to the SAME account as the authorized
-    destination is fine — the binding check only blocks divergence, not a
-    redundant restatement of the authorized account."""
+    destination is fine — the binding check only blocks divergence."""
     monkeypatch.delenv("TINYASSETS_EXTERNAL_WRITE_DRY_RUN", raising=False)
-    _set_credentials(monkeypatch)
+    _deposit_credentials(tmp_path)
     grant_consent(
         tmp_path,
         sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
         destination="x:self",
         granted_by="tester",
     )
-    monkeypatch.setattr(
-        "tinyassets.effectors.twitter_post._post_tweet",
-        lambda **_kwargs: {"data": {"id": "match-ok"}},
-    )
+    monkeypatch.setattr(_SEND, lambda **_kwargs: {"data": {"id": "match-ok"}})
 
     # 'x:self' normalizes to the default handle; restate it explicitly.
     packet = _packet(payload={"handle": "@kwisatzh4derach"})

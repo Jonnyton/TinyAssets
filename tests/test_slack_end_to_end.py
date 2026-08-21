@@ -32,11 +32,47 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from tinyassets.credential_vault import write_credential_vault
+from tinyassets.effectors import outbound_channel_adapter as adapter
 from tinyassets.effectors import slack_agent_service as service
 from tinyassets.effectors import slack_socket_runner as runner
-from tinyassets.effectors import slack_transport
 
 pytest.importorskip("websockets")
+
+
+def _install_loopback_slack_driver(monkeypatch, port):
+    """Point the adapter's SSRF-hardened driver at a loopback chat.postMessage stub.
+
+    ``build_slack_transport`` sends through ``_SsrfHardenedHttpDriver()`` (real
+    DNS/TLS to slack.com); this injects the test seams (loopback socket, pass-through
+    TLS, port-443 allowlist) so the real driver + real endpoint allowlist run against
+    the local ``_PostMessage`` server — carrying the genuine Bearer header.
+    """
+    import socket
+    import ssl
+
+    from tinyassets.storage.outbound_connections import _SsrfHardenedHttpDriver
+
+    class _PassThroughTLS:
+        def __init__(self):
+            self.verify_mode = ssl.CERT_NONE
+            self.check_hostname = False
+
+        def wrap_socket(self, sock, server_hostname=None):  # noqa: ANN001
+            return sock
+
+    def open_socket(_address, timeout, _src):
+        return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+
+    def factory():
+        return _SsrfHardenedHttpDriver(
+            resolver=lambda _h, _p: ["127.0.0.1"],
+            validator=lambda addr: addr,
+            open_socket=open_socket,
+            ssl_context=_PassThroughTLS(),
+            allowed_ports=frozenset({443}),
+        )
+
+    monkeypatch.setattr(adapter, "_SsrfHardenedHttpDriver", factory)
 
 TEAM = "T0BN5LK57FT"
 APP = "A0BN1Q98MTQ"
@@ -200,14 +236,9 @@ async def test_the_documented_socket_lifecycle_end_to_end(tmp_path, monkeypatch)
             lambda _u: real_connect(f"ws://127.0.0.1:{port}"),
         )
 
-        real_transport = slack_transport.build_slack_transport
-        monkeypatch.setattr(
-            service,
-            "build_slack_transport",
-            lambda d, **kw: real_transport(
-                d, url=f"http://127.0.0.1:{http.server_address[1]}/api/chat.postMessage"
-            ),
-        )
+        # build_slack_transport (via service) now routes through the SSRF-hardened
+        # driver; point that driver at the loopback chat.postMessage stub.
+        _install_loopback_slack_driver(monkeypatch, http.server_address[1])
 
         turns: list[str] = []
 

@@ -757,7 +757,7 @@ def test_composite_transport_receipt_does_not_duplicate_the_reply(base, monkeypa
     reply_ts = "1700000000.000200"
 
     def _composite_transport(destination, body, *, thread_ts=""):
-        # Exactly what tinyassets/effectors/slack_transport.py returns.
+        # Exactly what outbound_channel_adapter.build_slack_transport returns.
         return _Receipt(f"slack:{_DM}:{reply_ts}")
 
     # Turn 1: the reply is recorded from the COMPOSITE receipt.

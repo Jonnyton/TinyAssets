@@ -1,38 +1,49 @@
-"""Single-call outbound channels expressed as general ``http`` connections.
+"""The ONE outbound-channel module — every external channel routes here.
 
-Channel-agnostic-outbound tracks 2 + 5: instead of a bespoke module per channel,
-Slack ``chat.postMessage`` and X/Twitter ``POST /2/tweets`` each become a request
-that the general credential-blind SSRF-hardened driver
-(``storage/outbound_connections``) sends through a vault ``http`` credential + an
-``OutboundEndpoint`` allowlist. Auth is applied INSIDE the broker child from the
-connection's bundle (Bearer bot token for Slack; OAuth 1.0a signature for X) —
-this module is credential-blind and only shapes the request.
+Channel-agnostic-outbound (design.md D1–D6): instead of a bespoke effector module
+per channel, GitHub PRs, Slack ``chat.postMessage``, and X/Twitter
+``POST /2/tweets`` are ALL expressed as requests that the general credential-blind
+SSRF-hardened driver (``storage/outbound_connections``) sends through a per-channel
+credential bundle + an ``OutboundEndpoint`` allowlist. The auth material is applied
+INSIDE the driver from the bundle (Bearer for GitHub/Slack; OAuth 1.0a signed in the
+broker child for X) — the request builders in this module are credential-blind and
+only shape the wire request.
 
-The migration ORACLES are ``effectors/slack_transport.py`` and
-``effectors/twitter_post.py``; the request builders here reproduce their
-BYTE-IDENTICAL normalized wire request (endpoint, method, body, non-auth headers),
-proven by the differential tests in ``tests/test_outbound_channel_migration.py``.
-The oracles stay in place, each behind a per-channel readiness flag, until parity
-is proven and the universe is atomically cut over — never two credential paths
-live.
+This is the collapse target: the legacy bespoke per-channel effector modules are
+GONE, their credential/HTTP paths replaced here by the one SSRF-hardened driver (no
+feature flag, no legacy fallback). ``build_slack_transport`` and
+``run_twitter_post_effector`` live here now; a channel with no vault credential FAILS
+LOUD (a universe adds its connection as a user) — it never borrows ambient env.
+Byte-identical wire-request parity for each channel is pinned by
+``tests/test_outbound_channel_migration.py``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import re
+import sqlite3
+import time
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
+from tinyassets.effectors.authority import DENIED as SOUL_AUTHORITY_DENIED
+from tinyassets.effectors.authority import resolve_soul_effect_authority
 from tinyassets.storage.outbound_connections import (
     ConnectionSecretBundle,
     OutboundEndpoint,
+    ProxyRequestError,
     SsrfValidationError,
     _github_repository_from_destination,
     _parse_allowed_endpoints,
     _SsrfHardenedHttpDriver,
 )
+
+logger = logging.getLogger(__name__)
 
 #: One ASCII owner/repo pair. ``_github_repository_from_destination`` validates the
 #: destination with ``re``'s Unicode ``\w``, but the allowlist compares template
@@ -44,15 +55,21 @@ _GH_ASCII_OWNER_REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 # --- Slack ------------------------------------------------------------------ #
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
-#: The connection allowlist entry a Slack ``http`` connection must carry.
+#: The connection allowlist entry a Slack ``http`` connection carries.
 SLACK_ALLOWED_ENDPOINT: dict[str, Any] = {
     "host": "slack.com",
     "path_template": "/api/chat.postMessage",
     "methods": ["POST"],
 }
-#: Per-channel readiness flag: until truthy, Slack keeps posting through the
-#: legacy ``slack_transport`` effector (no dual credential path).
-SLACK_VIA_CONNECTION_FLAG = "TINYASSETS_SLACK_OUTBOUND_VIA_CONNECTION"
+#: Parsed egress allowlist for the Slack send — built through the storage
+#: validator so it is provably one ``create_connection`` would accept.
+SLACK_ALLOWED_ENDPOINTS: tuple[OutboundEndpoint, ...] = _parse_allowed_endpoints(
+    [SLACK_ALLOWED_ENDPOINT]
+)
+#: Bot tokens only. An ``xoxp-`` user token posts under a person's name.
+BOT_TOKEN_PREFIX = "xoxb-"
+#: Slack rejects oversized posts; bound the body before spending a round trip.
+_SLACK_MAX_BODY_BYTES = 40_000
 
 # --- X / Twitter ------------------------------------------------------------ #
 TWITTER_TWEETS_URL = "https://api.x.com/2/tweets"
@@ -61,17 +78,21 @@ TWITTER_ALLOWED_ENDPOINT: dict[str, Any] = {
     "path_template": "/2/tweets",
     "methods": ["POST"],
 }
-TWITTER_VIA_CONNECTION_FLAG = "TINYASSETS_TWITTER_OUTBOUND_VIA_CONNECTION"
+#: Parsed egress allowlist for the X/Twitter send.
+TWITTER_ALLOWED_ENDPOINTS: tuple[OutboundEndpoint, ...] = _parse_allowed_endpoints(
+    [TWITTER_ALLOWED_ENDPOINT]
+)
 
 
 def slack_http_request(*, channel: str, text: str, thread_ts: str = "") -> dict[str, Any]:
     """The Slack ``chat.postMessage`` call as an ``http``-connection request.
 
-    Byte-identical to ``slack_transport._post``: the body is ``json.dumps(payload)``
-    with the stdlib's DEFAULT separators (``", "`` / ``": "``). The general driver's
-    dict-body auto-encoding uses COMPACT separators, so we pass a pre-encoded string
-    to reproduce Slack's spaced form exactly, and set ``Content-Type`` explicitly.
-    The Bearer bot token is applied in the broker child (``auth_scheme="bearer"``).
+    The body is ``json.dumps(payload)`` with the stdlib's DEFAULT separators
+    (``", "`` / ``": "``); the general driver's dict-body auto-encoding uses COMPACT
+    separators, so we pass a pre-encoded string to reproduce Slack's spaced form
+    exactly, and set ``Content-Type`` explicitly. The Bearer bot token is applied in
+    the driver (``auth_scheme="bearer"``). The wire request is pinned by
+    ``tests/test_outbound_channel_migration.py``.
     """
     payload: dict[str, Any] = {"channel": channel, "text": text}
     if isinstance(thread_ts, str) and thread_ts.strip():
@@ -88,10 +109,10 @@ def twitter_http_request(
 ) -> dict[str, Any]:
     """The X/Twitter ``POST /2/tweets`` call as an ``http``-connection request.
 
-    Byte-identical to ``twitter_post._post_tweet``: COMPACT JSON body and the same
-    ``Accept``/``Content-Type``/``User-Agent`` headers. The OAuth 1.0a
-    ``Authorization`` is signed in the broker child from the ``oauth1a`` bundle —
-    never here (the adapter never sees the four OAuth secrets).
+    COMPACT JSON body and the ``Accept``/``Content-Type``/``User-Agent`` headers X
+    expects. The OAuth 1.0a ``Authorization`` is signed in the driver from the
+    ``oauth1a`` bundle — never here (the adapter never sees the four OAuth secrets).
+    The wire request is pinned by ``tests/test_outbound_channel_migration.py``.
     """
     body: dict[str, Any] = {"text": text}
     if reply_to_tweet_id:
@@ -116,38 +137,20 @@ def twitter_http_request(
 # calls is expressed here as a credential-blind ``http``-connection request that
 # reproduces ``effectors/github_pr.py``'s EXACT wire construction byte-for-byte.
 #
-# The migration ORACLE is ``github_pr``'s own request construction:
-#   * ``_github_api_request`` (github_pr.py:1084) — POST create + labels.
-#   * ``_git_data_api``       (github_pr.py:1107) — the Git Data reads/writes.
-# BOTH encode the body with the stdlib's DEFAULT (spaced) ``json.dumps`` and
-# carry the SAME five headers. The general driver's dict-body auto-encoding uses
-# COMPACT separators, so — exactly like the Slack builder — every POST builder
-# here passes a PRE-ENCODED default-``json.dumps`` string body and sets
-# ``Content-Type`` explicitly, so the wire bytes match github_pr's. GET reads
-# carry no body but still send ``Content-Type: application/json`` (github_pr's
-# helpers set all five headers unconditionally). ``Authorization: Bearer
-# <token>`` is applied INSIDE the broker child from the connection bundle
-# (``auth_scheme="bearer"``) — these builders are CREDENTIAL-BLIND and never
-# emit it.
-#
-# CREDENTIAL-BLINDNESS + parity is proven by the differential tests in
-# ``tests/test_outbound_channel_migration.py``, which drive github_pr's REAL
-# request construction end-to-end (``_materialize_branch`` /
-# ``_invoke_github_api_pr_create`` / ``_fetch_file_at_ref``) against a loopback
-# recorder and assert every builder here produces the identical wire request,
-# AND (slice 2B) run github_pr's OWN dispatch flag-OFF vs flag-ON against the same
-# loopback, asserting the wire request AND the parsed result / error shapes match.
-#
-# SLICE 2B: :func:`github_send_via_connection` routes github_pr's
-# ``_github_api_request``/``_git_data_api`` (and the broker's ``read_for_commit``)
-# through the SSRF-hardened driver + :func:`github_allowed_endpoints`, but ONLY
-# when ``TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION`` is truthy. It stays DARK: the
-# flag defaults off, and flag-off runs github_pr's legacy raw-urllib path verbatim.
+# Each ``api.github.com`` PR-flow call is expressed as a credential-blind
+# ``http``-connection request whose wire bytes are byte-identical to the request
+# ``github_pr.py`` constructs: the body is the stdlib's DEFAULT (spaced)
+# ``json.dumps`` string (pre-encoded so the driver's compact auto-encoding does not
+# apply) and the SAME five headers ride on every call. GET reads carry no body but
+# still send ``Content-Type: application/json`` (github_pr sets all five headers
+# unconditionally). ``Authorization: Bearer <token>`` is applied INSIDE the driver
+# from the connection bundle (``auth_scheme="bearer"``) — these builders never emit
+# it. ``github_pr._github_api_request``/``_git_data_api`` and the broker's
+# ``read_for_commit`` route through :func:`github_send_via_connection` +
+# :func:`github_allowed_endpoints` UNCONDITIONALLY (no flag, no legacy urllib).
+# Parity is pinned by the wire-request tests in
+# ``tests/test_outbound_channel_migration.py``.
 GITHUB_API_BASE = "https://api.github.com"
-
-#: Per-channel readiness flag: until truthy, GitHub keeps pushing PRs through
-#: the legacy ``github_pr`` effector (no dual credential path). DARK in slice 1.
-GITHUB_VIA_CONNECTION_FLAG = "TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION"
 
 #: The five headers github_pr sends on EVERY api.github.com call, minus
 #: ``Authorization`` (added in the broker child from the bearer bundle). Copied
@@ -285,21 +288,6 @@ def github_allowed_endpoints(destination: str) -> tuple[OutboundEndpoint, ...]:
                 "required_query": ["per_page"],
             },
         ]
-    )
-
-
-def github_outbound_via_connection_enabled() -> bool:
-    """Whether the DARK egress-unification flag is truthy (slice 2B).
-
-    Until this is set, github_pr keeps pushing PRs through its legacy raw-urllib
-    path verbatim (no dual credential path, no behavior change). The flag is
-    read at call time so a test can flip it per-case.
-    """
-    return os.environ.get(GITHUB_VIA_CONNECTION_FLAG, "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
     )
 
 
@@ -473,3 +461,861 @@ def github_contents_read_request(
         path=f"/repos/{owner_repo}/contents/{encoded}?ref={encoded_ref}",
         body=None,
     )
+
+
+# =========================================================================== #
+# Slack — server-owned app reply transport (was a bespoke effector module).
+#
+# ``build_slack_transport`` supplies the injected ``Transport`` callback
+# ``app_outbound_adapter`` calls. Three invariants it holds:
+#   * the bot token never crosses the credential-blind boundary — it is resolved
+#     from the per-universe vault here and applied INSIDE the driver;
+#   * a vault-bound universe NEVER falls through to host env — an empty vault means
+#     "not authorized", not "borrow the maintainer's token";
+#   * the receipt carries no content (``ts`` is an identifier, not text).
+# =========================================================================== #
+class SlackTransportError(RuntimeError):
+    """The reply could not be delivered to Slack.
+
+    Deliberately carries no message body and no credential — it is raised across
+    the governed boundary, and ``app_outbound_adapter`` wraps it into
+    ``AppOutboundDeliveryError``.
+    """
+
+
+def resolve_slack_bot_token(
+    universe_dir: str | Path | None,
+    connection_id: str,
+) -> str:
+    """Return the Slack bot token for one connection, or an empty string.
+
+    Vault-first, and a vault-bound universe never falls through to the process
+    environment: an empty vault means this universe is not authorized, not "look at
+    the host env". Never echoed into caller-visible evidence.
+    """
+    if universe_dir is None or not connection_id.strip():
+        return ""
+    from tinyassets.credential_vault import resolve_slack_token, vault_exists
+
+    token = resolve_slack_token(universe_dir, connection_id.strip())
+    if token or vault_exists(universe_dir):
+        return token
+    return ""
+
+
+def slack_send_via_connection(
+    *, channel: str, text: str, thread_ts: str, bot_token: str
+) -> dict[str, Any]:
+    """Post one Slack message through the credential-blind SSRF-hardened driver.
+
+    Mirrors :func:`github_send_via_connection`: the Bearer bot token is applied
+    INSIDE the driver from a one-member bundle (``auth_scheme="bearer"``); this seam
+    never emits ``Authorization``. Returns the driver's sanitized
+    ``{status, reason, headers, body}``; raises the driver's secret-free
+    ``SsrfValidationError``/``ProxyRequestError`` on refusal/failure (the caller maps
+    those to :class:`SlackTransportError`).
+    """
+    request = slack_http_request(channel=channel, text=text, thread_ts=thread_ts)
+    driver = _SsrfHardenedHttpDriver()
+    return driver(
+        bundle=ConnectionSecretBundle(token=bot_token),
+        auth_scheme="bearer",
+        method="POST",
+        url=request["url"],
+        headers=request["headers"],
+        body=request["body"],
+        allowed_endpoints=SLACK_ALLOWED_ENDPOINTS,
+    )
+
+
+def build_slack_transport(universe_dir: str | Path | None):
+    """Build the injected ``Transport`` callable for ``app_outbound_adapter``.
+
+    The returned callable takes ``(ReplyDestination, str)`` (plus keyword-only
+    ``thread_ts``) and returns an ``AppTransportReceipt`` whose
+    ``provider_receipt_ref`` is the Slack message identifier — never the message
+    text. Every send goes through the one SSRF-hardened driver; a missing/invalid
+    vault credential FAILS LOUD.
+    """
+    from tinyassets.app_outbound_adapter import AppTransportReceipt
+    from tinyassets.effectors.slack_errors import safe_error_code
+
+    def _transport(
+        destination: Any,
+        body: str,
+        *,
+        thread_ts: str = "",
+    ) -> Any:
+        if destination.provider != "slack":
+            raise SlackTransportError("slack transport received a non-slack destination")
+        text = body if isinstance(body, str) else ""
+        if not text.strip():
+            raise SlackTransportError("refusing to deliver an empty reply")
+        if len(text.encode("utf-8")) > _SLACK_MAX_BODY_BYTES:
+            raise SlackTransportError("reply body exceeds the slack transport bound")
+
+        token = resolve_slack_bot_token(universe_dir, destination.connection_id)
+        if not token:
+            # Fail closed. A missing credential must never degrade into "deliver
+            # with whatever token happens to be around".
+            raise SlackTransportError(
+                "no requester-owned slack credential for this connection"
+            )
+        if not token.startswith(BOT_TOKEN_PREFIX):
+            # Checked HERE, not only at startup: the token is re-read from the vault
+            # on every post (so rotation is picked up), which makes a startup-only
+            # check time-of-check/time-of-use. A user (``xoxp-``) token posts under a
+            # HUMAN's name, so the agent would silently impersonate whoever installed
+            # the app.
+            raise SlackTransportError("the stored slack credential is not a bot token")
+
+        send_failed = False
+        result: dict[str, Any] = {}
+        try:
+            result = slack_send_via_connection(
+                channel=destination.address,
+                text=text,
+                thread_ts=thread_ts,
+                bot_token=token,
+            )
+        except (SsrfValidationError, ProxyRequestError):
+            send_failed = True
+        if send_failed:
+            # Raised OUTSIDE the except block on purpose: `from None` clears
+            # __cause__ but leaves __context__ holding the driver error, whose
+            # text could quote a reflected header (the Authorization-echo leak
+            # class). Raising here clears __context__ too. The driver's errors are
+            # already secret-free; this is defense-in-depth.
+            raise SlackTransportError("slack transport unreachable")
+
+        status = int(result["status"])
+        if not 200 <= status < 300:
+            raise SlackTransportError(f"slack transport http {status}")
+        try:
+            decoded = json.loads(result["body"])
+        except Exception:  # noqa: BLE001 - decode errors and hostile nesting alike
+            raise SlackTransportError(
+                "slack transport returned malformed JSON"
+            ) from None
+        if not isinstance(decoded, dict):
+            raise SlackTransportError("slack transport returned a non-object response")
+        if not decoded.get("ok"):
+            # Slack reports failure in-band with HTTP 200. Surface the error CODE
+            # only — never the echoed message payload Slack returns.
+            code = safe_error_code(decoded.get("error"), default="unknown_error")
+            raise SlackTransportError(f"slack rejected the reply: {code}")
+
+        receipt_ref = str(decoded.get("ts") or "").strip()
+        if not receipt_ref:
+            raise SlackTransportError("slack accepted the reply without an identifier")
+        channel = str(decoded.get("channel") or destination.address).strip()
+        return AppTransportReceipt(provider_receipt_ref=f"slack:{channel}:{receipt_ref}")
+
+    return _transport
+
+
+# =========================================================================== #
+# X / Twitter — external-write effector (was a bespoke effector module).
+#
+# The full authority → consent → idempotency → receipt lifecycle is preserved
+# verbatim; only two things changed vs the legacy module: credentials move from
+# host env to the per-universe vault (closing the cross-universe env hole,
+# design.md §4), and the tweet POST goes through the one SSRF-hardened driver
+# (``twitter_send_via_connection``) instead of a bespoke urllib + hand-rolled
+# OAuth call. The OAuth 1.0a signature is built INSIDE the broker child from the
+# four-value bundle (``auth_scheme="oauth1a"``); this module never signs it.
+# =========================================================================== #
+EXTERNAL_WRITE_SINK_TWITTER_POST = "twitter_post"
+DESTINATION_RECONCILIATION = {
+    "supported": False,
+    "reason": (
+        "the adapter has no stable destination lookup by system effect key; "
+        "stale intents require operator inspection"
+    ),
+}
+
+_DRY_RUN_ENV = "TINYASSETS_EXTERNAL_WRITE_DRY_RUN"
+_DEFAULT_HANDLE = "@kwisatzh4derach"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+class TwitterCredentials:
+    """The four OAuth 1.0a values (+ a resolution-source label)."""
+
+    __slots__ = (
+        "access_token",
+        "access_token_secret",
+        "api_key",
+        "api_secret",
+        "source",
+    )
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        api_secret: str,
+        access_token: str,
+        access_token_secret: str,
+        source: str,
+    ) -> None:
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.access_token = access_token
+        self.access_token_secret = access_token_secret
+        self.source = source
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
+def _parse_packet(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        packet = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or not stripped.startswith("{"):
+            return None
+        try:
+            packet = json.loads(stripped)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(packet, dict):
+            return None
+    else:
+        return None
+    if packet.get("sink") != EXTERNAL_WRITE_SINK_TWITTER_POST:
+        return None
+    return packet
+
+
+def _find_packet(
+    *,
+    output_keys: list[str],
+    run_state: dict[str, Any],
+) -> tuple[str | None, dict[str, Any] | None]:
+    for key in output_keys or []:
+        if not isinstance(key, str) or key not in run_state:
+            continue
+        packet = _parse_packet(run_state.get(key))
+        if packet is not None:
+            return key, packet
+    return None, None
+
+
+def _destination(packet: dict[str, Any]) -> str:
+    value = packet.get("destination")
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _payload(packet: dict[str, Any]) -> dict[str, Any]:
+    value = packet.get("payload")
+    return value if isinstance(value, dict) else {}
+
+
+def _text(packet: dict[str, Any]) -> str:
+    value = _payload(packet).get("text")
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _optional_tweet_id(packet: dict[str, Any], key: str) -> str:
+    value = _payload(packet).get(key)
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _normalize_handle(value: str) -> str:
+    raw = value.strip()
+    if raw.lower() in {"", "x:self", "self", "@self"}:
+        return _DEFAULT_HANDLE
+    if raw.lower().startswith("x:"):
+        raw = raw.split(":", 1)[1].strip()
+    if raw.startswith("https://x.com/") or raw.startswith("https://twitter.com/"):
+        raw = raw.rstrip("/").rsplit("/", 1)[-1]
+    if not raw.startswith("@"):
+        raw = f"@{raw}"
+    return raw
+
+
+def _authorized_handle(packet: dict[str, Any]) -> str:
+    """Account/handle the post will use — DERIVED FROM ``destination`` only.
+
+    Authority, consent, and credential resolution all key off the authorized
+    ``destination``. The account actually posted-from is bound to that same
+    destination, never to an arbitrary payload-supplied handle. A packet whose
+    payload names a *different* account is rejected upstream by
+    :func:`_packet_handle_override` rather than silently honored.
+    """
+    destination = _destination(packet)
+    if destination:
+        return _normalize_handle(destination)
+    return _DEFAULT_HANDLE
+
+
+def _packet_handle_override(packet: dict[str, Any]) -> str:
+    """Return any payload/packet-supplied handle, normalized; "" if none.
+
+    Unlike :func:`_authorized_handle` this does NOT fall back to ``destination`` —
+    it surfaces only an explicit caller-supplied handle so the effector can detect
+    (and reject) a handle that disagrees with the authorized destination.
+    """
+    payload = _payload(packet)
+    for key in ("sink_handle", "handle", "account_handle"):
+        value = payload.get(key) or packet.get(key)
+        if isinstance(value, str) and value.strip():
+            return _normalize_handle(value)
+    return ""
+
+
+def _resolve_credentials(
+    *, universe_dir: Path | None, destination: str
+) -> TwitterCredentials | None:
+    """Resolve the four OAuth 1.0a values from the per-universe vault.
+
+    Vault-first and NO env fallback: the legacy ``TWITTER_*`` host-env resolution is
+    gone — it was the cross-universe isolation hole design.md §4 closes. A universe
+    that has not deposited a ``twitter`` connection for this destination resolves to
+    ``None`` → the effector dry-runs ``missing_credentials``, never borrowing ambient
+    env.
+    """
+    if universe_dir is None or not destination:
+        return None
+    from tinyassets.credential_vault import resolve_twitter_credentials
+
+    values = resolve_twitter_credentials(universe_dir, destination)
+    if not values:
+        return None
+    return TwitterCredentials(
+        api_key=values["api_key"],
+        api_secret=values["api_secret"],
+        access_token=values["access_token"],
+        access_token_secret=values["access_token_secret"],
+        source="vault",
+    )
+
+
+def _universe_dir(base_path: str | Path | None) -> Path | None:
+    if base_path is None:
+        return None
+    try:
+        return Path(base_path)
+    except (TypeError, ValueError):
+        return None
+
+
+def _check_consent(universe_dir: Path | None, destination: str) -> bool:
+    if universe_dir is None or not destination:
+        return False
+    try:
+        from tinyassets.storage.effector_consents import is_consent_active
+
+        return is_consent_active(
+            universe_dir,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            destination=destination,
+        )
+    except Exception:
+        logger.exception("twitter_post consent lookup crashed")
+        return False
+
+
+def _derive_idempotency_hint(
+    *,
+    packet: dict[str, Any],
+    run_id: str,
+    handle: str,
+    text: str,
+    universe_dir: Path | None,
+) -> str:
+    from tinyassets.idempotency import resolve_effector_identity
+
+    identity = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+        universe_dir=universe_dir,
+    )
+    if identity.active_key:
+        return identity.active_key
+    payload = _payload(packet)
+    source_run_id = payload.get("source_run_id") or packet.get("source_run_id") or run_id
+    seed = f"{source_run_id}|{EXTERNAL_WRITE_SINK_TWITTER_POST}|{handle}|{text}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _try_reserve(
+    universe_dir: Path | None,
+    *,
+    idempotency_hint: str,
+    run_id: str,
+) -> dict[str, Any]:
+    if universe_dir is None or not idempotency_hint:
+        return {"status": "no_hint"}
+    from tinyassets.storage.external_write_receipts import try_reserve_receipt
+
+    return try_reserve_receipt(
+        universe_dir,
+        idempotency_hint=idempotency_hint,
+        sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+        run_id=run_id or "",
+    )
+
+
+def _finalize_receipt(
+    universe_dir: Path | None,
+    *,
+    idempotency_hint: str,
+    evidence: dict[str, Any],
+    run_id: str,
+) -> bool:
+    if universe_dir is None or not idempotency_hint:
+        return False
+    try:
+        from tinyassets.storage.external_write_receipts import finalize_receipt
+
+        return finalize_receipt(
+            universe_dir,
+            idempotency_hint=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            evidence=evidence,
+            run_id=run_id or "",
+        )
+    except Exception:
+        logger.exception("failed to finalize twitter_post receipt")
+        return False
+
+
+def _release_reservation(
+    universe_dir: Path | None,
+    *,
+    idempotency_hint: str,
+    run_id: str,
+) -> None:
+    if universe_dir is None or not idempotency_hint:
+        return
+    try:
+        from tinyassets.storage.external_write_receipts import release_reservation
+
+        release_reservation(
+            universe_dir,
+            idempotency_hint=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            run_id=run_id or "",
+            mark_failed=True,
+        )
+    except Exception:
+        logger.exception("failed to release twitter_post reservation")
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return any(token in msg for token in ("locked", "busy", "deadlock", "timeout"))
+
+
+def twitter_send_via_connection(
+    *,
+    text: str,
+    reply_to_tweet_id: str,
+    quote_tweet_id: str,
+    credentials: TwitterCredentials,
+) -> dict[str, Any]:
+    """Post one tweet through the credential-blind SSRF-hardened driver.
+
+    Mirrors :func:`github_send_via_connection`: the OAuth 1.0a ``Authorization`` is
+    signed INSIDE the driver from the four-value bundle (``auth_scheme="oauth1a"``);
+    this seam never signs or sees the header. Returns the SAME response shape the
+    legacy bespoke tweet POST produced — the parsed JSON dict on success, or a
+    ``{"error", "error_kind", ...}`` dict — so the effector's downstream logic is
+    unchanged.
+    """
+    request = twitter_http_request(
+        text=text,
+        reply_to_tweet_id=reply_to_tweet_id,
+        quote_tweet_id=quote_tweet_id,
+    )
+    bundle = ConnectionSecretBundle(
+        api_key=credentials.api_key,
+        api_secret=credentials.api_secret,
+        access_token=credentials.access_token,
+        access_token_secret=credentials.access_token_secret,
+    )
+    driver = _SsrfHardenedHttpDriver()
+    try:
+        result = driver(
+            bundle=bundle,
+            auth_scheme="oauth1a",
+            method="POST",
+            url=request["url"],
+            headers=request["headers"],
+            body=request["body"],
+            allowed_endpoints=TWITTER_ALLOWED_ENDPOINTS,
+        )
+    except (SsrfValidationError, ProxyRequestError) as exc:
+        return {
+            "error": f"X API request failed: {exc}",
+            "error_kind": "x_api_request_failed",
+        }
+    status = int(result["status"])
+    body_text = result["body"]
+    if not 200 <= status < 300:
+        return {
+            "error": f"X API HTTP {status}: {body_text[:500]}",
+            "error_kind": "x_api_http_error",
+            "http_status": status,
+        }
+    try:
+        return json.loads(body_text)
+    except (TypeError, ValueError) as exc:
+        return {
+            "error": f"X API returned invalid JSON: {exc}",
+            "error_kind": "x_api_invalid_json",
+        }
+
+
+def _post_id(response: dict[str, Any]) -> str:
+    data = response.get("data")
+    if isinstance(data, dict):
+        value = data.get("id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    value = response.get("id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
+
+
+def _post_url(handle: str, post_id: str) -> str:
+    screen_name = handle.strip().lstrip("@")
+    return f"https://x.com/{screen_name}/status/{post_id}"
+
+
+def _would_post_evidence(
+    *,
+    reason: str,
+    packet: dict[str, Any],
+    destination: str,
+    handle: str,
+    text: str,
+    matched_key: str | None,
+    idempotency_hint: str | None = None,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "dry_run": True,
+        "phase": "phase_2",
+        "reason": reason,
+        "destination": destination,
+        "sink_handle": handle,
+        "would_post": {
+            "text": text,
+            "reply_to_tweet_id": _optional_tweet_id(packet, "reply_to_tweet_id"),
+            "quote_tweet_id": _optional_tweet_id(packet, "quote_tweet_id"),
+        },
+        "matched_output_key": matched_key,
+        "intent": packet,
+    }
+    if idempotency_hint:
+        evidence["idempotency_hint"] = idempotency_hint
+    return evidence
+
+
+def run_twitter_post_effector(
+    *,
+    node_id: str,
+    output_keys: list[str],
+    run_state: dict[str, Any],
+    base_path: str | Path | None = None,
+    run_id: str = "",
+) -> dict[str, Any]:
+    """Run one ``twitter_post`` external-write packet.
+
+    The effector never raises to the run-completion path; every refusal, duplicate,
+    or external API failure is returned as structured evidence.
+    """
+    matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
+    if packet is None:
+        return {
+            "error": (
+                f"node '{node_id}' declared effects=["
+                f"{EXTERNAL_WRITE_SINK_TWITTER_POST}] but no output_key held "
+                "a parseable twitter_post external_write_packet"
+            ),
+            "error_kind": "no_matching_packet",
+        }
+
+    destination = _destination(packet)
+    # SECURITY INVARIANT: the account actually posted-from is bound to the
+    # authorized ``destination``, never to an arbitrary payload handle. Authority,
+    # consent, and credential resolution all key off this same destination.
+    handle = _authorized_handle(packet)
+    override_handle = _packet_handle_override(packet)
+    text = _text(packet)
+    universe_dir = _universe_dir(base_path)
+    idempotency_hint = _derive_idempotency_hint(
+        packet=packet,
+        run_id=run_id,
+        handle=handle,
+        text=text,
+        universe_dir=universe_dir,
+    )
+
+    if not destination:
+        return {
+            "error": "packet.destination is required for twitter_post",
+            "error_kind": "invalid_destination",
+            "phase": "phase_2",
+            "matched_output_key": matched_key,
+        }
+    if override_handle and override_handle != handle:
+        # The payload named an account that does not match the account the
+        # authorized destination resolves to. Authority + consent only cover the
+        # destination-derived account, so honoring this override would post from an
+        # account that was never authorized. Reject, never post.
+        return {
+            "error": (
+                "packet payload handle resolves to a different account than "
+                "the authorized destination; refusing twitter_post to avoid "
+                "posting from an unauthorized account"
+            ),
+            "error_kind": "handle_authority_mismatch",
+            "phase": "phase_2",
+            "destination": destination,
+            "authorized_handle": handle,
+            "requested_handle": override_handle,
+            "matched_output_key": matched_key,
+        }
+    if not text:
+        return {
+            "error": "packet.payload.text is required for twitter_post",
+            "error_kind": "invalid_payload",
+            "phase": "phase_2",
+            "destination": destination,
+            "matched_output_key": matched_key,
+        }
+
+    if _env_truthy(_DRY_RUN_ENV):
+        evidence = _would_post_evidence(
+            reason="operator_kill_switch_active",
+            packet=packet,
+            destination=destination,
+            handle=handle,
+            text=text,
+            matched_key=matched_key,
+            idempotency_hint=idempotency_hint,
+        )
+        evidence["kill_switch_env"] = _DRY_RUN_ENV
+        return evidence
+
+    authority = resolve_soul_effect_authority(
+        universe_dir,
+        EXTERNAL_WRITE_SINK_TWITTER_POST,
+        destination,
+    )
+    if authority == SOUL_AUTHORITY_DENIED:
+        return _would_post_evidence(
+            reason="soul_not_authorized",
+            packet=packet,
+            destination=destination,
+            handle=handle,
+            text=text,
+            matched_key=matched_key,
+            idempotency_hint=idempotency_hint,
+        )
+
+    if not _check_consent(universe_dir, destination):
+        evidence = _would_post_evidence(
+            reason="missing_consent",
+            packet=packet,
+            destination=destination,
+            handle=handle,
+            text=text,
+            matched_key=matched_key,
+            idempotency_hint=idempotency_hint,
+        )
+        evidence["hint"] = (
+            "Effector consent grants are not exposed by the advertised "
+            "handles; an operator must authorize this destination through "
+            "the internal consent surface before dispatching twitter_post "
+            "effects."
+        )
+        return evidence
+
+    credentials = _resolve_credentials(universe_dir=universe_dir, destination=destination)
+    if credentials is None:
+        evidence = _would_post_evidence(
+            reason="missing_credentials",
+            packet=packet,
+            destination=destination,
+            handle=handle,
+            text=text,
+            matched_key=matched_key,
+            idempotency_hint=idempotency_hint,
+        )
+        evidence["hint"] = (
+            "No vault twitter connection for this destination. Deposit a "
+            "per-universe `social`/`twitter` credential (the four OAuth 1.0a "
+            "values) keyed to this destination; the host-env TWITTER_* fallback "
+            "was removed to close the cross-universe credential hole."
+        )
+        return evidence
+
+    try:
+        reservation = _try_reserve(
+            universe_dir,
+            idempotency_hint=idempotency_hint,
+            run_id=run_id,
+        )
+    except sqlite3.OperationalError as exc:
+        return {
+            "error": (
+                "receipt store unavailable; refusing twitter_post to avoid "
+                f"duplicate posts: {exc}"
+            ),
+            "error_kind": (
+                "receipt_store_locked"
+                if _is_lock_error(exc) else "receipt_store_error"
+            ),
+            "phase": "phase_2",
+            "destination": destination,
+            "idempotency_hint": idempotency_hint,
+            "matched_output_key": matched_key,
+        }
+
+    status = reservation.get("status")
+    if status == "duplicate":
+        recorded = reservation.get("row") or {}
+        return {
+            "idempotency_dedup_hit": True,
+            "phase": "phase_2",
+            "destination": destination,
+            "matched_output_key": matched_key,
+            "evidence": recorded.get("evidence") or {},
+            "recorded_run_id": recorded.get("run_id"),
+            "recorded_at": recorded.get("created_at"),
+            "idempotency_hint": idempotency_hint,
+        }
+    if status == "in_flight":
+        held = reservation.get("row") or {}
+        return {
+            "dry_run": True,
+            "phase": "phase_2",
+            "reason": "concurrent_in_flight",
+            "destination": destination,
+            "sink_handle": handle,
+            "idempotency_hint": idempotency_hint,
+            "matched_output_key": matched_key,
+            "held_by_run_id": held.get("run_id"),
+            "reservation_created_at": held.get("created_at"),
+            "intent": packet,
+        }
+    if status == "reconciliation_required":
+        from tinyassets.effectors.outbound_boundary import (
+            hold_unreconciled_pending,
+        )
+
+        hold = hold_unreconciled_pending(
+            universe_dir=universe_dir,
+            effect_key=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            run_id=run_id,
+        )
+        return {
+            **hold,
+            "dry_run": True,
+            "phase": "phase_2",
+            "destination": destination,
+            "idempotency_hint": idempotency_hint,
+            "matched_output_key": matched_key,
+            "intent": packet,
+        }
+    if status not in (
+        "reserved",
+        "reserved_after_failed",
+        "no_hint",
+    ):
+        return {
+            "dry_run": True,
+            "phase": "phase_2",
+            "reason": "reservation_unknown_state",
+            "destination": destination,
+            "idempotency_hint": idempotency_hint,
+            "reservation_status": str(status),
+            "matched_output_key": matched_key,
+            "intent": packet,
+        }
+
+    response = twitter_send_via_connection(
+        text=text,
+        reply_to_tweet_id=_optional_tweet_id(packet, "reply_to_tweet_id"),
+        quote_tweet_id=_optional_tweet_id(packet, "quote_tweet_id"),
+        credentials=credentials,
+    )
+    if "error" in response:
+        _release_reservation(
+            universe_dir,
+            idempotency_hint=idempotency_hint,
+            run_id=run_id,
+        )
+        response.setdefault("phase", "phase_2")
+        response.setdefault("destination", destination)
+        response.setdefault("sink_handle", handle)
+        response.setdefault("idempotency_hint", idempotency_hint)
+        response.setdefault("reservation_released", True)
+        response.setdefault("matched_output_key", matched_key)
+        return response
+
+    post_id = _post_id(response)
+    if not post_id:
+        _release_reservation(
+            universe_dir,
+            idempotency_hint=idempotency_hint,
+            run_id=run_id,
+        )
+        return {
+            "error": "X API response did not contain data.id",
+            "error_kind": "x_api_invalid_response",
+            "phase": "phase_2",
+            "destination": destination,
+            "sink_handle": handle,
+            "idempotency_hint": idempotency_hint,
+            "reservation_released": True,
+            "matched_output_key": matched_key,
+        }
+
+    evidence = {
+        "phase": "phase_2",
+        "destination": destination,
+        "sink_handle": handle,
+        "post_id": post_id,
+        "post_url": _post_url(handle, post_id),
+        "matched_output_key": matched_key,
+        "idempotency_hint": idempotency_hint,
+        "credential_source": credentials.source,
+        "recorded_at": time.time(),
+    }
+    if status == "reserved_after_failed":
+        evidence["reservation_origin"] = status
+    if not _finalize_receipt(
+        universe_dir,
+        idempotency_hint=idempotency_hint,
+        evidence=evidence,
+        run_id=run_id,
+    ):
+        from tinyassets.effectors.outbound_boundary import (
+            hold_receipt_finalization_failure,
+        )
+
+        evidence = hold_receipt_finalization_failure(
+            universe_dir=universe_dir,
+            effect_key=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            run_id=run_id,
+            destination_evidence=evidence,
+        )
+    return evidence

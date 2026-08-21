@@ -1428,6 +1428,48 @@ def resolve_slack_app_token(
     return ""
 
 
+def resolve_twitter_credentials(
+    universe_dir: str | Path | None,
+    destination: str,
+) -> dict[str, str]:
+    """Return the four OAuth 1.0a values for one X/Twitter destination.
+
+    Mirrors :func:`resolve_slack_token`: the record must be a ``social``
+    credential for service ``twitter`` (or ``x``) whose ``destination`` is the
+    exact authorized destination. Scoping to the destination — never to the host
+    process env — is what closes the cross-universe env hole the legacy
+    ``twitter_post`` effector left open (it read ambient ``TWITTER_*``).
+
+    Returns a ``{api_key, api_secret, access_token, access_token_secret}`` mapping
+    only when ALL four values are present; otherwise an empty dict. The caller is
+    responsible for the vault-first / never-fall-through-to-env rule — this returns
+    only what the vault holds, and never echoes a value into caller-visible
+    evidence.
+    """
+    if universe_dir is None:
+        return {}
+    wanted = destination.strip()
+    if not wanted:
+        return {}
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "social":
+            continue
+        if _service(record) not in ("twitter", "x"):
+            continue
+        if str(record.get("destination") or "").strip() != wanted:
+            continue
+        values = {
+            "api_key": _secret_value(record, "api_key", "consumer_key"),
+            "api_secret": _secret_value(record, "api_secret", "consumer_secret"),
+            "access_token": _secret_value(record, "access_token"),
+            "access_token_secret": _secret_value(record, "access_token_secret"),
+        }
+        if all(values.values()):
+            return values
+        return {}
+    return {}
+
+
 def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str, Any]]:
     if universe_dir is None:
         return []

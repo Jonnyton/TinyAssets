@@ -36,7 +36,7 @@ from tinyassets.effectors.github_search import (
     register_search_repo_files,
     search_repo_files,
 )
-from tinyassets.effectors.twitter_post import (
+from tinyassets.effectors.outbound_channel_adapter import (
     EXTERNAL_WRITE_SINK_TWITTER_POST,
     run_twitter_post_effector,
 )

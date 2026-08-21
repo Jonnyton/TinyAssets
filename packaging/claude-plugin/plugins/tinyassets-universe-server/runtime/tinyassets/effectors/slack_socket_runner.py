@@ -81,7 +81,7 @@ def http_opener(
 ) -> Mapping[str, Any]:
     """POST `apps.connections.open` and return the decoded response.
 
-    Stdlib only, matching `effectors/slack_transport`: one POST does not justify
+    Stdlib only, like the outbound channel adapter: one POST does not justify
     a Slack SDK. The token goes in the Authorization header and is never placed
     in an exception — these errors cross log boundaries.
     """
