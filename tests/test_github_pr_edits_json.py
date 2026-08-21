@@ -29,7 +29,7 @@ def _b64(text: str) -> str:
 
 
 def _scripted_api(responses):
-    def fake(*, method, path, capability_token, body=None):
+    def fake(*, method, path, capability_token, body=None, destination=""):
         fake.calls.append((method, path, body))
         for matcher, result in responses:
             if matcher(method, path):

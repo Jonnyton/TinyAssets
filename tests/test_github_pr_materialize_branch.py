@@ -29,7 +29,7 @@ def _scripted_api(responses):
     the returned function's ``.calls`` list.
     """
 
-    def fake(*, method, path, capability_token, body=None):
+    def fake(*, method, path, capability_token, body=None, destination=""):
         fake.calls.append((method, path, body))
         for matcher, result in responses:
             if matcher(method, path):
@@ -135,7 +135,7 @@ def test_scoped_publish_binds_exact_prepared_commit_before_opening_pr(monkeypatc
     calls = []
     head = "tinyassets/cloud-" + "d" * 24
 
-    def fake_git_api(*, method, path, capability_token, body=None):
+    def fake_git_api(*, method, path, capability_token, body=None, destination=""):
         calls.append((method, path, capability_token, body))
         return {"ref": f"refs/heads/{_HEAD}"}, None
 
