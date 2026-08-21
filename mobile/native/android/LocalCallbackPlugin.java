@@ -62,7 +62,7 @@ public class LocalCallbackPlugin extends Plugin {
         expectedPath = path;
         expectedState = state;
         accepted.set(null);
-        generation.incrementAndGet();
+        final int gen = generation.incrementAndGet();
         stopServer();
         // Chrome may resolve "localhost" to ::1 before 127.0.0.1; listen on
         // BOTH loopbacks so the redirect never waits on a dead address. IPv6
@@ -78,8 +78,8 @@ public class LocalCallbackPlugin extends Plugin {
         } catch (IOException ignored) {
             server6 = null;
         }
-        serve(server4);
-        if (server6 != null) serve(server6);
+        serve(server4, gen);
+        if (server6 != null) serve(server6, gen);
         JSObject r = new JSObject();
         r.put("port", port);
         r.put("ipv6", server6 != null);
@@ -93,7 +93,7 @@ public class LocalCallbackPlugin extends Plugin {
         return s;
     }
 
-    private void serve(final ServerSocket s) {
+    private void serve(final ServerSocket s, final int gen) {
         Thread t = new Thread(() -> {
             while (!s.isClosed()) {
                 Socket c;
@@ -107,7 +107,7 @@ public class LocalCallbackPlugin extends Plugin {
                 // process preempt the real callback by connecting first. And
                 // nothing on this thread may ever bring the app down.
                 try {
-                    handle(c);
+                    handle(c, gen);
                 } catch (Throwable ignored) {
                 } finally {
                     try { c.close(); } catch (IOException ignored) { }
@@ -133,7 +133,7 @@ public class LocalCallbackPlugin extends Plugin {
      * callback by connecting first. The listener closes only after the valid
      * callback has been handed to the web layer.
      */
-    private void handle(Socket c) throws IOException {
+    private void handle(Socket c, int gen) throws IOException {
         c.setSoTimeout(SOCKET_TIMEOUT_MS);
         // Only the request line matters; read it with a hard cap and stop at
         // the first CRLF so header size (Chrome sends plenty) is irrelevant.
@@ -178,7 +178,7 @@ public class LocalCallbackPlugin extends Plugin {
         ev.put("url", "http://localhost" + target);
         notifyListeners("callback", ev, true);
         bringToFront();
-        scheduleLingerStop(generation.get());
+        scheduleLingerStop(gen);
     }
 
     /**
