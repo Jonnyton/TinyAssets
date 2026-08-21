@@ -60,6 +60,9 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from tinyassets.effectors.authority import DENIED as SOUL_AUTHORITY_DENIED
+from tinyassets.effectors.authority import resolve_soul_effect_authority
+
 logger = logging.getLogger(__name__)
 
 #: The one generic sink. A node that declares ``effects=[…this…]`` and emits a
@@ -135,6 +138,29 @@ def _ledger_db_path(base_path: str | Path | None) -> Path | None:
         return Path(base_path).parent / "outbound.db"
     except (TypeError, ValueError):
         return None
+
+
+def _check_consent(universe_dir: Path, destination: str) -> bool:
+    """Whether an active effector-consent grant exists for this destination.
+
+    A connection grant proves the universe MAY use the connection; a live
+    external effect additionally requires the owner's explicit effector consent
+    for the destination. Fail closed (return False) on empty destination or any
+    lookup failure — a live call must never proceed on a crashed consent check.
+    """
+    if not destination:
+        return False
+    try:
+        from tinyassets.storage.effector_consents import is_consent_active
+
+        return is_consent_active(
+            universe_dir,
+            sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+            destination=destination,
+        )
+    except Exception:
+        logger.exception("authenticated_external_call consent lookup crashed")
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -365,6 +391,45 @@ def _run(
             "connection_id": connection_id,
             "grant_id": grant_id,
             "universe_id": universe_id,
+        }
+
+    # Authorization gates — parity with every prior per-channel effector. The
+    # connection grant above proves the universe MAY use this connection, but a
+    # LIVE external effect additionally requires: (1) the running universe's soul
+    # to not DENY the (sink, destination), and (2) an active effector-consent
+    # grant for the destination. A connection grant ALONE is not sufficient to
+    # fire an effect — fail closed on either gate. The destination is the
+    # connection's own configured destination (a stable, server-owned value,
+    # never taken from the packet).
+    universe_dir = Path(base_path)
+    destination = str(getattr(view, "destination", "") or "").strip()
+    authority = resolve_soul_effect_authority(
+        universe_dir,
+        EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        destination,
+    )
+    if authority == SOUL_AUTHORITY_DENIED:
+        return {
+            "dry_run": True,
+            "reason": "soul_authority_denied",
+            "error_kind": "soul_authority_denied",
+            "destination": destination,
+            "connection_id": connection_id,
+            "matched_output_key": matched_key,
+        }
+    if not _check_consent(universe_dir, destination):
+        return {
+            "dry_run": True,
+            "reason": "missing_consent",
+            "error_kind": "missing_consent",
+            "destination": destination,
+            "connection_id": connection_id,
+            "matched_output_key": matched_key,
+            "hint": (
+                "A live authenticated_external_call requires an active effector-"
+                "consent grant for this connection's destination; grant it through "
+                "the internal consent surface before the effect can fire."
+            ),
         }
 
     host, host_error = _resolve_host(request, view)

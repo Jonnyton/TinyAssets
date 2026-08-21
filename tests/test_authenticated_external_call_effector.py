@@ -65,6 +65,7 @@ def _setup(
     endpoints=None,
     scopes=("POST",),
     grant_universe=None,
+    grant_consent_for=True,
 ):
     """REAL vault http record + http connection + per-universe grant."""
     data_root = tmp_path
@@ -96,6 +97,19 @@ def _setup(
         owner_user_id="user-1",
         universe_id=grant_universe or universe_id,
     )
+    if grant_consent_for:
+        # A connection grant alone is NOT sufficient to fire an effect; a live
+        # authenticated_external_call also requires an active effector-consent
+        # grant for the destination (soul authority is UNDECLARED here, which
+        # passes the soul gate). Negative tests pass grant_consent_for=False.
+        from tinyassets.storage.effector_consents import grant_consent
+
+        grant_consent(
+            universe_dir,
+            sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+            destination=destination,
+            granted_by="test",
+        )
     return data_root, universe_dir, db_path
 
 
@@ -572,3 +586,78 @@ def test_module_names_no_channel():
         "openai",
     ):
         assert banned not in src, f"channel-specific token {banned!r} leaked in"
+
+
+# --------------------------------------------------------------------------- #
+# Authorization gates (Codex reject 2026-08-20): a connection grant ALONE must
+# NOT fire an effect — soul authority must not DENY, and effector consent for
+# the destination must be active. These prove the generic effector keeps the
+# gates the deleted per-channel effectors enforced.
+# --------------------------------------------------------------------------- #
+def test_missing_consent_refuses_before_any_egress(tmp_path, monkeypatch):
+    # A connection grant WITHOUT an effector-consent grant is refused at the
+    # authorization gate — BEFORE the worker opens, so nothing reaches the wire.
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    data_root, universe_dir, db_path = _setup(tmp_path, grant_consent_for=False)
+    loop = _Loopback()
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(
+        monkeypatch,
+        db_path=db_path,
+        universe_dir=universe_dir,
+        grant_id="grant-http",
+        provider="http",
+        destination="api.example.com",
+        runtime_root=tmp_path / "rt-noconsent",
+    )
+    packet = {
+        "sink": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        "connection_id": "conn-http",
+        "grant_id": "grant-http",
+        "verb": "POST",
+        "request": {"method": "POST", "path": "/v1/messages", "body": {"text": "x"}},
+    }
+    try:
+        evidence = run_authenticated_external_call_effector(
+            node_id="n1",
+            output_keys=["out"],
+            run_state={"out": json.dumps(packet)},
+            base_path=str(universe_dir),
+            run_id="r1",
+        )
+    finally:
+        loop.stop()
+    assert evidence["error_kind"] == "missing_consent"
+    assert evidence.get("dry_run") is True
+    assert evidence.get("delivered") is not True
+    # Decisive proof: NOTHING reached the destination.
+    assert loop.recorded == []
+
+
+def test_revoked_consent_refuses_the_call(tmp_path, monkeypatch):
+    # Consent granted then revoked must close the gate — an active connection
+    # grant must NOT bypass a revoked destination consent.
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    data_root, universe_dir, db_path = _setup(tmp_path)  # grants consent
+    from tinyassets.storage.effector_consents import revoke_consent
+
+    revoke_consent(
+        universe_dir,
+        sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        destination="api.example.com",
+    )
+    packet = {
+        "sink": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        "connection_id": "conn-http",
+        "grant_id": "grant-http",
+        "verb": "POST",
+        "request": {"method": "POST", "path": "/v1/messages", "body": {"text": "x"}},
+    }
+    evidence = run_authenticated_external_call_effector(
+        node_id="n1",
+        output_keys=["out"],
+        run_state={"out": json.dumps(packet)},
+        base_path=str(universe_dir),
+        run_id="r1",
+    )
+    assert evidence["error_kind"] == "missing_consent"
