@@ -1,0 +1,18 @@
+# Node / Capacitor CLI
+node_modules/
+package-lock.json
+
+# Generated native Android project (regenerate with `npx cap add android`).
+# If you customize it (icons, signing config, native code) and want it tracked,
+# remove this line and commit the android/ directory.
+android/
+
+# Build outputs
+*.apk
+*.aab
+*.keystore
+*.jks
+.gradle/
+build/
+
+# Capacitor assets source is tracked; generated icons live under android/

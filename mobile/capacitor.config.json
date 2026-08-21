@@ -1,0 +1,24 @@
+{
+  "appId": "io.tinyassets.app",
+  "appName": "TinyAssets",
+  "webDir": "www",
+  "server": {
+    "url": "https://tinyassets.io/mcp/app",
+    "allowNavigation": [
+      "tinyassets.io",
+      "*.authkit.app"
+    ],
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": {
+    "backgroundColor": "#0b0b0f"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "backgroundColor": "#0b0b0f",
+      "showSpinner": false
+    }
+  }
+}

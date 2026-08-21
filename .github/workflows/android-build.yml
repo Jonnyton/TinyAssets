@@ -1,0 +1,55 @@
+name: Android debug APK
+
+# Builds a sideloadable debug APK on GitHub's runners (JDK 17 + Android SDK
+# pre-installed) and uploads it as an artifact. Download it from the run's
+# Artifacts, transfer to an Android phone, enable "install unknown apps", and
+# open it — no local Android Studio / keystore / Play account needed to TRY it.
+# (The signed release .aab for Play is a separate, keystore-signed build — see
+# mobile/README.md.)
+
+on:
+  push:
+    branches: [feat/android-app]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install JS deps
+        working-directory: mobile
+        run: npm install
+
+      - name: Add + sync Android platform
+        working-directory: mobile
+        run: |
+          npx --yes cap add android
+          npx --yes cap sync android
+
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinyassets-android-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
