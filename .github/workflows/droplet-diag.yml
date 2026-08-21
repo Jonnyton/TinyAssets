@@ -7,35 +7,23 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  deploy_fix:
+  stab:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH deploy cba8fac9 + reconcile systemd
+      - name: SSH stability check + settle systemd
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
           set -euo pipefail
-          mkdir -p ~/.ssh
-          printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
-          chmod 600 ~/.ssh/do_deploy
+          mkdir -p ~/.ssh; printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy; chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          NEWIMG="ghcr.io/jonnyton/tinyassets-daemon@sha256:335b78f027f9322b0a6ee84cb02dd3255cdfbcd6bda6b7026ff8e33cd5d1c563"
-          C="docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml"
-          echo "===== UNIT FILE (ExecStart/ExecStop/StartLimit) ====="; grep -E "ExecStart|ExecStop|Restart|StartLimit|RemainAfterExit|Type=" /etc/systemd/system/tinyassets-daemon.service 2>&1
-          echo "===== swap TINYASSETS_IMAGE -> cba8fac9 (perm-preserving) ====="
-          cp -a /etc/tinyassets/env /etc/tinyassets/env.bak
-          { grep -v '^TINYASSETS_IMAGE=' /etc/tinyassets/env.bak; echo "TINYASSETS_IMAGE=${NEWIMG}"; } > /tmp/env.new
-          chown --reference=/etc/tinyassets/env.bak /tmp/env.new; chmod --reference=/etc/tinyassets/env.bak /tmp/env.new
-          mv /tmp/env.new /etc/tinyassets/env && echo "env updated"; grep '^TINYASSETS_IMAGE=' /etc/tinyassets/env
-          echo "===== up -d (deploy cba8fac9) ====="; $C up -d 2>&1 | tail -12
-          sleep 15; echo "===== ps ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
-          echo "===== reconcile systemd (reset-failed + restart) ====="; systemctl reset-failed tinyassets-daemon.service 2>&1; systemctl restart tinyassets-daemon.service 2>&1; echo "restart rc=$?"; sleep 40
-          echo "===== systemd active? ====="; systemctl is-active tinyassets-daemon.service 2>&1
-          echo "===== SAFETY NET up -d ====="; $C up -d 2>&1 | tail -6; sleep 10
-          echo "===== FINAL ps ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
-          echo "===== local token proxy probe ====="; curl -s -o /dev/null -w "localhost:8001/mcp/app/token -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{}' http://localhost:8001/mcp/app/token 2>&1
+          echo "===== systemd status ====="; systemctl is-active tinyassets-daemon.service; systemctl show tinyassets-daemon.service -p NRestarts -p ActiveState -p SubState 2>&1
+          echo "===== container uptime (flapping?) sample 1 ====="; docker ps --format '{{.Names}} {{.Status}}' | grep daemon
+          sleep 20
+          echo "===== sample 2 (20s later — uptime should INCREASE, not reset) ====="; docker ps --format '{{.Names}} {{.Status}}' | grep daemon
+          echo "===== daemon restart count ====="; docker inspect --format 'restarts={{.RestartCount}} started={{.State.StartedAt}}' tinyassets-daemon 2>&1
+          echo "===== ExecStart line ====="; grep ExecStart /etc/systemd/system/tinyassets-daemon.service
           echo "===== DONE ====="
           REMOTE
