@@ -113,6 +113,12 @@ export default function HomeClient() {
             </p>
             <div className="cover__actions">
               <a className="btn btn--primary" href="/start">Put me to work →</a>
+              <a
+                className="btn btn--ghost"
+                href="https://github.com/Jonnyton/TinyAssets/releases/latest/download/app-debug.apk"
+              >
+                Get the Android app ↓
+              </a>
               <button type="button" className="urlchip" onClick={copyUrl} aria-label="Copy the MCP URL">
                 <code>{MCP_URL.replace("https://", "")}</code>
                 <span className="urlchip__copy">{copied ? "copied ✓" : "copy"}</span>
