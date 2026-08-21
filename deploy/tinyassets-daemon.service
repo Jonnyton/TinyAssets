@@ -30,8 +30,17 @@ Wants=network-online.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
+# Type=oneshot + RemainAfterExit=yes + `docker compose up -d` (2026-08-21 P0 fix).
+# The old Type=simple + foreground `docker compose up` made systemd watch the
+# compose CLI process; when that process exited during a deploy's down/up (a
+# transient, aggravated by the watchdog racing a `systemctl restart`), Restart=always
+# hot-looped it until StartLimitBurst tripped and systemd gave up — leaving the whole
+# stack (daemon + tunnel) STOPPED and prod 502. `up -d` returns cleanly after the
+# stack is healthy; RemainAfterExit keeps the unit "active"; docker's own
+# restart policy (compose.yml) handles container-level crashes.
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 User=tinyassets
 Group=tinyassets
 WorkingDirectory=/opt/tinyassets
@@ -48,17 +57,21 @@ ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/env || { echo "ENV-UNREADABLE: 
 ExecStartPre=/bin/sh -c 'meta=$$(stat -c "%%U:%%G %%a" /etc/tinyassets/agent-interchange.env 2>/dev/null || true); test -r /etc/tinyassets/agent-interchange.env && [ "$$meta" = "root:tinyassets 640" ] || { echo "AGENT-INTERCHANGE-ENV-UNREADABLE: /etc/tinyassets/agent-interchange.env must be readable with root:tinyassets 640 (found $$meta)" >&2; ls -l /etc/tinyassets/agent-interchange.env >&2 || true; exit 1; }'
 ExecStartPre=/bin/sh -c 'meta=$$(stat -c "%%U:%%G %%a" /etc/tinyassets/request-idempotency.env 2>/dev/null || true); test -r /etc/tinyassets/request-idempotency.env && [ "$$meta" = "root:tinyassets 640" ] || { echo "REQUEST-IDEMPOTENCY-ENV-UNREADABLE: /etc/tinyassets/request-idempotency.env must be readable with root:tinyassets 640 (found $$meta)" >&2; ls -l /etc/tinyassets/request-idempotency.env >&2 || true; exit 1; }'
 
-# docker compose up runs in foreground; systemd watches the PID.
-# The image's own tini PID-1 handles SIGTERM cleanly (Row A Dockerfile).
-ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up
+# `up -d` starts the stack detached and returns once it is up + healthy (the
+# tunnel depends_on the daemon's healthcheck), so systemd never watches a
+# long-lived foreground CLI. --remove-orphans clears any half-created container
+# from a prior crashed attempt (the exit-125 class this fix removes).
+ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d --remove-orphans
 ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml down --timeout 30
 
-# Restart posture. 10s delay avoids hot-loop on persistent failure;
-# StartLimitInterval/Burst caps cascading restarts to 5 in 5 min
-# (after which systemd refuses further restarts until manual reset).
-Restart=always
+# Restart posture. on-failure (NOT always — with RemainAfterExit, `always` would
+# re-run a SUCCESSFUL oneshot). 10s delay + StartLimitBurst cap avoids a hot-loop;
+# container-level crashes are handled by docker's restart policy, not systemd.
+Restart=on-failure
 RestartSec=10s
 
+# TimeoutStartSec > the up -d + healthcheck-wait budget (daemon health ~30s).
+TimeoutStartSec=200s
 # TimeoutStopSec > the cloudflared + daemon graceful-shutdown budgets.
 TimeoutStopSec=60s
 
