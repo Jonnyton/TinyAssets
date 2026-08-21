@@ -49,3 +49,16 @@ def test_absent_soul_is_undeclared_not_denied(tmp_path):
     # that keeps a soul-less universe from being blocked on every effect).
     assert effect_authority_from_soul(universe_dir) == ()
     assert resolve_soul_effect_authority(universe_dir, _SINK, _DEST) == UNDECLARED
+
+
+def test_actual_read_failure_on_existing_soul_fails_closed(tmp_path):
+    # A REAL read failure (no mock): the soul path EXISTS but is a directory, so
+    # read_text raises IsADirectoryError (an OSError) that read_universe_soul
+    # swallows to None. lstat() confirms the path exists -> fail closed -> DENIED.
+    # This is the path Codex flagged is_file() could wrongly pass through.
+    universe_dir = tmp_path / "u3"
+    universe_dir.mkdir()
+    soul_path(universe_dir).mkdir()  # exists, but unreadable as a file
+    with pytest.raises(OSError):
+        effect_authority_from_soul(universe_dir)
+    assert resolve_soul_effect_authority(universe_dir, _SINK, _DEST) == DENIED

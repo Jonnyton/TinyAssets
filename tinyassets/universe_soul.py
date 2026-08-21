@@ -338,16 +338,24 @@ def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
     soul = read_universe_soul(universe_dir)
     if soul is not None:
         return soul.effect_authority
+    # read_universe_soul returned None: distinguish a genuinely ABSENT soul
+    # (-> () -> UNDECLARED) from an existing-but-unreadable one (-> raise ->
+    # DENIED). Use lstat(), NOT is_file(): is_file() can suppress a metadata
+    # error to False (Codex adapt 2026-08-20, Python 3.14.3), wrongly restoring
+    # UNDECLARED. lstat() raises FileNotFoundError only when the path is truly
+    # gone; ANY other failure — or any existing entry, including a dangling or
+    # malformed symlink — means we cannot treat the soul as absent, so we fail
+    # closed. Only the genuine-deletion race lands in ().
     try:
-        exists = soul_path(universe_dir).is_file()
+        soul_path(universe_dir).lstat()
+    except FileNotFoundError:
+        return ()
     except OSError:
-        exists = True  # cannot confirm absence -> fail closed
-    if exists:
-        raise OSError(
-            "soul file exists but could not be read; failing closed for "
-            "effect-authority resolution"
-        )
-    return ()
+        pass  # metadata error on an uncertain path -> fail closed below
+    raise OSError(
+        "soul file exists but could not be read; failing closed for "
+        "effect-authority resolution"
+    )
 
 
 def _render_list(items: tuple[str, ...]) -> str:
