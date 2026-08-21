@@ -7,10 +7,10 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  stab:
+  settle:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH stability check + settle systemd
+      - name: SSH settle systemd
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
@@ -19,11 +19,15 @@ jobs:
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== systemd status ====="; systemctl is-active tinyassets-daemon.service; systemctl show tinyassets-daemon.service -p NRestarts -p ActiveState -p SubState 2>&1
-          echo "===== container uptime (flapping?) sample 1 ====="; docker ps --format '{{.Names}} {{.Status}}' | grep daemon
-          sleep 20
-          echo "===== sample 2 (20s later — uptime should INCREASE, not reset) ====="; docker ps --format '{{.Names}} {{.Status}}' | grep daemon
-          echo "===== daemon restart count ====="; docker inspect --format 'restarts={{.RestartCount}} started={{.State.StartedAt}}' tinyassets-daemon 2>&1
-          echo "===== ExecStart line ====="; grep ExecStart /etc/systemd/system/tinyassets-daemon.service
+          C="docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml"
+          echo "===== reset-failed + start (attach to running stack, no stop) ====="
+          systemctl reset-failed tinyassets-daemon.service 2>&1
+          systemctl start tinyassets-daemon.service 2>&1 &
+          sleep 45
+          echo "===== systemd state ====="; systemctl show tinyassets-daemon.service -p ActiveState -p SubState -p NRestarts 2>&1
+          echo "===== SAFETY NET: ensure stack up ====="; $C up -d 2>&1 | tail -5
+          sleep 8
+          echo "===== ps ====="; docker ps --format '{{.Names}} {{.Status}}' | grep -E "daemon|tunnel"
+          echo "===== enable on boot ====="; systemctl is-enabled tinyassets-daemon.service 2>&1
           echo "===== DONE ====="
           REMOTE
