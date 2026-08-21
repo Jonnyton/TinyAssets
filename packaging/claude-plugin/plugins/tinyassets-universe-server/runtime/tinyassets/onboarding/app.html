@@ -465,12 +465,17 @@
   }
   async function enterSignedIn(){
     const me = await fetchMe();
-    if(me && me.engine_connected===false){
-      engineConnected = false;
+    if(me===null && !token()) return;            // fetchMe signed us out
+    if(!(me && me.engine_connected===true)){
+      // Connect-until-ready: only an explicit "connected" opens chat. Unknown
+      // (daemon hiccup) still lands on Connect, with the reason, and "Skip for
+      // now" remains available.
+      engineConnected = me ? false : null;
       showConnect(true);
+      if(!me) $("connect-status").textContent += " (Couldn't confirm your universe's status just now — you can connect anyway or skip.)";
       return;
     }
-    engineConnected = me ? !!me.engine_connected : null;
+    engineConnected = true;
     showView("chat"); startHeartbeat(); $("composer-input").focus();
   }
   function onEngineConnected(){
@@ -516,11 +521,27 @@
     const challenge=await challengeFor(verifier);
     const port=CFG.openai.redirect_port||1455, path=CFG.openai.redirect_path||"/auth/callback";
     const redirectUri="http://localhost:"+port+path;
-    let handle=null, done=false;
+    let handle=null, done=false, flow=null;
     const finish=async(ok,msg)=>{ if(done) return; done=true; try{ if(handle) handle.remove(); }catch(_e){}
       try{ await LC.stop(); }catch(_e){} btn.disabled=false; openaiBusy=false;
       if(ok){ btn.textContent="OpenAI connected ✓"; res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn."; onEngineConnected(); }
       else res.textContent=msg; };
+    // 1. Register the flow with the daemon: binds THIS session, THIS
+    //    challenge, THIS redirect, and the user's own home universe.
+    try{
+      const r=await fetch("/mcp/app/openai/begin",{method:"POST",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({code_challenge:challenge, redirect_uri:redirectUri})});
+      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
+      const doc=await r.json();
+      if(!r.ok||!doc.flow){
+        const why = doc.error==="no_home_universe" ? "Your universe isn't ready yet — send it one message first, then connect." : (doc.error||"could not start");
+        return finish(false, why);
+      }
+      flow=doc.flow;
+    }catch(e){ return finish(false, "Couldn't reach the connector: "+e.message); }
+    // 2. Listen on loopback for OpenAI's redirect (the listener only accepts
+    //    the exact callback path carrying THIS state).
     try{
       handle = await LC.addListener("callback", async (ev)=>{
         let u; try{ u=new URL(ev.url); }catch(_e){ return; }
@@ -532,14 +553,14 @@
         try{
           r=await fetch("/mcp/app/openai/exchange",{method:"POST",
             headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-            body:JSON.stringify({code, code_verifier:verifier, redirect_uri:redirectUri})});
+            body:JSON.stringify({flow, code, code_verifier:verifier})});
           doc=await r.json();
         }catch(e){ return finish(false, "Couldn't reach the connector: "+e.message); }
         if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
         if(doc.status==="connected") return finish(true);
         return finish(false, "Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.");
       });
-      await LC.start({port, path});
+      await LC.start({port, path, state});
     }catch(e){ return finish(false, "Couldn't start the sign-in listener: "+(e.message||e)); }
     const p=new URLSearchParams({
       response_type:"code", client_id:CFG.openai.client_id, redirect_uri:redirectUri,

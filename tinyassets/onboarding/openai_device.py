@@ -68,12 +68,27 @@ class DeviceAuthError(Exception):
         self.status = status
 
 
-def _opaque(value: Any, limit: int = 256) -> str:
-    """A bounded string field from an untrusted JSON document, never the whole doc."""
+def _opaque(
+    value: Any, limit: int = 256, *, code: str = "device_response_invalid", status: int = 502
+) -> str:
+    """A bounded string field from an untrusted document, never the whole doc.
+
+    Upstream (OpenAI) documents fail as 502 ``device_response_invalid``; fields
+    supplied by OUR client fail as 400 (callers pass ``code``/``status``)."""
     text = str(value or "").strip()
     if len(text) > limit:
-        raise DeviceAuthError("device_response_invalid")
+        raise DeviceAuthError(code, status)
     return text
+
+
+def _upstream_error(status_code: int, *, invalid: str) -> DeviceAuthError:
+    """Map an OpenAI error status to ours without echoing the upstream body:
+    4xx (bad/expired code, invalid grant) -> 400, 429 -> 429, 5xx -> 502."""
+    if status_code == 429:
+        return DeviceAuthError("openai_throttled", 429)
+    if 400 <= status_code < 500:
+        return DeviceAuthError(invalid, 400)
+    return DeviceAuthError("openai_unavailable", 502)
 
 
 async def start_device_auth(client_factory: ClientFactory = _default_client) -> dict[str, Any]:
@@ -90,7 +105,7 @@ async def start_device_auth(client_factory: ClientFactory = _default_client) -> 
     if resp.status_code == 404:
         raise DeviceAuthError("device_login_unavailable", 503)
     if resp.status_code >= 400:
-        raise DeviceAuthError("device_start_failed")
+        raise _upstream_error(resp.status_code, invalid="device_start_failed")
     try:
         doc = resp.json()
     except ValueError:
@@ -177,7 +192,7 @@ async def poll_device_auth(
             if resp.status_code in (403, 404):
                 return None  # pending — the CLI treats these as "not yet"
             if resp.status_code >= 400:
-                raise DeviceAuthError("device_poll_failed")
+                raise _upstream_error(resp.status_code, invalid="device_poll_failed")
             try:
                 doc = resp.json()
             except ValueError:
@@ -203,7 +218,7 @@ async def poll_device_auth(
     except httpx.HTTPError:
         raise DeviceAuthError("openai_unreachable") from None
     if tok.status_code >= 400:
-        raise DeviceAuthError("token_exchange_failed")
+        raise _upstream_error(tok.status_code, invalid="token_exchange_failed")
     try:
         tdoc = tok.json()
     except ValueError:
@@ -240,13 +255,28 @@ _MAX_PENDING_PER_USER = 3
 
 
 class _PendingFlow:
-    __slots__ = ("user_id", "universe_id", "device_auth_id", "user_code", "expires_at", "leased")
+    __slots__ = (
+        "user_id", "universe_id", "device_auth_id", "user_code",
+        "code_challenge", "redirect_uri", "expires_at", "leased",
+    )
 
-    def __init__(self, user_id: str, universe_id: str, device_auth_id: str, user_code: str) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        universe_id: str,
+        device_auth_id: str = "",
+        user_code: str = "",
+        code_challenge: str = "",
+        redirect_uri: str = "",
+    ) -> None:
         self.user_id = user_id
         self.universe_id = universe_id
+        # device flow: the bearer tuple; browser flow: the PKCE challenge +
+        # loopback redirect the authorize request was built with.
         self.device_auth_id = device_auth_id
         self.user_code = user_code
+        self.code_challenge = code_challenge
+        self.redirect_uri = redirect_uri
         self.expires_at = _time.monotonic() + FLOW_TTL_SECONDS
         # One poll at a time: taken under the lock by lookup_flow, released by
         # release_flow (pending) or consume_flow (terminal). Two concurrent
@@ -263,10 +293,22 @@ def _sweep_locked(now: float) -> None:
         _pending.pop(handle, None)
 
 
-def register_flow(*, user_id: str, universe_id: str, device_auth_id: str, user_code: str) -> str:
-    """Bind a started flow to ``user_id`` and return its opaque handle."""
+def register_flow(
+    *,
+    user_id: str,
+    universe_id: str,
+    device_auth_id: str = "",
+    user_code: str = "",
+    code_challenge: str = "",
+    redirect_uri: str = "",
+) -> str:
+    """Bind a started flow to ``user_id`` + its exact home universe and return
+    its opaque handle. ``universe_id`` is server-resolved by the caller; a
+    client never chooses where a credential lands."""
     if not user_id:
         raise DeviceAuthError("authentication_required", 401)
+    if not universe_id:
+        raise DeviceAuthError("no_home_universe", 409)
     with _pending_lock:
         now = _time.monotonic()
         _sweep_locked(now)
@@ -278,7 +320,9 @@ def register_flow(*, user_id: str, universe_id: str, device_auth_id: str, user_c
         if len(_pending) >= _MAX_PENDING_FLOWS:
             raise DeviceAuthError("too_many_pending_flows", 429)
         handle = _secrets.token_urlsafe(32)
-        _pending[handle] = _PendingFlow(user_id, universe_id, device_auth_id, user_code)
+        _pending[handle] = _PendingFlow(
+            user_id, universe_id, device_auth_id, user_code, code_challenge, redirect_uri
+        )
         return handle
 
 
@@ -317,6 +361,19 @@ def _reset_pending_for_tests() -> None:
         _pending.clear()
 
 
+def verifier_matches_challenge(code_verifier: str, code_challenge: str) -> bool:
+    """S256: the exchange may only complete with the verifier whose challenge
+    the flow was begun with — binds the callback to the initiating app session."""
+    import hashlib
+    import hmac
+
+    if not code_verifier or not code_challenge:
+        return False
+    digest = hashlib.sha256(code_verifier.encode("ascii", "strict")).digest()
+    expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return hmac.compare_digest(expected, code_challenge.strip())
+
+
 def deposit_codex_auth_json(auth_json: str, *, universe_id: str = "") -> dict[str, Any]:
     """Deposit through the landed ``connect_llm`` handler under the CURRENT
     request identity (set by the auth middleware from the app's bearer). Every
@@ -344,6 +401,7 @@ __all__ = [
     "browser_authorize_params",
     "valid_loopback_redirect",
     "exchange_browser_code",
+    "verifier_matches_challenge",
     "VERIFICATION_URL",
     "DeviceAuthError",
     "start_device_auth",
@@ -417,8 +475,8 @@ async def exchange_browser_code(
     client_factory: ClientFactory = _default_client,
 ) -> dict[str, Any]:
     """PKCE exchange for the browser flow; returns ``{"auth_json": ...}``."""
-    code = _opaque(code, 2048)
-    code_verifier = _opaque(code_verifier, 512)
+    code = _opaque(code, 2048, code="field_too_large", status=400)
+    code_verifier = _opaque(code_verifier, 512, code="field_too_large", status=400)
     if not code or not code_verifier:
         raise DeviceAuthError("missing_fields", 400)
     if not valid_loopback_redirect(redirect_uri):
@@ -439,7 +497,7 @@ async def exchange_browser_code(
     except httpx.HTTPError:
         raise DeviceAuthError("openai_unreachable") from None
     if tok.status_code >= 400:
-        raise DeviceAuthError("token_exchange_failed", 400)
+        raise _upstream_error(tok.status_code, invalid="token_exchange_failed")
     try:
         tdoc = tok.json()
     except ValueError:

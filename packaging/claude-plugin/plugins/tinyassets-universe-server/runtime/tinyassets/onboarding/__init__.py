@@ -270,6 +270,23 @@ def _app_identity_required() -> Any:
     return None
 
 
+def _bootstrap_home(identity: Any) -> str:
+    """The signed-in user's OWN home universe id, created on first contact if
+    it does not exist yet (the same ``ensure_founder_home`` the conversation
+    entry uses). "" when the identity cannot create one. Runs in a worker
+    thread under the request identity. This is the ONLY universe a credential
+    from the app may land in — a client-supplied universe id is ignored."""
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import identity_context
+
+    with identity_context(identity):
+        try:
+            return ensure_founder_home(_base_path(), identity.user_id) or ""
+        except Exception:  # noqa: BLE001 - no home is an honest answer, not a 500
+            return ""
+
+
 async def _handle_openai_device_start(request: Any) -> Any:
     """Begin the one-tap OpenAI link: returns the user code + approval URL."""
     from starlette.responses import JSONResponse, PlainTextResponse
@@ -286,17 +303,23 @@ async def _handle_openai_device_start(request: Any) -> Any:
     denied = _app_identity_required()
     if denied is not None:
         return denied
+    from starlette.concurrency import run_in_threadpool
+
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
-    universe_id = str(data.get("universe_id", "")).strip()[:128]
+    identity = current_identity()
+    home = await run_in_threadpool(_bootstrap_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home_universe"}, status_code=409)
     try:
         started = await start_device_auth()
         # The raw device tuple is a bearer capability for the credential; it
-        # stays in the daemon, bound to THIS user. The app gets an opaque handle.
+        # stays in the daemon, bound to THIS user + THEIR home. The app gets an
+        # opaque handle.
         handle = register_flow(
-            user_id=current_identity().user_id,
-            universe_id=universe_id,
+            user_id=identity.user_id,
+            universe_id=home,
             device_auth_id=started["device_auth_id"],
             user_code=started["user_code"],
         )
@@ -401,22 +424,21 @@ async def _handle_me(request: Any) -> Any:
     identity = current_identity()
 
     def _read() -> dict[str, Any]:
-        from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+        from tinyassets.api.helpers import _universe_dir
         from tinyassets.api.universe import universe_has_assigned_engine
-        from tinyassets.daemon_server import get_founder_home
 
+        # Only the user's OWN home counts — created now if this is their first
+        # contact, so the Connect gate always has a destination. The
+        # identity-neutral public landing universe has an engine of its own
+        # and must never read as "you're connected".
+        home = _bootstrap_home(identity)
+        if not home:
+            return {"universe_id": "", "home_bound": False, "engine_connected": False}
         with identity_context(identity):
-            # Only the user's OWN bound home counts. Before first contact there
-            # is no home yet; the identity-neutral public landing universe has
-            # an engine of its own and must not read as "you're connected".
-            home = get_founder_home(_base_path(), identity.user_id) or ""
-            if not home or not (_base_path() / home).is_dir():
-                return {"universe_id": "", "home_bound": False, "engine_connected": False}
-            uid = _request_universe(home)
             return {
-                "universe_id": uid,
+                "universe_id": home,
                 "home_bound": True,
-                "engine_connected": bool(universe_has_assigned_engine(_universe_dir(uid))),
+                "engine_connected": bool(universe_has_assigned_engine(_universe_dir(home))),
             }
 
     try:
@@ -426,19 +448,71 @@ async def _handle_me(request: Any) -> Any:
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
+async def _handle_openai_begin(request: Any) -> Any:
+    """Browser sign-in start: the app sends the PKCE challenge + loopback
+    redirect it will build the authorize URL with. The daemon binds them to
+    the signed-in user + their exact home behind an opaque handle, so the
+    later exchange can only complete for that session, that verifier, that
+    redirect, into that universe."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding.openai_device import (
+        DeviceAuthError,
+        register_flow,
+        valid_loopback_redirect,
+    )
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    challenge = str(data.get("code_challenge", "")).strip()
+    redirect_uri = str(data.get("redirect_uri", "")).strip()
+    if not (43 <= len(challenge) <= 128) or not _re.fullmatch(r"[A-Za-z0-9_-]+", challenge):
+        return JSONResponse({"error": "invalid_code_challenge"}, status_code=400)
+    if not valid_loopback_redirect(redirect_uri):
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    identity = current_identity()
+    home = await run_in_threadpool(_bootstrap_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home_universe"}, status_code=409)
+    try:
+        handle = register_flow(
+            user_id=identity.user_id,
+            universe_id=home,
+            code_challenge=challenge,
+            redirect_uri=redirect_uri,
+        )
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    return JSONResponse({"flow": handle}, headers={"Cache-Control": "no-store"})
+
+
 async def _handle_openai_exchange(request: Any) -> Any:
     """Browser sign-in completion: the app caught OpenAI's redirect on its
-    loopback listener and sends (code, verifier, redirect_uri). The daemon
-    exchanges with PKCE and deposits as the signed-in user; the response
-    carries only a status."""
+    loopback listener and sends (flow, code, verifier). The flow must belong
+    to this identity, the verifier must hash to the challenge the flow was
+    begun with, and the exchange uses the flow's redirect. The daemon then
+    deposits into the flow's home universe; the response carries only a
+    status."""
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
     from tinyassets.auth.middleware import current_identity, identity_context
     from tinyassets.onboarding.openai_device import (
         DeviceAuthError,
+        consume_flow,
         deposit_codex_auth_json,
         exchange_browser_code,
+        lookup_flow,
+        release_flow,
+        verifier_matches_challenge,
     )
 
     if not onboarding_enabled():
@@ -450,15 +524,34 @@ async def _handle_openai_exchange(request: Any) -> Any:
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
     identity = current_identity()
-    universe_id = str(data.get("universe_id", "")).strip()[:128]
+    handle = str(data.get("flow", ""))[:128]
+    code_verifier = str(data.get("code_verifier", ""))[:512]
+    try:
+        flow = lookup_flow(handle, user_id=identity.user_id)
+    except DeviceAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status)
+    if not flow.code_challenge or not verifier_matches_challenge(
+        code_verifier, flow.code_challenge
+    ):
+        consume_flow(handle)  # a wrong verifier is terminal: one attempt per flow
+        return JSONResponse({"error": "verifier_mismatch"}, status_code=400)
     try:
         outcome = await exchange_browser_code(
             code=str(data.get("code", "")),
-            code_verifier=str(data.get("code_verifier", "")),
-            redirect_uri=str(data.get("redirect_uri", "")),
+            code_verifier=code_verifier,
+            redirect_uri=flow.redirect_uri,
         )
     except DeviceAuthError as exc:
+        if exc.status in (429, 502):
+            release_flow(handle)  # transient upstream trouble: the app may retry
+        else:
+            consume_flow(handle)
         return JSONResponse({"error": exc.code}, status_code=exc.status)
+    except BaseException:
+        release_flow(handle)
+        raise
+    consume_flow(handle)
+    universe_id = flow.universe_id
 
     def _deposit() -> dict[str, Any]:
         with identity_context(identity):
@@ -491,6 +584,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
         Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
         Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
+        Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
         Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
     ]

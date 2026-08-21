@@ -8,9 +8,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -31,14 +29,24 @@ import java.nio.charset.StandardCharsets;
  */
 @CapacitorPlugin(name = "LocalCallback")
 public class LocalCallbackPlugin extends Plugin {
+    private static final int MAX_REQUEST_BYTES = 8192;   // a callback line + a few headers
+    private static final int SOCKET_TIMEOUT_MS = 3000;
+
     private ServerSocket server;
-    private String expectedPath = "/auth/callback";
+    private volatile String expectedPath = "/auth/callback";
+    private volatile String expectedState = "";
 
     @PluginMethod
     public void start(PluginCall call) {
         int port = call.getInt("port", 1455);
         String path = call.getString("path", "/auth/callback");
+        String state = call.getString("state", "");
+        if (state == null || state.isEmpty()) {
+            call.reject("state is required");
+            return;
+        }
         expectedPath = path;
+        expectedState = state;
         stopServer();
         try {
             ServerSocket s = new ServerSocket();
@@ -72,20 +80,34 @@ public class LocalCallbackPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * Any app on the phone can open http://localhost:PORT, so nothing a client
+     * sends is trusted: the request is read with a hard byte cap (no unbounded
+     * line reads), only an exact GET of the expected path carrying EXACTLY the
+     * expected state is accepted, and anything else gets a 404 and is ignored
+     * without closing the listener - a stranger cannot preempt the real
+     * callback by connecting first. The listener closes only after the valid
+     * callback has been handed to the web layer.
+     */
     private void handle(Socket c) throws IOException {
-        c.setSoTimeout(5000);
-        BufferedReader in = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
-        String request = in.readLine();
-        String target = "/";
-        if (request != null) {
-            String[] parts = request.split(" ");
-            if (parts.length >= 2) target = parts[1];
+        c.setSoTimeout(SOCKET_TIMEOUT_MS);
+        byte[] buf = new byte[MAX_REQUEST_BYTES];
+        int n = 0;
+        java.io.InputStream in = c.getInputStream();
+        while (n < buf.length) {
+            int r = in.read(buf, n, buf.length - n);
+            if (r < 0) break;
+            n += r;
+            if (indexOfCrlfCrlf(buf, n) >= 0) break;
         }
-        String header;
-        while ((header = in.readLine()) != null && !header.isEmpty()) { /* drain */ }
+        String head = new String(buf, 0, n, StandardCharsets.ISO_8859_1);
+        int eol = head.indexOf("\r\n");
+        String requestLine = eol >= 0 ? head.substring(0, eol) : head;
+        String[] parts = requestLine.split(" ");
+        String target = (parts.length >= 2 && "GET".equals(parts[0])) ? parts[1] : "";
 
-        boolean isCallback = target.startsWith(expectedPath);
-        String body = isCallback
+        boolean valid = isExpectedCallback(target);
+        String body = valid
             ? "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
               + "<meta http-equiv=\"refresh\" content=\"1;url=intent://auth#Intent;scheme=tinyassets;package=io.tinyassets.app;end\"></head>"
               + "<body style=\"font-family:system-ui;background:#0f1020;color:#eef0ff;text-align:center;padding:3rem\">"
@@ -96,18 +118,47 @@ public class LocalCallbackPlugin extends Plugin {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         OutputStream out = c.getOutputStream();
         out.write((
-            (isCallback ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found")
+            (valid ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found")
             + "\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + bytes.length
             + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         out.write(bytes);
         out.flush();
-        if (!isCallback) return;
+        if (!valid) return;   // ignored; keep listening for the real callback
 
         JSObject ev = new JSObject();
         ev.put("url", "http://localhost" + target);
         notifyListeners("callback", ev, true);
         bringToFront();
-        stopServer();   // one flow per start(): the listener closes after the first callback
+        stopServer();   // one valid callback per start()
+    }
+
+    private static int indexOfCrlfCrlf(byte[] b, int len) {
+        for (int i = 0; i + 3 < len; i++) {
+            if (b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') return i;
+        }
+        return -1;
+    }
+
+    /** Exact path, and a query whose `state` equals the one this flow started with. */
+    private boolean isExpectedCallback(String target) {
+        if (target == null || target.isEmpty()) return false;
+        int q = target.indexOf('?');
+        String path = q >= 0 ? target.substring(0, q) : target;
+        if (!path.equals(expectedPath)) return false;
+        if (q < 0) return false;
+        String query = target.substring(q + 1);
+        int hash = query.indexOf('#');
+        if (hash >= 0) query = query.substring(0, hash);
+        boolean stateOk = false, hasCode = false;
+        for (String kv : query.split("&")) {
+            int eq = kv.indexOf('=');
+            String k = eq >= 0 ? kv.substring(0, eq) : kv;
+            String v = eq >= 0 ? kv.substring(eq + 1) : "";
+            try { v = java.net.URLDecoder.decode(v, "UTF-8"); } catch (Exception e) { return false; }
+            if (k.equals("state")) stateOk = v.equals(expectedState);
+            if (k.equals("code") && !v.isEmpty()) hasCode = true;
+        }
+        return stateOk && hasCode;
     }
 
     private void bringToFront() {
