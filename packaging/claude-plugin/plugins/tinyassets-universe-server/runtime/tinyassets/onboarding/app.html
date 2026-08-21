@@ -645,6 +645,9 @@
     await openExternal(CFG.openai.authorize_url+"?"+p.toString());
     trace("openai.browser", "opened");
     res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here.";
+    // Safety net: if the phone still blocks the localhost hop, the stuck page
+    // keeps the sign-in result in its address bar — Share it to TinyAssets.
+    setTimeout(()=>{ if(openaiPending) res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here. If it ends on a \u201ccan\u2019t be reached\u201d page instead, tap that page\u2019s Share button (top right) and choose TinyAssets \u2014 that finishes the link."; }, 25*1000);
     openaiPending.timer=setTimeout(()=>{ if(openaiPending) finishOpenAI(false, "That took too long — tap Connect OpenAI to try again."); }, 10*60*1000);
   }
 

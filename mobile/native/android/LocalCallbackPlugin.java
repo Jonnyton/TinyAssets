@@ -80,6 +80,7 @@ public class LocalCallbackPlugin extends Plugin {
         }
         serve(server4, gen);
         if (server6 != null) serve(server6, gen);
+        keepAlive(true);
         JSObject r = new JSObject();
         r.put("port", port);
         r.put("ipv6", server6 != null);
@@ -287,6 +288,34 @@ public class LocalCallbackPlugin extends Plugin {
         server6 = null;
         if (a != null) { try { a.close(); } catch (IOException ignored) { } }
         if (b != null) { try { b.close(); } catch (IOException ignored) { } }
+        keepAlive(false);
+    }
+
+    /**
+     * Android 14+ freezes a cached (backgrounded) process after ~10 s - which
+     * is where this app sits while the user is on the provider's page. The
+     * kernel keeps accepting on the listening socket but the frozen app never
+     * answers, so the provider's redirect times out (ERR_CONNECTION_TIMED_OUT,
+     * founder test 2026-08-21). A short-lived foreground service (with its
+     * "Finishing your sign-in" notification) keeps the process schedulable for
+     * exactly the life of the listener.
+     */
+    private void keepAlive(boolean on) {
+        try {
+            android.content.Context ctx = getContext();
+            Intent svc = new Intent(ctx, LocalCallbackService.class);
+            if (on) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    ctx.startForegroundService(svc);
+                } else {
+                    ctx.startService(svc);
+                }
+            } else {
+                ctx.stopService(svc);
+            }
+        } catch (Throwable ignored) {
+            // Best effort: without it the listener still runs, just freezable.
+        }
     }
 
     @Override
