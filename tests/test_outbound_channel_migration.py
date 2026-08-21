@@ -10,7 +10,9 @@ oracle and assert the general-primitive path produces the same normalized reques
 
 from __future__ import annotations
 
+import base64
 import http.server
+import json
 import socket
 import ssl
 import threading
@@ -18,12 +20,24 @@ import threading
 import pytest
 
 from tinyassets.effectors.outbound_channel_adapter import (
+    GITHUB_ALLOWED_ENDPOINTS,
+    GITHUB_API_BASE,
+    github_add_labels_request,
+    github_contents_read_request,
+    github_git_blob_request,
+    github_git_commit_read_request,
+    github_git_commit_request,
+    github_git_ref_create_request,
+    github_git_ref_read_request,
+    github_git_tree_request,
+    github_pull_request_create_request,
     slack_http_request,
     twitter_http_request,
 )
 from tinyassets.storage.outbound_connections import (
     ConnectionSecretBundle,
     OutboundEndpoint,
+    SsrfValidationError,
     _oauth1a_authorization,
     _SsrfHardenedHttpDriver,
 )
@@ -250,3 +264,347 @@ def test_twitter_migrated_wire_request_matches_the_oracle(stub, monkeypatch):
     # byte-identical signer is proven in the dedicated auth-parity test above).
     assert migrated["headers"]["authorization"].startswith("OAuth ")
     assert oracle["headers"]["authorization"].startswith("OAuth ")
+
+
+# --------------------------------------------------------------------------- #
+# GITHUB (track 3) — multi-call PR transaction, bearer token, spaced JSON body.
+#
+# The oracle is github_pr's OWN request construction, driven end-to-end against
+# a stateful loopback GitHub so no expected request is ever hand-written:
+#   * _materialize_branch        -> base-ref read, base-commit read, blob, tree,
+#                                   commit, ref (the git-data write sequence).
+#   * _invoke_github_api_pr_create -> PR create + labels.
+#   * _fetch_file_at_ref         -> contents read.
+# Each recorded wire request is compared to the corresponding builder driven
+# through the REAL _SsrfHardenedHttpDriver with the REAL GITHUB_ALLOWED_ENDPOINTS.
+# --------------------------------------------------------------------------- #
+_GH_TOKEN = "ghs_testcapabilitytoken_notinresponses"
+_GH_OWNER_REPO = "octocat/hello-world"
+_GH_BASE_BRANCH = "main"
+_GH_HEAD_BRANCH = "tinyassets/cloud-branch"
+_GH_COMMIT_MESSAGE = "test commit message"
+_GH_CHANGE_PATH = "docs/x.md"  # non-tinyassets/ path -> no plugin-mirror blob
+_GH_CHANGE_CONTENT = "hello\n"
+# Fixed shas the stub vends at each step; distinct so a mismatch is unambiguous.
+_GH_BASE_COMMIT_SHA = "a" * 40
+_GH_BASE_TREE_SHA = "b" * 40
+_GH_BLOB_SHA = "c" * 40
+_GH_NEW_TREE_SHA = "d" * 40
+_GH_NEW_COMMIT_SHA = "e" * 40
+
+
+def _github_route(method: str, path: str) -> object:
+    """Return the JSON github_pr expects at each PR-flow step (stateful stub)."""
+    concrete = path.split("?", 1)[0]
+    if method == "GET" and "/git/ref/heads/" in concrete:
+        return {"object": {"sha": _GH_BASE_COMMIT_SHA}}
+    if method == "GET" and "/git/commits/" in concrete:
+        return {"tree": {"sha": _GH_BASE_TREE_SHA}}
+    if method == "GET" and "/contents/" in concrete:
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(b"file body\n").decode("ascii"),
+        }
+    if method == "POST" and concrete.endswith("/git/blobs"):
+        return {"sha": _GH_BLOB_SHA}
+    if method == "POST" and concrete.endswith("/git/trees"):
+        return {"sha": _GH_NEW_TREE_SHA}
+    if method == "POST" and concrete.endswith("/git/commits"):
+        return {"sha": _GH_NEW_COMMIT_SHA}
+    if method == "POST" and concrete.endswith("/git/refs"):
+        return {"ref": "refs/heads/x", "object": {"sha": _GH_NEW_COMMIT_SHA}}
+    if method == "POST" and concrete.endswith("/pulls"):
+        return {"html_url": "https://github.example/o/r/pull/1", "number": 1}
+    if method == "POST" and concrete.endswith("/labels"):
+        return [{"name": "x"}]
+    return {}
+
+
+class _GitHubRecordingHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_a):
+        return
+
+    def _handle(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        self.server.recorded.append(  # type: ignore[attr-defined]
+            {
+                "method": self.command,
+                "path": self.path,
+                "body": body,
+                "headers": {k.lower(): v for k, v in self.headers.items()},
+            }
+        )
+        payload = json.dumps(_github_route(self.command, self.path)).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):  # noqa: N802
+        self._handle()
+
+    def do_POST(self):  # noqa: N802
+        self._handle()
+
+
+@pytest.fixture
+def github_stub():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _GitHubRecordingHandler)
+    server.recorded = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _run_github_through_driver(github_stub, request: dict) -> dict:
+    """Send a builder request through the REAL SSRF driver + REAL allowlist."""
+    port = github_stub.server_address[1]
+
+    def open_socket(_address, timeout, _src):
+        return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+
+    driver = _SsrfHardenedHttpDriver(
+        resolver=lambda _h, _p: ["127.0.0.1"],
+        validator=lambda addr: addr,
+        open_socket=open_socket,
+        ssl_context=_PassThroughTLS(),
+        allowed_ports=frozenset({port}),
+    )
+    tail = request["url"].split("api.github.com", 1)[1]  # /path?query
+    driver(
+        bundle=ConnectionSecretBundle(token=_GH_TOKEN),
+        auth_scheme="bearer",
+        method=request["method"],
+        url=f"https://api.github.com:{port}{tail}",
+        headers=request["headers"],
+        body=request["body"],
+        allowed_endpoints=GITHUB_ALLOWED_ENDPOINTS,
+    )
+    return github_stub.recorded[-1]
+
+
+def _assert_github_wire_identical(migrated: dict, oracle: dict) -> None:
+    assert migrated["method"] == oracle["method"]
+    assert migrated["path"] == oracle["path"]
+    assert migrated["body"] == oracle["body"]  # byte-identical spaced JSON / empty
+    for header in ("accept", "content-type", "user-agent", "x-github-api-version"):
+        assert migrated["headers"][header] == oracle["headers"][header]
+    # Bearer auth is deterministic: byte-identical Authorization, driver-applied.
+    assert migrated["headers"]["authorization"] == oracle["headers"]["authorization"]
+    assert migrated["headers"]["authorization"] == f"Bearer {_GH_TOKEN}"
+
+
+def test_github_git_data_sequence_matches_the_oracle(github_stub, monkeypatch):
+    # Drive github_pr's REAL materialize sequence against the stub, then compare
+    # every recorded wire request to the matching builder.
+    from tinyassets.effectors import github_pr
+
+    port = github_stub.server_address[1]
+    monkeypatch.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
+
+    result = github_pr._materialize_branch(
+        changes_json={_GH_CHANGE_PATH: _GH_CHANGE_CONTENT},
+        destination=_GH_OWNER_REPO,
+        base_branch=_GH_BASE_BRANCH,
+        head_branch=_GH_HEAD_BRANCH,
+        commit_message=_GH_COMMIT_MESSAGE,
+        capability_token=_GH_TOKEN,
+        publish_ref=True,
+    )
+    # The happy path completed => exactly the six git-data calls fired, in order.
+    assert result.get("materialized") is True, result
+    recorded = github_stub.recorded
+    assert len(recorded) == 6, [r["method"] + " " + r["path"] for r in recorded]
+
+    (ref_read, commit_read, blob, tree, commit, ref_create) = recorded
+
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_git_ref_read_request(owner_repo=_GH_OWNER_REPO, branch=_GH_BASE_BRANCH),
+        ),
+        ref_read,
+    )
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_git_commit_read_request(
+                owner_repo=_GH_OWNER_REPO, sha=_GH_BASE_COMMIT_SHA
+            ),
+        ),
+        commit_read,
+    )
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_git_blob_request(
+                owner_repo=_GH_OWNER_REPO, content=_GH_CHANGE_CONTENT
+            ),
+        ),
+        blob,
+    )
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_git_tree_request(
+                owner_repo=_GH_OWNER_REPO,
+                base_tree=_GH_BASE_TREE_SHA,
+                # github_pr's tree-entry key order (github_pr.py:1482).
+                tree=[
+                    {
+                        "path": _GH_CHANGE_PATH,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": _GH_BLOB_SHA,
+                    }
+                ],
+            ),
+        ),
+        tree,
+    )
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_git_commit_request(
+                owner_repo=_GH_OWNER_REPO,
+                message=_GH_COMMIT_MESSAGE,
+                tree=_GH_NEW_TREE_SHA,
+                parents=[_GH_BASE_COMMIT_SHA],
+            ),
+        ),
+        commit,
+    )
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_git_ref_create_request(
+                owner_repo=_GH_OWNER_REPO,
+                ref=f"refs/heads/{_GH_HEAD_BRANCH}",
+                sha=_GH_NEW_COMMIT_SHA,
+            ),
+        ),
+        ref_create,
+    )
+
+
+def test_github_pr_create_and_labels_match_the_oracle(github_stub, monkeypatch):
+    # github_pr's REAL PR-create builder; the stub returns html_url+number so the
+    # labels call fires too.
+    from tinyassets.effectors import github_pr
+
+    port = github_stub.server_address[1]
+    monkeypatch.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
+
+    labels = ["cloud", "automation"]
+    github_pr._invoke_github_api_pr_create(
+        payload={
+            "title": "Add a thing",
+            "body": "PR body <!-- marker -->",
+            "base_branch": _GH_BASE_BRANCH,
+            "head_branch": _GH_HEAD_BRANCH,
+            "labels": labels,
+            "draft": True,
+        },
+        destination=_GH_OWNER_REPO,
+        capability_token=_GH_TOKEN,
+    )
+    assert len(github_stub.recorded) == 2, github_stub.recorded
+    pulls_oracle, labels_oracle = github_stub.recorded
+
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_pull_request_create_request(
+                owner_repo=_GH_OWNER_REPO,
+                title="Add a thing",
+                body="PR body <!-- marker -->",
+                base_branch=_GH_BASE_BRANCH,
+                head_branch=_GH_HEAD_BRANCH,
+                draft=True,
+            ),
+        ),
+        pulls_oracle,
+    )
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_add_labels_request(
+                owner_repo=_GH_OWNER_REPO, pr_number=1, labels=labels
+            ),
+        ),
+        labels_oracle,
+    )
+
+
+def test_github_contents_read_matches_the_oracle(github_stub, monkeypatch):
+    # github_pr's REAL contents-read builder (_fetch_file_at_ref computes the
+    # quoting + path, then calls _git_data_api). The GET is recorded before the
+    # response is validated, so a plain stub response suffices.
+    from tinyassets.effectors import github_pr
+
+    port = github_stub.server_address[1]
+    monkeypatch.setattr(github_pr, "_GITHUB_API", f"http://127.0.0.1:{port}")
+
+    github_pr._fetch_file_at_ref(
+        owner_repo=_GH_OWNER_REPO,
+        path="README.md",
+        ref=_GH_BASE_BRANCH,
+        capability_token=_GH_TOKEN,
+    )
+    oracle = github_stub.recorded[-1]
+
+    _assert_github_wire_identical(
+        _run_github_through_driver(
+            github_stub,
+            github_contents_read_request(
+                owner_repo=_GH_OWNER_REPO, path="README.md", ref=_GH_BASE_BRANCH
+            ),
+        ),
+        oracle,
+    )
+
+
+def test_github_allowlist_is_storage_valid_and_covers_the_pr_flow():
+    # Built through the storage validator, so every entry is one create_connection
+    # would accept; assert the full api.github.com PR-flow surface is present.
+    assert all(isinstance(ep, OutboundEndpoint) for ep in GITHUB_ALLOWED_ENDPOINTS)
+    assert all(ep.host == "api.github.com" for ep in GITHUB_ALLOWED_ENDPOINTS)
+    templates = {(ep.path_template, ep.methods) for ep in GITHUB_ALLOWED_ENDPOINTS}
+    assert templates == {
+        ("/repos/{owner}/{repo}/pulls", ("POST",)),
+        ("/repos/{owner}/{repo}/issues/{pr_number}/labels", ("POST",)),
+        ("/repos/{owner}/{repo}/git/blobs", ("POST",)),
+        ("/repos/{owner}/{repo}/git/trees", ("POST",)),
+        ("/repos/{owner}/{repo}/git/commits", ("POST",)),
+        ("/repos/{owner}/{repo}/git/refs", ("POST",)),
+        ("/repos/{owner}/{repo}/git/ref/heads/{branch}", ("GET",)),
+        ("/repos/{owner}/{repo}/git/commits/{sha}", ("GET",)),
+        ("/repos/{owner}/{repo}/contents/{path}", ("GET",)),
+    }
+    assert GITHUB_API_BASE == "https://api.github.com"
+
+
+def test_github_contents_subdir_path_refused_by_allowlist(github_stub):
+    # SHAPE FINDING (real): the contents {path} is url-quoted with safe="/", so a
+    # subdirectory file expands to MULTIPLE path segments, which the fixed-segment
+    # OutboundEndpoint template cannot match. The WIRE request is byte-identical,
+    # but the allowlist REFUSES it before any socket opens. Documents the limit
+    # honestly rather than hiding it behind a root-only fixture.
+    request = github_contents_read_request(
+        owner_repo=_GH_OWNER_REPO, path="src/pkg/module.py", ref=_GH_BASE_BRANCH
+    )
+    assert request["url"] == (
+        f"{GITHUB_API_BASE}/repos/{_GH_OWNER_REPO}"
+        "/contents/src/pkg/module.py?ref=main"
+    )
+    with pytest.raises(SsrfValidationError):
+        _run_github_through_driver(github_stub, request)
