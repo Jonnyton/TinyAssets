@@ -1153,6 +1153,23 @@ _SSRF_QUERY_NAME_RE = re.compile(r"^[A-Za-z0-9_.\[\]-]{1,64}$")
 _SSRF_MAX_MATCH_SEGMENT = 512
 #: A declared param/query value pattern longer than this is rejected at authoring.
 _SSRF_MAX_PATTERN_LEN = 256
+#: A multi-segment ("rest") placeholder — ``{name+}`` — permitted ONLY as the
+#: FINAL template segment and at most once. It captures one OR MORE concrete path
+#: segments (github contents sub-paths, slash-bearing branch refs) as a single
+#: value. The captured tail is split on literal ``/``; each segment is rejected if
+#: empty / ``.`` / ``..`` / over-long, the whole tail is bounded (segments + total
+#: length), and the ``/``-joined tail must full-match the endpoint's declared
+#: pattern for that rest-param. Encoded separators (%2e/%2f/%5c), ``%25``,
+#: controls, and overlong bytes are ALREADY rejected on the concrete URL by
+#: ``_parse_canonical_https_url`` -> ``_reject_unsafe_encoded_path`` before any
+#: match, and the canonical path is already literal-dot-segment-free — so a
+#: rest-tail cannot smuggle a traversal an origin would decode later. The declared
+#: rest-pattern is the endpoint-specific tightening (repo-relative path for
+#: contents; git ref-name shape for branches) on top of those invariants.
+_SSRF_ENDPOINT_REST_PLACEHOLDER_RE = re.compile(r"^\{[a-z0-9_]+\+\}$")
+#: A concrete rest-tail may span at most this many segments / this many chars.
+_SSRF_MAX_REST_SEGMENTS = 40
+_SSRF_MAX_REST_TAIL_LEN = 1024
 
 
 class ConnectionSecretBundle:
@@ -1420,6 +1437,21 @@ def _placeholder_names(path_template: str) -> list[str]:
     ]
 
 
+def _rest_placeholder_name(path_template: str) -> str | None:
+    """The name of the final ``{name+}`` rest placeholder, or ``None``.
+
+    A rest placeholder is permitted ONLY as the final segment and at most once —
+    ``_validate_path_template`` enforces that at authoring, so at match time this
+    trusts the stored template. ``{name+}`` strips to ``name`` (drop ``{`` and
+    ``+}``).
+    """
+    segments = path_template.split("/")
+    last = segments[-1] if segments else ""
+    if _SSRF_ENDPOINT_REST_PLACEHOLDER_RE.match(last):
+        return last[1:-2]
+    return None
+
+
 def _validate_path_template(path_template: Any) -> str:
     """Validate a stored allowlist path template (traversal-free, ``/``-rooted)."""
     if not isinstance(path_template, str) or not path_template.startswith("/"):
@@ -1431,10 +1463,20 @@ def _validate_path_template(path_template: Any) -> str:
     # Same encoded-separator guard the concrete URL gets (FIX 2): reject
     # %2e/%2f/%5c and overlong/control encodings a stored template could smuggle.
     _reject_unsafe_encoded_path(path_template)
-    for segment in path_template.split("/")[1:]:
+    segments = path_template.split("/")[1:]
+    for index, segment in enumerate(segments):
         if segment in (".", ".."):
             raise SsrfValidationError("endpoint path_template must not contain dot-segments")
         if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(segment):
+            continue
+        if _SSRF_ENDPOINT_REST_PLACEHOLDER_RE.match(segment):
+            # A multi-segment tail is only sound as the FINAL segment — anywhere
+            # else it would swallow later fixed segments and defeat the
+            # destination pin (`/repos/<owner>/<repo>/...`).
+            if index != len(segments) - 1:
+                raise SsrfValidationError(
+                    "endpoint rest placeholder must be the final path segment"
+                )
             continue
         if not _SSRF_ENDPOINT_LITERAL_RE.match(segment):
             raise SsrfValidationError("endpoint path_template segment is not permitted")
@@ -1457,11 +1499,13 @@ def _compile_declared_pattern(pattern: Any) -> str:
 def _validate_param_patterns(
     path_template: str, raw: Any
 ) -> tuple[tuple[str, str], ...]:
-    """Every ``{param}`` MUST declare a value pattern; no stray patterns (FIX 3)."""
+    """Every ``{param}`` / ``{param+}`` MUST declare a value pattern; no strays (FIX 3)."""
     placeholders = _placeholder_names(path_template)
-    if len(set(placeholders)) != len(placeholders):
+    rest_name = _rest_placeholder_name(path_template)
+    all_names = placeholders + ([rest_name] if rest_name else [])
+    if len(set(all_names)) != len(all_names):
         raise SsrfValidationError("endpoint path_template has duplicate placeholders")
-    placeholder_set = set(placeholders)
+    placeholder_set = set(all_names)
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
@@ -1555,18 +1599,16 @@ def _segment_matches_pattern(segment: str, pattern: str) -> bool:
     return re.fullmatch(pattern, segment) is not None
 
 
-def _path_matches_template(
-    path: str, template: str, param_patterns: dict[str, str]
+def _fixed_segments_match(
+    concrete: list[str], pattern: list[str], param_patterns: dict[str, str]
 ) -> bool:
-    """Segment-wise match; each ``{param}`` must full-match its DECLARED pattern.
+    """Match a run of concrete segments against fixed/``{param}`` template segments.
 
-    A placeholder with no declared pattern fails closed (an over-broad "any
-    non-empty segment" match is exactly the FIX 3 bypass).
+    Each ``{param}`` must full-match its DECLARED single-segment pattern; a
+    placeholder with no declared pattern fails closed (an over-broad "any
+    non-empty segment" match is exactly the FIX 3 bypass). Literals must be
+    byte-equal. Lengths must already be equal.
     """
-    concrete = path.split("/")
-    pattern = template.split("/")
-    if len(concrete) != len(pattern):
-        return False
     for got, want in zip(concrete, pattern):
         if _SSRF_ENDPOINT_PLACEHOLDER_RE.match(want):
             declared = param_patterns.get(want[1:-1])
@@ -1576,6 +1618,49 @@ def _path_matches_template(
         if got != want:
             return False
     return True
+
+
+def _path_matches_template(
+    path: str, template: str, param_patterns: dict[str, str]
+) -> bool:
+    """Segment-wise match; each ``{param}``/``{param+}`` full-matches its pattern.
+
+    Fixed-arity templates require equal segment counts. A template ending in a
+    ``{name+}`` rest placeholder matches its fixed prefix segment-for-segment,
+    then captures the REMAINING concrete segments (>=1) as the rest-tail — each
+    tail segment rejected if empty / ``.`` / ``..`` / over-long, the whole tail
+    bounded, and the ``/``-joined tail full-matched against the rest-param's
+    DECLARED endpoint-specific pattern. The concrete URL is already canonical,
+    literal-dot-segment-free, and stripped of encoded separators (%2e/%2f/%5c)
+    upstream, so the rest-tail cannot smuggle a decoded traversal.
+    """
+    concrete = path.split("/")
+    pattern = template.split("/")
+    rest_name = _rest_placeholder_name(template)
+    if rest_name is None:
+        if len(concrete) != len(pattern):
+            return False
+        return _fixed_segments_match(concrete, pattern, param_patterns)
+
+    prefix = pattern[:-1]
+    # The rest placeholder captures one OR MORE segments.
+    if len(concrete) < len(prefix) + 1:
+        return False
+    if not _fixed_segments_match(concrete[: len(prefix)], prefix, param_patterns):
+        return False
+    tail_segments = concrete[len(prefix):]
+    if len(tail_segments) > _SSRF_MAX_REST_SEGMENTS:
+        return False
+    for seg in tail_segments:
+        if not seg or seg in (".", "..") or len(seg) > _SSRF_MAX_MATCH_SEGMENT:
+            return False
+    tail = "/".join(tail_segments)
+    if len(tail) > _SSRF_MAX_REST_TAIL_LEN:
+        return False
+    declared = param_patterns.get(rest_name)
+    if declared is None:
+        return False
+    return re.fullmatch(declared, tail) is not None
 
 
 def _query_permitted(query_items: list[tuple[str, str]], endpoint: OutboundEndpoint) -> bool:
