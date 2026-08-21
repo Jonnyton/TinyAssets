@@ -20,8 +20,43 @@ logger = logging.getLogger(__name__)
 
 
 def _public_base_url() -> str:
-    """The public origin webhooks are posted to. Canonical is tinyassets.io."""
-    return (os.environ.get("TINYASSETS_PUBLIC_BASE_URL") or "https://tinyassets.io").rstrip("/")
+    """The public HTTPS ORIGIN webhooks are posted to. Canonical is tinyassets.io.
+
+    Validated to scheme+host only (https, a host, no path/query/fragment/userinfo)
+    so a misconfigured ``TINYASSETS_PUBLIC_BASE_URL`` can never mis-mint the webhook
+    URL — e.g. an embedded path yielding ``…/mcp/mcp/hooks/<token>`` or a query that
+    places the SECRET token in a query string. Anything not a bare https origin
+    falls back to the canonical origin (Codex inbound review).
+    """
+    from urllib.parse import urlsplit
+
+    default = "https://tinyassets.io"
+    raw = (os.environ.get("TINYASSETS_PUBLIC_BASE_URL") or default).rstrip("/")
+    # A canonical origin carries no whitespace/control chars — reject outright
+    # (Codex: whitespace was accepted before) so it can't smuggle a header/URL.
+    if any(c.isspace() for c in raw):
+        logger.warning("TINYASSETS_PUBLIC_BASE_URL has whitespace; using %s", default)
+        return default
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname  # malformed host (e.g. "https://[bad") raises ValueError
+        _ = parts.port         # a non-numeric port raises ValueError
+    except ValueError:
+        logger.warning("TINYASSETS_PUBLIC_BASE_URL is malformed; using %s", default)
+        return default
+    if (
+        parts.scheme == "https"
+        and host
+        and not parts.path
+        and not parts.query
+        and not parts.fragment
+        and "@" not in parts.netloc
+    ):
+        return raw
+    logger.warning(
+        "TINYASSETS_PUBLIC_BASE_URL is not a bare https origin; using %s", default
+    )
+    return default
 
 
 def _uid(kwargs: dict[str, Any]) -> str:
@@ -74,7 +109,7 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
         return err
 
     token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid)
-    url = f"{_public_base_url()}/hooks/{token}"
+    url = f"{_public_base_url()}/mcp/hooks/{token}"
     return json.dumps({
         "text": (
             "Inbound webhook URL created. Paste it into the channel's webhook settings "
@@ -179,7 +214,7 @@ def _action_create_source(kwargs: dict[str, Any]) -> str:
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
     token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid, source_id=source_id)
-    url = f"{_public_base_url()}/hooks/{token}"
+    url = f"{_public_base_url()}/mcp/hooks/{token}"
     return json.dumps({
         "text": (
             "Inbound source created. Paste this URL into the channel's webhook settings; "

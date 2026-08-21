@@ -93,3 +93,39 @@ def test_challenge_path_exempts_only_the_app_route():
     assert mw._auth_challenge_path("/mcp/") is True
     assert mw._auth_challenge_path("/mcp/app/callback") is True  # not the served path
     assert mw._auth_challenge_path("/.well-known/oauth-protected-resource") is False
+
+
+def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> int:
+    """Like _drive but with request headers, to exercise the bearer path."""
+    app = mw.AuthContextMiddleware(_ok_app)
+    hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    scope = {"type": "http", "method": method, "path": path, "headers": hdrs}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert starts, "no response.start emitted"
+    return starts[0]["status"]
+
+
+def test_hook_route_ignores_foreign_bearer(require_auth_provider, monkeypatch):
+    """A generic channel POSTing to /mcp/hooks/<token> with its OWN Authorization:
+    Bearer must NOT be 401'd by the MCP challenge — the unguessable URL token +
+    author-gated handler are the boundary (Codex inbound review). Without the
+    carve-out an invalid bearer returned 401 before the hook handler ran."""
+    tok = "a" * 43
+    monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+    # foreign bearer + valid hook path -> reaches the downstream app (200)
+    assert _drive_h("/mcp/hooks/" + tok, headers={"Authorization": "Bearer foreign.xyz"}) == 200
+    # the same foreign bearer on the MCP endpoint is still challenged (401)
+    assert _drive_h("/mcp", headers={"Authorization": "Bearer foreign.xyz"}) == 401
+    # inbound OFF -> no carve-out, the hook path with a foreign bearer is 401'd
+    monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)
+    assert _drive_h("/mcp/hooks/" + tok, headers={"Authorization": "Bearer foreign.xyz"}) == 401
