@@ -44,8 +44,12 @@ class OutboundEndpoint:
     path segment cannot silently address a different account (Codex FIX 3).
     ``allowed_query`` names the ONLY query parameters permitted — an undeclared
     query parameter is REFUSED, never dropped — and ``query_patterns`` optionally
-    constrains a declared query value. ``param_patterns``/``query_patterns`` are
-    stored as sorted ``(name, regex)`` pairs so the dataclass stays hashable.
+    constrains a declared query value. ``required_query`` names query parameters
+    that MUST be present EXACTLY ONCE (a subset of ``allowed_query``), so an
+    endpoint whose semantics depend on a validated parameter (github's contents
+    ``?ref=`` — Codex FIX: "require exactly one validated ref query") cannot be
+    called without it or with a duplicate. ``param_patterns``/``query_patterns``
+    are stored as sorted ``(name, regex)`` pairs so the dataclass stays hashable.
     """
 
     host: str
@@ -54,6 +58,7 @@ class OutboundEndpoint:
     param_patterns: tuple[tuple[str, str], ...] = ()
     allowed_query: tuple[str, ...] = ()
     query_patterns: tuple[tuple[str, str], ...] = ()
+    required_query: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -63,6 +68,7 @@ class OutboundEndpoint:
             "param_patterns": {name: pat for name, pat in self.param_patterns},
             "allowed_query": list(self.allowed_query),
             "query_patterns": {name: pat for name, pat in self.query_patterns},
+            "required_query": list(self.required_query),
         }
 
 
@@ -916,6 +922,70 @@ def _github_repository_from_destination(destination: str) -> str:
     return normalized
 
 
+def _github_outbound_via_connection_enabled() -> bool:
+    """Whether the DARK github egress-unification flag is truthy (slice 2B).
+
+    Delegates to the adapter's canonical reader so the flag NAME lives in ONE
+    place; lazy-imported to avoid a module-load import cycle (the adapter imports
+    this module). The broker child inherits the flag from the parent env — it is
+    not on the child env denylist — so this gate works inside the spawned proxy.
+    """
+    from tinyassets.effectors.outbound_channel_adapter import (
+        github_outbound_via_connection_enabled,
+    )
+
+    return github_outbound_via_connection_enabled()
+
+
+def _read_for_commit_via_connection(
+    *, repository: str, intended_head_sha: str, per_page: int, credential: str
+) -> list:
+    """Flag-ON PRs-for-commit read through the SSRF-hardened driver + the
+    destination-bound github allowlist (channel-agnostic-outbound slice 2B, DARK).
+
+    Reproduces the legacy read's semantics byte-for-byte: the broker's own
+    ``tinyassets-outbound-broker/1.0`` User-Agent + header set is preserved (the
+    driver injects the Bearer from a one-member bundle), and any transport /
+    allowlist refusal, non-2xx status, non-JSON body, or non-list payload raises a
+    secret-free ``ProxyRequestError`` — exactly what the legacy ``urlopen`` path
+    surfaces. On 2xx it returns the parsed PR list.
+    """
+    from tinyassets.effectors.outbound_channel_adapter import github_allowed_endpoints
+
+    path = (
+        f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
+        + urllib.parse.urlencode({"per_page": per_page})
+    )
+    try:
+        result = _SsrfHardenedHttpDriver()(
+            bundle=ConnectionSecretBundle(token=credential),
+            auth_scheme="bearer",
+            method="GET",
+            url=f"https://api.github.com{path}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "tinyassets-outbound-broker/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            body=None,
+            allowed_endpoints=github_allowed_endpoints(repository),
+        )
+    except (SsrfValidationError, ProxyRequestError):
+        raise ProxyRequestError("GitHub destination read failed") from None
+    # Reject every non-2xx (Codex): redirects are disabled, so a 3xx is a failure,
+    # not a body to parse — exactly what the legacy urlopen path surfaces (it
+    # raises on >=400 and would follow, never return, a 3xx).
+    if not 200 <= int(result["status"]) < 300:
+        raise ProxyRequestError("GitHub destination read failed") from None
+    try:
+        payload = json.loads(result["body"])
+    except (TypeError, ValueError):
+        raise ProxyRequestError("GitHub destination read failed") from None
+    if not isinstance(payload, list):
+        raise ProxyRequestError("GitHub destination returned an invalid response")
+    return payload
+
+
 class _ProductionGitHubNetworkDriver:
     """Trusted credential-bearing GitHub read transport for scoped proxies."""
 
@@ -975,6 +1045,16 @@ class _ProductionGitHubNetworkDriver:
         per_page = request["per_page"]
         if not isinstance(per_page, int) or isinstance(per_page, bool) or not 1 <= per_page <= 100:
             raise PermissionError("GitHub request page size is invalid")
+        if _github_outbound_via_connection_enabled():
+            # DARK egress-unification (slice 2B): route this read through the
+            # SSRF-hardened driver + destination-bound allowlist. Flag-off keeps
+            # the verbatim raw-urllib path below.
+            return _read_for_commit_via_connection(
+                repository=repository,
+                intended_head_sha=intended_head_sha,
+                per_page=per_page,
+                credential=credential,
+            )
         path = (
             f"/repos/{repository}/commits/{intended_head_sha}/pulls?"
             + urllib.parse.urlencode({"per_page": per_page})
@@ -1170,6 +1250,13 @@ _SSRF_ENDPOINT_REST_PLACEHOLDER_RE = re.compile(r"^\{[a-z0-9_]+\+\}$")
 #: A concrete rest-tail may span at most this many segments / this many chars.
 _SSRF_MAX_REST_SEGMENTS = 40
 _SSRF_MAX_REST_TAIL_LEN = 1024
+#: Bounds on the raw query string parsed at allowlist time. Without these a
+#: duplicate-field flood (``?ref=a&ref=a&...``) forces ``parse_qsl`` to build a
+#: huge list before the exactly-once/undeclared checks can reject it — a cheap
+#: memory/CPU amplifier on the egress path (Codex). ``max_num_fields`` makes
+#: ``parse_qsl`` itself fail closed past the bound.
+_SSRF_MAX_QUERY_LEN = 4096
+_SSRF_MAX_QUERY_FIELDS = 32
 
 
 class ConnectionSecretBundle:
@@ -1522,9 +1609,14 @@ def _validate_param_patterns(
 
 
 def _validate_query_rules(
-    allowed_raw: Any, patterns_raw: Any
-) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
-    """Declared query names + optional value patterns; undeclared names refused."""
+    allowed_raw: Any, patterns_raw: Any, required_raw: Any
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Declared query names + optional value patterns + required names.
+
+    ``required_query`` names must be a subset of ``allowed_query`` and are each
+    enforced present EXACTLY ONCE at match time (Codex FIX: exactly-one ref).
+    Undeclared names are refused; declared names may be pattern-constrained.
+    """
     if allowed_raw is None:
         allowed_raw = []
     if isinstance(allowed_raw, str) or not isinstance(allowed_raw, (list, tuple)):
@@ -1548,7 +1640,20 @@ def _validate_query_rules(
                 "endpoint query_patterns names must be in allowed_query"
             )
         patterns.append((text, _compile_declared_pattern(pattern)))
-    return tuple(allowed), tuple(sorted(patterns))
+    if required_raw is None:
+        required_raw = []
+    if isinstance(required_raw, str) or not isinstance(required_raw, (list, tuple)):
+        raise SsrfValidationError("endpoint required_query must be a list")
+    required: list[str] = []
+    for name in required_raw:
+        text = str(name).strip()
+        if text not in allowed:
+            raise SsrfValidationError(
+                "endpoint required_query names must be in allowed_query"
+            )
+        if text not in required:
+            required.append(text)
+    return tuple(allowed), tuple(sorted(patterns)), tuple(sorted(required))
 
 
 def _validate_endpoint(raw: Any) -> OutboundEndpoint:
@@ -1563,8 +1668,8 @@ def _validate_endpoint(raw: Any) -> OutboundEndpoint:
         # single-label names — matching the transport's own hostname policy.
         raise SsrfValidationError("endpoint host is not a permitted hostname")
     path_template = _validate_path_template(raw.get("path_template"))
-    allowed_query, query_patterns = _validate_query_rules(
-        raw.get("allowed_query"), raw.get("query_patterns")
+    allowed_query, query_patterns, required_query = _validate_query_rules(
+        raw.get("allowed_query"), raw.get("query_patterns"), raw.get("required_query")
     )
     return OutboundEndpoint(
         host=host,
@@ -1573,6 +1678,7 @@ def _validate_endpoint(raw: Any) -> OutboundEndpoint:
         param_patterns=_validate_param_patterns(path_template, raw.get("param_patterns")),
         allowed_query=allowed_query,
         query_patterns=query_patterns,
+        required_query=required_query,
     )
 
 
@@ -1669,15 +1775,22 @@ def _query_permitted(query_items: list[tuple[str, str]], endpoint: OutboundEndpo
     Queries are no longer discarded before matching: an undeclared parameter (or
     a declared one whose value fails its pattern) refuses the whole request, so a
     tenant/target/operation cannot ride in a query string to escape the
-    connection's destination.
+    connection's destination. A ``required_query`` name must additionally appear
+    EXACTLY ONCE (Codex FIX: exactly-one validated ref) — zero occurrences or a
+    duplicate refuses the request.
     """
     allowed = set(endpoint.allowed_query)
     patterns = dict(endpoint.query_patterns)
+    counts: dict[str, int] = {}
     for name, value in query_items:
         if name not in allowed:
             return False
         declared = patterns.get(name)
         if declared is not None and not _segment_matches_pattern(value, declared):
+            return False
+        counts[name] = counts.get(name, 0) + 1
+    for required in endpoint.required_query:
+        if counts.get(required, 0) != 1:
             return False
     return True
 
@@ -1698,9 +1811,22 @@ def _enforce_endpoint_allowlist(
     host = canonical.hostname.strip().lower()
     verb = (method or "").strip().upper()
     raw_path, _, raw_query = canonical.path_qs.partition("?")
-    query_items = (
-        urllib.parse.parse_qsl(raw_query, keep_blank_values=True) if raw_query else []
-    )
+    if len(raw_query) > _SSRF_MAX_QUERY_LEN:
+        raise SsrfValidationError("outbound url query is too long")
+    try:
+        query_items = (
+            urllib.parse.parse_qsl(
+                raw_query,
+                keep_blank_values=True,
+                max_num_fields=_SSRF_MAX_QUERY_FIELDS,
+            )
+            if raw_query
+            else []
+        )
+    except ValueError:
+        # parse_qsl raises when the field count exceeds the bound; treat a
+        # flood as a refused request rather than an unbounded parse.
+        raise SsrfValidationError("outbound url query has too many fields") from None
     for endpoint in endpoints:
         if endpoint.host != host:
             continue

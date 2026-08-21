@@ -80,7 +80,9 @@ Design source: ``drafts/concepts/external-write-phase-2-authority.md``.
 from __future__ import annotations
 
 import base64
+import email.message
 import hashlib
+import io
 import json
 import logging
 import os
@@ -103,10 +105,15 @@ from tinyassets.effectors.authority import (
     effect_authority_key,
     resolve_soul_effect_authority,
 )
+from tinyassets.effectors.outbound_channel_adapter import (
+    github_outbound_via_connection_enabled,
+    github_send_via_connection,
+)
 from tinyassets.storage.outbound_connections import (
     AmbiguousProxyOutcome,
     ProxyRequestError,
     ScopedConnectionProxy,
+    SsrfValidationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -1081,12 +1088,70 @@ def _invoke_gh_pr_create(
     }
 
 
+def _connection_http_error(
+    *, path: str, status: int, reason: str, text: str
+) -> urllib.error.HTTPError:
+    """Synthesize the ``urllib.error.HTTPError`` github_pr's callers already expect.
+
+    The credential-blind driver RETURNS ``{status, body}`` for every status (it
+    disables urllib's HTTPErrorProcessor), but ``_github_api_request``'s legacy
+    ``urlopen`` RAISES ``HTTPError`` on >=400 and the callers read ``exc.code`` +
+    ``exc.read()``. Rebuild an equivalent so the flag-on path is transparent.
+    """
+    return urllib.error.HTTPError(
+        f"{_GITHUB_API}{path}",
+        status,
+        reason,
+        email.message.Message(),
+        io.BytesIO(text.encode("utf-8")),
+    )
+
+
+def _github_api_request_via_connection(
+    *, path: str, capability_token: str, body: dict[str, Any], destination: str
+) -> dict[str, Any]:
+    """Flag-ON POST via the credential-blind driver — reproduces ``_github_api_``
+    ``request``'s EXACT semantics: return the parsed JSON on 2xx; raise
+    ``urllib.error.HTTPError`` on >=400 (so callers surface ``exc.code`` + detail);
+    raise ``urllib.error.URLError`` on a transport/allowlist refusal (so the
+    ``(URLError, TimeoutError, OSError)`` catch fires, marking the outcome
+    ambiguous). The body is a default-``json.dumps`` string so the wire bytes match.
+    """
+    try:
+        result = github_send_via_connection(
+            method="POST",
+            path=path,
+            body=json.dumps(body),
+            capability_token=capability_token,
+            destination=destination,
+        )
+    except (SsrfValidationError, ProxyRequestError) as exc:
+        raise urllib.error.URLError(f"outbound connection refused: {exc}") from None
+    status = int(result["status"])
+    text = result["body"]
+    # Reject every non-2xx (Codex): redirects are disabled in the driver, so a
+    # 3xx is NOT a success to feed to json.loads — only 200..299 is a real body.
+    if not 200 <= status < 300:
+        raise _connection_http_error(
+            path=path, status=status, reason=str(result.get("reason", "")), text=text
+        )
+    return json.loads(text)
+
+
 def _github_api_request(
     *,
     path: str,
     capability_token: str,
     body: dict[str, Any],
+    destination: str,
 ) -> dict[str, Any]:
+    if github_outbound_via_connection_enabled():
+        return _github_api_request_via_connection(
+            path=path,
+            capability_token=capability_token,
+            body=body,
+            destination=destination,
+        )
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{_GITHUB_API}{path}",
@@ -1104,12 +1169,54 @@ def _github_api_request(
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _git_data_api_via_connection(
+    *,
+    method: str,
+    path: str,
+    capability_token: str,
+    body: dict[str, Any] | None,
+    destination: str,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Flag-ON Git-Data call via the credential-blind driver — reproduces
+    ``_git_data_api``'s ``(parsed, error)`` contract byte-for-byte.
+
+    A >=400 status maps to ``{"http_status": status, "detail": body[:400]}``
+    (the driver already decoded the body with ``errors="replace"``, exactly as the
+    legacy ``exc.read().decode(..., errors="replace")[:400]``), preserving the
+    BUG-111 distinct-error_kind behavior (a 401/403/404 stays a scope failure via
+    ``_scope_or``). A transport/allowlist refusal maps to ``http_status=None`` (the
+    legacy URLError/OSError branch), so ``_scope_or`` keeps the step's own kind.
+    """
+    try:
+        result = github_send_via_connection(
+            method=method,
+            path=path,
+            body=(json.dumps(body) if body is not None else None),
+            capability_token=capability_token,
+            destination=destination,
+        )
+    except (SsrfValidationError, ProxyRequestError) as exc:
+        return None, {"http_status": None, "detail": str(exc)}
+    status = int(result["status"])
+    text = result["body"]
+    # Reject every non-2xx (Codex): a 3xx (redirects disabled) is a failure with a
+    # status, not a body to parse; preserve the status so _scope_or keeps its
+    # BUG-111 401/403/404 scope-upgrade on the real error codes.
+    if not 200 <= status < 300:
+        return None, {"http_status": status, "detail": text[:400]}
+    try:
+        return (json.loads(text) if text.strip() else {}), None
+    except (TypeError, ValueError) as exc:
+        return None, {"http_status": None, "detail": f"parse error: {exc}"}
+
+
 def _git_data_api(
     *,
     method: str,
     path: str,
     capability_token: str,
     body: dict[str, Any] | None = None,
+    destination: str,
 ) -> tuple[Any, dict[str, Any] | None]:
     """Call the GitHub Git Data / REST API. Returns ``(parsed, error)``.
 
@@ -1121,6 +1228,14 @@ def _git_data_api(
     ``gh_nonzero_exit``). A 401/403/404 on a write step signals a token
     scope problem (constraint 1: Contents write must be present).
     """
+    if github_outbound_via_connection_enabled():
+        return _git_data_api_via_connection(
+            method=method,
+            path=path,
+            capability_token=capability_token,
+            body=body,
+            destination=destination,
+        )
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         f"{_GITHUB_API}{path}",
@@ -1179,6 +1294,7 @@ def _fetch_file_at_ref(
         method="GET",
         path=f"/repos/{owner_repo}/contents/{encoded}?ref={encoded_ref}",
         capability_token=capability_token,
+        destination=owner_repo,
     )
     if err is not None:
         return None, err
@@ -1421,6 +1537,7 @@ def _materialize_branch(
         method="GET",
         path=f"/repos/{owner_repo}/git/ref/heads/{base_branch}",
         capability_token=capability_token,
+        destination=owner_repo,
     )
     if err is not None:
         return {
@@ -1440,6 +1557,7 @@ def _materialize_branch(
         method="GET",
         path=f"/repos/{owner_repo}/git/commits/{base_commit_sha}",
         capability_token=capability_token,
+        destination=owner_repo,
     )
     if err is not None:
         return {
@@ -1466,6 +1584,7 @@ def _materialize_branch(
             path=f"/repos/{owner_repo}/git/blobs",
             capability_token=capability_token,
             body={"content": contents, "encoding": "utf-8"},
+            destination=owner_repo,
         )
         if err is not None:
             return {
@@ -1488,6 +1607,7 @@ def _materialize_branch(
         path=f"/repos/{owner_repo}/git/trees",
         capability_token=capability_token,
         body={"base_tree": base_tree_sha, "tree": tree_entries},
+        destination=owner_repo,
     )
     if err is not None:
         return {
@@ -1508,6 +1628,7 @@ def _materialize_branch(
             "tree": new_tree_sha,
             "parents": [base_commit_sha],
         },
+        destination=owner_repo,
     )
     if err is not None:
         return {
@@ -1538,6 +1659,7 @@ def _materialize_branch(
         path=f"/repos/{owner_repo}/git/refs",
         capability_token=capability_token,
         body={"ref": f"refs/heads/{head_branch}", "sha": new_commit_sha},
+        destination=owner_repo,
     )
     if err is None:
         return {
@@ -1557,6 +1679,7 @@ def _materialize_branch(
         method="GET",
         path=f"/repos/{owner_repo}/git/ref/heads/{head_branch}",
         capability_token=capability_token,
+        destination=owner_repo,
     )
     if lookup_err is not None:
         return {
@@ -1573,6 +1696,7 @@ def _materialize_branch(
             method="GET",
             path=f"/repos/{owner_repo}/git/commits/{existing_commit_sha}",
             capability_token=capability_token,
+            destination=owner_repo,
         )
         existing_tree_sha = ((existing_commit or {}).get("tree") or {}).get("sha")
     if existing_tree_sha == new_tree_sha:
@@ -1718,12 +1842,14 @@ def _publish_scoped_github_pull_request(
             "ref": f"refs/heads/{head_branch}",
             "sha": intended_head_sha,
         },
+        destination=repository,
     )
     if error is not None:
         existing, lookup_error = _git_data_api(
             method="GET",
             path=f"/repos/{repository}/git/ref/heads/{head_branch}",
             capability_token=capability_token,
+            destination=repository,
         )
         existing_sha = ((existing or {}).get("object") or {}).get("sha")
         if lookup_error is not None or existing_sha != intended_head_sha:
@@ -1789,6 +1915,7 @@ def _invoke_github_api_pr_create(
             path=f"/repos/{owner_repo}/pulls",
             capability_token=capability_token,
             body=request_body,
+            destination=owner_repo,
         )
         pr_url = created.get("html_url") if isinstance(created, dict) else ""
         pr_number = created.get("number") if isinstance(created, dict) else None
@@ -1806,6 +1933,7 @@ def _invoke_github_api_pr_create(
                     path=f"/repos/{owner_repo}/issues/{pr_number}/labels",
                     capability_token=capability_token,
                     body={"labels": labels},
+                    destination=owner_repo,
                 )
             except (
                 urllib.error.HTTPError,

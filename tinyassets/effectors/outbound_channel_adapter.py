@@ -20,13 +20,27 @@ live.
 from __future__ import annotations
 
 import json
+import os
+import re
 import urllib.parse
 from typing import Any
 
 from tinyassets.storage.outbound_connections import (
+    ConnectionSecretBundle,
     OutboundEndpoint,
+    SsrfValidationError,
+    _github_repository_from_destination,
     _parse_allowed_endpoints,
+    _SsrfHardenedHttpDriver,
 )
+
+#: One ASCII owner/repo pair. ``_github_repository_from_destination`` validates the
+#: destination with ``re``'s Unicode ``\w``, but the allowlist compares template
+#: literals as ASCII strings — so the two grammars must agree or a Unicode
+#: confusable could parse as one repo yet fail the literal segment validator
+#: (Codex). This ASCII re-check pins the derived ``owner/repo`` to the byte
+#: alphabet the matcher uses, failing closed with a clear error otherwise.
+_GH_ASCII_OWNER_REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 # --- Slack ------------------------------------------------------------------ #
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
@@ -120,11 +134,15 @@ def twitter_http_request(
 # ``tests/test_outbound_channel_migration.py``, which drive github_pr's REAL
 # request construction end-to-end (``_materialize_branch`` /
 # ``_invoke_github_api_pr_create`` / ``_fetch_file_at_ref``) against a loopback
-# recorder and assert every builder here produces the identical wire request.
+# recorder and assert every builder here produces the identical wire request,
+# AND (slice 2B) run github_pr's OWN dispatch flag-OFF vs flag-ON against the same
+# loopback, asserting the wire request AND the parsed result / error shapes match.
 #
-# This is SLICE 1: request builders + allowlist + differential tests only. No
-# dispatch is rewired, no flag flipped, ``github_pr.py`` is untouched, and the
-# ``TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION`` flag below stays dark.
+# SLICE 2B: :func:`github_send_via_connection` routes github_pr's
+# ``_github_api_request``/``_git_data_api`` (and the broker's ``read_for_commit``)
+# through the SSRF-hardened driver + :func:`github_allowed_endpoints`, but ONLY
+# when ``TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION`` is truthy. It stays DARK: the
+# flag defaults off, and flag-off runs github_pr's legacy raw-urllib path verbatim.
 GITHUB_API_BASE = "https://api.github.com"
 
 #: Per-channel readiness flag: until truthy, GitHub keeps pushing PRs through
@@ -141,103 +159,181 @@ _GITHUB_HEADERS: dict[str, str] = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-#: One ``owner`` or ``repo`` path segment — matches ``_github_repository_from_``
-#: ``destination``'s ``[\w.-]+/[\w.-]+`` (github_pr / outbound_connections).
-_GH_REPO_SEGMENT = r"[\w.-]+"
 #: A 40-hex (SHA-1) or 64-hex (SHA-256) git object id, as one path segment.
 _GH_SHA = r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})"
-#: One non-``/`` file/branch path segment (root-level file, non-slashed branch).
-#: SHAPE FINDING: github_pr url-quotes contents ``{path}`` with ``safe="/"`` and
-#: leaves branch refs (``tinyassets/cloud-...``) unquoted, so BOTH can expand to
-#: MULTIPLE segments. The OutboundEndpoint template model matches exactly one
-#: non-empty segment per ``{param}`` (fixed segment count), so a subdirectory
-#: contents-read or a slash-bearing head-ref read is byte-identical on the wire
-#: but REFUSED by this allowlist. Single-segment cases (root file, ``main``)
-#: match. A variable-depth tail needs a template-model extension (a later slice);
-#: proven by ``test_github_contents_subdir_path_refused_by_allowlist``.
-_GH_ONE_SEGMENT = r"[\w.\-~%!$&'()*+,;=:@]+"
+#: One repo-relative CONTENTS path segment: unreserved URL chars or a legal
+#: ``%XX`` escape. github_pr url-quotes the contents path with ``safe="/"``, so a
+#: segment is only ``[A-Za-z0-9._~-]`` plus percent-escapes, and the ``/``
+#: separators survive. Encoded separators (``%2e``/``%2f``/``%5c``), ``%25``,
+#: control and overlong bytes are ALREADY rejected on the concrete URL by
+#: ``_reject_unsafe_encoded_path`` before this pattern runs, so a ``%XX`` here is a
+#: safe byte only.
+_GH_CONTENTS_SEG = r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+"
+#: A repo-relative contents path as a multi-segment ``{path+}`` rest tail:
+#: one-or-more segments joined by ``/`` (the ``/`` here is the tail JOIN produced
+#: by the matcher, never an encoded separator). Covers root files (``README.md``)
+#: and subdirectory files (``src/pkg/module.py``).
+_GH_CONTENTS_REST = rf"{_GH_CONTENTS_SEG}(?:/{_GH_CONTENTS_SEG})*"
+#: One git branch-ref segment. github_pr leaves branch refs UNQUOTED, so the raw
+#: name is on the wire; the class covers every ref github_pr reads (``main``/
+#: ``master`` base branches, the enforced head ``tinyassets/cloud-<24hex>``,
+#: ``feat/x``-style base branches) PLUS the git-legal ``+`` (e.g. ``release+hotfix``
+#: — a parity case Codex flagged). Still far tighter than git check-ref-format:
+#: ``@{`` is excluded (no ``@``/``{``), the git-forbidden ``~^:?*[\`` + space +
+#: control are excluded, ``.``/``..``/empty segments are rejected by the matcher,
+#: and there is no leading/trailing slash. ``.lock``-suffixed refs never occur in
+#: this flow. Widening the ref VALUE only is safe: the owner/repo LITERALS pin the
+#: destination, so a ref can never traverse ``/repos/<owner>/<repo>/git/ref/heads/``.
+_GH_REF_SEG = r"[A-Za-z0-9._+-]+"
+#: A git branch-ref name as a multi-segment ``{ref+}`` rest tail.
+_GH_REF_REST = rf"{_GH_REF_SEG}(?:/{_GH_REF_SEG})*"
+#: The contents ``?ref=`` value (``parse_qsl``-decoded): a branch/tag ref name.
+#: Same shape as a ref tail (a slash-bearing ``feat/x`` decodes from ``feat%2Fx``);
+#: it is a git ref interpreted by the API, never a URL path, so it cannot traverse
+#: the destination-bound ``/repos/<owner>/<repo>/contents/`` prefix.
+_GH_REF_QUERY = _GH_REF_REST
 
-#: The api.github.com egress allowlist for the whole PR flow (design.md D3).
-#: ``owner_repo`` is modeled as TWO placeholders because on the wire it is two
-#: path segments (``octocat/hello-world``) — the recon's single ``{owner_repo}``
-#: placeholder cannot match a slash. Built through the storage validator so the
-#: shipped allowlist is provably one ``create_connection`` would accept
-#: (fail-loud at import if any template/pattern is invalid).
-GITHUB_ALLOWED_ENDPOINTS: tuple[OutboundEndpoint, ...] = _parse_allowed_endpoints(
-    [
-        {  # PR create — github_pr.py:1789
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/pulls",
-            "methods": ["POST"],
-            "param_patterns": {"owner": _GH_REPO_SEGMENT, "repo": _GH_REPO_SEGMENT},
-        },
-        {  # Add labels — github_pr.py:1806
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/issues/{pr_number}/labels",
-            "methods": ["POST"],
-            "param_patterns": {
-                "owner": _GH_REPO_SEGMENT,
-                "repo": _GH_REPO_SEGMENT,
-                "pr_number": r"[0-9]+",
+
+def github_allowed_endpoints(destination: str) -> tuple[OutboundEndpoint, ...]:
+    """The api.github.com egress allowlist for ONE repository (Codex finding 2).
+
+    DESTINATION-BOUND: ``owner``/``repo`` are baked in as path LITERALS derived
+    from the connection's ``destination`` EXACTLY as the credential-blind broker
+    does (``_github_repository_from_destination`` — lower-cased, single repository,
+    ``[\\w.-]+/[\\w.-]+``, ``.``/``..`` rejected). A token scoped to ``acme/widget``
+    can therefore ONLY egress to ``/repos/acme/widget/*`` — there is no
+    ``{owner}``/``{repo}`` placeholder that could expand to a different account
+    (the slice-1 allowlist's ``[\\w.-]+`` placeholders permitted ANY repo, the hole
+    Codex flagged as REQUIRED-to-close before flip). Literal template segments are
+    byte-compared by the matcher, so the owner/repo are NOT regex-escaped — they
+    are already constrained to ``[\\w.-]`` and re-validated by
+    ``_validate_path_template``. Variable-depth tails (subdir contents, slash
+    branch refs) use the SSRF-safe ``{name+}`` rest placeholder (slice 2A). Built
+    through the storage validator, so the returned allowlist is provably one
+    ``create_connection`` would accept (fail-loud if any template/pattern invalid).
+    """
+    owner_repo = _github_repository_from_destination(destination)
+    if _GH_ASCII_OWNER_REPO_RE.fullmatch(owner_repo) is None:
+        # Defence-in-depth (Codex): the destination validator uses Unicode ``\w``;
+        # the allowlist compares ASCII literals. Refuse anything the byte matcher
+        # could not represent rather than build an endpoint that can never match.
+        raise SsrfValidationError("github destination is not an ASCII owner/repo")
+    base = f"/repos/{owner_repo}"
+    return _parse_allowed_endpoints(
+        [
+            {  # PR create — github_pr.py:1789
+                "host": "api.github.com",
+                "path_template": f"{base}/pulls",
+                "methods": ["POST"],
             },
-        },
-        {  # Blob create — github_pr.py:1466
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/git/blobs",
-            "methods": ["POST"],
-            "param_patterns": {"owner": _GH_REPO_SEGMENT, "repo": _GH_REPO_SEGMENT},
-        },
-        {  # Tree create — github_pr.py:1488
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/git/trees",
-            "methods": ["POST"],
-            "param_patterns": {"owner": _GH_REPO_SEGMENT, "repo": _GH_REPO_SEGMENT},
-        },
-        {  # Commit create — github_pr.py:1504
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/git/commits",
-            "methods": ["POST"],
-            "param_patterns": {"owner": _GH_REPO_SEGMENT, "repo": _GH_REPO_SEGMENT},
-        },
-        {  # Ref create — github_pr.py:1538 / :1715
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/git/refs",
-            "methods": ["POST"],
-            "param_patterns": {"owner": _GH_REPO_SEGMENT, "repo": _GH_REPO_SEGMENT},
-        },
-        {  # Ref read — github_pr.py:1422 / :1558 / :1725
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/git/ref/heads/{branch}",
-            "methods": ["GET"],
-            "param_patterns": {
-                "owner": _GH_REPO_SEGMENT,
-                "repo": _GH_REPO_SEGMENT,
-                "branch": _GH_ONE_SEGMENT,
+            {  # Add labels — github_pr.py:1806
+                "host": "api.github.com",
+                "path_template": f"{base}/issues/{{pr_number}}/labels",
+                "methods": ["POST"],
+                "param_patterns": {"pr_number": r"[0-9]+"},
             },
-        },
-        {  # Commit read — github_pr.py:1441 / :1574
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/git/commits/{sha}",
-            "methods": ["GET"],
-            "param_patterns": {
-                "owner": _GH_REPO_SEGMENT,
-                "repo": _GH_REPO_SEGMENT,
-                "sha": _GH_SHA,
+            {  # Blob create — github_pr.py:1466
+                "host": "api.github.com",
+                "path_template": f"{base}/git/blobs",
+                "methods": ["POST"],
             },
-        },
-        {  # Contents read — github_pr.py:1180
-            "host": "api.github.com",
-            "path_template": "/repos/{owner}/{repo}/contents/{path}",
-            "methods": ["GET"],
-            "param_patterns": {
-                "owner": _GH_REPO_SEGMENT,
-                "repo": _GH_REPO_SEGMENT,
-                "path": _GH_ONE_SEGMENT,
+            {  # Tree create — github_pr.py:1488
+                "host": "api.github.com",
+                "path_template": f"{base}/git/trees",
+                "methods": ["POST"],
             },
-            "allowed_query": ["ref"],
-        },
-    ]
-)
+            {  # Commit create — github_pr.py:1504
+                "host": "api.github.com",
+                "path_template": f"{base}/git/commits",
+                "methods": ["POST"],
+            },
+            {  # Ref create — github_pr.py:1538 / :1715
+                "host": "api.github.com",
+                "path_template": f"{base}/git/refs",
+                "methods": ["POST"],
+            },
+            {  # Ref read — github_pr.py:1422 / :1558 / :1725 (slash-bearing refs)
+                "host": "api.github.com",
+                "path_template": f"{base}/git/ref/heads/{{ref+}}",
+                "methods": ["GET"],
+                "param_patterns": {"ref": _GH_REF_REST},
+            },
+            {  # Commit read — github_pr.py:1441 / :1574
+                "host": "api.github.com",
+                "path_template": f"{base}/git/commits/{{sha}}",
+                "methods": ["GET"],
+                "param_patterns": {"sha": _GH_SHA},
+            },
+            {  # Contents read — github_pr.py:1180 (subdir paths + exactly-one ref)
+                "host": "api.github.com",
+                "path_template": f"{base}/contents/{{path+}}",
+                "methods": ["GET"],
+                "param_patterns": {"path": _GH_CONTENTS_REST},
+                "allowed_query": ["ref"],
+                "query_patterns": {"ref": _GH_REF_QUERY},
+                "required_query": ["ref"],
+            },
+            {  # PRs-for-commit read — outbound_connections.py:978 (broker path)
+                "host": "api.github.com",
+                "path_template": f"{base}/commits/{{sha}}/pulls",
+                "methods": ["GET"],
+                "param_patterns": {"sha": _GH_SHA},
+                "allowed_query": ["per_page"],
+                # The broker validates 1..100; encode that authority exactly (no
+                # leading-zero / >100 spellings) so the allowlist matches it (Codex).
+                "query_patterns": {"per_page": r"(?:100|[1-9][0-9]?)"},
+                "required_query": ["per_page"],
+            },
+        ]
+    )
+
+
+def github_outbound_via_connection_enabled() -> bool:
+    """Whether the DARK egress-unification flag is truthy (slice 2B).
+
+    Until this is set, github_pr keeps pushing PRs through its legacy raw-urllib
+    path verbatim (no dual credential path, no behavior change). The flag is
+    read at call time so a test can flip it per-case.
+    """
+    return os.environ.get(GITHUB_VIA_CONNECTION_FLAG, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def github_send_via_connection(
+    *,
+    method: str,
+    path: str,
+    body: str | None,
+    capability_token: str,
+    destination: str,
+) -> dict[str, Any]:
+    """Send ONE github api call through the credential-blind SSRF-hardened driver.
+
+    Slice 2B egress-unification seam (DARK). ``path`` and ``body`` come from the
+    slice-1 builders (or an equivalent ``/repos/<owner>/<repo>/...`` path + a
+    pre-encoded default-``json.dumps`` string body), so the wire request is
+    byte-identical to github_pr's legacy urllib construction. The Bearer token is
+    applied INSIDE the driver from a one-member ``ConnectionSecretBundle`` — this
+    seam never emits ``Authorization`` itself. The egress boundary is the
+    destination-bound :func:`github_allowed_endpoints`. Returns the driver's
+    sanitized ``{status, reason, headers, body}``; raises the driver's secret-free
+    ``SsrfValidationError``/``ProxyRequestError`` on refusal/failure (the caller
+    maps those to github_pr's legacy return/raise shapes).
+    """
+    driver = _SsrfHardenedHttpDriver()
+    return driver(
+        bundle=ConnectionSecretBundle(token=capability_token),
+        auth_scheme="bearer",
+        method=method,
+        url=f"{GITHUB_API_BASE}{path}",
+        headers=dict(_GITHUB_HEADERS),
+        body=body,
+        allowed_endpoints=github_allowed_endpoints(destination),
+    )
 
 
 def _github_request(*, method: str, path: str, body: str | None) -> dict[str, Any]:
