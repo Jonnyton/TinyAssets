@@ -7,10 +7,10 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
 jobs:
-  diag:
+  recover:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH diagnostics
+      - name: SSH recover daemon service
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
@@ -22,10 +22,12 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" bash -s <<'REMOTE'
           set +e
-          echo "===== UPTIME (did droplet reboot?) ====="; uptime; echo "boot: $(who -b 2>/dev/null)"
-          echo "===== RESTART POLICIES ====="; for c in tinyassets-daemon tinyassets-tunnel tinyassets-logs; do echo "$c: $(docker inspect --format '{{.HostConfig.RestartPolicy.Name}} status={{.State.Status}} exit={{.State.ExitCode}} finishedAt={{.State.FinishedAt}}' $c 2>&1)"; done
-          echo "===== DAEMON LOGS (last 100) ====="; docker logs tinyassets-daemon --tail 100 2>&1 | tail -100
-          echo "===== COMPOSE FILE ====="; ls -la /opt/tinyassets/compose.yml /etc/tinyassets/*.yml 2>&1 | head
-          echo "===== systemd unit? ====="; systemctl list-units --type=service 2>/dev/null | grep -iE "tinyassets|docker" | head
+          echo "===== WHY IT FAILED (journalctl) ====="; journalctl -u tinyassets-daemon.service -n 45 --no-pager 2>&1 | tail -45
+          echo "===== RESET + RESTART ====="; systemctl reset-failed tinyassets-daemon.service 2>&1; systemctl restart tinyassets-daemon.service 2>&1; echo "restart rc=$?"
+          echo "waiting 50s for stack..."; sleep 50
+          echo "===== STATUS AFTER ====="; systemctl status tinyassets-daemon.service --no-pager 2>&1 | head -12
+          echo "===== DOCKER PS ====="; docker ps --format '{{.Names}} | {{.Status}}' 2>&1 | head
+          echo "===== LOCAL DAEMON PROBE ====="; curl -s -o /dev/null -w "localhost:8001/mcp -> %{http_code}\n" -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"p","version":"1"}}}' http://localhost:8001/mcp 2>&1
+          echo "===== FRESH DAEMON LOGS (post-restart) ====="; docker logs tinyassets-daemon --tail 30 2>&1 | tail -30
           echo "===== DONE ====="
           REMOTE
