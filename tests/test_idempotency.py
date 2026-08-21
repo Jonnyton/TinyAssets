@@ -399,10 +399,7 @@ def test_system_identity_mode_fails_loudly_without_durable_fields(tmp_path):
 @pytest.mark.parametrize(
     ("module_name", "reconciliation_supported"),
     [
-        ("tinyassets.effectors.github_pr", False),
-        ("tinyassets.effectors.outbound_channel_adapter", False),
         ("tinyassets.effectors.wiki_write_back", True),
-        ("tinyassets.effectors.windows_desktop", False),
     ],
 )
 def test_receipt_backed_effectors_are_wired_to_identity_migration(

@@ -324,9 +324,38 @@ def loop_branch_from_soul(universe_dir: Path) -> str:
 
 
 def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
-    """Return the soul-declared effect-authority grants, or () if none/no soul."""
+    """Return the soul-declared effect-authority grants, or () if no soul exists.
+
+    A genuinely ABSENT soul yields () — the authority resolver reads that as
+    UNDECLARED. But a soul file that EXISTS and cannot be read is NOT "no soul":
+    silently downgrading it to () would turn a real DENY into UNDECLARED and let
+    an otherwise-denied effect fire (Codex reject 2026-08-20). ``read_universe_soul``
+    swallows both FileNotFoundError and other OSErrors to None, so we distinguish
+    them by the file's existence and RAISE on an existing-but-unreadable soul, so
+    ``resolve_soul_effect_authority`` fails closed (DENIED). If we cannot even
+    confirm absence, we fail closed too.
+    """
     soul = read_universe_soul(universe_dir)
-    return soul.effect_authority if soul is not None else ()
+    if soul is not None:
+        return soul.effect_authority
+    # read_universe_soul returned None: distinguish a genuinely ABSENT soul
+    # (-> () -> UNDECLARED) from an existing-but-unreadable one (-> raise ->
+    # DENIED). Use lstat(), NOT is_file(): is_file() can suppress a metadata
+    # error to False (Codex adapt 2026-08-20, Python 3.14.3), wrongly restoring
+    # UNDECLARED. lstat() raises FileNotFoundError only when the path is truly
+    # gone; ANY other failure — or any existing entry, including a dangling or
+    # malformed symlink — means we cannot treat the soul as absent, so we fail
+    # closed. Only the genuine-deletion race lands in ().
+    try:
+        soul_path(universe_dir).lstat()
+    except FileNotFoundError:
+        return ()
+    except OSError:
+        pass  # metadata error on an uncertain path -> fail closed below
+    raise OSError(
+        "soul file exists but could not be read; failing closed for "
+        "effect-authority resolution"
+    )
 
 
 def _render_list(items: tuple[str, ...]) -> str:

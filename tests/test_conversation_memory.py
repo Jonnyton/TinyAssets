@@ -211,8 +211,10 @@ def test_history_is_gated_to_founder_turns(tmp_path, monkeypatch):
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
     monkeypatch.setattr(ui, "call_provider", fake_call_provider)
     # A non-founder (external floor) turn.
+    # EXTERNAL_SENDER_FLOOR (== interlocutor.T0) was removed with the external-chat
+    # converse path in the channel rip; T0 is the same non-founder floor tier.
     monkeypatch.setattr(ui.interlocutor, "resolve_interlocutor_tier",
-                        lambda uid: type("R", (), {"tier": ui.EXTERNAL_SENDER_FLOOR})())
+                        lambda uid: type("R", (), {"tier": ui.interlocutor.T0})())
 
     ui.converse(
         "u-test", "hello",

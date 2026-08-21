@@ -2354,58 +2354,6 @@ class _ClaimedCloudProviderSession:
             {"authority": "requester_owned", "attempts": 1},
         )
 
-    def execute_github_pull_request_effect(
-        self,
-        *,
-        packet: dict[str, Any],
-        run_id: str,
-    ) -> dict[str, Any]:
-        """Use the requester's exact destination grant under current custody."""
-        from tinyassets.effectors.github_pr import (
-            _execute_scoped_cloud_github_pr_effect,
-            _repository_from_scoped_destination,
-        )
-        from tinyassets.storage.outbound_connections import ConnectionLedger
-
-        def refresh_claim_id() -> str:
-            with self._lock:
-                self._refresh_background_authority()
-                self._claim = self._refresh_provider_claim()
-                return self._claim.claim_id
-
-        claim_id = refresh_claim_id()
-        continuation = self._continuation
-        ledger = ConnectionLedger(
-            self._base_path / "outbound.db",
-            verify_authenticated_principal=lambda: continuation.principal_id,
-        )
-        cap = ledger.evaluate_unprompted_action_cap(
-            grant_id=continuation.destination_grant_id,
-            action_value=1,
-            action_unit="pull_requests",
-        )
-        if cap.status != "automatic" or cap.cap is None:
-            raise PermissionError("cloud GitHub effect exceeds destination action cap")
-        proxy = ledger.resolve_exact_scoped_proxy(
-            universe_id=continuation.universe_id,
-            grant_id=continuation.destination_grant_id,
-            connection_id=continuation.destination_connection_id,
-        )
-        try:
-            return _execute_scoped_cloud_github_pr_effect(
-                universe_dir=self._base_path / continuation.universe_id,
-                universe_id=continuation.universe_id,
-                automation_id=continuation.automation_id,
-                claim_id=claim_id,
-                repository=_repository_from_scoped_destination(continuation.destination),
-                packet=packet,
-                proxy=proxy,
-                run_id=run_id,
-                refresh_claim_id=refresh_claim_id,
-            )
-        finally:
-            proxy.close()
-
     def __call__(
         self,
         prompt: str,

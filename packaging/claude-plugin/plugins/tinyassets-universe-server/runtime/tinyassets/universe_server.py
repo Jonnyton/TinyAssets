@@ -553,18 +553,6 @@ def read_graph(
                 universe_id=graph_id,
             )
         )
-    if normalized == "chat_surface":
-        # The RESOLVED routing, which is the only thing an intent can be
-        # checked against — a channel binding the user forgot about is exactly
-        # what makes the workspace default surprising.
-        from tinyassets.api import chat_surface
-
-        return json.dumps(
-            chat_surface.describe(
-                universe_id=graph_id,
-                workspace_id=query.strip(),
-            )
-        )
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -635,37 +623,6 @@ _mcp_read_graph = _register_structured_tool(
         openWorldHint=False,
     ),
 )
-
-
-def _chat_surface_payload(payload_json: str) -> dict | None:
-    """Parse the chat-surface payload, refusing anything that is not an object.
-
-    Keys are restricted to the declared setup fields. Passing `**payload` into
-    a handler otherwise lets a caller reach a keyword the handler never meant
-    to expose — and these handlers derive authority, so a stray `subject_id`
-    would be exactly the wrong thing to accept.
-    """
-    import json as _json
-
-    raw = (payload_json or "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = _json.loads(raw)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    allowed = {
-        "universe_id",
-        "workspace_id",
-        "channel_id",
-        "external_sender_id",
-        "provider",
-        "agent_binding_id",
-        "app_id",
-    }
-    return {k: v for k, v in parsed.items() if k in allowed}
 
 
 def write_graph(
@@ -976,44 +933,6 @@ def write_graph(
                 payload=payload_json,
             )
         )
-    if normalized == "chat_surface":
-        # Recognition and routing were buildable but unreachable: neither
-        # `provision` nor `bind` had a user-facing caller, so in production no
-        # founder mapping could exist and every channel routed to one universe.
-        # This is the caller. It adds no advertised handle — the live tool
-        # catalog is pinned, and an unreachable setup path is the thing being
-        # fixed rather than a thing to add more of.
-        from tinyassets.api import chat_surface
-
-        chat_operation = (operation or "").strip().lower()
-        handler = {
-            "connect_account": chat_surface.connect_account,
-            "bind_channel": chat_surface.bind_channel,
-            "unbind_channel": chat_surface.unbind_channel,
-        }.get(chat_operation)
-        if handler is None:
-            return json.dumps(
-                {
-                    "error": "unknown_chat_surface_operation",
-                    "target": "chat_surface",
-                    "operation": operation,
-                    "allowed_operations": [
-                        "connect_account",
-                        "bind_channel",
-                        "unbind_channel",
-                    ],
-                }
-            )
-        payload = _chat_surface_payload(payload_json)
-        if payload is None:
-            return json.dumps({"error": "payload_json_must_be_a_json_object"})
-        payload.setdefault("universe_id", graph_id)
-        try:
-            return json.dumps(handler(**payload))
-        except TypeError as exc:
-            return json.dumps(
-                {"error": "unexpected_chat_surface_field", "detail": str(exc)}
-            )
     if normalized == "agent":
         agent_operation = (operation or "publish").strip().lower()
         action = {
@@ -1085,8 +1004,8 @@ def write_graph(
     if normalized == "source_channel":
         # Owner self-serve source-channel approval + policy (re-applied
         # 2026-08-19 after the fe1aaf32 deploy dropped this hot-patch). A
-        # GENERAL primitive: a source_code node is a code channel, a
-        # github_pull_request sink is an effector channel.
+        # GENERAL primitive: a source_code node is a code channel, an
+        # authenticated_external_call sink is an effector channel.
         from tinyassets.api.source_channel import (
             source_channel as _source_channel_impl,
         )
@@ -3004,25 +2923,6 @@ def create_streamable_http_app() -> Starlette:
                     shutdown_scheduler()
                 except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
                     logger.exception("inbound event bus shutdown failed")
-            # Drain the app-ingress turn executor on graceful shutdown so accepted
-            # Slack turns are not dropped on a restart. uvicorn.run for THIS app is
-            # on the main thread, so its signal-driven shutdown runs this finally;
-            # the ingress listener itself is a daemon thread that never sees the
-            # signal, which is why the drain is hooked here (Codex #1). Best-effort
-            # + never raising: a shutdown fault must not mask the real teardown.
-            try:
-                from tinyassets.app_ingress_workers import (
-                    shutdown_ingress_executor,
-                )
-
-                _abandoned = shutdown_ingress_executor(wait=True)
-                if _abandoned:
-                    logger.warning(
-                        "app ingress: %d accepted turn(s) abandoned at shutdown",
-                        _abandoned,
-                    )
-            except Exception:  # noqa: BLE001 - shutdown drain must not mask teardown
-                logger.exception("app ingress: executor drain at shutdown failed")
             writer_barrier.release()
 
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
@@ -3038,9 +2938,8 @@ def create_streamable_http_app() -> Starlette:
     from starlette.responses import JSONResponse as _HookJSON
     from starlette.routing import Route as _HookRoute
 
-    from tinyassets.onboarding import onboarding_routes
-
     from tinyassets.auth.wellknown import starlette_discovery_routes
+    from tinyassets.onboarding import onboarding_routes
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
 
     async def _hooks_endpoint(request):
@@ -3169,14 +3068,6 @@ def main(
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
     if transport == "streamable-http":
-        # Internal app-event ingress for chat transports, on its OWN port and
-        # only when its key is configured. It is not a route on the app below:
-        # that app is the tunnel's origin, and production's ingress rules live
-        # in the Cloudflare dashboard, so its public path exposure cannot be
-        # read from this repo. A no-op when unconfigured.
-        from tinyassets.app_ingress_http import serve_in_background
-
-        serve_in_background()
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
         # tools are available on EVERY served turn after a clean boot — no
@@ -3185,17 +3076,6 @@ def main(
         from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
 
         _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
-        # Async action-result delivery: a periodic daemon-thread tick posts the
-        # terminal result of an app-originated background run back to its Slack
-        # conversation as a governed follow-up. Inert + safe over an empty outbox, so
-        # starting it unconditionally is fine (Slice 3).
-        try:
-            from tinyassets.action_result_delivery_tick import start_delivery_loop
-            from tinyassets.storage import data_dir as _ar_data_dir
-
-            start_delivery_loop(_ar_data_dir())
-        except Exception:  # noqa: BLE001 - boot must not fail on delivery maintenance
-            logger.exception("action-result: delivery loop not started")
         app = create_streamable_http_app()
         uvicorn.run(app, host=host, port=port)
         return
