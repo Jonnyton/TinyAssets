@@ -20,8 +20,32 @@ logger = logging.getLogger(__name__)
 
 
 def _public_base_url() -> str:
-    """The public origin webhooks are posted to. Canonical is tinyassets.io."""
-    return (os.environ.get("TINYASSETS_PUBLIC_BASE_URL") or "https://tinyassets.io").rstrip("/")
+    """The public HTTPS ORIGIN webhooks are posted to. Canonical is tinyassets.io.
+
+    Validated to scheme+host only (https, a host, no path/query/fragment/userinfo)
+    so a misconfigured ``TINYASSETS_PUBLIC_BASE_URL`` can never mis-mint the webhook
+    URL — e.g. an embedded path yielding ``…/mcp/mcp/hooks/<token>`` or a query that
+    places the SECRET token in a query string. Anything not a bare https origin
+    falls back to the canonical origin (Codex inbound review).
+    """
+    from urllib.parse import urlsplit
+
+    default = "https://tinyassets.io"
+    raw = (os.environ.get("TINYASSETS_PUBLIC_BASE_URL") or default).rstrip("/")
+    parts = urlsplit(raw)
+    if (
+        parts.scheme == "https"
+        and parts.hostname
+        and not parts.path
+        and not parts.query
+        and not parts.fragment
+        and "@" not in parts.netloc
+    ):
+        return raw
+    logger.warning(
+        "TINYASSETS_PUBLIC_BASE_URL is not a bare https origin; using %s", default
+    )
+    return default
 
 
 def _uid(kwargs: dict[str, Any]) -> str:

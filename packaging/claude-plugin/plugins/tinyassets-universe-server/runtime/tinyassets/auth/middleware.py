@@ -819,10 +819,19 @@ class AuthContextMiddleware:
                     _current_identity.set(ANONYMOUS)
                     _current_bearer_present.set(True)
                     set_wiki_canary_authority(True)
-            if not canary_authorized:
+            # The inbound webhook receiver's sole boundary is its unguessable URL
+            # token + author-gated handler; a generic channel may POST with its OWN
+            # Authorization: Bearer. Skip ALL MCP bearer interpretation/401 on an
+            # enabled EXACT hook route so a foreign bearer isn't rejected before the
+            # token handler runs (Codex inbound review). The route is exempt from
+            # _auth_challenge_path too, so the challenge branches below are skipped.
+            is_hook_route = _inbound_hooks_enabled() and _is_inbound_hook_path(
+                scope.get("path", "")
+            )
+            if not canary_authorized and not is_hook_route:
                 auth_middleware(token)
             identity = _current_identity.get()
-            if not canary_authorized and token and identity is None:
+            if not canary_authorized and not is_hook_route and token and identity is None:
                 # Present-but-invalid bearer token → 401 challenge (RFC 9728).
                 await _send_auth_challenge_401(send, invalid_token=True)
                 return
