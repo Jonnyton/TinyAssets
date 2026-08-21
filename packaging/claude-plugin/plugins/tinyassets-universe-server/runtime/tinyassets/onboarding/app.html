@@ -199,14 +199,15 @@
       document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
       return false;
     }
-    const body = new URLSearchParams({
-      grant_type:"authorization_code", code, redirect_uri:redirectUri(),
-      client_id:CFG.client_id, code_verifier:saved.verifier, resource:CFG.resource,
-    });
+    // Exchange the code SAME-ORIGIN through the daemon proxy (/mcp/app/token).
+    // The cross-origin AuthKit token endpoint fails inside an app WebView
+    // ("Failed to fetch"); the proxy does the PKCE exchange server-side and
+    // returns the access token. redirect_uri + code_verifier are re-checked there.
     let tokens;
     try{
-      const r = await fetch(CFG.token_endpoint, {
-        method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body,
+      const r = await fetch("/mcp/app/token", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({code, code_verifier:saved.verifier, redirect_uri:redirectUri()}),
       });
       tokens = await r.json();
     }catch(e){

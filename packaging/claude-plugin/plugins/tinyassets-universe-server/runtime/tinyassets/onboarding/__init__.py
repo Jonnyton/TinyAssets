@@ -126,15 +126,97 @@ async def _handle_app(request: Any) -> Any:
     )
 
 
+async def _handle_token(request: Any) -> Any:
+    """Same-origin PKCE token-exchange proxy for the onboarding SPA.
+
+    An app WebView (Capacitor) cannot reliably run the cross-origin AuthKit token
+    exchange the browser does — the same-origin ``/mcp`` calls succeed but the
+    cross-origin ``fetch`` to the AuthKit token endpoint fails ("Failed to fetch").
+    The SPA POSTs the PKCE result here instead; this forwards the exchange
+    server-to-server (PUBLIC client: ``client_id`` + ``code_verifier``, NO secret —
+    a stolen code still cannot be redeemed without the verifier) and returns ONLY
+    the access token. Same dark flag as the app; bounded + validated input.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    cfg = app_config()
+    if not cfg.get("configured"):
+        return JSONResponse({"error": "not_configured"}, status_code=503)
+
+    raw = await request.body()
+    if len(raw) > 8192:  # a PKCE exchange body is tiny; reject anything larger
+        return JSONResponse({"error": "request_too_large"}, status_code=413)
+    import json as _json
+
+    try:
+        data = _json.loads(raw or b"{}")
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+
+    code = str(data.get("code", "")).strip()
+    verifier = str(data.get("code_verifier", "")).strip()
+    redirect_uri = str(data.get("redirect_uri", "")).strip()
+    if not code or not verifier or not redirect_uri:
+        return JSONResponse({"error": "missing_fields"}, status_code=400)
+    # Defense in depth (AuthKit also re-validates redirect_uri against the
+    # authorize request): only accept an https URL whose path is this app's own.
+    parts = urlsplit(redirect_uri)
+    if parts.scheme != "https" or not parts.path.endswith("/mcp/app"):
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+
+    import httpx
+
+    token_form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": cfg["client_id"],
+        "code_verifier": verifier,
+        "resource": cfg["resource"],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                cfg["token_endpoint"],
+                data=token_form,
+                headers={"Accept": "application/json"},
+            )
+    except httpx.HTTPError:
+        return JSONResponse({"error": "token_endpoint_unreachable"}, status_code=502)
+    try:
+        payload = resp.json()
+    except ValueError:
+        return JSONResponse({"error": "token_endpoint_bad_response"}, status_code=502)
+
+    access = ""
+    if isinstance(payload, dict):
+        access = str(payload.get("access_token", "")).strip()
+    if not access:
+        detail = "no_token"
+        if isinstance(payload, dict):
+            detail = str(payload.get("error_description") or payload.get("error") or "no_token")
+        return JSONResponse({"error": detail}, status_code=400)
+    # Return ONLY the access token; never echo the code/verifier or the raw body.
+    return JSONResponse({"access_token": access}, headers={"Cache-Control": "no-store"})
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
     Served under ``/mcp/`` so the production tunnel reaches it with no infra
-    change, and same-origin so the page calls ``/mcp`` with no CORS.
+    change, and same-origin so the page calls ``/mcp`` (and the token-exchange
+    proxy) with no CORS.
     """
     from starlette.routing import Route
 
-    return [Route("/mcp/app", _handle_app, methods=["GET", "HEAD"])]
+    return [
+        Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/mcp/app/token", _handle_token, methods=["POST"]),
+    ]
 
 
 __all__ = [

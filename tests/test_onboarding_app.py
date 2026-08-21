@@ -157,7 +157,9 @@ def test_response_sets_security_headers(monkeypatch):
 
 def test_route_is_mcp_app_get(monkeypatch):
     routes = onboarding.onboarding_routes()
-    assert len(routes) == 1
-    route = routes[0]
-    assert route.path == "/mcp/app"
-    assert "GET" in route.methods
+    by_path = {r.path: r for r in routes}
+    # The SPA page (GET) + its same-origin PKCE token-exchange proxy (POST).
+    assert set(by_path) == {"/mcp/app", "/mcp/app/token"}
+    assert "GET" in by_path["/mcp/app"].methods
+    assert "POST" in by_path["/mcp/app/token"].methods
+    assert "GET" not in by_path["/mcp/app/token"].methods

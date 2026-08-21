@@ -89,9 +89,12 @@ def test_other_mcp_subpath_still_challenges(require_auth_provider):
 
 def test_challenge_path_exempts_only_the_app_route():
     assert mw._auth_challenge_path("/mcp/app") is False
+    # The same-origin PKCE token-exchange proxy runs before any bearer exists.
+    assert mw._auth_challenge_path("/mcp/app/token") is False
     assert mw._auth_challenge_path("/mcp") is True
     assert mw._auth_challenge_path("/mcp/") is True
     assert mw._auth_challenge_path("/mcp/app/callback") is True  # not the served path
+    assert mw._auth_challenge_path("/mcp/app/token/x") is True  # exact-match only, no prefix bypass
     assert mw._auth_challenge_path("/.well-known/oauth-protected-resource") is False
 
 
