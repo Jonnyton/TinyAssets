@@ -486,6 +486,33 @@ def _is_connect_deposit_path(path: str) -> bool:
     return path == "/mcp/connect" or path.startswith("/mcp/connect/")
 
 
+def _is_inbound_hook_path(path: str) -> bool:
+    """Exactly ``/mcp/hooks/<one-segment-token>`` (non-empty, no deeper path).
+
+    The token is variable so this can't be an equality check like ``/mcp/app``;
+    it is pinned to a single non-empty segment after the fixed prefix so no
+    deeper ``/mcp/hooks/...`` path is ever exempted.
+    """
+    prefix = "/mcp/hooks/"
+    if not path.startswith(prefix):
+        return False
+    token = path[len(prefix):]
+    return bool(token) and "/" not in token
+
+
+def _inbound_hooks_enabled() -> bool:
+    """Whether the inbound webhook receiver route is mounted (dark flag).
+
+    Lazily imported so the auth middleware never hard-depends on the inbound
+    module; any import failure fails closed (treated as disabled).
+    """
+    try:
+        from tinyassets.webhook_inbound import inbound_enabled
+    except Exception:
+        return False
+    return bool(inbound_enabled())
+
+
 def _auth_challenge_path(path: str) -> bool:
     """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
     Discovery routes stay public so the client can still find the authorization
@@ -505,6 +532,15 @@ def _auth_challenge_path(path: str) -> bool:
     # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
     # /mcp/connect(/*) — no other /mcp path is opened.
     if connect_deposit_routes_enabled() and _is_connect_deposit_path(path):
+        return False
+    # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
+    # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
+    # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
+    # carries no MCP bearer, so — like /mcp/app and /mcp/connect — it must not be
+    # swept into the /mcp/* bearer 401. Only exempt when inbound is enabled (the
+    # route only exists then) and only the exact /mcp/hooks/<one-segment-token>
+    # shape — no deeper /mcp/hooks/... path is opened.
+    if _inbound_hooks_enabled() and _is_inbound_hook_path(path):
         return False
     return path == "/mcp" or path.startswith("/mcp/")
 

@@ -30,7 +30,7 @@ def test_mint_returns_a_url_for_an_owned_branch(monkeypatch, tmp_path):
         {"universe_id": "u-a", "branch_def_id": "b-1"},
     ))
     assert out["branch_def_id"] == "b-1"
-    assert out["url"].endswith("/hooks/" + out["token"])
+    assert out["url"].endswith("/mcp/hooks/" + out["token"])
     # the token resolves in the store to this universe + branch (no source binding)
     assert webhook_hooks.resolve(tmp_path, token=out["token"]) == {
         "universe_id": "u-a", "branch_def_id": "b-1", "source_id": None,

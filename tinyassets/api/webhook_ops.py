@@ -74,7 +74,7 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
         return err
 
     token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid)
-    url = f"{_public_base_url()}/hooks/{token}"
+    url = f"{_public_base_url()}/mcp/hooks/{token}"
     return json.dumps({
         "text": (
             "Inbound webhook URL created. Paste it into the channel's webhook settings "
@@ -179,7 +179,7 @@ def _action_create_source(kwargs: dict[str, Any]) -> str:
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
     token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid, source_id=source_id)
-    url = f"{_public_base_url()}/hooks/{token}"
+    url = f"{_public_base_url()}/mcp/hooks/{token}"
     return json.dumps({
         "text": (
             "Inbound source created. Paste this URL into the channel's webhook settings; "
