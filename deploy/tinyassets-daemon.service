@@ -72,7 +72,7 @@ ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyass
 ExecStop=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml down --timeout 30
 
 # Restart posture. on-failure (NOT always — with RemainAfterExit, `always` would
-# re-run a SUCCESSFUL oneshot). 10s delay + StartLimitBurst cap avoids a hot-loop;
+# re-run a SUCCESSFUL oneshot). 10s delay + the [Unit] start-limit cap avoids a hot-loop;
 # container-level crashes are handled by docker's restart policy, not systemd.
 Restart=on-failure
 RestartSec=10s
