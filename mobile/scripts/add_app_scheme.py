@@ -59,7 +59,7 @@ FILTER = """            <intent-filter>
             </intent-filter>
 """
 
-MAIN_ACTIVITY_SRC = """package io.tinyassets.app;
+MAIN_ACTIVITY_SRC = r"""package io.tinyassets.app;
 
 import android.content.Intent;
 import android.net.Uri;
