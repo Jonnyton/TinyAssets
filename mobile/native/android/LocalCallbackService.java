@@ -25,6 +25,11 @@ import android.os.IBinder;
 public class LocalCallbackService extends Service {
     static final String CHANNEL_ID = "tinyassets_signin";
     static final int NOTIFICATION_ID = 1455;
+    // Hard ceiling: a sign-in never legitimately outlives this. Stops the
+    // service even if the web layer forgot to (e.g. the WebView was torn down).
+    static final long MAX_LIFETIME_MS = 12 * 60 * 1000L;
+    private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable selfStop = this::stopSelf;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -55,7 +60,20 @@ public class LocalCallbackService extends Service {
             // process may just be frozen while backgrounded (the pre-fix state).
             stopSelf();
         }
+        handler.removeCallbacks(selfStop);
+        handler.postDelayed(selfStop, MAX_LIFETIME_MS);
         return START_NOT_STICKY;
+    }
+
+    /** Android 15+ calls this when a dataSync service exhausts its budget. */
+    public void onTimeout(int startId, int fgsType) {
+        stopSelf();
+    }
+
+    @Override
+    public void onDestroy() {
+        handler.removeCallbacks(selfStop);
+        super.onDestroy();
     }
 
     @Override

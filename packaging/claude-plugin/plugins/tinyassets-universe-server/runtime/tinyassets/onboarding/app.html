@@ -513,10 +513,10 @@
     setTimeout(()=>{ showView("chat"); startHeartbeat(); $("composer-input").focus(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
-    sessionStorage.removeItem(TOKEN_KEY); clearOpenAIPending(); showView("signin"); }
+    sessionStorage.removeItem(TOKEN_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate){ showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
-    $("btn-openai-code").hidden = !(NATIVE && nativePlugin("LocalCallback"));
+    if(!openaiBusy) resetOpenAIUI();
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
     $("connect-status").textContent = asGate
       ? "Your universe needs a mind to think with. Connect the subscription it should run on — credentials go straight to the connector over TLS, never through chat, never logged."
@@ -567,6 +567,28 @@
     return null;
   }
   function clearOpenAIPending(){ try{ localStorage.removeItem(OPENAI_FLOW_KEY); }catch(_e){} openaiPending=null; }
+
+  // Tear down any in-flight browser flow (listener, foreground service,
+  // timers, pending record, external tab) WITHOUT reporting an outcome. Used
+  // on sign-out, when the user switches to the code method, and on auth loss.
+  async function cancelOpenAIFlow(){
+    const LC=nativePlugin("LocalCallback");
+    const pend=openaiPending; clearOpenAIPending();
+    try{ if(pend&&pend.handle) pend.handle.remove(); }catch(_e){}
+    try{ if(pend&&pend.timer) clearTimeout(pend.timer); }catch(_e){}
+    try{ if(LC) await LC.stop(); }catch(_e){}
+    await closeExternal();
+    openaiBusy=false;
+  }
+  // Every OpenAI control back to its initial state (the Connect button and,
+  // on the phone, the "use a code" link), e.g. after a sign-out/re-sign-in.
+  function resetOpenAIUI(){
+    const b=$("btn-openai-connect"); b.hidden=false; b.disabled=false; b.textContent="Connect OpenAI";
+    $("btn-openai-code").hidden = !(NATIVE && nativePlugin("LocalCallback"));
+    $("openai-setup").hidden=true; $("openai-flow").hidden=true;
+    $("btn-openai-setup-done").disabled=false;
+    $("openai-result").textContent="";
+  }
 
   async function finishOpenAI(ok,msg){
     const btn=$("btn-openai-connect"), res=$("openai-result"), LC=nativePlugin("LocalCallback");
@@ -685,7 +707,7 @@
     try{
       const r=await fetch("/mcp/app/openai/device/start",{method:"POST",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:"{}"});
-      if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
       started=await r.json();
       if(!r.ok||!started.user_code||!started.flow) throw new Error(started.error||"could not start");
     }catch(e){ res.textContent="Couldn't reach OpenAI: "+e.message; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false; return; }
@@ -705,7 +727,7 @@
           headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body});
         doc=await r.json();
       }catch(_e){ continue; }
-      if(r.status===401){ openaiBusy=false; return enterSignedOut(); }
+      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
       if(doc.status==="pending") continue;
       if(doc.status==="connected"){
         await closeExternal();
@@ -738,7 +760,7 @@
 
   function wire(){
     $("btn-openai-connect").addEventListener("click",connectOpenAI);
-    $("btn-openai-code").addEventListener("click",()=>showOpenAISetup());
+    $("btn-openai-code").addEventListener("click",async()=>{ await cancelOpenAIFlow(); showOpenAISetup(); });
     $("btn-openai-settings").addEventListener("click",()=>{ trace("openai.complete","settings-opened"); openExternal(CHATGPT_SECURITY_URL); });
     $("btn-openai-setup-done").addEventListener("click",connectOpenAIDevice);
     $("btn-claude-connect").addEventListener("click",connectClaude);

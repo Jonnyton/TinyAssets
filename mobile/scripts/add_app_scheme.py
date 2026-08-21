@@ -109,10 +109,9 @@ public class MainActivity extends BridgeActivity {
 
 
 def register_scheme() -> int:
+    """Add each intent-filter independently, so a generated project patched by
+    an OLDER version of this script still gains the newer filters."""
     text = MANIFEST.read_text(encoding="utf-8")
-    if 'android:scheme="tinyassets"' in text:
-        print("app scheme already registered")
-        return 0
     marker = "</activity>"
     if marker not in text:
         print("no </activity> in manifest", file=sys.stderr)
@@ -120,9 +119,20 @@ def register_scheme() -> int:
     # Capacitor's MainActivity is the first (and only) <activity>; launchMode is
     # singleTask in the template, so the VIEW intent reaches the running app via
     # onNewIntent -> Capacitor App plugin `appUrlOpen`.
-    text = text.replace(marker, FILTER + "        " + marker, 1)
-    MANIFEST.write_text(text, encoding="utf-8")
-    print("registered tinyassets://auth intent-filter")
+    view_filter, send_filter = FILTER.split("            <!--", 1)
+    send_filter = "            <!--" + send_filter
+    added = []
+    if 'android:scheme="tinyassets"' not in text:
+        text = text.replace(marker, view_filter + "        " + marker, 1)
+        added.append("tinyassets://auth")
+    if 'android.intent.action.SEND' not in text:
+        text = text.replace(marker, send_filter + "        " + marker, 1)
+        added.append("share-to-app")
+    if added:
+        MANIFEST.write_text(text, encoding="utf-8")
+        print("registered intent-filters: " + ", ".join(added))
+    else:
+        print("intent-filters already registered")
     return 0
 
 
@@ -161,14 +171,16 @@ def install_plugin() -> int:
     PLUGIN_DST.write_text(PLUGIN_SRC.read_text(encoding="utf-8"), encoding="utf-8")
     SERVICE_DST.write_text(SERVICE_SRC.read_text(encoding="utf-8"), encoding="utf-8")
     current = MAIN_ACTIVITY.read_text(encoding="utf-8") if MAIN_ACTIVITY.exists() else ""
-    if "registerPlugin(LocalCallbackPlugin.class)" in current:
-        print("LocalCallback plugin already registered")
+    if current == MAIN_ACTIVITY_SRC:
+        print("MainActivity already current")
         return 0
+    # Replace any RECOGNIZED MainActivity (Capacitor's template or an earlier
+    # version written by this script) so upgrades pick up the share rewrite.
     if current and not re.search(r"class MainActivity extends BridgeActivity", current):
         print("unexpected MainActivity shape; refusing to overwrite", file=sys.stderr)
         return 1
     MAIN_ACTIVITY.write_text(MAIN_ACTIVITY_SRC, encoding="utf-8")
-    print("installed + registered LocalCallback plugin")
+    print("installed LocalCallback plugin + MainActivity (plugin registration, share rewrite)")
     return 0
 
 
