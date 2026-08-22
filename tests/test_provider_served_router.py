@@ -423,6 +423,21 @@ def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, m
         revoke_provider_request(capability)
     # Both turns reached the provider AND returned their replies (never withheld).
     assert provider.calls == 2
+    # The overrun is RECORDED, not silently ignored: rows settle as 'exceeded'
+    # with the actual usage charged (audit / upstream-metered on the founder's
+    # own subscription).
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(tmp_path)
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT state, actual_total_tokens FROM "
+            "served_provider_budget_reservations ORDER BY created_at"
+        ).fetchall()
+    assert [r[0] for r in rows] == ["exceeded", "exceeded"]
+    assert all(r[1] == 20 for r in rows)  # measured 12 input + 8 output
 
 
 @pytest.mark.skipif(os.name == "nt", reason="bubblewrap is a POSIX sandbox")

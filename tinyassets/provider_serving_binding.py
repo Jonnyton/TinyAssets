@@ -47,12 +47,8 @@ _PROVIDER_SERVICE = {
 _SERVING_OPERATIONS = ("converse",)
 _SERVING_ROLES = ("writer",)
 _MAX_BINDING_INVOCATIONS = 10_000
-# Per-call token ceiling. A codex workspace turn is ~10-30k tokens, so a single
-# legitimate turn never trips it, while a runaway single call still does; the
-# aggregate anti-runaway guard is max_invocations + the rolling window.
-_MAX_TOKENS = 262_144
-# 100 microunits/token, sized to the per-call token ceiling with headroom.
-_MAX_COST_MICROUNITS = 10_000_000_000
+_MAX_TOKENS = 32_768
+_MAX_COST_MICROUNITS = 10_000_000
 _BINDING_TTL = timedelta(days=30)
 _PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
 

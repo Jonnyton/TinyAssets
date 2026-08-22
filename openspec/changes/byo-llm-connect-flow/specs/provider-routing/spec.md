@@ -106,14 +106,24 @@ Each admitted request capability SHALL independently limit provider calls to a
 small reply/learning budget; the durable binding-generation invocation ceiling
 SHALL be a high-water anti-runaway bound spanning multiple normal requests, not
 the per-request limit.
-After completion, actual adapter usage SHALL be recorded; an over-ceiling result
-SHALL be withheld and future calls SHALL remain held.
+After completion, actual adapter usage SHALL be recorded and the reservation
+settled; a result whose actual usage exceeds the per-call reservation estimate
+SHALL be marked `exceeded` and DELIVERED (never withheld) — the reply was
+already generated and metered on the requester's own subscription, and a served
+adapter's real input is dominated by context it injects itself (a workspace +
+tool schemas), so a normal turn routinely exceeds a prompt-derived estimate.
+The aggregate anti-runaway bound is the durable binding-generation invocation
+high-water within the rolling window, not per-call withholding. (2026-08-22:
+this supersedes the earlier withhold-on-over-ceiling rule, which discarded
+legitimate paid-for replies on nearly every served turn.)
 
-#### Scenario: Provider exceeds a reserved ceiling
+#### Scenario: Provider actual usage exceeds the reservation estimate
 
-- **WHEN** actual token or cost usage exceeds the durable reservation
-- **THEN** the result is withheld and the reservation is marked exceeded
-- **AND** no later call can reuse the consumed budget
+- **WHEN** actual token or cost usage exceeds the per-call reservation
+- **THEN** the reservation is marked `exceeded`, actual usage is recorded, and
+  the generated reply is returned to the requester
+- **AND** the durable binding-generation invocation high-water still bounds a
+  runaway loop across requests
 
 #### Scenario: Two founder turns use one binding
 
