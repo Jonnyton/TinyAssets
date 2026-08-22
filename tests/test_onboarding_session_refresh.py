@@ -16,7 +16,15 @@ import httpx
 from tinyassets import onboarding
 
 
-def _drive(body: dict, *, cookie: str = "", monkeypatch, upstream):
+def _drive(
+    body: dict,
+    *,
+    cookie: str = "",
+    origin: str = "https://tinyassets.io",
+    content_type: str = "application/json",
+    monkeypatch,
+    upstream,
+):
     """Drive the token route with a scripted AuthKit token endpoint."""
     from starlette.requests import Request
 
@@ -52,7 +60,13 @@ def _drive(body: dict, *, cookie: str = "", monkeypatch, upstream):
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     route = next(r for r in onboarding.onboarding_routes() if r.path == "/mcp/app/token")
     raw = json.dumps(body).encode()
-    headers = [(b"content-type", b"application/json"), (b"content-length", str(len(raw)).encode())]
+    headers = [
+        (b"content-type", content_type.encode()),
+        (b"content-length", str(len(raw)).encode()),
+        (b"host", b"tinyassets.io"),
+    ]
+    if origin:
+        headers.append((b"origin", origin.encode()))
     if cookie:
         headers.append((b"cookie", cookie.encode()))
     scope = {
@@ -122,7 +136,7 @@ def test_refresh_without_cookie_is_401_and_hits_no_upstream(monkeypatch):
     assert (status, doc, calls) == (401, {"error": "no_refresh_token"}, [])
 
 
-def test_failed_refresh_clears_the_cookie(monkeypatch):
+def test_failed_refresh_maps_error_and_keeps_cookie(monkeypatch):
     def upstream(form):
         return httpx.Response(400, json={"error": "invalid_grant", "error_description": "expired"})
 
@@ -132,8 +146,10 @@ def test_failed_refresh_clears_the_cookie(monkeypatch):
         monkeypatch=monkeypatch,
         upstream=upstream,
     )
-    assert status == 401 and doc == {"error": "expired"}
-    assert cookies and cookies[0].startswith('ta_rt=""') and "Max-Age=0" in cookies[0]
+    assert status == 401 and doc == {"error": "refresh_failed"}
+    # the cookie is NOT cleared on failure (a lost rotation race must not
+    # delete the winner's token); logout is the explicit clear.
+    assert cookies == []
 
 
 def test_unknown_grant_is_rejected(monkeypatch):
@@ -141,3 +157,50 @@ def test_unknown_grant_is_rejected(monkeypatch):
         {"grant_type": "password"}, monkeypatch=monkeypatch, upstream=lambda f: httpx.Response(500)
     )
     assert (status, doc) == (400, {"error": "unsupported_grant_type"})
+
+
+def test_cross_origin_or_non_json_is_refused_before_any_grant(monkeypatch):
+    """Codex: login-CSRF / session fixation — a cross-site POST (or a form
+    post) must never reach AuthKit nor set the refresh cookie."""
+
+    def upstream(form):
+        raise AssertionError("must not call AuthKit")
+
+    body = {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"}
+    for origin, ctype in (
+        ("https://evil.example", "application/json"),
+        ("", "application/json"),
+        ("https://tinyassets.io", "text/plain"),
+        ("https://tinyassets.io", "application/x-www-form-urlencoded"),
+        ("http://tinyassets.io.evil.example", "application/json"),
+    ):
+        status, doc, cookies, calls = _drive(
+            body, origin=origin, content_type=ctype, monkeypatch=monkeypatch, upstream=upstream
+        )
+        assert (status, doc, cookies, calls) == (403, {"error": "cross_origin_rejected"}, [], [])
+
+
+def test_logout_clears_the_cookie_without_upstream(monkeypatch):
+    def upstream(form):
+        raise AssertionError("must not call AuthKit")
+
+    status, doc, cookies, calls = _drive(
+        {"grant_type": "logout"}, cookie="ta_rt=LIVE", monkeypatch=monkeypatch, upstream=upstream
+    )
+    assert (status, doc, calls) == (200, {"ok": True}, [])
+    assert cookies and cookies[0].startswith('ta_rt=""') and "Max-Age=0" in cookies[0]
+    assert "Path=/mcp/app/token" in cookies[0]
+
+
+def test_exchange_failure_maps_to_stable_code(monkeypatch):
+    def upstream(form):
+        return httpx.Response(
+            400, json={"error": "invalid_grant", "error_description": "SECRET detail"}
+        )
+
+    status, doc, _, _ = _drive(
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        monkeypatch=monkeypatch,
+        upstream=upstream,
+    )
+    assert (status, doc) == (400, {"error": "exchange_failed"})

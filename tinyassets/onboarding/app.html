@@ -387,11 +387,18 @@
     sessionStorage.setItem(EXP_KEY, String(exp || 0));
   }
   let refreshing = null;
+  // Serialized across ALL documents of this origin (Web Locks) as well as
+  // within this one: AuthKit rotates the refresh token, so two concurrent
+  // refreshes (two tabs, or the callback page + the app) would race.
+  function withRefreshLock(fn){
+    if(navigator.locks && navigator.locks.request) return navigator.locks.request("ta-session-refresh", fn);
+    return fn();
+  }
   async function refreshAccessToken(){
     if(refreshing) return refreshing;
-    refreshing = (async()=>{
+    refreshing = withRefreshLock(async()=>{
       try{
-        const r = await fetch("/mcp/app/token", {method:"POST", credentials:"include",
+        const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
           headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"refresh_token"})});
         if(!r.ok) return false;
         const doc = await r.json();
@@ -401,8 +408,15 @@
         return true;
       }catch(_e){ return false; }
       finally{ refreshing = null; }
-    })();
+    });
     return refreshing;
+  }
+  // Explicit sign-out ends the renewable session server-side (clears the
+  // HttpOnly refresh cookie) so the next person on this device cannot be
+  // silently signed in on launch.
+  async function endServerSession(){
+    try{ await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"logout"})}); }catch(_e){}
   }
   async function ensureFreshToken(){
     const exp = Number(sessionStorage.getItem(EXP_KEY) || 0);
@@ -835,7 +849,7 @@
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-connect").addEventListener("click",()=>showConnect(false));
     $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); });
-    $("btn-signout").addEventListener("click",()=>{ sessionStorage.setItem("ta_force_login","1"); enterSignedOut(); });
+    $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     $("btn-deposit").addEventListener("click",async()=>{
       const service=$("connect-service").value, out=$("connect-result");
       const materialEl=$("connect-material"), material=materialEl.value.trim(), btn=$("btn-deposit");

@@ -41,6 +41,28 @@ _SCOPES = "openid profile email offline_access"
 _REFRESH_COOKIE = "ta_rt"
 _REFRESH_COOKIE_PATH = "/mcp/app/token"
 _REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _same_origin_json(request: Any, public_resource: str = "") -> bool:
+    """True only for a JSON request whose ``Origin`` is this app's own origin.
+
+    "Own origin" = the request's Host, or the app's configured public resource
+    host (``tinyassets.io``) — the tunnel may rewrite Host on the way in, and
+    the Capacitor WebView loads the remote page at that public origin."""
+    ctype = str(request.headers.get("content-type", "")).split(";")[0].strip().lower()
+    if ctype != "application/json":
+        return False
+    origin = str(request.headers.get("origin", "")).strip().lower()
+    if not origin:
+        return False
+    parts = urlsplit(origin)
+    if parts.scheme not in ("https", "http") or not parts.netloc:
+        return False
+    allowed = {str(request.headers.get("host", "")).strip().lower()}
+    allowed.add(urlsplit(public_resource or "").netloc.lower())
+    allowed.discard("")
+    return parts.netloc in allowed
 
 
 def onboarding_enabled() -> bool:
@@ -162,6 +184,14 @@ async def _handle_token(request: Any) -> Any:
     cfg = app_config()
     if not cfg.get("configured"):
         return JSONResponse({"error": "not_configured"}, status_code=503)
+    # Login-CSRF / session-fixation guard (Codex 2026-08-22): this endpoint is
+    # unauthenticated and sets the refresh cookie, so it must only answer its
+    # own page — exact same-origin `Origin` and a JSON body (a cross-site form
+    # post cannot send either).
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
 
     # A PKCE exchange body is tiny; anything larger is refused before buffering.
     raw = await _read_bounded_body(request, 8192)
@@ -177,6 +207,14 @@ async def _handle_token(request: Any) -> Any:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
 
     grant = str(data.get("grant_type", "authorization_code")).strip()
+    if grant == "logout":
+        # Sign-out must end the renewable session too, not just the page's
+        # access token: clear the cookie at its exact path. (AuthKit has no
+        # public-client revocation call for refresh tokens; the cookie is the
+        # only place ours lives.)
+        response = JSONResponse({"ok": True}, headers=_NO_STORE)
+        response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
+        return response
     if grant == "refresh_token":
         # Silent session renewal. AuthKit access tokens live ~5 minutes; the
         # refresh token never reaches the page — it lives in an HttpOnly
@@ -238,14 +276,23 @@ async def _handle_token(request: Any) -> Any:
         except (TypeError, ValueError):
             expires_in = 0
     if not access:
-        detail = "no_token"
+        # Stable local codes only; AuthKit's error text goes to the server log
+        # (sanitized, bounded), never to the page.
+        import logging
+
+        upstream = ""
         if isinstance(payload, dict):
-            detail = str(payload.get("error_description") or payload.get("error") or "no_token")
-        status = 401 if grant == "refresh_token" else 400
-        response = JSONResponse({"error": detail}, status_code=status)
+            upstream = str(payload.get("error") or "")[:64]
+        logging.getLogger("tinyassets.onboarding").warning(
+            "token %s failed: upstream=%s http=%s", grant, upstream or "none", resp.status_code
+        )
         if grant == "refresh_token":
-            response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
-        return response
+            # Do NOT clear the cookie here: a refresh that loses a rotation
+            # race with another tab would otherwise delete the winner's new
+            # token. A genuinely dead cookie simply keeps failing until it
+            # expires or the user signs out (logout clears it).
+            return JSONResponse({"error": "refresh_failed"}, status_code=401, headers=_NO_STORE)
+        return JSONResponse({"error": "exchange_failed"}, status_code=400, headers=_NO_STORE)
     # Return ONLY the access token (+ its lifetime); never echo the code,
     # verifier, raw body, or the refresh token — that one goes into an
     # HttpOnly, Secure, SameSite=Strict cookie scoped to this endpoint only.
