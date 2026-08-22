@@ -611,6 +611,9 @@ _BRAIN_SECTIONS = {
 #: brain file is system-prompt material, so bound it rather than let one turn
 #: write an unbounded body that bloats the prompt / storage.
 _BRAIN_MAX_SECTION_BYTES = 16_384
+#: A learned name is a short label (goes in identity.md frontmatter), so bound it
+#: separately from section bodies (Codex brain-loop re-review 2026-08-22).
+_BRAIN_MAX_NAME_BYTES = 256
 #: Least-privilege identity for a brain write: the write is governed by
 #: soul.edit.md + the graph pin, NOT ACL, so it needs no `costly` / submit /
 #: branch-write authority (Codex #5).
@@ -738,6 +741,12 @@ def write_brain(
             })
         soul[fname] = val
     learned_name = (name or "").strip()
+    # A name is a short label, not a body — cap it so it can't smuggle an
+    # unbounded payload into identity.md via the frontmatter (Codex re-review #2).
+    if len(learned_name.encode("utf-8")) > _BRAIN_MAX_NAME_BYTES:
+        return json.dumps({
+            "error": f"name is too long (> {_BRAIN_MAX_NAME_BYTES} bytes).",
+        })
     if not (soul or learned_name):
         return json.dumps({
             "error": (

@@ -441,6 +441,36 @@ def test_write_brain_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
     assert soul.read_text(encoding="utf-8") == soul_before  # soul.md untouched
 
 
+def test_write_brain_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
+    """Codex re-review BLOCKER: the SECONDARY soul-edit sinks (log/snapshot/index)
+    must not write through a hardlink either. Atomic writes repoint the name to a
+    fresh inode, so a soul_versions/index.md hardlinked to soul.md cannot overwrite
+    it during the snapshot."""
+    import os
+
+    from tinyassets import engine_mcp_server as s
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    soul = udir / "soul.md"
+    soul_before = soul.read_text(encoding="utf-8")
+    index = udir / "soul_versions" / "index.md"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    if index.exists():
+        index.unlink()
+    os.link(soul, index)  # predictable-name sink aliased to soul.md
+
+    s.write_brain(identity="I am Aria, the founder's research companion.")
+    assert soul.read_text(encoding="utf-8") == soul_before  # soul.md untouched
+
+
+def test_write_brain_rejects_oversized_name(monkeypatch, tmp_path):
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    out = json.loads(s.write_brain(name="x" * (s._BRAIN_MAX_NAME_BYTES + 1)))
+    assert "name is too long" in out.get("error", "")
+
+
 def test_write_brain_refused_off_allowlist(monkeypatch, tmp_path):
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s

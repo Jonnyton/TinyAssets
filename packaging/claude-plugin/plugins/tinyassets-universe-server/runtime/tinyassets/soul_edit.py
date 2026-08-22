@@ -21,6 +21,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
@@ -68,6 +69,29 @@ def _render(meta: dict[str, Any], body: str) -> str:
     if not body.endswith("\n"):
         body += "\n"
     return f"---\n{fm}\n---\n\n{body}"
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Inode-safe write: write a FRESH temp file in the same dir + os.replace.
+
+    ``os.replace`` repoints the NAME at a new inode, so a SYMLINK or HARDLINK at
+    ``path`` can never redirect the write onto another inode (e.g. soul.md's
+    control-plane frontmatter or an external file). This closes the inode-alias
+    bypass across EVERY soul-edit sink — the governed files, log.md, the snapshot,
+    and the version index — and also the check→use TOCTOU window, since the write
+    itself is safe regardless of what the path pointed at a moment earlier (Codex
+    brain-loop re-review 2026-08-22).
+    """
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
@@ -288,7 +312,7 @@ def apply_soul_edit(
                 meta["name"] = name
             rendered = _render(meta, body)
             new_contents[filename] = rendered
-            (universe_dir / filename).write_text(rendered, encoding="utf-8")
+            _atomic_write_text(universe_dir / filename, rendered)
             updated.append(filename)
 
         log_entry = summary.strip() or f"learned {', '.join(sorted(updated))}"
@@ -318,7 +342,7 @@ def _append_log(universe_dir: Path, line: str) -> None:
         text = "# Update Log\n"
     if not text.endswith("\n"):
         text += "\n"
-    log_path.write_text(text + line + "\n", encoding="utf-8")
+    _atomic_write_text(log_path, text + line + "\n")
 
 
 def _write_edit_snapshot(
@@ -358,8 +382,8 @@ def _write_edit_snapshot(
     for filename in sorted(files):
         body_parts += [f"## {filename}", "", "```markdown", files[filename].rstrip(), "```", ""]
     snapshot_name = f"{next_number:04d}.md"
-    (versions_dir / snapshot_name).write_text(
-        _render(meta, "\n".join(body_parts)), encoding="utf-8",
+    _atomic_write_text(
+        versions_dir / snapshot_name, _render(meta, "\n".join(body_parts))
     )
 
     index_path = versions_dir / "index.md"
@@ -369,9 +393,9 @@ def _write_edit_snapshot(
         index_text = "# Soul Version Index\n"
     if not index_text.endswith("\n"):
         index_text += "\n"
-    index_path.write_text(
+    _atomic_write_text(
+        index_path,
         index_text
         + f"- [{next_number:04d}]({snapshot_name}) — learned: {summary}\n",
-        encoding="utf-8",
     )
     return f"{SOUL_VERSIONS_DIR}/{snapshot_name}"
