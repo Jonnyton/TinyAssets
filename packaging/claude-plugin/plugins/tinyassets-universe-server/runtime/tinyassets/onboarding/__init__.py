@@ -35,6 +35,12 @@ _NONCE_PLACEHOLDER = "__TA_NONCE__"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _SCOPES = "openid profile email offline_access"
+# The AuthKit refresh token lives ONLY here: an HttpOnly cookie the page cannot
+# read, sent back solely to the token proxy. 7 days = AuthKit's default
+# maximum session length; AuthKit rotates the token on every refresh.
+_REFRESH_COOKIE = "ta_rt"
+_REFRESH_COOKIE_PATH = "/mcp/app/token"
+_REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600
 
 
 def onboarding_enabled() -> bool:
@@ -170,27 +176,43 @@ async def _handle_token(request: Any) -> Any:
     if not isinstance(data, dict):
         return JSONResponse({"error": "invalid_json"}, status_code=400)
 
-    code = str(data.get("code", "")).strip()
-    verifier = str(data.get("code_verifier", "")).strip()
-    redirect_uri = str(data.get("redirect_uri", "")).strip()
-    if not code or not verifier or not redirect_uri:
-        return JSONResponse({"error": "missing_fields"}, status_code=400)
-    # Defense in depth (AuthKit also re-validates redirect_uri against the
-    # authorize request): only accept an https URL whose path is this app's own.
-    parts = urlsplit(redirect_uri)
-    if parts.scheme != "https" or not parts.path.endswith("/mcp/app"):
-        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    grant = str(data.get("grant_type", "authorization_code")).strip()
+    if grant == "refresh_token":
+        # Silent session renewal. AuthKit access tokens live ~5 minutes; the
+        # refresh token never reaches the page — it lives in an HttpOnly
+        # cookie scoped to this exact path, set by the initial exchange below.
+        refresh = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
+        if not refresh or len(refresh) > 4096:
+            return JSONResponse({"error": "no_refresh_token"}, status_code=401)
+        token_form = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": cfg["client_id"],
+            "resource": cfg["resource"],
+        }
+    elif grant == "authorization_code":
+        code = str(data.get("code", "")).strip()
+        verifier = str(data.get("code_verifier", "")).strip()
+        redirect_uri = str(data.get("redirect_uri", "")).strip()
+        if not code or not verifier or not redirect_uri:
+            return JSONResponse({"error": "missing_fields"}, status_code=400)
+        # Defense in depth (AuthKit also re-validates redirect_uri against the
+        # authorize request): only accept an https URL whose path is this app's own.
+        parts = urlsplit(redirect_uri)
+        if parts.scheme != "https" or not parts.path.endswith("/mcp/app"):
+            return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+        token_form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": cfg["client_id"],
+            "code_verifier": verifier,
+            "resource": cfg["resource"],
+        }
+    else:
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
 
     import httpx
-
-    token_form = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect_uri,
-        "client_id": cfg["client_id"],
-        "code_verifier": verifier,
-        "resource": cfg["resource"],
-    }
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
@@ -206,15 +228,42 @@ async def _handle_token(request: Any) -> Any:
         return JSONResponse({"error": "token_endpoint_bad_response"}, status_code=502)
 
     access = ""
+    refresh_token = ""
+    expires_in = 0
     if isinstance(payload, dict):
         access = str(payload.get("access_token", "")).strip()
+        refresh_token = str(payload.get("refresh_token", "")).strip()
+        try:
+            expires_in = int(payload.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            expires_in = 0
     if not access:
         detail = "no_token"
         if isinstance(payload, dict):
             detail = str(payload.get("error_description") or payload.get("error") or "no_token")
-        return JSONResponse({"error": detail}, status_code=400)
-    # Return ONLY the access token; never echo the code/verifier or the raw body.
-    return JSONResponse({"access_token": access}, headers={"Cache-Control": "no-store"})
+        status = 401 if grant == "refresh_token" else 400
+        response = JSONResponse({"error": detail}, status_code=status)
+        if grant == "refresh_token":
+            response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
+        return response
+    # Return ONLY the access token (+ its lifetime); never echo the code,
+    # verifier, raw body, or the refresh token — that one goes into an
+    # HttpOnly, Secure, SameSite=Strict cookie scoped to this endpoint only.
+    response = JSONResponse(
+        {"access_token": access, "expires_in": expires_in or None},
+        headers={"Cache-Control": "no-store"},
+    )
+    if refresh_token and len(refresh_token) <= 4096:
+        response.set_cookie(
+            _REFRESH_COOKIE,
+            refresh_token,
+            max_age=_REFRESH_COOKIE_MAX_AGE,
+            path=_REFRESH_COOKIE_PATH,
+            secure=True,
+            httponly=True,
+            samesite="strict",
+        )
+    return response
 
 
 async def _read_bounded_body(request: Any, limit: int) -> bytes | None:

@@ -366,11 +366,52 @@
       return false;   // keep the PKCE state: a retry of the same sign-in can still complete
     }
     pkceStore.removeItem(PKCE_KEY);
-    sessionStorage.setItem(TOKEN_KEY, tokens.access_token);
+    storeAccessToken(tokens.access_token, tokens.expires_in);
     return true;
   }
 
   function token(){ return sessionStorage.getItem(TOKEN_KEY); }
+
+  // ---- Session renewal ----
+  // AuthKit access tokens live ~5 minutes. The refresh token never reaches this
+  // page: the daemon keeps it in an HttpOnly cookie and renews on request.
+  // Before each call the token is renewed if it is about to expire; a 401 gets
+  // one renewal + retry; only a failed renewal signs the user out (with a
+  // message, and without losing what they typed).
+  const EXP_KEY = "ta_access_exp";
+  function storeAccessToken(tk, expiresIn){
+    sessionStorage.setItem(TOKEN_KEY, tk);
+    let exp = 0;
+    try{ exp = JSON.parse(atob(tk.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).exp * 1000; }catch(_e){}
+    if(!exp && expiresIn) exp = Date.now() + expiresIn*1000;
+    sessionStorage.setItem(EXP_KEY, String(exp || 0));
+  }
+  let refreshing = null;
+  async function refreshAccessToken(){
+    if(refreshing) return refreshing;
+    refreshing = (async()=>{
+      try{
+        const r = await fetch("/mcp/app/token", {method:"POST", credentials:"include",
+          headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"refresh_token"})});
+        if(!r.ok) return false;
+        const doc = await r.json();
+        if(!doc.access_token) return false;
+        storeAccessToken(doc.access_token, doc.expires_in);
+        MCP.sessionId = null;   // the MCP session was bound to the old bearer
+        return true;
+      }catch(_e){ return false; }
+      finally{ refreshing = null; }
+    })();
+    return refreshing;
+  }
+  async function ensureFreshToken(){
+    const exp = Number(sessionStorage.getItem(EXP_KEY) || 0);
+    if(token() && exp && exp - Date.now() < 60*1000){ await refreshAccessToken(); }
+  }
+  function sessionExpired(){
+    enterSignedOut();
+    document.getElementById("signin-notice").textContent = "Your session expired. Sign in again — anything you typed is still in the box.";
+  }
 
   // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
   const MCP = {
@@ -385,15 +426,22 @@
       }
       throw new Error("no JSON or SSE frame");
     },
-    async _rpc(method, params, opts){
+    async _rpc(method, params, opts, _retried){
       opts=opts||{};
+      await ensureFreshToken();
       const frame={jsonrpc:"2.0", method, params:params||{}};
       if(opts.expectResult!==false) frame.id=this.nextId++;
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
       const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
       if(this.sessionId) headers["mcp-session-id"]=this.sessionId;
       const resp=await fetch("/mcp",{method:"POST",headers,body:JSON.stringify(frame)});
-      if(resp.status===401){ const e=new Error("authentication_required"); e.authRequired=true; throw e; }
+      if(resp.status===401){
+        if(!_retried && token() && await refreshAccessToken()){
+          if(method!=="initialize") await this.ensureInit();
+          return this._rpc(method, params, opts, true);
+        }
+        const e=new Error("authentication_required"); e.authRequired=true; throw e;
+      }
       const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       if(opts.expectResult===false) return null;
       const rpc=this._parse(await resp.text());
@@ -460,7 +508,7 @@
     try{
       renderConverse(await MCP.converse(message)); setStatusLine("");
     }catch(err){
-      if(err.authRequired){ setStatusLine(""); return enterSignedOut(); }
+      if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
       appendMessage("system","Couldn't reach your universe: "+err.message); setStatusLine("");
     }finally{ $("btn-send").disabled=false; }
   }
@@ -474,7 +522,7 @@
       const name=s.universe_name||s.universe||s.universe_id||"";
       if(name) $("universe-name").textContent=name;
     }catch(err){
-      if(err.authRequired) return enterSignedOut();
+      if(err.authRequired) return sessionExpired();
       const dot=$("dot"); dot.className="dot dot--err"; dot.title="status unavailable";
     }
   }
@@ -486,8 +534,10 @@
   let engineConnected = null;   // null = unknown yet
   async function fetchMe(){
     try{
-      const r = await fetch("/mcp/app/me", {headers: authHeaders()});
-      if(r.status===401){ enterSignedOut(); return null; }
+      await ensureFreshToken();
+      let r = await fetch("/mcp/app/me", {headers: authHeaders()});
+      if(r.status===401 && await refreshAccessToken()) r = await fetch("/mcp/app/me", {headers: authHeaders()});
+      if(r.status===401){ sessionExpired(); return null; }
       if(!r.ok) return null;
       return await r.json();
     }catch(_e){ return null; }
@@ -513,7 +563,7 @@
     setTimeout(()=>{ showView("chat"); startHeartbeat(); $("composer-input").focus(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
-    sessionStorage.removeItem(TOKEN_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
+    sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate){ showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
     if(!openaiBusy) resetOpenAIUI();
@@ -807,6 +857,7 @@
     wireNativeReturn();
     loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start
     const signedInNow = await completeSignInIfCallback();
+    if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the refresh cookie
     if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
   }
   boot();
