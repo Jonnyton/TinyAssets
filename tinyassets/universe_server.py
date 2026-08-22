@@ -1582,8 +1582,6 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "auth_scope_required": True,
         })
 
-    from tinyassets.universe_intelligence import converse as _converse_impl
-
     # Cross-turn memory (founder goal 2026-08-22: a conversation that persists).
     # One continuous session per founder per universe, keyed on the VERIFIED
     # principal, so every surface (phone app, claude.ai connector, web) shares
@@ -1591,7 +1589,10 @@ def converse(message: str = "", graph_id: str = "") -> str:
     # store is best-effort by contract: a memory hiccup never costs the turn.
     # History only rides into GRANTED (founder) turns — enforced again inside
     # converse — and it is memory, never consent.
-    memory_universe_dir = _base_path() / uid
+    from tinyassets.api.helpers import _universe_dir as _memory_universe_dir
+    from tinyassets.universe_intelligence import converse as _converse_impl
+
+    memory_universe_dir = _memory_universe_dir(uid)
     memory_session = f"principal:{current_actor_id()}"
     try:
         from tinyassets.conversation_store import load_recent
@@ -1622,10 +1623,10 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "error": f"Your universe couldn't be reached right now: {exc}",
         })
     try:
-        from tinyassets.conversation_store import record_turn
+        from tinyassets.conversation_store import record_exchange
 
-        record_turn(memory_universe_dir, memory_session, "founder", message)
-        record_turn(memory_universe_dir, memory_session, "universe", str(reply))
+        # Both sides in ONE transaction: never a founder-only half-turn.
+        record_exchange(memory_universe_dir, memory_session, message, str(reply))
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
     return json.dumps({"reply": reply, "universe_id": uid})

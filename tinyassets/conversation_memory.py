@@ -145,6 +145,17 @@ def _footer(interlocutor: str, nonce: str) -> str:
     )
 
 
+def _one_line(text: str) -> str:
+    """Render one message as exactly one record line.
+
+    A stored message (a prior universe reply, or pasted founder text) that
+    contains a newline followed by "Founder:" would otherwise forge a founder
+    record inside the history block (Codex 2026-08-22 #1). Line breaks become
+    a visible marker, so every record is one line and role labels can only
+    come from the renderer."""
+    return " ⏎ ".join(part for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+
+
 def format_history(
     messages: list[Msg],
     *,
@@ -174,7 +185,7 @@ def format_history(
     def line(m: Msg) -> str:
         when = _relative(m.ts, now)
         prefix = f"[{when}] " if when else ""
-        return f"{prefix}{_label(m.speaker)}: {m.text}"
+        return f"{prefix}{_label(m.speaker)}: {_one_line(m.text)}"
 
     def render(rows: list[Msg]) -> str:
         return header + "\n".join(line(m) for m in rows) + footer
@@ -191,7 +202,7 @@ def format_history(
         prefix = f"[{when}] " if when else ""
         head = prefix + _label(only.speaker) + ": "
         budget = char_cap - len(header) - len(footer) - len(head)
-        clipped = only.text[: max(0, budget)]
+        clipped = _one_line(only.text)[: max(0, budget)]
         block = header + head + clipped + footer
     return block
 
