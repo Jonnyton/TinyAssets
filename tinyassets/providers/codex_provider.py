@@ -286,6 +286,18 @@ class CodexProvider(BaseProvider):
         win_kw = _no_window_kwargs()
         if config.sandbox_workspace:
             inner_cmd = [*cmd, "-C", "/workspace"]
+            # A converse/chat turn is NOT a coding task: give codex an EMPTY
+            # scratch /workspace (tmpfs) inside the same jail instead of the
+            # universe, so it answers as a chat model rather than acting as a
+            # code agent on the mounted files (live 2026-08-22: served converse
+            # replied with persona-echo / "reauthentication" while hosted-mode
+            # codex chatted + recalled memory correctly). Coding turns
+            # (run_graph etc.) keep the read-only universe workspace.
+            workspace_mount = (
+                ["--tmpfs", "/workspace"]
+                if getattr(config, "sandbox_chat", False)
+                else ["--ro-bind", str(universe_root), "/workspace"]
+            )
             bwrap_cmd = [
                 bwrap_path,
                 "--die-with-parent",
@@ -298,9 +310,7 @@ class CodexProvider(BaseProvider):
                 "/proc",
                 "--tmpfs",
                 "/tmp",
-                "--ro-bind",
-                str(universe_root),
-                "/workspace",
+                *workspace_mount,
                 "--tmpfs",
                 "/workspace/.runtime/provider-launch-credentials",
                 # CODEX_HOME is a private tmpfs with the snapshot's credential

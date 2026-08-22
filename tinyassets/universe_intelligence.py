@@ -203,6 +203,7 @@ def _sandboxed_config(
     return ModelConfig(
         timeout=timeout,
         sandbox_workspace=True,
+        sandbox_chat=True,
         allowed_tools=allowed,
         disallowed_tools=disallowed,
         engine_mcp_enabled=engine_mcp,

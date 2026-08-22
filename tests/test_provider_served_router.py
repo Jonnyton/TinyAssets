@@ -300,7 +300,7 @@ def test_budget_reservation_revalidates_path_credential_at_moment_of_use(tmp_pat
         reserve_served_provider_budget,
     )
 
-    universe_dir, _, capability, context = _served_context(
+    universe_dir, serving, capability, context = _served_context(
         tmp_path,
         path_backed=True,
     )
@@ -449,7 +449,7 @@ def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
     from tinyassets.providers.codex_provider import CodexProvider
     from tinyassets.providers.router import ProviderRouter
 
-    universe_dir, _, capability, context = _served_context(
+    universe_dir, serving, capability, context = _served_context(
         tmp_path,
         path_backed=True,
     )
@@ -567,6 +567,39 @@ os.execvpe(command[0], command, env)
         flag == "--ro-bind" and target == "/codex-home" for flag, _source, target in mount_pairs
     )
     assert not os.path.exists(snapshot_mount)
+
+    # --- converse CHAT turn: same jail, EMPTY /workspace (not the universe) ---
+    # A code-mode turn ro-binds the universe at /workspace; a chat turn must not,
+    # so codex answers as a chat model instead of acting on the mounted files
+    # (live 2026-08-22 phone e2e). Re-run through the same fake sandbox with
+    # sandbox_chat=True and assert the workspace mount flipped to a tmpfs.
+    from tinyassets.auth.middleware import revoke_provider_request as _revoke2
+
+    cap2, ctx2 = _fresh_served_request(universe_dir, serving, request_id="chat-1")
+    try:
+        with patch(
+            "tinyassets.providers.codex_provider.get_sandbox_status",
+            return_value={"bwrap_available": True, "bwrap_path": str(fake_bwrap), "reason": None},
+        ):
+            asyncio.run(
+                ProviderRouter({"codex": CodexProvider()}).call(
+                    "writer", "hello", "system",
+                    config=ModelConfig(sandbox_workspace=True, sandbox_chat=True, max_tokens=8),
+                    operation="converse",
+                    universe_context=ctx2,
+                )
+            )
+    finally:
+        _revoke2(cap2)
+    chat_args = json.loads(bwrap_log.read_text(encoding="utf-8"))
+    chat_pairs = list(zip(chat_args, chat_args[1:], chat_args[2:]))
+    assert ("--tmpfs", "/workspace") in zip(chat_args, chat_args[1:])
+    assert not any(
+        flag == "--ro-bind" and target == "/workspace" for flag, _s, target in chat_pairs
+    )
+    # the OS jail + credential mount are unchanged
+    assert "--unshare-all" in chat_args
+    assert ("--tmpfs", "/codex-home") in zip(chat_args, chat_args[1:])
 
 
 def test_codex_wrapper_resolution_mounts_real_binary_tree(tmp_path):

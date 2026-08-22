@@ -161,6 +161,12 @@ class ModelConfig:
     (propose_changes) deep. Not a prompt hint; a real subprocess setting."""
 
     sandbox_workspace: bool = False
+    # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
+    # coding workspace. Codex `exec` mounted at the universe with -C /workspace
+    # behaves as a code agent on the files and replies with coding-agent output
+    # instead of a chat answer (live 2026-08-22). Chat turns run in the same
+    # bwrap jail over an EMPTY scratch workspace.
+    sandbox_chat: bool = False
     """Run the CLI subprocess isolated to the universe's OWN dir instead of the
     host's cwd. When True, subprocess providers set ``cwd=universe_dir`` so the
     call does NOT inherit the daemon's working directory (which may be a source
