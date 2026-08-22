@@ -463,6 +463,82 @@ def test_write_brain_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
     assert soul.read_text(encoding="utf-8") == soul_before  # soul.md untouched
 
 
+def _can_symlink(tmp_path):
+    probe = tmp_path / "_sl_probe"
+    try:
+        probe.symlink_to(tmp_path)
+        probe.unlink()
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+def test_write_brain_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
+    """Codex re-review: soul_versions symlinked to an external dir must not let the
+    snapshot write escape the universe."""
+    import os
+
+    import pytest
+
+    from tinyassets import engine_mcp_server as s
+
+    if not _can_symlink(tmp_path):
+        pytest.skip("symlinks not creatable on this host")
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    external = tmp_path / "external_dir"
+    external.mkdir()
+    sv = udir / "soul_versions"
+    if sv.exists():
+        import shutil
+        shutil.rmtree(sv)
+    os.symlink(external, sv, target_is_directory=True)
+
+    out = json.loads(s.write_brain(identity="I am Aria, the founder's companion."))
+    assert out.get("error")  # refused
+    # nothing was written into the external dir
+    assert not any(external.iterdir())
+
+
+def test_read_brain_does_not_follow_symlinked_section(monkeypatch, tmp_path):
+    """Codex re-review: a brain file symlinked out of the universe must not
+    disclose the external file's contents through read_brain."""
+    import os
+
+    import pytest
+
+    from tinyassets import engine_mcp_server as s
+
+    if not _can_symlink(tmp_path):
+        pytest.skip("symlinks not creatable on this host")
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET EXTERNAL", encoding="utf-8")
+    ident = udir / "identity.md"
+    ident.unlink()
+    os.symlink(secret, ident)
+
+    out = json.loads(s.read_brain())
+    assert "TOP SECRET" not in json.dumps(out)
+    assert out["brain"]["identity"] == ""  # not disclosed
+
+
+def test_engine_run_admit_refuses_symlinked_ledger(monkeypatch, tmp_path):
+    import os
+
+    import pytest
+
+    from tinyassets import engine_mcp_server as s
+
+    if not _can_symlink(tmp_path):
+        pytest.skip("symlinks not creatable on this host")
+    external_db = tmp_path / "external.db"
+    external_db.write_text("", encoding="utf-8")
+    ledger = tmp_path / ".engine_run_admissions.db"
+    os.symlink(external_db, ledger)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    assert s._engine_run_admit(fail_closed=True) is False
+
+
 def test_write_brain_rejects_oversized_name(monkeypatch, tmp_path):
     from tinyassets import engine_mcp_server as s
 

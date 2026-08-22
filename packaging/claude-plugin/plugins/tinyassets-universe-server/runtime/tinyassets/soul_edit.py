@@ -71,6 +71,25 @@ def _render(meta: dict[str, Any], body: str) -> str:
     return f"---\n{fm}\n---\n\n{body}"
 
 
+def assert_contained(root: Path, path: Path) -> None:
+    """Refuse a path that escapes ``root`` through a symlinked component.
+
+    ``os.path.realpath`` resolves EVERY symlink in the path (the file itself AND
+    any parent directory, e.g. a ``soul_versions`` symlinked to an external dir),
+    so requiring both the path and its parent to resolve inside ``root`` closes
+    symlink write-escape and read-through-disclosure across the soul-edit sinks
+    (Codex brain-loop re-review 2026-08-22). Hardlinks (which share no distinct
+    path) are handled separately by the per-file link-count guard + atomic writes.
+    """
+    root_r = os.path.realpath(root)
+    prefix = root_r + os.sep
+    for candidate in (os.path.realpath(path), os.path.realpath(Path(path).parent)):
+        if candidate != root_r and not candidate.startswith(prefix):
+            raise SoulEditError(
+                f"path escapes the universe via a symlinked component: {path}"
+            )
+
+
 def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     """Inode-safe write: write a FRESH temp file in the same dir + os.replace.
 
@@ -336,6 +355,7 @@ def apply_soul_edit(
 
 def _append_log(universe_dir: Path, line: str) -> None:
     log_path = universe_dir / "log.md"
+    assert_contained(universe_dir, log_path)
     try:
         text = log_path.read_text(encoding="utf-8")
     except OSError:
@@ -361,6 +381,11 @@ def _write_edit_snapshot(
     snapshots because each records its own event.
     """
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
+    # Refuse a soul_versions symlinked to an external dir BEFORE any fs op
+    # (parent-directory symlink write-escape — Codex re-review). realpath of a
+    # not-yet-created dir stays inside the universe; a symlink resolves out and is
+    # refused.
+    assert_contained(universe_dir, versions_dir)
     versions_dir.mkdir(parents=True, exist_ok=True)
     existing = sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"))
     next_number = 1

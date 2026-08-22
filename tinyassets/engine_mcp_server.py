@@ -103,6 +103,18 @@ def _engine_run_admit(*, fail_closed: bool = False) -> bool:
 
     data_dir = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip() or "."
     db = _P(data_dir) / ".engine_run_admissions.db"
+    # A symlinked ledger would write to an external SQLite DB (Codex re-review):
+    # refuse if the path is a symlink or resolves outside the data dir. Fail
+    # CLOSED on a tampered ledger regardless of caller mode.
+    try:
+        if db.is_symlink():
+            return False
+        data_root_r = os.path.realpath(data_dir)
+        db_r = os.path.realpath(db)
+        if db_r != data_root_r and not db_r.startswith(data_root_r + os.sep):
+            return False
+    except OSError:
+        return not fail_closed
     now = _time.time()
     cutoff = now - _RUN_GRAPH_RATE_WINDOW_S
     try:
@@ -641,6 +653,7 @@ def read_brain() -> str:
     from tinyassets.soul_edit import (
         SoulEditError,
         _split_frontmatter,
+        assert_contained,
         read_governed_files,
     )
     from tinyassets.universe_intelligence import _read_bundle_body
@@ -655,6 +668,14 @@ def read_brain() -> str:
         # brain-loop review 2026-08-22).
         brain = {}
         for section, fname in _BRAIN_SECTIONS.items():
+            # A brain file symlinked out of the universe would disclose an external
+            # file's contents to the agent — refuse to read through it (Codex
+            # re-review); a contained regular file reads normally.
+            try:
+                assert_contained(udir, udir / fname)
+            except SoulEditError:
+                brain[section] = ""
+                continue
             raw = _read_bundle_body(udir, fname)
             try:
                 _meta, body = _split_frontmatter(raw)
