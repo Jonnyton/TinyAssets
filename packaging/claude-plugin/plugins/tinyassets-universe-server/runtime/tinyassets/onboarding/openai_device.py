@@ -386,10 +386,34 @@ def deposit_codex_auth_json(auth_json: str, *, universe_id: str = "") -> dict[st
     from tinyassets.api.llm_deposit import connect_llm
 
     material = base64.b64encode(auth_json.encode("utf-8")).decode("ascii")
-    return connect_llm(
+    result = connect_llm(
         universe_id=universe_id,
         payload={"service": "codex", "auth_material_b64": material},
     )
+    if isinstance(result, dict) and not result.get("error"):
+        # The app's Connect is the whole gesture: the deposited subscription
+        # must also SERVE the founder's universe (live test 2026-08-21: the
+        # credential landed but every turn still asked for a serving binding).
+        result["serving"] = _serve_after_deposit(universe_id, "codex")
+    return result
+
+
+def _serve_after_deposit(universe_id: str, service: str) -> dict[str, Any]:
+    from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.onboarding.serving import ensure_founder_serving
+
+    try:
+        uid = _request_universe(universe_id)
+        return ensure_founder_serving(
+            base_path=_base_path(),
+            universe_dir=_universe_dir(uid),
+            owner_user_id=current_actor_id() or "",
+            universe_id=uid,
+            service=service,
+        )
+    except Exception as exc:  # noqa: BLE001 - never mask a successful deposit
+        return {"status": "held", "reason": "serving_setup_failed", "detail": type(exc).__name__}
 
 
 __all__ = [
