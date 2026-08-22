@@ -81,9 +81,7 @@ def _served_context(
     if path_backed:
         auth_home = universe_dir / "codex-auth"
         auth_home.mkdir()
-        (auth_home / "auth.json").write_bytes(
-            b'{"tokens":{"access_token":"first"}}'
-        )
+        (auth_home / "auth.json").write_bytes(b'{"tokens":{"access_token":"first"}}')
         credential = {
             "credential_type": "llm_subscription",
             "service": "codex",
@@ -269,11 +267,13 @@ def test_served_router_rejects_credential_rotation_after_selection(tmp_path):
     universe_dir, _, capability, context = _served_context(tmp_path)
     write_credential_vault(
         universe_dir,
-        [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
-        }],
+        [
+            {
+                "credential_type": "llm_subscription",
+                "service": "codex",
+                "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
+            }
+        ],
     )
     provider = _RecordingProvider("codex")
     try:
@@ -361,22 +361,20 @@ def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     assert provider.calls == 0
 
 
-def test_served_budget_overrun_is_per_call_and_releases_after_settle(tmp_path, monkeypatch):
-    """An overrun is caught at ITS OWN settlement and does not brick the binding.
+def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, monkeypatch):
+    """A per-call overrun is RECORDED, not withheld (2026-08-22 founder e2e).
 
-    The token/cost budget bounds only IN-FLIGHT reserved spend (2026-08-19 fix):
-    a turn that overruns its reservation is held at that turn's settlement, but
-    once it SETTLES the hold is RELEASED, so the next turn is admitted fresh
-    (bounded per-turn by its own ``max_tokens``) instead of being permanently
-    bricked. Under the old cumulative-lifetime semantics a single settled overrun
-    held every future call at reservation time (``provider.calls == 1``); now both
-    turns reach the provider and are each independently caught (``== 2``). The
-    separate cumulative runaway guard is the invocation high-water — see
-    ``test_binding_generation_high_water_blocks_runaway_across_requests``.
+    A served provider injects its own large context, so a normal turn routinely
+    exceeds the prompt-byte reservation estimate; withholding the reply threw
+    away work the founder already generated and paid for on their own
+    subscription. Now the overrun settles as 'exceeded' (actual charged) and the
+    reply is DELIVERED. The aggregate anti-runaway guard is the invocation
+    high-water within the rolling window — see
+    ``test_binding_generation_high_water_blocks_runaway_across_requests`` — not
+    per-call withholding.
     """
     import tinyassets.provider_serving_binding as serving_binding
     from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.router import ProviderRouter
 
     monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 16)
@@ -400,38 +398,46 @@ def test_served_budget_overrun_is_per_call_and_releases_after_settle(tmp_path, m
     provider = _OverBudgetProvider("codex")
     router = ProviderRouter({"codex": provider})
     try:
-        # Turn 1 overruns its reservation -> held at ITS settlement.
-        with pytest.raises(ProviderAuthorityHeldError, match="budget"):
-            asyncio.run(
-                router.call(
-                    "writer",
-                    "p",
-                    "s",
-                    config=ModelConfig(max_tokens=8),
-                    operation="converse",
-                    universe_context=context,
-                )
+        # Turn 1 overruns its reservation -> reply DELIVERED, actual charged.
+        r1 = asyncio.run(
+            router.call(
+                "writer", "p", "s",
+                config=ModelConfig(max_tokens=8),
+                operation="converse",
+                universe_context=context,
             )
-        # The settled overrun RELEASED its in-flight hold, so turn 2 is admitted
-        # fresh (not permanently bricked). It overruns again and is likewise held
-        # -- but only AFTER reaching the provider, at its own settlement.
-        with pytest.raises(ProviderAuthorityHeldError, match="budget"):
-            asyncio.run(
-                router.call(
-                    "writer",
-                    "p",
-                    "s",
-                    config=ModelConfig(max_tokens=1),
-                    operation="converse",
-                    universe_context=context,
-                )
+        )
+        assert r1.text == "overspent"
+        # The settled overrun released its in-flight hold, so turn 2 is admitted
+        # fresh and likewise delivered.
+        r2 = asyncio.run(
+            router.call(
+                "writer", "p", "s",
+                config=ModelConfig(max_tokens=1),
+                operation="converse",
+                universe_context=context,
             )
+        )
+        assert r2.text == "overspent"
     finally:
         revoke_provider_request(capability)
-    # Both turns REACHED the provider: a settled overrun does not pre-block the
-    # next call. (Old cumulative-lifetime semantics held turn 2 at reservation
-    # time with provider.calls == 1.)
+    # Both turns reached the provider AND returned their replies (never withheld).
     assert provider.calls == 2
+    # The overrun is RECORDED, not silently ignored: rows settle as 'exceeded'
+    # with the actual usage charged (audit / upstream-metered on the founder's
+    # own subscription).
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(tmp_path)
+    with store.connection() as conn:
+        rows = conn.execute(
+            "SELECT state, actual_total_tokens FROM "
+            "served_provider_budget_reservations ORDER BY created_at"
+        ).fetchall()
+    assert [r[0] for r in rows] == ["exceeded", "exceeded"]
+    assert all(r[1] == 20 for r in rows)  # measured 12 input + 8 output
 
 
 @pytest.mark.skipif(os.name == "nt", reason="bubblewrap is a POSIX sandbox")
@@ -503,13 +509,13 @@ os.execvpe(command[0], command, env)
 
     try:
         with patch(
-                "tinyassets.providers.codex_provider.get_sandbox_status",
-                return_value={
-                    "bwrap_available": True,
-                    "bwrap_path": str(fake_bwrap),
-                    "reason": None,
-                },
-            ):
+            "tinyassets.providers.codex_provider.get_sandbox_status",
+            return_value={
+                "bwrap_available": True,
+                "bwrap_path": str(fake_bwrap),
+                "reason": None,
+            },
+        ):
             response = asyncio.run(
                 ProviderRouter({"codex": CodexProvider()}).call(
                     "writer",
@@ -527,7 +533,7 @@ os.execvpe(command[0], command, env)
     assert response.input_tokens == 3
     assert response.output_tokens == 2
     captured = json.loads(bwrap_log.read_text(encoding="utf-8"))
-    inner = captured[captured.index("--") + 1:]
+    inner = captured[captured.index("--") + 1 :]
     assert "--full-auto" in inner
     assert "--json" in inner
     assert "--ignore-user-config" in inner
@@ -544,11 +550,13 @@ os.execvpe(command[0], command, env)
     # CODEX_HOME is a private tmpfs (codex's launcher needs to create .lock)
     # with the snapshot's credential FILES bound read-only into it.
     assert ("--tmpfs", "/codex-home") in zip(captured, captured[1:])
-    snapshot_mount = os.path.dirname(next(
-        source
-        for flag, source, target in mount_pairs
-        if flag == "--ro-bind" and target == "/codex-home/auth.json"
-    ))
+    snapshot_mount = os.path.dirname(
+        next(
+            source
+            for flag, source, target in mount_pairs
+            if flag == "--ro-bind" and target == "/codex-home/auth.json"
+        )
+    )
     assert snapshot_mount != str(universe_dir / "codex-auth")
     # Never a writable bind of the snapshot, and never the snapshot dir itself.
     assert not any(
@@ -556,8 +564,7 @@ os.execvpe(command[0], command, env)
         for flag, _source, target in mount_pairs
     )
     assert not any(
-        flag == "--ro-bind" and target == "/codex-home"
-        for flag, _source, target in mount_pairs
+        flag == "--ro-bind" and target == "/codex-home" for flag, _source, target in mount_pairs
     )
     assert not os.path.exists(snapshot_mount)
 
@@ -692,7 +699,7 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
                 "-c",
                 "from pathlib import Path; Path(r'"
                 + str(auth_file)
-                + "').write_text('{\"tokens\":{\"access_token\":\"rotated\"}}')",
+                + '\').write_text(\'{"tokens":{"access_token":"rotated"}}\')',
             ],
             check=True,
         )
@@ -926,8 +933,11 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
             for prompt in ("reply", "learning"):
                 asyncio.run(
                     router.call(
-                        "writer", prompt, "system",
-                        operation="converse", universe_context=context,
+                        "writer",
+                        prompt,
+                        "system",
+                        operation="converse",
+                        universe_context=context,
                     )
                 )
         finally:
@@ -940,8 +950,11 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
         with pytest.raises(ProviderAuthorityHeldError, match="budget"):
             asyncio.run(
                 router.call(
-                    "writer", "fifth", "system",
-                    operation="converse", universe_context=ctx5,
+                    "writer",
+                    "fifth",
+                    "system",
+                    operation="converse",
+                    universe_context=ctx5,
                 )
             )
     finally:
@@ -952,8 +965,7 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     conn = sqlite3.connect(db_path(universe_dir.parent))
     try:
         conn.execute(
-            "UPDATE served_provider_budget_reservations "
-            "SET created_at = created_at - ?",
+            "UPDATE served_provider_budget_reservations SET created_at = created_at - ?",
             (2 * 3600.0,),
         )
         conn.commit()
@@ -965,8 +977,11 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     try:
         asyncio.run(
             router.call(
-                "writer", "sixth", "system",
-                operation="converse", universe_context=ctx6,
+                "writer",
+                "sixth",
+                "system",
+                operation="converse",
+                universe_context=ctx6,
             )
         )
     finally:
@@ -1114,8 +1129,17 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
             "reserved_total_tokens, reserved_cost_microunits, "
             "actual_total_tokens, actual_cost_microunits, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
-            ("r-reconciled", authority.binding_id, authority.binding_generation,
-             "succeeded", 100, 10_000, 100, 10_000, 1.0),
+            (
+                "r-reconciled",
+                authority.binding_id,
+                authority.binding_generation,
+                "succeeded",
+                100,
+                10_000,
+                100,
+                10_000,
+                1.0,
+            ),
         )
         conn.commit()
     finally:
@@ -1149,3 +1173,50 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
             output_tokens=40,
             cost_microunits=5_000,
         )
+
+
+def test_real_input_above_prompt_estimate_is_not_withheld(tmp_path):
+    """The founder-facing fix (2026-08-22): a served provider injects its own
+    context (codex mounts a workspace + tool schemas), so its ACTUAL input
+    tokens far exceed the byte length of our prompt and thus the reservation
+    estimate. Such a turn settles as 'exceeded' but its reply is DELIVERED, not
+    withheld — the founder already generated and paid for it on their own
+    subscription. (The reservation is still sized estimate+output; the change is
+    that an overrun no longer withholds the delivered reply.)"""
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers.router import ProviderRouter
+
+    _, _, capability, context = _served_context(tmp_path)
+
+    class _BigContextProvider(_RecordingProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            self.calls += 1
+            # tiny prompt bytes, but codex-style real input of ~12k tokens
+            return ProviderResponse(
+                text="here is your answer",
+                provider=self.name,
+                model="fixture",
+                family=self.family,
+                latency_ms=1.0,
+                input_tokens=12_000,
+                output_tokens=200,
+                cost_microunits=1_220_000,
+            )
+
+    provider = _BigContextProvider("codex")
+    router = ProviderRouter({"codex": provider})
+    try:
+        resp = asyncio.run(
+            router.call(
+                "writer",
+                "hi",
+                "s",
+                config=ModelConfig(max_tokens=512),
+                operation="converse",
+                universe_context=context,
+            )
+        )
+        assert resp.text == "here is your answer"  # delivered, not withheld
+        assert provider.calls == 1
+    finally:
+        revoke_provider_request(capability)
