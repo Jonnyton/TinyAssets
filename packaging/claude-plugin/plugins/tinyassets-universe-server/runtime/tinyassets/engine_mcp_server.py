@@ -635,17 +635,29 @@ def read_brain() -> str:
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import _current_identity
-    from tinyassets.soul_edit import SoulEditError, read_governed_files
+    from tinyassets.soul_edit import (
+        SoulEditError,
+        _split_frontmatter,
+        read_governed_files,
+    )
     from tinyassets.universe_intelligence import _read_bundle_body
     from tinyassets.universe_self_model import read_self_model
 
     token = _bind_founder_identity()
     try:
         udir = _universe_dir(_GRAPH_ID)
-        brain = {
-            section: _read_bundle_body(udir, fname)
-            for section, fname in _BRAIN_SECTIONS.items()
-        }
+        # Return the BODY only (frontmatter stripped) so a read -> edit -> write
+        # round-trip stays clean: write_brain re-wraps managed frontmatter, so
+        # echoing a frontmatter-laden read back would otherwise NEST it (Codex
+        # brain-loop review 2026-08-22).
+        brain = {}
+        for section, fname in _BRAIN_SECTIONS.items():
+            raw = _read_bundle_body(udir, fname)
+            try:
+                _meta, body = _split_frontmatter(raw)
+            except Exception:  # noqa: BLE001 - a malformed file still reads as-is
+                body = raw
+            brain[section] = body.strip()
         try:
             governed = set(read_governed_files(udir))
         except SoulEditError:

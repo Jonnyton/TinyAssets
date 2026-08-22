@@ -388,6 +388,23 @@ def test_write_brain_then_next_system_prompt_reflects_it(monkeypatch, tmp_path):
     assert "research companion" in prompt
 
 
+def test_brain_read_write_round_trip_does_not_nest_frontmatter(monkeypatch, tmp_path):
+    """read_brain returns the clean body, so write -> read -> write-back is stable
+    and never nests managed frontmatter (Codex brain-loop review)."""
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    marker = "I am Aria, the founder's research companion."
+    s.write_brain(identity=marker)
+    body1 = json.loads(s.read_brain())["brain"]["identity"]
+    assert marker in body1
+    assert "---" not in body1  # no frontmatter leaked into the body
+    # Echo the read body back; it must not accumulate frontmatter.
+    s.write_brain(identity=body1)
+    body2 = json.loads(s.read_brain())["brain"]["identity"]
+    assert body2 == body1
+
+
 def test_write_brain_cannot_touch_soul_md(monkeypatch, tmp_path):
     """soul.md (its frontmatter carries the executable loop_branch_def_id) is not
     an accepted section and is never written by write_brain."""
