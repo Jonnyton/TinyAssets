@@ -15,11 +15,15 @@ the served-router tests do:
         -> bind_serving_provider(provider of the deposited service)
           -> set_serving(enabled=True)
 
-Existing founder bindings are reused (and re-pointed to the newly deposited
-provider: users switch Claude <-> OpenAI at will). All authority checks inside
-the serving module still run — this composes the public primitives, it does
-not bypass them. Claude serving stays behind the operator opt-in
-(``TINYASSETS_ALLOW_CLAUDE_SERVING``); when that refuses, the result says so.
+The founder's DEDICATED platform binding is used (created once; reset to
+canonical content at an exact revision if a collaborator edited it — never an
+arbitrary rediscovered binding), re-pointed to the newly deposited provider
+(users switch Claude <-> OpenAI at will); any other serving binding the
+founder created is disabled so exactly one serves. A CURRENT admin ACL is
+re-checked before any mutation. All authority checks inside the serving module
+still run — this composes the public primitives, it does not bypass them.
+Claude serving stays behind the operator opt-in (``TINYASSETS_ALLOW_CLAUDE_SERVING``);
+when that refuses, the result says so.
 """
 
 from __future__ import annotations
@@ -55,28 +59,97 @@ def _platform_definition(base: Path) -> dict[str, Any]:
     )
 
 
-def _founder_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, Any]:
-    """The founder's existing binding in this universe (a serving one wins), or a new one."""
-    from tinyassets.custom_agents import create_binding, list_bindings
+def _require_current_admin(base: Path, *, universe_id: str, owner: str) -> None:
+    """The owner must hold an explicit, CURRENT ``admin`` ACL row on the universe.
 
+    Re-checked immediately before any mutation (Codex 2026-08-21 #1): a bearer
+    whose founder-home mapping survived an ACL revocation must not be able to
+    create or re-point serving. Same row ``connect_llm`` requires."""
+    from tinyassets.daemon_server import list_universe_acl
+
+    rows = [
+        row
+        for row in list_universe_acl(base, universe_id=universe_id)
+        if row.get("actor_id") == owner and row.get("permission") == "admin"
+    ]
+    if not rows:
+        raise PermissionError("a current admin ACL on the universe is required")
+
+
+def _platform_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, Any]:
+    """The founder's DEDICATED platform binding — never an arbitrary rediscovered one.
+
+    Codex 2026-08-21 #2 (confused deputy): a write collaborator may update a
+    founder-created binding (definition, configuration); auto-selecting "the
+    founder's current binding" would then bind the founder's credential under
+    collaborator-chosen content. So: the binding must be founder-created AND
+    on the platform definition; if its configuration has drifted from the
+    canonical payload it is reset by the founder at an exact revision before
+    use; otherwise a fresh one is created. Ambiguity (several candidates) is
+    refused rather than guessed.
+    """
+    from tinyassets.custom_agents import create_binding, list_bindings, update_binding
+
+    definition = _platform_definition(base)
+    did = definition["agent_definition_id"]
     mine = [
         b
         for b in list_bindings(base, universe_id=universe_id, limit=100)
-        if b.get("created_by") == owner
+        if b.get("created_by") == owner and b.get("agent_definition_id") == did
     ]
-    serving = [b for b in mine if b.get("status") == "serving"]
-    if serving:
-        return serving[0]
-    if mine:
-        return mine[0]
-    definition = _platform_definition(base)
-    return create_binding(
+    if len(mine) > 1:
+        raise ValueError("ambiguous platform bindings; refusing to guess")
+    if not mine:
+        return create_binding(
+            base,
+            universe_id=universe_id,
+            definition_id=did,
+            created_by=owner,
+            payload=dict(_BINDING_PAYLOAD),
+        )
+    binding = mine[0]
+    config = binding.get("configuration") or {}
+    canonical = {k: config.get(k) for k in _BINDING_PAYLOAD} == _BINDING_PAYLOAD
+    extra = set(config) - set(_BINDING_PAYLOAD) - {"provider_ref"}
+    if canonical and not extra:
+        return binding
+    # Drifted (possibly collaborator-edited): reset to canonical content at the
+    # exact current revision; a concurrent edit makes this fail closed.
+    return update_binding(
         base,
         universe_id=universe_id,
-        definition_id=definition["agent_definition_id"],
-        created_by=owner,
+        binding_id=binding["agent_binding_id"],
+        expected_revision=int(binding["revision"]),
+        updated_by=owner,
         payload=dict(_BINDING_PAYLOAD),
+        definition_id=did,
     )
+
+
+def _quiesce_other_serving(
+    base: Path, *, universe_dir: Path, universe_id: str, owner: str, keep: str
+) -> None:
+    """Exactly one founder serving binding may exist: the app's connect is the
+    founder's choice of which one. Other founder-created serving bindings are
+    disabled at their exact revision; anyone else's bindings are never touched."""
+    from tinyassets.custom_agents import list_bindings
+    from tinyassets.provider_serving_binding import set_serving
+
+    for b in list_bindings(base, universe_id=universe_id, limit=100):
+        if (
+            b.get("created_by") == owner
+            and b.get("status") == "serving"
+            and b.get("agent_binding_id") != keep
+        ):
+            set_serving(
+                base_path=base,
+                universe_dir=universe_dir,
+                owner_user_id=owner,
+                universe_id=universe_id,
+                agent_binding_id=b["agent_binding_id"],
+                expected_revision=int(b["revision"]),
+                enabled=False,
+            )
 
 
 def ensure_founder_serving(
@@ -106,7 +179,8 @@ def ensure_founder_serving(
     if not owner or owner == "anonymous" or not uid:
         return {"status": "held", "reason": "authentication_required"}
     try:
-        binding = _founder_binding(base, universe_id=uid, owner=owner)
+        _require_current_admin(base, universe_id=uid, owner=owner)
+        binding = _platform_binding(base, universe_id=uid, owner=owner)
         bound = bind_serving_provider(
             base_path=base,
             universe_dir=universe_dir,
@@ -127,6 +201,13 @@ def ensure_founder_serving(
             enabled=True,
         )
         final = enabled.get("agent_binding") or after_bind
+        _quiesce_other_serving(
+            base,
+            universe_dir=Path(universe_dir),
+            universe_id=uid,
+            owner=owner,
+            keep=final["agent_binding_id"],
+        )
         return {
             "status": "serving",
             "provider": provider,

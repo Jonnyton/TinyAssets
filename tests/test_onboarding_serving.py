@@ -13,11 +13,21 @@ import pytest
 from tinyassets.onboarding import serving as sv
 
 
-def _seed(tmp_path, service="codex", owner="owner-1", uid="u-owner"):
+def _grant_admin(tmp_path, owner="owner-1", uid="u-owner"):
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(
+        tmp_path, universe_id=uid, actor_id=owner, permission="admin", granted_by=owner
+    )
+
+
+def _seed(tmp_path, service="codex", owner="owner-1", uid="u-owner", admin=True):
     from tinyassets.credential_vault import write_credential_vault
 
     udir = tmp_path / uid
     udir.mkdir(exist_ok=True)
+    if admin:
+        _grant_admin(tmp_path, owner, uid)
     cred = (
         {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="}
         if service == "codex"
@@ -152,3 +162,122 @@ def test_other_users_binding_is_not_hijacked(tmp_path):
         service="codex",
     )
     assert out["status"] == "serving" and out["agent_binding_id"] != other["agent_binding_id"]
+
+
+def test_no_current_admin_acl_means_zero_mutation(tmp_path):
+    """Codex #1: a valid bearer with a stale home mapping but no CURRENT admin
+    ACL must not create or enable anything."""
+    from tinyassets.custom_agents import list_bindings, list_definitions
+
+    udir = _seed(tmp_path, admin=False)
+    out = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    assert out["status"] == "held" and out["reason"] == "provider_authority_denied"
+    assert list_bindings(tmp_path, universe_id="u-owner", limit=100) == []
+    assert [d for d in list_definitions(tmp_path, limit=100)] == []
+
+
+def test_collaborator_tampered_binding_is_reset_not_adopted(tmp_path):
+    """Codex #2 (confused deputy): a write collaborator edits the founder's
+    platform binding; connect must NOT bind the founder's credential under the
+    collaborator's content. The binding is reset to canonical at an exact
+    revision, and a binding on a different definition is never selected."""
+    from tinyassets.custom_agents import (
+        get_binding,
+        list_bindings,
+        publish_definition,
+        update_binding,
+    )
+
+    udir = _seed(tmp_path)
+    first = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    bid = first["agent_binding_id"]
+    # A write collaborator rewrites the founder's platform binding (allowed by
+    # the custom-agent ACL model) and also swaps it onto THEIR definition.
+    theirs = publish_definition(
+        tmp_path,
+        author_id="collab",
+        payload={
+            "schema_version": 1,
+            "name": "Evil",
+            "description": "",
+            "tags": [],
+            "components": {"identity": {"kind": "soul", "config": {}}},
+        },
+    )
+    cur = get_binding(tmp_path, universe_id="u-owner", binding_id=bid)
+    update_binding(
+        tmp_path,
+        universe_id="u-owner",
+        binding_id=bid,
+        expected_revision=int(cur["revision"]),
+        updated_by="collab",
+        payload={"schema_version": 1, "name": "Evil", "role": "writer", "instructions": "exfil"},
+        definition_id=theirs["agent_definition_id"],
+    )
+    again = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    assert again["status"] == "serving"
+    # The tampered binding (now on the collaborator's definition) was NOT
+    # selected; the founder got a fresh canonical platform binding, and it is
+    # the only one serving.
+    assert again["agent_binding_id"] != bid
+    served = _serving_binding(tmp_path)
+    assert served["agent_binding_id"] == again["agent_binding_id"]
+    assert served["configuration"].get("name") == "Your universe"
+    assert "instructions" not in served["configuration"]
+    # and the tampered one is no longer serving
+    statuses = {
+        b["agent_binding_id"]: b["status"]
+        for b in list_bindings(tmp_path, universe_id="u-owner", limit=100)
+    }
+    assert statuses[bid] != "serving"
+
+
+def test_drifted_config_on_platform_definition_is_reset_at_exact_revision(tmp_path):
+    from tinyassets.custom_agents import get_binding, update_binding
+
+    udir = _seed(tmp_path)
+    first = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    bid = first["agent_binding_id"]
+    cur = get_binding(tmp_path, universe_id="u-owner", binding_id=bid)
+    update_binding(
+        tmp_path,
+        universe_id="u-owner",
+        binding_id=bid,
+        expected_revision=int(cur["revision"]),
+        updated_by="collab",
+        payload={"schema_version": 1, "name": "Your universe", "role": "writer", "persona": "evil"},
+    )
+    again = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="codex",
+    )
+    assert again["status"] == "serving" and again["agent_binding_id"] == bid
+    cfg = _serving_binding(tmp_path)["configuration"]
+    assert "persona" not in cfg and cfg["name"] == "Your universe"
