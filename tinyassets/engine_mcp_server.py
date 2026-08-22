@@ -59,6 +59,10 @@ _READ_CAPABILITIES = ("read", "list")
 # exactly this gap). This matches _AUTHENTICATED_BASE_CAPABILITIES for a founder.
 # Bound ONLY for the run_graph handler, never the read handlers — least privilege.
 _RUN_CAPABILITIES = ("read", "list", "write", "submit_request", "costly")
+# Remix caps (Codex ADAPT 2026-08-22 #6): a branch WRITE, not a run. Drops
+# ``submit_request`` (that gates run submission, which remix does not do). Keeps
+# ``costly`` because branch create/build is a scope-gated costly op.
+_REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 
 #: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
 #: engine-triggered runs per universe per rolling window.
@@ -79,16 +83,19 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit() -> bool:
-    """Atomically admit one engine-triggered run under the rolling cap, or refuse.
+def _engine_run_admit(*, fail_closed: bool = False) -> bool:
+    """Atomically admit one engine-triggered write under the rolling cap, or refuse.
 
     A dedicated engine-admission ledger (NOT the shared runs table, which would
     over-limit legitimate browser/scheduled runs — Codex 2026-08-19 (b)). The
     count-and-insert run inside a single ``BEGIN IMMEDIATE`` transaction, so two
-    parallel run_graph calls cannot both slip past the cap (atomic admission,
-    closing the TOCTOU race). Old rows are pruned opportunistically so the table
-    stays bounded. Fail-OPEN on any DB error: this is a spam bound, not the
-    primary control (the allowlist + approved-source gate are).
+    parallel calls cannot both slip past the cap (atomic admission, closing the
+    TOCTOU race). Old rows are pruned opportunistically so the table stays bounded.
+
+    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — its
+    approved-source gate + allowlist are the primary controls, so a DB blip must
+    not wedge legitimate runs. remix passes True — the rolling cap IS a real
+    safety bound on an autonomous write, so a DB error refuses rather than admits.
     """
     import sqlite3
     import time as _time
@@ -126,7 +133,9 @@ def _engine_run_admit() -> bool:
         finally:
             conn.close()
     except sqlite3.Error:
-        return True  # fail open — spam bound, not the primary control
+        # run_graph: fail open (spam bound, not the primary control). remix: fail
+        # closed (the cap is a real bound on an autonomous write).
+        return not fail_closed
 
 
 def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
@@ -306,12 +315,21 @@ def run_graph(
     from tinyassets.universe_server import run_graph as _impl
 
     # Run capabilities (write + submit_request) bound ONLY for this call. The
-    # graph_id is PINNED to this universe so the run records under it; the
-    # branch_def_id is author-gated by run_branch under the founder identity, so
-    # a branch the founder did not author is refused rather than run (this closes
-    # the run_graph IDOR the read-only slice deferred).
+    # graph_id is PINNED to this universe so the run records under it.
     token = _bind_founder_identity(_RUN_CAPABILITIES)
     try:
+        # IDOR gate (Codex ADAPT 2026-08-22 #1): the run path resolves an
+        # unreadable caller-supplied branch id UNCHANGED and then loads it raw
+        # (_resolve_branch_id -> get_branch_definition), so a known FOREIGN-PRIVATE
+        # branch id could reach execution even though read_commons_shape returns
+        # "not found". Authorize READ/execute over the branch here first — under
+        # the founder identity — and make a non-readable branch indistinguishable
+        # from a missing one. (A public or founder-authored branch passes; a
+        # foreign-private one is refused, never run.)
+        from tinyassets.api.branches import _base_path, _resolve_readable_branch
+
+        if _resolve_readable_branch(bid, str(_base_path())) is None:
+            return json.dumps({"error": f"Branch '{bid}' not found."})
         return _impl(
             branch_def_id=bid,
             graph_id=_GRAPH_ID,
@@ -343,6 +361,11 @@ def run_graph(
 # confinement is hardened. PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
 _COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals"})
+#: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
+#: branch catalog is global and unbounded, so cap the rows we return to the agent
+#: to protect its context window as the commons grows. (Cursor pagination is a
+#: follow-up.)
+_COMMONS_BROWSE_MAX = 50
 
 
 @mcp.tool
@@ -393,11 +416,24 @@ def browse_commons(
             # scope="published" = shapes with a published (remixable) version —
             # exactly the commons catalog. viewer=founder is derived from the
             # bound identity inside _ext_branch_list.
-            return _extensions_impl(
+            raw = _extensions_impl(
                 action="list_branches",
                 scope="published",
                 author=(author or "").strip(),
             )
+            # Hard cap the rows (Codex #7): list_branches has no server-side limit.
+            try:
+                payload = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return raw
+            rows = payload.get("branches") if isinstance(payload, dict) else None
+            if isinstance(rows, list) and len(rows) > _COMMONS_BROWSE_MAX:
+                payload["branches"] = rows[:_COMMONS_BROWSE_MAX]
+                payload["count"] = _COMMONS_BROWSE_MAX
+                payload["truncated"] = True
+                payload["total_available"] = len(rows)
+                return json.dumps(payload, default=str)
+            return raw
         from tinyassets.universe_server import read_graph as _impl
 
         return _impl(
@@ -429,9 +465,11 @@ def read_commons_shape(branch_id: str = "", agent_definition_id: str = "") -> st
         return err
     bid = (branch_id or "").strip()
     aid = (agent_definition_id or "").strip()
-    if not (bid or aid):
+    if bool(bid) == bool(aid):
+        # Exactly one (Codex #7): neither, or both (which would silently pick
+        # branch_id), is a caller error.
         return json.dumps({
-            "error": "pass branch_id or agent_definition_id (from browse_commons).",
+            "error": "pass exactly one of branch_id / agent_definition_id.",
         })
 
     from tinyassets.auth.middleware import _current_identity
@@ -454,12 +492,13 @@ def remix_shape(
     name: str = "",
     description: str = "",
 ) -> str:
-    """Remix (fork) a shared commons shape into YOUR OWN universe as a new
-    PRIVATE branch you can then inspect, edit, and run.
+    """Remix (fork) a shared commons shape into a new PRIVATE branch you own,
+    which you can then inspect, edit, and run.
 
     This copies the shape only — nodes, edges, prompts. It never copies another
-    universe's private data. The new branch is private to your universe until you
-    choose to publish it.
+    universe's private data. Any executable source-code node inherited from
+    another author lands UN-approved: you must re-approve it before it can run
+    (a foreign author's approval is not trusted for your executions).
 
     Args:
         fork_from: The ``published_version_id`` of the shape to remix (from a
@@ -473,9 +512,9 @@ def remix_shape(
     err = _binding_error()
     if err is not None:
         return err
-    # Single-founder scope gate (mirrors run_graph): remix WRITES a branch into
-    # this universe. Safe for one vetted founder; refuse until multi-tenant
-    # confinement is hardened, even if a server was somehow started here.
+    # Single-founder scope gate (mirrors run_graph): remix WRITES a branch. Safe
+    # for one vetted founder; refuse until multi-tenant confinement is hardened,
+    # even if a server was somehow started here.
     from tinyassets.engine_mcp_http import run_graph_allowlist
 
     if _GRAPH_ID not in run_graph_allowlist():
@@ -493,8 +532,8 @@ def remix_shape(
         })
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
-    # Effect-spam bound (shared engine-write budget with run_graph).
-    if not _engine_run_admit():
+    # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
+    if not _engine_run_admit(fail_closed=True):
         return json.dumps({
             "error": (
                 f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
@@ -513,10 +552,11 @@ def remix_shape(
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import write_graph as _impl
 
-    # Founder's full authenticated capability set — faithful to what the founder
-    # can already do through the browser; remix is not an escalation. The write
-    # lands under the founder identity, so it records in THIS universe.
-    token = _bind_founder_identity(_RUN_CAPABILITIES)
+    # Least-privilege branch-write caps (Codex #6) — NOT the full run set. The
+    # write lands under the founder identity in the shared BranchDefinition store
+    # as a new PRIVATE, founder-authored shape; cross-author source-code approval
+    # is stripped in the fork path so nothing inherited runs without re-approval.
+    token = _bind_founder_identity(_REMIX_CAPABILITIES)
     try:
         return _impl(
             target="branch",
@@ -527,90 +567,13 @@ def remix_shape(
         _current_identity.reset(token)
 
 
-@mcp.tool
-def publish_shape(branch_id: str = "", notes: str = "") -> str:
-    """Publish (or UPDATE) one of YOUR OWN shapes to the shared global commons so
-    other universes can find and remix it.
-
-    Publishing makes the shape PUBLIC and snapshots its CURRENT state as a new
-    version. Keep evolving the SAME branch and call this again to publish an
-    improved version of the SAME workflow — e.g. after a run surfaced an error you
-    fixed. Re-publishing the same branch UPDATES its commons entry in place (a new
-    best version under the same shape); it does NOT spawn a separate near-duplicate
-    shape, and it does NOT change anyone's existing remix/fork (those are copies —
-    a remixer re-remixes to pick up your latest). So publish the SAME branch you
-    have been improving rather than remixing your own work into a new branch each
-    time.
-
-    You can only publish a shape YOUR universe authored; someone else's shape
-    reads as "not found".
-
-    Args:
-        branch_id: The branch definition id of YOUR shape to publish/update
-            (from ``read_graph target="graph"`` or a prior ``remix_shape``).
-            Required.
-        notes: Optional release notes — what changed / what this version fixes.
-    """
-    import json
-
-    err = _binding_error()
-    if err is not None:
-        return err
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "publish is not enabled for this universe yet; it is limited to a "
-                "vetted founder while its multi-tenant confinement is hardened."
-            ),
-        })
-    bid = (branch_id or "").strip()
-    if not bid:
-        return json.dumps({
-            "error": "branch_id (a branch YOUR universe authored) is required.",
-        })
-    if not _engine_run_admit():
-        return json.dumps({
-            "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
-
-    from tinyassets.auth.middleware import _current_identity
-    from tinyassets.universe_server import write_graph as _impl
-
-    token = _bind_founder_identity(_RUN_CAPABILITIES)
-    try:
-        # 1. Make it public so it is visible in the commons (no-op if already
-        #    public). Author-gated: a branch this universe did not author is
-        #    refused here, so it never reaches publish.
-        make_public = _impl(
-            target="branch",
-            operation="patch",
-            branch_id=bid,
-            changes_json=json.dumps(
-                [{"op": "set_visibility", "visibility": "public"}],
-                separators=(",", ":"),
-            ),
-        )
-        try:
-            if isinstance(json.loads(make_public), dict) and json.loads(
-                make_public
-            ).get("error"):
-                return make_public
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # 2. Snapshot the current state as a new best version of the SAME shape.
-        return _impl(
-            target="branch",
-            operation="publish",
-            branch_id=bid,
-            description=(notes or "").strip(),
-        )
-    finally:
-        _current_identity.reset(token)
+# NOTE (Codex ADAPT 2026-08-22, finding #5): commons PUBLISH — make a shape public
+# + snapshot a new best version, with the founder's "same workflow, improved,
+# updated in place" model — is DEFERRED to a follow-up slice. Publishing is a
+# GLOBAL write and needs a consent gate (an autonomous agent must not silently
+# flip a shape public + publish without a founder consent token), which was not in
+# the reviewed proposal. Build it there with the consent gate + the fork
+# auto-track dependency-subscription.
 
 
 if __name__ == "__main__":
