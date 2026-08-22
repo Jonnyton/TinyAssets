@@ -490,8 +490,8 @@ with open({str(bwrap_log)!r}, "w", encoding="utf-8") as stream:
     json.dump(args, stream)
 env = os.environ.copy()
 for index, value in enumerate(args[:-2]):
-    if value == "--ro-bind" and args[index + 2] == "/codex-home":
-        env["CODEX_HOME"] = args[index + 1]
+    if value == "--ro-bind" and args[index + 2] == "/codex-home/auth.json":
+        env["CODEX_HOME"] = os.path.dirname(args[index + 1])
 separator = args.index("--")
 command = args[separator + 1:]
 os.execvpe(command[0], command, env)
@@ -541,14 +541,22 @@ os.execvpe(command[0], command, env)
     ) in zip(captured, captured[1:])
     mount_pairs = list(zip(captured, captured[1:], captured[2:]))
     assert ("--ro-bind", str(install_root), str(install_root)) in mount_pairs
-    snapshot_mount = next(
+    # CODEX_HOME is a private tmpfs (codex's launcher needs to create .lock)
+    # with the snapshot's credential FILES bound read-only into it.
+    assert ("--tmpfs", "/codex-home") in zip(captured, captured[1:])
+    snapshot_mount = os.path.dirname(next(
         source
         for flag, source, target in mount_pairs
-        if flag == "--ro-bind" and target == "/codex-home"
-    )
+        if flag == "--ro-bind" and target == "/codex-home/auth.json"
+    ))
     assert snapshot_mount != str(universe_dir / "codex-auth")
+    # Never a writable bind of the snapshot, and never the snapshot dir itself.
     assert not any(
-        flag == "--bind" and target == "/codex-home"
+        flag == "--bind" and target.startswith("/codex-home")
+        for flag, _source, target in mount_pairs
+    )
+    assert not any(
+        flag == "--ro-bind" and target == "/codex-home"
         for flag, _source, target in mount_pairs
     )
     assert not os.path.exists(snapshot_mount)

@@ -748,6 +748,49 @@ async def _handle_trace(request: Any) -> Any:
     return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
 
+async def _handle_serving_bind(request: Any) -> Any:
+    """Make a deposited subscription serve the signed-in user's own universe.
+
+    Called by the app after a Claude deposit (the OpenAI paths do it inline),
+    and usable as a "fix my universe" retry. Body: ``{"service": "claude"|"codex"}``."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    service = str(data.get("service", "")).strip().lower()
+    if service not in ("claude", "codex"):
+        return JSONResponse({"error": "unsupported_service"}, status_code=400)
+    identity = current_identity()
+
+    def _bind() -> dict[str, Any]:
+        from tinyassets.api.helpers import _base_path, _universe_dir
+        from tinyassets.onboarding.serving import ensure_founder_serving
+
+        with identity_context(identity):
+            home = _read_home(identity)
+            if not home:
+                return {"status": "held", "reason": "no_home_universe"}
+            return ensure_founder_serving(
+                base_path=_base_path(),
+                universe_dir=_universe_dir(home),
+                owner_user_id=identity.user_id,
+                universe_id=home,
+                service=service,
+            )
+
+    out = await run_in_threadpool(_bind)
+    return JSONResponse({"serving": out}, headers={"Cache-Control": "no-store"})
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -766,6 +809,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
         Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
+        Route("/mcp/app/serving/bind", _handle_serving_bind, methods=["POST"]),
     ]
 
 

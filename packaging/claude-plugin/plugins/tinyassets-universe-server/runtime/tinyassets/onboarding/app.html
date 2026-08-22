@@ -856,7 +856,12 @@
     try{
       const payload=await MCP.connectLLM("claude", btoa(unescape(encodeURIComponent(material))));
       if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); }
-      else{ res.textContent="Claude connected. Your universe thinks on it from the next turn."; btn.textContent="Claude connected ✓"; onEngineConnected(); }
+      else{
+        // Deposit is write-only; make it SERVE the universe too.
+        let sv=null; try{ const r=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service:"claude"})}); sv=(await r.json()).serving; }catch(_e){}
+        if(sv&&sv.status==="serving"){ res.textContent="Claude connected. Your universe thinks on it from the next turn."; btn.textContent="Claude connected ✓"; onEngineConnected(); }
+        else{ res.textContent="Claude credential saved, but serving isn't enabled yet"+(sv&&sv.detail?(": "+sv.detail):"")+"."; btn.disabled=false; }
+      }
     }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } res.textContent="Couldn't connect: "+err.message; }
     finally{ btn.disabled=false; }
   }
