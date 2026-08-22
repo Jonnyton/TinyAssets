@@ -47,6 +47,18 @@ services:
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
+      # Served codex turns run inside a bubblewrap sandbox that mounts a fresh
+      # procfs in its own namespace; Docker's default masked/read-only /proc
+      # paths make that mount EPERM ("bwrap: Can't mount proc", live
+      # 2026-08-21). Unconfined system paths let the inner sandbox exist; the
+      # container stays unprivileged (no cap_add, non-root).
+      - systempaths=unconfined
+      # With system paths unconfined, keep the rest of the posture tight: no
+      # capabilities at all and no privilege escalation (bwrap uses
+      # unprivileged user namespaces, which need neither).
+      - no-new-privileges=true
+    cap_drop:
+      - ALL
     # Image CMD already runs `python -m tinyassets.universe_server`.
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:

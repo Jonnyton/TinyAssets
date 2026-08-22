@@ -118,6 +118,44 @@ def _codex_binary_tree(real_executable: Path) -> Path:
     return tree
 
 
+_SECRET_SHAPES = re.compile(
+    # Explicit secret shapes only (a generic long-token rule also hid hashes,
+    # paths and model ids — the real cause). JWT fragments: any `eyJ…` run,
+    # with or without the dotted tail.
+    r"(sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_.-]{10,}|"
+    r"(?i:bearer\s+\S+)|(?i:(?:token|secret|api[_-]?key|password)[\"']?\s*[:=]\s*\S+))"
+)
+
+
+def _redacted_stderr_excerpt(stderr_text: str, limit: int = 240) -> str:
+    """The last stderr line, secrets replaced, as a head+tail excerpt.
+
+    Feeds user-visible diagnostics (router chain_state), so it must be safe
+    even if codex ever echoes credential material. Head+tail (not a plain
+    prefix) because codex 0.135 appends its auth error code at the END of
+    the line."""
+    lines = [line.strip() for line in stderr_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return "(no stderr)"
+    text = _SECRET_SHAPES.sub("[redacted]", lines[-1])
+    if len(text) <= limit:
+        return text
+    half = (limit - 5) // 2
+    return text[:half] + " ... " + text[-half:]
+
+
+def _codex_home_file_mounts(codex_home: Path) -> list[str]:
+    """``--ro-bind`` args for each regular file of the sealed snapshot."""
+    args: list[str] = []
+    for entry in sorted(codex_home.iterdir()):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        args.extend(("--ro-bind", str(entry), f"/codex-home/{entry.name}"))
+    if not args:
+        raise ProviderError("codex served sandbox found no credential files to mount")
+    return args
+
+
 def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
     wrapper, real_executable = _resolved_codex_executable(base_cmd)
     candidates = [_codex_binary_tree(real_executable)]
@@ -265,9 +303,16 @@ class CodexProvider(BaseProvider):
                 "/workspace",
                 "--tmpfs",
                 "/workspace/.runtime/provider-launch-credentials",
-                "--ro-bind",
-                str(codex_home),
+                # CODEX_HOME is a private tmpfs with the snapshot's credential
+                # FILES bound read-only into it: codex >= 0.135's launcher
+                # takes `flock $CODEX_HOME/.lock` before starting, so a
+                # read-only home dir died instantly ("cannot open lock file
+                # /codex-home/.lock: Read-only file system", exit 73 in 56 ms
+                # -> "codex exhausted", live 2026-08-22). The credential bytes
+                # stay immutable; only scratch files can be created beside them.
+                "--tmpfs",
                 "/codex-home",
+                *_codex_home_file_mounts(codex_home),
                 "--setenv",
                 "CODEX_HOME",
                 "/codex-home",
@@ -335,14 +380,20 @@ class CodexProvider(BaseProvider):
 
         elapsed_ms = (time.monotonic() - start) * 1000
 
-        # Quick exit-code-1 => provider unavailable (same heuristic as claude)
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        # Sandbox failures are classified FIRST: they are a host defect, not a
+        # provider outage, and must surface as such instead of being folded
+        # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).
+        check_bwrap_failure(stderr_text)
+        # Quick exit-code-1 => provider unavailable (same heuristic as claude).
+        # Carry a REDACTED excerpt of codex's own words so the real cause is
+        # visible; never raw stderr (it can carry token material).
         if proc.returncode == 1 and elapsed_ms < 5000:
             raise ProviderUnavailableError(
-                "codex exec returned exit code 1 quickly -- likely unavailable"
+                "codex exec returned exit code 1 quickly -- likely unavailable: "
+                + _redacted_stderr_excerpt(stderr_text)
             )
 
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        check_bwrap_failure(stderr_text)
 
         if proc.returncode != 0:
             raise ProviderError(
