@@ -268,6 +268,16 @@ class CodexProvider(BaseProvider):
                 "shell_tool",
                 "--disable",
                 "unified_exec",
+                # Defence-in-depth for served turns: `--ignore-user-config` drops
+                # only $CODEX_HOME/config.toml — a served CODE turn still mounts
+                # the universe at /workspace and could load a project-level
+                # `.codex/config.toml` from it, which may declare its OWN
+                # `mcp_servers`. Clear them so a crafted universe cannot inject an
+                # MCP server into the served model (Codex cross-family review,
+                # 2026-08-22). Account ChatGPT connectors are handled separately
+                # by `--disable apps` in the shared command below.
+                "-c",
+                "mcp_servers={}",
                 "-c",
                 'web_search="cached"',
                 "--json",
@@ -279,6 +289,25 @@ class CodexProvider(BaseProvider):
             model,
             *effort_args,
             *sandbox_args,
+            # Disable the `apps` feature (codex >= 0.135 default: stable/on) on
+            # EVERY codex launch — served and non-served alike. It exposes the
+            # subscription account's installed ChatGPT connectors — including
+            # TinyAssets' OWN /mcp connector — to the model as `codex_apps` MCP
+            # tools. `--ignore-user-config` does NOT strip these: they are
+            # account/cloud-side, not config.toml. Seeing its own persona prompt,
+            # the served universe intelligence "relays" the turn back through the
+            # tinyassets_converse/write_graph app tool, which needs a fresh
+            # ChatGPT-side OAuth and returns "This app connection requires
+            # reauthentication..." — a confused-deputy loop that intermittently
+            # replaced the real reply (live-diagnosed 2026-08-22, raw codex --json
+            # showed the codex_apps tool call). No codex turn — served text,
+            # served code, or the non-served auto-fix path — is ever a legitimate
+            # client of the account's connectors. codex rejects unknown feature
+            # names, so this fails closed on any future version that renames it.
+            # Disabling apps also removes the codex_apps MCP server upstream, so
+            # `enable_mcp_apps` / `apps_mcp_path_override` cannot resurrect it.
+            "--disable",
+            "apps",
             "--skip-git-repo-check",
             "--ephemeral",
         ]
