@@ -607,6 +607,14 @@ _BRAIN_SECTIONS = {
     "origin": "origin.md",
     "body": "body.md",
 }
+#: Per-section size cap for a brain write (Codex brain-loop review 2026-08-22): a
+#: brain file is system-prompt material, so bound it rather than let one turn
+#: write an unbounded body that bloats the prompt / storage.
+_BRAIN_MAX_SECTION_BYTES = 16_384
+#: Least-privilege identity for a brain write: the write is governed by
+#: soul.edit.md + the graph pin, NOT ACL, so it needs no `costly` / submit /
+#: branch-write authority (Codex #5).
+_BRAIN_WRITE_CAPABILITIES = ("read", "list", "write")
 
 
 @mcp.tool
@@ -663,7 +671,6 @@ def write_brain(
     origin: str = "",
     body: str = "",
     name: str = "",
-    canon_json: str = "",
 ) -> str:
     """Durably WRITE to your OWN brain so the change is part of your system prompt
     from your NEXT turn onward. This is how you actually LEARN and evolve — not
@@ -671,8 +678,7 @@ def write_brain(
 
     Pass the NEW full markdown body for any section you want to update (call
     ``read_brain`` first and edit the current text; only the sections you pass
-    change). ``name`` records a name you have chosen for yourself. ``canon_json``
-    optionally saves durable world-facts to your universe's knowledge.
+    change). ``name`` records a name you have chosen for yourself.
 
     Args:
         identity: New body for who you are.
@@ -680,9 +686,6 @@ def write_brain(
         origin: New body for where you came from.
         body: New body for your form / how you work (your harness).
         name: A name you have learned or chosen for yourself.
-        canon_json: Optional JSON list of durable world-facts to save to your
-            universe's knowledge; each item is {"title": ..., "content": ...}
-            (an optional "category" defaults to "lore").
     """
     import json
 
@@ -708,31 +711,26 @@ def write_brain(
     soul: dict[str, str] = {}
     for section, fname in _BRAIN_SECTIONS.items():
         val = (section_values.get(section) or "").strip()
-        if val:
-            soul[fname] = val
-    canon = None
-    raw_canon = (canon_json or "").strip()
-    if raw_canon:
-        try:
-            canon = json.loads(raw_canon)
-        except json.JSONDecodeError:
-            return json.dumps({"error": "canon_json must be valid JSON."})
-        # Normalize to the _commit_canon contract: it consumes {"title","content"}.
-        # Accept "body" as an alias so a natural {"title","body"} item still saves.
-        if isinstance(canon, list):
-            for _item in canon:
-                if (
-                    isinstance(_item, dict)
-                    and not _item.get("content")
-                    and _item.get("body")
-                ):
-                    _item["content"] = _item["body"]
+        if not val:
+            continue
+        # Bound each section (Codex brain-loop review 2026-08-22): a brain file is
+        # system-prompt material, so cap its size to keep the prompt (and storage)
+        # bounded rather than let one turn write an unbounded body.
+        if len(val.encode("utf-8")) > _BRAIN_MAX_SECTION_BYTES:
+            return json.dumps({
+                "error": (
+                    f"section {section!r} is too large "
+                    f"(> {_BRAIN_MAX_SECTION_BYTES} bytes); keep brain sections "
+                    "concise."
+                ),
+            })
+        soul[fname] = val
     learned_name = (name or "").strip()
-    if not (soul or learned_name or canon):
+    if not (soul or learned_name):
         return json.dumps({
             "error": (
-                "nothing to write; pass a section body (identity/founder/origin/"
-                "body), a name, or canon_json."
+                "nothing to write; pass a section body "
+                "(identity/founder/origin/body) or a name."
             ),
         })
     if not _engine_run_admit(fail_closed=True):
@@ -747,15 +745,14 @@ def write_brain(
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_intelligence import commit_learning
 
-    # Least-privilege branch-write caps (the write is governed by soul.edit.md +
-    # the graph pin, not ACL). commit_learning writes ONLY governed files via
-    # apply_soul_edit (soul.md excluded above) + optional wiki canon.
-    token = _bind_founder_identity(_REMIX_CAPABILITIES)
+    # Least-privilege identity (Codex #5): the write is governed by soul.edit.md +
+    # the graph pin, not ACL, so it needs neither `costly` nor branch-write /
+    # submit authority. commit_learning writes ONLY the governed grounding files
+    # via apply_soul_edit (soul.md excluded; symlink/hardlink refused at the sink).
+    token = _bind_founder_identity(_BRAIN_WRITE_CAPABILITIES)
     try:
         udir = _universe_dir(_GRAPH_ID)
         proposed: dict = {"name": learned_name, "soul": soul}
-        if canon is not None:
-            proposed["canon"] = canon
         result = commit_learning(
             udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID
         )

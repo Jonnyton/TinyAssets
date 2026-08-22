@@ -441,12 +441,15 @@ def test_write_brain_requires_something_to_write(monkeypatch, tmp_path):
     assert "nothing to write" in json.loads(s.write_brain()).get("error", "")
 
 
-def test_write_brain_rejects_bad_canon_json(monkeypatch, tmp_path):
+def test_write_brain_rejects_oversized_section(monkeypatch, tmp_path):
+    """A brain section is system-prompt material, so an unbounded body is refused
+    (Codex brain-loop review)."""
     from tinyassets import engine_mcp_server as s
 
     _seed_brain_universe(monkeypatch, tmp_path)
-    out = json.loads(s.write_brain(name="Aria", canon_json="{not json"))
-    assert "canon_json must be valid JSON" in out.get("error", "")
+    huge = "x" * (s._BRAIN_MAX_SECTION_BYTES + 1)
+    out = json.loads(s.write_brain(identity=huge))
+    assert "too large" in out.get("error", "")
 
 
 def test_write_brain_admission_fails_closed(monkeypatch, tmp_path):
@@ -465,20 +468,24 @@ def test_read_brain_fails_closed_unbound(monkeypatch):
     assert "refusing" in json.loads(s.read_brain()).get("error", "")
 
 
-def test_write_brain_canon_body_alias_normalized_to_content(monkeypatch, tmp_path):
-    """A {"title","body"} canon item is normalized to the _commit_canon contract
-    {"title","content"} so it actually persists (Codex brain-loop review)."""
+def test_write_brain_uses_least_privilege_caps(monkeypatch, tmp_path):
+    """The brain write binds read/list/write only — no costly/submit (Codex #5)."""
     import tinyassets.universe_intelligence as ui
     from tinyassets import engine_mcp_server as s
+    from tinyassets.auth import middleware
 
     _seed_brain_universe(monkeypatch, tmp_path)
-    captured = {}
+    caps = {}
     monkeypatch.setattr(
         ui, "commit_learning",
-        lambda udir, proposed, **kw: (captured.update(proposed), {"updated_files": []})[1],
+        lambda udir, proposed, **kw: (
+            caps.update(c=set(middleware.current_identity().capabilities)),
+            {"updated_files": ["identity.md"]},
+        )[1],
     )
-    s.write_brain(canon_json=json.dumps([{"title": "Fact", "body": "the sky is blue"}]))
-    assert captured["canon"][0]["content"] == "the sky is blue"
+    s.write_brain(identity="I am Aria, the founder's research companion.")
+    assert caps["c"] == {"read", "list", "write"}
+    assert "costly" not in caps["c"] and "submit_request" not in caps["c"]
 
 
 # ── universe_intelligence._sandboxed_config: the enable gate ────────────────
