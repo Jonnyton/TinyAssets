@@ -15,6 +15,21 @@ import httpx
 
 from tinyassets import onboarding
 
+# Captured before any test monkeypatches httpx.AsyncClient, so _Client always
+# subclasses the REAL client — not a previous call's mock (which chained the
+# wrong upstream when _drive ran more than once per test).
+_PRISTINE_ASYNC_CLIENT = httpx.AsyncClient
+
+
+def _ok(access: str, refresh: str, exp: int = 300) -> httpx.Response:
+    return httpx.Response(
+        200, json={"access_token": access, "refresh_token": refresh, "expires_in": exp}
+    )
+
+
+def _boom(_form):
+    raise AssertionError("must not call AuthKit")
+
 
 def _drive(
     body: dict,
@@ -24,10 +39,19 @@ def _drive(
     content_type: str = "application/json",
     monkeypatch,
     upstream,
+    data_dir: str = "",
 ):
-    """Drive the token route with a scripted AuthKit token endpoint."""
+    """Drive the token route with a scripted AuthKit token endpoint.
+
+    ``data_dir`` isolates the server-side refresh-session store; pass the SAME
+    value across calls to test a mint-then-refresh-by-handle sequence. When
+    omitted, a throwaway temp dir keeps the test off the real data root.
+    """
+    import tempfile
+
     from starlette.requests import Request
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", data_dir or tempfile.mkdtemp())
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(
         onboarding,
@@ -50,7 +74,7 @@ def _drive(
         calls.append(form)
         return upstream(form)
 
-    real_client = httpx.AsyncClient
+    real_client = _PRISTINE_ASYNC_CLIENT
 
     class _Client(real_client):
         def __init__(self, *a, **kw):
@@ -97,13 +121,125 @@ def test_exchange_sets_httponly_refresh_cookie_and_never_echoes_it(monkeypatch):
         monkeypatch=monkeypatch,
         upstream=upstream,
     )
-    assert status == 200 and doc == {"access_token": "acc1", "expires_in": 300}
+    assert status == 200
+    assert doc["access_token"] == "acc1" and doc["expires_in"] == 300
+    # The page gets an OPAQUE handle, never the refresh token itself.
     assert "REFRESH-SECRET" not in json.dumps(doc)
+    assert len(doc["session_ref"]) == 43  # secrets.token_urlsafe(32)
     assert len(cookies) == 1
     c = cookies[0]
     assert c.startswith("ta_rt=REFRESH-SECRET;")
     assert "HttpOnly" in c and "Secure" in c and "SameSite=strict" in c.replace("Strict", "strict")
     assert "Path=/mcp/app/token" in c
+
+
+def test_handle_path_survives_without_the_cookie(monkeypatch, tmp_path):
+    """The WebView drops the HttpOnly cookie; the localStorage handle must renew
+    the session on its own. Mint a handle via the code exchange, then refresh
+    with ONLY that handle (no cookie) — AuthKit is called with the STORED token."""
+    dd = str(tmp_path)
+
+    def exch(form):
+        assert form["grant_type"] == "authorization_code"
+        return _ok("a1", "RT1")
+
+    status, doc, _, _ = _drive(
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        monkeypatch=monkeypatch, upstream=exch, data_dir=dd,
+    )
+    assert status == 200
+    handle = doc["session_ref"]
+
+    seen = {}
+
+    def refr(form):
+        assert form["grant_type"] == "refresh_token"
+        seen["rt"] = form["refresh_token"]
+        return _ok("a2", "RT2")
+
+    # No cookie at all — exactly the WebView's broken state.
+    status, doc, _, calls = _drive(
+        {"grant_type": "refresh_token", "session_ref": handle},
+        monkeypatch=monkeypatch, upstream=refr, data_dir=dd,
+    )
+    assert status == 200 and doc["access_token"] == "a2"
+    assert seen["rt"] == "RT1"          # used the STORED refresh token, not a cookie
+    assert doc["session_ref"] == handle  # handle is stable across rotation
+    assert "RT2" not in json.dumps(doc)  # rotated token stays server-side
+
+
+def test_handle_is_rotated_in_place_then_reusable(monkeypatch, tmp_path):
+    """A second refresh must use the ROTATED token (RT2), proving the store was
+    updated in place under the same handle — this is what broke live (rotation
+    not persisting → works once then forces re-login)."""
+    dd = str(tmp_path)
+    _drive(
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        monkeypatch=monkeypatch,
+        upstream=lambda f: _ok("a1", "RT1"),
+        data_dir=dd,
+    )
+    # recover the handle
+    _, doc, _, _ = _drive(
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        monkeypatch=monkeypatch,
+        upstream=lambda f: _ok("a1", "RT1"),
+        data_dir=dd,
+    )
+    handle = doc["session_ref"]
+    _drive(
+        {"grant_type": "refresh_token", "session_ref": handle},
+        monkeypatch=monkeypatch,
+        upstream=lambda f: _ok("a2", "RT2"),
+        data_dir=dd,
+    )
+    seen = {}
+
+    def refr2(form):
+        seen["rt"] = form["refresh_token"]
+        return _ok("a3", "RT3")
+
+    status, doc, _, _ = _drive(
+        {"grant_type": "refresh_token", "session_ref": handle},
+        monkeypatch=monkeypatch, upstream=refr2, data_dir=dd,
+    )
+    assert status == 200 and doc["access_token"] == "a3"
+    assert seen["rt"] == "RT2"  # second refresh used the rotated token, not the stale RT1
+
+
+def test_logout_drops_the_server_side_handle(monkeypatch, tmp_path):
+    """After logout, the handle must be dead: a refresh with it hits no upstream."""
+    dd = str(tmp_path)
+    _, doc, _, _ = _drive(
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        monkeypatch=monkeypatch,
+        upstream=lambda f: _ok("a1", "RT1"),
+        data_dir=dd,
+    )
+    handle = doc["session_ref"]
+    _drive({"grant_type": "logout", "session_ref": handle}, monkeypatch=monkeypatch,
+           upstream=lambda f: httpx.Response(500), data_dir=dd)
+    status, doc, _, calls = _drive(
+        {"grant_type": "refresh_token", "session_ref": handle},
+        monkeypatch=monkeypatch,
+        upstream=_boom,
+        data_dir=dd,
+    )
+    assert (status, doc, calls) == (401, {"error": "no_refresh_token"}, [])
+
+
+def test_malformed_handle_is_ignored_no_traversal(monkeypatch, tmp_path):
+    """A crafted handle must never read outside the store, and with no cookie it
+    simply fails closed (no upstream)."""
+    dd = str(tmp_path)
+    for bad in ("../../etc/passwd", "a" * 43 + "/x", "short", "has space" + "x" * 34):
+        status, doc, _, calls = _drive(
+            {"grant_type": "refresh_token", "session_ref": bad},
+            monkeypatch=monkeypatch,
+            upstream=_boom,
+            data_dir=dd,
+        )
+        assert (status, doc, calls) == (401, {"error": "no_refresh_token"}, [])
 
 
 def test_refresh_uses_cookie_only_and_rotates_it(monkeypatch):
