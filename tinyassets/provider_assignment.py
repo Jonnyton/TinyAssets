@@ -472,7 +472,28 @@ def reserve_served_provider_budget(
         if output_tokens < 1:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
-        reserved_total = estimated_input_tokens + output_tokens
+        # Reserve the FULL per-call ceiling (bounded by remaining binding budget),
+        # not `estimate + output`. `estimated_input_tokens` is the byte length of
+        # OUR prompt, but a served provider's real input is dominated by context
+        # it injects itself — codex mounts a workspace and its tool schemas, so a
+        # normal turn's actual input (~10k+ tokens) always exceeds a prompt-byte
+        # estimate. Sizing the reservation to the estimate turned it into a
+        # de-facto cap that WITHHELD a reply the founder already generated and
+        # paid for on their own subscription (live 2026-08-22). Admitting on the
+        # per-call ceiling means a call is only ever withheld for exceeding the
+        # real ceiling; the rolling window + max_invocations stay the aggregate
+        # anti-runaway guard.
+        per_call_ceiling = min(
+            authority.max_tokens,
+            remaining_tokens,
+            affordable_total_tokens,
+        )
+        if per_call_ceiling < estimated_input_tokens + output_tokens:
+            # Not enough remaining binding budget to cover even this call's
+            # envelope — refuse before spending anything.
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
+        reserved_total = per_call_ceiling
         reserved_cost = reserved_total * _SERVED_COST_MICROUNITS_PER_TOKEN
         # Per-call lease deadline: this call's OWN worst-case healthy duration.
         # The reconciler settles a row only past this, so it never reclaims a live

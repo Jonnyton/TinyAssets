@@ -81,9 +81,7 @@ def _served_context(
     if path_backed:
         auth_home = universe_dir / "codex-auth"
         auth_home.mkdir()
-        (auth_home / "auth.json").write_bytes(
-            b'{"tokens":{"access_token":"first"}}'
-        )
+        (auth_home / "auth.json").write_bytes(b'{"tokens":{"access_token":"first"}}')
         credential = {
             "credential_type": "llm_subscription",
             "service": "codex",
@@ -269,11 +267,13 @@ def test_served_router_rejects_credential_rotation_after_selection(tmp_path):
     universe_dir, _, capability, context = _served_context(tmp_path)
     write_credential_vault(
         universe_dir,
-        [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
-        }],
+        [
+            {
+                "credential_type": "llm_subscription",
+                "service": "codex",
+                "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
+            }
+        ],
     )
     provider = _RecordingProvider("codex")
     try:
@@ -503,13 +503,13 @@ os.execvpe(command[0], command, env)
 
     try:
         with patch(
-                "tinyassets.providers.codex_provider.get_sandbox_status",
-                return_value={
-                    "bwrap_available": True,
-                    "bwrap_path": str(fake_bwrap),
-                    "reason": None,
-                },
-            ):
+            "tinyassets.providers.codex_provider.get_sandbox_status",
+            return_value={
+                "bwrap_available": True,
+                "bwrap_path": str(fake_bwrap),
+                "reason": None,
+            },
+        ):
             response = asyncio.run(
                 ProviderRouter({"codex": CodexProvider()}).call(
                     "writer",
@@ -527,7 +527,7 @@ os.execvpe(command[0], command, env)
     assert response.input_tokens == 3
     assert response.output_tokens == 2
     captured = json.loads(bwrap_log.read_text(encoding="utf-8"))
-    inner = captured[captured.index("--") + 1:]
+    inner = captured[captured.index("--") + 1 :]
     assert "--full-auto" in inner
     assert "--json" in inner
     assert "--ignore-user-config" in inner
@@ -544,11 +544,13 @@ os.execvpe(command[0], command, env)
     # CODEX_HOME is a private tmpfs (codex's launcher needs to create .lock)
     # with the snapshot's credential FILES bound read-only into it.
     assert ("--tmpfs", "/codex-home") in zip(captured, captured[1:])
-    snapshot_mount = os.path.dirname(next(
-        source
-        for flag, source, target in mount_pairs
-        if flag == "--ro-bind" and target == "/codex-home/auth.json"
-    ))
+    snapshot_mount = os.path.dirname(
+        next(
+            source
+            for flag, source, target in mount_pairs
+            if flag == "--ro-bind" and target == "/codex-home/auth.json"
+        )
+    )
     assert snapshot_mount != str(universe_dir / "codex-auth")
     # Never a writable bind of the snapshot, and never the snapshot dir itself.
     assert not any(
@@ -556,8 +558,7 @@ os.execvpe(command[0], command, env)
         for flag, _source, target in mount_pairs
     )
     assert not any(
-        flag == "--ro-bind" and target == "/codex-home"
-        for flag, _source, target in mount_pairs
+        flag == "--ro-bind" and target == "/codex-home" for flag, _source, target in mount_pairs
     )
     assert not os.path.exists(snapshot_mount)
 
@@ -692,7 +693,7 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
                 "-c",
                 "from pathlib import Path; Path(r'"
                 + str(auth_file)
-                + "').write_text('{\"tokens\":{\"access_token\":\"rotated\"}}')",
+                + '\').write_text(\'{"tokens":{"access_token":"rotated"}}\')',
             ],
             check=True,
         )
@@ -926,8 +927,11 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
             for prompt in ("reply", "learning"):
                 asyncio.run(
                     router.call(
-                        "writer", prompt, "system",
-                        operation="converse", universe_context=context,
+                        "writer",
+                        prompt,
+                        "system",
+                        operation="converse",
+                        universe_context=context,
                     )
                 )
         finally:
@@ -940,8 +944,11 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
         with pytest.raises(ProviderAuthorityHeldError, match="budget"):
             asyncio.run(
                 router.call(
-                    "writer", "fifth", "system",
-                    operation="converse", universe_context=ctx5,
+                    "writer",
+                    "fifth",
+                    "system",
+                    operation="converse",
+                    universe_context=ctx5,
                 )
             )
     finally:
@@ -952,8 +959,7 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     conn = sqlite3.connect(db_path(universe_dir.parent))
     try:
         conn.execute(
-            "UPDATE served_provider_budget_reservations "
-            "SET created_at = created_at - ?",
+            "UPDATE served_provider_budget_reservations SET created_at = created_at - ?",
             (2 * 3600.0,),
         )
         conn.commit()
@@ -965,8 +971,11 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     try:
         asyncio.run(
             router.call(
-                "writer", "sixth", "system",
-                operation="converse", universe_context=ctx6,
+                "writer",
+                "sixth",
+                "system",
+                operation="converse",
+                universe_context=ctx6,
             )
         )
     finally:
@@ -1114,8 +1123,17 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
             "reserved_total_tokens, reserved_cost_microunits, "
             "actual_total_tokens, actual_cost_microunits, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
-            ("r-reconciled", authority.binding_id, authority.binding_generation,
-             "succeeded", 100, 10_000, 100, 10_000, 1.0),
+            (
+                "r-reconciled",
+                authority.binding_id,
+                authority.binding_generation,
+                "succeeded",
+                100,
+                10_000,
+                100,
+                10_000,
+                1.0,
+            ),
         )
         conn.commit()
     finally:
@@ -1149,3 +1167,49 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
             output_tokens=40,
             cost_microunits=5_000,
         )
+
+
+def test_real_input_above_prompt_estimate_is_not_withheld(tmp_path):
+    """The founder-facing fix (2026-08-22): a served provider injects its own
+    context (codex mounts a workspace + tool schemas), so its ACTUAL input
+    tokens far exceed the byte length of our prompt. Reserving the per-call
+    ceiling (not estimate+output) means such a call is delivered, not withheld,
+    as long as it stays under the real ceiling — the founder already generated
+    and paid for the reply on their own subscription."""
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers.router import ProviderRouter
+
+    _, _, capability, context = _served_context(tmp_path)
+
+    class _BigContextProvider(_RecordingProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            self.calls += 1
+            # tiny prompt bytes, but codex-style real input of ~12k tokens
+            return ProviderResponse(
+                text="here is your answer",
+                provider=self.name,
+                model="fixture",
+                family=self.family,
+                latency_ms=1.0,
+                input_tokens=12_000,
+                output_tokens=200,
+                cost_microunits=1_220_000,
+            )
+
+    provider = _BigContextProvider("codex")
+    router = ProviderRouter({"codex": provider})
+    try:
+        resp = asyncio.run(
+            router.call(
+                "writer",
+                "hi",
+                "s",
+                config=ModelConfig(max_tokens=512),
+                operation="converse",
+                universe_context=context,
+            )
+        )
+        assert resp.text == "here is your answer"  # delivered, not withheld
+        assert provider.calls == 1
+    finally:
+        revoke_provider_request(capability)
