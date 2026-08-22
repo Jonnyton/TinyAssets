@@ -268,6 +268,23 @@ class CodexProvider(BaseProvider):
                 "shell_tool",
                 "--disable",
                 "unified_exec",
+                # Disable the `apps` feature (codex >= 0.135 default: stable/on).
+                # It exposes the SUBSCRIPTION account's installed ChatGPT
+                # connectors — including TinyAssets' OWN /mcp connector — to the
+                # served model as `codex_apps` MCP tools. `--ignore-user-config`
+                # does NOT strip these: they are account/cloud-side, not
+                # config.toml. When the universe intelligence sees its own
+                # persona prompt it then "relays" the turn back through the
+                # tinyassets_converse/write_graph app tool, which needs a fresh
+                # ChatGPT-side OAuth and returns "This app connection requires
+                # reauthentication..." — a confused-deputy loop that intermittently
+                # replaced the real reply (live-diagnosed 2026-08-22, raw codex
+                # --json showed the codex_apps tool call). A served turn must be
+                # the model answering AS the universe, never a client of the
+                # account's connectors. Proven: with apps off the codex_apps
+                # calls vanish and it answers warmly in first person.
+                "--disable",
+                "apps",
                 "-c",
                 'web_search="cached"',
                 "--json",
