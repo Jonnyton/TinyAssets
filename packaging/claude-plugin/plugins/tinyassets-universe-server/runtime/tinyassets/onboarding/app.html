@@ -351,11 +351,16 @@
     // returns the access token. redirect_uri + code_verifier are re-checked there.
     let tokens;
     try{
-      const r = await fetch("/mcp/app/token", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({code, code_verifier:saved.verifier, redirect_uri:redirectUri()}),
+      // Under the same cross-document lock as refresh/logout: every mutation
+      // of the refresh cookie is serialized, so a late refresh can never
+      // overwrite a fresh login.
+      tokens = await withRefreshLock(async()=>{
+        const r = await fetch("/mcp/app/token", {
+          method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({code, code_verifier:saved.verifier, redirect_uri:redirectUri()}),
+        });
+        return r.json();
       });
-      tokens = await r.json();
     }catch(e){
       document.getElementById("signin-notice").textContent = "Token exchange failed: " + e.message;
       return false;
@@ -396,6 +401,15 @@
   }
   async function refreshAccessToken(){
     if(refreshing) return refreshing;
+    let pendingLogout = logoutPending;
+    try{ pendingLogout = pendingLogout || localStorage.getItem("ta_logout_pending")==="1"; }catch(_e){}
+    if(pendingLogout){
+      // Finish the interrupted sign-out first; only a confirmed logout
+      // re-enables renewal. Never renew from a cookie the user asked to drop.
+      if(!(await endServerSession())) return false;
+      try{ localStorage.removeItem("ta_logout_pending"); }catch(_e){}
+      return false;
+    }
     refreshing = withRefreshLock(async()=>{
       try{
         const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
@@ -414,9 +428,21 @@
   // Explicit sign-out ends the renewable session server-side (clears the
   // HttpOnly refresh cookie) so the next person on this device cannot be
   // silently signed in on launch.
+  // Returns true only when the daemon confirmed the cookie is gone; until
+  // then this page refuses to renew (so a failed logout cannot silently
+  // resurrect the session on reload) and the next sign-out retries.
+  let logoutPending = false;
   async function endServerSession(){
-    try{ await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
-      headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"logout"})}); }catch(_e){}
+    return withRefreshLock(async()=>{
+      logoutPending = true;
+      try{
+        const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
+          headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"logout"})});
+        if(r.ok){ logoutPending = false; try{ localStorage.removeItem("ta_logout_pending"); }catch(_e){} return true; }
+      }catch(_e){}
+      try{ localStorage.setItem("ta_logout_pending","1"); }catch(_e){}
+      return false;
+    });
   }
   async function ensureFreshToken(){
     const exp = Number(sessionStorage.getItem(EXP_KEY) || 0);
