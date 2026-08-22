@@ -716,8 +716,19 @@ def test_authorized_public_and_owner_private_clone_preserves_source_nodes(
     assert built["status"] == "built"
     assert stored["author"] == "alice"
     assert stored["fork_from"] == version_id
+    # Node attribution (authorship) is always preserved.
     assert stored["node_defs"][0]["author"] == "original-node-author"
-    assert stored["node_defs"][0]["approved_by"] == "credential-approver"
+    if source_author == "alice":
+        # Same-author fork: the forker already owns/trusts the approval, so it is
+        # retained (its hash is valid).
+        assert stored["node_defs"][0]["approved_by"] == "credential-approver"
+        assert stored["node_defs"][0]["approved"] is True
+    else:
+        # Cross-author fork (Codex ADAPT 2026-08-22 #2): a foreign author's
+        # executable approval is NOT trusted for the forker's runs — the approval
+        # hash is self-computable, so it is stripped and must be re-approved.
+        assert stored["node_defs"][0]["approved_by"] == ""
+        assert stored["node_defs"][0]["approved"] is False
 
 
 def test_foreign_private_and_missing_set_fork_from_are_identical_and_atomic(

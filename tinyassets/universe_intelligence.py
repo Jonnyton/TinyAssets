@@ -109,18 +109,55 @@ _ENGINE_DISALLOWED_TOOLS = (
 # ``graph_id`` / ``universe_id`` parameter, and the founder identity gates reads
 # of a PRIVATE universe.
 #
+# Slice 2 (2026-08-19): ``run_graph`` — run one of the universe's OWN branches
+# end-to-end (author-gated + allowlisted + rate-limited).
+#
+# Slice 3 (2026-08-22): the SHARED COMMONS. ``browse_commons`` +
+# ``read_commons_shape`` are READ-ONLY over PUBLIC cross-universe shapes (the
+# existing viewer filter + author gate enforce visibility). ``remix_shape`` forks
+# a public shape into a new PRIVATE branch the founder owns — cross-author
+# executable source approval is STRIPPED on the fork so nothing inherited runs
+# until re-approved (Codex ADAPT 2026-08-22 #2). The writes are allowlisted +
+# rate-limited (fail-closed) like run_graph. This gives the served agent the SAME
+# commons the browser chatbot has, so it stops WebFetching n8n/Make when asked to
+# browse "our" commons.
+#
 # DEFERRED, each gated on the matching cross-family confinement review:
-#   * ``write_graph`` / ``run_graph`` (slice 2) — WRITES + SPEND on the founder's
-#     own subscription. Their target/operation surface has daemon- and
-#     registry-GLOBAL operations (agent publish, daemon memory) that escape a
-#     universe pin, and ``run_graph`` can loop-spend; the safe boundary (which
-#     operations are universe-scoped) is exactly what the review must pin down.
-#   * ``read_page`` / ``write_page`` (slice 3) — resolve their universe from the
-#     founder's HOME, not a graph_id, and ``write_page scope=commons`` writes the
-#     GLOBAL shared commons; pinning them needs a wiki-root override not yet set.
+#   * commons PUBLISH — make a shape public + snapshot a new best version, with
+#     the founder's "same workflow, improved, updated in place" model (founder
+#     2026-08-22). A GLOBAL write; needs a consent gate before an autonomous agent
+#     can publish (Codex ADAPT 2026-08-22 #5). Built + reverted from this slice.
+#   * fork AUTO-TRACK — let a fork opt in to auto-sync when the upstream commons
+#     shape it depends on publishes a new version (founder 2026-08-22). Needs a
+#     dependency-subscription store + a re-fork/sync mechanism.
+#   * ``read_page`` / ``write_page`` — resolve their universe from the founder's
+#     HOME, not a graph_id, and ``write_page scope=commons`` writes the GLOBAL
+#     shared commons; pinning them needs a wiki-root override not yet set.
 #   * ``converse`` — never exposed (a universe relaying to itself is a
 #     recursion / fork bomb).
-_ENGINE_MCP_TOOLS = ("read_graph", "get_status", "run_graph")
+# Brain / harness read-write loop (2026-08-22): the agent reads + durably writes
+# its OWN brain (identity/founder/origin/body + name + canon) so the change is in
+# its system prompt next turn. Governed (commit_learning -> apply_soul_edit,
+# soul.edit.md whitelist; soul.md's executable frontmatter excluded), pinned to
+# its own universe, allowlisted + rate-limited. Markdown content, never executed —
+# no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
+# injected into the next turn."
+#
+# remix_shape is intentionally NOT listed: Codex re-review 2026-08-22 found the
+# remix->run path still reaches a foreign child branch's forged-approval code
+# (the invoke_branch closure is not yet sanitized on cross-author remix). The
+# tool exists for the follow-up but stays off every served allowlist until that
+# hardening lands. run_graph stays (pre-existing) but is being author-gated to
+# own-authored branches in the same follow-up.
+_ENGINE_MCP_TOOLS = (
+    "read_graph",
+    "get_status",
+    "run_graph",
+    "browse_commons",
+    "read_commons_shape",
+    "read_brain",
+    "write_brain",
+)
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
 # the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
@@ -495,14 +532,30 @@ def _commit_canon(universe_id: str, canon: object) -> list[str]:
         if not title or not content:
             continue
         try:
-            write_universe_canon(
+            result = write_universe_canon(
                 universe_id,
                 category=category,
                 filename=title,
                 content=content,
                 log_entry=_LEARN_CONTEXT,
             )
-            written.append(title)
+            # write_universe_canon returns a JSON string; an {"error": ...}
+            # return is a FAILURE (it does not raise). Only count a genuine
+            # success so callers never falsely report a page as written (Codex
+            # brain-loop review 2026-08-22).
+            failed = False
+            try:
+                decoded = json.loads(result) if isinstance(result, str) else result
+                failed = isinstance(decoded, dict) and bool(decoded.get("error"))
+            except (json.JSONDecodeError, TypeError):
+                failed = False
+            if failed:
+                logger.warning(
+                    "commit_learning: canon write returned an error for %r: %s",
+                    title, result,
+                )
+            else:
+                written.append(title)
         except Exception:  # a bad page must not sink the whole commit
             logger.exception("commit_learning: canon write failed for %r", title)
     return written

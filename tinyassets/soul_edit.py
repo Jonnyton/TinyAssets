@@ -19,7 +19,9 @@ import contextlib
 import hashlib
 import os
 import re
+import stat
 import sys
+import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
@@ -67,6 +69,48 @@ def _render(meta: dict[str, Any], body: str) -> str:
     if not body.endswith("\n"):
         body += "\n"
     return f"---\n{fm}\n---\n\n{body}"
+
+
+def assert_contained(root: Path, path: Path) -> None:
+    """Refuse a path that escapes ``root`` through a symlinked component.
+
+    ``os.path.realpath`` resolves EVERY symlink in the path (the file itself AND
+    any parent directory, e.g. a ``soul_versions`` symlinked to an external dir),
+    so requiring both the path and its parent to resolve inside ``root`` closes
+    symlink write-escape and read-through-disclosure across the soul-edit sinks
+    (Codex brain-loop re-review 2026-08-22). Hardlinks (which share no distinct
+    path) are handled separately by the per-file link-count guard + atomic writes.
+    """
+    root_r = os.path.realpath(root)
+    prefix = root_r + os.sep
+    for candidate in (os.path.realpath(path), os.path.realpath(Path(path).parent)):
+        if candidate != root_r and not candidate.startswith(prefix):
+            raise SoulEditError(
+                f"path escapes the universe via a symlinked component: {path}"
+            )
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Inode-safe write: write a FRESH temp file in the same dir + os.replace.
+
+    ``os.replace`` repoints the NAME at a new inode, so a SYMLINK or HARDLINK at
+    ``path`` can never redirect the write onto another inode (e.g. soul.md's
+    control-plane frontmatter or an external file). This closes the inode-alias
+    bypass across EVERY soul-edit sink — the governed files, log.md, the snapshot,
+    and the version index — and also the check→use TOCTOU window, since the write
+    itself is safe regardless of what the path pointed at a moment earlier (Codex
+    brain-loop re-review 2026-08-22).
+    """
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
@@ -226,8 +270,40 @@ def apply_soul_edit(
         # Pass 1 — read current state + compare-and-swap check. All checks run
         # before any write, so a mismatch leaves the bundle untouched.
         parsed: dict[str, tuple[dict[str, Any], str]] = {}
+        udir_resolved = universe_dir.resolve()
         for filename in changes:
             path = universe_dir / filename
+            # Inode-safety (Codex brain-loop review 2026-08-22): validate the
+            # resolved FILE OBJECT, not just the filename string. A governed file
+            # that is a SYMLINK, or a HARDLINK aliasing another inode (e.g.
+            # identity.md hardlinked to soul.md or to an external file), would let
+            # a whitelisted write mutate a NON-governed target — overwriting the
+            # soul's executable frontmatter (loop_branch_def_id / effect_authority)
+            # or a file outside the universe. That is a control-plane bypass, so
+            # refuse rather than write THROUGH the aliased path. Requires a planted
+            # link (crafted/restored/compromised universe), but the boundary must
+            # survive that.
+            try:
+                st = os.lstat(path)
+            except OSError as exc:
+                raise SoulEditError(
+                    f"governed file missing on disk: {filename}"
+                ) from exc
+            if stat.S_ISLNK(st.st_mode):
+                raise SoulEditError(
+                    f"governed file is a symlink, refusing to write: {filename}"
+                )
+            if st.st_nlink > 1:
+                raise SoulEditError(
+                    f"governed file is hardlinked (nlink={st.st_nlink}); refusing "
+                    f"to write through an aliased inode: {filename}"
+                )
+            resolved = path.resolve()
+            if resolved != udir_resolved / filename:
+                raise SoulEditError(
+                    f"governed file resolves outside its universe slot, refusing: "
+                    f"{filename}"
+                )
             try:
                 raw = path.read_text(encoding="utf-8")
             except OSError as exc:
@@ -255,7 +331,7 @@ def apply_soul_edit(
                 meta["name"] = name
             rendered = _render(meta, body)
             new_contents[filename] = rendered
-            (universe_dir / filename).write_text(rendered, encoding="utf-8")
+            _atomic_write_text(universe_dir / filename, rendered)
             updated.append(filename)
 
         log_entry = summary.strip() or f"learned {', '.join(sorted(updated))}"
@@ -279,13 +355,14 @@ def apply_soul_edit(
 
 def _append_log(universe_dir: Path, line: str) -> None:
     log_path = universe_dir / "log.md"
+    assert_contained(universe_dir, log_path)
     try:
         text = log_path.read_text(encoding="utf-8")
     except OSError:
         text = "# Update Log\n"
     if not text.endswith("\n"):
         text += "\n"
-    log_path.write_text(text + line + "\n", encoding="utf-8")
+    _atomic_write_text(log_path, text + line + "\n")
 
 
 def _write_edit_snapshot(
@@ -304,6 +381,11 @@ def _write_edit_snapshot(
     snapshots because each records its own event.
     """
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
+    # Refuse a soul_versions symlinked to an external dir BEFORE any fs op
+    # (parent-directory symlink write-escape — Codex re-review). realpath of a
+    # not-yet-created dir stays inside the universe; a symlink resolves out and is
+    # refused.
+    assert_contained(universe_dir, versions_dir)
     versions_dir.mkdir(parents=True, exist_ok=True)
     existing = sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"))
     next_number = 1
@@ -325,8 +407,8 @@ def _write_edit_snapshot(
     for filename in sorted(files):
         body_parts += [f"## {filename}", "", "```markdown", files[filename].rstrip(), "```", ""]
     snapshot_name = f"{next_number:04d}.md"
-    (versions_dir / snapshot_name).write_text(
-        _render(meta, "\n".join(body_parts)), encoding="utf-8",
+    _atomic_write_text(
+        versions_dir / snapshot_name, _render(meta, "\n".join(body_parts))
     )
 
     index_path = versions_dir / "index.md"
@@ -336,9 +418,9 @@ def _write_edit_snapshot(
         index_text = "# Soul Version Index\n"
     if not index_text.endswith("\n"):
         index_text += "\n"
-    index_path.write_text(
+    _atomic_write_text(
+        index_path,
         index_text
         + f"- [{next_number:04d}]({snapshot_name}) — learned: {summary}\n",
-        encoding="utf-8",
     )
     return f"{SOUL_VERSIONS_DIR}/{snapshot_name}"
