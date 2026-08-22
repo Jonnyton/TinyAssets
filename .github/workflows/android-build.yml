@@ -20,6 +20,12 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/android-build.yml"
+  # PR builds compile-check native changes (mobile/native, the injector) with
+  # no signing key and no publish - both are main-only below.
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
 permissions:
@@ -61,6 +67,8 @@ jobs:
         run: |
           python3 scripts/add_app_scheme.py
           grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
+          grep -n 'LocalCallbackService' android/app/src/main/AndroidManifest.xml
+          grep -n 'FOREGROUND_SERVICE_DATA_SYNC' android/app/src/main/AndroidManifest.xml
 
       - name: Restore the stable debug signing key (main only)
         # Android's debug signing config reads ~/.android/debug.keystore

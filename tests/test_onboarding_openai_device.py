@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import pathlib
 
 import httpx
 import pytest
@@ -228,6 +229,14 @@ def _drive(route_path: str, body: dict | None, *, identity=None, enabled=True, m
     ) else resp.body
 
 
+def _home(monkeypatch, home="u-home"):
+    """Pin the server-resolved home: the POST routes bootstrap it, the GET reads it."""
+    import tinyassets.onboarding as onboarding
+
+    monkeypatch.setattr(onboarding, "_bootstrap_home", lambda identity: home)
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity: home)
+
+
 def _user(sub="user_123"):
     from tinyassets.auth.provider import Identity
 
@@ -272,6 +281,7 @@ def test_start_route_returns_code_and_opaque_handle_only(monkeypatch):
         }
 
     monkeypatch.setattr(od, "start_device_auth", fake_start)
+    _home(monkeypatch)
     status, doc = _drive(
         "/mcp/app/openai/device/start", {}, identity=_user(), monkeypatch=monkeypatch
     )
@@ -293,6 +303,7 @@ def _started(monkeypatch, *, user, device_auth_id="dev-1", user_code="AB-CD"):
         }
 
     monkeypatch.setattr(od, "start_device_auth", fake_start)
+    _home(monkeypatch)
     status, doc = _drive("/mcp/app/openai/device/start", {}, identity=user, monkeypatch=monkeypatch)
     assert status == 200
     return doc["flow"]
@@ -356,7 +367,7 @@ def test_poll_rejects_foreign_unknown_and_replayed_handles(monkeypatch):
 
 def test_flow_registry_expires_and_caps_per_user(monkeypatch):
     od._reset_pending_for_tests()
-    h = od.register_flow(user_id="u", universe_id="", device_auth_id="d", user_code="c")
+    h = od.register_flow(user_id="u", universe_id="u-home", device_auth_id="d", user_code="c")
     assert od.lookup_flow(h, user_id="u").device_auth_id == "d"
     with pytest.raises(od.DeviceAuthError):
         od.lookup_flow(h, user_id="someone-else")
@@ -370,13 +381,16 @@ def test_flow_registry_expires_and_caps_per_user(monkeypatch):
     # per-user cap: the oldest pending flow is replaced, never unbounded growth
     od._reset_pending_for_tests()
     handles = [
-        od.register_flow(user_id="u", universe_id="", device_auth_id=f"d{i}", user_code="c")
+        od.register_flow(user_id="u", universe_id="u-home", device_auth_id=f"d{i}", user_code="c")
         for i in range(5)
     ]
     alive = [h for h in handles if h in od._pending]
     assert len(alive) == od._MAX_PENDING_PER_USER and alive == handles[-od._MAX_PENDING_PER_USER :]
     with pytest.raises(od.DeviceAuthError):
-        od.register_flow(user_id="", universe_id="", device_auth_id="d", user_code="c")
+        od.register_flow(user_id="", universe_id="u-home", device_auth_id="d", user_code="c")
+    with pytest.raises(od.DeviceAuthError) as ei:  # no home -> nowhere to deposit
+        od.register_flow(user_id="u", universe_id="", device_auth_id="d", user_code="c")
+    assert ei.value.status == 409
 
 
 def test_bounded_body_rejects_oversized_before_buffering(monkeypatch):
@@ -515,7 +529,7 @@ def test_poll_lease_blocks_concurrent_poll_and_releases_on_pending():
     """Codex round-2: a second poll while one is in flight must not race into a
     second deposit — it answers 409; a pending outcome hands the lease back."""
     od._reset_pending_for_tests()
-    h = od.register_flow(user_id="u", universe_id="", device_auth_id="d", user_code="c")
+    h = od.register_flow(user_id="u", universe_id="u-home", device_auth_id="d", user_code="c")
     od.lookup_flow(h, user_id="u")  # lease taken
     with pytest.raises(od.DeviceAuthError) as ei:
         od.lookup_flow(h, user_id="u")
@@ -571,3 +585,391 @@ def test_poll_route_releases_lease_on_unexpected_exception(monkeypatch):
         )
     # The flow is still pending (not consumed) and NOT leased: a retry proceeds.
     assert od.lookup_flow(handle, user_id=_user().user_id).leased is True
+
+
+# ------------------------------------------------ browser (loopback) flow ----
+
+
+def test_loopback_redirect_validation():
+    ok = od.valid_loopback_redirect
+    assert ok("http://localhost:1455/auth/callback")
+    assert ok("http://127.0.0.1:2000/auth/callback")
+    assert not ok("https://localhost:1455/auth/callback")  # scheme
+    assert not ok("http://evil.example:1455/auth/callback")  # host
+    assert not ok("http://localhost/auth/callback")  # no port
+    assert not ok("http://localhost:80/auth/callback")  # privileged port
+    assert not ok("http://localhost:1455/other")  # path
+    assert not ok("http://localhost:1455/auth/callback?x=1")  # query
+
+
+def test_browser_authorize_params_match_codex_cli():
+    q = od.browser_authorize_params(
+        redirect_uri="http://localhost:1455/auth/callback", code_challenge="c", state="s"
+    )
+    assert q["client_id"] == od.CODEX_CLIENT_ID
+    assert q["code_challenge_method"] == "S256"
+    assert q["codex_cli_simplified_flow"] == "true"
+    assert q["id_token_add_organizations"] == "true"
+    assert q["originator"] == "codex_cli_rs"
+    assert "offline_access" in q["scope"]
+
+
+def test_exchange_browser_code_posts_pkce_and_builds_auth_json():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/oauth/token"
+        seen["form"] = dict(p.split("=", 1) for p in req.content.decode().split("&"))
+        return httpx.Response(
+            200, json={"id_token": "t", "access_token": "a", "refresh_token": "r"}
+        )
+
+    out = asyncio.run(
+        od.exchange_browser_code(
+            code="c1",
+            code_verifier="v1",
+            redirect_uri="http://localhost:1455/auth/callback",
+            client_factory=_client_with(handler),
+        )
+    )
+    assert seen["form"]["grant_type"] == "authorization_code"
+    assert seen["form"]["code"] == "c1" and seen["form"]["code_verifier"] == "v1"
+    assert seen["form"]["redirect_uri"] == "http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
+    assert json.loads(out["auth_json"])["tokens"]["refresh_token"] == "r"
+
+
+def test_exchange_browser_code_rejects_bad_redirect_before_network():
+    def handler(req):
+        raise AssertionError("must not reach the network")
+
+    with pytest.raises(od.DeviceAuthError) as ei:
+        asyncio.run(
+            od.exchange_browser_code(
+                code="c",
+                code_verifier="v",
+                redirect_uri="https://evil/auth/callback",
+                client_factory=_client_with(handler),
+            )
+        )
+    assert ei.value.code == "invalid_redirect_uri"
+
+
+def _pkce():
+    import hashlib
+
+    verifier = "v" * 43
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    )
+    return verifier, challenge
+
+
+def test_begin_binds_user_home_challenge_and_redirect(monkeypatch):
+    od._reset_pending_for_tests()
+    _home(monkeypatch, "u-mine")
+    verifier, challenge = _pkce()
+    body = {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"}
+    assert _drive("/mcp/app/openai/begin", body, monkeypatch=monkeypatch)[0] == 401
+    status, doc = _drive(
+        "/mcp/app/openai/begin", body, identity=_user("u1"), monkeypatch=monkeypatch
+    )
+    assert status == 200 and set(doc) == {"flow"}
+    flow = od.lookup_flow(doc["flow"], user_id="u1")
+    assert (flow.universe_id, flow.code_challenge, flow.redirect_uri) == (
+        "u-mine",
+        challenge,
+        "http://localhost:1455/auth/callback",
+    )
+    od.release_flow(doc["flow"])
+    # bad inputs / no home
+    bad = dict(body, redirect_uri="https://evil/auth/callback")
+    assert (
+        _drive("/mcp/app/openai/begin", bad, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        == 400
+    )
+    bad = dict(body, code_challenge="short")
+    assert (
+        _drive("/mcp/app/openai/begin", bad, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        == 400
+    )
+    _home(monkeypatch, "")
+    assert (
+        _drive("/mcp/app/openai/begin", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        == 409
+    )
+
+
+def test_exchange_route_requires_bound_flow_and_matching_verifier(monkeypatch):
+    """Codex round-2 #3: the exchange completes only for the identity that
+    began the flow, with the verifier whose challenge the flow holds, using the
+    flow's own redirect, into the flow's own home."""
+    od._reset_pending_for_tests()
+    _home(monkeypatch, "u-mine")
+    verifier, challenge = _pkce()
+    status, doc = _drive(
+        "/mcp/app/openai/begin",
+        {"code_challenge": challenge, "redirect_uri": "http://localhost:2000/auth/callback"},
+        identity=_user("u1"),
+        monkeypatch=monkeypatch,
+    )
+    handle = doc["flow"]
+    seen = {}
+
+    async def fake_exchange(**kw):
+        seen.update(kw)
+        return {
+            "auth_json": od.build_codex_auth_json(id_token="t", access_token="a", refresh_token="r")
+        }
+
+    monkeypatch.setattr(od, "exchange_browser_code", fake_exchange)
+    captured = {}
+    import tinyassets.api.llm_deposit as ld
+
+    def fake_connect_llm(*, universe_id="", payload=None):
+        from tinyassets.auth.middleware import current_identity
+
+        captured["actor"] = current_identity().user_id
+        captured["universe"] = universe_id
+        return {"ok": True}
+
+    monkeypatch.setattr(ld, "connect_llm", fake_connect_llm)
+
+    # foreign identity: unknown flow, nothing exchanged
+    body = {"flow": handle, "code": "c", "code_verifier": verifier}
+    assert _drive(
+        "/mcp/app/openai/exchange", body, identity=_user("attacker"), monkeypatch=monkeypatch
+    ) == (404, {"error": "unknown_flow"})
+    assert seen == {}
+    # wrong verifier: refused AND the flow is consumed (one attempt)
+    wrong = dict(body, code_verifier="w" * 43)
+    assert _drive(
+        "/mcp/app/openai/exchange", wrong, identity=_user("u1"), monkeypatch=monkeypatch
+    ) == (400, {"error": "verifier_mismatch"})
+    assert (
+        _drive("/mcp/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        == 404
+    )
+    # fresh flow, right verifier: exchanged with the FLOW's redirect, deposited into the FLOW's home
+    status, doc = _drive(
+        "/mcp/app/openai/begin",
+        {"code_challenge": challenge, "redirect_uri": "http://localhost:2000/auth/callback"},
+        identity=_user("u1"),
+        monkeypatch=monkeypatch,
+    )
+    body["flow"] = doc["flow"]
+    _home(monkeypatch, "u-OTHER")  # a later home change must not redirect the deposit
+    status, doc = _drive(
+        "/mcp/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch
+    )
+    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert seen["redirect_uri"] == "http://localhost:2000/auth/callback"
+    assert (captured["actor"], captured["universe"]) == ("u1", "u-mine")
+    # consumed
+    assert (
+        _drive("/mcp/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        == 404
+    )
+
+
+def test_upstream_error_mapping():
+    assert od._upstream_error(400, invalid="x").status == 400
+    assert od._upstream_error(429, invalid="x").status == 429
+    assert od._upstream_error(503, invalid="x").status == 502
+    with pytest.raises(od.DeviceAuthError) as ei:
+        asyncio.run(
+            od.exchange_browser_code(
+                code="c" * 3000,
+                code_verifier="v",
+                redirect_uri="http://localhost:1455/auth/callback",
+            )
+        )
+    assert ei.value.status == 400
+
+
+# ------------------------------------------------------------ /mcp/app/me ----
+
+
+def _drive_get(path, *, identity=None, monkeypatch):
+    from starlette.requests import Request
+
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.onboarding import onboarding_routes
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    route = next(r for r in onboarding_routes() if r.path == path)
+    scope = {"type": "http", "method": "GET", "path": path, "headers": [], "query_string": b""}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def run():
+        req = Request(scope, receive)
+        if identity is not None:
+            with identity_context(identity):
+                return await route.endpoint(req)
+        return await route.endpoint(req)
+
+    resp = asyncio.run(run())
+    return resp.status_code, json.loads(resp.body or b"{}")
+
+
+def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
+    assert _drive_get("/mcp/app/me", monkeypatch=monkeypatch)[0] == 401
+
+    import tinyassets.api.helpers as helpers
+    import tinyassets.api.universe as uni
+
+    (tmp_path / "u-home").mkdir()
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    # Cannot create a home (no scope) -> not connected; the public landing
+    # universe must NOT read as "you're connected".
+    _home(monkeypatch, "")
+    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: True)
+    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    assert (status, doc["home_bound"], doc["engine_connected"]) == (200, False, False)
+    # Home (bootstrapped) without an engine -> connect gate.
+    _home(monkeypatch, "u-home")
+    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: False)
+    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    assert (doc["home_bound"], doc["engine_connected"], doc["universe_id"]) == (
+        True,
+        False,
+        "u-home",
+    )
+    # Home with an engine -> straight to chat.
+    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: True)
+    assert (
+        _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)[1][
+            "engine_connected"
+        ]
+        is True
+    )
+
+
+def test_bootstrap_home_uses_first_contact_provisioning(monkeypatch):
+    """The gate's destination is created the same way the conversation entry
+    creates it (ensure_founder_home), under the request identity; "" when the
+    identity cannot create one."""
+    import tinyassets.api.first_contact as fc
+    import tinyassets.api.helpers as helpers
+    from tinyassets.onboarding import _bootstrap_home
+
+    seen = {}
+
+    def fake_ensure(base, founder):
+        from tinyassets.auth.middleware import current_identity
+
+        seen["founder"] = founder
+        seen["ctx"] = current_identity().user_id
+        return "u-new"
+
+    monkeypatch.setattr(fc, "ensure_founder_home", fake_ensure)
+    monkeypatch.setattr(helpers, "_base_path", lambda: pathlib.Path("."))
+    assert _bootstrap_home(_user("f9")) == "u-new"
+    assert seen == {"founder": "f9", "ctx": "f9"}
+    monkeypatch.setattr(
+        fc, "ensure_founder_home", lambda b, f: (_ for _ in ()).throw(RuntimeError("x"))
+    )
+    assert _bootstrap_home(_user("f9")) == ""
+
+
+def test_me_is_read_only_and_bootstrap_happens_on_begin(monkeypatch):
+    """Codex round-3 #2: a status GET must not create a universe; provisioning
+    belongs to the POST the user acts on."""
+    import tinyassets.onboarding as onboarding
+
+    calls = []
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity: "")
+    monkeypatch.setattr(
+        onboarding, "_bootstrap_home", lambda identity: calls.append("boot") or "u-new"
+    )
+    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    assert (status, doc["home_bound"], calls) == (200, False, [])
+    od._reset_pending_for_tests()
+    _verifier, challenge = _pkce()
+    body = {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"}
+    status, doc = _drive(
+        "/mcp/app/openai/begin", body, identity=_user("f1"), monkeypatch=monkeypatch
+    )
+    assert status == 200 and calls == ["boot"]
+    assert od.lookup_flow(doc["flow"], user_id="f1").universe_id == "u-new"
+
+
+def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
+    """Codex round-3 #3: a non-ASCII / short verifier is refused up front and
+    the flow stays usable (not leased, not consumed)."""
+    od._reset_pending_for_tests()
+    _home(monkeypatch, "u-mine")
+    _verifier, challenge = _pkce()
+    status, doc = _drive(
+        "/mcp/app/openai/begin",
+        {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"},
+        identity=_user("u1"),
+        monkeypatch=monkeypatch,
+    )
+    handle = doc["flow"]
+    for bad in ("short", "v" * 43 + "\u00e9", "v" * 200):
+        status, doc = _drive(
+            "/mcp/app/openai/exchange",
+            {"flow": handle, "code": "c", "code_verifier": bad},
+            identity=_user("u1"),
+            monkeypatch=monkeypatch,
+        )
+        assert (status, doc) == (400, {"error": "invalid_code_verifier"})
+    assert (
+        od.lookup_flow(handle, user_id="u1").leased is True
+    )  # still there, lease free before this
+    assert od.verifier_matches_challenge("v" * 43 + "\u00e9", challenge) is False
+
+
+def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch, caplog):
+    import logging
+
+    import tinyassets.onboarding as onboarding
+
+    onboarding._trace_buckets.clear()
+    assert _drive("/mcp/app/trace", {"step": "openai.finish"}, monkeypatch=monkeypatch)[0] == 401
+    with caplog.at_level(logging.WARNING, logger="tinyassets.onboarding"):
+        status, doc = _drive(
+            "/mcp/app/trace",
+            {"step": "openai.callback", "detail": "code\nerror\x00 " + "d" * 500},
+            identity=_user("f1"),
+            monkeypatch=monkeypatch,
+        )
+    assert (status, doc) == (200, {"ok": True})
+    line = next(r.getMessage() for r in caplog.records if "app-trace" in r.getMessage())
+    assert "user=f1 step=openai.callback detail=code error" in line
+    assert "\n" not in line and len(line) < 320
+    # only known steps
+    assert (
+        _drive(
+            "/mcp/app/trace", {"step": "x<script>"}, identity=_user("f1"), monkeypatch=monkeypatch
+        )[0]
+        == 400
+    )
+    # per-identity window
+    for _ in range(onboarding._TRACE_BUCKET_MAX):
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f2"),
+            monkeypatch=monkeypatch,
+        )
+    assert (
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f2"),
+            monkeypatch=monkeypatch,
+        )[0]
+        == 429
+    )
+    assert (
+        _drive(
+            "/mcp/app/trace",
+            {"step": "openai.finish"},
+            identity=_user("f3"),
+            monkeypatch=monkeypatch,
+        )[0]
+        == 200
+    )
