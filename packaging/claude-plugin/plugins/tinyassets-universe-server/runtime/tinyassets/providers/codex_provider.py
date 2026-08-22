@@ -118,6 +118,23 @@ def _codex_binary_tree(real_executable: Path) -> Path:
     return tree
 
 
+_SECRET_SHAPES = re.compile(
+    r"(sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_.-]{10,}|"
+    r"[A-Za-z0-9+/=_-]{40,}|(?i:bearer\s+\S+)|(?i:(token|secret|key)[\"']?\s*[:=]\s*\S+))"
+)
+
+
+def _redacted_stderr_excerpt(stderr_text: str, limit: int = 160) -> str:
+    """The last stderr line, with anything token-shaped replaced, hard-capped.
+
+    Feeds user-visible diagnostics (router chain_state), so it must be safe
+    even if codex ever echoes credential material."""
+    lines = [line.strip() for line in stderr_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return "(no stderr)"
+    return _SECRET_SHAPES.sub("[redacted]", lines[-1])[:limit]
+
+
 def _codex_home_file_mounts(codex_home: Path) -> list[str]:
     """``--ro-bind`` args for each regular file of the sealed snapshot."""
     args: list[str] = []
@@ -355,17 +372,19 @@ class CodexProvider(BaseProvider):
         elapsed_ms = (time.monotonic() - start) * 1000
 
         stderr_text = stderr.decode("utf-8", errors="replace")
+        # Sandbox failures are classified FIRST: they are a host defect, not a
+        # provider outage, and must surface as such instead of being folded
+        # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).
+        check_bwrap_failure(stderr_text)
         # Quick exit-code-1 => provider unavailable (same heuristic as claude).
-        # Carry codex's own words: a bare "likely unavailable" hid the real
-        # cause (a sandbox mount) behind a cooldown for a whole day.
+        # Carry a REDACTED excerpt of codex's own words so the real cause is
+        # visible; never raw stderr (it can carry token material).
         if proc.returncode == 1 and elapsed_ms < 5000:
-            lines = stderr_text.strip().splitlines()
-            excerpt = lines[-1][:300] if lines else "(no stderr)"
             raise ProviderUnavailableError(
-                f"codex exec returned exit code 1 quickly -- likely unavailable: {excerpt}"
+                "codex exec returned exit code 1 quickly -- likely unavailable: "
+                + _redacted_stderr_excerpt(stderr_text)
             )
 
-        check_bwrap_failure(stderr_text)
 
         if proc.returncode != 0:
             raise ProviderError(

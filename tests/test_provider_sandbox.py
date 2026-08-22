@@ -80,3 +80,29 @@ def test_disallow_only_still_emits_deny_floor(tmp_path):
     assert "--disallowedTools" in flags
     assert "Bash" in flags
     assert "--allowedTools" not in flags
+
+
+def test_codex_fast_exit_excerpt_is_redacted_and_capped():
+    from tinyassets.providers.codex_provider import _redacted_stderr_excerpt
+
+    raw = "warning: x\nerror: auth failed token=sk-abcdefghijklmnop Bearer eyJhbGciOi.abcdefghijklmnop\n"
+    out = _redacted_stderr_excerpt(raw)
+    assert "sk-abc" not in out and "eyJ" not in out and "[redacted]" in out
+    assert len(_redacted_stderr_excerpt("x" * 1000)) <= 160
+    assert _redacted_stderr_excerpt("") == "(no stderr)"
+
+
+def test_bwrap_proc_mount_and_lock_signatures_are_sandbox_failures(monkeypatch):
+    import sys
+
+    import pytest
+
+    from tinyassets.providers.base import SandboxUnavailableError, check_bwrap_failure
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    for text in (
+        "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
+        "flock: cannot open lock file /codex-home/.lock: Read-only file system",
+    ):
+        with pytest.raises(SandboxUnavailableError):
+            check_bwrap_failure(text)

@@ -1062,6 +1062,12 @@ _BWRAP_FAILURE_PATTERNS: tuple[str, ...] = (
     "bwrap: No permissions to create new namespace",
     "bwrap: No such file or directory",
     "sandbox initialization failed",
+    # The 2026-08-21 production outage: Docker's masked /proc paths make the
+    # --proc mount EPERM inside the sandbox namespace.
+    "bwrap: Can't mount proc",
+    "Can't mount proc on",
+    # codex's launcher takes a lock in CODEX_HOME; a read-only home dies here.
+    "cannot open lock file",
 )
 
 

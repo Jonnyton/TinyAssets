@@ -53,6 +53,12 @@ services:
       # 2026-08-21). Unconfined system paths let the inner sandbox exist; the
       # container stays unprivileged (no cap_add, non-root).
       - systempaths=unconfined
+      # With system paths unconfined, keep the rest of the posture tight: no
+      # capabilities at all and no privilege escalation (bwrap uses
+      # unprivileged user namespaces, which need neither).
+      - no-new-privileges=true
+    cap_drop:
+      - ALL
     # Image CMD already runs `python -m tinyassets.universe_server`.
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
