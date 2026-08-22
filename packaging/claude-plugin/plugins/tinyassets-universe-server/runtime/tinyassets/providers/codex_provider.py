@@ -118,6 +118,18 @@ def _codex_binary_tree(real_executable: Path) -> Path:
     return tree
 
 
+def _codex_home_file_mounts(codex_home: Path) -> list[str]:
+    """``--ro-bind`` args for each regular file of the sealed snapshot."""
+    args: list[str] = []
+    for entry in sorted(codex_home.iterdir()):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        args.extend(("--ro-bind", str(entry), f"/codex-home/{entry.name}"))
+    if not args:
+        raise ProviderError("codex served sandbox found no credential files to mount")
+    return args
+
+
 def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
     wrapper, real_executable = _resolved_codex_executable(base_cmd)
     candidates = [_codex_binary_tree(real_executable)]
@@ -265,9 +277,16 @@ class CodexProvider(BaseProvider):
                 "/workspace",
                 "--tmpfs",
                 "/workspace/.runtime/provider-launch-credentials",
-                "--ro-bind",
-                str(codex_home),
+                # CODEX_HOME is a private tmpfs with the snapshot's credential
+                # FILES bound read-only into it: codex >= 0.135's launcher
+                # takes `flock $CODEX_HOME/.lock` before starting, so a
+                # read-only home dir died instantly ("cannot open lock file
+                # /codex-home/.lock: Read-only file system", exit 73 in 56 ms
+                # -> "codex exhausted", live 2026-08-22). The credential bytes
+                # stay immutable; only scratch files can be created beside them.
+                "--tmpfs",
                 "/codex-home",
+                *_codex_home_file_mounts(codex_home),
                 "--setenv",
                 "CODEX_HOME",
                 "/codex-home",
@@ -335,13 +354,17 @@ class CodexProvider(BaseProvider):
 
         elapsed_ms = (time.monotonic() - start) * 1000
 
-        # Quick exit-code-1 => provider unavailable (same heuristic as claude)
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        # Quick exit-code-1 => provider unavailable (same heuristic as claude).
+        # Carry codex's own words: a bare "likely unavailable" hid the real
+        # cause (a sandbox mount) behind a cooldown for a whole day.
         if proc.returncode == 1 and elapsed_ms < 5000:
+            lines = stderr_text.strip().splitlines()
+            excerpt = lines[-1][:300] if lines else "(no stderr)"
             raise ProviderUnavailableError(
-                "codex exec returned exit code 1 quickly -- likely unavailable"
+                f"codex exec returned exit code 1 quickly -- likely unavailable: {excerpt}"
             )
 
-        stderr_text = stderr.decode("utf-8", errors="replace")
         check_bwrap_failure(stderr_text)
 
         if proc.returncode != 0:
