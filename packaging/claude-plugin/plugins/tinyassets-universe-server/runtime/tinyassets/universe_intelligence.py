@@ -109,18 +109,40 @@ _ENGINE_DISALLOWED_TOOLS = (
 # ``graph_id`` / ``universe_id`` parameter, and the founder identity gates reads
 # of a PRIVATE universe.
 #
+# Slice 2 (2026-08-19): ``run_graph`` — run one of the universe's OWN branches
+# end-to-end (author-gated + allowlisted + rate-limited).
+#
+# Slice 3 (2026-08-22): the SHARED COMMONS. ``browse_commons`` +
+# ``read_commons_shape`` are READ-ONLY over PUBLIC cross-universe shapes (the
+# existing viewer filter + author gate enforce visibility). ``remix_shape`` forks
+# a public shape into the founder's OWN universe as a new PRIVATE branch.
+# ``publish_shape`` makes one of the founder's OWN shapes public + snapshots a new
+# best version to the GLOBAL commons — re-publishing the SAME branch UPDATES its
+# commons entry in place (the "same workflow, improved" model, founder 2026-08-22)
+# rather than spawning near-duplicates; existing forks are copies and are
+# unaffected. The three writes are allowlisted + rate-limited like run_graph;
+# publish/patch are author-gated (only your OWN shapes). This gives the served
+# agent the SAME commons the browser chatbot has, so it stops WebFetching
+# n8n/Make when asked to browse "our" commons.
+#
 # DEFERRED, each gated on the matching cross-family confinement review:
-#   * ``write_graph`` / ``run_graph`` (slice 2) — WRITES + SPEND on the founder's
-#     own subscription. Their target/operation surface has daemon- and
-#     registry-GLOBAL operations (agent publish, daemon memory) that escape a
-#     universe pin, and ``run_graph`` can loop-spend; the safe boundary (which
-#     operations are universe-scoped) is exactly what the review must pin down.
-#   * ``read_page`` / ``write_page`` (slice 3) — resolve their universe from the
-#     founder's HOME, not a graph_id, and ``write_page scope=commons`` writes the
-#     GLOBAL shared commons; pinning them needs a wiki-root override not yet set.
+#   * fork AUTO-TRACK — let a fork opt in to auto-sync when the upstream commons
+#     shape it depends on publishes a new version (founder 2026-08-22). Needs a
+#     dependency-subscription store + a re-fork/sync mechanism; a follow-up slice.
+#   * ``read_page`` / ``write_page`` — resolve their universe from the founder's
+#     HOME, not a graph_id, and ``write_page scope=commons`` writes the GLOBAL
+#     shared commons; pinning them needs a wiki-root override not yet set.
 #   * ``converse`` — never exposed (a universe relaying to itself is a
 #     recursion / fork bomb).
-_ENGINE_MCP_TOOLS = ("read_graph", "get_status", "run_graph")
+_ENGINE_MCP_TOOLS = (
+    "read_graph",
+    "get_status",
+    "run_graph",
+    "browse_commons",
+    "read_commons_shape",
+    "remix_shape",
+    "publish_shape",
+)
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
 # the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).

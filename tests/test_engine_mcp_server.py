@@ -118,6 +118,248 @@ def test_bind_founder_identity_anonymous_without_actor(monkeypatch):
         middleware._current_identity.reset(token)
 
 
+# ── engine_mcp_server: shared commons (browse / read / remix) ───────────────
+
+def _bind_ids(monkeypatch, actor="sub-1", graph="u-x"):
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setattr(s, "_ACTOR_ID", actor)
+    monkeypatch.setattr(s, "_GRAPH_ID", graph)
+    return s
+
+
+def test_browse_commons_fails_closed_when_unbound(monkeypatch):
+    s = _bind_ids(monkeypatch, actor="")  # no principal
+    assert "refusing" in json.loads(s.browse_commons()).get("error", "")
+
+
+def test_browse_commons_rejects_unknown_kind(monkeypatch):
+    s = _bind_ids(monkeypatch)
+    out = json.loads(s.browse_commons(kind="nodes"))
+    assert "not available" in out.get("error", "")
+
+
+def test_browse_commons_branches_lists_published_with_read_caps(monkeypatch):
+    """branches → list_branches scope=published, viewer = bound founder, read-only caps."""
+    import tinyassets.api.extensions as ext
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
+    captured: dict = {}
+
+    def _fake(**kw):
+        ident = middleware.current_identity()
+        captured["kw"] = kw
+        captured["user_id"] = ident.user_id
+        captured["caps"] = set(ident.capabilities)
+        return "{}"
+
+    monkeypatch.setattr(ext, "_extensions_impl", _fake)
+    s.browse_commons(kind="branches", author="someone")
+    assert captured["kw"]["action"] == "list_branches"
+    assert captured["kw"]["scope"] == "published"
+    assert captured["kw"]["author"] == "someone"
+    assert captured["user_id"] == "sub-9"  # viewer = founder
+    assert captured["caps"] == {"read", "list"}  # least privilege
+
+
+def test_browse_commons_agents_delegates_to_read_graph(monkeypatch):
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch)
+    captured: dict = {}
+    monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
+    s.browse_commons(kind="agents", query="triage", limit=5)
+    assert captured["target"] == "agents"
+    assert captured["query"] == "triage"
+    assert captured["limit"] == 5
+
+
+def test_read_commons_shape_reads_any_public_branch_by_id(monkeypatch):
+    """NOT graph-pinned: the caller-supplied branch_id passes through; the
+    canonical get_branch author-gates a private non-authored shape."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
+    captured: dict = {}
+
+    def _fake(**kw):
+        captured["kw"] = kw
+        captured["caps"] = set(middleware.current_identity().capabilities)
+        return "{}"
+
+    monkeypatch.setattr(us, "read_graph", _fake)
+    s.read_commons_shape(branch_id="other-universe-branch")
+    assert captured["kw"] == {"target": "branch", "branch_id": "other-universe-branch"}
+    assert captured["caps"] == {"read", "list"}  # read-only
+
+
+def test_read_commons_shape_requires_an_id(monkeypatch):
+    s = _bind_ids(monkeypatch)
+    assert "branch_id or agent_definition_id" in json.loads(
+        s.read_commons_shape()
+    ).get("error", "")
+
+
+def test_remix_shape_requires_fork_from_and_name(monkeypatch):
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-ok")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-ok"}))
+    assert "fork_from" in json.loads(s.remix_shape(name="x")).get("error", "")
+    assert "name is required" in json.loads(
+        s.remix_shape(fork_from="v-1")
+    ).get("error", "")
+
+
+def test_remix_shape_refused_off_allowlist(monkeypatch):
+    """remix is a WRITE — refuse unless this universe is on the run_graph allowlist."""
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-not-listed")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
+    assert "not enabled for this universe" in out.get("error", "")
+    assert calls["n"] == 0  # never reached the write
+
+
+def test_remix_shape_forks_private_with_full_caps(monkeypatch):
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda: True)
+    captured: dict = {}
+
+    def _fake(**kw):
+        captured["kw"] = kw
+        captured["caps"] = set(middleware.current_identity().capabilities)
+        return "{}"
+
+    monkeypatch.setattr(us, "write_graph", _fake)
+    s.remix_shape(fork_from="v-parent", name="my remix", description="tweaked")
+    assert captured["kw"]["target"] == "branch"
+    assert captured["kw"]["operation"] == "remix"
+    spec = json.loads(captured["kw"]["payload_json"])
+    assert spec["fork_from"] == "v-parent"
+    assert spec["name"] == "my remix"
+    assert spec["visibility"] == "private"  # private by default
+    assert spec["description"] == "tweaked"
+    # founder's full authenticated caps (write/submit/costly) — faithful to browser
+    assert {"write", "submit_request", "costly"} <= captured["caps"]
+
+
+def test_remix_shape_rate_limited(monkeypatch):
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda: False)  # over the cap
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
+    assert "rate limit" in out.get("error", "")
+    assert calls["n"] == 0
+
+
+def test_publish_shape_requires_branch_id(monkeypatch):
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    assert "branch_id" in json.loads(s.publish_shape()).get("error", "")
+
+
+def test_publish_shape_refused_off_allowlist(monkeypatch):
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-nope")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.publish_shape(branch_id="b-1"))
+    assert "not enabled for this universe" in out.get("error", "")
+    assert calls["n"] == 0
+
+
+def test_publish_shape_makes_public_then_publishes(monkeypatch):
+    """publish = set_visibility public (a no-op if already public) THEN a new
+    version snapshot of the SAME branch — full founder caps."""
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda: True)
+    seen: list = []
+
+    def _fake(**kw):
+        seen.append((kw, set(middleware.current_identity().capabilities)))
+        return "{}"
+
+    monkeypatch.setattr(us, "write_graph", _fake)
+    s.publish_shape(branch_id="b-mine", notes="fixed the retry bug")
+    assert len(seen) == 2
+    (patch_kw, patch_caps), (pub_kw, pub_caps) = seen
+    # 1st: make public
+    assert patch_kw["target"] == "branch" and patch_kw["operation"] == "patch"
+    assert patch_kw["branch_id"] == "b-mine"
+    ops = json.loads(patch_kw["changes_json"])
+    assert ops == [{"op": "set_visibility", "visibility": "public"}]
+    # 2nd: publish a new version of the SAME branch with the notes
+    assert pub_kw["target"] == "branch" and pub_kw["operation"] == "publish"
+    assert pub_kw["branch_id"] == "b-mine"
+    assert pub_kw["description"] == "fixed the retry bug"
+    assert {"write", "submit_request", "costly"} <= pub_caps
+
+
+def test_publish_shape_stops_if_not_author(monkeypatch):
+    """A non-authored branch fails the author-gated set_visibility -> do NOT
+    publish (never snapshot a shape this universe does not own)."""
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda: True)
+    seen: list = []
+
+    def _fake(**kw):
+        seen.append(kw["operation"])
+        if kw["operation"] == "patch":
+            return json.dumps({"error": "Branch 'b-x' not found."})
+        return "{}"
+
+    monkeypatch.setattr(us, "write_graph", _fake)
+    out = json.loads(s.publish_shape(branch_id="b-x"))
+    assert "not found" in out.get("error", "")
+    assert seen == ["patch"]  # publish never ran
+
+
 # ── universe_intelligence._sandboxed_config: the enable gate ────────────────
 
 def _fake_ctx():
@@ -170,6 +412,9 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
     assert cfg.engine_mcp_enabled is True
     assert "mcp__tinyassets__read_graph" in cfg.allowed_tools
     assert "mcp__tinyassets__get_status" in cfg.allowed_tools
+    # commons handles are admitted too (slice 3)
+    for _h in ("browse_commons", "read_commons_shape", "remix_shape", "publish_shape"):
+        assert f"mcp__tinyassets__{_h}" in cfg.allowed_tools, _h
     # the wildcard deny is dropped so the tinyassets handles are admittable...
     assert "mcp__*" not in cfg.disallowed_tools
     # ...but the resource readers stay denied (surface = exactly the handles)
@@ -253,3 +498,67 @@ def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
     )
     flags, _cwd = cp._sandbox_cli_args(cfg, tmp_path)
     assert "--strict-mcp-config" in flags
+
+
+# ── codex_provider._codex_engine_mcp_args: the codex CLI wiring ──────────────
+
+def test_codex_engine_mcp_args_off_clears_map(tmp_path):
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    env: dict = {}
+    cfg = ModelConfig(engine_mcp_enabled=False)
+    assert _codex_engine_mcp_args(cfg, env) == ["-c", "mcp_servers={}"]
+    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
+
+
+def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path):
+    """Engine MCP requested but no running HTTP server -> clear the map, no bearer."""
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    env = {"TINYASSETS_DATA_DIR": str(tmp_path)}  # no routes file present
+    cfg = ModelConfig(
+        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id="u-9"
+    )
+    assert _codex_engine_mcp_args(cfg, env) == ["-c", "mcp_servers={}"]
+    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
+
+
+def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path):
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    (tmp_path / ".engine_mcp_http_routes.json").write_text(
+        json.dumps({"u-9": {"url": "http://127.0.0.1:8790/mcp", "secret": "s3cr3t"}}),
+        encoding="utf-8",
+    )
+    env = {"TINYASSETS_DATA_DIR": str(tmp_path)}
+    cfg = ModelConfig(
+        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id="u-9"
+    )
+    args = _codex_engine_mcp_args(cfg, env)
+    assert args[0] == "-c"
+    assert args[1] == (
+        'mcp_servers={tinyassets={url="http://127.0.0.1:8790/mcp",'
+        'bearer_token_env_var="TINYASSETS_ENGINE_MCP_BEARER"}}'
+    )
+    # secret goes in the subprocess env (read via bearer_token_env_var), NOT argv
+    assert env["TINYASSETS_ENGINE_MCP_BEARER"] == "s3cr3t"
+    assert "s3cr3t" not in args[1]
+
+
+def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path):
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    (tmp_path / ".engine_mcp_http_routes.json").write_text(
+        json.dumps({"u-9": {"url": "http://127.0.0.1:8790/mcp", "secret": ""}}),
+        encoding="utf-8",
+    )
+    env = {"TINYASSETS_DATA_DIR": str(tmp_path)}
+    cfg = ModelConfig(
+        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id="u-9"
+    )
+    assert _codex_engine_mcp_args(cfg, env) == ["-c", "mcp_servers={}"]
+    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env

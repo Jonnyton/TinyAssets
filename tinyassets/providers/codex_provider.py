@@ -199,6 +199,78 @@ def _codex_workdir() -> str:
     return str(Path(__file__).resolve().parents[2])
 
 
+#: Env var codex reads the engine-MCP bearer from (``bearer_token_env_var``). The
+#: secret lands in the codex subprocess env, NOT on argv or in the prompt — so the
+#: served model never sees it (mirrors claude_provider's --mcp-config headers).
+_ENGINE_MCP_BEARER_ENV = "TINYASSETS_ENGINE_MCP_BEARER"
+
+
+def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> list[str]:
+    """The ``-c mcp_servers=...`` args for a served codex turn.
+
+    When the founder-scoped engine MCP is enabled AND a per-universe HTTP engine
+    server is running (its loopback ``url`` + ``secret`` in
+    ``.engine_mcp_http_routes.json``, written 0600 by ``engine_mcp_http``), wire
+    codex to that ONE trusted server — the same commons + own-universe handles the
+    browser chatbot has — and inject the bearer into ``proc_env`` (codex reads it
+    via ``bearer_token_env_var``, keeping it off argv/prompt). This is the codex
+    analogue of ``claude_provider._engine_mcp_flags``.
+
+    Injection safety (empirically verified against codex-cli 0.146, 2026-08-22):
+    a served turn's ONLY ``mcp_servers`` source is this ``-c`` value —
+    ``--ignore-user-config`` drops ``$CODEX_HOME/config.toml``; codex does NOT
+    auto-load a project-level ``/workspace/.codex/config.toml`` (a `codex mcp
+    list` from such a dir shows none); the chat turn's ``/workspace`` is an empty
+    tmpfs anyway; and account ChatGPT connectors are removed by ``--disable apps``.
+    NB ``-c mcp_servers={...}`` MERGES with any loaded config rather than
+    replacing it, so this design relies on there being nothing to merge with (not
+    on replacement) — the previous blanket ``mcp_servers={}`` was a no-op clear.
+
+    FAIL CLOSED: engine MCP requested but no running HTTP server (no route / no
+    secret) -> clear the map (WebFetch-only), never a half-wired or unauthenticated
+    server. stdio is not an option here (the tinyassets package is not in the jail).
+    """
+    if not (
+        getattr(config, "engine_mcp_enabled", False)
+        and (getattr(config, "engine_mcp_actor_id", "") or "").strip()
+        and (getattr(config, "engine_mcp_graph_id", "") or "").strip()
+    ):
+        return ["-c", "mcp_servers={}"]
+    graph_id = config.engine_mcp_graph_id.strip()
+    data_dir = (
+        proc_env.get("TINYASSETS_DATA_DIR")
+        or os.environ.get("TINYASSETS_DATA_DIR")
+        or ""
+    ).strip()
+    url = ""
+    secret = ""
+    try:
+        routes_path = Path(data_dir or ".") / ".engine_mcp_http_routes.json"
+        if routes_path.is_file():
+            routes = json.loads(routes_path.read_text(encoding="utf-8"))
+            if isinstance(routes, dict):
+                entry = routes.get(graph_id)
+                if isinstance(entry, dict):
+                    url = str(entry.get("url") or "").strip()
+                    secret = str(entry.get("secret") or "").strip()
+    except Exception:  # noqa: BLE001 - never break a turn on a bad route file
+        url = ""
+        secret = ""
+    if not (url and secret):
+        return ["-c", "mcp_servers={}"]
+    # A malformed url containing a double-quote would break the inline TOML; a
+    # loopback engine url never does, but refuse rather than emit broken config.
+    if '"' in url:
+        return ["-c", "mcp_servers={}"]
+    proc_env[_ENGINE_MCP_BEARER_ENV] = secret
+    server = (
+        "mcp_servers={tinyassets={"
+        f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}"'
+        "}}"
+    )
+    return ["-c", server]
+
+
 class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
@@ -268,16 +340,16 @@ class CodexProvider(BaseProvider):
                 "shell_tool",
                 "--disable",
                 "unified_exec",
-                # Defence-in-depth for served turns: `--ignore-user-config` drops
-                # only $CODEX_HOME/config.toml — a served CODE turn still mounts
-                # the universe at /workspace and could load a project-level
-                # `.codex/config.toml` from it, which may declare its OWN
-                # `mcp_servers`. Clear them so a crafted universe cannot inject an
-                # MCP server into the served model (Codex cross-family review,
-                # 2026-08-22). Account ChatGPT connectors are handled separately
-                # by `--disable apps` in the shared command below.
-                "-c",
-                "mcp_servers={}",
+                # MCP surface for the served turn. When the founder-scoped engine
+                # MCP is enabled + its per-universe HTTP server is running, wire
+                # codex to that ONE trusted server (commons + own-universe handles,
+                # bearer via env — see _codex_engine_mcp_args); otherwise clear the
+                # map (WebFetch-only). `--ignore-user-config` drops
+                # $CODEX_HOME/config.toml and codex does not auto-load a project
+                # `/workspace/.codex/config.toml`, so this `-c` value is the turn's
+                # only mcp_servers source. Account ChatGPT connectors are removed
+                # separately by `--disable apps` in the shared command below.
+                *_codex_engine_mcp_args(config, proc_env),
                 "-c",
                 'web_search="cached"',
                 "--json",

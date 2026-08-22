@@ -546,8 +546,9 @@ os.execvpe(command[0], command, env)
     # them, returning "This app connection requires reauthentication..." instead
     # of answering (confused-deputy loop, live-diagnosed 2026-08-22).
     assert ("--disable", "apps") in list(zip(inner, inner[1:]))
-    # Served turns also clear project-level mcp_servers so a crafted universe's
-    # `.codex/config.toml` cannot inject an MCP server into the served model.
+    # Engine MCP off (this config) -> mcp_servers is cleared so the served turn is
+    # WebFetch-only. (When engine MCP is on + a route exists, _codex_engine_mcp_args
+    # wires the one trusted tinyassets server instead — see test_engine_mcp_server.)
     assert ("-c", "mcp_servers={}") in list(zip(inner, inner[1:]))
     assert "--dangerously-bypass-approvals-and-sandbox" not in inner
     assert (
