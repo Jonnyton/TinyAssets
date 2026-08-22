@@ -532,14 +532,30 @@ def _commit_canon(universe_id: str, canon: object) -> list[str]:
         if not title or not content:
             continue
         try:
-            write_universe_canon(
+            result = write_universe_canon(
                 universe_id,
                 category=category,
                 filename=title,
                 content=content,
                 log_entry=_LEARN_CONTEXT,
             )
-            written.append(title)
+            # write_universe_canon returns a JSON string; an {"error": ...}
+            # return is a FAILURE (it does not raise). Only count a genuine
+            # success so callers never falsely report a page as written (Codex
+            # brain-loop review 2026-08-22).
+            failed = False
+            try:
+                decoded = json.loads(result) if isinstance(result, str) else result
+                failed = isinstance(decoded, dict) and bool(decoded.get("error"))
+            except (json.JSONDecodeError, TypeError):
+                failed = False
+            if failed:
+                logger.warning(
+                    "commit_learning: canon write returned an error for %r: %s",
+                    title, result,
+                )
+            else:
+                written.append(title)
         except Exception:  # a bad page must not sink the whole commit
             logger.exception("commit_learning: canon write failed for %r", title)
     return written

@@ -680,7 +680,9 @@ def write_brain(
         origin: New body for where you came from.
         body: New body for your form / how you work (your harness).
         name: A name you have learned or chosen for yourself.
-        canon_json: Optional JSON list of {"title","body"} durable facts.
+        canon_json: Optional JSON list of durable world-facts to save to your
+            universe's knowledge; each item is {"title": ..., "content": ...}
+            (an optional "category" defaults to "lore").
     """
     import json
 
@@ -715,6 +717,16 @@ def write_brain(
             canon = json.loads(raw_canon)
         except json.JSONDecodeError:
             return json.dumps({"error": "canon_json must be valid JSON."})
+        # Normalize to the _commit_canon contract: it consumes {"title","content"}.
+        # Accept "body" as an alias so a natural {"title","body"} item still saves.
+        if isinstance(canon, list):
+            for _item in canon:
+                if (
+                    isinstance(_item, dict)
+                    and not _item.get("content")
+                    and _item.get("body")
+                ):
+                    _item["content"] = _item["body"]
     learned_name = (name or "").strip()
     if not (soul or learned_name or canon):
         return json.dumps({

@@ -441,6 +441,22 @@ def test_read_brain_fails_closed_unbound(monkeypatch):
     assert "refusing" in json.loads(s.read_brain()).get("error", "")
 
 
+def test_write_brain_canon_body_alias_normalized_to_content(monkeypatch, tmp_path):
+    """A {"title","body"} canon item is normalized to the _commit_canon contract
+    {"title","content"} so it actually persists (Codex brain-loop review)."""
+    import tinyassets.universe_intelligence as ui
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        ui, "commit_learning",
+        lambda udir, proposed, **kw: (captured.update(proposed), {"updated_files": []})[1],
+    )
+    s.write_brain(canon_json=json.dumps([{"title": "Fact", "body": "the sky is blue"}]))
+    assert captured["canon"][0]["content"] == "the sky is blue"
+
+
 # ── universe_intelligence._sandboxed_config: the enable gate ────────────────
 
 def _fake_ctx():
