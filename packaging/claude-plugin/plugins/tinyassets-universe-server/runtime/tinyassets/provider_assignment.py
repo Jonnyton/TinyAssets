@@ -628,9 +628,23 @@ def finalize_served_provider_budget(
         conn.commit()
     finally:
         conn.close()
+    # NOTE (2026-08-22): a per-call overrun is NO LONGER withheld. The reply was
+    # already generated and paid for on the founder's own subscription, and a
+    # served provider's real input is dominated by context it injects itself
+    # (codex mounts a workspace + tool schemas, ~10k+ tokens), so a normal turn
+    # routinely exceeds the prompt-byte reservation estimate — withholding it
+    # discarded a legitimate reply on essentially every turn (live e2e). The
+    # overrun is RECORDED (state='exceeded', actual usage charged) so the rolling
+    # window + next-reserve admission see true spend; the aggregate anti-runaway
+    # guard is the invocation high-water within the rolling window
+    # (max_invocations), which is unchanged. We never throw away delivered work.
     if exceeded:
-        raise ProviderAuthorityHeldError(
-            "Provider authority budget was exceeded; the provider result was withheld."
+        logger.warning(
+            "served budget: reservation %s exceeded its per-call estimate "
+            "(actual_total=%d reserved=%d) — charged actual, reply delivered",
+            reservation.reservation_id,
+            actual_total,
+            reservation.reserved_total_tokens,
         )
 
 
