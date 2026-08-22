@@ -142,13 +142,19 @@ _ENGINE_DISALLOWED_TOOLS = (
 # its own universe, allowlisted + rate-limited. Markdown content, never executed —
 # no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
 # injected into the next turn."
+#
+# remix_shape is intentionally NOT listed: Codex re-review 2026-08-22 found the
+# remix->run path still reaches a foreign child branch's forged-approval code
+# (the invoke_branch closure is not yet sanitized on cross-author remix). The
+# tool exists for the follow-up but stays off every served allowlist until that
+# hardening lands. run_graph stays (pre-existing) but is being author-gated to
+# own-authored branches in the same follow-up.
 _ENGINE_MCP_TOOLS = (
     "read_graph",
     "get_status",
     "run_graph",
     "browse_commons",
     "read_commons_shape",
-    "remix_shape",
     "read_brain",
     "write_brain",
 )

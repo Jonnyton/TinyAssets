@@ -493,13 +493,15 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
     assert cfg.engine_mcp_enabled is True
     assert "mcp__tinyassets__read_graph" in cfg.allowed_tools
     assert "mcp__tinyassets__get_status" in cfg.allowed_tools
-    # commons + brain handles are admitted too; publish is deferred
+    # read-only commons + brain handles are admitted; remix + publish are held
+    # off every served allowlist pending the closure-sanitize / consent gate.
     for _h in (
-        "browse_commons", "read_commons_shape", "remix_shape",
+        "browse_commons", "read_commons_shape",
         "read_brain", "write_brain",
     ):
         assert f"mcp__tinyassets__{_h}" in cfg.allowed_tools, _h
     assert "mcp__tinyassets__publish_shape" not in cfg.allowed_tools
+    assert "mcp__tinyassets__remix_shape" not in cfg.allowed_tools
     # the wildcard deny is dropped so the tinyassets handles are admittable...
     assert "mcp__*" not in cfg.disallowed_tools
     # ...but the resource readers stay denied (surface = exactly the handles)
