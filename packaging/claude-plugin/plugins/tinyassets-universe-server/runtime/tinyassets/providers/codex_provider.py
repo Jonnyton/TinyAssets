@@ -183,44 +183,25 @@ def _secret_mask_args(universe_root: Path) -> list[str]:
 
 
 def _project_folder_mounts(universe_root: Path) -> list[str]:
-    """Bind the universe as the served agent's read/WRITE project folder — its
-    brain — but EXPOSE ONLY its plain markdown docs.
+    """Bind the universe as the served agent's FULLY-OPEN read/WRITE project
+    folder — its customizable harness and brain.
 
     A converse turn is the founder's own agent working in its own universe, so it
-    reads and evolves its brain in place (edits persist). Every entry that is not
-    a top-level, non-dot, real (non-symlink) ``*.md`` file is masked: the
-    credential vault, auth snapshots, private config, state DBs, ledger/serving
-    JSON, lockfiles, and every subdirectory. This is an ALLOWLIST (mask
-    everything not proven to be a brain doc), so a newly-added system file is
-    masked by default rather than leaked. Fail-closed: the universe must be
-    enumerable, and the credential subtree is always masked even if the scan
-    somehow missed it.
+    may read, edit, and CREATE any file of any type there — notes, configs, tools,
+    sub-agent definitions, whatever harness the founder shapes — and the edits
+    persist. The ONLY things masked are the well-known, stable credential paths
+    (the deposited-LLM vault, the auth snapshots, the private config); the
+    per-launch credential snapshot under ``.runtime`` is masked separately in the
+    bwrap builder. Everything else is the founder's to control. Isolation is at
+    the universe boundary (OS sandbox + per-universe credentials), so full
+    in-universe access is safe.
+
+    NOTE: credentials are being relocated OUT of the universe entirely (to a
+    sibling secrets dir); until every universe has migrated, this fixed
+    credential mask is the belt-and-suspenders guard — a short, stable list of
+    known credential paths, not a fragile "enumerate every secret" denylist.
     """
-    args = ["--bind", str(universe_root), "/workspace"]
-    exposed_md = False
-    for entry in sorted(universe_root.iterdir()):
-        name = entry.name
-        if (
-            not name.startswith(".")
-            and name.endswith(".md")
-            and entry.is_file()
-            and not entry.is_symlink()
-        ):
-            exposed_md = True
-            continue
-        args += _mask_arg(entry, f"/workspace/{name}")
-    # Belt-and-suspenders: the secret entries are already covered above, but mask
-    # them again explicitly so a future change to the allowlist can never expose
-    # them by accident.
-    for name in _UNIVERSE_SECRET_ENTRIES:
-        p = universe_root / name
-        if (p.exists() or p.is_symlink()) and f"/workspace/{name}" not in args:
-            args += _mask_arg(p, f"/workspace/{name}")
-    if not exposed_md:
-        # No brain docs to expose is not itself an error (a brand-new universe),
-        # but it means the folder is effectively empty scratch — that is fine.
-        pass
-    return args
+    return ["--bind", str(universe_root), "/workspace", *_secret_mask_args(universe_root)]
 
 
 def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
