@@ -156,6 +156,73 @@ def _codex_home_file_mounts(codex_home: Path) -> list[str]:
     return args
 
 
+# System state that lives in the universe dir and must NEVER be exposed to the
+# served agent, even read-only: the deposited-LLM credential vault, the codex/
+# claude auth snapshots, and the private universe config. Masked in BOTH the
+# read-only coding mount and the read/write project-folder mount.
+_UNIVERSE_SECRET_ENTRIES = (".credentials", ".credential-vault.json", "config.yaml")
+
+
+def _mask_arg(path: Path, target: str) -> list[str]:
+    """bwrap args that BLIND ``target`` inside the jail: an empty tmpfs over a
+    directory, ``/dev/null`` over a file (symlinks masked as files, never
+    followed)."""
+    if path.is_dir() and not path.is_symlink():
+        return ["--tmpfs", target]
+    return ["--ro-bind", "/dev/null", target]
+
+
+def _secret_mask_args(universe_root: Path) -> list[str]:
+    """Mask the always-secret universe entries onto ``/workspace``."""
+    args: list[str] = []
+    for name in _UNIVERSE_SECRET_ENTRIES:
+        p = universe_root / name
+        if p.exists() or p.is_symlink():
+            args += _mask_arg(p, f"/workspace/{name}")
+    return args
+
+
+def _project_folder_mounts(universe_root: Path) -> list[str]:
+    """Bind the universe as the served agent's read/WRITE project folder — its
+    brain — but EXPOSE ONLY its plain markdown docs.
+
+    A converse turn is the founder's own agent working in its own universe, so it
+    reads and evolves its brain in place (edits persist). Every entry that is not
+    a top-level, non-dot, real (non-symlink) ``*.md`` file is masked: the
+    credential vault, auth snapshots, private config, state DBs, ledger/serving
+    JSON, lockfiles, and every subdirectory. This is an ALLOWLIST (mask
+    everything not proven to be a brain doc), so a newly-added system file is
+    masked by default rather than leaked. Fail-closed: the universe must be
+    enumerable, and the credential subtree is always masked even if the scan
+    somehow missed it.
+    """
+    args = ["--bind", str(universe_root), "/workspace"]
+    exposed_md = False
+    for entry in sorted(universe_root.iterdir()):
+        name = entry.name
+        if (
+            not name.startswith(".")
+            and name.endswith(".md")
+            and entry.is_file()
+            and not entry.is_symlink()
+        ):
+            exposed_md = True
+            continue
+        args += _mask_arg(entry, f"/workspace/{name}")
+    # Belt-and-suspenders: the secret entries are already covered above, but mask
+    # them again explicitly so a future change to the allowlist can never expose
+    # them by accident.
+    for name in _UNIVERSE_SECRET_ENTRIES:
+        p = universe_root / name
+        if (p.exists() or p.is_symlink()) and f"/workspace/{name}" not in args:
+            args += _mask_arg(p, f"/workspace/{name}")
+    if not exposed_md:
+        # No brain docs to expose is not itself an error (a brand-new universe),
+        # but it means the folder is effectively empty scratch — that is fine.
+        pass
+    return args
+
+
 def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
     wrapper, real_executable = _resolved_codex_executable(base_cmd)
     candidates = [_codex_binary_tree(real_executable)]
@@ -315,18 +382,30 @@ class CodexProvider(BaseProvider):
         win_kw = _no_window_kwargs()
         if config.sandbox_workspace:
             inner_cmd = [*cmd, "-C", "/workspace"]
-            # A converse/chat turn is NOT a coding task: give codex an EMPTY
-            # scratch /workspace (tmpfs) inside the same jail instead of the
-            # universe, so it answers as a chat model rather than acting as a
-            # code agent on the mounted files (live 2026-08-22: served converse
-            # replied with persona-echo / "reauthentication" while hosted-mode
-            # codex chatted + recalled memory correctly). Coding turns
-            # (run_graph etc.) keep the read-only universe workspace.
-            workspace_mount = (
-                ["--tmpfs", "/workspace"]
-                if getattr(config, "sandbox_chat", False)
-                else ["--ro-bind", str(universe_root), "/workspace"]
-            )
+            # A converse turn is the founder's own agent working IN its universe:
+            # its brain is a read/WRITE project folder it reads and evolves in
+            # place (edits persist). `_project_folder_mounts` exposes ONLY the
+            # markdown brain docs and masks all system state — the credential
+            # vault, auth snapshots, private config, state DBs, serving/ledger
+            # JSON, and every subdirectory — so the agent can never read a secret
+            # or clobber its own permissions (isolation is at the universe
+            # boundary, not per-file). Coding turns (run_graph etc.) keep the
+            # read-only universe workspace, but with the always-secret entries
+            # masked there too.
+            if getattr(config, "sandbox_project_folder", False):
+                # Founder converse: the universe as a read/WRITE project-folder brain.
+                workspace_mount = _project_folder_mounts(universe_root)
+            elif getattr(config, "sandbox_chat", False):
+                # Non-founder converse: empty scratch workspace, no brain access.
+                workspace_mount = ["--tmpfs", "/workspace"]
+            else:
+                # Coding turn (run_graph etc.): read-only universe, secrets masked.
+                workspace_mount = [
+                    "--ro-bind",
+                    str(universe_root),
+                    "/workspace",
+                    *_secret_mask_args(universe_root),
+                ]
             bwrap_cmd = [
                 bwrap_path,
                 "--die-with-parent",

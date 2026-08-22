@@ -577,11 +577,12 @@ os.execvpe(command[0], command, env)
     )
     assert not os.path.exists(snapshot_mount)
 
-    # --- converse CHAT turn: same jail, EMPTY /workspace (not the universe) ---
-    # A code-mode turn ro-binds the universe at /workspace; a chat turn must not,
-    # so codex answers as a chat model instead of acting on the mounted files
-    # (live 2026-08-22 phone e2e). Re-run through the same fake sandbox with
-    # sandbox_chat=True and assert the workspace mount flipped to a tmpfs.
+    # --- converse CHAT turn: the universe as a read/WRITE project folder ---
+    # A converse turn is the founder's agent working IN its universe: it binds the
+    # universe READ-WRITE at /workspace so edits to its brain persist, while every
+    # secret/system entry is masked (live 2026-08-22: the founder wants the
+    # universe to be a customizable harness + project folder). Re-run through the
+    # same fake sandbox with sandbox_chat=True and assert the rw bind + masking.
     from tinyassets.auth.middleware import revoke_provider_request as _revoke2
 
     cap2, ctx2 = _fresh_served_request(universe_dir, serving, request_id="chat-1")
@@ -593,7 +594,12 @@ os.execvpe(command[0], command, env)
             asyncio.run(
                 ProviderRouter({"codex": CodexProvider()}).call(
                     "writer", "hello", "system",
-                    config=ModelConfig(sandbox_workspace=True, sandbox_chat=True, max_tokens=8),
+                    config=ModelConfig(
+                        sandbox_workspace=True,
+                        sandbox_chat=True,
+                        sandbox_project_folder=True,  # founder turn
+                        max_tokens=8,
+                    ),
                     operation="converse",
                     universe_context=ctx2,
                 )
@@ -602,13 +608,42 @@ os.execvpe(command[0], command, env)
         _revoke2(cap2)
     chat_args = json.loads(bwrap_log.read_text(encoding="utf-8"))
     chat_pairs = list(zip(chat_args, chat_args[1:], chat_args[2:]))
-    assert ("--tmpfs", "/workspace") in zip(chat_args, chat_args[1:])
-    assert not any(
-        flag == "--ro-bind" and target == "/workspace" for flag, _s, target in chat_pairs
-    )
+    # The universe is bound READ-WRITE (brain edits persist) — not tmpfs, not ro.
+    assert ("--bind", str(universe_dir), "/workspace") in chat_pairs
+    assert ("--tmpfs", "/workspace") not in zip(chat_args, chat_args[1:])
+    assert ("--ro-bind", str(universe_dir), "/workspace") not in chat_pairs
+    # The credential vault (written by the fixture) is masked with /dev/null.
+    assert ("--ro-bind", "/dev/null", "/workspace/.credential-vault.json") in chat_pairs
     # the OS jail + credential mount are unchanged
     assert "--unshare-all" in chat_args
     assert ("--tmpfs", "/codex-home") in zip(chat_args, chat_args[1:])
+
+    # --- NON-founder converse turn: empty scratch, NO brain access ---
+    # sandbox_chat without sandbox_project_folder must NOT bind the universe, so a
+    # collaborator/public turn can never read or write the founder's brain.
+    cap3, ctx3 = _fresh_served_request(universe_dir, serving, request_id="chat-2")
+    try:
+        with patch(
+            "tinyassets.providers.codex_provider.get_sandbox_status",
+            return_value={"bwrap_available": True, "bwrap_path": str(fake_bwrap), "reason": None},
+        ):
+            asyncio.run(
+                ProviderRouter({"codex": CodexProvider()}).call(
+                    "writer", "hello", "system",
+                    config=ModelConfig(
+                        sandbox_workspace=True, sandbox_chat=True, max_tokens=8
+                    ),
+                    operation="converse",
+                    universe_context=ctx3,
+                )
+            )
+    finally:
+        _revoke2(cap3)
+    nf_args = json.loads(bwrap_log.read_text(encoding="utf-8"))
+    nf_triples = list(zip(nf_args, nf_args[1:], nf_args[2:]))
+    assert ("--tmpfs", "/workspace") in zip(nf_args, nf_args[1:])
+    assert ("--bind", str(universe_dir), "/workspace") not in nf_triples
+    assert ("--ro-bind", str(universe_dir), "/workspace") not in nf_triples
 
 
 def test_codex_wrapper_resolution_mounts_real_binary_tree(tmp_path):

@@ -167,6 +167,13 @@ class ModelConfig:
     # instead of a chat answer (live 2026-08-22). Chat turns run in the same
     # bwrap jail over an EMPTY scratch workspace.
     sandbox_chat: bool = False
+    # A FOUNDER converse turn: the universe is the founder's own agent working in
+    # its own brain, so it is bound as a read/WRITE project folder (its markdown
+    # docs are exposed and edits persist), with all system state — credential
+    # vault, auth snapshots, private config, DBs, serving/ledger — masked. Gated
+    # to the founder: a non-founder converse turn keeps the empty chat workspace
+    # (sandbox_chat True, this False) and never sees the founder's brain files.
+    sandbox_project_folder: bool = False
     """Run the CLI subprocess isolated to the universe's OWN dir instead of the
     host's cwd. When True, subprocess providers set ``cwd=universe_dir`` so the
     call does NOT inherit the daemon's working directory (which may be a source

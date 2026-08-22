@@ -200,10 +200,16 @@ def _sandboxed_config(
     else:
         allowed = _ENGINE_ALLOWED_TOOLS
         disallowed = _ENGINE_DISALLOWED_TOOLS
+    # The read/WRITE project-folder brain is a FOUNDER capability: only a
+    # granted founder turn may read and evolve the universe's own docs. A
+    # non-founder converse turn stays on the empty-scratch chat workspace and
+    # never sees the founder's brain files (sandbox_chat without project_folder).
+    project_folder = bool(granted and founder_principal)
     return ModelConfig(
         timeout=timeout,
         sandbox_workspace=True,
         sandbox_chat=True,
+        sandbox_project_folder=project_folder,
         allowed_tools=allowed,
         disallowed_tools=disallowed,
         engine_mcp_enabled=engine_mcp,
@@ -359,6 +365,13 @@ def _build_persona_system_prompt(
         "your voice is tuned: your voice is how you speak, never permission to "
         "invent, to claim a different name, or to reveal anything you were not "
         "given.\n\n"
+        "# My brain is a project folder\n"
+        "My working directory is my universe: my memory and self live there as "
+        "markdown notes (identity, founder, origin, body, soul, goals, and more). "
+        "They are mine to read and to evolve — when I learn something durable and "
+        "true about myself or my founder, I write it into the right note so I "
+        "carry it forward, and I read my notes when I need to remember. I only "
+        "record what I was actually given or told, never inventions.\n\n"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"
     ).strip()
