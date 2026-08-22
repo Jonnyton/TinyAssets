@@ -85,10 +85,17 @@ def test_disallow_only_still_emits_deny_floor(tmp_path):
 def test_codex_fast_exit_excerpt_is_redacted_and_capped():
     from tinyassets.providers.codex_provider import _redacted_stderr_excerpt
 
-    raw = "warning: x\nerror: auth failed token=sk-abcdefghijklmnop Bearer eyJhbGciOi.abcdefghijklmnop\n"
+    raw = "warning: x\nerror: auth failed token=sk-abcdefghijklmnop Bearer eyJhbGciOi.abcdefghijk\n"
     out = _redacted_stderr_excerpt(raw)
     assert "sk-abc" not in out and "eyJ" not in out and "[redacted]" in out
-    assert len(_redacted_stderr_excerpt("x" * 1000)) <= 160
+    # No generic long-token rule: hashes / paths / model ids stay readable.
+    keep = "stream error for model gpt-5.5 at /opt/codex-install/node_modules/.bin/codex sha256:"
+    keep += "a" * 64
+    assert _redacted_stderr_excerpt(keep) == keep
+    # Long lines keep head AND tail (codex appends its auth error code last).
+    long = "x" * 400 + " auth error code: E_FOO"
+    ex = _redacted_stderr_excerpt(long)
+    assert len(ex) <= 240 and ex.endswith("E_FOO") and " ... " in ex
     assert _redacted_stderr_excerpt("") == "(no stderr)"
 
 
@@ -106,3 +113,5 @@ def test_bwrap_proc_mount_and_lock_signatures_are_sandbox_failures(monkeypatch):
     ):
         with pytest.raises(SandboxUnavailableError):
             check_bwrap_failure(text)
+    # an unrelated lock error is NOT a sandbox failure
+    check_bwrap_failure("flock: cannot open lock file /data/.codex/.lock: Permission denied")

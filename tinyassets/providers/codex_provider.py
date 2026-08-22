@@ -119,20 +119,29 @@ def _codex_binary_tree(real_executable: Path) -> Path:
 
 
 _SECRET_SHAPES = re.compile(
-    r"(sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_.-]{10,}|"
-    r"[A-Za-z0-9+/=_-]{40,}|(?i:bearer\s+\S+)|(?i:(token|secret|key)[\"']?\s*[:=]\s*\S+))"
+    # Explicit secret shapes only (a generic long-token rule also hid hashes,
+    # paths and model ids — the real cause). JWT fragments: any `eyJ…` run,
+    # with or without the dotted tail.
+    r"(sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_.-]{10,}|"
+    r"(?i:bearer\s+\S+)|(?i:(?:token|secret|api[_-]?key|password)[\"']?\s*[:=]\s*\S+))"
 )
 
 
-def _redacted_stderr_excerpt(stderr_text: str, limit: int = 160) -> str:
-    """The last stderr line, with anything token-shaped replaced, hard-capped.
+def _redacted_stderr_excerpt(stderr_text: str, limit: int = 240) -> str:
+    """The last stderr line, secrets replaced, as a head+tail excerpt.
 
     Feeds user-visible diagnostics (router chain_state), so it must be safe
-    even if codex ever echoes credential material."""
+    even if codex ever echoes credential material. Head+tail (not a plain
+    prefix) because codex 0.135 appends its auth error code at the END of
+    the line."""
     lines = [line.strip() for line in stderr_text.strip().splitlines() if line.strip()]
     if not lines:
         return "(no stderr)"
-    return _SECRET_SHAPES.sub("[redacted]", lines[-1])[:limit]
+    text = _SECRET_SHAPES.sub("[redacted]", lines[-1])
+    if len(text) <= limit:
+        return text
+    half = (limit - 5) // 2
+    return text[:half] + " ... " + text[-half:]
 
 
 def _codex_home_file_mounts(codex_home: Path) -> list[str]:

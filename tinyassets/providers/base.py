@@ -1066,8 +1066,10 @@ _BWRAP_FAILURE_PATTERNS: tuple[str, ...] = (
     # --proc mount EPERM inside the sandbox namespace.
     "bwrap: Can't mount proc",
     "Can't mount proc on",
-    # codex's launcher takes a lock in CODEX_HOME; a read-only home dies here.
-    "cannot open lock file",
+    # codex's launcher takes a lock in the sandboxed CODEX_HOME; a read-only
+    # home dies here. Scoped to that exact path so unrelated lock errors are
+    # not misread as sandbox failures.
+    "cannot open lock file /codex-home/.lock",
 )
 
 
