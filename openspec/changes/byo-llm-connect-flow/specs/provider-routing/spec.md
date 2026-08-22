@@ -142,9 +142,27 @@ be hidden from the workspace mount. If the sandbox, executable-tree mount, or
 accounting output is unavailable, the adapter SHALL fail closed before
 returning a reply.
 
+The served launch SHALL disable the Codex `apps` feature so the subscription
+account's installed host-owned connectors — including TinyAssets' own public
+`/mcp` connector — are never exposed to the served model as tools. It SHALL also
+clear any project-level `mcp_servers` so a mounted universe's own Codex config
+cannot inject an MCP server into the served turn. A served turn is the model
+answering as the universe, never a client of the account's connectors. Because
+Codex rejects unknown feature names, an adapter that cannot express the
+apps-disable SHALL fail closed rather than launch with host apps enabled.
+
 #### Scenario: Sandboxed Codex turn completes
 
 - **WHEN** a live Codex serving authority reaches the real adapter
 - **THEN** Codex runs inside the OS sandbox and returns its reply plus token
   accounting
 - **AND** no unconfined fallback launch is attempted
+
+#### Scenario: Host-owned account connectors never reach the served model
+
+- **WHEN** the founder's subscription account has the TinyAssets connector (or
+  any other ChatGPT app) installed and a served Codex turn runs
+- **THEN** the launch disables the `apps` feature and clears project
+  `mcp_servers`, so no `codex_apps` tool is offered to the model
+- **AND** the universe replies as itself instead of relaying the turn back
+  through its own connector and returning a reauthentication notice
