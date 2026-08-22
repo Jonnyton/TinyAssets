@@ -346,6 +346,10 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     from tinyassets.universe_bundle import seed_okf_bundle
 
     monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    # _engine_run_admit keys its rolling-limit ledger off TINYASSETS_DATA_DIR
+    # (not _base_path), so isolate it per test or the shared ledger exhausts the
+    # 20/window cap across the suite and later writes are spuriously rate-limited.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = tmp_path / uid
     seed_okf_bundle(udir, purpose="help the founder", loop_branch_def_id="")
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-brain")
@@ -398,6 +402,26 @@ def test_write_brain_cannot_touch_soul_md(monkeypatch, tmp_path):
     import inspect
     params = set(inspect.signature(getattr(s.write_brain, "fn", s.write_brain)).parameters)
     assert "soul" not in params and "source_code" not in params
+
+
+def test_write_brain_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
+    """Codex brain-loop review: if identity.md is a hardlink aliasing soul.md,
+    write_brain must NOT mutate soul.md's (executable) frontmatter through it."""
+    import os
+
+    from tinyassets import engine_mcp_server as s
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    identity = udir / "identity.md"
+    soul = udir / "soul.md"
+    soul_before = soul.read_text(encoding="utf-8")
+    # Plant the alias: identity.md becomes a hardlink to soul.md (same inode).
+    identity.unlink()
+    os.link(soul, identity)
+
+    out = json.loads(s.write_brain(identity="I am Aria, the research companion."))
+    assert out.get("error")  # refused, not ok
+    assert soul.read_text(encoding="utf-8") == soul_before  # soul.md untouched
 
 
 def test_write_brain_refused_off_allowlist(monkeypatch, tmp_path):

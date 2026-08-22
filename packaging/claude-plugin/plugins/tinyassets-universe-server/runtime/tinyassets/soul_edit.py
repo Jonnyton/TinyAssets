@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import os
 import re
+import stat
 import sys
 import time
 from collections.abc import Iterable, Iterator
@@ -226,8 +227,40 @@ def apply_soul_edit(
         # Pass 1 — read current state + compare-and-swap check. All checks run
         # before any write, so a mismatch leaves the bundle untouched.
         parsed: dict[str, tuple[dict[str, Any], str]] = {}
+        udir_resolved = universe_dir.resolve()
         for filename in changes:
             path = universe_dir / filename
+            # Inode-safety (Codex brain-loop review 2026-08-22): validate the
+            # resolved FILE OBJECT, not just the filename string. A governed file
+            # that is a SYMLINK, or a HARDLINK aliasing another inode (e.g.
+            # identity.md hardlinked to soul.md or to an external file), would let
+            # a whitelisted write mutate a NON-governed target — overwriting the
+            # soul's executable frontmatter (loop_branch_def_id / effect_authority)
+            # or a file outside the universe. That is a control-plane bypass, so
+            # refuse rather than write THROUGH the aliased path. Requires a planted
+            # link (crafted/restored/compromised universe), but the boundary must
+            # survive that.
+            try:
+                st = os.lstat(path)
+            except OSError as exc:
+                raise SoulEditError(
+                    f"governed file missing on disk: {filename}"
+                ) from exc
+            if stat.S_ISLNK(st.st_mode):
+                raise SoulEditError(
+                    f"governed file is a symlink, refusing to write: {filename}"
+                )
+            if st.st_nlink > 1:
+                raise SoulEditError(
+                    f"governed file is hardlinked (nlink={st.st_nlink}); refusing "
+                    f"to write through an aliased inode: {filename}"
+                )
+            resolved = path.resolve()
+            if resolved != udir_resolved / filename:
+                raise SoulEditError(
+                    f"governed file resolves outside its universe slot, refusing: "
+                    f"{filename}"
+                )
             try:
                 raw = path.read_text(encoding="utf-8")
             except OSError as exc:
