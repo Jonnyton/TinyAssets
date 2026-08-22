@@ -644,7 +644,9 @@ async def _handle_trace(request: Any) -> Any:
         return JSONResponse({"error": "unknown_step"}, status_code=400)
     if not _trace_allowed(current_identity().user_id):
         return JSONResponse({"error": "rate_limited"}, status_code=429)
-    logging.getLogger("tinyassets.onboarding").info(
+    # WARNING, deliberately: rare, rate-limited diagnostics that must reach the
+    # daemon log at its production level (INFO is filtered there).
+    logging.getLogger("tinyassets.onboarding").warning(
         "app-trace user=%s step=%s detail=%s", current_identity().user_id, step, detail
     )
     return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})

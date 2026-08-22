@@ -67,6 +67,8 @@ jobs:
         run: |
           python3 scripts/add_app_scheme.py
           grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
+          grep -n 'LocalCallbackService' android/app/src/main/AndroidManifest.xml
+          grep -n 'FOREGROUND_SERVICE_DATA_SYNC' android/app/src/main/AndroidManifest.xml
 
       - name: Restore the stable debug signing key (main only)
         # Android's debug signing config reads ~/.android/debug.keystore
