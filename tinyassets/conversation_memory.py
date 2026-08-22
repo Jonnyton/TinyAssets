@@ -146,14 +146,17 @@ def _footer(interlocutor: str, nonce: str) -> str:
 
 
 def _one_line(text: str) -> str:
-    """Render one message as exactly one record line.
+    """Render one message as exactly one record line, INJECTIVELY.
 
     A stored message (a prior universe reply, or pasted founder text) that
     contains a newline followed by "Founder:" would otherwise forge a founder
-    record inside the history block (Codex 2026-08-22 #1). Line breaks become
-    a visible marker, so every record is one line and role labels can only
-    come from the renderer."""
-    return " ⏎ ".join(part for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+    record inside the history block (Codex 2026-08-22). C-style escaping -
+    backslash first, then line breaks - is unambiguous: a literal backslash-n
+    in the original renders as a doubled backslash, so no input can imitate
+    an encoded newline, and role labels can only come from the renderer."""
+    return (
+        text.replace("\\", "\\\\").replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+    )
 
 
 def format_history(
@@ -174,7 +177,7 @@ def format_history(
     kept = [m for m in messages if isinstance(m.text, str) and m.text.strip()]
     if not kept:
         return ""
-    kept = kept[-max(1, int(limit)):]
+    kept = kept[-max(1, int(limit)) :]
     who = _sanitize_name(interlocutor)
     nonce = secrets.token_hex(8)
     while nonce in who or any(nonce in m.text for m in kept):
