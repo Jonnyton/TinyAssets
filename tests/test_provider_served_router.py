@@ -1178,10 +1178,11 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
 def test_real_input_above_prompt_estimate_is_not_withheld(tmp_path):
     """The founder-facing fix (2026-08-22): a served provider injects its own
     context (codex mounts a workspace + tool schemas), so its ACTUAL input
-    tokens far exceed the byte length of our prompt. Reserving the per-call
-    ceiling (not estimate+output) means such a call is delivered, not withheld,
-    as long as it stays under the real ceiling — the founder already generated
-    and paid for the reply on their own subscription."""
+    tokens far exceed the byte length of our prompt and thus the reservation
+    estimate. Such a turn settles as 'exceeded' but its reply is DELIVERED, not
+    withheld — the founder already generated and paid for it on their own
+    subscription. (The reservation is still sized estimate+output; the change is
+    that an overrun no longer withholds the delivered reply.)"""
     from tinyassets.auth.middleware import revoke_provider_request
     from tinyassets.providers.router import ProviderRouter
 

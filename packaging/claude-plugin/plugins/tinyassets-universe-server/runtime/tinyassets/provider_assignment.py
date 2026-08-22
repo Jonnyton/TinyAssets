@@ -613,10 +613,12 @@ def finalize_served_provider_budget(
     # (codex mounts a workspace + tool schemas, ~10k+ tokens), so a normal turn
     # routinely exceeds the prompt-byte reservation estimate — withholding it
     # discarded a legitimate reply on essentially every turn (live e2e). The
-    # overrun is RECORDED (state='exceeded', actual usage charged) so the rolling
-    # window + next-reserve admission see true spend; the aggregate anti-runaway
-    # guard is the invocation high-water within the rolling window
-    # (max_invocations), which is unchanged. We never throw away delivered work.
+    # overrun is RECORDED (state='exceeded', actual usage stored) as
+    # audit/accounting data — the spend is metered on the founder's own
+    # subscription upstream, not re-enforced here (admission counts only IN-FLIGHT
+    # reservations, not settled actuals). The aggregate anti-runaway guard is the
+    # invocation high-water within the rolling window (max_invocations), which is
+    # unchanged. We never throw away delivered work.
     if exceeded:
         logger.warning(
             "served budget: reservation %s exceeded its per-call estimate "
