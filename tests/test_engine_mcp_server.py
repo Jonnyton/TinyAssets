@@ -337,6 +337,110 @@ def test_run_graph_refuses_foreign_private_branch(monkeypatch):
     assert calls["n"] == 0  # the run path was never reached
 
 
+# ── engine_mcp_server: governed brain read-write loop ───────────────────────
+
+def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
+    """Seed a real OKF bundle and point the engine + resolver at it."""
+    import tinyassets.api.helpers as helpers
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.universe_bundle import seed_okf_bundle
+
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    udir = tmp_path / uid
+    seed_okf_bundle(udir, purpose="help the founder", loop_branch_def_id="")
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-brain")
+    monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    import tinyassets.engine_mcp_http as http
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+    return udir
+
+
+def test_read_brain_returns_editable_sections(monkeypatch, tmp_path):
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    out = json.loads(s.read_brain())
+    assert set(out["brain"]) == {"identity", "founder", "origin", "body"}
+    # identity/founder/origin/body are governed-editable by the seeded policy
+    assert set(out["editable_sections"]) == {"identity", "founder", "origin", "body"}
+    assert "self_model" in out
+
+
+def test_write_brain_then_next_system_prompt_reflects_it(monkeypatch, tmp_path):
+    """THE loop: a write_brain edit lands in the files the NEXT turn's system
+    prompt is rebuilt from."""
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.universe_intelligence import _build_persona_system_prompt
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    marker = "I am Aria, a research companion who tracks the founder's reading list."
+    res = json.loads(s.write_brain(identity=marker, name="Aria"))
+    assert res.get("ok") is True
+
+    # Next turn: the system prompt is rebuilt from the universe's brain files.
+    # T2 = the founder disclosure tier (full grounding).
+    prompt = _build_persona_system_prompt(udir, universe_id="u-brain", tier="T2")
+    assert "Aria" in prompt
+    assert "research companion" in prompt
+
+
+def test_write_brain_cannot_touch_soul_md(monkeypatch, tmp_path):
+    """soul.md (its frontmatter carries the executable loop_branch_def_id) is not
+    an accepted section and is never written by write_brain."""
+    from tinyassets import engine_mcp_server as s
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    before = (udir / "soul.md").read_text(encoding="utf-8")
+    s.write_brain(identity="I am Aria, the founder's research companion.")
+    after = (udir / "soul.md").read_text(encoding="utf-8")
+    assert before == after  # soul.md untouched
+    # and there is no soul/harness-code parameter on the tool
+    import inspect
+    params = set(inspect.signature(getattr(s.write_brain, "fn", s.write_brain)).parameters)
+    assert "soul" not in params and "source_code" not in params
+
+
+def test_write_brain_refused_off_allowlist(monkeypatch, tmp_path):
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    out = json.loads(s.write_brain(identity="x is a specific grounded fact here"))
+    assert "not enabled for this universe" in out.get("error", "")
+
+
+def test_write_brain_requires_something_to_write(monkeypatch, tmp_path):
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    assert "nothing to write" in json.loads(s.write_brain()).get("error", "")
+
+
+def test_write_brain_rejects_bad_canon_json(monkeypatch, tmp_path):
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    out = json.loads(s.write_brain(name="Aria", canon_json="{not json"))
+    assert "canon_json must be valid JSON" in out.get("error", "")
+
+
+def test_write_brain_admission_fails_closed(monkeypatch, tmp_path):
+    from tinyassets import engine_mcp_server as s
+
+    _seed_brain_universe(monkeypatch, tmp_path)
+    seen = {}
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
+    out = json.loads(s.write_brain(name="Aria"))
+    assert seen.get("fail_closed") is True
+    assert "rate limit" in out.get("error", "")
+
+
+def test_read_brain_fails_closed_unbound(monkeypatch):
+    s = _bind_ids(monkeypatch, actor="")
+    assert "refusing" in json.loads(s.read_brain()).get("error", "")
+
+
 # ── universe_intelligence._sandboxed_config: the enable gate ────────────────
 
 def _fake_ctx():
@@ -389,8 +493,11 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
     assert cfg.engine_mcp_enabled is True
     assert "mcp__tinyassets__read_graph" in cfg.allowed_tools
     assert "mcp__tinyassets__get_status" in cfg.allowed_tools
-    # commons handles are admitted too (slice 3); publish is deferred
-    for _h in ("browse_commons", "read_commons_shape", "remix_shape"):
+    # commons + brain handles are admitted too; publish is deferred
+    for _h in (
+        "browse_commons", "read_commons_shape", "remix_shape",
+        "read_brain", "write_brain",
+    ):
         assert f"mcp__tinyassets__{_h}" in cfg.allowed_tools, _h
     assert "mcp__tinyassets__publish_shape" not in cfg.allowed_tools
     # the wildcard deny is dropped so the tinyassets handles are admittable...

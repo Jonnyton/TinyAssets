@@ -135,6 +135,13 @@ _ENGINE_DISALLOWED_TOOLS = (
 #     shared commons; pinning them needs a wiki-root override not yet set.
 #   * ``converse`` — never exposed (a universe relaying to itself is a
 #     recursion / fork bomb).
+# Brain / harness read-write loop (2026-08-22): the agent reads + durably writes
+# its OWN brain (identity/founder/origin/body + name + canon) so the change is in
+# its system prompt next turn. Governed (commit_learning -> apply_soul_edit,
+# soul.edit.md whitelist; soul.md's executable frontmatter excluded), pinned to
+# its own universe, allowlisted + rate-limited. Markdown content, never executed —
+# no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
+# injected into the next turn."
 _ENGINE_MCP_TOOLS = (
     "read_graph",
     "get_status",
@@ -142,6 +149,8 @@ _ENGINE_MCP_TOOLS = (
     "browse_commons",
     "read_commons_shape",
     "remix_shape",
+    "read_brain",
+    "write_brain",
 )
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT

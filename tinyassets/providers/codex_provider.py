@@ -215,6 +215,8 @@ _ENGINE_MCP_ENABLED_TOOLS = (
     "browse_commons",
     "read_commons_shape",
     "remix_shape",
+    "read_brain",
+    "write_brain",
 )
 
 #: Force the served CWD project untrusted so codex never loads a project-level

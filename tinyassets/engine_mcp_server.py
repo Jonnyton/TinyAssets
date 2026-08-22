@@ -576,6 +576,189 @@ def remix_shape(
 # auto-track dependency-subscription.
 
 
+# ── Brain / harness read-write loop (2026-08-22) ─────────────────────────────
+# Founder vision: the universe is the agent's EDITABLE brain + project folder —
+# it reads it and writes durable changes to it, and those changes are injected
+# into the NEXT turn's system prompt. The READ half already works (the daemon
+# rebuilds the persona system prompt each turn from the universe's OKF brain
+# files — identity/founder/origin/body + soul + self-model; see
+# universe_intelligence._build_persona_system_prompt). These two tools give the
+# served agent the WRITE half AS AGENCY (not the post-hoc extractor):
+#
+#   * read_brain  — read the agent's own brain files (what IS its system prompt).
+#   * write_brain — durably write learnings to those files, so they shape the
+#                   next turn.
+#
+# Governed, NOT raw-folder (that was the PR #2475 host-RCE reject): the write
+# routes through commit_learning -> apply_soul_edit, which writes ONLY the files
+# whitelisted in the universe's soul.edit.md policy, under a per-universe lock
+# with compare-and-swap and managed frontmatter. This slice restricts writes to
+# the SELF-DESCRIPTIVE grounding files (identity/founder/origin/body) + a learned
+# name + wiki canon. soul.md is deliberately EXCLUDED: its frontmatter carries
+# the executable loop_branch_def_id / effect_authority (the control-plane the
+# #2475 review flagged), which must never be agent-writable through here. All of
+# these files are read into the prompt as TEXT and never executed, so the write
+# surface carries no code-execution path — worst case the agent rewrites its own
+# self-description, which is its brain, not an escalation. Pinned to the agent's
+# OWN universe; allowlisted + rate-limited (fail-closed) like the other writes.
+_BRAIN_SECTIONS = {
+    "identity": "identity.md",
+    "founder": "founder.md",
+    "origin": "origin.md",
+    "body": "body.md",
+}
+
+
+@mcp.tool
+def read_brain() -> str:
+    """Read YOUR OWN brain — the durable files that ARE your system prompt every
+    turn: who you are, who your founder is, where you came from, and your body /
+    how you work, plus your learned self-model.
+
+    This is your project folder / harness. Whatever you save here with
+    ``write_brain`` is what you wake up already knowing next turn — read it first
+    so an edit builds on what's there instead of blanking it.
+    """
+    import json
+
+    err = _binding_error()
+    if err is not None:
+        return err
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.soul_edit import SoulEditError, read_governed_files
+    from tinyassets.universe_intelligence import _read_bundle_body
+    from tinyassets.universe_self_model import read_self_model
+
+    token = _bind_founder_identity()
+    try:
+        udir = _universe_dir(_GRAPH_ID)
+        brain = {
+            section: _read_bundle_body(udir, fname)
+            for section, fname in _BRAIN_SECTIONS.items()
+        }
+        try:
+            governed = set(read_governed_files(udir))
+        except SoulEditError:
+            governed = set()
+        editable = [s for s, f in _BRAIN_SECTIONS.items() if f in governed]
+        try:
+            self_model = read_self_model(udir)
+        except Exception:  # noqa: BLE001 - never break a read on a bad model file
+            self_model = {}
+        return json.dumps({
+            "brain": brain,
+            "self_model": self_model,
+            "editable_sections": editable,
+        })
+    finally:
+        _current_identity.reset(token)
+
+
+@mcp.tool
+def write_brain(
+    identity: str = "",
+    founder: str = "",
+    origin: str = "",
+    body: str = "",
+    name: str = "",
+    canon_json: str = "",
+) -> str:
+    """Durably WRITE to your OWN brain so the change is part of your system prompt
+    from your NEXT turn onward. This is how you actually LEARN and evolve — not
+    just recall within one conversation.
+
+    Pass the NEW full markdown body for any section you want to update (call
+    ``read_brain`` first and edit the current text; only the sections you pass
+    change). ``name`` records a name you have chosen for yourself. ``canon_json``
+    optionally saves durable world-facts to your universe's knowledge.
+
+    Args:
+        identity: New body for who you are.
+        founder: New body for who your founder is.
+        origin: New body for where you came from.
+        body: New body for your form / how you work (your harness).
+        name: A name you have learned or chosen for yourself.
+        canon_json: Optional JSON list of {"title","body"} durable facts.
+    """
+    import json
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    from tinyassets.engine_mcp_http import run_graph_allowlist
+
+    if _GRAPH_ID not in run_graph_allowlist():
+        return json.dumps({
+            "error": (
+                "brain writes are not enabled for this universe yet; they are "
+                "limited to a vetted founder while multi-tenant confinement is "
+                "hardened."
+            ),
+        })
+    section_values = {
+        "identity": identity,
+        "founder": founder,
+        "origin": origin,
+        "body": body,
+    }
+    soul: dict[str, str] = {}
+    for section, fname in _BRAIN_SECTIONS.items():
+        val = (section_values.get(section) or "").strip()
+        if val:
+            soul[fname] = val
+    canon = None
+    raw_canon = (canon_json or "").strip()
+    if raw_canon:
+        try:
+            canon = json.loads(raw_canon)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "canon_json must be valid JSON."})
+    learned_name = (name or "").strip()
+    if not (soul or learned_name or canon):
+        return json.dumps({
+            "error": (
+                "nothing to write; pass a section body (identity/founder/origin/"
+                "body), a name, or canon_json."
+            ),
+        })
+    if not _engine_run_admit(fail_closed=True):
+        return json.dumps({
+            "error": (
+                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+            ),
+        })
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.universe_intelligence import commit_learning
+
+    # Least-privilege branch-write caps (the write is governed by soul.edit.md +
+    # the graph pin, not ACL). commit_learning writes ONLY governed files via
+    # apply_soul_edit (soul.md excluded above) + optional wiki canon.
+    token = _bind_founder_identity(_REMIX_CAPABILITIES)
+    try:
+        udir = _universe_dir(_GRAPH_ID)
+        proposed: dict = {"name": learned_name, "soul": soul}
+        if canon is not None:
+            proposed["canon"] = canon
+        result = commit_learning(
+            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID
+        )
+        if result is None:
+            return json.dumps({
+                "error": (
+                    "nothing was persisted — the edit was empty, ungrounded, or "
+                    "rejected (e.g. a section that is not governed-editable)."
+                ),
+            })
+        return json.dumps({"ok": True, "written": result})
+    finally:
+        _current_identity.reset(token)
+
+
 if __name__ == "__main__":
     # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
     # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
