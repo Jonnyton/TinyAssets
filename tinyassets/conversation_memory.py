@@ -145,6 +145,20 @@ def _footer(interlocutor: str, nonce: str) -> str:
     )
 
 
+def _one_line(text: str) -> str:
+    """Render one message as exactly one record line, INJECTIVELY.
+
+    A stored message (a prior universe reply, or pasted founder text) that
+    contains a newline followed by "Founder:" would otherwise forge a founder
+    record inside the history block (Codex 2026-08-22). C-style escaping -
+    backslash first, then line breaks - is unambiguous: a literal backslash-n
+    in the original renders as a doubled backslash, so no input can imitate
+    an encoded newline, and role labels can only come from the renderer."""
+    return (
+        text.replace("\\", "\\\\").replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+    )
+
+
 def format_history(
     messages: list[Msg],
     *,
@@ -163,7 +177,7 @@ def format_history(
     kept = [m for m in messages if isinstance(m.text, str) and m.text.strip()]
     if not kept:
         return ""
-    kept = kept[-max(1, int(limit)):]
+    kept = kept[-max(1, int(limit)) :]
     who = _sanitize_name(interlocutor)
     nonce = secrets.token_hex(8)
     while nonce in who or any(nonce in m.text for m in kept):
@@ -174,7 +188,7 @@ def format_history(
     def line(m: Msg) -> str:
         when = _relative(m.ts, now)
         prefix = f"[{when}] " if when else ""
-        return f"{prefix}{_label(m.speaker)}: {m.text}"
+        return f"{prefix}{_label(m.speaker)}: {_one_line(m.text)}"
 
     def render(rows: list[Msg]) -> str:
         return header + "\n".join(line(m) for m in rows) + footer
@@ -191,7 +205,7 @@ def format_history(
         prefix = f"[{when}] " if when else ""
         head = prefix + _label(only.speaker) + ": "
         budget = char_cap - len(header) - len(footer) - len(head)
-        clipped = only.text[: max(0, budget)]
+        clipped = _one_line(only.text)[: max(0, budget)]
         block = header + head + clipped + footer
     return block
 
