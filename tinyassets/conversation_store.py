@@ -253,6 +253,85 @@ def record_turn(
     return 0
 
 
+#: Per-session retention ceiling for the verbatim transcript at rest. Rendering
+#: is already bounded (DEFAULT_LIMIT turns / character budget); this bounds the
+#: store itself so a long-lived thread cannot grow without limit. Oldest turns
+#: beyond it are deleted on every exchange (Codex 2026-08-22 #3). User-driven
+#: deletion/export of the transcript is a separate, tracked follow-up.
+RETENTION_TURNS = 400
+
+
+def record_exchange(
+    universe_dir: "str | Path",
+    session_id: str,
+    founder_text: str,
+    universe_text: str,
+    *,
+    ts: float | None = None,
+) -> bool:
+    """Append a founder turn AND the universe's reply in ONE transaction.
+
+    Two independent ``record_turn`` calls can leave a founder-only half-turn
+    when the second write fails (Codex 2026-08-22 #2); here both rows commit
+    together or not at all. Also applies ``RETENTION_TURNS``. Best-effort by
+    contract: returns False and logs on any failure, never raises.
+    """
+    if not session_id or not isinstance(founder_text, str) or not founder_text.strip():
+        return False
+    if not isinstance(universe_text, str) or not universe_text.strip():
+        return False
+    try:
+        when = _when(ts)
+        db_path = _db_path(universe_dir)
+        lock = _lock_for(db_path)
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        logger.warning("conversation_store: exchange setup failed", exc_info=True)
+        return False
+    for attempt in range(6):
+        try:
+            with lock:
+                conn = _connect(db_path)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute(
+                        "SELECT COALESCE(MAX(turn_no), 0) + 1 "
+                        "FROM conversation_turns WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                    turn_no = int(row[0])
+                    conn.executemany(
+                        "INSERT INTO conversation_turns "
+                        "(session_id, turn_no, speaker, content, ts, ext_id) "
+                        "VALUES (?, ?, ?, ?, ?, '')",
+                        [
+                            (session_id, turn_no, "founder", founder_text, when),
+                            (session_id, turn_no + 1, "universe", universe_text, when),
+                        ],
+                    )
+                    conn.execute(
+                        "DELETE FROM conversation_turns WHERE session_id = ? AND turn_no <= "
+                        "(SELECT COALESCE(MAX(turn_no), 0) FROM conversation_turns "
+                        "WHERE session_id = ?) - ?",
+                        (session_id, session_id, RETENTION_TURNS),
+                    )
+                    conn.commit()
+                    return True
+                finally:
+                    conn.close()
+        except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+            msg = str(exc).lower()
+            if ("lock" in msg or "busy" in msg or "unique" in msg) and attempt < 5:
+                time.sleep(0.02 * (attempt + 1))
+                continue
+            logger.warning("conversation_store: exchange failed: %s", exc)
+            return False
+        except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+            logger.warning("conversation_store: exchange failed", exc_info=True)
+            return False
+    logger.warning("conversation_store: exchange failed after 6 attempts for %s", session_id)
+    return False
+
+
 def load_recent(
     universe_dir: "str | Path",
     session_id: str,

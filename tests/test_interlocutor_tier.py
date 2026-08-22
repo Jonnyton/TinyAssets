@@ -496,7 +496,7 @@ class TestEntrypointBindsTier:
 
         seen: dict = {}
 
-        def _capture(uid, msg, *, actor_id="", tier=None):
+        def _capture(uid, msg, *, actor_id="", tier=None, **_kw):
             seen.update(uid=uid, actor_id=actor_id, tier=tier)
             return "hello back"
 

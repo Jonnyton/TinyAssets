@@ -1582,7 +1582,24 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "auth_scope_required": True,
         })
 
+    # Cross-turn memory (founder goal 2026-08-22: a conversation that persists).
+    # One continuous session per founder per universe, keyed on the VERIFIED
+    # principal, so every surface (phone app, claude.ai connector, web) shares
+    # the same thread and it survives app restarts and token renewals. The
+    # store is best-effort by contract: a memory hiccup never costs the turn.
+    # History only rides into GRANTED (founder) turns — enforced again inside
+    # converse — and it is memory, never consent.
+    from tinyassets.api.helpers import _universe_dir as _memory_universe_dir
     from tinyassets.universe_intelligence import converse as _converse_impl
+
+    memory_universe_dir = _memory_universe_dir(uid)
+    memory_session = f"principal:{current_actor_id()}"
+    try:
+        from tinyassets.conversation_store import load_recent
+
+        conversation_history = load_recent(memory_universe_dir, memory_session)
+    except Exception:  # noqa: BLE001 - no memory this turn, never a failed turn
+        conversation_history = []
 
     try:
         reply = _converse_impl(
@@ -1590,6 +1607,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
             message,
             actor_id=current_actor_id(),
             tier=turn.interlocutor.tier,
+            conversation_history=conversation_history,
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
@@ -1604,6 +1622,13 @@ def converse(message: str = "", graph_id: str = "") -> str:
         return json.dumps({
             "error": f"Your universe couldn't be reached right now: {exc}",
         })
+    try:
+        from tinyassets.conversation_store import record_exchange
+
+        # Both sides in ONE transaction: never a founder-only half-turn.
+        record_exchange(memory_universe_dir, memory_session, message, str(reply))
+    except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
+        logger.warning("converse: conversation memory could not record the turn", exc_info=True)
     return json.dumps({"reply": reply, "universe_id": uid})
 
 
