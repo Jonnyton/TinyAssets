@@ -27,10 +27,16 @@ Slice 1 scope + security posture (grounded in the outbound substrate):
 - **Provision-or-rotate, policy-immutable.** A repeat call for the same
   destination rotates the secret and reuses the (idempotent) connection/grant ONLY
   when every immutable field matches (owner, type, class, auth scheme, scopes,
-  destination, credential_ref, and the endpoint allow-list). Any change to the
+  destination, credential_ref, and the endpoint allow-list — the last compared as
+  an unordered set, so a reorder alone is not a change). Any real change to the
   policy — a different endpoint allow-list included — is refused as a conflict
   before any vault write, so a re-provision can never silently keep the old egress
-  policy under a rotated secret. Changing policy means revoke-then-reprovision.
+  policy under a rotated secret. Changing an existing connection's policy is
+  UNSUPPORTED in Slice 1: ``revoke_connection`` only stamps ``revoked_at``, and a
+  revoked deterministic resource then trips the ``revoked_at is not None``
+  conflict on every re-provision, so there is no revoke-then-reprovision path.
+  A dedicated policy-update operation is the follow-up (tasks.md); until it lands,
+  a policy change requires a new destination.
 - **Never echoes the secret or the credential_ref.** Errors carry no secret.
 
 A live outbound call additionally requires the owner's effector consent for the
@@ -123,6 +129,43 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
             "packet with this connection_id + grant_id",
         ],
     }
+
+
+def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
+    """Order-insensitive canonical form of an endpoint allow-list, for the
+    idempotency conflict-check ONLY.
+
+    Runtime authorization treats endpoints, methods, and ``allowed_query`` names
+    as UNORDERED sets, so a re-provision that reorders an otherwise-identical
+    policy must compare equal — else idempotency breaks with a false
+    ``connection_conflict``. Storage does NOT sort the endpoint list, the
+    ``methods``, or ``allowed_query`` (``_parse_allowed_endpoints`` /
+    ``_validate_endpoint_methods`` preserve input order), so BOTH sides are
+    normalized here: sort ``methods`` / ``allowed_query`` / ``required_query``
+    within each endpoint, then sort the endpoints by a stable serialization.
+    ``param_patterns`` / ``query_patterns`` are already order-independent (dicts
+    emitted by ``as_dict``); ``sort_keys`` canonicalizes them.
+
+    This ONLY collapses set-identical reorderings — any genuinely different host,
+    path, method, or query name changes the canonical string, so no distinct
+    policy can falsely MATCH. Endpoint duplicates are preserved (a list with a
+    repeated endpoint is a different input, treated as a conflict), so equality
+    is never over-broad.
+    """
+    normalized = [
+        {
+            "host": endpoint.get("host"),
+            "path_template": endpoint.get("path_template"),
+            "methods": sorted(set(endpoint.get("methods") or ())),
+            "param_patterns": endpoint.get("param_patterns") or {},
+            "allowed_query": sorted(set(endpoint.get("allowed_query") or ())),
+            "query_patterns": endpoint.get("query_patterns") or {},
+            "required_query": sorted(set(endpoint.get("required_query") or ())),
+        }
+        for endpoint in endpoints
+    ]
+    normalized.sort(key=lambda endpoint: json.dumps(endpoint, sort_keys=True))
+    return json.dumps(normalized, sort_keys=True)
 
 
 def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -226,11 +269,15 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
 
     # 4. Conflict-check the connection AND grant BEFORE depositing anything, so a
     #    mismatch never rotates a credential. Compare EVERY immutable field (Codex
-    #    review): a re-provision may only reuse+rotate a byte-identical connection
-    #    (same owner/type/class/scheme/scopes/destination/ref/endpoints). Changing
-    #    the endpoint allow-list (or any field) is a conflict, never a silent reuse
-    #    of the old policy under a rotated secret — the owner must revoke first (a
-    #    dedicated update op is a follow-up). Credential-bearing read (trusted
+    #    review): a re-provision may only reuse+rotate a policy-identical connection
+    #    (same owner/type/class/scheme/scopes/destination/ref/endpoints). The
+    #    endpoint allow-list is compared as an unordered set (`_canonical_policy`),
+    #    so a pure reorder stays idempotent; any real change (a different endpoint
+    #    list, or any field) is a conflict, never a silent reuse of the old policy
+    #    under a rotated secret. Changing an existing connection's policy is
+    #    UNSUPPORTED in Slice 1 (revoke only stamps revoked_at, which then trips the
+    #    revoked_at conflict below) — a policy change needs a new destination until
+    #    the dedicated update op follow-up lands. Credential-bearing read (trusted
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
     if resource is not None and (
@@ -243,7 +290,8 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         or resource.destination != destination
         or resource.credential_ref != credential_ref
         or resource.revoked_at is not None
-        or [e.as_dict() for e in resource.allowed_endpoints] != requested_endpoints
+        or _canonical_policy([e.as_dict() for e in resource.allowed_endpoints])
+        != _canonical_policy(requested_endpoints)
     ):
         return {"error": "connection_conflict", "resource": "connection"}
     existing_grant = ledger.get_grant(grant_id)

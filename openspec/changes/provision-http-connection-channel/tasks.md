@@ -47,4 +47,7 @@
 Slice 2: expose connect_http + write_graph target=branch + consent/mint on the
 SERVED surface (engine_mcp_server.py) so the universe builds channels itself.
 oauth1a/multi-secret bundle; typed http credential validation; a dedicated
-policy-update op (change the endpoint allow-list without revoke-then-reprovision).
+policy-update op — the ONLY planned way to change an existing connection's endpoint
+allow-list. Slice 1 has NO revoke-then-reprovision path (`revoke_connection` only
+stamps `revoked_at`, which then trips the `revoked_at` conflict), so until the
+update op lands a policy change requires a new destination.

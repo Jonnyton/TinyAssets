@@ -53,8 +53,10 @@ template + methods validated) — reject empty (SSRF boundary).
    provider="http", destination, credential_ref, allowed_endpoints)`; else
    conflict-check EVERY immutable field (owner, connection_type, connection_class,
    provider, auth_scheme, scopes, destination, credential_ref, revoked_at, AND the
-   endpoint allow-list compared as `as_dict()`) → any mismatch, including a changed
-   endpoint list, returns `{"error":"connection_conflict"}` BEFORE the vault write.
+   endpoint allow-list compared as an UNORDERED set — `_canonical_policy` sorts
+   endpoints/methods/query names so a reorder stays idempotent) → any real mismatch,
+   including a changed endpoint set, returns `{"error":"connection_conflict"}`
+   BEFORE the vault write.
 5. Idempotent grant: `get_grant` first; if None → `grant_connection(grant_id,
    connection_id, owner_user_id=actor, universe_id=uid,
    unprompted_action_cap=ActionCap("http_calls", <cap>, "requests"))`; else

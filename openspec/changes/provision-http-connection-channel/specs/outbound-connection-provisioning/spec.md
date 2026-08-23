@@ -58,10 +58,17 @@ never leave a usable half-connection.
 - **GIVEN** an owner who already provisioned a connection for a destination
 - **WHEN** they call connect_http again for the same destination with an identical
   policy (same owner, type, class, auth scheme, scopes, credential_ref, and
-  endpoint allow-list)
+  endpoint allow-list — the endpoint allow-list compared as an UNORDERED set of
+  endpoints/methods/query names, so a reordered-but-identical policy is not a
+  change)
 - **THEN** the existing connection/grant are returned (deterministic ids), not
   duplicated, and the secret is rotated to the new value
-- **AND** if any immutable field differs — including a changed endpoint allow-list,
-  or a non-owner admin — the call returns `connection_conflict` before any vault
-  write, so a re-provision never silently keeps the old egress policy under a
-  rotated secret (changing policy requires revoke-then-reprovision)
+- **AND** if any immutable field differs — including a genuinely changed endpoint
+  allow-list, or a non-owner admin — the call returns `connection_conflict` before
+  any vault write, so a re-provision never silently keeps the old egress policy
+  under a rotated secret
+- **AND** changing an existing connection's policy is UNSUPPORTED in Slice 1: there
+  is no revoke-then-reprovision path (`revoke_connection` only stamps `revoked_at`,
+  and a revoked deterministic resource then trips the `revoked_at` conflict on
+  every re-provision), so a policy change requires a new destination until the
+  dedicated policy-update operation follow-up lands
