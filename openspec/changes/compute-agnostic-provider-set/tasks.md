@@ -5,11 +5,27 @@ migration. Selection/toggle (`user-assigned-llm-policy`), API-key custody
 (`retire-mcp-provider-secret-deposit`), connect UX (`byo-llm-connect-flow`) are
 sibling umbrella lanes that consume this — NOT built here.
 
-## 0. Pre-req (execution half of the migration)
-- [ ] 0.1 Verify + land `retire-cloud-worker-fleet` (worktree `wf-fleet-removal-complete`):
+## 0. Pre-req — SALVAGE fleet-removal, do NOT hand-merge it (revised 2026-08-22)
+Verification verdict: `retire-cloud-worker-fleet` (branch `claude/fleet-removal-complete`)
+is clean/tested/in-scope but 65 commits behind, and its `router.py`/`base.py`/
+`provider_assignment.py` conflicts are ALL the dangerous pattern — a large stale-base
+DELETION vs main's NEWER additive security/budget work (`_SERVED_PER_CALL_MAX_TOKENS`
+served-budget fix, `ProviderInvocationCarrier` authority, connect_http #2485). A
+hand-merge risks silently dropping main's work — and slice-1 REWRITES those same files
+anyway. So do NOT land the branch as-is.
+- [ ] 0.1 **Salvage the clean-merging modules** (additive, no conflict): cherry-pick /
+      copy `tinyassets/assigned_credential_execution.py` (+382) + `tests/test_assigned_credential_execution.py`
+      (+490) + the archived OpenSpec change onto current `origin/main`.
+- [ ] 0.2 **Fold the fleet-removal INTENT into slice-1's router rewrite** (§3 here):
       queued execution resolves each workflow's assigned serving credential; fail closed
-      `no_requester_owned_executor`, no ambient borrow. (Verification subagent running.)
-      Rebase this change on the result.
+      `no_requester_owned_executor`; remove provider-fallback chains / free-provider
+      chaining / writer pins / ambient host-credential borrow — but PRESERVE main's
+      served-budget decouple, `ProviderInvocationCarrier`, and connect_http substrate.
+      This replaces a risky hand-merge of a file we rewrite anyway.
+- [ ] 0.3 Delete the cloud-worker fleet files fleet-removal removed (cloud_worker.py,
+      host_pool/*, idle_cycle.py, healthcheck, fleet-only tests) as a scoped removal on
+      current main + reference-repair. Decide `slack_agent_worker.py` keep-vs-delete
+      (main already deleted it; adopt that deletion unless a live surface needs it).
 
 ## 1. Registry (owns: provider definition → candidate)
 - [ ] 1.1 `ProviderDefinition` immutable descriptor (server-issued id, `access_method`
