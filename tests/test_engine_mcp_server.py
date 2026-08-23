@@ -837,3 +837,109 @@ def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path):
     )
     assert _codex_engine_mcp_args(cfg, env) == _UNTRUSTED
     assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
+
+
+# ── connect_compute (slice 4): served compute-provider registration ──────────
+
+def test_connect_compute_fails_closed_when_unbound(monkeypatch):
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
+    out = json.loads(s.connect_compute(access_method="subscription_cli"))
+    assert "not bound" in out.get("error", "")
+
+
+def test_connect_compute_refused_off_allowlist(monkeypatch):
+    """Registration is a WRITE via the engine surface — held to the vetted-founder
+    allowlist while multi-tenant confinement is hardened; the impl is never reached."""
+    import tinyassets.api.compute_connection as cc
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-not-listed")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    calls = {"n": 0}
+    monkeypatch.setattr(cc, "connect_compute", lambda **kw: (calls.update(n=1), {})[1])
+    out = json.loads(s.connect_compute(access_method="subscription_cli", ref="codex"))
+    assert "not enabled for this universe" in out.get("error", "")
+    assert calls["n"] == 0  # never reached the write
+
+
+def test_connect_compute_requires_access_method(monkeypatch):
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-ok")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-ok"}))
+    out = json.loads(s.connect_compute(access_method="  "))
+    assert "access_method is required" in out.get("error", "")
+
+
+def test_connect_compute_pins_universe_and_binds_write_caps(monkeypatch):
+    """universe_id is PINNED (never caller-supplied) and least-privilege write caps
+    are bound (no submit_request / costly)."""
+    import tinyassets.api.compute_connection as cc
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-cc")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-cc")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-cc"}))
+    captured: dict = {}
+
+    def _fake(**kw):
+        captured["kw"] = kw
+        captured["caps"] = set(middleware.current_identity().capabilities)
+        return {"status": "registered", "definition_id": "provdef_x"}
+
+    monkeypatch.setattr(cc, "connect_compute", _fake)
+    s.connect_compute(
+        access_method="api_key_http", protocol="openai_chat",
+        model="moonshotai/kimi-k2", ref="http_grant_z", visibility="private",
+    )
+    assert captured["kw"]["universe_id"] == "u-cc"  # PINNED, not caller-supplied
+    payload = captured["kw"]["payload"]
+    assert payload["access_method"] == "api_key_http"
+    assert payload["protocol"] == "openai_chat"
+    assert payload["model"] == "moonshotai/kimi-k2"
+    assert payload["ref"] == "http_grant_z"
+    # least-privilege write caps: NOT submit_request, NOT costly.
+    assert {"read", "list", "write"} == captured["caps"]
+    assert "submit_request" not in captured["caps"]
+    assert "costly" not in captured["caps"]
+
+
+def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_path):
+    """Full flow against the real impl: the served agent registers a candidate under
+    the founder's own universe (admin ACL required); no secret ever appears."""
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.daemon_server import grant_universe_access
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "u-cc-e2e"
+    (tmp_path / uid).mkdir(parents=True)
+    grant_universe_access(
+        tmp_path, universe_id=uid, actor_id="founder-cc",
+        permission="admin", granted_by="founder-cc",
+    )
+    monkeypatch.setattr(s, "_ACTOR_ID", "founder-cc")
+    monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+
+    out = json.loads(s.connect_compute(
+        access_method="subscription_cli", protocol="cli:codex",
+        model="gpt-5-codex", ref="codex",
+    ))
+    assert out["status"] == "registered", out
+    assert out["access_method"] == "subscription_cli"
+    assert "secret" not in json.dumps(out).lower()
+    # A non-admin actor on the same universe is refused (owner-gate, uniform envelope).
+    monkeypatch.setattr(s, "_ACTOR_ID", "intruder")
+    refused = json.loads(s.connect_compute(
+        access_method="subscription_cli", protocol="cli:codex",
+        model="gpt-5-codex", ref="codex",
+    ))
+    assert refused.get("error") == "not_found"
