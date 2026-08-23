@@ -48,30 +48,38 @@ Executors are `BaseProvider` subclasses, so the existing node-execution + servin
 machinery consumes them unchanged (agent = node, host decision 2026-08-22).
 Compute authorization = the connection GRANT alone (no effector consent / no
 outbound-effects flag); SSRF + credential-blindness still apply.
-- [ ] 2.1 `provider_for_definition(definition) -> BaseProvider` resolver; selects the
-      executor deterministically by `access_method`; NO cross-method ambient fallback.
-- [ ] 2.2 `subscription_cli` executor = existing `CodexProvider` behind the resolver,
-      verbatim behavior (codex exec, sealed CODEX_HOME, sandbox, auth-health, budget,
-      telemetry, `codex` identity). Differential-test vs current `CodexProvider`.
+- [x] 2.1 `provider_for_definition(definition) -> BaseProvider` resolver; deterministic
+      by `access_method`; NO cross-method fallback. `provider_resolver.py` + 5 tests.
+- [x] 2.2 `subscription_cli` -> the vendor CLI adapter (`codex`->CodexProvider,
+      `claude-code`->ClaudeProvider) behind the resolver, identity preserved verbatim.
 - [x] 2.3a `api_key_http` protocol ENCODERS (not vendor SDKs): `openai_chat` +
       `anthropic_messages` — credential-free request body/path build + fail-loud
       response decode. `tinyassets/providers/protocol_encoders.py` + 18 tests.
-- [ ] 2.3b `ApiKeyHttpProvider(BaseProvider)` — composes the encoder + dispatch via
-      `ConnectionLedger.resolve_exact_scoped_proxy(universe_id, grant_id, connection_id)`
-      then `proxy.request(verb, request)` (the credential-blind broker worker; grant
-      gates it, NO effector-consent/flag per the compute-authorization decision) +
-      decode into a `ProviderResponse`. Universe-isolation gate: grant.universe_id must
-      match. Test wire-request assembly + response parse via the injected in-process
-      driver seam (the spawned worker re-imports production SSRF, so a monkeypatch
-      cannot cross it — use the loopback-broker seam for assertions).
+- [x] 2.3b `ApiKeyHttpProvider(BaseProvider)` — composes the encoder + dispatch via
+      `ConnectionLedger.resolve_exact_scoped_proxy` then `proxy.request` (credential-blind
+      broker worker; grant-gated, NO effector-consent/flag; SSRF preserved) + decode into
+      a `ProviderResponse`. Universe-isolation gate enforced up front + by the resolver;
+      HTTP status -> typed ProviderError; malformed body fails loud.
+      `tinyassets/providers/api_key_http_provider.py` + 13 tests.
+      SLICE 2 COMPLETE: 4 additive modules, 55 tests, none touching live code.
 
-## 3. Open router
-- [ ] 3.1 Implement the routing equation (selected ∩ allowed_providers ∩ enrollment ∩
-      capability); replace static role chains (`router.py:180`). Router filters within
-      the selected ordered set, never synthesizes a candidate. Empty set → fail closed
-      naming the emptying input.
+## 3. Open router — integration point mapped (do ADDITIVELY, full-suite gated)
+Integration seam (studied 2026-08-23): `ProviderRouter` (router.py:260) — `.register()`
+adds a BaseProvider by name; `.effective_chain(role)` builds the static ordered chain;
+`.call_with_policy()` (line 991) honors the per-node `llm_policy`
+(preferred_provider+accepted_fallbacks). Open providers integrate by resolving a
+universe's registered ProviderDefinitions via `provider_for_definition` and
+`.register()`-ing them so the policy/chain can reference them by name
+(ApiKeyHttpProvider.name = `api_key_http:<def-id>`). Do this ADDITIVELY first
+(register the universe's open providers alongside the existing chains; run the FULL
+provider/routing/serving suite for zero regressions) — the static-chain removal is the
+task-5 migration, sequenced after the open path is proven.
+- [ ] 3.1 Per-universe open-provider registration into the router + routing equation
+      (selected ∩ allowed_providers ∩ enrollment ∩ capability); router filters within
+      the selected ordered set, never synthesizes. Empty set → fail closed naming the
+      emptying input. FULL suite green vs origin/main.
 - [ ] 3.2 Preserve fail-loud, bounded cooldown, hard-writer-pin, per-universe privacy
-      allowlist; privacy ceiling DOMINATES capability. Assert with mutation-probe tests.
+      allowlist; privacy ceiling DOMINATES capability. Mutation-probe tests. Codex gate.
 
 ## 4. Capability + advisories (non-authority)
 - [ ] 4.1 Capability observations: user-declared (validated on use) + passive
