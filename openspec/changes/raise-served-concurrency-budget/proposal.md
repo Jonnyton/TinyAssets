@@ -22,10 +22,19 @@ concurrency.
 
 ## What Changes
 
+- **Decouple the per-call output reservation from the aggregate in-flight
+  ceiling (the core fix).** The production converse path (`_sandboxed_config`)
+  leaves `max_tokens=None`; the router substituted the *entire* binding ceiling
+  and then reserved that whole amount per turn, so the first turn reserved the
+  full budget and the second concurrent turn bricked no matter how high the
+  ceiling was raised (Codex 2026-08-22). The router now reserves a bounded
+  per-call default (`_SERVED_PER_CALL_MAX_TOKENS = 65_536`, capped to the
+  ceiling) when no explicit `max_tokens` is set.
 - Raise `_MAX_TOKENS` 32_768 → 4_000_000 and `_MAX_COST_MICROUNITS`
   10_000_000 → 400_000_000 on the serving binding (kept consistent so the
-  token cap, not the cost cap, is the effective ceiling). Sized for realistic
-  single-user concurrency (~90 simultaneous worst-case ~45 KB turns).
+  token cap, not the cost cap, is the effective ceiling). With per-call
+  decoupled, the ceiling now genuinely bounds *concurrency*: ~40–60 simultaneous
+  worst-case turns share it.
 - The true runaway backstops are unchanged: the rolling per-hour invocation cap
   (`_MAX_BINDING_INVOCATIONS = 10_000`), the engine-run rate limit (20/hr), and
   the user's metered subscription. The two independent guards in

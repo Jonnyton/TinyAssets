@@ -421,6 +421,117 @@ def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch)
         revoke_provider_request(capability)
 
 
+def test_served_none_max_tokens_reserves_bounded_per_call_not_whole_ceiling(tmp_path):
+    """Production converse path leaves max_tokens=None. The router must reserve a
+    BOUNDED per-call output, not the entire binding ceiling — else the first turn
+    reserves the whole budget and the second concurrent turn bricks regardless of
+    ceiling size (Codex 2026-08-22, the real production-path defect)."""
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers.router import (
+        _SERVED_PER_CALL_MAX_TOKENS,
+        ProviderRouter,
+    )
+
+    seen: dict[str, object] = {}
+
+    class _Rec(_RecordingProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            seen["max_tokens"] = config.max_tokens
+            return await super().complete(
+                prompt, system, config, universe_dir=universe_dir
+            )
+
+    _, _, capability, context = _served_context(tmp_path)
+    router = ProviderRouter({"codex": _Rec("codex")})
+    try:
+        asyncio.run(
+            router.call(
+                "writer", "hi", "sys",
+                config=ModelConfig(max_tokens=None),
+                operation="converse",
+                universe_context=context,
+            )
+        )
+    finally:
+        revoke_provider_request(capability)
+    # The per-call reservation is the bounded default, NOT the multi-million
+    # aggregate in-flight ceiling.
+    assert seen["max_tokens"] == _SERVED_PER_CALL_MAX_TOKENS
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows admission uses exclusive msvcrt file locks that serialize "
+    "even shared readers, so two same-universe calls cannot overlap in-flight "
+    "here; concurrent readers (fcntl LOCK_SH) run on the Linux prod/CI host, "
+    "which is where the concurrency budget brick actually occurs.",
+)
+def test_two_concurrent_served_none_max_tokens_calls_both_reach_provider(tmp_path):
+    """Two overlapping served turns (production max_tokens=None), the first held
+    in flight while the second reserves, must BOTH reach the provider — one user
+    driving many surfaces at once. Pre-fix the first reserved the whole ceiling
+    and the second got 'Provider authority budget is exhausted'. Real concurrent
+    requests arrive on separate threads (the admission lock is thread-keyed), so
+    the test uses two threads with a shared gate."""
+    import threading
+
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
+
+    both_in = threading.Event()
+    lock = threading.Lock()
+
+    class _Blocking(_RecordingProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            with lock:
+                self.calls += 1
+                n = self.calls
+            if n >= 2:
+                both_in.set()  # the second turn was admitted while the first waits
+            if not both_in.wait(timeout=5):
+                raise AssertionError(
+                    "second concurrent served turn was never admitted while the "
+                    "first was in flight"
+                )
+            return ProviderResponse(
+                text="ok", provider=self.name, model="f",
+                family=self.family, latency_ms=1.0,
+            )
+
+    universe_dir, serving, cap1, ctx1 = _served_context(tmp_path)
+    cap2, ctx2 = _fresh_served_request(universe_dir, serving, request_id="req-2")
+    provider = _Blocking("codex")
+    router = ProviderRouter({"codex": provider})
+    results: dict[str, object] = {}
+
+    def worker(key, ctx):
+        try:
+            results[key] = asyncio.run(
+                router.call(
+                    "writer", key, "s", config=ModelConfig(max_tokens=None),
+                    operation="converse", universe_context=ctx,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced via assertion below
+            results[key] = exc
+
+    t1 = threading.Thread(target=worker, args=("a", ctx1))
+    t2 = threading.Thread(target=worker, args=("b", ctx2))
+    try:
+        t1.start()
+        t2.start()
+        t1.join(10)
+        t2.join(10)
+    finally:
+        revoke_provider_request(cap1)
+        revoke_provider_request(cap2)
+    assert provider.calls == 2, "both turns must reach the provider"
+    assert not isinstance(results.get("a"), Exception), results.get("a")
+    assert not isinstance(results.get("b"), Exception), results.get("b")
+    assert results["a"].text == "ok" and results["b"].text == "ok"
+
+
 @pytest.mark.parametrize("operation", [None, "run_graph"])
 def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     tmp_path,
