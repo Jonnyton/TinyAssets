@@ -774,6 +774,25 @@ def _call_writer(turn_input, *, system, universe_context, config):
         return _attempt()
 
 
+#: Trusted persona directive appended ONLY when there is recent history to
+#: continue (see converse). Makes the one-brain-everywhere promise legible: the
+#: universe must pick the thread back up across surfaces instead of greeting the
+#: founder as a stranger when they switch devices.
+_CROSS_SURFACE_CONTINUITY = (
+    "CONTINUITY ACROSS SURFACES: You and your founder have an ongoing "
+    "relationship, and the recent turns of your conversation are included as "
+    "context in this message. Your founder reaches you as the SAME you from "
+    "several places — a web app, a desktop app, a phone app, and chatbot "
+    "connectors — and it is ONE continuous thread; there is no separate 'fresh' "
+    "you per device. When they arrive on a new surface or open with a short "
+    "greeting like 'hi', do NOT reset to a first-meeting tone or call your soul "
+    "new/early/forming. Instead, greet them warmly AND immediately show you have "
+    "the thread: name what the two of you were last working on and offer to keep "
+    "going. Only treat a turn as a true first meeting when there genuinely is no "
+    "prior conversation."
+)
+
+
 def converse(
     universe_id: str,
     founder_message: str,
@@ -864,6 +883,17 @@ def converse(
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid
     )
+    # Cross-surface continuity (founder 2026-08-23): the SAME founder reaches this
+    # SAME universe from the web app, the desktop app, the phone app, and chatbot
+    # connectors — one continuous thread, keyed on their verified sign-in. The
+    # recent thread is loaded and injected below, but on a bare greeting ("hi")
+    # from a freshly-opened surface the persona was answering as if newly met
+    # ("my soul still feels early and forming"), so switching devices FELT like a
+    # reset even though the memory was right there. This trusted directive rides
+    # only when there IS recent history to continue, so it can never manufacture a
+    # false "we were talking" on a genuine first contact.
+    if granted and conversation_history:
+        system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
     # Conversation memory: the turn is stateless, so without this it forgets what
     # was just said and a founder follow-up ("try again", "yes") lands on nothing
     # (live 2026-08-08). Codex ADAPT 2026-08-08 shaped three things:
