@@ -292,10 +292,16 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     proc_env[_ENGINE_MCP_BEARER_ENV] = secret
     enabled = ",".join(f'"{t}"' for t in _ENGINE_MCP_ENABLED_TOOLS)
     # Dotted key merges the one server into the (otherwise-empty) map.
+    # default_tools_approval_mode="approve": codex MCP tools default to `auto`,
+    # which requires per-call approval; a non-interactive served `codex exec` has
+    # no approver, so the prompt auto-cancels ("user cancelled MCP tool call").
+    # Auto-approve this ONE trusted, enabled_tools-restricted server so its tools
+    # actually execute (Codex diagnosis 2026-08-22; verified key parses on 0.146).
     server = (
         "mcp_servers.tinyassets={"
         f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
-        f"required=true,enabled_tools=[{enabled}]"
+        f'required=true,default_tools_approval_mode="approve",'
+        f"enabled_tools=[{enabled}]"
         "}"
     )
     args += ["-c", server]
