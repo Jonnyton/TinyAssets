@@ -44,15 +44,26 @@ anyway. So do NOT land the branch as-is.
       is NEVER carried across a remix.
 
 ## 2. Executors (owns: frozen invocation dispatch)
-- [ ] 2.1 `Executor.execute(invocation, credential_ref)` interface; select
-      deterministically by `access_method`; NO cross-method ambient fallback.
-- [ ] 2.2 `subscription_cli` executor = existing `CodexProvider` behind the interface,
+Executors are `BaseProvider` subclasses, so the existing node-execution + serving
+machinery consumes them unchanged (agent = node, host decision 2026-08-22).
+Compute authorization = the connection GRANT alone (no effector consent / no
+outbound-effects flag); SSRF + credential-blindness still apply.
+- [ ] 2.1 `provider_for_definition(definition) -> BaseProvider` resolver; selects the
+      executor deterministically by `access_method`; NO cross-method ambient fallback.
+- [ ] 2.2 `subscription_cli` executor = existing `CodexProvider` behind the resolver,
       verbatim behavior (codex exec, sealed CODEX_HOME, sandbox, auth-health, budget,
       telemetry, `codex` identity). Differential-test vs current `CodexProvider`.
-- [ ] 2.3 `api_key_http` executor = `openai_chat` + `anthropic_messages` protocol
-      ENCODERS (not vendor SDKs) that emit through the SSRF-hardened outbound proxy
-      (`ConnectionLedger` + credential-blind proxy). Differential-test the openai_chat
-      encoder against the current grok/groq/ollama providers' request/response handling.
+- [x] 2.3a `api_key_http` protocol ENCODERS (not vendor SDKs): `openai_chat` +
+      `anthropic_messages` — credential-free request body/path build + fail-loud
+      response decode. `tinyassets/providers/protocol_encoders.py` + 18 tests.
+- [ ] 2.3b `ApiKeyHttpProvider(BaseProvider)` — composes the encoder + dispatch via
+      `ConnectionLedger.resolve_exact_scoped_proxy(universe_id, grant_id, connection_id)`
+      then `proxy.request(verb, request)` (the credential-blind broker worker; grant
+      gates it, NO effector-consent/flag per the compute-authorization decision) +
+      decode into a `ProviderResponse`. Universe-isolation gate: grant.universe_id must
+      match. Test wire-request assembly + response parse via the injected in-process
+      driver seam (the spawned worker re-imports production SSRF, so a monkeypatch
+      cannot cross it — use the loopback-broker seam for assertions).
 
 ## 3. Open router
 - [ ] 3.1 Implement the routing equation (selected ∩ allowed_providers ∩ enrollment ∩

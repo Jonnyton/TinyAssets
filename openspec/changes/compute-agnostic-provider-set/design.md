@@ -68,9 +68,30 @@ One executor per access method, selected DETERMINISTICALLY by
   blind proxy). Compute HTTP **consumes** that substrate; it does not duplicate the
   ledger or reuse a credential-bearing MCP op.
 
+  **Compute authorization = the connection grant alone (host decision 2026-08-22).**
+  "just granting access to the universe is enough — then it can be used however the
+  universe/user wants." Unlike an outbound *effect*, a compute call does NOT require
+  the per-destination `effector_consents` grant or the
+  `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` effects flag — those gate acting on
+  the world; running inference on the universe's OWN granted compute is its core
+  function, so the universe-bound `grant_connection` binding IS the authorization.
+  The SSRF hardening, credential-blindness, endpoint allowlist, and universe-isolation
+  gate (`grant.universe_id` must match the running universe) STILL apply — the grant
+  removes only the extra *effects*-consent layer, never the credential/network guards.
+
 Executor interface (minimal): `execute(invocation, credential_ref) -> response`.
 The invocation carries a reference + provenance, never secret material; the secret
 is resolved only at the transport-owned boundary (custody owner's proxy).
+
+**Node-uniform (host decision 2026-08-22): an agent is just a type of node.** "once a
+compute source is granted to a universe it can be used to run any node and an agent is
+just a type of node." The executor is invoked the SAME way for every node that runs
+inference — the interactive agent-node and any workflow node alike — drawing from the
+one granted compute pool. There is NO agent-only compute path or agent-only
+authorization; "serving" is simply the agent-node's own compute selection under the
+same per-node policy (`preferred_provider` + `accepted_fallbacks`,
+`user-assigned-llm-policy`). The executors are `BaseProvider` implementations so the
+existing node-execution + serving machinery consumes them unchanged.
 
 ## 4. Routing equation (the router filters, never synthesizes)
 
