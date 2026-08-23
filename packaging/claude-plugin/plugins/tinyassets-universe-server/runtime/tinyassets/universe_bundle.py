@@ -61,8 +61,13 @@ BASELINE_FILES: tuple[str, ...] = (
 )
 
 # Soul-edit-governed files (D6): only these are edited through the soul.edit
-# policy. orgchart/projects/goals are learned/runtime, NOT governed.
-SOUL_EDIT_GOVERNED = ("soul.md", "identity.md", "founder.md", "body.md", "origin.md")
+# policy. orgchart.md joined this set 2026-08-23 so the agent can RECORD its org
+# structure via write_brain like its other grounding docs (it previously could not
+# edit orgchart at all, so it re-asked every turn). projects/goals stay
+# learned/runtime, NOT governed.
+SOUL_EDIT_GOVERNED = (
+    "soul.md", "identity.md", "founder.md", "body.md", "origin.md", "orgchart.md",
+)
 
 # Files that must NOT be created at baseline (D5).
 FORBIDDEN_BASELINE = ("self", "soul", "notes.json", "activity.log")
@@ -102,12 +107,13 @@ def _soul_md(purpose: str, loop_branch_def_id: str) -> str:
         "- [founder](founder.md) — the oath-confirmed founder this universe is bonded to",
         "- [body](body.md) — the learned embodiment (surfaces, voice, hands, senses)",
         "- [origin](origin.md) — how and why this universe came to be",
+        "- [orgchart](orgchart.md) — the org chart; the founder is the sole "
+        "member by default, always the top anchor",
         "",
         "## Open Questions",
         "",
         "These files are learned/runtime, not soul-edit-governed, and start empty:",
         "",
-        "- [orgchart](orgchart.md) — the learned organization, founder always on top",
         "- [projects](projects.md) — the founder's projects index",
         "- [goals](goals.md) — runtime goals and the Branch uses/runs attached to them",
         "",
@@ -142,8 +148,8 @@ A soul edit MAY update only these explicitly changed files:
 
 {governed}
 
-`orgchart.md`, `projects.md`, and `goals.md` are learned/runtime files and are
-NOT governed by this policy.
+`projects.md` and `goals.md` are learned/runtime files and are NOT governed by
+this policy.
 
 ## Rules
 
@@ -204,21 +210,22 @@ confirmed. Nothing about the founder is invented at creation.
 def _orgchart_md() -> str:
     body = """# Org Chart
 
-Status: not learned yet.
+The founder is the sole member of this org chart. Assume this by default — the
+oath-confirmed founder is the only member unless the founder tells you about
+additional members. Do NOT ask about the org chart when it is just the founder;
+this default already answers it.
 
-This is the universe's learned organization map.
-The oath-confirmed founder is always the top anchor of the org chart.
-Everything below the founder — roles, teams, daemons, collaborators,
-delegations, responsibilities, and reporting lines — is learned from actual
-work and authority decisions. No organization is learned yet, and none is
-invented at creation.
+The founder is always the top anchor. If the founder later names roles, teams,
+daemons, collaborators, delegations, responsibilities, or reporting lines, record
+them here (via write_brain orgchart) beneath the founder. Nothing beyond the
+founder is invented at creation.
 """
     return _doc(
         "Org Chart",
         body,
         title="Org Chart",
-        description="Learned organization map; the founder is always the top anchor.",
-        status="not-learned",
+        description="Org chart; the founder is the sole member by default, always the top anchor.",
+        status="learned",
     )
 
 

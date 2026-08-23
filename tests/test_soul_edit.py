@@ -135,7 +135,9 @@ def test_soul_edit_updates_soul_md_body_preserving_frontmatter(universe):
 
 
 def test_soul_edit_rejects_non_governed_files(universe):
-    for bad in ("projects.md", "orgchart.md", "goals.md", "log.md", "index.md"):
+    # orgchart.md is now GOVERNED (joined SOUL_EDIT_GOVERNED 2026-08-23 so the agent
+    # can record its org chart); projects/goals/log/index remain non-governed.
+    for bad in ("projects.md", "goals.md", "log.md", "index.md"):
         with pytest.raises(SoulEditError):
             apply_soul_edit(
                 universe, changes={bad: "x"}, source="s", context="c",
@@ -174,16 +176,34 @@ def test_soul_edit_refuses_without_policy_file(universe):
         )
 
 
-def test_governed_list_is_read_from_policy_file(universe):
-    # Authority lives in soul.edit.md, not a hardcoded list: narrow the policy
-    # and the path must follow it.
+def test_policy_governs_beyond_the_baseline(universe):
+    # The policy file is still read as authority for what it lists BEYOND the
+    # baseline grounding files: a non-baseline file the universe adds to its policy
+    # becomes governable, and a file that is neither baseline nor policy-listed is
+    # rejected.
+    from tinyassets.soul_edit import read_governed_files
+
+    assert "projects.md" not in read_governed_files(universe)  # not baseline, not listed
     policy = (universe / "soul.edit.md").read_text(encoding="utf-8")
-    policy = policy.replace("- `identity.md`\n", "")
+    policy = policy.replace("## Governed files\n", "## Governed files\n\n- `projects.md`\n")
     (universe / "soul.edit.md").write_text(policy, encoding="utf-8")
-    with pytest.raises(SoulEditError):
-        apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="c",
-        )
+    assert "projects.md" in read_governed_files(universe)  # policy addition honored
+
+
+def test_baseline_grounding_files_are_always_governed(universe):
+    # Anti-drift floor (2026-08-23): the platform baseline of grounding files stays
+    # governed even if a universe's (possibly stale) soul.edit.md text omits one — so
+    # an existing universe gains a newly-baselined file (e.g. orgchart.md) without a
+    # data migration, and a core soul file can never be silently un-governed.
+    from tinyassets.soul_edit import read_governed_files
+    from tinyassets.universe_bundle import SOUL_EDIT_GOVERNED
+
+    policy = (universe / "soul.edit.md").read_text(encoding="utf-8")
+    policy = policy.replace("- `identity.md`\n", "")  # stale/omitted policy text
+    (universe / "soul.edit.md").write_text(policy, encoding="utf-8")
+    governed = read_governed_files(universe)
+    for baseline in SOUL_EDIT_GOVERNED:
+        assert baseline in governed, baseline  # floor holds despite the omission
 
 
 # ── history: log + snapshot ─────────────────────────────────────────────────

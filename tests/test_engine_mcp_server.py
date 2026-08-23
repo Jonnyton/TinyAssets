@@ -364,9 +364,13 @@ def test_read_brain_returns_editable_sections(monkeypatch, tmp_path):
 
     _seed_brain_universe(monkeypatch, tmp_path)
     out = json.loads(s.read_brain())
-    assert set(out["brain"]) == {"identity", "founder", "origin", "body"}
-    # identity/founder/origin/body are governed-editable by the seeded policy
-    assert set(out["editable_sections"]) == {"identity", "founder", "origin", "body"}
+    # orgchart joined the brain sections 2026-08-23 so the agent can record its org
+    # chart (previously unwritable → it re-asked every turn).
+    assert set(out["brain"]) == {"identity", "founder", "origin", "body", "orgchart"}
+    # all five are governed-editable (orgchart via the SOUL_EDIT_GOVERNED baseline).
+    assert set(out["editable_sections"]) == {
+        "identity", "founder", "origin", "body", "orgchart",
+    }
     assert "self_model" in out
 
 

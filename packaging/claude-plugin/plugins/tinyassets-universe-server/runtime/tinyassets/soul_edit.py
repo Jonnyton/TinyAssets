@@ -137,7 +137,20 @@ def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
     governed = tuple(re.findall(r"^\s*-\s*`([^`]+)`", section.group(1), flags=re.MULTILINE))
     if not governed:
         raise SoulEditError("soul.edit.md governs no files")
-    return governed
+    # Baseline migration (2026-08-23): the platform-seeded baseline of governed
+    # grounding files is ALWAYS governable, even for universes whose soul.edit.md was
+    # seeded before a file joined the baseline (e.g. orgchart.md). Union the parsed
+    # policy list with the current baseline so an existing universe does not need a
+    # data migration to gain a new baseline grounding file, while any files the
+    # universe itself added to its policy are preserved. (This is what lets the live
+    # universe finally record its org chart instead of re-asking every turn.)
+    from tinyassets.universe_bundle import SOUL_EDIT_GOVERNED
+
+    merged = list(governed)
+    for baseline in SOUL_EDIT_GOVERNED:
+        if baseline not in merged:
+            merged.append(baseline)
+    return tuple(merged)
 
 
 @contextlib.contextmanager
