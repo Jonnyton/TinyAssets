@@ -1046,3 +1046,41 @@ def test_connect_compute_is_exposed_in_both_provider_allowlists():
     # And the server actually registers a handler by that name (exposure is real).
     from tinyassets import engine_mcp_server as s
     assert callable(getattr(s, "connect_compute", None))
+
+
+def test_read_graph_compute_target_lists_own_providers_end_to_end(monkeypatch, tmp_path):
+    """The served read_graph now accepts target=compute (pinned to this universe) and
+    lists the universe's own registered providers — the read sibling of connect_compute."""
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.api.compute_connection import connect_compute
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import grant_universe_access
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "u-compute-read"
+    (tmp_path / uid).mkdir(parents=True)
+    grant_universe_access(tmp_path, universe_id=uid, actor_id="founder-cr",
+                          permission="admin", granted_by="founder-cr")
+    # Register a provider as the founder (direct impl, admin identity bound).
+    tok = _current_identity.set(Identity(user_id="founder-cr", username="founder-cr",
+                                         capabilities=["read", "list", "write"]))
+    try:
+        reg = connect_compute(universe_id=uid, payload={
+            "access_method": "subscription_cli", "protocol": "cli:codex",
+            "model": "gpt-5-codex", "ref": "codex"})
+        assert reg["status"] == "registered"
+    finally:
+        _current_identity.reset(tok)
+
+    # "compute" is now a pinned read target (not refused).
+    assert "compute" in s._PINNED_READ_TARGETS
+    monkeypatch.setattr(s, "_ACTOR_ID", "founder-cr")
+    monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    out = json.loads(s.read_graph(target="compute"))
+    assert out.get("count") == 1, out
+    assert out["providers"][0]["definition_id"] == reg["definition_id"]
+    # Graph-pinned: a served read cannot address another universe (the arg is fixed).
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-someone-else")
+    other = json.loads(s.read_graph(target="compute"))
+    assert other.get("error") == "not_found"  # no admin ACL there -> uniform not_found

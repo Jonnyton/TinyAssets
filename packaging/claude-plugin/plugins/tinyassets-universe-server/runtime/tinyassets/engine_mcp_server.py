@@ -175,9 +175,14 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # other ``read_graph`` target (runs/run/branch/goals/agents/agent_binding/…)
 # selects records through INDEPENDENT ids that a ``graph_id`` pin does not
 # constrain — Codex REJECT 2026-08-13 #5/#8: those reach global or other-founder
-# data (and ``run_graph``'s branch load is an IDOR). Slice 1 exposes ONLY these
-# two, so the pin is a real confinement, not a decoration.
-_PINNED_READ_TARGETS = frozenset({"status", "graph"})
+# data (and ``run_graph``'s branch load is an IDOR). Only targets whose backing
+# read is scoped ENTIRELY by universe_id are safe to pin here.
+# ``compute`` (slice 4b): read_compute_providers lists ONLY this universe's own
+# registered provider definitions (list_definitions(universe_id)) — fully
+# graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
+# pin is a real confinement. It is the read sibling of connect_compute, letting
+# the served agent SEE the compute providers it can register/select.
+_PINNED_READ_TARGETS = frozenset({"status", "graph", "compute"})
 
 
 def _binding_error() -> str | None:
@@ -206,8 +211,10 @@ def read_graph(target: str = "status") -> str:
     Scoped to YOUR universe — you cannot read another one.
 
     Args:
-        target: What to read: ``status`` (a factual daemon + serving snapshot) or
-            ``graph`` (inspect your universe's graph). Any other value is refused.
+        target: What to read: ``status`` (a factual daemon + serving snapshot),
+            ``graph`` (inspect your universe's graph), or ``compute`` (list the
+            compute providers registered for your universe — the read sibling of
+            registering one with ``connect_compute``). Any other value is refused.
     """
     import json
 
