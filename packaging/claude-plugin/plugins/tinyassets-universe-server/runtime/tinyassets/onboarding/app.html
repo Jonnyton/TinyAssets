@@ -469,7 +469,7 @@
 
   // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
   const MCP = {
-    sessionId:null, nextId:1,
+    sessionId:null, nextId:1, _initing:null,
     _parse(text){
       const t=(text||"").trim();
       if(!t) throw new Error("empty MCP response");
@@ -482,7 +482,15 @@
     },
     async _rpc(method, params, opts, _retried){
       opts=opts||{};
+      const isHandshake = (method==="initialize" || method==="notifications/initialized");
       await ensureFreshToken();
+      // A proactive token refresh (above) resets the session — it was bound to
+      // the now-rotated bearer (see MCP.sessionId=null in refreshAccessToken).
+      // Re-establish it BEFORE a non-handshake call, or the server rejects the
+      // call as "Invalid request parameters" (no session) instead of a 401, and
+      // the 401 retry path never runs. Without this the first turn after every
+      // ~5-min refresh fails until a reload.
+      if(this.sessionId===null && !isHandshake) await this.ensureInit();
       const frame={jsonrpc:"2.0", method, params:params||{}};
       if(opts.expectResult!==false) frame.id=this.nextId++;
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
@@ -496,6 +504,15 @@
         }
         const e=new Error("authentication_required"); e.authRequired=true; throw e;
       }
+      // MCP transport signals an expired/evicted session with HTTP 404 to a
+      // request that carried a session id. Reset + re-initialize once and retry.
+      // Do NOT retry on JSON-RPC errors: that would replay state-changing calls
+      // and could discard a healthy session (session recovery is 404-scoped).
+      if(resp.status===404 && this.sessionId && !_retried && !isHandshake){
+        this.sessionId=null;
+        await this.ensureInit();
+        return this._rpc(method, params, opts, true);
+      }
       const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       if(opts.expectResult===false) return null;
       const rpc=this._parse(await resp.text());
@@ -504,9 +521,15 @@
     },
     async ensureInit(){
       if(this.sessionId) return;
-      await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
-        clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}});
-      await this._rpc("notifications/initialized",{},{expectResult:false});
+      // Serialize concurrent initializers: two post-refresh calls must share ONE
+      // initialize handshake, or the second's session orphans the first's.
+      if(this._initing){ await this._initing; return; }
+      this._initing=(async()=>{
+        await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
+          clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}});
+        await this._rpc("notifications/initialized",{},{expectResult:false});
+      })();
+      try{ await this._initing; } finally { this._initing=null; }
     },
     async callTool(name,args){
       await this.ensureInit();
