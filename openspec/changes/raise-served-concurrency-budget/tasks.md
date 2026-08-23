@@ -20,11 +20,14 @@
 - [x] 2.2 Oracle: a 32_768 ceiling bricks the 2nd turn AND a reservation never
       exceeds the binding's own stored ceiling (authority contract, no floor).
 - [x] 2.3 Heal: a stale-low binding re-bind advances generation + persists the
-      current ceiling without replay (`test_stale_binding_rebind_lifts_ceiling_without_replay`).
+      current ceiling without replay (`test_stale_binding_rebind_advances_generation_and_reflows_ceiling`).
 - [x] 2.4 Linux/CI two-thread test (Windows-skipped) + full suite green, ruff clean.
 
 ## 3. Review + rollout
-- [ ] 3.1 Opposite-provider (Codex) exact-head review returns approve/adapt.
+- [ ] 3.1 Opposite-provider (Codex) exact-head review returns `approve` (any
+      `adapt` changes HEAD and requires a fresh review). Core approach approved
+      2026-08-22 (digest-covered authority preserved, transactional generation
+      advance); test-independence + doc polish applied post-approval.
 - [ ] 3.2 Merge + deploy; confirm prod `release_state.git_sha` contains it.
 - [ ] 3.3 Re-bind the founder binding (now actually lifts the ceiling) + live
       proof: concurrent turns across ≥2 surfaces with no "budget exhausted".

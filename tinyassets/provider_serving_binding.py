@@ -59,7 +59,7 @@ _MAX_BINDING_INVOCATIONS = 10_000
 # that one user drive their universe from many surfaces at once alongside
 # concurrent LangGraph automations (and many users doing the same, each on their
 # OWN per-binding ceiling). Sized now for realistic single-user concurrency
-# (~90 simultaneous worst-case ~45 KB turns); the true runaway backstops remain
+# (~40-50 simultaneous ~80-95 KB reservations); the true runaway backstops remain
 # the rolling per-hour invocation cap (_MAX_BINDING_INVOCATIONS) + the engine-run
 # rate limit (20/hr) + the user's metered subscription.
 _MAX_TOKENS = 4_000_000

@@ -430,6 +430,50 @@ def test_stale_binding_rebind_advances_generation_and_reflows_ceiling(tmp_path, 
     assert tightened["provider_binding"]["max_cost_microunits"] == 100_000_000
 
 
+def test_replay_gate_checks_token_and_cost_independently(tmp_path, monkeypatch):
+    """Each replay guard (token AND cost) must independently force a rebind, so
+    neither can be deleted silently: drift in EITHER ceiling alone must skip the
+    replay (Codex 2026-08-22).
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 4_000_000)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 400_000_000)
+    universe_dir, serving, capability, _ctx = _served_context(tmp_path)
+    revoke_provider_request(capability)
+
+    def _rebind(rev):
+        return bind_serving_provider(
+            base_path=tmp_path,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id=serving["agent_binding_id"],
+            expected_revision=rev,
+            provider="codex",
+        )
+
+    # Same policy -> replay baseline.
+    r0 = _rebind(serving["revision"])
+    assert r0.get("replayed") is True
+    rev = r0["agent_binding"]["revision"]
+
+    # TOKEN-only drift (cost unchanged) must skip replay — the token guard fires.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 5_000_000)
+    r1 = _rebind(rev)
+    assert r1.get("replayed") is not True
+    assert r1["provider_binding"]["max_tokens"] == 5_000_000
+    rev = r1["agent_binding"]["revision"]
+
+    # COST-only drift (token now unchanged at 5M) must skip replay — cost guard.
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 500_000_000)
+    r2 = _rebind(rev)
+    assert r2.get("replayed") is not True
+    assert r2["provider_binding"]["max_cost_microunits"] == 500_000_000
+
+
 def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):
     """Regression oracle: a 32_768 ceiling bricks at ~2 concurrent turns.
 
@@ -438,7 +482,7 @@ def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch)
     exhausted". This pins the root cause. It also asserts the AUTHORITY CONTRACT:
     a reservation never exceeds the binding's OWN stored ceiling — admission never
     floors/expands it above the digest-covered value (the healing path is a
-    re-bind, see ``test_stale_binding_rebind_lifts_ceiling_without_replay``).
+    re-bind, see ``test_stale_binding_rebind_advances_generation_and_reflows_ceiling``).
     """
     import tinyassets.provider_serving_binding as serving_binding
     from tinyassets.auth.middleware import revoke_provider_request
