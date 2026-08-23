@@ -625,6 +625,12 @@ _BRAIN_SECTIONS = {
     "founder": "founder.md",
     "origin": "origin.md",
     "body": "body.md",
+    # orgchart is a governed grounding file like the others (added 2026-08-23): the
+    # agent must be able to RECORD its org structure — e.g. "my founder is my only
+    # member" — or it re-asks every turn (live founder report: it could edit every
+    # doc EXCEPT orgchart, so the org fact spilled into founder/body). Paired with
+    # orgchart.md in SOUL_EDIT_GOVERNED + the read_governed_files baseline migration.
+    "orgchart": "orgchart.md",
 }
 #: Per-section size cap for a brain write (Codex brain-loop review 2026-08-22): a
 #: brain file is system-prompt material, so bound it rather than let one turn
@@ -713,6 +719,7 @@ def write_brain(
     founder: str = "",
     origin: str = "",
     body: str = "",
+    orgchart: str = "",
     name: str = "",
 ) -> str:
     """Durably WRITE to your OWN brain so the change is part of your system prompt
@@ -728,6 +735,10 @@ def write_brain(
         founder: New body for who your founder is.
         origin: New body for where you came from.
         body: New body for your form / how you work (your harness).
+        orgchart: New body for your organization — who is on your org chart under
+            your founder. The default is that your founder is your ONLY member;
+            record that (or any members the founder tells you about) here so you
+            stop asking. The founder is always the top anchor.
         name: A name you have learned or chosen for yourself.
     """
     import json
@@ -750,6 +761,7 @@ def write_brain(
         "founder": founder,
         "origin": origin,
         "body": body,
+        "orgchart": orgchart,
     }
     soul: dict[str, str] = {}
     for section, fname in _BRAIN_SECTIONS.items():
@@ -779,7 +791,7 @@ def write_brain(
         return json.dumps({
             "error": (
                 "nothing to write; pass a section body "
-                "(identity/founder/origin/body) or a name."
+                "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
     if not _engine_run_admit(fail_closed=True):

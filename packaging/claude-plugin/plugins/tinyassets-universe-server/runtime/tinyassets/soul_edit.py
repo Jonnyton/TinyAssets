@@ -114,9 +114,19 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
 
 
 def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
-    """Parse the governed-file list from the universe's ``soul.edit.md``.
+    """Governed files = a platform-enforced floor PLUS the universe's own extensions.
 
-    The policy file is the authority. No policy file → no soul edits.
+    The universe's ``soul.edit.md`` lists files it governs; a PRESENT policy is still
+    required (no policy file → no soul edits, fail-closed). The returned set is the
+    UNION of that list with the platform baseline (``SOUL_EDIT_GOVERNED``): the core
+    grounding files are ALWAYS governable (Codex review 2026-08-23). This is
+    deliberate — per-universe OMISSION of a baseline file is NOT a supported deny
+    mechanism (soul.edit.md is platform-seeded from the baseline, never a
+    restrictive user override), and it lets an existing universe gain a newly
+    baselined grounding file (e.g. orgchart.md) without a data migration while a core
+    soul file can never be silently un-governed. A universe MAY still ADD files above
+    the floor by listing them. ``soul.edit.md`` itself is deliberately NOT in the
+    baseline or the brain-writable mapping, so an agent cannot edit its own policy.
     """
     policy_path = universe_dir / SOUL_EDIT_POLICY_FILENAME
     try:
@@ -137,7 +147,20 @@ def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
     governed = tuple(re.findall(r"^\s*-\s*`([^`]+)`", section.group(1), flags=re.MULTILINE))
     if not governed:
         raise SoulEditError("soul.edit.md governs no files")
-    return governed
+    # Baseline migration (2026-08-23): the platform-seeded baseline of governed
+    # grounding files is ALWAYS governable, even for universes whose soul.edit.md was
+    # seeded before a file joined the baseline (e.g. orgchart.md). Union the parsed
+    # policy list with the current baseline so an existing universe does not need a
+    # data migration to gain a new baseline grounding file, while any files the
+    # universe itself added to its policy are preserved. (This is what lets the live
+    # universe finally record its org chart instead of re-asking every turn.)
+    from tinyassets.universe_bundle import SOUL_EDIT_GOVERNED
+
+    merged = list(governed)
+    for baseline in SOUL_EDIT_GOVERNED:
+        if baseline not in merged:
+            merged.append(baseline)
+    return tuple(merged)
 
 
 @contextlib.contextmanager
