@@ -297,6 +297,54 @@ def test_reprovision_is_idempotent_and_rotates_secret(base: Path) -> None:
     assert recs[0]["token"] == "sk-v2"
 
 
+def test_reordered_endpoints_and_methods_are_idempotent(base: Path) -> None:
+    """Endpoints, methods, and allowed_query names are UNORDERED sets at runtime,
+    so a re-provision that only REORDERS an otherwise-identical policy must stay
+    idempotent — same deterministic ids, secret rotated, NOT a false
+    connection_conflict (Codex review finding #2, order-insensitive compare)."""
+    udir = _make_universe(base, "u-reorder", admin="founder")
+    _login("founder")
+
+    ep_a = {
+        "host": "api.example.com",
+        "path_template": "/v1/messages",
+        "methods": ["GET", "POST"],
+        "allowed_query": ["alpha", "beta"],
+    }
+    ep_b = {
+        "host": "other.example.com",
+        "path_template": "/v1/models",
+        "methods": ["POST", "PUT"],
+    }
+    first = _connect("u-reorder", secret="sk-v1", endpoints=[ep_a, ep_b])
+    assert first["status"] == "provisioned"
+
+    # Identical policy, everything reordered: endpoint list swapped, methods
+    # swapped within each endpoint, allowed_query names swapped. Secret rotated.
+    ep_a_reordered = {
+        "host": "api.example.com",
+        "path_template": "/v1/messages",
+        "methods": ["POST", "GET"],
+        "allowed_query": ["beta", "alpha"],
+    }
+    ep_b_reordered = {
+        "host": "other.example.com",
+        "path_template": "/v1/models",
+        "methods": ["PUT", "POST"],
+    }
+    second = _connect(
+        "u-reorder", secret="sk-v2", endpoints=[ep_b_reordered, ep_a_reordered]
+    )
+
+    # A pure reorder is NOT a conflict — same ids, secret rotated to v2.
+    assert second.get("status") == "provisioned", second
+    assert second["connection_id"] == first["connection_id"]
+    assert second["grant_id"] == first["grant_id"]
+    recs = _http_records(udir)
+    assert len(recs) == 1
+    assert recs[0]["token"] == "sk-v2"
+
+
 def test_reprovision_with_changed_endpoints_is_a_conflict(base: Path) -> None:
     """A re-provision that changes the egress policy (a different endpoint
     allow-list) must be refused as a conflict BEFORE the vault write — never a
@@ -384,6 +432,72 @@ def test_inert_self_heal_after_grant_fault(base: Path, monkeypatch: pytest.Monke
     assert healed["connection_id"] == conn_id
     assert ledger.get_grant(grant_id) is not None
     assert len(_http_records(udir)) == 1
+
+
+def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
+    base: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A create-stage fault (create_connection raises AFTER the vault deposit)
+    leaves an orphaned http vault record with no connection row. A SECOND admin
+    then finds no ledger conflict (resource is None), so the ONLY thing that can
+    stop them overwriting the orphaned secret and provisioning as themselves is
+    the vault's own depositor-ownership enforcement — which must now cover http
+    records (Codex CRITICAL finding). The original owner's retry still completes.
+    """
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage import outbound_connections as oc
+
+    udir = _make_universe(base, "u-orphan", admin="founder")
+    grant_universe_access(
+        base, universe_id="u-orphan", actor_id="coadmin",
+        permission="admin", granted_by="founder",
+    )
+
+    real_create = oc.ConnectionLedger.create_connection
+    calls = {"n": 0}
+
+    def _flaky_create(self: Any, *a: Any, **k: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("injected create fault")
+        return real_create(self, *a, **k)
+
+    monkeypatch.setattr(oc.ConnectionLedger, "create_connection", _flaky_create)
+
+    # 1. Founder's first call: the vault deposit lands (owner recorded), then
+    #    create_connection raises. The fault surfaces; no connection row exists.
+    _login("founder")
+    with pytest.raises(RuntimeError):
+        _connect("u-orphan", secret="founder-secret")
+
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, grant_id = _ids(universe_id="u-orphan", destination="webhook:acme")
+    ledger = _ledger(base, "founder")
+    assert ledger._get_connection_resource(conn_id) is None  # orphaned: no row
+    recs = _http_records(udir)
+    assert len(recs) == 1 and recs[0]["token"] == "founder-secret"  # orphaned cred
+
+    # 2. Second admin tries to seize the orphaned credential. No ledger conflict
+    #    (resource is None), so the vault ownership guard is the only defense: it
+    #    refuses, and the founder's secret is NOT overwritten.
+    _login("coadmin")
+    seized = _connect("u-orphan", secret="coadmin-secret")
+    assert seized["error"] == "credential_ownership_transfer_unsupported"
+    recs = _http_records(udir)
+    assert len(recs) == 1 and recs[0]["token"] == "founder-secret"  # untouched
+    assert ledger._get_connection_resource(conn_id) is None  # still no connection
+
+    # 3. Original owner retries (create now succeeds): the orphan heals into a
+    #    usable connection + grant, and the stored secret is the owner's.
+    _login("founder")
+    healed = _connect("u-orphan", secret="founder-secret-v2")
+    assert healed["status"] == "provisioned"
+    assert healed["connection_id"] == conn_id
+    assert ledger._get_connection_resource(conn_id) is not None
+    assert ledger.get_grant(grant_id) is not None
+    recs = _http_records(udir)
+    assert len(recs) == 1 and recs[0]["token"] == "founder-secret-v2"
 
 
 # --------------------------------------------------------------------------- #

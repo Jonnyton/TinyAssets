@@ -244,6 +244,44 @@ def _credentials_match(
     return bool(_vcs_purposes(existing) & _vcs_purposes(incoming))
 
 
+def _ownership_service_keys(records: list[dict[str, Any]]) -> set[str]:
+    """Service keys (matching the ``llm_credential_deposit_owners.service``
+    column) for every credential record that carries depositor ownership.
+
+    Ownership is what lets the universe-level cross-owner guard in
+    :func:`write_credential_vault` refuse a second principal overwriting a first
+    principal's secret. Two families of record carry it:
+
+    - ``llm_subscription`` claude/codex → the bare provider name, because the
+      custody lookups (:func:`adopt_llm_subscription_custody` /
+      :func:`current_llm_subscription_custody`) query ``service`` by that exact
+      value.
+    - ``http`` → the record's upsert-key service (``_service``, which
+      ``connect_http`` sets equal to the destination), namespaced ``http:<svc>``.
+      The namespace guarantees it can never collide with a provider-name row (an
+      http destination may legally be the literal string ``claude``) and can
+      never be mistaken for a subscription by the custody lookups. The key is
+      derived from the same value the vault upsert slots on, so a re-provision of
+      the same destination maps to the same owner row (rotation stays owned).
+
+    Generalizing ownership to ``http`` closes the orphaned-credential hole: an
+    http deposit now records its owner, so a create-fault that leaves a vault
+    record with no connection row still fails closed against a second admin at
+    the vault write, before any ledger row exists (Codex critical finding).
+    Records with no usable service key (e.g. an owner-less direct http deposit)
+    contribute no ownership row, exactly as before.
+    """
+    keys: set[str] = set()
+    for record in records:
+        credential_type = record.get("credential_type")
+        service = _service(record)
+        if credential_type == "llm_subscription" and service in {"claude", "codex"}:
+            keys.add(service)
+        elif credential_type == "http" and service:
+            keys.add(f"http:{service}")
+    return keys
+
+
 def _merge_subscription_records(
     existing: list[dict[str, Any]],
     incoming: dict[str, Any],
@@ -567,12 +605,10 @@ def write_credential_vault(
             # commit, so a concurrent unlocked reader can never observe a
             # credential before its ownership row exists.
             final_records, summary = _prepare_credential_write(universe, credentials)
-            services = {
-                _service(record)
-                for record in final_records
-                if record.get("credential_type") == "llm_subscription"
-                and _service(record) in {"claude", "codex"}
-            }
+            # Owner-row keys for every ownership-bearing record (llm_subscription
+            # claude/codex AND http — the latter closes the orphaned-credential
+            # hole). Drives both the prune (which rows survive) and the insert.
+            services = _ownership_service_keys(final_records)
 
             # Snapshot the prior owner rows so a (rare) file-replace failure AFTER
             # the DB commit can be compensated below.
