@@ -935,7 +935,16 @@ def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_
     ))
     assert out["status"] == "registered", out
     assert out["access_method"] == "subscription_cli"
-    assert "secret" not in json.dumps(out).lower()
+    # No credential-bearing KEY is ever projected (there is no secret to leak). The
+    # projection is a fixed, known-safe shape — assert on keys, not a substring scan
+    # (the "next" guidance text legitimately names the "api_key_http" access method).
+    assert set(out) <= {
+        "status", "definition_id", "access_method", "protocol", "model",
+        "visibility", "next",
+    }, out
+    for banned in ("secret", "token", "api_key", "apikey", "authorization",
+                   "bearer", "password", "credential", "ref", "auth_material"):
+        assert banned not in out, banned
     # A non-admin actor on the same universe is refused (owner-gate, uniform envelope).
     monkeypatch.setattr(s, "_ACTOR_ID", "intruder")
     refused = json.loads(s.connect_compute(
@@ -943,3 +952,77 @@ def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_
         model="gpt-5-codex", ref="codex",
     ))
     assert refused.get("error") == "not_found"
+
+
+def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tmp_path):
+    """The served api_key_http path enforces grant isolation via _validate_http_grant:
+    a same-owner/same-universe grant registers; a foreign-universe, foreign-owner, or
+    nonexistent grant is refused with the uniform envelope (no grant existence leak)."""
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "u-akh"
+    (tmp_path / uid).mkdir(parents=True)
+    grant_universe_access(
+        tmp_path, universe_id=uid, actor_id="owner-akh",
+        permission="admin", granted_by="owner-akh",
+    )
+    ledger = ConnectionLedger(
+        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-akh"
+    )
+    ledger.create_connection(
+        connection_id="http_akh", owner_user_id="owner-akh", connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("http",), provider="http",
+        destination="compute:x", credential_ref="vault://http/compute:x",
+        allowed_endpoints=[{"host": "api.example.com",
+                            "path_template": "/v1/chat/completions", "methods": ["POST"]}],
+    )
+    # (a) grant bound to THIS universe + owner -> registers.
+    ledger.grant_connection(
+        grant_id="grant_ok", connection_id="http_akh", owner_user_id="owner-akh",
+        universe_id=uid, unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+    # (b) SAME connection granted to ANOTHER universe -> foreign-universe grant.
+    ledger.grant_connection(
+        grant_id="grant_other_uni", connection_id="http_akh", owner_user_id="owner-akh",
+        universe_id="u-other", unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+
+    monkeypatch.setattr(s, "_ACTOR_ID", "owner-akh")
+    monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+
+    def _cc(ref):
+        return json.loads(s.connect_compute(
+            access_method="api_key_http", protocol="openai_chat",
+            model="moonshotai/kimi-k2", ref=ref,
+        ))
+
+    assert _cc("grant_ok")["status"] == "registered"
+    # Foreign-universe grant -> uniform not_found (never confirm a foreign grant).
+    assert _cc("grant_other_uni").get("error") == "not_found"
+    # Nonexistent grant -> connection_setup_invalid (absent/revoked), no existence leak.
+    assert _cc("grant_does_not_exist").get("error") == "connection_setup_invalid"
+
+    # A DIFFERENT founder whose grant belongs to another owner is refused not_found.
+    other_ledger = ConnectionLedger(
+        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-akh"
+    )
+    other_ledger.grant_connection(
+        grant_id="grant_foreign_owner", connection_id="http_akh",
+        owner_user_id="owner-akh", universe_id="u-intruder",
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+    grant_universe_access(
+        tmp_path, universe_id="u-intruder", actor_id="intruder-akh",
+        permission="admin", granted_by="intruder-akh",
+    )
+    (tmp_path / "u-intruder").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(s, "_ACTOR_ID", "intruder-akh")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-intruder")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-intruder"}))
+    # The grant is owned by owner-akh, not intruder-akh -> uniform not_found.
+    assert _cc("grant_foreign_owner").get("error") == "not_found"
