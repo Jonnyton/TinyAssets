@@ -371,13 +371,65 @@ def test_many_concurrent_reservations_share_one_binding_without_bricking(tmp_pat
         revoke_provider_request(capability)
 
 
+def test_stale_low_ceiling_binding_is_floored_and_admits_concurrency(tmp_path, monkeypatch):
+    """A binding bound BEFORE the ceiling was sized for concurrency persists a
+    stale-low max_tokens (the founder binding is 32_768), and re-bind is
+    idempotent so it cannot be lifted. The serve-time ceiling floor must still
+    admit many concurrent in-flight turns. This is the completing fix for the
+    existing-binding case #2479's constant raise did not reach.
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_assignment import (
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    # Bind with the OLD stale-low ceiling (what the founder binding persists).
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 32_768)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 10_000_000)
+    universe_dir, _serving, capability, context = _served_context(
+        tmp_path, path_backed=True,
+    )
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            # The persisted ceiling really is the stale-low value...
+            assert authority.max_tokens == 32_768
+            # ...yet ten concurrent ~53 KB in-flight reservations all admit,
+            # because the serve-time floor raises the effective ceiling.
+            reservations = [
+                reserve_served_provider_budget(
+                    tmp_path,
+                    universe_dir=universe_dir,
+                    authority=authority,
+                    requested_output_tokens=32_768,
+                    estimated_input_tokens=20_000,
+                )
+                for _ in range(10)
+            ]
+            assert len(reservations) == 10
+            assert all(r.output_tokens >= 1 for r in reservations)
+    finally:
+        revoke_provider_request(capability)
+
+
 def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):
-    """Regression oracle: the pre-fix 32_768 cap bricked at ~2 concurrent turns.
+    """Regression oracle: a 32_768 ceiling bricks at ~2 concurrent turns.
 
     A single ~20 KB system-prompt turn nearly fills 32_768; the SECOND
-    simultaneous in-flight turn across any surface got ``output_tokens < 1`` and
-    surfaced as "budget exhausted". This pins the root cause the raised cap fixes.
+    simultaneous in-flight turn got ``output_tokens < 1`` and surfaced as "budget
+    exhausted". This pins the root cause. The serve-time floor is disabled here
+    (set to the same low value) so the oracle still demonstrates the underlying
+    brick that the floor otherwise prevents (see
+    ``test_stale_low_ceiling_binding_is_floored_and_admits_concurrency``).
     """
+    import tinyassets.provider_assignment as provider_assignment
     import tinyassets.provider_serving_binding as serving_binding
     from tinyassets.auth.middleware import revoke_provider_request
     from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -389,6 +441,11 @@ def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch)
     # Bake the OLD ceilings into the binding at creation time.
     monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 32_768)
     monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 10_000_000)
+    # Disable the serve-time floor so the raw brick is observable.
+    monkeypatch.setattr(provider_assignment, "_SERVE_MIN_CEILING_TOKENS", 32_768)
+    monkeypatch.setattr(
+        provider_assignment, "_SERVE_MIN_CEILING_COST_MICROUNITS", 10_000_000
+    )
     universe_dir, _serving, capability, context = _served_context(
         tmp_path,
         path_backed=True,
