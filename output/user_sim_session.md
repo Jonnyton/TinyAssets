@@ -371,3 +371,30 @@ model (authorized by the connection grant alone, not that flag).
 work — authority-sensitive (served build+run = RCE-risk) → OpenSpec + Codex
 before build. Positive result: deployed converse round-trip works end-to-end on
 the webapp; codex serving is healthy (bwrap available).
+
+---
+
+## 2026-08-23 (cont.) — Surface-parity fix VERIFIED live (compute registration)
+
+After #2491 (connect_compute handler) + #2492 (served enabled-tools allowlists),
+deployed sha `f2c95f43` (running_healthy, canary passed). Re-ran the webapp ui-test
+(`https://tinyassets.io/mcp/app`, founder).
+
+- ui-test #2 (post-#2491, sha 70157f51): served agent reported `tool_search` returned
+  "Found 0 tools" for compute registration — handler was DARK (not in the provider
+  enabled-tools allowlist). This drove #2492.
+- ui-test #3 (post-#2492, sha f2c95f43): prompt "register my codex subscription as a
+  compute provider (connect_compute, subscription_cli/cli:codex/ref=codex)".
+  - Turn 1 (model omitted): tool returned the REAL validation error
+    `{"error":"connection_setup_invalid","detail":"model must be 1..200 printable
+    single-line chars"}` — proof the agent actually invoked the deployed tool.
+  - Turn 2 (model=gpt-5-codex): **"I registered it successfully. definition_id:
+    provdef_5d696592b51813f32673e3daf49c134a"** (status registered, subscription_cli,
+    cli:codex, gpt-5-codex, private) + the correct next step (select via
+    llm_policy.preferred_provider).
+
+CONCLUSION: the served webapp agent can now self-serve compute-provider registration
+— the surface-parity gap for compute building is CLOSED, live-proven. Independent
+read-back not available (read_graph target=connections lists outbound connections, not
+provider definitions — a follow-up: add a definitions read surface). Post-fix clean-use
+evidence = this founder run; no other users exist yet.
