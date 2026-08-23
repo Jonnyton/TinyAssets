@@ -469,7 +469,7 @@
 
   // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
   const MCP = {
-    sessionId:null, nextId:1,
+    sessionId:null, nextId:1, _initing:null,
     _parse(text){
       const t=(text||"").trim();
       if(!t) throw new Error("empty MCP response");
@@ -504,27 +504,32 @@
         }
         const e=new Error("authentication_required"); e.authRequired=true; throw e;
       }
+      // MCP transport signals an expired/evicted session with HTTP 404 to a
+      // request that carried a session id. Reset + re-initialize once and retry.
+      // Do NOT retry on JSON-RPC errors: that would replay state-changing calls
+      // and could discard a healthy session (session recovery is 404-scoped).
+      if(resp.status===404 && this.sessionId && !_retried && !isHandshake){
+        this.sessionId=null;
+        await this.ensureInit();
+        return this._rpc(method, params, opts, true);
+      }
       const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       if(opts.expectResult===false) return null;
       const rpc=this._parse(await resp.text());
-      if(rpc.error){
-        // A server-side session that expired/was evicted surfaces as a JSON-RPC
-        // error (not a 401) on a non-handshake call. Reset + re-initialize once,
-        // then retry, so a stale session self-heals instead of failing the turn.
-        if(!_retried && !isHandshake){
-          this.sessionId=null;
-          await this.ensureInit();
-          return this._rpc(method, params, opts, true);
-        }
-        const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e;
-      }
+      if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
       return rpc.result;
     },
     async ensureInit(){
       if(this.sessionId) return;
-      await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
-        clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}});
-      await this._rpc("notifications/initialized",{},{expectResult:false});
+      // Serialize concurrent initializers: two post-refresh calls must share ONE
+      // initialize handshake, or the second's session orphans the first's.
+      if(this._initing){ await this._initing; return; }
+      this._initing=(async()=>{
+        await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
+          clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}});
+        await this._rpc("notifications/initialized",{},{expectResult:false});
+      })();
+      try{ await this._initing; } finally { this._initing=null; }
     },
     async callTool(name,args){
       await this.ensureInit();
