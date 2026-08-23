@@ -161,7 +161,15 @@ class ApiKeyHttpProvider(BaseProvider):
             temperature=getattr(config, "temperature", None),
             max_tokens=getattr(config, "max_tokens", None),
         )
+        # Protocol-static, credential-FREE headers (e.g. anthropic-version, required
+        # by the Anthropic Messages API or it 400s). The api key is NOT here — the
+        # broker applies it from the connection's auth_scheme (x-api-key for Claude).
+        from tinyassets.providers.protocol_encoders import static_headers_for
+
         wire_request: dict[str, Any] = {"url": f"https://{host}{path}", "body": body}
+        static_headers = static_headers_for(self._definition.protocol)
+        if static_headers:
+            wire_request["headers"] = static_headers
 
         started = time.monotonic()
         try:
