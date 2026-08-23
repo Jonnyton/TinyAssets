@@ -454,3 +454,31 @@ def test_mcp_soul_edit_denied_for_non_owner(tmp_path, monkeypatch):
     ))
     assert out.get("error") == "universe_access_denied"
     assert "Hacked" not in (udir / "identity.md").read_text(encoding="utf-8")
+
+
+def test_policy_absence_still_fails_closed_despite_baseline_floor(universe):
+    # The baseline floor is a UNION with a PRESENT policy — it must NOT resurrect a
+    # missing policy into an implicit allow. No soul.edit.md => hard fail (Codex #5).
+    from tinyassets.soul_edit import read_governed_files
+
+    (universe / "soul.edit.md").unlink()
+    with pytest.raises(SoulEditError):
+        read_governed_files(universe)
+    with pytest.raises(SoulEditError):
+        apply_soul_edit(
+            universe, changes={"identity.md": "x"}, source="s", context="c",
+        )
+
+
+def test_soul_edit_policy_is_never_self_editable(universe):
+    # An agent must not be able to edit its OWN policy or promote soul.md through the
+    # brain surface (Codex #4): soul.edit.md is neither in the governed baseline nor a
+    # brain section, and write_brain exposes no soul/soul.edit section.
+    from tinyassets.engine_mcp_server import _BRAIN_SECTIONS
+    from tinyassets.soul_edit import read_governed_files
+    from tinyassets.universe_bundle import SOUL_EDIT_GOVERNED
+
+    assert "soul.edit.md" not in SOUL_EDIT_GOVERNED
+    assert "soul.edit.md" not in read_governed_files(universe)
+    assert "soul.edit.md" not in _BRAIN_SECTIONS.values()
+    assert "soul.md" not in _BRAIN_SECTIONS.values()  # soul.md not agent-writable
