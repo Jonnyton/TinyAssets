@@ -589,16 +589,43 @@ def write_credential_vault(
             if owner:
                 existing = conn.execute(
                     """
-                    SELECT DISTINCT owner_user_id
+                    SELECT service, owner_user_id
                       FROM llm_credential_deposit_owners
                      WHERE universe_id = ?
                     """,
                     (uid,),
                 ).fetchall()
-                if any(str(row[0]) != owner for row in existing):
+                if any(str(row[1]) != owner for row in existing):
                     raise PermissionError(
                         "credential ownership transfer requires a dedicated flow"
                     )
+                # Fail-closed for LEGACY unowned http credentials. An http record
+                # deposited before http ownership was tracked (or via an owner-less
+                # path) has a vault record but NO owner row, so the universe-wide
+                # guard above cannot see an owner to compare — a second admin could
+                # otherwise overwrite the orphan and provision as themselves (Codex
+                # review). Refuse to overwrite an existing unowned http slot: it is
+                # unprovable whether the caller is the original owner, so recovering
+                # such a record needs a dedicated flow, never a silent owned rewrite.
+                owned_keys = {str(row[0]) for row in existing}
+                on_disk_http = {
+                    service
+                    for record in load_credential_vault(universe)
+                    if record.get("credential_type") == "http"
+                    and (service := _service(record))
+                }
+                for record in _records_from_payload(credentials):
+                    if record.get("credential_type") != "http":
+                        continue
+                    service = _service(record)
+                    if (
+                        service
+                        and service in on_disk_http
+                        and f"http:{service}" not in owned_keys
+                    ):
+                        raise PermissionError(
+                            "credential ownership transfer requires a dedicated flow"
+                        )
 
             # Compute the final merged records + summary IN MEMORY. The vault file
             # is the LAST mutation (below), never written before the owner-row

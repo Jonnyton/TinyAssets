@@ -51,3 +51,19 @@ policy-update op — the ONLY planned way to change an existing connection's end
 allow-list. Slice 1 has NO revoke-then-reprovision path (`revoke_connection` only
 stamps `revoked_at`, which then trips the `revoked_at` conflict), so until the
 update op lands a policy change requires a new destination.
+
+Deferred hardening (Codex cross-family review, single-founder MVP — defer
+concurrency edges post-live per founder law, but tracked):
+- **Provisioning TOCTOU across the vault + ledger.** `connect_http` conflict-checks,
+  then writes the vault (per-universe admission lock), then inserts the ledger row —
+  three steps not under one lock. Two concurrent same-owner provisions for the same
+  destination with DIFFERENT policies can interleave so the ledger keeps policy A
+  while the vault holds secret B (the second insert fails after the secret rotated).
+  Fix = serialize provisioning per (universe, destination) across BOTH the vault and
+  the ledger mutation, with a deterministic concurrency regression (§14 proof).
+  Same-owner only (not a cross-owner authority breach); low reach while the feature
+  flag is off and there is a single founder.
+- **Legacy unowned http credential recovery.** Records deposited before http
+  ownership was tracked have no owner row; Slice 1 now fails them CLOSED (any owned
+  overwrite is refused). A dedicated owner-proven recovery/migration flow is owed so
+  a legitimate original owner can re-establish ownership without a silent rewrite.

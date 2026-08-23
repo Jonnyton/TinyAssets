@@ -348,8 +348,10 @@ def test_reordered_endpoints_and_methods_are_idempotent(base: Path) -> None:
 def test_reprovision_with_changed_endpoints_is_a_conflict(base: Path) -> None:
     """A re-provision that changes the egress policy (a different endpoint
     allow-list) must be refused as a conflict BEFORE the vault write — never a
-    silent reuse of the old connection under a rotated secret. The owner must
-    revoke-then-reprovision to change policy (Codex review finding #2)."""
+    silent reuse of the old connection under a rotated secret. Changing an
+    existing connection's policy is UNSUPPORTED in Slice 1 (no revoke-then-
+    reprovision path exists — revoke only stamps revoked_at); a policy change
+    needs a new destination until the dedicated update op lands."""
     udir = _make_universe(base, "u-epchg", admin="founder")
     _login("founder")
 
@@ -498,6 +500,91 @@ def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
     assert ledger.get_grant(grant_id) is not None
     recs = _http_records(udir)
     assert len(recs) == 1 and recs[0]["token"] == "founder-secret-v2"
+
+
+def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
+    """An http credential deposited BEFORE http ownership was recorded (a legacy /
+    owner-less vault record with no owner row) must not be silently overwritten by
+    an owned connect_http: the universe-wide guard cannot see an owner it never
+    recorded, so the deposit fails closed and the legacy secret is preserved. A
+    second admin cannot seize it; recovery needs a dedicated flow (Codex review)."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = _make_universe(base, "u-legacy", admin="founder")
+    grant_universe_access(
+        base, universe_id="u-legacy", actor_id="coadmin",
+        permission="admin", granted_by="founder",
+    )
+    # Simulate a legacy deposit: an http vault record with NO owner row (owner-less).
+    write_credential_vault(
+        udir,
+        [{
+            "credential_type": "http",
+            "service": "webhook:acme",
+            "destination": "webhook:acme",
+            "token": "legacy-secret",
+        }],
+    )
+
+    # Neither a fresh admin nor the original founder may silently rewrite it.
+    for actor in ("coadmin", "founder"):
+        _login(actor)
+        result = _connect("u-legacy", secret=f"{actor}-secret")
+        assert result["error"] == "credential_ownership_transfer_unsupported", (
+            actor, result,
+        )
+        recs = _http_records(udir)
+        assert len(recs) == 1 and recs[0]["token"] == "legacy-secret"  # untouched
+
+
+def test_http_deposit_preserves_llm_serving_custody_rows(base: Path) -> None:
+    """Generalizing owner-row keys to http must NOT wipe or corrupt the
+    claude/codex ownership rows that gate serving custody. After a universe has
+    both llm subscriptions AND an http connection, all three owner rows coexist —
+    the http prune/insert leaves the subscription custody rows intact (Codex
+    review: prove owner-row prune/insert preserves serving custody)."""
+    import base64 as _b64mod
+    import sqlite3 as _sqlite
+
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.storage import db_path
+
+    udir = _make_universe(base, "u-custody", admin="founder")
+    codex_auth = _b64mod.b64encode(b'{"tokens":{"a":"b"}}').decode("ascii")
+    write_credential_vault(
+        udir,
+        [
+            {"credential_type": "llm_subscription", "service": "claude",
+             "oauth_token": "tok"},
+            {"credential_type": "llm_subscription", "service": "codex",
+             "auth_json_b64": codex_auth},
+        ],
+        owner_user_id="founder",
+        universe_id="u-custody",
+    )
+
+    _login("founder")
+    assert _connect("u-custody", secret="sk-http")["status"] == "provisioned"
+
+    conn = _sqlite.connect(db_path(base))
+    try:
+        rows = {
+            (str(s), str(o))
+            for s, o in conn.execute(
+                "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
+                "WHERE universe_id = ?",
+                ("u-custody",),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    # claude/codex serving-custody rows survive the http prune; http adds its own.
+    assert rows == {
+        ("claude", "founder"),
+        ("codex", "founder"),
+        ("http:webhook:acme", "founder"),
+    }
 
 
 # --------------------------------------------------------------------------- #
