@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+*.log
+# Signing material — never commit
+*.p12
+*.pfx
+*.jks
+keystore.properties
