@@ -588,15 +588,29 @@ class ProviderRouter:
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
         # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = (
-            [served_authority.provider]
-            if served_authority is not None
-            else _effective_universe_provider_ceiling(
+        if served_authority is not None:
+            # The served authority is the explicitly-bound provider, but it must ALSO
+            # sit within the universe's privacy allowlist — a minted served authority
+            # must NOT bypass allowed_providers (Codex serve-open-compute review #2).
+            # No ceiling set = allow (backwards-compatible); a ceiling that excludes the
+            # served provider empties the chain -> fail closed below.
+            _served_ceiling = _effective_universe_provider_ceiling(
+                universe_context,
+                resolved_config,
+                carrier_armed=False,
+            )
+            allowlist = (
+                [served_authority.provider]
+                if _served_ceiling is None
+                or served_authority.provider in _served_ceiling
+                else []
+            )
+        else:
+            allowlist = _effective_universe_provider_ceiling(
                 universe_context,
                 resolved_config,
                 carrier_armed=invocation_carrier is not None,
             )
-        )
         if allowlist is not None:
             filtered = self._apply_allowlist(chain, allowlist)
             if not filtered:
@@ -709,6 +723,16 @@ class ProviderRouter:
                     detail="provider name not registered with daemon",
                 ))
                 continue
+            if served_authority is not None and (
+                getattr(provider, "name", None) != served_authority.provider
+            ):
+                # Substitution guard (Codex serve-open-compute review #5): the registry
+                # instance under this name MUST be the exact provider the authority was
+                # minted for, before we reserve budget or dispatch. Fail closed on any
+                # same-name substitution rather than serving a different provider/grant.
+                raise PermissionError(
+                    "served provider instance does not match the minted authority"
+                )
             if not self._quota.available(provider_name):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
                 cd = self._quota.cooldown_remaining(provider_name)
