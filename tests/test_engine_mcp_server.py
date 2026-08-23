@@ -905,8 +905,8 @@ def test_connect_compute_pins_universe_and_binds_write_caps(monkeypatch):
     assert payload["protocol"] == "openai_chat"
     assert payload["model"] == "moonshotai/kimi-k2"
     assert payload["ref"] == "http_grant_z"
-    # least-privilege write caps: NOT submit_request, NOT costly.
-    assert {"read", "list", "write"} == captured["caps"]
+    # strict least privilege: a pure WRITE — write alone, no read/list/submit/costly.
+    assert {"write"} == captured["caps"]
     assert "submit_request" not in captured["caps"]
     assert "costly" not in captured["caps"]
 
@@ -1002,10 +1002,11 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
         ))
 
     assert _cc("grant_ok")["status"] == "registered"
-    # Foreign-universe grant -> uniform not_found (never confirm a foreign grant).
+    # Every inaccessible non-empty ref -> the SAME uniform not_found (Codex adapt #1):
+    # foreign-universe, foreign-owner, absent, and revoked are indistinguishable, so
+    # the surface is not an existence/ownership oracle.
     assert _cc("grant_other_uni").get("error") == "not_found"
-    # Nonexistent grant -> connection_setup_invalid (absent/revoked), no existence leak.
-    assert _cc("grant_does_not_exist").get("error") == "connection_setup_invalid"
+    assert _cc("grant_does_not_exist").get("error") == "not_found"
 
     # A DIFFERENT founder whose grant belongs to another owner is refused not_found.
     other_ledger = ConnectionLedger(

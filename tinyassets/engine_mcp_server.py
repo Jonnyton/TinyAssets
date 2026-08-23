@@ -829,7 +829,10 @@ def write_brain(
 # universe), and — like remix/run_graph — held to the vetted-founder allowlist while
 # multi-tenant engine-write confinement is hardened. NO secret ever crosses this
 # surface (connect_http, which deposits one, is deliberately NOT exposed here).
-_CONNECT_CAPABILITIES = ("read", "list", "write")
+# Strict least privilege (Codex adapt #5): registration is a pure WRITE — it needs
+# neither ``read`` nor ``list``, so bind ``write`` alone (owner authority comes from
+# the admin ACL check in the impl, not from a capability).
+_CONNECT_CAPABILITIES = ("write",)
 
 
 @mcp.tool

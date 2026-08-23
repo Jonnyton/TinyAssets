@@ -165,8 +165,11 @@ def _load(universe_id: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
+        # Do NOT interpolate exc — it can carry the store's filesystem path or parser
+        # internals, and this message can surface on the served MCP surface (Codex
+        # adapt #4). The chained cause preserves the detail for local logs.
         raise ProviderDefinitionError(
-            f"provider definitions store is present but unreadable/corrupt: {exc}"
+            "provider definitions store is present but unreadable or corrupt"
         ) from exc
     if not isinstance(data, list):
         raise ProviderDefinitionError(
@@ -240,10 +243,15 @@ def register_definition(
         # re-declared by the owner (private<->commons) without a new id.
         if row.get("owner_user_id") != owner_user_id:
             raise ProviderDefinitionError("definition owned by another principal")
-        if row.get("visibility") != visibility:
+        # Integrity re-check on the idempotent path (Codex adapt #3): a stored row
+        # sharing this id whose fields no longer content-address it (e.g. a swapped
+        # ref) must fail closed, never be returned or rewritten under a trusted id.
+        verified = _verified_definition(row)
+        if verified.visibility != visibility:
             row["visibility"] = visibility
             _write(universe_id, rows)
-        return ProviderDefinition(**row)
+            return _verified_definition(row)
+        return verified
 
     definition = ProviderDefinition(
         id=definition_id,
