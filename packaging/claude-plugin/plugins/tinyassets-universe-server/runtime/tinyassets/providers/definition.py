@@ -269,12 +269,20 @@ def register_definition(
     return definition
 
 
-def _verified_definition(row: dict[str, Any]) -> ProviderDefinition:
+def _verified_definition(
+    row: dict[str, Any], *, expect_universe: str | None = None
+) -> ProviderDefinition:
     """Construct a ProviderDefinition and verify its id is the content-address of its
     own fields. The id is deterministic over (universe, owner, access_method, protocol,
     ref, model), so a stored row whose id does NOT recompute has been tampered with —
     e.g. an id kept while `ref` (the grant) was swapped, which would let a substituted
-    grant serve under a trusted name (Codex reject #4). Fail closed on mismatch."""
+    grant serve under a trusted name (Codex reject #4). Fail closed on mismatch.
+
+    When ``expect_universe`` is given, ALSO verify the row belongs to that universe
+    bucket (Codex adapt, read-surface review): the content-address proves the fields
+    are self-consistent, NOT that the row lives in the right per-universe store — a row
+    copied from another universe's file would carry a valid id but the wrong
+    ``universe_id``. Fail closed on a bucket mismatch."""
     definition = ProviderDefinition(**row)
     expected = _definition_id(
         universe_id=definition.universe_id,
@@ -288,18 +296,25 @@ def _verified_definition(row: dict[str, Any]) -> ProviderDefinition:
         raise ProviderDefinitionError(
             "provider definition id integrity check failed (tampered store row)"
         )
+    if expect_universe is not None and definition.universe_id != expect_universe:
+        raise ProviderDefinitionError(
+            "provider definition universe mismatch (row in the wrong bucket)"
+        )
     return definition
 
 
 def get_definition(universe_id: str, definition_id: str) -> ProviderDefinition | None:
     for row in _load(universe_id):
         if row.get("id") == definition_id:
-            return _verified_definition(row)
+            return _verified_definition(row, expect_universe=universe_id)
     return None
 
 
 def list_definitions(universe_id: str) -> list[ProviderDefinition]:
-    return [_verified_definition(row) for row in _load(universe_id)]
+    return [
+        _verified_definition(row, expect_universe=universe_id)
+        for row in _load(universe_id)
+    ]
 
 
 def list_commons_definitions(base: str | Path) -> list[dict[str, Any]]:

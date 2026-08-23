@@ -479,7 +479,7 @@ def read_graph(
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            branch, automations, automation, connections, agents, agent, agent_bindings, or
+            branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
             agent_binding.
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
@@ -587,6 +587,13 @@ def read_graph(
                 binding_id=agent_binding_id,
             )
         )
+    if normalized == "compute":
+        # The read sibling of write_graph target=connection operation=connect_compute:
+        # list the compute providers registered for this universe (candidates). Owner-
+        # gated + no secret. Lets a user SEE what they registered from any surface.
+        from tinyassets.api.compute_connection import read_compute_providers
+
+        return json.dumps(read_compute_providers(universe_id=graph_id))
     return _unknown_target(
         "read_graph",
         target,
@@ -602,6 +609,7 @@ def read_graph(
             "automations",
             "automation",
             "connections",
+            "compute",
             "agents",
             "agent",
             "agent_bindings",

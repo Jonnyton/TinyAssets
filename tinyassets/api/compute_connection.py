@@ -185,3 +185,56 @@ def connect_compute(*, universe_id: str = "", payload: Any = None) -> dict[str, 
     except pd.ProviderDefinitionError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     return _project(definition)
+
+
+def _project_read(definition: Any) -> dict[str, Any]:
+    """Owner-facing view of one registered provider (no secret exists to redact —
+    ``ref`` is a grant_id / CLI name). Distinct from ``_project`` (the post-write
+    receipt): a listing row carrying the durable descriptor fields."""
+    return {
+        "definition_id": definition.id,
+        "access_method": definition.access_method,
+        "protocol": definition.protocol,
+        "model": definition.model,
+        "ref": definition.ref,
+        "visibility": definition.visibility,
+        "created_at": getattr(definition, "created_at", ""),
+    }
+
+
+def read_compute_providers(*, universe_id: str = "") -> dict[str, Any]:
+    """List the compute providers registered for the owner's universe (candidates).
+
+    The read sibling of :func:`connect_compute` — so a user can SEE what they (or a
+    remix) registered, from any surface. Owner-gated exactly like registration (an
+    explicit ``admin`` ACL row; anonymous/non-admin/unknown-universe get the uniform
+    ``not_found``). Integrity is enforced by ``list_definitions`` (each row's id must
+    content-address its own fields, else it fails closed). No secret is ever returned.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.providers import definition as pd
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = permissions.current_actor_id().strip()
+    if not actor or actor == "anonymous":
+        return {"error": "authentication_required", "resource": "connection"}
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    admin = [
+        row
+        for row in list_universe_acl(base, universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+    try:
+        definitions = pd.list_definitions(uid)
+    except pd.ProviderDefinitionError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    return {
+        "universe_id": uid,
+        "providers": [_project_read(d) for d in definitions],
+        "count": len(definitions),
+    }
