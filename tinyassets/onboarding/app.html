@@ -195,6 +195,16 @@
   const CFG = window.__TA_ONBOARDING__ || __TA_ONBOARDING_CONFIG__;
   const TOKEN_KEY = "ta_access_token";
   const PKCE_KEY = "ta_pkce";
+  // Opaque server-side refresh-session handle. Lives in localStorage because the
+  // Android WebView does NOT reliably persist the HttpOnly refresh cookie across
+  // the OAuth external-tab round-trip / process death (proven live 2026-08-22),
+  // which forced a re-login every ~5 min. localStorage IS persisted by the
+  // WebView. The handle is a bearer to a refresh token kept only server-side; the
+  // real refresh token never reaches this page.
+  const SREF_KEY = "ta_sref";
+  function sessionRef(){ try{ return localStorage.getItem(SREF_KEY) || ""; }catch(_e){ return ""; } }
+  function storeSessionRef(ref){ try{ if(ref) localStorage.setItem(SREF_KEY, ref); }catch(_e){} }
+  function clearSessionRef(){ try{ localStorage.removeItem(SREF_KEY); }catch(_e){} }
 
   // ---- PKCE helpers (in-browser; public client, no secret) ----
   function b64url(bytes){
@@ -372,6 +382,7 @@
     }
     pkceStore.removeItem(PKCE_KEY);
     storeAccessToken(tokens.access_token, tokens.expires_in);
+    storeSessionRef(tokens.session_ref);   // WebView-persistent renewal handle
     return true;
   }
 
@@ -413,11 +424,13 @@
     refreshing = withRefreshLock(async()=>{
       try{
         const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
-          headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"refresh_token"})});
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({grant_type:"refresh_token", session_ref: sessionRef() || undefined})});
         if(!r.ok) return false;
         const doc = await r.json();
         if(!doc.access_token) return false;
         storeAccessToken(doc.access_token, doc.expires_in);
+        storeSessionRef(doc.session_ref);   // handle is stable, but re-store defensively
         MCP.sessionId = null;   // the MCP session was bound to the old bearer
         return true;
       }catch(_e){ return false; }
@@ -437,8 +450,9 @@
       logoutPending = true;
       try{
         const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
-          headers:{"Content-Type":"application/json"}, body: JSON.stringify({grant_type:"logout"})});
-        if(r.ok){ logoutPending = false; try{ localStorage.removeItem("ta_logout_pending"); }catch(_e){} return true; }
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({grant_type:"logout", session_ref: sessionRef() || undefined})});
+        if(r.ok){ logoutPending = false; clearSessionRef(); try{ localStorage.removeItem("ta_logout_pending"); }catch(_e){} return true; }
       }catch(_e){}
       try{ localStorage.setItem("ta_logout_pending","1"); }catch(_e){}
       return false;
@@ -897,13 +911,27 @@
     });
   }
 
+  // Proactive renewal: keep the ~5-minute access token fresh in the background so
+  // a long conversation never stalls on an expired token. ensureFreshToken()
+  // only calls the network when the token is within 60s of expiry, so this is a
+  // cheap heartbeat, not a refresh-per-minute. Also renew when the app returns to
+  // the foreground (Android throttles timers while backgrounded, so the token can
+  // lapse while the user is away — renew on resume before the next message).
+  function startSessionKeepAlive(){
+    setInterval(()=>{ if(token()) ensureFreshToken().catch(()=>{}); }, 60*1000);
+    document.addEventListener("visibilitychange", ()=>{
+      if(document.visibilityState==="visible" && token()) ensureFreshToken().catch(()=>{});
+    });
+  }
+
   async function boot(){
     wire();
     wireNativeReturn();
     loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start
     const signedInNow = await completeSignInIfCallback();
-    if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the refresh cookie
+    if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
+    startSessionKeepAlive();
   }
   boot();
   </script>

@@ -43,6 +43,82 @@ _REFRESH_COOKIE_PATH = "/mcp/app/token"
 _REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600
 _NO_STORE = {"Cache-Control": "no-store"}
 
+# Session handle (server-side refresh store). The HttpOnly cookie above is the
+# web path, but the Android WebView does NOT persist a `Secure; SameSite=Strict;
+# HttpOnly` cookie set from a `fetch()` response across the OAuth external-tab
+# round-trip / process death (proven live 2026-08-22: 0 cookies in the jar,
+# refresh → `no_refresh_token`, forcing a re-login every ~5 min). So the app also
+# gets an opaque HANDLE it keeps in localStorage (which the WebView DOES persist)
+# and sends in the refresh body. The handle is a bearer to the AuthKit refresh
+# token, which is stored ONLY server-side and never reaches JS — strictly better
+# than putting the refresh token itself in a readable cookie, and it survives the
+# WebView. A `secrets.token_urlsafe(32)` handle is 43 url-safe chars.
+_REFRESH_SESSION_TTL = 7 * 24 * 3600
+_HANDLE_RE = _re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+
+def _refresh_store_dir() -> Path:
+    from tinyassets.storage import data_dir
+
+    d = data_dir() / "app_refresh_sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _valid_handle(handle: str) -> bool:
+    return bool(_HANDLE_RE.match(handle or ""))
+
+
+def _write_refresh_session(handle: str, refresh_token: str) -> None:
+    """Persist (or rotate, same handle) the AuthKit refresh token, atomically."""
+    import json
+    import time
+
+    if not _valid_handle(handle) or not refresh_token:
+        return
+    path = _refresh_store_dir() / f"{handle}.json"
+    tmp = path.with_suffix(".tmp")
+    payload = {"rt": refresh_token, "exp": int(time.time()) + _REFRESH_SESSION_TTL}
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)  # atomic swap so a concurrent read never sees a partial
+
+
+def _mint_refresh_session(refresh_token: str) -> str:
+    handle = secrets.token_urlsafe(32)
+    _write_refresh_session(handle, refresh_token)
+    return handle
+
+
+def _read_refresh_session(handle: str) -> str:
+    """The stored refresh token for a valid, unexpired handle, else ""."""
+    import json
+    import time
+
+    if not _valid_handle(handle):
+        return ""
+    path = _refresh_store_dir() / f"{handle}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if int(data.get("exp", 0) or 0) < int(time.time()):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return ""
+    rt = str(data.get("rt", ""))
+    return rt if 0 < len(rt) <= 4096 else ""
+
+
+def _drop_refresh_session(handle: str) -> None:
+    if not _valid_handle(handle):
+        return
+    try:
+        (_refresh_store_dir() / f"{handle}.json").unlink()
+    except OSError:
+        pass
+
 
 def _same_origin_json(request: Any, public_resource: str = "") -> bool:
     """True only for a JSON request whose ``Origin`` is this app's own origin.
@@ -207,19 +283,29 @@ async def _handle_token(request: Any) -> Any:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
 
     grant = str(data.get("grant_type", "authorization_code")).strip()
+    # The opaque server-side session handle (WebView path). Validated; a bad
+    # value is simply ignored so the cookie path still applies.
+    session_ref = str(data.get("session_ref", "")).strip()
+    if not _valid_handle(session_ref):
+        session_ref = ""
     if grant == "logout":
         # Sign-out must end the renewable session too, not just the page's
-        # access token: clear the cookie at its exact path. (AuthKit has no
-        # public-client revocation call for refresh tokens; the cookie is the
-        # only place ours lives.)
+        # access token: clear the cookie AND drop the server-side handle so
+        # neither the next person on this device nor a stolen handle can renew.
+        if session_ref:
+            _drop_refresh_session(session_ref)
         response = JSONResponse({"ok": True}, headers=_NO_STORE)
         response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
         return response
     if grant == "refresh_token":
         # Silent session renewal. AuthKit access tokens live ~5 minutes; the
-        # refresh token never reaches the page — it lives in an HttpOnly
-        # cookie scoped to this exact path, set by the initial exchange below.
-        refresh = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
+        # refresh token never reaches the page. Native WebView: it comes from the
+        # server-side store keyed by the localStorage handle. Web browser: from
+        # the HttpOnly cookie. The handle wins when present (the WebView cookie is
+        # unreliable — see _REFRESH_SESSION_TTL note).
+        refresh = _read_refresh_session(session_ref) if session_ref else ""
+        if not refresh:
+            refresh = str(request.cookies.get(_REFRESH_COOKIE, "")).strip()
         if not refresh or len(refresh) > 4096:
             return JSONResponse({"error": "no_refresh_token"}, status_code=401)
         token_form = {
@@ -293,13 +379,26 @@ async def _handle_token(request: Any) -> Any:
             # expires or the user signs out (logout clears it).
             return JSONResponse({"error": "refresh_failed"}, status_code=401, headers=_NO_STORE)
         return JSONResponse({"error": "exchange_failed"}, status_code=400, headers=_NO_STORE)
-    # Return ONLY the access token (+ its lifetime); never echo the code,
-    # verifier, raw body, or the refresh token — that one goes into an
-    # HttpOnly, Secure, SameSite=Strict cookie scoped to this endpoint only.
-    response = JSONResponse(
-        {"access_token": access, "expires_in": expires_in or None},
-        headers={"Cache-Control": "no-store"},
-    )
+    # Persist the rotated refresh token server-side under an opaque handle (the
+    # native WebView path) and return the handle to the page; keep the HttpOnly
+    # cookie too (the web-browser path). Never echo the code, verifier, raw body,
+    # or the refresh token itself — the page only ever sees the access token and
+    # the opaque handle, never the AuthKit refresh token.
+    handle = ""
+    if refresh_token and len(refresh_token) <= 4096:
+        if session_ref:
+            _write_refresh_session(session_ref, refresh_token)  # rotate in place
+            handle = session_ref
+        else:
+            handle = _mint_refresh_session(refresh_token)
+    elif session_ref:
+        # AuthKit rotated without returning a new token (rare): keep the existing
+        # server-side token under the same handle so the app can renew again.
+        handle = session_ref
+    body: dict[str, Any] = {"access_token": access, "expires_in": expires_in or None}
+    if handle:
+        body["session_ref"] = handle
+    response = JSONResponse(body, headers={"Cache-Control": "no-store"})
     if refresh_token and len(refresh_token) <= 4096:
         response.set_cookie(
             _REFRESH_COOKIE,
