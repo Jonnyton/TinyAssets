@@ -211,8 +211,10 @@ def read_graph(target: str = "status") -> str:
     Scoped to YOUR universe — you cannot read another one.
 
     Args:
-        target: What to read: ``status`` (a factual daemon + serving snapshot) or
-            ``graph`` (inspect your universe's graph). Any other value is refused.
+        target: What to read: ``status`` (a factual daemon + serving snapshot),
+            ``graph`` (inspect your universe's graph), or ``compute`` (list the
+            compute providers registered for your universe — the read sibling of
+            registering one with ``connect_compute``). Any other value is refused.
     """
     import json
 
