@@ -74,10 +74,25 @@ universe's registered ProviderDefinitions via `provider_for_definition` and
 (register the universe's open providers alongside the existing chains; run the FULL
 provider/routing/serving suite for zero regressions) — the static-chain removal is the
 task-5 migration, sequenced after the open path is proven.
-- [ ] 3.1 Per-universe open-provider registration into the router + routing equation
-      (selected ∩ allowed_providers ∩ enrollment ∩ capability); router filters within
-      the selected ordered set, never synthesizes. Empty set → fail closed naming the
-      emptying input. FULL suite green vs origin/main.
+- [x] 3.1a `register_universe_open_providers(router, universe_id)` — the additive
+      bridge: resolve + register a universe's ProviderDefinitions into the router so the
+      EXISTING chain routes to them. `provider_resolver.py` + 2 tests; FULL provider/
+      routing/serving suite green (1140 passed; the 2 fails are known-pre-existing/order-
+      dependent, in .github/known-failing-tests.txt — not regressions).
+- [x] 3.1b `connect_compute` — the user-facing MCP registration surface (write_graph
+      target=connection). Registration-only, custody-clean; api_key_http refs a granted
+      http connection (validated bound+owned), subscription_cli refs codex/claude-code.
+      `tinyassets/api/compute_connection.py` + 11 tests; no advertised-handle regression.
+- [ ] 3.1c Node-execution wiring: TWO parts — (a) register the universe's open providers
+      at a universe-bound call [additive hook, ready], and (b) make selection HONOR the
+      open provider. BLOCKER for (b): `call_with_policy` short-circuits to role-based
+      `call()` when a universe_context is present (router.py:1024), IGNORING the per-node
+      policy; and `set_engine`/`bind_serving_provider` accept only codex/claude-code
+      (provider_serving_binding.py:209). So an open provider registers but nothing selects
+      it. (b) is an AUTHORITY-OWNED serving-path change (constrain-set-engine-provider-
+      authority owns allowed_providers; user-assigned-llm-policy owns per-node selection) —
+      careful, FULL-suite + Codex gated. Do NOT add the register-hook alone (dead code
+      until (b) lands). This is the security-critical serving change, done last + reviewed.
 - [ ] 3.2 Preserve fail-loud, bounded cooldown, hard-writer-pin, per-universe privacy
       allowlist; privacy ceiling DOMINATES capability. Mutation-probe tests. Codex gate.
 
