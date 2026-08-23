@@ -129,6 +129,7 @@ class UniverseBoundProviderCall:
 
             raise AllProvidersExhaustedError("No provider router is available.")
         global _last_provider
+        _register_open_providers_for(self.universe_context)
         result = _real_router.call_with_policy_sync(
             role,
             prompt,
@@ -243,6 +244,35 @@ _real_router = _build_fallback_router()
 # ---------------------------------------------------------------------------
 
 
+def _register_open_providers_for(universe_context: Any) -> None:
+    """Register the calling universe's open compute providers into the live router.
+
+    The additive bridge from the open registry (``connect_compute`` /
+    ``ProviderDefinition``) to routing: after this, the universe's open providers are
+    in ``router.available_providers`` by name, so the existing chain routes to any the
+    universe config's ``allowed_providers`` + preference select (set via the
+    ``open_provider`` engine mode). Defensive: never breaks a provider call — a missing
+    context, absent registry, or resolution error is a no-op. Isolation is preserved by
+    ``ApiKeyHttpProvider``'s per-call grant-universe gate, so a provider registered here
+    for one universe cannot serve another.
+    """
+    if _real_router is None or universe_context is None:
+        return
+    try:
+        universe_dir = getattr(universe_context, "universe_dir", None)
+        if universe_dir is None:
+            return
+        from pathlib import Path as _Path
+
+        from tinyassets.providers.provider_resolver import (
+            register_universe_open_providers,
+        )
+
+        register_universe_open_providers(_real_router, _Path(universe_dir).name)
+    except Exception:
+        logger.debug("open-provider registration skipped", exc_info=True)
+
+
 def _call_router_with_retry(
     role: str,
     prompt: str,
@@ -265,6 +295,8 @@ def _call_router_with_retry(
 
     def _once() -> str:
         global _last_provider
+        # Make the universe's open compute providers routable before the call.
+        _register_open_providers_for(universe_context)
         # Only forward config / universe_context when set, so existing
         # routers/stubs with the 3-arg call_sync signature keep working
         # (backward-compat).

@@ -343,6 +343,24 @@ class ProviderRouter:
             return chain
         return [preferred] + [p for p in chain if p != preferred]
 
+    def _apply_open_preference(self, chain: list[str], preferred: str) -> list[str]:
+        """Preference that also admits an OPEN, registered provider not in the
+        static role chain (compute-agnostic).
+
+        The static ``FALLBACK_CHAINS`` only name the built-in providers, so a
+        universe that selected an open provider (``api_key_http:<def-id>``, set as
+        ``preferred_writer`` by the ``open_provider`` engine mode) is not in the
+        chain — plain ``_apply_preference`` would be a no-op. If the preferred
+        provider is REGISTERED (the per-universe registration bridge ran) but not in
+        the chain, prepend it so it is tried first, keeping the built-in chain as
+        fallback. If it is not registered, behave exactly as before (no phantom
+        entry). Only the non-served path reaches here; the interactive served turn
+        uses ``served_authority.provider`` directly and never consults this."""
+        reordered = self._apply_preference(chain, preferred)
+        if preferred and preferred not in reordered and preferred in self._providers:
+            return [preferred, *reordered]
+        return reordered
+
     @staticmethod
     def _current_allowlist(
         resolved: "UniverseConfig | None" = None,
@@ -561,9 +579,9 @@ class ProviderRouter:
                 ucfg = resolved_config
                 if ucfg is not None:
                     if role == "writer" and ucfg.preferred_writer:
-                        chain = self._apply_preference(chain, ucfg.preferred_writer)
+                        chain = self._apply_open_preference(chain, ucfg.preferred_writer)
                     elif role == "judge" and ucfg.preferred_judge:
-                        chain = self._apply_preference(chain, ucfg.preferred_judge)
+                        chain = self._apply_open_preference(chain, ucfg.preferred_judge)
             except Exception:
                 pass
 
