@@ -327,3 +327,47 @@ was observed; the rendered action-resolution failure makes ChatGPT's connector
 registration/attachment seam the next repair boundary without establishing
 whether an accepted bearer reached validation. It is not
 authenticated-continuity acceptance evidence.
+
+---
+
+## 2026-08-23 — Webapp ui-test: compute-agnostic surface parity (served agent)
+
+**Surface:** live webapp `https://tinyassets.io/mcp/app`, signed in as founder
+(universe `u-01kxm1vszd8hwp7em418asq8h9`), deployed sha `bce0f188` (verified via
+`get_status` release_state: running_healthy, forward_canary passed).
+
+**Prompt (typed as a user):** "I want to run my automations on a different
+compute provider — say OpenRouter or Kimi, using my own API key. Can I add that
+compute channel myself, and what do you need from me?"
+
+**Rendered reply (served on codex, verbatim excerpt):**
+> Yes, but not as a simple in-chat toggle from where I'm standing right now.
+> What I can see in my live status is: my host is currently bound to `codex`;
+> `api_key_providers_enabled` is `false`; my daemon is accepting `any` LLM type,
+> but that is not the same thing as having BYO-provider channels wired in.
+> So if you want OpenRouter or Kimi with your own key, this looks like a
+> code/config change in TinyAssets, not something already exposed for self-serve
+> use in this universe. [then asks which provider / global-vs-per-automation /
+> where the key lives / models / routing policy / fallback, and recommends
+> "add a provider adapter, enable API-key-backed providers in config, define a
+> named compute channel…"]
+
+**Finding (CONFIRMED):** the compute-agnostic capability shipped in `bce0f188`
+and is live on the CONNECTOR surface (`write_graph target=connection
+operation=connect_compute`), but the SERVED webapp agent cannot self-serve it —
+it treats compute-channel building as an unbuilt code change.
+
+**Root cause:** `tinyassets/engine_mcp_server.py` exposes to the served agent
+ONLY: read_graph, get_status, run_graph, browse_commons, read_commons_shape,
+remix_shape, read_brain, write_brain. It has NO write_graph (connect_compute /
+connect_http / branch create-patch), no consent (grant_effector_consent), and no
+serving-control (set_engine / bind_serving_provider / set_serving). Same
+root-cause class as the pre-existing served-agent BUILD/RUN parity gap. Also note
+the agent conflated the legacy `api_key_providers_enabled` host flag (gates the
+fixed gemini/groq/grok providers) with the new grant-authorized `api_key_http`
+model (authorized by the connection grant alone, not that flag).
+
+**Status:** recorded as a P1 STATUS concern; fix is the served build-verb parity
+work — authority-sensitive (served build+run = RCE-risk) → OpenSpec + Codex
+before build. Positive result: deployed converse round-trip works end-to-end on
+the webapp; codex serving is healthy (bwrap available).
