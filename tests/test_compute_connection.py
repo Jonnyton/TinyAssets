@@ -243,3 +243,53 @@ def test_foreign_universe_admin_refused(base: Path) -> None:
     r = _connect("u-b", access_method="subscription_cli", protocol="cli:codex",
                  model="m", ref="codex")
     assert r == {"error": "not_found", "resource": "connection"}
+
+
+# --------------------------------------------------------------------------- #
+# read_compute_providers — the owner-facing listing (read sibling).
+# --------------------------------------------------------------------------- #
+
+
+def test_read_compute_providers_lists_owner_definitions(base: Path) -> None:
+    from tinyassets.api.compute_connection import read_compute_providers
+
+    _make_universe(base, "u-r", admin="founder")
+    _login("founder")
+    reg = _connect("u-r", access_method="subscription_cli", protocol="cli:codex",
+                   model="gpt-5-codex", ref="codex")
+    assert reg["status"] == "registered"
+
+    out = read_compute_providers(universe_id="u-r")
+    assert out["count"] == 1
+    row = out["providers"][0]
+    assert row["definition_id"] == reg["definition_id"]
+    assert row["access_method"] == "subscription_cli"
+    assert row["protocol"] == "cli:codex"
+    assert row["model"] == "gpt-5-codex"
+    # No secret / owner leak in the projection.
+    assert "owner_user_id" not in row
+    for banned in ("secret", "token", "password", "credential", "auth_material"):
+        assert banned not in json.dumps(out).lower(), banned
+
+
+def test_read_compute_providers_owner_gated(base: Path) -> None:
+    from tinyassets.api.compute_connection import read_compute_providers
+
+    _make_universe(base, "u-r2", admin="founder", write="collab")
+    _login("founder")
+    _connect("u-r2", access_method="subscription_cli", protocol="cli:codex",
+             model="gpt-5-codex", ref="codex")
+
+    # Anonymous -> authentication_required.
+    _logout()
+    assert read_compute_providers(universe_id="u-r2").get("error") == "authentication_required"
+
+    # A write collaborator (not admin) -> uniform not_found (owner-gated).
+    _login("collab")
+    assert read_compute_providers(universe_id="u-r2") == {
+        "error": "not_found", "resource": "connection",
+    }
+
+    # Owner (admin) -> the listing.
+    _login("founder")
+    assert read_compute_providers(universe_id="u-r2")["count"] == 1
