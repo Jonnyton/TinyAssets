@@ -77,6 +77,32 @@ def test_system_prompt_is_first_person_and_grounded(tmp_path, monkeypatch):
     assert "Jonathan" in prompt
 
 
+def test_founder_prompt_instructs_proactive_brain_persistence(tmp_path):
+    """The founder prompt must tell the universe to WRITE learned facts to its
+    brain (write_brain) and stop asking permission — the fix for the live gap
+    where it recited a founder-taught org chart / repo but never persisted them.
+    A lower-tier visitor is never shown the brain-write mechanics.
+    """
+    udir = _seed(tmp_path)
+    founder_prompt = ui._build_persona_system_prompt(
+        udir, universe_id="u-test", tier=interlocutor.FOUNDER
+    )
+    assert "write_brain" in founder_prompt
+    assert "how i remember" in founder_prompt.lower()
+    assert "ask permission" in founder_prompt.lower()
+
+    # A lower-tier visitor never sees the brain-write instruction (and may be
+    # refused content entirely by the disclosure filter).
+    try:
+        visitor_prompt = ui._build_persona_system_prompt(
+            udir, universe_id="u-test", tier=interlocutor.T1
+        )
+    except PermissionError:
+        visitor_prompt = ""
+    assert "write_brain" not in visitor_prompt
+    assert "how i remember" not in visitor_prompt.lower()
+
+
 def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     write_universe_config_fields(udir, preferred_writer="codex")
