@@ -715,6 +715,42 @@ class ProviderRouter:
 
         for provider_name in chain:
             provider = self._providers.get(provider_name)
+            if (
+                served_authority is not None
+                and provider_name == served_authority.provider
+                and provider_name.startswith("api_key_http:")
+            ):
+                # Do NOT trust the mutable registry for an OPEN served provider (Codex
+                # serve-open-compute re-review #4): a substituted same-name registry
+                # object could advertise the content-addressed name while backing a
+                # different endpoint/grant/credential. Resolve the executor FRESH from
+                # the integrity-checked ProviderDefinition (get_definition verifies the
+                # id content-addresses its fields), so the dispatched instance is
+                # authenticated by construction, not by a name comparison.
+                try:
+                    from tinyassets.providers.definition import get_definition
+                    from tinyassets.providers.provider_resolver import (
+                        provider_for_definition,
+                    )
+
+                    _uid = (
+                        universe_dir.name
+                        if universe_dir is not None
+                        else served_authority.universe_id
+                    )
+                    _def_id = provider_name.split("api_key_http:", 1)[-1]
+                    _definition = get_definition(_uid, _def_id)
+                    if _definition is None:
+                        raise PermissionError(
+                            "open served provider definition is absent"
+                        )
+                    provider = provider_for_definition(_definition)
+                except PermissionError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - fail closed, secret-free
+                    raise PermissionError(
+                        "open served provider could not be authenticated"
+                    ) from exc
             if provider is None:
                 logger.info("Provider %s not in registry, skipping", provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
@@ -723,16 +759,6 @@ class ProviderRouter:
                     detail="provider name not registered with daemon",
                 ))
                 continue
-            if served_authority is not None and (
-                getattr(provider, "name", None) != served_authority.provider
-            ):
-                # Substitution guard (Codex serve-open-compute review #5): the registry
-                # instance under this name MUST be the exact provider the authority was
-                # minted for, before we reserve budget or dispatch. Fail closed on any
-                # same-name substitution rather than serving a different provider/grant.
-                raise PermissionError(
-                    "served provider instance does not match the minted authority"
-                )
             if not self._quota.available(provider_name):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
                 cd = self._quota.cooldown_remaining(provider_name)
