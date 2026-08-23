@@ -230,3 +230,24 @@ rejected 2026-08-04 as redundant with `run_graph` and as more pre-built
 complexity. The gap is the missing primitive, not a missing convenience.
 
 Needs promotion to an OpenSpec change before any build.
+
+- [2026-08-22] (source: host, owner: claude-code, status: captured,
+  priority: uptime-platform, size: large) **Out-of-the-box pooled compute for
+  every universe.** Two tiers: (1) the INTERACTIVE agent the user chats with (any
+  surface) runs on the user's PREFERRED default provider + a fallback order; (2)
+  the UNIVERSE's background LangGraph tasks/automations draw from the FULL POOL of
+  compute — deposited subscriptions (Claude, OpenAI/codex) PLUS a large set of
+  free internet APIs, each with its own limits, aggregated. Every new universe
+  ships preset with OpenRouter + all its free-to-use APIs (and as many other free
+  APIs as we can wire) so a universe with nothing deposited still RUNS out of the
+  box. Framing: "users give the universe all the compute we can and want to give
+  it; there's a lot of free compute on the internet — preset the universe with all
+  of it." Sub-item: wire the Claude subscription deposit (Claude Code OAuth token
+  via the browser deposit form; NOT third-party OAuth-connect — Anthropic forbids
+  it). RECONCILIATION REQUIRED before build: this expands the current
+  "platform-never-supplies-compute / user-subscription-runs-it / subscription-only-
+  by-default (TINYASSETS_ALLOW_API_KEY_PROVIDERS gate)" principle — needs a design
+  decision + PLAN.md (Module: Providers / router fallback + credential vault)
+  update. Links: memory universe-compute-pool-free-apis-out-of-box; no-host-writer;
+  user-subscription-runs-the-universe. Needs promotion to an OpenSpec change before
+  any build.
