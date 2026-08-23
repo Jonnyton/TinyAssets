@@ -26,16 +26,15 @@ so concurrent users do not contend at the budget layer.
 - **THEN** the reservation's output allotment is the bounded per-call default,
   not the aggregate ceiling
 
-#### Scenario: A binding with a stale-low persisted ceiling is floored at admission
+#### Scenario: A stale-low binding is healed by re-bind, not by an admission override
 
-- **GIVEN** a serving binding bound before the ceiling was sized for concurrency,
-  whose persisted `max_tokens` is below the current concurrency-sized backstop
-  (and which cannot be lifted by the idempotent re-bind)
-- **WHEN** concurrent converse turns reserve budget for that binding
-- **THEN** the effective in-flight ceiling is floored to the current backstop, so
-  the turns are admitted rather than held with "budget exhausted"
-- **AND** the floor only ever RAISES the ceiling; the rolling invocation cap and
-  settled-release model remain the runaway bounds
+- **GIVEN** a serving binding whose persisted (digest-covered) ceiling is below
+  current policy because it was bound before the ceiling was raised
+- **WHEN** the binding owner re-binds the same provider
+- **THEN** the re-bind does NOT replay the stale binding; it advances the
+  generation/digest and persists the current ceiling, re-signing the authority
+- **AND** admission NEVER expands a reservation above the binding's own stored,
+  digest-covered ceiling (no admission-time floor) — the authority contract holds
 
 #### Scenario: Many concurrent turns across surfaces on one binding
 

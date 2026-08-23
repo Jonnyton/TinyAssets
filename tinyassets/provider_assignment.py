@@ -109,19 +109,6 @@ _LEASE_MARGIN_S = 300.0
 #: a healthy call is never reclaimed early.
 _FALLBACK_CALL_TIMEOUT_S = 3600.0
 
-#: Serve-time in-flight ceiling FLOOR. A binding bound before the ceiling was
-#: sized for concurrency persists a stale-low ``max_tokens`` (e.g. 32_768), and
-#: ``bind_serving_provider`` is idempotent on the same provider so a re-bind
-#: cannot lift it. Flooring the ceiling to the current concurrency-sized backstop
-#: at admission heals existing bindings without a re-deposit / re-bind / data
-#: migration. This is a runaway guard, NOT a spend cap — real spend is metered on
-#: the user's own deposited subscription, and the bounded per-call reservation
-#: (``_SERVED_PER_CALL_MAX_TOKENS`` in the router) is what keeps one turn from
-#: eating the ceiling. Keep in sync with
-#: ``provider_serving_binding._MAX_TOKENS`` / ``_MAX_COST_MICROUNITS``.
-_SERVE_MIN_CEILING_TOKENS = 4_000_000
-_SERVE_MIN_CEILING_COST_MICROUNITS = 400_000_000
-
 
 def _ensure_served_budget_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
@@ -474,17 +461,8 @@ def reserve_served_provider_budget(
         in_flight = [row for row in rows if row[0] in _IN_FLIGHT_STATES]
         used_tokens = sum(int(row[1]) for row in in_flight)
         used_cost = sum(int(row[2]) for row in in_flight)
-        # Floor the persisted ceiling to the current concurrency-sized backstop so
-        # a binding bound before the ceiling was raised (stale-low max_tokens, not
-        # liftable via the idempotent re-bind) still admits concurrent turns. Only
-        # ever RAISES the ceiling; a runaway is still bounded by the rolling
-        # invocation cap above and the settled-release model.
-        effective_max_tokens = max(authority.max_tokens, _SERVE_MIN_CEILING_TOKENS)
-        effective_max_cost = max(
-            authority.max_cost_microunits, _SERVE_MIN_CEILING_COST_MICROUNITS
-        )
-        remaining_tokens = effective_max_tokens - used_tokens
-        remaining_cost = effective_max_cost - used_cost
+        remaining_tokens = authority.max_tokens - used_tokens
+        remaining_cost = authority.max_cost_microunits - used_cost
         affordable_total_tokens = remaining_cost // _SERVED_COST_MICROUNITS_PER_TOKEN
         output_tokens = min(
             requested_output_tokens,
