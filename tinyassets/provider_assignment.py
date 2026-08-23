@@ -97,6 +97,13 @@ _SERVED_COST_MICROUNITS_PER_TOKEN = 100
 #: only the oldest settled history beyond both the window and this cap.
 _SETTLED_RETENTION_ROWS = 5000
 
+
+def _is_open_provider(name: str) -> bool:
+    """True for an open compute provider serving name (``api_key_http:<def-id>``).
+    Its credential is a connection grant, not a subscription snapshot — the authority
+    + budget paths branch on this."""
+    return name.startswith("api_key_http:")
+
 #: Rolling window for the invocation runaway guard (Codex 2026-08-19 reject #3).
 #: The per-binding-generation invocation ceiling counts only rows CREATED within
 #: this window, so it bounds a runaway self-invoking loop WITHOUT ever
@@ -330,7 +337,10 @@ def reserve_served_provider_budget(
     conservative fallback timeout.
     """
 
-    from tinyassets.credential_vault import current_llm_subscription_custody
+    from tinyassets.credential_vault import (
+        current_connection_grant_custody,
+        current_llm_subscription_custody,
+    )
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
@@ -363,13 +373,28 @@ def reserve_served_provider_budget(
             conn, universe_id=authority.universe_id,
         )
         binding = store.get_binding_in_transaction(conn, binding_id=authority.binding_id)
-        custody = current_llm_subscription_custody(
-            conn,
-            universe_dir=universe_dir,
-            owner_user_id=authority.owner_user_id,
-            universe_id=authority.universe_id,
-            service=authority.credential_service,
-        )
+        if _is_open_provider(authority.provider):
+            # connection_grant: re-read the secret-free connection-grant custody (no
+            # subscription custody for an open provider). Fail closed if the grant is
+            # gone (custody absent) — the same exact-identity check below applies.
+            from tinyassets.provider_serving_binding import _open_connection_id
+
+            custody = current_connection_grant_custody(
+                conn,
+                owner_user_id=authority.owner_user_id,
+                universe_id=authority.universe_id,
+                connection_id=_open_connection_id(
+                    Path(base_path), authority.universe_id, authority.provider
+                ),
+            )
+        else:
+            custody = current_llm_subscription_custody(
+                conn,
+                universe_dir=universe_dir,
+                owner_user_id=authority.owner_user_id,
+                universe_id=authority.universe_id,
+                service=authority.credential_service,
+            )
         if (
             assignment is None
             or assignment.state != "ready"
@@ -1053,6 +1078,7 @@ def authorize_served_provider_call(
     from tinyassets.auth.middleware import validate_provider_request_carrier
     from tinyassets.credential_vault import (
         cleanup_llm_credential_snapshot,
+        current_connection_grant_custody,
         current_llm_subscription_custody,
         snapshot_llm_subscription_credential,
     )
@@ -1151,59 +1177,102 @@ def authorize_served_provider_call(
                     role=role,
                 ):
                     raise PermissionError("provider binding is not current")
-                service = {"codex": "codex", "claude-code": "claude"}.get(
-                    assignment.provider
-                )
-                if service is None:
-                    raise PermissionError("provider is not supported for serving")
-                custody = current_llm_subscription_custody(
-                    conn,
-                    universe_dir=universe,
-                    owner_user_id=capability.principal_id,
-                    universe_id=uid,
-                    service=service,
-                )
-                exact_custody = (
-                    custody is not None,
-                    custody is not None
-                    and custody.reference_id == assignment.credential_reference_id,
-                    custody is not None
-                    and custody.generation == assignment.credential_reference_generation,
-                    custody is not None
-                    and custody.reference_digest
-                    == assignment.credential_reference_digest,
-                    provider_binding.assignment_generation == assignment.generation,
-                    provider_binding.assignment_digest == assignment.assignment_digest,
-                    provider_binding.credential_reference_digest
-                    == assignment.credential_reference_digest,
-                )
-                if not all(exact_custody):
-                    raise PermissionError("credential custody is not current")
-                credential_snapshot = snapshot_llm_subscription_credential(
-                    universe_dir=universe,
-                    custody=custody,
-                )
-                authority = ServedProviderAuthority(
-                    authority_kind="subscription_snapshot",
-                    provider=assignment.provider,
-                    max_invocations=provider_binding.max_invocations,
-                    request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
-                    max_tokens=provider_binding.max_tokens,
-                    max_cost_microunits=provider_binding.max_cost_microunits,
-                    owner_user_id=capability.principal_id,
-                    universe_id=uid,
-                    agent_binding_id=carrier_binding_id,
-                    binding_revision=carrier_revision,
-                    binding_id=provider_binding.binding_id,
-                    binding_generation=provider_binding.generation,
-                    binding_digest=provider_binding.binding_digest,
-                    credential_reference_id=custody.reference_id,
-                    credential_reference_generation=credential_snapshot.generation,
-                    credential_reference_digest=credential_snapshot.reference_digest,
-                    credential_service=service,
-                    credential_snapshot_dir=credential_snapshot.directory,
-                    request_capability=capability,
-                )
+                # Shared custody-identity check for BOTH variants (Codex: exact tuple).
+                def _exact_custody(cust: object) -> bool:
+                    return all((
+                        cust is not None,
+                        cust is not None
+                        and cust.reference_id == assignment.credential_reference_id,
+                        cust is not None
+                        and cust.generation == assignment.credential_reference_generation,
+                        cust is not None
+                        and cust.reference_digest == assignment.credential_reference_digest,
+                        provider_binding.assignment_generation == assignment.generation,
+                        provider_binding.assignment_digest == assignment.assignment_digest,
+                        provider_binding.credential_reference_digest
+                        == assignment.credential_reference_digest,
+                    ))
+
+                if _is_open_provider(assignment.provider):
+                    # connection_grant variant: revalidate the owned + bound + live grant
+                    # (exact-tuple, Codex), read the secret-free connection-grant custody,
+                    # NO subscription snapshot/custody. _open_serving_context raises
+                    # PermissionError on a revoked/foreign/absent grant — fail closed.
+                    from tinyassets.provider_serving_binding import _open_serving_context
+
+                    def_id = assignment.provider.split("api_key_http:", 1)[-1]
+                    _pname, _gid, _connection_id, _cref = _open_serving_context(
+                        Path(base_path), uid, capability.principal_id, def_id
+                    )
+                    custody = current_connection_grant_custody(
+                        conn,
+                        owner_user_id=capability.principal_id,
+                        universe_id=uid,
+                        connection_id=_connection_id,
+                    )
+                    if not _exact_custody(custody):
+                        raise PermissionError("credential custody is not current")
+                    authority = ServedProviderAuthority(
+                        authority_kind="connection_grant",
+                        provider=assignment.provider,
+                        max_invocations=provider_binding.max_invocations,
+                        request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
+                        max_tokens=provider_binding.max_tokens,
+                        max_cost_microunits=provider_binding.max_cost_microunits,
+                        owner_user_id=capability.principal_id,
+                        universe_id=uid,
+                        agent_binding_id=carrier_binding_id,
+                        binding_revision=carrier_revision,
+                        binding_id=provider_binding.binding_id,
+                        binding_generation=provider_binding.generation,
+                        binding_digest=provider_binding.binding_digest,
+                        credential_reference_id=custody.reference_id,
+                        credential_reference_generation=custody.generation,
+                        credential_reference_digest=custody.reference_digest,
+                        credential_service="http",
+                        credential_snapshot_dir=None,
+                        request_capability=capability,
+                    )
+                else:
+                    service = {"codex": "codex", "claude-code": "claude"}.get(
+                        assignment.provider
+                    )
+                    if service is None:
+                        raise PermissionError("provider is not supported for serving")
+                    custody = current_llm_subscription_custody(
+                        conn,
+                        universe_dir=universe,
+                        owner_user_id=capability.principal_id,
+                        universe_id=uid,
+                        service=service,
+                    )
+                    if not _exact_custody(custody):
+                        raise PermissionError("credential custody is not current")
+                    credential_snapshot = snapshot_llm_subscription_credential(
+                        universe_dir=universe,
+                        custody=custody,
+                    )
+                    authority = ServedProviderAuthority(
+                        authority_kind="subscription_snapshot",
+                        provider=assignment.provider,
+                        max_invocations=provider_binding.max_invocations,
+                        request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
+                        max_tokens=provider_binding.max_tokens,
+                        max_cost_microunits=provider_binding.max_cost_microunits,
+                        owner_user_id=capability.principal_id,
+                        universe_id=uid,
+                        agent_binding_id=carrier_binding_id,
+                        binding_revision=carrier_revision,
+                        binding_id=provider_binding.binding_id,
+                        binding_generation=provider_binding.generation,
+                        binding_digest=provider_binding.binding_digest,
+                        credential_reference_id=custody.reference_id,
+                        credential_reference_generation=credential_snapshot.generation,
+                        credential_reference_digest=credential_snapshot.reference_digest,
+                        credential_service=service,
+                        credential_snapshot_dir=credential_snapshot.directory,
+                        request_capability=capability,
+                    )
                 conn.rollback()
             yield authority
         except ProviderAuthorityHeldError:

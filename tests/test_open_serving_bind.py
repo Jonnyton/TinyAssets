@@ -121,3 +121,58 @@ def test_bind_unknown_provider_rejected(tmp_path, monkeypatch) -> None:
             universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],
             expected_revision=1, provider="provdef_does_not_exist",
         )
+
+
+def _bound_and_serving(tmp_path, monkeypatch):
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    universe_dir, agent, definition = _setup(tmp_path, monkeypatch)
+    connected = bind_serving_provider(
+        base_path=tmp_path, universe_dir=universe_dir, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],
+        expected_revision=1, provider=definition.id,
+    )
+    serving = set_serving(
+        base_path=tmp_path, universe_dir=universe_dir, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],
+        expected_revision=connected["agent_binding"]["revision"], enabled=True,
+    )["agent_binding"]
+    return universe_dir, serving, definition
+
+
+def test_open_provider_authorizes_and_reserves_a_served_turn(tmp_path, monkeypatch) -> None:
+    from tinyassets.auth.middleware import (
+        claim_provider_request,
+        mint_provider_request_carrier,
+        reserve_provider_request,
+    )
+    from tinyassets.provider_assignment import (
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    universe_dir, serving, definition = _bound_and_serving(tmp_path, monkeypatch)
+    reserve = reserve_provider_request(
+        principal_id="owner-1", session_id="s1", request_id="r1", tool_name="converse",
+    )
+    claim_provider_request(reserve, tool_name="converse")
+    carrier = mint_provider_request_carrier(
+        universe_id="u-owner", agent_binding_id=serving["agent_binding_id"],
+        binding_revision=serving["revision"], operation="converse",
+    )
+
+    with authorize_served_provider_call(
+        tmp_path, universe_dir=universe_dir, request_carrier=carrier,
+        role="writer", operation="converse",
+    ) as authority:
+        # The CALL-side authority is the connection_grant variant — no snapshot.
+        assert authority.authority_kind == "connection_grant"
+        assert authority.provider == f"api_key_http:{definition.id}"
+        assert authority.credential_snapshot_dir is None
+        # Budget reserves without a subscription custody re-check (open branch).
+        reservation = reserve_served_provider_budget(
+            tmp_path, universe_dir=universe_dir, authority=authority,
+            requested_output_tokens=100, estimated_input_tokens=50,
+        )
+        assert reservation is not None
+        assert reservation.reserved_total_tokens >= 150
