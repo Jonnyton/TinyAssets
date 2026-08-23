@@ -467,12 +467,19 @@ def test_served_none_max_tokens_reserves_bounded_per_call_not_whole_ceiling(tmp_
     "which is where the concurrency budget brick actually occurs.",
 )
 def test_two_concurrent_served_none_max_tokens_calls_both_reach_provider(tmp_path):
-    """Two overlapping served turns (production max_tokens=None), the first held
-    in flight while the second reserves, must BOTH reach the provider — one user
-    driving many surfaces at once. Pre-fix the first reserved the whole ceiling
-    and the second got 'Provider authority budget is exhausted'. Real concurrent
-    requests arrive on separate threads (the admission lock is thread-keyed), so
-    the test uses two threads with a shared gate."""
+    """Two overlapping served turns on the production max_tokens=None path, the
+    first held in flight while the second reserves, must BOTH be admitted at
+    budget reservation and reach the provider — the concurrency brick the founder
+    hit. Pre-fix the first turn reserved the whole ceiling and the second got
+    'Provider authority budget is exhausted'.
+
+    Scope: this proves BUDGET ADMISSION under concurrency (this PR's fix). The
+    separate process-wide provider worker pool (ProviderRouter, 8 workers) is the
+    provider-execution concurrency control and merely queues excess turns; it is
+    not what bricked. Each worker claims and revokes its OWN request capability
+    in-thread (contextvars are per-thread), so the request-capability ContextVar
+    is never contaminated across threads or leaked into later tests.
+    """
     import threading
 
     from tinyassets.auth.middleware import revoke_provider_request
@@ -499,13 +506,19 @@ def test_two_concurrent_served_none_max_tokens_calls_both_reach_provider(tmp_pat
                 family=self.family, latency_ms=1.0,
             )
 
-    universe_dir, serving, cap1, ctx1 = _served_context(tmp_path)
-    cap2, ctx2 = _fresh_served_request(universe_dir, serving, request_id="req-2")
+    # Set up the shared serving binding, then revoke the setup's main-thread
+    # capability immediately so only the per-worker in-thread capabilities are
+    # ever live (no ContextVar leak into later tests).
+    universe_dir, serving, setup_cap, _ = _served_context(tmp_path)
+    revoke_provider_request(setup_cap)
     provider = _Blocking("codex")
     router = ProviderRouter({"codex": provider})
     results: dict[str, object] = {}
 
-    def worker(key, ctx):
+    def worker(key, request_id):
+        cap, ctx = _fresh_served_request(
+            universe_dir, serving, request_id=request_id
+        )
         try:
             results[key] = asyncio.run(
                 router.call(
@@ -515,17 +528,15 @@ def test_two_concurrent_served_none_max_tokens_calls_both_reach_provider(tmp_pat
             )
         except Exception as exc:  # noqa: BLE001 - surfaced via assertion below
             results[key] = exc
+        finally:
+            revoke_provider_request(cap)  # in-thread: no ContextVar contamination
 
-    t1 = threading.Thread(target=worker, args=("a", ctx1))
-    t2 = threading.Thread(target=worker, args=("b", ctx2))
-    try:
-        t1.start()
-        t2.start()
-        t1.join(10)
-        t2.join(10)
-    finally:
-        revoke_provider_request(cap1)
-        revoke_provider_request(cap2)
+    t1 = threading.Thread(target=worker, args=("a", "req-a"))
+    t2 = threading.Thread(target=worker, args=("b", "req-b"))
+    t1.start()
+    t2.start()
+    t1.join(10)
+    t2.join(10)
     assert provider.calls == 2, "both turns must reach the provider"
     assert not isinstance(results.get("a"), Exception), results.get("a")
     assert not isinstance(results.get("b"), Exception), results.get("b")

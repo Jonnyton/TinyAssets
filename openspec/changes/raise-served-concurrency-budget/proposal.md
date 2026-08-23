@@ -32,9 +32,15 @@ concurrency.
   ceiling) when no explicit `max_tokens` is set.
 - Raise `_MAX_TOKENS` 32_768 → 4_000_000 and `_MAX_COST_MICROUNITS`
   10_000_000 → 400_000_000 on the serving binding (kept consistent so the
-  token cap, not the cost cap, is the effective ceiling). With per-call
-  decoupled, the ceiling now genuinely bounds *concurrency*: ~40–60 simultaneous
-  worst-case turns share it.
+  token cap, not the cost cap, is the effective ceiling). Sizing rationale:
+  budget is reserved in `router.call` **before** the process-wide provider
+  worker pool (8 workers), so in-flight reservations equal the number of
+  concurrent *requests* (surfaces + automations), not the number of executing
+  turns. 4M / (~65 KB per-call output + ~15–30 KB input) ≈ 40+ concurrent
+  requests can hold reservations while the 8-worker pool serializes their actual
+  provider execution. The ceiling is a runaway backstop above that, not a
+  concurrency or spend control (the worker pool bounds execution; the user's own
+  subscription meters spend).
 - The true runaway backstops are unchanged: the rolling per-hour invocation cap
   (`_MAX_BINDING_INVOCATIONS = 10_000`), the engine-run rate limit (20/hr), and
   the user's metered subscription. The two independent guards in

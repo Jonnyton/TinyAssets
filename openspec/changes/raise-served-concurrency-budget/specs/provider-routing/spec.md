@@ -1,18 +1,30 @@
 # provider-routing (delta)
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Served-provider budget admission bounds concurrency, not lifetime spend
 
-The served-provider budget ceiling on a serving binding SHALL bound only
-UNSETTLED (in-flight) reserved token/cost spend, so a settled turn releases its
-reservation and the binding serves indefinitely. The ceiling is a concurrency
-runaway guard, NOT a cumulative spend limit — real spend is metered on the
-user's own deposited subscription upstream. The ceiling SHALL be sized so that a
-single user driving their universe from multiple surfaces at once, alongside
-concurrent LangGraph automations, does not exhaust it under normal use. Each
-universe's binding has its own independent ceiling, so concurrent users do not
-contend.
+The served-provider budget reservation for a converse turn SHALL request a
+BOUNDED per-call output allotment, decoupled from the binding's aggregate
+in-flight ceiling: when the caller sets no explicit `max_tokens`, the router
+SHALL reserve a bounded per-call default (capped to the ceiling), never the
+whole ceiling. The aggregate ceiling SHALL bound only UNSETTLED (in-flight)
+reserved token/cost spend, so a settled turn releases its reservation. The
+ceiling is a concurrency runaway backstop, NOT a cumulative spend limit — real
+spend is metered on the user's own deposited subscription upstream, and the
+process-wide provider worker pool is the actual provider-execution concurrency
+control. The ceiling SHALL be sized so that a single user driving their universe
+from multiple surfaces at once, alongside concurrent LangGraph automations, is
+not falsely held. Each universe's binding has its own independent budget ledger,
+so concurrent users do not contend at the budget layer.
+
+#### Scenario: A converse turn reserves a bounded per-call amount, not the ceiling
+
+- **GIVEN** a ready serving binding whose aggregate ceiling is far larger than
+  one turn's output
+- **WHEN** a converse turn is routed with no explicit `max_tokens`
+- **THEN** the reservation's output allotment is the bounded per-call default,
+  not the aggregate ceiling
 
 #### Scenario: Many concurrent turns across surfaces on one binding
 

@@ -31,8 +31,12 @@
 - [ ] 3.4 Live proof: concurrent turns across ≥2 surfaces succeed without
       "budget exhausted".
 
-## 4. Follow-up (post-live hardening, not this change)
-- [ ] 4.1 Auto-heal existing bindings to the current ceiling on deploy (so no
-      manual re-bind is needed), evaluated against the Codex-gated reserve logic.
-- [ ] 4.2 Consider dividing the byte-based `estimated_input_tokens` proxy by a
-      bytes/token factor so reservations are not ~4× inflated.
+## Follow-ups (post-live hardening — prose, not tracked tasks)
+
+Deferred to later hardening, out of scope here: (a) auto-heal existing bindings
+to the current ceiling on deploy so no manual re-bind is needed (must be
+evaluated against the Codex-gated reserve logic before touching it); (b) divide
+the byte-based `estimated_input_tokens` proxy by a bytes/token factor so
+reservations are not ~4× inflated; (c) if per-user host capacity ever needs a
+hard bound, add explicit bounded host-capacity admission with load proof rather
+than relying on the aggregate ceiling.
