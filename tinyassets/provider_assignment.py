@@ -366,6 +366,20 @@ def reserve_served_provider_budget(
             "claude-code serving is held; set TINYASSETS_ALLOW_CLAUDE_SERVING "
             "for the vetted host to enable it"
         )
+    # Explicit authority_kind consistency (Codex reject #5): the credential model is
+    # NEVER inferred from the provider-name prefix alone. The kind, the provider shape,
+    # and the snapshot presence must agree, or fail closed — an absent subscription
+    # snapshot must never be treated as open authority, and vice versa.
+    _kind = getattr(authority, "authority_kind", None)
+    _open = _is_open_provider(authority.provider)
+    if _kind == "connection_grant":
+        if not _open or authority.credential_snapshot_dir is not None:
+            raise ProviderAuthorityHeldError(held)
+    elif _kind == "subscription_snapshot":
+        if _open or authority.credential_snapshot_dir is None:
+            raise ProviderAuthorityHeldError(held)
+    else:
+        raise ProviderAuthorityHeldError(held)
     store = SQLiteProviderWorkAuthorityStore(base_path)
     with store.connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -374,10 +388,15 @@ def reserve_served_provider_budget(
         )
         binding = store.get_binding_in_transaction(conn, binding_id=authority.binding_id)
         if _is_open_provider(authority.provider):
-            # connection_grant: re-read the secret-free connection-grant custody (no
-            # subscription custody for an open provider). Fail closed if the grant is
-            # gone (custody absent) — the same exact-identity check below applies.
-            from tinyassets.provider_serving_binding import _open_connection_id
+            # connection_grant: re-read the secret-free connection-grant custody, then
+            # revalidate the LIVE grant under the authority's owner + universe (owner +
+            # bound + not-revoked + not-rotated) — _open_connection_id alone omits the
+            # owner/universe gate, so a foreign grant reusing the connection_id would
+            # otherwise satisfy a stale-digest compare (Codex reject #3).
+            from tinyassets.provider_serving_binding import (
+                _open_connection_id,
+                verify_open_grant_custody,
+            )
 
             custody = current_connection_grant_custody(
                 conn,
@@ -386,6 +405,10 @@ def reserve_served_provider_budget(
                 connection_id=_open_connection_id(
                     Path(base_path), authority.universe_id, authority.provider
                 ),
+            )
+            verify_open_grant_custody(
+                Path(base_path), authority.universe_id, authority.owner_user_id,
+                authority.provider, custody,
             )
         else:
             custody = current_llm_subscription_custody(
@@ -1194,24 +1217,35 @@ def authorize_served_provider_call(
                     ))
 
                 if _is_open_provider(assignment.provider):
-                    # connection_grant variant: revalidate the owned + bound + live grant
-                    # (exact-tuple, Codex), read the secret-free connection-grant custody,
-                    # NO subscription snapshot/custody. _open_serving_context raises
-                    # PermissionError on a revoked/foreign/absent grant — fail closed.
-                    from tinyassets.provider_serving_binding import _open_serving_context
+                    # connection_grant variant: no subscription snapshot/custody. Two
+                    # independent gates (Codex reject #1): (a) the custody row must match
+                    # the assignment's exact digests (_exact_custody), AND (b) the LIVE
+                    # grant — resolved fresh under the AUTHENTICATED CALLER as owner —
+                    # must still be owned + bound + not-revoked + not-rotated
+                    # (verify_open_grant_custody recomputes the live grant-identity digest
+                    # and compares it to the stored custody, so a rotated grant / changed
+                    # credential_ref that kept the connection_id is rejected). This is the
+                    # independent caller-ownership check, not a read of the grant's own owner.
+                    from tinyassets.provider_serving_binding import (
+                        _open_connection_id,
+                        verify_open_grant_custody,
+                    )
 
-                    def_id = assignment.provider.split("api_key_http:", 1)[-1]
-                    _pname, _gid, _connection_id, _cref = _open_serving_context(
-                        Path(base_path), uid, capability.principal_id, def_id
+                    connection_id = _open_connection_id(
+                        Path(base_path), uid, assignment.provider
                     )
                     custody = current_connection_grant_custody(
                         conn,
                         owner_user_id=capability.principal_id,
                         universe_id=uid,
-                        connection_id=_connection_id,
+                        connection_id=connection_id,
                     )
                     if not _exact_custody(custody):
                         raise PermissionError("credential custody is not current")
+                    verify_open_grant_custody(
+                        Path(base_path), uid, capability.principal_id,
+                        assignment.provider, custody,
+                    )
                     authority = ServedProviderAuthority(
                         authority_kind="connection_grant",
                         provider=assignment.provider,

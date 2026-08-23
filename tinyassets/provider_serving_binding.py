@@ -228,9 +228,44 @@ def _open_serving_context(
     return provider_name, grant.grant_id, grant.connection_id, resource.credential_ref
 
 
+def verify_open_grant_custody(
+    base: Path, universe_id: str, owner_user_id: str, provider_name: str, custody: object
+) -> str:
+    """Fail closed unless the LIVE connection grant behind ``provider_name`` still
+    matches ``custody``. Returns the connection_id on success.
+
+    This is the exact-identity revalidation the authority + budget + bind-ready paths
+    MUST use (Codex serve-open-compute reject #1/#2/#3): it (a) re-resolves the grant
+    with the FULL owner + universe + not-revoked gate via ``_open_serving_context`` —
+    a foreign/rotated/revoked grant raises — and (b) recomputes the grant-identity
+    record digest from the LIVE grant and requires it to equal the stored custody's
+    ``_record_digest``, so a grant/credential_ref rotation that keeps the same
+    connection_id is rejected (a stale-digest comparison alone would let it pass)."""
+    from tinyassets.credential_vault import _connection_grant_record_digest
+
+    def_id = provider_name.split("api_key_http:", 1)[-1]
+    _pname, grant_id, connection_id, credential_ref = _open_serving_context(
+        base, universe_id, owner_user_id, def_id
+    )
+    live_digest = _connection_grant_record_digest(
+        grant_id=grant_id,
+        connection_id=connection_id,
+        credential_ref=credential_ref,
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+    )
+    if custody is None or getattr(custody, "_record_digest", None) != live_digest:
+        raise PermissionError(
+            "open provider grant/credential changed since binding — re-bind required"
+        )
+    return connection_id
+
+
 def _open_connection_id(base: Path, universe_id: str, provider_name: str) -> str:
-    """The connection_id backing an open serving provider name, for custody re-reads
-    that only have the provider name (validated fresh, so a revoked grant fails)."""
+    """The connection_id backing an open serving provider name, for the FIRST custody
+    read before the full identity revalidation (verify_open_grant_custody). Existence +
+    revocation only — callers MUST follow with verify_open_grant_custody for the
+    owner/universe/rotation gate."""
     from tinyassets.providers.definition import get_definition
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
@@ -454,6 +489,10 @@ def bind_serving_provider(
                         universe_id=uid,
                         connection_id=open_grant[1],
                     )
+                    # Re-validate the LIVE grant (owner + bound + not-revoked + not
+                    # rotated) in the ready phase, not only the pending phase — a
+                    # revocation/rotation in between must be caught (Codex reject #2).
+                    verify_open_grant_custody(base, uid, owner, selected, custody)
                 else:
                     custody = current_llm_subscription_custody(
                         conn,
@@ -596,6 +635,12 @@ def _current_serving_authority(
             connection_id=_open_connection_id(
                 Path(universe_dir).parent, universe_id, assignment.provider
             ),
+        )
+        # Exact live-grant revalidation (owner + bound + not-revoked + not-rotated),
+        # not just a stored-digest compare (Codex reject #1/#2).
+        verify_open_grant_custody(
+            Path(universe_dir).parent, universe_id, owner_user_id,
+            assignment.provider, custody,
         )
     else:
         custody = current_llm_subscription_custody(

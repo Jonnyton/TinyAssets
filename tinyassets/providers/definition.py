@@ -261,15 +261,37 @@ def register_definition(
     return definition
 
 
+def _verified_definition(row: dict[str, Any]) -> ProviderDefinition:
+    """Construct a ProviderDefinition and verify its id is the content-address of its
+    own fields. The id is deterministic over (universe, owner, access_method, protocol,
+    ref, model), so a stored row whose id does NOT recompute has been tampered with —
+    e.g. an id kept while `ref` (the grant) was swapped, which would let a substituted
+    grant serve under a trusted name (Codex reject #4). Fail closed on mismatch."""
+    definition = ProviderDefinition(**row)
+    expected = _definition_id(
+        universe_id=definition.universe_id,
+        owner_user_id=definition.owner_user_id,
+        access_method=definition.access_method,
+        protocol=definition.protocol,
+        ref=definition.ref,
+        model=definition.model,
+    )
+    if definition.id != expected:
+        raise ProviderDefinitionError(
+            "provider definition id integrity check failed (tampered store row)"
+        )
+    return definition
+
+
 def get_definition(universe_id: str, definition_id: str) -> ProviderDefinition | None:
     for row in _load(universe_id):
         if row.get("id") == definition_id:
-            return ProviderDefinition(**row)
+            return _verified_definition(row)
     return None
 
 
 def list_definitions(universe_id: str) -> list[ProviderDefinition]:
-    return [ProviderDefinition(**row) for row in _load(universe_id)]
+    return [_verified_definition(row) for row in _load(universe_id)]
 
 
 def list_commons_definitions(base: str | Path) -> list[dict[str, Any]]:
