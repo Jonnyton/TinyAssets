@@ -22,6 +22,18 @@ Do NOT start the live-authority steps (3–6) without the shape in proposal.md o
       the SAME CAS/generation machinery (no parallel system). `provider_ref` STAYS the
       work-binding id (== assignment.binding_id at 1120); the open name goes in
       `ProviderAssignment.provider`. Budget scope = binding id + generation.
+      SOLVED custody approach (credential_vault.py — follow `adopt_llm_subscription_custody`
+      / `current_llm_subscription_custody`'s exact pattern): add `adopt_connection_grant_custody`
+      / `current_connection_grant_custody` that REUSE the `llm_credential_custody` table +
+      `_custody_reference_digest`, with `service = f"connection:{connection_id}"` and a
+      SECRET-FREE grant-identity `record_digest = _canonical_digest({grant_id, connection_id,
+      credential_ref, owner_user_id, universe_id, schema_version:1})` (NOT the credential
+      material — the secret stays credential-blind; the digest rotates if the grant changes).
+      This yields a valid `LLMCredentialCustodyReference` (reference_id/generation/reference_digest/
+      _record_digest) that `_assignment` + the work-binding seed consume UNCHANGED — so bind /
+      authorize / reserve reuse the same integrity + CAS with only a custody-source branch.
+      Owner gate: the caller already validated the connection grant is owned + bound; the
+      custody table's UNIQUE(owner,universe,service) + the grant-ownership check are the gate.
 
 ## 2. Bind + serving fence (Codex findings #5, #8)
 - [ ] 2.1 `bind_serving_provider` accepts an open-provider def-id: validate the definition
