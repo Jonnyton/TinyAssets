@@ -2310,9 +2310,27 @@ def _staged_branch_from_spec(
                 # carried node against its source hash; the fail-closed runtime
                 # gate is the backstop, this keeps the persisted snapshot
                 # honest at authoring time.
-                branch.node_defs = [
-                    _reconcile_node_approval(n) for n in parent_copy.node_defs
-                ]
+                #
+                # SECURITY (Codex ADAPT 2026-08-22 #2): the approval hash is
+                # SELF-COMPUTABLE, so a matching hash proves only that the source
+                # is unchanged — NOT that a party the FORKER trusts approved it. A
+                # malicious commons author can publish source_code with a forged
+                # approved=True + matching hash; a naive fork would carry it and
+                # the forker's run would execute it. On a CROSS-AUTHOR fork, strip
+                # ALL executable approval so inherited code lands un-approved and
+                # the new author must re-approve before it can run. Attribution
+                # (node ``author``) is preserved; only the executable approval is
+                # dropped.
+                _forker = _request_branch_actor()
+                _cross_author = bool(parent.author) and parent.author != _forker
+                _carried = []
+                for _n in parent_copy.node_defs:
+                    if _cross_author:
+                        _clear_source_code_approval(_n)
+                        _carried.append(_n)
+                    else:
+                        _carried.append(_reconcile_node_approval(_n))
+                branch.node_defs = _carried
                 branch.graph_nodes = parent_copy.graph_nodes
             if not _spec_has_graph_key("edges"):
                 branch.edges = parent_copy.edges
