@@ -27,13 +27,21 @@ anyway. So do NOT land the branch as-is.
       current main + reference-repair. Decide `slack_agent_worker.py` keep-vs-delete
       (main already deleted it; adopt that deletion unless a live surface needs it).
 
-## 1. Registry (owns: provider definition → candidate)
-- [ ] 1.1 `ProviderDefinition` immutable descriptor (server-issued id, `access_method`
-      ∈ {`subscription_cli`,`api_key_http`}, `protocol`, normalized endpoint, model,
-      opaque `credential_ref` tuple-bound to endpoint+assignment-gen, visibility) +
-      storage. Registration creates ONLY a candidate — no enroll/authorize/select/route.
-- [ ] 1.2 Commons visibility: a `commons` definition is a descriptor-only remix source;
-      remix NEVER auto-binds the original owner's credential.
+## 1. Registry (owns: provider definition → candidate) — DONE
+- [x] 1.1 `ProviderDefinition` immutable descriptor (deterministic server-issued id,
+      `access_method` ∈ {`subscription_cli`,`api_key_http`}, `protocol`, model, `ref`
+      indirection [provider name | connection_id, never a secret], visibility) +
+      per-universe JSON store. Registration creates ONLY a candidate — no
+      enroll/authorize/select/route; test asserts the registry store is the sole
+      artifact written. Owner-conflict refused; access-method/protocol coherence
+      enforced. `tinyassets/providers/definition.py` + 19 tests.
+      NOTE: the endpoint + credential + assignment-gen binding lives on the
+      referenced `ConnectionLedger` connection (api_key_http reuses connect_http),
+      not duplicated in the descriptor — the descriptor holds only the `ref`.
+- [x] 1.2 Commons visibility: `list_commons_definitions` returns SHAPE-only public
+      views (no owner, no ref); `remix_definition` requires the remixer's own new
+      ref and refuses a full-definition dict, so the original owner's ref/credential
+      is NEVER carried across a remix.
 
 ## 2. Executors (owns: frozen invocation dispatch)
 - [ ] 2.1 `Executor.execute(invocation, credential_ref)` interface; select
