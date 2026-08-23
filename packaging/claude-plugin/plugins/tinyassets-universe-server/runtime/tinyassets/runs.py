@@ -4014,17 +4014,32 @@ def poll_child_run_status(
     *,
     timeout_seconds: float = 300.0,
     poll_interval: float = 1.0,
+    expected_actor: str | None = None,
+    expected_universe_id: str | None = None,
 ) -> dict[str, Any]:
     """Block until *run_id* reaches a terminal status or *timeout_seconds* elapses.
 
     Returns the run record dict (same shape as ``get_run``).
     Raises ``TimeoutError`` if the run does not terminate in time.
     Raises ``KeyError`` if the run does not exist at poll time.
+
+    When ``expected_actor`` / ``expected_universe_id`` are supplied (invoke_branch
+    task 4.2), a run whose ``actor`` / ``queue_universe_id`` does not match is treated
+    as ABSENT — the SAME ``KeyError`` as a missing run, so a foreign run id planted in
+    parent state cannot be awaited and the await surface is not an existence oracle.
     """
+    want_actor = (expected_actor or "").strip()
+    want_universe = (expected_universe_id or "").strip()
     deadline = time.monotonic() + timeout_seconds
     while True:
         record = get_run(base_path, run_id)
         if record is None:
+            raise KeyError(f"Child run '{run_id}' not found in runs DB.")
+        if want_actor and (str(record.get("actor") or "").strip() != want_actor):
+            raise KeyError(f"Child run '{run_id}' not found in runs DB.")
+        if want_universe and (
+            str(record.get("queue_universe_id") or "").strip() != want_universe
+        ):
             raise KeyError(f"Child run '{run_id}' not found in runs DB.")
         if record.get("status") in _TERMINAL_STATUSES:
             return record
