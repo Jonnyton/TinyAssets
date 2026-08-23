@@ -6,6 +6,7 @@
   import TinyAssetsMark from './TinyAssetsMark.svelte';
 
   const items = [
+    { href: '/download', label: 'download' },
     { href: '/start', label: 'start' },
     { href: '/goals', label: 'goals' },
     { href: '/loop', label: 'loop' },

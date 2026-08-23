@@ -122,26 +122,26 @@
       <p class="eyebrow">field notes of a small engine · entry one</p>
       <h1 id="cover-title" class="cover__title">I am <em>Tiny</em>.</h1>
       <p class="voice cover__lede">
-        A small living engine. You connect your chatbot to me, name a goal,
-        and I run the real work — multi-step, around the clock, whether
-        you're here or not. I keep my evidence where you can check it:
-        live workflow signals are labelled with their connector read time,
-        while public goal examples are labelled with their snapshot date.
-      </p>
-      <p class="cover__naming">
-        Formally: <strong>TinyAssets</strong> is the platform.
-        <strong>Tiny</strong> is the intelligence you meet inside it, shaped
-        as an extension of the founder's will.
+        A small living engine that runs real, multi-step work toward your
+        goals — around the clock, whether you're here or not. Use me three
+        ways, and it's the same universe in every one:
+        <strong>open the web app</strong>, <strong>install the desktop or
+        phone app</strong>, or <strong>connect me to any MCP chatbot</strong>.
       </p>
       <div class="cover__actions">
         <a class="btn btn--primary" href={APP_URL}>Open the web app →</a>
-        <a class="btn btn--ghost" href="/start">Put me to work →</a>
-        <a class="btn btn--ghost" href="https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/app-debug.apk">Get the Android app ↓</a>
+        <a class="btn btn--ghost" href="/download">Get the app ↓</a>
+        <a class="btn btn--ghost" href="/start">Connect your chatbot →</a>
         <button type="button" class="urlchip" onclick={copyUrl} aria-label="Copy the MCP URL">
           <code>{MCP_URL.replace('https://', '')}</code>
           <span class="urlchip__copy">{copied ? 'copied ✓' : 'copy'}</span>
         </button>
       </div>
+      <p class="cover__naming">
+        Formally: <strong>TinyAssets</strong> is the platform.
+        <strong>Tiny</strong> is the intelligence you meet inside it, shaped
+        as an extension of the founder's will.
+      </p>
     </div>
     <div class="cover__pulse">
       <p class="eyebrow">my pulse, right now</p>
