@@ -482,7 +482,15 @@
     },
     async _rpc(method, params, opts, _retried){
       opts=opts||{};
+      const isHandshake = (method==="initialize" || method==="notifications/initialized");
       await ensureFreshToken();
+      // A proactive token refresh (above) resets the session — it was bound to
+      // the now-rotated bearer (see MCP.sessionId=null in refreshAccessToken).
+      // Re-establish it BEFORE a non-handshake call, or the server rejects the
+      // call as "Invalid request parameters" (no session) instead of a 401, and
+      // the 401 retry path never runs. Without this the first turn after every
+      // ~5-min refresh fails until a reload.
+      if(this.sessionId===null && !isHandshake) await this.ensureInit();
       const frame={jsonrpc:"2.0", method, params:params||{}};
       if(opts.expectResult!==false) frame.id=this.nextId++;
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
@@ -499,7 +507,17 @@
       const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       if(opts.expectResult===false) return null;
       const rpc=this._parse(await resp.text());
-      if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
+      if(rpc.error){
+        // A server-side session that expired/was evicted surfaces as a JSON-RPC
+        // error (not a 401) on a non-handshake call. Reset + re-initialize once,
+        // then retry, so a stale session self-heals instead of failing the turn.
+        if(!_retried && !isHandshake){
+          this.sessionId=null;
+          await this.ensureInit();
+          return this._rpc(method, params, opts, true);
+        }
+        const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e;
+      }
       return rpc.result;
     },
     async ensureInit(){
