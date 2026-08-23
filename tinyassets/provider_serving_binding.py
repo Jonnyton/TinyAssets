@@ -59,7 +59,7 @@ _MAX_BINDING_INVOCATIONS = 10_000
 # that one user drive their universe from many surfaces at once alongside
 # concurrent LangGraph automations (and many users doing the same, each on their
 # OWN per-binding ceiling). Sized now for realistic single-user concurrency
-# (~90 simultaneous worst-case ~45 KB turns); the true runaway backstops remain
+# (~40-50 simultaneous ~80-95 KB reservations); the true runaway backstops remain
 # the rolling per-hour invocation cap (_MAX_BINDING_INVOCATIONS) + the engine-run
 # rate limit (20/hr) + the user's metered subscription.
 _MAX_TOKENS = 4_000_000
@@ -300,6 +300,16 @@ def bind_serving_provider(
             and current_binding is not None
             and current_binding.binding_digest == current_assignment.binding_digest
             and agent["configuration"].get("provider_ref") == serving_binding_id
+            # Replay ONLY when the signed ceilings EXACTLY match current policy.
+            # Any drift — a stale-low binding (bound before the ceiling was raised)
+            # OR a stale-high binding (policy since tightened) — must fall through
+            # to the transactional rebind, which advances the generation/digest and
+            # re-signs at the current ceiling. Exact equality (not >=) so a policy
+            # tightening actually reflows down, and a raise actually heals up, both
+            # via a re-signed authority — never an admission-time override that
+            # would bypass the digest-covered contract (Codex 2026-08-22).
+            and current_binding.max_tokens == _MAX_TOKENS
+            and current_binding.max_cost_microunits == _MAX_COST_MICROUNITS
         ):
             try:
                 with store.connection() as replay_conn:

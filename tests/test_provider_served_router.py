@@ -371,12 +371,118 @@ def test_many_concurrent_reservations_share_one_binding_without_bricking(tmp_pat
         revoke_provider_request(capability)
 
 
+def test_stale_binding_rebind_advances_generation_and_reflows_ceiling(tmp_path, monkeypatch):
+    """A binding whose signed ceiling drifts from current policy must be HEALED by
+    a re-bind (advance generation + digest, re-sign at the current ceiling), not
+    replayed with the stale authority. Exact-equality gate: a raise heals UP and a
+    tightening reflows DOWN, both via a re-signed authority — never an
+    admission-time override (Codex 2026-08-22). Completing fix for the
+    existing-binding case #2479's constant raise did not reach.
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    # Bind initially with the OLD stale-low ceiling (what the founder persists).
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 32_768)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 10_000_000)
+    universe_dir, serving, capability, _ctx = _served_context(tmp_path)
+    revoke_provider_request(capability)
+
+    def _rebind(rev):
+        return bind_serving_provider(
+            base_path=tmp_path,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id=serving["agent_binding_id"],
+            expected_revision=rev,
+            provider="codex",
+        )
+
+    # Same policy -> REPLAY (no generation change); capture the stale identity.
+    replay = _rebind(serving["revision"])
+    assert replay.get("replayed") is True
+    stale_gen = replay["provider_binding"]["generation"]
+    stale_digest = replay["provider_binding"]["binding_digest"]
+    rev = replay["agent_binding"]["revision"]
+
+    # Raise policy -> HEAL up: not replayed, generation advances, digest changes.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 4_000_000)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 400_000_000)
+    healed = _rebind(rev)
+    assert healed.get("replayed") is not True
+    assert healed["provider_binding"]["generation"] > stale_gen
+    assert healed["provider_binding"]["binding_digest"] != stale_digest
+    assert healed["provider_binding"]["max_tokens"] == 4_000_000
+    assert healed["provider_binding"]["max_cost_microunits"] == 400_000_000
+    healed_gen = healed["provider_binding"]["generation"]
+    rev = healed["agent_binding"]["revision"]
+
+    # Tighten policy -> also NOT replayed (exact-equality gate): ceiling reflows
+    # DOWN via a fresh re-signed generation, never a stale-high replay.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 1_000_000)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 100_000_000)
+    tightened = _rebind(rev)
+    assert tightened.get("replayed") is not True
+    assert tightened["provider_binding"]["generation"] > healed_gen
+    assert tightened["provider_binding"]["max_tokens"] == 1_000_000
+    assert tightened["provider_binding"]["max_cost_microunits"] == 100_000_000
+
+
+def test_replay_gate_checks_token_and_cost_independently(tmp_path, monkeypatch):
+    """Each replay guard (token AND cost) must independently force a rebind, so
+    neither can be deleted silently: drift in EITHER ceiling alone must skip the
+    replay (Codex 2026-08-22).
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 4_000_000)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 400_000_000)
+    universe_dir, serving, capability, _ctx = _served_context(tmp_path)
+    revoke_provider_request(capability)
+
+    def _rebind(rev):
+        return bind_serving_provider(
+            base_path=tmp_path,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id=serving["agent_binding_id"],
+            expected_revision=rev,
+            provider="codex",
+        )
+
+    # Same policy -> replay baseline.
+    r0 = _rebind(serving["revision"])
+    assert r0.get("replayed") is True
+    rev = r0["agent_binding"]["revision"]
+
+    # TOKEN-only drift (cost unchanged) must skip replay — the token guard fires.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 5_000_000)
+    r1 = _rebind(rev)
+    assert r1.get("replayed") is not True
+    assert r1["provider_binding"]["max_tokens"] == 5_000_000
+    rev = r1["agent_binding"]["revision"]
+
+    # COST-only drift (token now unchanged at 5M) must skip replay — cost guard.
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 500_000_000)
+    r2 = _rebind(rev)
+    assert r2.get("replayed") is not True
+    assert r2["provider_binding"]["max_cost_microunits"] == 500_000_000
+
+
 def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):
-    """Regression oracle: the pre-fix 32_768 cap bricked at ~2 concurrent turns.
+    """Regression oracle: a 32_768 ceiling bricks at ~2 concurrent turns.
 
     A single ~20 KB system-prompt turn nearly fills 32_768; the SECOND
-    simultaneous in-flight turn across any surface got ``output_tokens < 1`` and
-    surfaced as "budget exhausted". This pins the root cause the raised cap fixes.
+    simultaneous in-flight turn got ``output_tokens < 1`` and surfaced as "budget
+    exhausted". This pins the root cause. It also asserts the AUTHORITY CONTRACT:
+    a reservation never exceeds the binding's OWN stored ceiling — admission never
+    floors/expands it above the digest-covered value (the healing path is a
+    re-bind, see ``test_stale_binding_rebind_advances_generation_and_reflows_ceiling``).
     """
     import tinyassets.provider_serving_binding as serving_binding
     from tinyassets.auth.middleware import revoke_provider_request
@@ -401,6 +507,7 @@ def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch)
             role="writer",
             operation="converse",
         ) as authority:
+            assert authority.max_tokens == 32_768
             first = reserve_served_provider_budget(
                 tmp_path,
                 universe_dir=universe_dir,
@@ -409,6 +516,9 @@ def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch)
                 estimated_input_tokens=20_000,
             )
             assert first.output_tokens >= 1
+            # Authority contract: the reservation is bounded by the binding's OWN
+            # stored ceiling, never floored above it at admission.
+            assert first.reserved_total_tokens <= 32_768
             with pytest.raises(ProviderAuthorityHeldError, match="budget"):
                 reserve_served_provider_budget(
                     tmp_path,

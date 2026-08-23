@@ -53,8 +53,16 @@ concurrency.
 ## Impact
 
 - Affected specs: `provider-routing` (served-provider budget admission).
-- Affected code: `tinyassets/provider_serving_binding.py` + packaging mirror.
-- New bindings pick up the ceiling at creation; a pre-existing binding is
-  re-bound once to adopt it (the error's own "reconnect or rebind" recovery).
+- Affected code: `tinyassets/providers/router.py`,
+  `tinyassets/provider_serving_binding.py`, `tinyassets/provider_assignment.py`
+  + packaging mirrors.
+- New bindings pick up the ceiling at creation. A pre-existing binding is healed
+  by a re-bind: `bind_serving_provider` no longer *replays* a same-provider
+  binding whose signed ceilings DIFFER from current policy (either direction) —
+  it advances the
+  generation/digest and persists the current ceiling (the error's own "reconnect
+  or rebind" recovery, now real instead of a no-op). The ceiling stays
+  digest-covered; there is deliberately NO admission-time floor (that would
+  bypass the signed authority — Codex 2026-08-22).
 - No change to spend enforcement (there is none here by design — spend is on the
   user's own subscription); this is a runaway-guard magnitude correction.
