@@ -678,7 +678,12 @@ def write_graph(
             HTTPS API the universe can then act on via the
             authenticated_external_call effect — the channel-agnostic way an
             owner builds an outbound channel (chat webhook, ticketing API, etc.)
-            without any service-specific code (owner-only; see payload_json).
+            without any service-specific code (owner-only; see payload_json). Also
+            with target=connection, connect_compute registers an open COMPUTE
+            provider (any Kimi/OpenRouter/OpenAI-compatible endpoint, or a CLI
+            subscription) the universe's automations can run on — registration
+            only, no secret (the credential is deposited out of band via the
+            secure browser form / connect_http); owner-only, see payload_json.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -724,6 +729,15 @@ def write_graph(
             generic http connection (auth_scheme bearer). Owner-only; the secret is
             vaulted and never echoed. Then grant effector consent for the
             destination and build a node whose effect is authenticated_external_call.
+            For target=connection operation=connect_compute, pass
+            {"access_method": "api_key_http", "protocol": "openai_chat"|
+            "anthropic_messages", "model": "<model>", "ref": "<grant_id of an http
+            connection already granted to this universe>"} to register an open compute
+            provider (Kimi/OpenRouter/any OpenAI-compatible endpoint). For a CLI
+            subscription pass {"access_method": "subscription_cli", "protocol":
+            "cli:codex"|"cli:claude-code", "model": "<model>", "ref": "codex"|
+            "claude-code"}. Owner-only, registration ONLY — NO secret here (deposit the
+            api key out of band via the secure browser form / connect_http first).
             For target=automation operation=create, pass
             {"definition": {"repository": "owner/repository",
             "accepted_spec_ref": "openspec/specs/capability/spec.md",
@@ -947,6 +961,19 @@ def write_graph(
 
             return json.dumps(
                 connect_http(
+                    universe_id=graph_id,
+                    payload=payload_json,
+                )
+            )
+        if connection_operation == "connect_compute":
+            # Owner-scoped registration of an open COMPUTE provider (any Kimi/
+            # OpenRouter/OpenAI-compatible endpoint or a CLI subscription). Its own
+            # owner-scoped handler; registration ONLY (no secret — the credential is
+            # deposited out of band per the custody boundary). Adds no advertised handle.
+            from tinyassets.api.compute_connection import connect_compute
+
+            return json.dumps(
+                connect_compute(
                     universe_id=graph_id,
                     payload=payload_json,
                 )

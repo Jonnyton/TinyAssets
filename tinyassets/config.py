@@ -273,7 +273,13 @@ def write_provider_assignment_projection(
         raise ValueError("provider assignment generation is invalid")
     selected = provider.strip()
     if normalized_state == "ready":
-        if generation < 1 or selected not in {"claude-code", "codex"}:
+        # A ready assignment names exactly one provider: a subscription-CLI provider
+        # (claude-code/codex) OR a registered open compute provider
+        # (api_key_http:<def-id>, compute-agnostic). Anything else is invalid.
+        _is_canonical = selected in {"claude-code", "codex"} or selected.startswith(
+            "api_key_http:"
+        )
+        if generation < 1 or not _is_canonical:
             raise ValueError("ready assignment requires one canonical provider")
         if not isinstance(binding, dict) or not binding.get("binding_id"):
             raise ValueError("ready assignment requires a binding projection")

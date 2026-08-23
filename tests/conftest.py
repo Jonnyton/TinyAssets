@@ -217,6 +217,28 @@ def _reset_git_enabled_probe():
 
 
 @pytest.fixture(autouse=True)
+def _reset_provider_request_state():
+    """Clear the process-global provider-request capability state per test.
+
+    ``_PROVIDER_REQUESTS`` (a module dict) plus the ``_current_provider_request``
+    / ``_current_provider_reserve`` ContextVars hold the one-shot authenticated
+    dispatch capability. ContextVars are NOT reset between pytest tests, so a
+    test that ``reserve``/``claim``s a capability and doesn't tear it down leaks
+    a stale ``ProviderRequestCapability`` into the next test: e.g. converse then
+    reads it via ``provider_request_capability()`` and resolves the serving
+    binding under the wrong principal (0 matches -> "exactly one founder serving
+    binding is required"). Same collection-order leak class as
+    ``_reset_git_enabled_probe`` above; the reset has to be process-global too.
+    Reuses the canonical fork-time reset so there is one definition of "clean".
+    """
+    from tinyassets.auth.middleware import _reset_provider_request_state_after_fork
+
+    _reset_provider_request_state_after_fork()
+    yield
+    _reset_provider_request_state_after_fork()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_storage_backend(monkeypatch):
     """Pin the storage backend to ``sqlite_only`` by default for every test.
 

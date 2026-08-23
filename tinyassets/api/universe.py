@@ -6052,10 +6052,64 @@ def _action_set_engine(
         return _set_engine_market_rented(uid, udir, data, preferred_writer)
     if engine_source == "host_daemon":
         return _set_engine_host_daemon(uid, udir, data, preferred_writer)
+    if engine_source == "open_provider":
+        return _set_engine_open_provider(uid, udir, data, preferred_writer)
     return json.dumps({
         "error": f"unknown engine_source {engine_source!r}.",
         "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
-                                   "market_rented", "host_daemon"],
+                                   "market_rented", "host_daemon", "open_provider"],
+    })
+
+
+def _set_engine_open_provider(uid, udir, data, preferred_writer) -> str:
+    """Open compute provider (compute-agnostic) → set the universe's writer to a
+    registered ProviderDefinition.
+
+    The correct-shape replacement for the fixed-service ``byo_api_key`` path: the
+    provider was registered out of band via ``connect_compute`` (an open descriptor
+    referencing a granted connection / CLI subscription), so this sets NO credential —
+    it only points the universe's ``preferred_writer`` at the definition's resolved
+    executor name (``api_key_http:<def-id>`` / ``codex`` / ``claude-code``). The
+    per-call registration bridge then makes that name routable. No ``allowed_providers``
+    restriction is written, so other roles keep their chains."""
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.providers import definition as pd
+    from tinyassets.providers.provider_resolver import provider_for_definition
+
+    definition_id = str(data.get("definition_id", "")).strip()
+    if not definition_id:
+        return json.dumps({
+            "error": "definition_id is required for open_provider.",
+            "hint": "register the provider first with write_graph "
+                    "target=connection operation=connect_compute.",
+        })
+    definition = pd.get_definition(uid, definition_id)
+    if definition is None:
+        return json.dumps({
+            "error": f"provider definition {definition_id!r} is not registered in "
+                     "this universe.",
+            "hint": "register it with connect_compute first.",
+        })
+    try:
+        provider_name = provider_for_definition(definition).name
+    except (ValueError, KeyError) as exc:
+        return json.dumps({
+            "error": f"definition cannot resolve to an executor: {exc}",
+        })
+    try:
+        write_universe_config_fields(
+            udir, engine_source="open_provider", preferred_writer=provider_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"Failed to write engine config: {exc}"})
+    return json.dumps({
+        "status": "engine_set",
+        "universe_id": uid,
+        "engine_source": "open_provider",
+        "definition_id": definition_id,
+        "preferred_writer": provider_name,
+        "note": "Writer now routes to this registered provider; no credential "
+                "was set here (it lives in the connection the definition references).",
     })
 
 

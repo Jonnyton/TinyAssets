@@ -343,6 +343,24 @@ class ProviderRouter:
             return chain
         return [preferred] + [p for p in chain if p != preferred]
 
+    def _apply_open_preference(self, chain: list[str], preferred: str) -> list[str]:
+        """Preference that also admits an OPEN, registered provider not in the
+        static role chain (compute-agnostic).
+
+        The static ``FALLBACK_CHAINS`` only name the built-in providers, so a
+        universe that selected an open provider (``api_key_http:<def-id>``, set as
+        ``preferred_writer`` by the ``open_provider`` engine mode) is not in the
+        chain — plain ``_apply_preference`` would be a no-op. If the preferred
+        provider is REGISTERED (the per-universe registration bridge ran) but not in
+        the chain, prepend it so it is tried first, keeping the built-in chain as
+        fallback. If it is not registered, behave exactly as before (no phantom
+        entry). Only the non-served path reaches here; the interactive served turn
+        uses ``served_authority.provider`` directly and never consults this."""
+        reordered = self._apply_preference(chain, preferred)
+        if preferred and preferred not in reordered and preferred in self._providers:
+            return [preferred, *reordered]
+        return reordered
+
     @staticmethod
     def _current_allowlist(
         resolved: "UniverseConfig | None" = None,
@@ -561,24 +579,38 @@ class ProviderRouter:
                 ucfg = resolved_config
                 if ucfg is not None:
                     if role == "writer" and ucfg.preferred_writer:
-                        chain = self._apply_preference(chain, ucfg.preferred_writer)
+                        chain = self._apply_open_preference(chain, ucfg.preferred_writer)
                     elif role == "judge" and ucfg.preferred_judge:
-                        chain = self._apply_preference(chain, ucfg.preferred_judge)
+                        chain = self._apply_open_preference(chain, ucfg.preferred_judge)
             except Exception:
                 pass
 
         # Q6.3 — apply per-universe allowlist (privacy primitive). Pin already
         # narrowed chain to [pin_writer] above; the filter then enforces
         # pin × allowlist composition. None = no-op (backwards-compat).
-        allowlist = (
-            [served_authority.provider]
-            if served_authority is not None
-            else _effective_universe_provider_ceiling(
+        if served_authority is not None:
+            # The served authority is the explicitly-bound provider, but it must ALSO
+            # sit within the universe's privacy allowlist — a minted served authority
+            # must NOT bypass allowed_providers (Codex serve-open-compute review #2).
+            # No ceiling set = allow (backwards-compatible); a ceiling that excludes the
+            # served provider empties the chain -> fail closed below.
+            _served_ceiling = _effective_universe_provider_ceiling(
+                universe_context,
+                resolved_config,
+                carrier_armed=False,
+            )
+            allowlist = (
+                [served_authority.provider]
+                if _served_ceiling is None
+                or served_authority.provider in _served_ceiling
+                else []
+            )
+        else:
+            allowlist = _effective_universe_provider_ceiling(
                 universe_context,
                 resolved_config,
                 carrier_armed=invocation_carrier is not None,
             )
-        )
         if allowlist is not None:
             filtered = self._apply_allowlist(chain, allowlist)
             if not filtered:
@@ -683,6 +715,42 @@ class ProviderRouter:
 
         for provider_name in chain:
             provider = self._providers.get(provider_name)
+            if (
+                served_authority is not None
+                and provider_name == served_authority.provider
+                and provider_name.startswith("api_key_http:")
+            ):
+                # Do NOT trust the mutable registry for an OPEN served provider (Codex
+                # serve-open-compute re-review #4): a substituted same-name registry
+                # object could advertise the content-addressed name while backing a
+                # different endpoint/grant/credential. Resolve the executor FRESH from
+                # the integrity-checked ProviderDefinition (get_definition verifies the
+                # id content-addresses its fields), so the dispatched instance is
+                # authenticated by construction, not by a name comparison.
+                try:
+                    from tinyassets.providers.definition import get_definition
+                    from tinyassets.providers.provider_resolver import (
+                        provider_for_definition,
+                    )
+
+                    _uid = (
+                        universe_dir.name
+                        if universe_dir is not None
+                        else served_authority.universe_id
+                    )
+                    _def_id = provider_name.split("api_key_http:", 1)[-1]
+                    _definition = get_definition(_uid, _def_id)
+                    if _definition is None:
+                        raise PermissionError(
+                            "open served provider definition is absent"
+                        )
+                    provider = provider_for_definition(_definition)
+                except PermissionError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - fail closed, secret-free
+                    raise PermissionError(
+                        "open served provider could not be authenticated"
+                    ) from exc
             if provider is None:
                 logger.info("Provider %s not in registry, skipping", provider_name)
                 attempts.append(ProviderAttemptDiagnostic(

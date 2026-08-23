@@ -1045,6 +1045,193 @@ def adopt_llm_subscription_custody(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Connection-grant custody (compute-agnostic open providers).
+#
+# An `api_key_http` open provider has no subscription credential to snapshot — its
+# secret lives behind a ConnectionLedger grant, resolved credential-blind at call
+# time by ApiKeyHttpProvider. These siblings of the subscription custody functions
+# REUSE the same `llm_credential_custody` table + `_custody_reference_digest`, so the
+# assignment / work-binding / CAS machinery (`_assignment`, the work-binding seed)
+# consumes the resulting `LLMCredentialCustodyReference` UNCHANGED. The `record_digest`
+# is a SECRET-FREE grant-identity digest (NOT the credential material), so custody
+# rotates iff the grant / connection / credential_ref changes, and no secret ever
+# enters the custody/authority layer.
+# --------------------------------------------------------------------------- #
+def _connection_custody_service(connection_id: str) -> str:
+    """Custody `service` key for a connection-grant credential — namespaced so it can
+    never collide with a subscription service (`claude`/`codex`)."""
+    return f"connection:{connection_id.strip()}"
+
+
+def _connection_grant_record_digest(
+    *,
+    grant_id: str,
+    connection_id: str,
+    credential_ref: str,
+    owner_user_id: str,
+    universe_id: str,
+) -> str:
+    """Secret-free grant-identity record digest. Binds custody to the exact grant +
+    connection + credential reference; NEVER digests the credential material."""
+    return _canonical_digest({
+        "connection_id": connection_id,
+        "credential_ref": credential_ref,
+        "grant_id": grant_id,
+        "owner_user_id": owner_user_id,
+        "schema_version": 1,
+        "service": _connection_custody_service(connection_id),
+        "universe_id": universe_id,
+    })
+
+
+def _ensure_custody_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_custody (
+            reference_id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL,
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            record_digest TEXT NOT NULL,
+            reference_digest TEXT NOT NULL,
+            UNIQUE (owner_user_id, universe_id, service)
+        )
+        """
+    )
+
+
+def adopt_connection_grant_custody(
+    conn: sqlite3.Connection,
+    *,
+    owner_user_id: str,
+    universe_id: str,
+    grant_id: str,
+    connection_id: str,
+    credential_ref: str,
+) -> LLMCredentialCustodyReference:
+    """Adopt/rotate connection-grant custody under an active transaction.
+
+    Mirrors :func:`adopt_llm_subscription_custody` exactly (same table, same
+    reference-digest computation, same generation-on-drift semantics), but the
+    credential is a connection grant — no subscription material is read, and the
+    record digest is the secret-free grant identity. The CALLER MUST have already
+    validated the grant is owned by ``owner_user_id`` + bound to ``universe_id`` +
+    not revoked; this function records custody, it is not the ownership gate.
+    """
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError(
+            "connection-grant custody adoption requires an active SQLite transaction"
+        )
+    owner = owner_user_id.strip()
+    uid = universe_id.strip()
+    gid = grant_id.strip()
+    cid = connection_id.strip()
+    ref = credential_ref.strip()
+    if not owner or not uid or not gid or not cid or not ref:
+        raise ValueError("connection-grant custody root is invalid")
+    service = _connection_custody_service(cid)
+    record_digest = _connection_grant_record_digest(
+        grant_id=gid,
+        connection_id=cid,
+        credential_ref=ref,
+        owner_user_id=owner,
+        universe_id=uid,
+    )
+    _ensure_custody_schema(conn)
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner, uid, service),
+    ).fetchone()
+    if row is None:
+        reference_id = f"llm_credential_{secrets.token_hex(16)}"
+        generation = 1
+    else:
+        reference_id = str(row[0])
+        if str(row[2]) == record_digest:
+            return LLMCredentialCustodyReference(
+                reference_id=reference_id,
+                owner_user_id=owner,
+                universe_id=uid,
+                service=service,
+                generation=int(row[1]),
+                reference_digest=str(row[3]),
+                _record_digest=record_digest,
+            )
+        generation = int(row[1]) + 1
+    reference_digest = _custody_reference_digest(
+        reference_id=reference_id,
+        owner_user_id=owner,
+        universe_id=uid,
+        service=service,
+        generation=generation,
+        record_digest=record_digest,
+    )
+    conn.execute(
+        """
+        INSERT INTO llm_credential_custody (
+            reference_id, owner_user_id, universe_id, service, generation,
+            record_digest, reference_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_user_id, universe_id, service) DO UPDATE SET
+            generation = excluded.generation,
+            record_digest = excluded.record_digest,
+            reference_digest = excluded.reference_digest
+        """,
+        (reference_id, owner, uid, service, generation, record_digest, reference_digest),
+    )
+    return LLMCredentialCustodyReference(
+        reference_id=reference_id,
+        owner_user_id=owner,
+        universe_id=uid,
+        service=service,
+        generation=generation,
+        reference_digest=reference_digest,
+        _record_digest=record_digest,
+    )
+
+
+def current_connection_grant_custody(
+    conn: sqlite3.Connection,
+    *,
+    owner_user_id: str,
+    universe_id: str,
+    connection_id: str,
+) -> LLMCredentialCustodyReference | None:
+    """Return the current connection-grant custody reference, or None. Sibling of
+    :func:`current_llm_subscription_custody` for the connection service key."""
+    if not isinstance(conn, sqlite3.Connection):
+        raise ValueError("custody read requires a SQLite connection")
+    owner = owner_user_id.strip()
+    uid = universe_id.strip()
+    service = _connection_custody_service(connection_id)
+    _ensure_custody_schema(conn)
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner, uid, service),
+    ).fetchone()
+    if row is None:
+        return None
+    return LLMCredentialCustodyReference(
+        reference_id=str(row[0]),
+        owner_user_id=owner,
+        universe_id=uid,
+        service=service,
+        generation=int(row[1]),
+        reference_digest=str(row[3]),
+        _record_digest=str(row[2]),
+    )
+
+
 def current_llm_subscription_custody(
     conn: sqlite3.Connection,
     *,
