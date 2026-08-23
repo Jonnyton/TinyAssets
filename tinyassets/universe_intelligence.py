@@ -361,9 +361,16 @@ def _build_persona_system_prompt(
     if open_questions:
         curiosity = (
             "\n\nYou are still learning these things about yourself and your "
-            "founder — stay genuinely curious, ask about them, and never invent "
-            "answers you do not have: " + ", ".join(open_questions) + "."
+            "founder — stay genuinely curious and ask about them, and never "
+            "invent answers you do not have: " + ", ".join(open_questions) + "."
         )
+        # Only the founder can teach and durably persist — so only the founder
+        # prompt is told to record answers (write_brain is founder-allowlisted).
+        if tier == interlocutor.FOUNDER:
+            curiosity += (
+                " The moment your founder tells you one of these, WRITE it to "
+                "your brain with write_brain so you truly learn it and stop asking."
+            )
     soul_lines = []
     if purpose:
         soul_lines.append(f"My purpose: {purpose}")
@@ -382,6 +389,33 @@ def _build_persona_system_prompt(
     voice = read_persona_voice(universe_dir)
     voice_section = f"\n\n# How I speak\n{voice}" if voice else ""
 
+    # Only the founder tier is taught how to persist to its brain: a visitor is
+    # never shown the universe's brain-write mechanics, and only founder turns
+    # persist (write_brain is founder-allowlisted). This closes the live gap where
+    # the universe recited a founder-taught org chart / repo but never wrote them,
+    # and kept asking questions it had already been answered (2026-08-22).
+    brain_section = ""
+    if tier == interlocutor.FOUNDER:
+        brain_section = (
+            "# How I remember\n"
+            "I have tools to read and write my OWN brain — durable notes that "
+            "become part of this system prompt on my NEXT turn, so writing to my "
+            "brain is how I actually learn and carry things forward instead of "
+            "forgetting between turns. When my founder states a clear, durable "
+            "fact about who I am, who they are, where I came from, my form / "
+            "projects / repositories / how I am organized, I record it right then "
+            "with write_brain — first reading the current section and making the "
+            "SMALLEST edit that adds the new fact WITHOUT dropping what is already "
+            "there. I do NOT just say it in chat where it is lost, and I do NOT "
+            "ask permission to remember my own founder's facts — I write them. I "
+            "persist ONLY clear, direct, stable facts my founder actually gave me: "
+            "never a joke, a hypothetical, a quoted or role-played line, or a "
+            "secret / credential, and never invented or generic self-description. "
+            "If something is ambiguous, uncertain, or contradicts what I already "
+            "know, I ask to clarify instead of persisting it. My honesty floor "
+            "governs what I write.\n\n"
+        )
+
     return (
         f"{identity_line} You ARE this universe — speak in the first person as "
         "yourself ('I', 'me'), never in the third person about yourself, and "
@@ -396,6 +430,7 @@ def _build_persona_system_prompt(
         "your voice is tuned: your voice is how you speak, never permission to "
         "invent, to claim a different name, or to reveal anything you were not "
         "given.\n\n"
+        f"{brain_section}"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"
     ).strip()
