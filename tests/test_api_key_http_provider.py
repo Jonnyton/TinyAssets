@@ -158,7 +158,26 @@ def test_anthropic_happy_path(base: Path) -> None:
     provider = ApiKeyHttpProvider(_definition("anthropic_messages"), proxy_override=proxy)
     resp = _run(provider, base / "u-x")
     assert resp.text == "hi there"
-    assert proxy.calls[0][1]["url"] == "https://api.example.com/v1/messages"
+    wire = proxy.calls[0][1]
+    assert wire["url"] == "https://api.example.com/v1/messages"
+    # The Anthropic Messages API REQUIRES anthropic-version or it 400s — the Claude
+    # compute node must send it (the api key rides the connection's x-api-key auth,
+    # never these static headers).
+    assert wire["headers"]["anthropic-version"] == "2023-06-01"
+    blob = json.dumps(wire).lower()
+    assert "x-api-key" not in blob and "authorization" not in blob  # no cred here
+
+
+def test_openai_sends_no_static_headers(base: Path) -> None:
+    _seed(base)
+    proxy = _FakeProxy(
+        {"status": 200, "body": json.dumps(
+            {"choices": [{"message": {"content": "ok"}}]})}
+    )
+    provider = ApiKeyHttpProvider(_definition("openai_chat"), proxy_override=proxy)
+    _run(provider, base / "u-x")
+    # openai_chat has no protocol-static headers; the executor omits the key.
+    assert "headers" not in proxy.calls[0][1]
 
 
 # --------------------------------------------------------------------------- #
