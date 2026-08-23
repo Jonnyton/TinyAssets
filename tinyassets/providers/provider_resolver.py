@@ -1,0 +1,62 @@
+"""Resolve a :class:`ProviderDefinition` to its executor (a ``BaseProvider``).
+
+The single dispatch point from the open provider registry to a concrete executor,
+selected DETERMINISTICALLY by ``access_method`` with NO cross-method fallback
+(Hard Rule #3 evolution, design §3):
+
+- ``api_key_http`` -> :class:`ApiKeyHttpProvider` (protocol encoder over the
+  credential-blind outbound proxy).
+- ``subscription_cli`` -> the existing vendor CLI adapter for ``ref`` (``codex`` ->
+  ``CodexProvider``, ``claude-code`` -> ``ClaudeProvider``), preserved verbatim
+  (sealed CODEX_HOME, sandbox, auth-health, budget, telemetry, stable identity).
+
+Executors are ``BaseProvider`` instances, so the existing router / serving /
+node-execution machinery consumes them unchanged (an agent is just a node). This
+resolver is the seam the router rewrite (task 3) and `call.py`'s registration will
+route through so provider identities are constructed in ONE place, not scattered.
+"""
+
+from __future__ import annotations
+
+from tinyassets.providers.base import BaseProvider
+from tinyassets.providers.definition import ProviderDefinition
+
+# subscription_cli provider name -> the vendor CLI adapter class. This is the ONLY
+# closed set in the compute-agnostic model: subscription access is CLI-subprocess
+# (never an API SDK), and only vendors whose CLI we run in-daemon can be subscription
+# providers. Everything else is api_key_http (open).
+_CLI_PROVIDER_CLASSES: dict[str, str] = {
+    "codex": "CodexProvider",
+    "claude-code": "ClaudeProvider",
+}
+
+
+def _cli_provider(ref: str) -> BaseProvider:
+    if ref == "codex":
+        from tinyassets.providers.codex_provider import CodexProvider
+
+        return CodexProvider()
+    if ref == "claude-code":
+        from tinyassets.providers.claude_provider import ClaudeProvider
+
+        return ClaudeProvider()
+    raise ValueError(
+        f"unknown subscription_cli provider ref: {ref!r} "
+        f"(known: {sorted(_CLI_PROVIDER_CLASSES)})"
+    )
+
+
+def provider_for_definition(definition: ProviderDefinition) -> BaseProvider:
+    """Return the executor (a ``BaseProvider``) for a registered definition.
+
+    Deterministic by ``access_method``; raises on an unknown access method or an
+    unknown subscription-CLI ref. Never falls back across access methods.
+    """
+    if definition.access_method == "api_key_http":
+        # Local import avoids a cycle (api_key_http_provider imports base).
+        from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+        return ApiKeyHttpProvider(definition)
+    if definition.access_method == "subscription_cli":
+        return _cli_provider(definition.ref)
+    raise ValueError(f"unknown access_method: {definition.access_method!r}")
