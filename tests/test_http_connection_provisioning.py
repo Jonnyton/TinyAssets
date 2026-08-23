@@ -538,6 +538,66 @@ def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
         assert len(recs) == 1 and recs[0]["token"] == "legacy-secret"  # untouched
 
 
+def test_unrelated_llm_deposit_cannot_claim_orphaned_http_slot(base: Path) -> None:
+    """A second admin must not be able to seize a legacy unowned http credential
+    by first depositing an UNRELATED owned credential (an LLM subscription). Owner
+    rows are claimed only for the records a deposit actually TOUCHES, so an LLM
+    deposit never assigns ownership of a pre-existing orphaned http slot — and the
+    later connect_http is still refused (Codex re-review: the LLM-deposit-first
+    seizure)."""
+    import sqlite3 as _sqlite
+
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage import db_path
+
+    udir = _make_universe(base, "u-indirect", admin="founder")
+    grant_universe_access(
+        base, universe_id="u-indirect", actor_id="coadmin",
+        permission="admin", granted_by="founder",
+    )
+    # Legacy orphan: an http vault record with NO owner row.
+    write_credential_vault(
+        udir,
+        [{
+            "credential_type": "http",
+            "service": "webhook:acme",
+            "destination": "webhook:acme",
+            "token": "legacy-secret",
+        }],
+    )
+
+    # coadmin deposits their OWN claude subscription. This must NOT silently claim
+    # the orphaned http slot.
+    write_credential_vault(
+        udir,
+        [{"credential_type": "llm_subscription", "service": "claude",
+          "oauth_token": "coadmin-tok"}],
+        owner_user_id="coadmin",
+        universe_id="u-indirect",
+    )
+    conn = _sqlite.connect(db_path(base))
+    try:
+        rows = {
+            (str(s), str(o))
+            for s, o in conn.execute(
+                "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
+                "WHERE universe_id = ?",
+                ("u-indirect",),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    assert rows == {("claude", "coadmin")}  # http slot NOT claimed by the LLM deposit
+
+    # coadmin now tries to seize the orphaned http credential — still refused.
+    _login("coadmin")
+    result = _connect("u-indirect", secret="coadmin-secret")
+    assert result["error"] == "credential_ownership_transfer_unsupported"
+    recs = _http_records(udir)
+    assert len(recs) == 1 and recs[0]["token"] == "legacy-secret"  # untouched
+
+
 def test_http_deposit_preserves_llm_serving_custody_rows(base: Path) -> None:
     """Generalizing owner-row keys to http must NOT wipe or corrupt the
     claude/codex ownership rows that gate serving custody. After a universe has
