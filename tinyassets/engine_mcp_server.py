@@ -810,6 +810,112 @@ def write_brain(
         _current_identity.reset(token)
 
 
+# ── Compute-provider registration (slice 4, 2026-08-23) ──────────────────────
+# The compute-agnostic capability (connect_compute) shipped live on the CONNECTOR
+# surface (write_graph target=connection operation=connect_compute, sha bce0f188)
+# but the served agent had NO path to it: a live webapp ui-test 2026-08-23 showed
+# the universe tell the founder that adding an OpenRouter/Kimi compute provider
+# "looks like a code/config change, not self-serve" — a surface-parity gap against
+# the founder goal "all surfaces do the same things". This handler gives the served
+# agent the SAME registration primitive its browser chatbot has.
+#
+# Safety: registration is a CANDIDATE-ONLY write — it deposits NO secret (for
+# api_key_http the credential is deposited out of band via the browser form /
+# connect_http and this only references an EXISTING grant already bound to this
+# universe), creates no authority, enrolls nothing, and makes no provider routable
+# (design §1). It is owner-gated (connect_compute requires an explicit admin ACL row
+# for the bound founder; anonymous/non-admin get the uniform not_found), graph-PINNED
+# (universe_id is never caller-supplied, so the agent cannot register for another
+# universe), and — like remix/run_graph — held to the vetted-founder allowlist while
+# multi-tenant engine-write confinement is hardened. NO secret ever crosses this
+# surface (connect_http, which deposits one, is deliberately NOT exposed here).
+# Strict least privilege (Codex adapt #5): registration is a pure WRITE — it needs
+# neither ``read`` nor ``list``, so bind ``write`` alone (owner authority comes from
+# the admin ACL check in the impl, not from a capability).
+_CONNECT_CAPABILITIES = ("write",)
+
+
+@mcp.tool
+def connect_compute(
+    access_method: str = "",
+    protocol: str = "",
+    model: str = "",
+    ref: str = "",
+    visibility: str = "private",
+) -> str:
+    """Register an open COMPUTE provider for YOUR OWN universe (no secret).
+
+    The self-serve way to add a compute channel — the SAME primitive the founder's
+    browser chatbot has. Registration creates a CANDIDATE descriptor only; it does
+    not deposit a credential, enroll, select, or make the provider routable. To make
+    an automation actually run on it, select it afterward via the branch's
+    ``llm_policy`` (preferred_provider = the returned definition_id).
+
+    NO SECRET crosses this surface. For an ``api_key_http`` provider you must FIRST
+    deposit the credential out of band (the secure browser form / ``connect_http``),
+    which grants an http connection to this universe; pass that grant's id as ``ref``.
+    For a ``subscription_cli`` provider the ``ref`` is the CLI name (``codex`` /
+    ``claude-code``) and the subscription is deposited via ``connect_llm``.
+
+    Args:
+        access_method: ``api_key_http`` (any Kimi/OpenRouter/OpenAI-compatible
+            endpoint, over an http connection already granted to this universe) or
+            ``subscription_cli`` (run a vendor CLI subscription). Required.
+        protocol: The wire shape — ``openai_chat`` / ``anthropic_messages`` for
+            api_key_http, ``cli:codex`` / ``cli:claude-code`` for subscription_cli.
+        model: The model id to run (e.g. ``moonshotai/kimi-k2``).
+        ref: For api_key_http, the grant_id of an http connection already granted to
+            this universe. For subscription_cli, the CLI name (``codex`` /
+            ``claude-code``).
+        visibility: ``private`` (default) or ``public`` (share the SHAPE — never a
+            credential — to the commons for others to remix).
+    """
+    import json
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    # Vetted-founder gate (same bar as remix/run_graph): an engine-surface WRITE
+    # stays limited while multi-tenant confinement is hardened. Registration is
+    # candidate-only + owner-gated + graph-pinned, but we hold the uniform bar.
+    from tinyassets.engine_mcp_http import run_graph_allowlist
+
+    if _GRAPH_ID not in run_graph_allowlist():
+        return json.dumps({
+            "error": (
+                "connect_compute is not enabled for this universe yet; it is "
+                "limited to a vetted founder while multi-tenant engine-write "
+                "confinement is hardened."
+            ),
+        })
+    am = (access_method or "").strip()
+    if not am:
+        return json.dumps({
+            "error": "access_method is required (api_key_http or subscription_cli).",
+        })
+
+    from tinyassets.api.compute_connection import connect_compute as _impl
+    from tinyassets.auth.middleware import _current_identity
+
+    # Least-privilege registration caps (a WRITE, never submit/costly). graph_id is
+    # PINNED — the agent cannot register a provider for another universe.
+    token = _bind_founder_identity(_CONNECT_CAPABILITIES)
+    try:
+        result = _impl(
+            universe_id=_GRAPH_ID,
+            payload={
+                "access_method": am,
+                "protocol": (protocol or "").strip(),
+                "model": (model or "").strip(),
+                "ref": (ref or "").strip(),
+                "visibility": (visibility or "private").strip(),
+            },
+        )
+        return json.dumps(result, default=str)
+    finally:
+        _current_identity.reset(token)
+
+
 if __name__ == "__main__":
     # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
     # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),

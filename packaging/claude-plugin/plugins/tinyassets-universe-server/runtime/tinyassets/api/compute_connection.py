@@ -77,6 +77,8 @@ def _validate_http_grant(
     Isolation: a grant for another universe/owner returns the uniform ``not_found``
     (never confirm a foreign grant's existence). The credential itself is never
     touched here — only the grant's binding metadata (a plain read)."""
+    # An EMPTY ref is a request-shape error (no specific grant is referenced, so it
+    # reveals no grant's existence) — safe to be specific and helpful.
     if not grant_id:
         return {
             "error": "connection_setup_invalid",
@@ -90,14 +92,27 @@ def _validate_http_grant(
 
     ledger = ConnectionLedger(base / "outbound.db")
     grant = ledger.get_grant(grant_id)
+    # Uniform absent-resource envelope for EVERY inaccessible grant (Codex adapt #1):
+    # absent, revoked, foreign-universe, foreign-owner, or backed by a
+    # non-http/revoked connection ALL return the SAME not_found — so the surface is
+    # never an existence/ownership oracle (a non-empty ref must not reveal WHICH
+    # condition failed).
     if grant is None or getattr(grant, "revoked_at", None) is not None:
-        return {
-            "error": "connection_setup_invalid",
-            "detail": "referenced grant is absent or revoked",
-        }
+        return dict(_NOT_FOUND)
     if getattr(grant, "universe_id", "") != universe_id:
         return dict(_NOT_FOUND)
     if getattr(grant, "owner_user_id", "") != actor:
+        return dict(_NOT_FOUND)
+    # Connection-class + liveness gate (Codex adapt #2): a grant is only valid as an
+    # api_key_http compute ref if it is backed by a LIVE, HTTP-class connection.
+    # Without this, any same-owner/same-universe grant (e.g. one issued for a
+    # different, non-http connection type) could be confused into a compute ref.
+    resource = ledger._get_connection_resource(getattr(grant, "connection_id", ""))
+    if (
+        resource is None
+        or getattr(resource, "connection_type", "") != "http"
+        or getattr(resource, "revoked_at", None) is not None
+    ):
         return dict(_NOT_FOUND)
     return None
 

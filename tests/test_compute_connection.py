@@ -178,7 +178,10 @@ def test_api_key_http_absent_grant_rejected(base: Path) -> None:
     _login("founder")
     r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
                  model="m", ref="http_grant_" + "z" * 32)
-    assert r["error"] == "connection_setup_invalid"
+    # A non-empty but inaccessible ref (absent here) returns the SAME uniform
+    # not_found as a foreign-universe/owner grant — no existence oracle (Codex adapt
+    # #1). Only an EMPTY ref gets the specific connection_setup_invalid usage error.
+    assert r["error"] == "not_found"
 
 
 def test_api_key_http_cross_universe_grant_hidden(base: Path) -> None:
