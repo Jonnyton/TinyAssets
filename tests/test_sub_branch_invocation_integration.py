@@ -116,7 +116,11 @@ class TestParentInvokesChildEndToEnd:
         assert outcome.run_id
         assert outcome.status
 
-    def test_child_actor_flows_into_child_run(self, seeded_base):
+    def test_child_runs_as_parent_actor_ignoring_child_actor_spec(self, seeded_base):
+        # The fixture seeds parent with child_actor="bob". Under the 2026-08-23
+        # sanitization contract, an author-supplied child_actor is identity spoofing
+        # and is IGNORED: the child always runs as the parent run's authenticated
+        # actor (ctx.actor="alice"), never "bob".
         base, parent, _child = seeded_base
 
         execute_branch(base, branch=parent, inputs={}, actor="alice")
@@ -126,15 +130,14 @@ class TestParentInvokesChildEndToEnd:
                 "SELECT actor, branch_def_id FROM runs ORDER BY started_at"
             ).fetchall()
 
-        # Two rows: parent (actor=alice) and child (actor=bob via child_actor).
         actors_by_branch = {r["branch_def_id"]: r["actor"] for r in rows}
         # Parent should be present.
         assert actors_by_branch.get("parent-bdef") == "alice"
         # Child may or may not have been spawned depending on whether the
         # parent's source_code path was approved & executed; assert only
-        # if the child ran.
+        # if the child ran — and it must inherit the parent actor, NOT "bob".
         if "child-bdef" in actors_by_branch:
-            assert actors_by_branch["child-bdef"] == "bob"
+            assert actors_by_branch["child-bdef"] == "alice"
 
 
 class TestDesignUsedIntegration:
