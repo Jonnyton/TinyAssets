@@ -811,6 +811,9 @@ def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path):
     assert 'url="http://127.0.0.1:8790/mcp"' in server
     assert 'bearer_token_env_var="TINYASSETS_ENGINE_MCP_BEARER"' in server
     assert "required=true" in server
+    # auto-approve the one trusted server so a non-interactive codex exec turn
+    # actually executes its MCP tools instead of "user cancelled".
+    assert 'default_tools_approval_mode="approve"' in server
     # restricted to exactly the declared tools; publish is NOT among them
     for _t in _ENGINE_MCP_ENABLED_TOOLS:
         assert f'"{_t}"' in server
