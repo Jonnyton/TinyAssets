@@ -673,7 +673,12 @@ def write_graph(
             fork_from field. Publish freezes the named branch_id.
             With target=connection, connect_llm deposits the authenticated
             owner's own Claude/Codex subscription into this universe's private
-            vault (owner-only; see payload_json).
+            vault (owner-only; see payload_json). Also with target=connection,
+            connect_http provisions a generic outbound http connection to ANY
+            HTTPS API the universe can then act on via the
+            authenticated_external_call effect — the channel-agnostic way an
+            owner builds an outbound channel (chat webhook, ticketing API, etc.)
+            without any service-specific code (owner-only; see payload_json).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -712,6 +717,13 @@ def write_graph(
             your auth.json. The secret is stored in the per-universe vault and is
             never echoed back. After a successful deposit, re-point serving with
             target=agent_binding operation=bind_serving_provider then set_serving.
+            For target=connection operation=connect_http, pass
+            {"destination": "<stable key, e.g. webhook:acme>", "secret":
+            "<bearer token>", "allowed_endpoints": [{"host": "api.example.com",
+            "path_template": "/v1/messages", "methods": ["POST"]}]} to provision a
+            generic http connection (auth_scheme bearer). Owner-only; the secret is
+            vaulted and never echoed. Then grant effector consent for the
+            destination and build a node whose effect is authenticated_external_call.
             For target=automation operation=create, pass
             {"definition": {"repository": "owner/repository",
             "accepted_spec_ref": "openspec/specs/capability/spec.md",

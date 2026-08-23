@@ -18,19 +18,20 @@ costly/submit/admission wrapper (the vault write takes its own per-universe lock
 
 ### Payload (JSON object)
 ```
-{ "destination": "<stable channel key, e.g. slack:acme>",   # required
-  "auth_scheme": "bearer|header|basic|none",                # required, validated
-  "secret": "<token>",                 # required unless auth_scheme=none; <=200k
-  "header_name": "<X-…>",              # required iff auth_scheme=header
-  "allowed_endpoints": [ {"host":"slack.com","path_template":"/api/chat.postMessage","methods":["POST"]}, … ] }  # >=1
+{ "destination": "<stable channel key, e.g. webhook:acme>",  # required
+  "auth_scheme": "bearer",                 # optional; Slice 1 accepts only bearer
+  "secret": "<token>",                     # required; <=200k
+  "allowed_endpoints": [ {"host":"api.example.com","path_template":"/v1/messages","methods":["POST"]}, … ] }  # >=1
 ```
-Validate: `destination` non-empty + used as the SINGLE key for both the vault
-record (`service` and `destination`) and the connection `destination` (keeps the
-resolver lookup key == consent/soul-authority key — the map's two-destination
-alignment). `auth_scheme` ∈ supported subset. `allowed_endpoints` normalized via
-the ledger's own `_parse_allowed_endpoints` (host lower-cased, path template +
-methods validated) — reject empty (SSRF boundary). Reject `oauth1a` (resolver
-returns one secret; 4-secret schemes unsupported).
+The handler names NO service — the owner supplies the host/path (a neutral example
+is shown above on purpose). Validate: `destination` non-empty + used as the SINGLE
+key for both the vault record (`service` and `destination`) and the connection
+`destination` (keeps the resolver lookup key == consent/soul-authority key — the
+map's two-destination alignment). `auth_scheme`, if present, must be `bearer`
+(Slice 1); anything else → `unsupported_auth_scheme` (`none`/`basic`/`header`/
+`oauth1a` deferred — the resolver returns one secret). `allowed_endpoints`
+normalized via the ledger's own `_parse_allowed_endpoints` (host lower-cased, path
+template + methods validated) — reject empty (SSRF boundary).
 
 ### Steps
 1. Vault deposit: `write_credential_vault(_universe_dir(uid),
@@ -48,17 +49,23 @@ returns one secret; 4-secret schemes unsupported).
    `http_grant_<32>` (mirror `cloud_connections._ids`).
 4. Idempotent create: `get_connection_resource` first; if None →
    `create_connection(connection_id, owner_user_id=actor, connection_class="http",
-   connection_type="http", auth_scheme, scopes=tuple(sorted(methods)),
-   provider="http", destination, credential_ref, allowed_endpoints)`; else if
-   owner/type/revoked mismatch → `{"error":"connection_conflict"}`.
+   connection_type="http", auth_scheme="bearer", scopes=("http",),
+   provider="http", destination, credential_ref, allowed_endpoints)`; else
+   conflict-check EVERY immutable field (owner, connection_type, connection_class,
+   provider, auth_scheme, scopes, destination, credential_ref, revoked_at, AND the
+   endpoint allow-list compared as `as_dict()`) → any mismatch, including a changed
+   endpoint list, returns `{"error":"connection_conflict"}` BEFORE the vault write.
 5. Idempotent grant: `get_grant` first; if None → `grant_connection(grant_id,
    connection_id, owner_user_id=actor, universe_id=uid,
    unprompted_action_cap=ActionCap("http_calls", <cap>, "requests"))`; else
    conflict-check.
-6. Return `{"status":"connected","connection_id","grant_id","destination",
-   "auth_scheme","allowed_endpoints":[…as_dict],"next":"grant effector consent
-   for <destination>, then build a node with effect authenticated_external_call"}`.
-   Never echo `credential_ref`/secret.
+6. Return `{"status":"provisioned","connection_id","grant_id","provider",
+   "destination","connection_class","auth_scheme" (read from the resource),
+   "allowed_endpoints":[…as_dict],"action_cap","next":[grant effector consent for
+   <destination>, enable the outbound flag, build a node with effect
+   authenticated_external_call]}`. Never echo `credential_ref`/secret. As-built
+   ordering: the full conflict-check runs BEFORE the vault deposit, so a hard
+   mismatch never rotates a live credential.
 
 ## Decisions / risk handling (from the substrate map)
 - **Two-destination alignment:** one `destination` value serves the vault key,

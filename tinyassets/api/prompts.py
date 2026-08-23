@@ -259,6 +259,12 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `read_graph target="automation" automation_id=...` |
    | Connect a GitHub destination    | `write_graph target="connection" operation="connect"` then |
    |                                | `operation="reconcile"` after OAuth consent |
+   | Connect an outbound channel    | `write_graph target="connection"`       |
+   | (any HTTPS API — user-built)   | `operation="connect_http"`; `payload_json` |
+   |                                | has `destination`, `secret` (bearer), and |
+   |                                | `allowed_endpoints:[{host,path_template,methods}]`; |
+   |                                | then grant effector consent + a node with |
+   |                                | effect `authenticated_external_call`    |
    | Bind requester-owned compute    | `write_graph target="automation" operation="bind_provider"` |
    |                                | with `payload_json={"provider":"codex"}` |
    | Inspect connections             | `read_graph target="connections"` |
