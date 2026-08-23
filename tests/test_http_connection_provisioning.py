@@ -1,0 +1,341 @@
+"""connect_http — provision a generic outbound http connection (Slice 1).
+
+Requirement source:
+``openspec/changes/provision-http-connection-channel/specs/outbound-connection-provisioning/spec.md``.
+
+Covers: owner (admin, not write) gate, the vault http deposit + connection +
+grant round-trip, endpoint SSRF pre-validation (nothing mutated on bad input),
+idempotency + secret rotation, cross-owner transfer refusal, response/log
+redaction, the write_graph dispatch, and the no-new-advertised-handle invariant.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+
+
+class _StaticAuthProvider(AuthProvider):
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "valid" else None
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return {"client_id": "test-client", **metadata}
+
+    def create_authorization(self, *a: Any, **k: Any) -> str:
+        return "test-code"
+
+    def exchange_code(self, *a: Any, **k: Any) -> dict[str, Any] | None:
+        return None
+
+
+def _login(user_id: str) -> None:
+    set_provider(
+        _StaticAuthProvider(
+            Identity(
+                user_id=user_id,
+                username=user_id,
+                capabilities=["tinyassets.universe.write"],
+            )
+        )
+    )
+    auth_middleware("valid")
+
+
+def _logout() -> None:
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth() -> Any:
+    _logout()
+    yield
+    _logout()
+
+
+@pytest.fixture
+def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = tmp_path / "data"
+    root.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    return root
+
+
+def _make_universe(base: Path, uid: str, *, admin: str = "", write: str = "") -> Path:
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = base / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    if admin:
+        grant_universe_access(
+            base, universe_id=uid, actor_id=admin, permission="admin", granted_by=admin
+        )
+    if write:
+        grant_universe_access(
+            base, universe_id=uid, actor_id=write, permission="write", granted_by=admin
+        )
+    return udir
+
+
+_SLACK_EP = [{"host": "slack.com", "path_template": "/api/chat.postMessage", "methods": ["POST"]}]
+
+
+def _connect(
+    uid: str,
+    *,
+    destination: str = "slack:acme",
+    secret: str = "xoxb-SECRET-token",
+    endpoints: Any = None,
+    auth_scheme: str | None = None,
+) -> dict[str, Any]:
+    from tinyassets.api.http_connection import connect_http
+
+    doc: dict[str, Any] = {
+        "destination": destination,
+        "secret": secret,
+        "allowed_endpoints": _SLACK_EP if endpoints is None else endpoints,
+    }
+    if auth_scheme is not None:
+        doc["auth_scheme"] = auth_scheme
+    return connect_http(universe_id=uid, payload=json.dumps(doc))
+
+
+def _ledger(base: Path, actor: str) -> Any:
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    return ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: actor
+    )
+
+
+def _http_records(udir: Path) -> list[dict[str, Any]]:
+    from tinyassets.credential_vault import load_credential_vault
+
+    return [r for r in load_credential_vault(udir) if r.get("credential_type") == "http"]
+
+
+# --------------------------------------------------------------------------- #
+# Positive round-trip.
+# --------------------------------------------------------------------------- #
+
+
+def test_owner_provisions_http_connection_round_trip(base: Path) -> None:
+    from tinyassets.api.http_connection import _ids
+
+    udir = _make_universe(base, "u-owner", admin="founder")
+    _login("founder")
+
+    result = _connect("u-owner")
+
+    assert result["status"] == "provisioned"
+    assert result["auth_scheme"] == "bearer"
+    assert result["destination"] == "slack:acme"
+    assert result["allowed_endpoints"][0]["host"] == "slack.com"
+    blob = json.dumps(result)
+    assert "xoxb-SECRET-token" not in blob
+    assert "vault://http" not in blob  # credential_ref never surfaced
+
+    # Vault: exactly one http record, keyed by destination, secret in `token`.
+    recs = _http_records(udir)
+    assert len(recs) == 1
+    assert recs[0]["destination"] == "slack:acme"
+    assert recs[0]["service"] == "slack:acme"
+    assert recs[0]["token"] == "xoxb-SECRET-token"
+
+    # Ledger: connection is http, endpoint stored, grant bound to the universe.
+    conn_id, grant_id = _ids(universe_id="u-owner", destination="slack:acme")
+    ledger = _ledger(base, "founder")
+    resource = ledger._get_connection_resource(conn_id)
+    assert resource is not None
+    assert resource.connection_type == "http"
+    assert resource.destination == "slack:acme"
+    assert resource.credential_ref == "vault://http/slack:acme"
+    assert resource.owner_user_id == "founder"
+    assert [e.host for e in resource.allowed_endpoints] == ["slack.com"]
+    grant = ledger.get_grant(grant_id)
+    assert grant is not None
+    assert grant.universe_id == "u-owner"
+    assert grant.connection_id == conn_id
+
+
+def test_provision_routes_through_write_graph(base: Path) -> None:
+    import importlib
+
+    from tinyassets import universe_server as us
+
+    importlib.reload(us)
+    try:
+        _make_universe(base, "u-route", admin="founder")
+        _login("founder")
+        raw = us.write_graph(
+            target="connection",
+            operation="connect_http",
+            graph_id="u-route",
+            payload_json=json.dumps(
+                {"destination": "slack:r", "secret": "xoxb-r", "allowed_endpoints": _SLACK_EP}
+            ),
+        )
+        payload = json.loads(raw)
+        assert payload["status"] == "provisioned"
+        assert payload["destination"] == "slack:r"
+    finally:
+        importlib.reload(us)
+
+
+# --------------------------------------------------------------------------- #
+# Auth gates.
+# --------------------------------------------------------------------------- #
+
+
+def test_anonymous_refused_before_any_write(base: Path) -> None:
+    udir = _make_universe(base, "u-anon", admin="founder")
+    result = _connect("u-anon")
+    assert result["error"] == "authentication_required"
+    assert _http_records(udir) == []
+    assert not (base / "outbound.db").exists()
+
+
+def test_write_collaborator_refused(base: Path) -> None:
+    udir = _make_universe(base, "u-collab", admin="founder", write="collab")
+    _login("collab")
+    result = _connect("u-collab")
+    assert result == {"error": "not_found", "resource": "connection"}
+    assert _http_records(udir) == []
+
+
+def test_foreign_universe_admin_refused(base: Path) -> None:
+    _make_universe(base, "u-a", admin="founder-a")
+    victim = _make_universe(base, "u-b", admin="founder-b")
+    _login("founder-a")  # admin of A, nothing on B
+    result = _connect("u-b")
+    assert result == {"error": "not_found", "resource": "connection"}
+    assert _http_records(victim) == []
+
+
+# --------------------------------------------------------------------------- #
+# Fail-closed input validation (nothing mutated).
+# --------------------------------------------------------------------------- #
+
+
+def test_bad_destination_grammar_rejected(base: Path) -> None:
+    udir = _make_universe(base, "u-dg", admin="founder")
+    _login("founder")
+    result = _connect("u-dg", destination="Bad Dest!/../x")
+    assert result["error"] == "connection_setup_invalid"
+    assert _http_records(udir) == []
+
+
+def test_empty_endpoints_rejected(base: Path) -> None:
+    udir = _make_universe(base, "u-ee", admin="founder")
+    _login("founder")
+    result = _connect("u-ee", endpoints=[])
+    assert result["error"] == "connection_setup_invalid"
+    assert _http_records(udir) == []
+
+
+def test_unsupported_auth_scheme_rejected(base: Path) -> None:
+    udir = _make_universe(base, "u-as", admin="founder")
+    _login("founder")
+    result = _connect("u-as", auth_scheme="oauth1a")
+    assert result["error"] == "unsupported_auth_scheme"
+    assert _http_records(udir) == []
+
+
+def test_ssrf_endpoint_rejected_nothing_mutated(base: Path) -> None:
+    """An IP-literal / metadata host is rejected by the endpoint validator BEFORE
+    the vault deposit — no credential and no connection are created."""
+    udir = _make_universe(base, "u-ssrf", admin="founder")
+    _login("founder")
+    result = _connect(
+        "u-ssrf",
+        endpoints=[{"host": "169.254.169.254", "path_template": "/latest", "methods": ["GET"]}],
+    )
+    assert result["error"] in ("endpoint_not_permitted", "connection_setup_invalid")
+    assert _http_records(udir) == []
+    assert not (base / "outbound.db").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Idempotency + rotation + conflict.
+# --------------------------------------------------------------------------- #
+
+
+def test_reprovision_is_idempotent_and_rotates_secret(base: Path) -> None:
+    udir = _make_universe(base, "u-idem", admin="founder")
+    _login("founder")
+
+    first = _connect("u-idem", secret="xoxb-v1")
+    second = _connect("u-idem", secret="xoxb-v2")
+
+    # Same deterministic ids (one connection per (universe, destination)).
+    assert first["connection_id"] == second["connection_id"]
+    assert first["grant_id"] == second["grant_id"]
+    # Exactly one http record; the secret was rotated to v2.
+    recs = _http_records(udir)
+    assert len(recs) == 1
+    assert recs[0]["token"] == "xoxb-v2"
+
+
+def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = _make_universe(base, "u-co", admin="founder")
+    grant_universe_access(
+        base, universe_id="u-co", actor_id="coadmin", permission="admin", granted_by="founder"
+    )
+    _login("founder")
+    assert _connect("u-co", secret="founder-secret")["status"] == "provisioned"
+
+    _login("coadmin")  # admin, but not the connection/credential owner
+    result = _connect("u-co", secret="coadmin-secret")
+    # Caught at the connection-ownership conflict BEFORE the vault is touched — a
+    # stronger guarantee than the vault's own ownership refusal: nothing mutated.
+    assert result["error"] == "connection_conflict"
+    recs = _http_records(udir)
+    assert len(recs) == 1
+    assert recs[0]["token"] == "founder-secret"
+
+
+# --------------------------------------------------------------------------- #
+# Redaction + no advertised handle.
+# --------------------------------------------------------------------------- #
+
+
+def test_response_and_logs_carry_no_secret(base: Path, caplog: pytest.LogCaptureFixture) -> None:
+    _make_universe(base, "u-clean", admin="founder")
+    _login("founder")
+    secret = "xoxb-SUPER-SECRET-do-not-echo"
+    with caplog.at_level("DEBUG"):
+        result = _connect("u-clean", secret=secret)
+    assert result["status"] == "provisioned"
+    assert secret not in json.dumps(result)
+    assert secret not in caplog.text
+
+
+def test_connect_http_adds_no_advertised_handle(base: Path) -> None:
+    import importlib
+
+    from scripts.mcp_public_canary import CANONICAL_HANDLES
+    from tinyassets import universe_server as us
+
+    importlib.reload(us)
+    try:
+        advertised = {t.name for t in asyncio.run(us.mcp.list_tools(run_middleware=True))}
+        assert advertised == set(CANONICAL_HANDLES)
+        assert "connect_http" not in advertised
+    finally:
+        importlib.reload(us)

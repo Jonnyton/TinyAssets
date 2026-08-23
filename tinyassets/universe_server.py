@@ -926,6 +926,19 @@ def write_graph(
                     payload=payload_json,
                 )
             )
+        if connection_operation == "connect_http":
+            # Owner-scoped provisioning of a generic outbound http connection so a
+            # universe can act on a channel (Slack, any HTTPS API). Its own
+            # owner-scoped handler; cloud_connections stays GitHub-only. Adds no
+            # advertised handle — the live tool catalog stays pinned.
+            from tinyassets.api.http_connection import connect_http
+
+            return json.dumps(
+                connect_http(
+                    universe_id=graph_id,
+                    payload=payload_json,
+                )
+            )
         return json.dumps(
             _cloud_connections_impl(
                 action=operation,
