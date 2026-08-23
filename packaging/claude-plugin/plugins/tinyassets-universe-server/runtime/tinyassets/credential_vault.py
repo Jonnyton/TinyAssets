@@ -585,6 +585,9 @@ def write_credential_vault(
     with provider_assignment_admission().exclusive(universe):
         conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
         try:
+            # The records THIS call is depositing (pre-merge). Ownership is claimed
+            # only for these — never for untouched records already in the vault.
+            incoming_records = _records_from_payload(credentials)
             _ensure_llm_deposit_owner_schema(conn)
             if owner:
                 existing = conn.execute(
@@ -602,40 +605,50 @@ def write_credential_vault(
                 # Fail-closed for LEGACY unowned http credentials. An http record
                 # deposited before http ownership was tracked (or via an owner-less
                 # path) has a vault record but NO owner row, so the universe-wide
-                # guard above cannot see an owner to compare — a second admin could
+                # guard above cannot see an owner to compare — a caller could
                 # otherwise overwrite the orphan and provision as themselves (Codex
                 # review). Refuse to overwrite an existing unowned http slot: it is
                 # unprovable whether the caller is the original owner, so recovering
                 # such a record needs a dedicated flow, never a silent owned rewrite.
-                owned_keys = {str(row[0]) for row in existing}
-                on_disk_http = {
+                # Scoped to deposits that actually TOUCH an http slot, so a non-http
+                # multi-record replace that recovers a malformed vault still works
+                # (it never reads the existing file).
+                incoming_http_services = {
                     service
-                    for record in load_credential_vault(universe)
+                    for record in incoming_records
                     if record.get("credential_type") == "http"
                     and (service := _service(record))
                 }
-                for record in _records_from_payload(credentials):
-                    if record.get("credential_type") != "http":
-                        continue
-                    service = _service(record)
-                    if (
+                if incoming_http_services:
+                    owned_keys = {str(row[0]) for row in existing}
+                    on_disk_http = {
                         service
-                        and service in on_disk_http
-                        and f"http:{service}" not in owned_keys
-                    ):
-                        raise PermissionError(
-                            "credential ownership transfer requires a dedicated flow"
-                        )
+                        for record in load_credential_vault(universe)
+                        if record.get("credential_type") == "http"
+                        and (service := _service(record))
+                    }
+                    for service in incoming_http_services:
+                        if (
+                            service in on_disk_http
+                            and f"http:{service}" not in owned_keys
+                        ):
+                            raise PermissionError(
+                                "credential ownership transfer requires a dedicated flow"
+                            )
 
             # Compute the final merged records + summary IN MEMORY. The vault file
             # is the LAST mutation (below), never written before the owner-row
             # commit, so a concurrent unlocked reader can never observe a
             # credential before its ownership row exists.
             final_records, summary = _prepare_credential_write(universe, credentials)
-            # Owner-row keys for every ownership-bearing record (llm_subscription
-            # claude/codex AND http — the latter closes the orphaned-credential
-            # hole). Drives both the prune (which rows survive) and the insert.
-            services = _ownership_service_keys(final_records)
+            # Owner-row keys: PRUNE against every ownership-bearing record that
+            # SURVIVES the merge (so a row for a vanished record is dropped), but
+            # CLAIM ownership only for the records this call actually deposits.
+            # Claiming against the whole merged vault would let an unrelated owned
+            # deposit silently seize a pre-existing unowned http record (Codex
+            # review — the LLM-deposit-first seizure).
+            final_owner_keys = _ownership_service_keys(final_records)
+            incoming_owner_keys = _ownership_service_keys(incoming_records)
 
             # Snapshot the prior owner rows so a (rare) file-replace failure AFTER
             # the DB commit can be compensated below.
@@ -650,14 +663,14 @@ def write_credential_vault(
 
             # 1. Owner-row DB transaction FIRST, and commit it.
             conn.execute("BEGIN IMMEDIATE")
-            placeholders = ",".join("?" for _ in services)
-            if services:
+            placeholders = ",".join("?" for _ in final_owner_keys)
+            if final_owner_keys:
                 conn.execute(
                     f"""
                     DELETE FROM llm_credential_deposit_owners
                      WHERE universe_id = ? AND service NOT IN ({placeholders})
                     """,
-                    (uid, *sorted(services)),
+                    (uid, *sorted(final_owner_keys)),
                 )
             else:
                 conn.execute(
@@ -665,7 +678,7 @@ def write_credential_vault(
                     (uid,),
                 )
             if owner:
-                for service_name in services:
+                for service_name in incoming_owner_keys:
                     conn.execute(
                         """
                         INSERT INTO llm_credential_deposit_owners (
