@@ -48,8 +48,18 @@ class ProviderAssignment:
 
 @dataclass(frozen=True, slots=True)
 class ServedProviderAuthority:
-    """Fresh, server-validated provider facts for one exact served call."""
+    """Fresh, server-validated provider facts for one exact served call.
 
+    ``authority_kind`` explicitly discriminates the credential model (Codex shape
+    review of serve-open-compute-provider): ``subscription_snapshot`` carries the
+    subscription custody tuple + a required ``credential_snapshot_dir``;
+    ``connection_grant`` carries an open provider's exact definition + grant identity
+    with ``credential_snapshot_dir=None`` (the credential lives in the connection grant,
+    resolved credential-blind at call time). The kind is NEVER inferred from a missing
+    snapshot — an absent subscription snapshot must fail closed, not silently become
+    open authority."""
+
+    authority_kind: str
     provider: str
     max_invocations: int
     request_max_invocations: int
@@ -66,7 +76,7 @@ class ServedProviderAuthority:
     credential_reference_generation: int
     credential_reference_digest: str
     credential_service: str
-    credential_snapshot_dir: Path = field(repr=False, compare=False)
+    credential_snapshot_dir: Path | None = field(repr=False, compare=False)
     request_capability: object = field(repr=False, compare=False)
 
 
@@ -1174,6 +1184,7 @@ def authorize_served_provider_call(
                     custody=custody,
                 )
                 authority = ServedProviderAuthority(
+                    authority_kind="subscription_snapshot",
                     provider=assignment.provider,
                     max_invocations=provider_binding.max_invocations,
                     request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,

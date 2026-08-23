@@ -1410,6 +1410,7 @@ def _claude_authority(tmp_path):
     from tinyassets.provider_assignment import ServedProviderAuthority
 
     return ServedProviderAuthority(
+        authority_kind="subscription_snapshot",
         provider="claude-code",
         max_invocations=10,
         request_max_invocations=2,
