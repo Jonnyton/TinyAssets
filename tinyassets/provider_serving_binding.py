@@ -47,8 +47,23 @@ _PROVIDER_SERVICE = {
 _SERVING_OPERATIONS = ("converse",)
 _SERVING_ROLES = ("writer",)
 _MAX_BINDING_INVOCATIONS = 10_000
-_MAX_TOKENS = 32_768
-_MAX_COST_MICROUNITS = 10_000_000
+# In-flight token / cost ceilings for a serving binding. These bound only
+# UNSETTLED (concurrent) reserved spend — a settled turn RELEASES (see
+# provider_assignment.reserve_served_provider_budget), so this is a CONCURRENCY
+# runaway guard, NOT a cumulative spend limit (the user's own deposited
+# subscription meters real spend upstream). The prior 32_768 was sized like a
+# spend cap and bricked at ~2 concurrent codex turns: a served turn reserves
+# `len(system+prompt bytes)` (a rebuilt persona/brain system prompt is ~15-30 KB)
+# plus its output, so the SECOND simultaneous turn across ANY surface got
+# `output_tokens < 1` -> "budget exhausted". That violated the core requirement
+# that one user drive their universe from many surfaces at once alongside
+# concurrent LangGraph automations (and many users doing the same, each on their
+# OWN per-binding ceiling). Sized now for realistic single-user concurrency
+# (~90 simultaneous worst-case ~45 KB turns); the true runaway backstops remain
+# the rolling per-hour invocation cap (_MAX_BINDING_INVOCATIONS) + the engine-run
+# rate limit (20/hr) + the user's metered subscription.
+_MAX_TOKENS = 4_000_000
+_MAX_COST_MICROUNITS = 400_000_000  # affordable = _MAX_COST/100 tokens, kept >= _MAX_TOKENS
 _BINDING_TTL = timedelta(days=30)
 _PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
 

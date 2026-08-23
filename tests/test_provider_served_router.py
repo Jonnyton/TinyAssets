@@ -327,6 +327,100 @@ def test_budget_reservation_revalidates_path_credential_at_moment_of_use(tmp_pat
         revoke_provider_request(capability)
 
 
+def test_many_concurrent_reservations_share_one_binding_without_bricking(tmp_path):
+    """One user driving many surfaces at once (plus automations) must not brick.
+
+    A served turn reserves ~len(system+prompt bytes) of in-flight budget; a
+    rebuilt persona/brain system prompt is ~15-30 KB. Ten simultaneous in-flight
+    reservations for the SAME binding (many surfaces + concurrent LangGraph
+    automations) must all be admitted under the concurrency-sized cap. The
+    in-flight cap is a runaway guard, not a spend limit, so legitimate
+    concurrency never trips it.
+    """
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_assignment import (
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    universe_dir, _serving, capability, context = _served_context(
+        tmp_path,
+        path_backed=True,
+    )
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            reservations = [
+                reserve_served_provider_budget(
+                    tmp_path,
+                    universe_dir=universe_dir,
+                    authority=authority,
+                    requested_output_tokens=4_000,
+                    estimated_input_tokens=20_000,
+                )
+                for _ in range(10)
+            ]
+            assert len(reservations) == 10
+            assert all(r.output_tokens >= 1 for r in reservations)
+    finally:
+        revoke_provider_request(capability)
+
+
+def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):
+    """Regression oracle: the pre-fix 32_768 cap bricked at ~2 concurrent turns.
+
+    A single ~20 KB system-prompt turn nearly fills 32_768; the SECOND
+    simultaneous in-flight turn across any surface got ``output_tokens < 1`` and
+    surfaced as "budget exhausted". This pins the root cause the raised cap fixes.
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_assignment import (
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    # Bake the OLD ceilings into the binding at creation time.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 32_768)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 10_000_000)
+    universe_dir, _serving, capability, context = _served_context(
+        tmp_path,
+        path_backed=True,
+    )
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            first = reserve_served_provider_budget(
+                tmp_path,
+                universe_dir=universe_dir,
+                authority=authority,
+                requested_output_tokens=4_000,
+                estimated_input_tokens=20_000,
+            )
+            assert first.output_tokens >= 1
+            with pytest.raises(ProviderAuthorityHeldError, match="budget"):
+                reserve_served_provider_budget(
+                    tmp_path,
+                    universe_dir=universe_dir,
+                    authority=authority,
+                    requested_output_tokens=4_000,
+                    estimated_input_tokens=20_000,
+                )
+    finally:
+        revoke_provider_request(capability)
+
+
 @pytest.mark.parametrize("operation", [None, "run_graph"])
 def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     tmp_path,
