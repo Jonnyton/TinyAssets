@@ -300,16 +300,16 @@ def bind_serving_provider(
             and current_binding is not None
             and current_binding.binding_digest == current_assignment.binding_digest
             and agent["configuration"].get("provider_ref") == serving_binding_id
-            # Do NOT replay a binding whose signed ceilings are BELOW current
-            # policy. A binding bound before the ceiling was sized for concurrency
-            # persists a stale-low max_tokens/max_cost; replaying it returns the
-            # stale authority forever. Instead, fall through to the transactional
-            # rebind, which advances the generation/digest and persists the current
-            # ceilings — healing the binding via a properly re-signed authority
-            # rather than an admission-time override that would bypass the
-            # digest-covered contract (Codex 2026-08-22).
-            and current_binding.max_tokens >= _MAX_TOKENS
-            and current_binding.max_cost_microunits >= _MAX_COST_MICROUNITS
+            # Replay ONLY when the signed ceilings EXACTLY match current policy.
+            # Any drift — a stale-low binding (bound before the ceiling was raised)
+            # OR a stale-high binding (policy since tightened) — must fall through
+            # to the transactional rebind, which advances the generation/digest and
+            # re-signs at the current ceiling. Exact equality (not >=) so a policy
+            # tightening actually reflows down, and a raise actually heals up, both
+            # via a re-signed authority — never an admission-time override that
+            # would bypass the digest-covered contract (Codex 2026-08-22).
+            and current_binding.max_tokens == _MAX_TOKENS
+            and current_binding.max_cost_microunits == _MAX_COST_MICROUNITS
         ):
             try:
                 with store.connection() as replay_conn:

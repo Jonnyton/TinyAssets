@@ -371,11 +371,12 @@ def test_many_concurrent_reservations_share_one_binding_without_bricking(tmp_pat
         revoke_provider_request(capability)
 
 
-def test_stale_binding_rebind_lifts_ceiling_without_replay(tmp_path, monkeypatch):
-    """A binding bound with a stale-low ceiling must be HEALED by a re-bind, not
-    replayed with the stale authority. The re-bind advances the generation and
-    persists the CURRENT ceiling, so the authority stays digest-covered — no
-    admission-time bypass (Codex 2026-08-22). This is the completing fix for the
+def test_stale_binding_rebind_advances_generation_and_reflows_ceiling(tmp_path, monkeypatch):
+    """A binding whose signed ceiling drifts from current policy must be HEALED by
+    a re-bind (advance generation + digest, re-sign at the current ceiling), not
+    replayed with the stale authority. Exact-equality gate: a raise heals UP and a
+    tightening reflows DOWN, both via a re-signed authority — never an
+    admission-time override (Codex 2026-08-22). Completing fix for the
     existing-binding case #2479's constant raise did not reach.
     """
     import tinyassets.provider_serving_binding as serving_binding
@@ -388,22 +389,45 @@ def test_stale_binding_rebind_lifts_ceiling_without_replay(tmp_path, monkeypatch
     universe_dir, serving, capability, _ctx = _served_context(tmp_path)
     revoke_provider_request(capability)
 
-    # Policy ceiling is now raised (as after #2479 deployed). A same-provider
-    # re-bind must NOT replay the stale binding — it re-signs at the new ceiling.
+    def _rebind(rev):
+        return bind_serving_provider(
+            base_path=tmp_path,
+            universe_dir=universe_dir,
+            owner_user_id="owner-1",
+            universe_id="u-owner",
+            agent_binding_id=serving["agent_binding_id"],
+            expected_revision=rev,
+            provider="codex",
+        )
+
+    # Same policy -> REPLAY (no generation change); capture the stale identity.
+    replay = _rebind(serving["revision"])
+    assert replay.get("replayed") is True
+    stale_gen = replay["provider_binding"]["generation"]
+    stale_digest = replay["provider_binding"]["binding_digest"]
+    rev = replay["agent_binding"]["revision"]
+
+    # Raise policy -> HEAL up: not replayed, generation advances, digest changes.
     monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 4_000_000)
     monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 400_000_000)
-    result = bind_serving_provider(
-        base_path=tmp_path,
-        universe_dir=universe_dir,
-        owner_user_id="owner-1",
-        universe_id="u-owner",
-        agent_binding_id=serving["agent_binding_id"],
-        expected_revision=serving["revision"],
-        provider="codex",
-    )
-    assert result.get("replayed") is not True  # healed, not a stale replay
-    assert result["provider_binding"]["max_tokens"] == 4_000_000
-    assert result["provider_binding"]["max_cost_microunits"] == 400_000_000
+    healed = _rebind(rev)
+    assert healed.get("replayed") is not True
+    assert healed["provider_binding"]["generation"] > stale_gen
+    assert healed["provider_binding"]["binding_digest"] != stale_digest
+    assert healed["provider_binding"]["max_tokens"] == 4_000_000
+    assert healed["provider_binding"]["max_cost_microunits"] == 400_000_000
+    healed_gen = healed["provider_binding"]["generation"]
+    rev = healed["agent_binding"]["revision"]
+
+    # Tighten policy -> also NOT replayed (exact-equality gate): ceiling reflows
+    # DOWN via a fresh re-signed generation, never a stale-high replay.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 1_000_000)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 100_000_000)
+    tightened = _rebind(rev)
+    assert tightened.get("replayed") is not True
+    assert tightened["provider_binding"]["generation"] > healed_gen
+    assert tightened["provider_binding"]["max_tokens"] == 1_000_000
+    assert tightened["provider_binding"]["max_cost_microunits"] == 100_000_000
 
 
 def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):

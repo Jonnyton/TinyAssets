@@ -28,11 +28,13 @@ so concurrent users do not contend at the budget layer.
 
 #### Scenario: A stale-low binding is healed by re-bind, not by an admission override
 
-- **GIVEN** a serving binding whose persisted (digest-covered) ceiling is below
-  current policy because it was bound before the ceiling was raised
+- **GIVEN** a serving binding whose persisted (digest-covered) ceiling DIFFERS
+  from current policy — stale-low (bound before a raise) or stale-high (policy
+  since tightened)
 - **WHEN** the binding owner re-binds the same provider
-- **THEN** the re-bind does NOT replay the stale binding; it advances the
-  generation/digest and persists the current ceiling, re-signing the authority
+- **THEN** the re-bind does NOT replay the stale binding (replay requires EXACT
+  policy equality); it advances the generation/digest and persists the current
+  ceiling, re-signing the authority — healing up or reflowing down as policy dictates
 - **AND** admission NEVER expands a reservation above the binding's own stored,
   digest-covered ceiling (no admission-time floor) — the authority contract holds
 
