@@ -19,6 +19,9 @@
   import { fmtDate, fmtRel } from '$lib/fmt';
 
   const MCP_URL = 'https://tinyassets.io/mcp';
+  // The hosted web app — the SAME universe you reach on the phone app and the
+  // desktop app; sign in as the same person and it's one continuous universe.
+  const APP_URL = 'https://tinyassets.io/mcp/app';
   let copied = $state(false);
   let copyTimer: number | null = null;
   async function copyUrl() {
@@ -131,7 +134,8 @@
         as an extension of the founder's will.
       </p>
       <div class="cover__actions">
-        <a class="btn btn--primary" href="/start">Put me to work →</a>
+        <a class="btn btn--primary" href={APP_URL}>Open the web app →</a>
+        <a class="btn btn--ghost" href="/start">Put me to work →</a>
         <a class="btn btn--ghost" href="https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/app-debug.apk">Get the Android app ↓</a>
         <button type="button" class="urlchip" onclick={copyUrl} aria-label="Copy the MCP URL">
           <code>{MCP_URL.replace('https://', '')}</code>
