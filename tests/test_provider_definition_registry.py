@@ -76,12 +76,28 @@ def test_deterministic_id_is_stable_across_universes_differs(base: Path) -> None
     assert a.id != b.id
 
 
-def test_owner_cannot_be_hijacked(base: Path) -> None:
-    _reg_http("u-own", owner="founder")
-    # A second principal registering the byte-identical descriptor hits the same
-    # deterministic id and is refused — cannot claim another owner's slot.
+def test_different_owners_get_separate_definitions_no_squat(base: Path) -> None:
+    # owner_user_id is part of the id material (Codex review): two owners registering
+    # the byte-identical descriptor get DISTINCT ids — no shared, predictable slot for
+    # one principal to pre-register and squat.
+    a = _reg_http("u-own", owner="founder")
+    b = _reg_http("u-own", owner="intruder")
+    assert a.id != b.id
+    assert {d.id for d in pd.list_definitions("u-own")} == {a.id, b.id}
+    assert pd.get_definition("u-own", a.id).owner_user_id == "founder"
+    assert pd.get_definition("u-own", b.id).owner_user_id == "intruder"
+
+
+def test_corrupt_store_raises_not_clobbers(base: Path) -> None:
+    d = _reg_http("u-corrupt")
+    store = base / "u-corrupt" / "provider_definitions.json"
+    store.write_text("{ not valid json", encoding="utf-8")
+    # A PRESENT-but-corrupt store must fail loud — never silently [] then overwrite,
+    # which would discard `d`.
     with pytest.raises(ProviderDefinitionError):
-        _reg_http("u-own", owner="intruder")
+        pd.list_definitions("u-corrupt")
+    with pytest.raises(ProviderDefinitionError):
+        _reg_http("u-corrupt")
 
 
 def test_owner_may_toggle_visibility_without_new_id(base: Path) -> None:

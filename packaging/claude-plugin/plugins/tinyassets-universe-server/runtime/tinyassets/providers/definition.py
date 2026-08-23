@@ -22,17 +22,21 @@ with NO cross-method fallback (Hard Rule #3 evolution):
   pointed at an arbitrary ``base_url``.
 
 The descriptor carries a ``ref`` (an indirection), never a secret: for
-``subscription_cli`` it is the provider name; for ``api_key_http`` it is the
-``connection_id`` (not secret — the secret lives in the vault behind the
-connection). A ``commons`` definition is a remixable SHAPE only: remixing never
-carries the original owner's ``ref`` or credential — the remixer supplies their own.
+``subscription_cli`` it is the provider name (``codex`` / ``claude-code``); for
+``api_key_http`` it is the ``grant_id`` of the ``ConnectionLedger`` grant that binds
+the connection to this universe (not secret — the grant is the authorization, and
+the credential lives in the vault behind the connection the grant points to). A
+``commons`` definition is a remixable SHAPE only: remixing never carries the original
+owner's ``ref`` or credential — the remixer supplies their own.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,12 +102,19 @@ def _now_iso() -> str:
 
 
 def _definition_id(
-    *, universe_id: str, access_method: str, protocol: str, ref: str, model: str
+    *, universe_id: str, owner_user_id: str, access_method: str, protocol: str,
+    ref: str, model: str
 ) -> str:
     """Deterministic server-issued id (never a user label). Length-prefixed
     canonical serialization so no two distinct descriptors collide, and identical
-    descriptors register idempotently to the same id."""
-    parts = (universe_id, access_method, protocol, ref, model)
+    descriptors register idempotently to the same id.
+
+    ``owner_user_id`` is part of the material (Codex review): otherwise the id is a
+    predictable function of shared inputs and a second principal in the same universe
+    could pre-register it and squat the slot. With the owner in the id, each owner has
+    their own id space — two owners registering the same descriptor get two distinct
+    definitions, never a shared slot to contend."""
+    parts = (universe_id, owner_user_id, access_method, protocol, ref, model)
     material = "\0".join(f"{len(p)}:{p}" for p in parts).encode()
     return f"provdef_{hashlib.sha256(material).hexdigest()[:32]}"
 
@@ -142,24 +153,47 @@ def _store_path(universe_id: str) -> Path:
 
 
 def _load(universe_id: str) -> list[dict[str, Any]]:
+    """Load the per-universe registry store.
+
+    An ABSENT store is an empty list (safe to create). A store that EXISTS but is
+    unreadable, corrupt, or the wrong shape RAISES (Codex review): returning ``[]``
+    there would let the next registration overwrite the file and silently discard
+    every prior definition. Fail loud, never clobber (Hard Rule #8)."""
     path = _store_path(universe_id)
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
+    if not path.exists():
         return []
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProviderDefinitionError(
+            f"provider definitions store is present but unreadable/corrupt: {exc}"
+        ) from exc
+    if not isinstance(data, list):
+        raise ProviderDefinitionError(
+            "provider definitions store is malformed (expected a JSON list)"
+        )
+    return data
 
 
 def _write(universe_id: str, rows: list[dict[str, Any]]) -> None:
     path = _store_path(universe_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    # A UNIQUE temp file per write + atomic replace (Codex review): a fixed temp name
+    # let two concurrent writers clobber each other mid-replace. NOTE (MVP-deferred,
+    # matching the single-founder concurrency-edge law): the load->append->write cycle
+    # is not yet locked, so two truly-concurrent registrations could still lose a row;
+    # a per-universe lock is the follow-up when multi-writer concurrency is in scope.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".provdef-", suffix=".json.tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(rows, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def register_definition(
@@ -191,6 +225,7 @@ def register_definition(
     )
     definition_id = _definition_id(
         universe_id=universe_id,
+        owner_user_id=owner_user_id,
         access_method=access_method,
         protocol=protocol,
         ref=ref,

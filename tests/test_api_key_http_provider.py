@@ -229,6 +229,15 @@ def test_error_envelope_without_status_fails_loud(base: Path) -> None:
         _run(provider, base / "u-x")
 
 
+def test_non_integer_status_rejected(base: Path) -> None:
+    # A malformed float status must NOT be truncated to 200 and pass as success.
+    _seed(base)
+    proxy = _FakeProxy({"status": 200.9, "body": '{"choices":[{"message":{"content":"x"}}]}'})
+    provider = ApiKeyHttpProvider(_definition(), proxy_override=proxy)
+    with pytest.raises(ProviderUnavailableError):
+        _run(provider, base / "u-x")
+
+
 # --------------------------------------------------------------------------- #
 # Constructor validation.
 # --------------------------------------------------------------------------- #

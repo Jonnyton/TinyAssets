@@ -63,10 +63,16 @@ def _single_host(view: Any) -> str:
 
 
 def _coerce_status(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    # A well-formed proxy envelope carries an INT status. Reject floats/bools/
+    # non-digit strings (Codex review): int(200.9) == 200 would let a malformed
+    # envelope pass as success. bool is an int subclass, so exclude it explicitly.
+    if isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
 
 
 class ApiKeyHttpProvider(BaseProvider):

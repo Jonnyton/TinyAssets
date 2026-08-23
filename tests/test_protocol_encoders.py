@@ -81,6 +81,7 @@ def test_openai_decode_missing_usage_is_none() -> None:
         {},
         {"choices": []},
         {"choices": [{"message": {"content": ""}}]},  # empty content = fail loud
+        {"choices": [{"message": {"content": "   \n\t "}}]},  # whitespace-only = fail loud
         {"choices": [{"message": {}}]},
         {"error": {"message": "rate limited"}},
     ],
@@ -126,6 +127,7 @@ def test_anthropic_decode_joins_text_blocks() -> None:
         {"type": "error", "error": {"message": "overloaded"}},
         {"content": []},
         {"content": [{"type": "tool_use"}]},  # no text block
+        {"content": [{"type": "text", "text": "   "}]},  # whitespace-only = fail loud
         "nope",
     ],
 )

@@ -16,7 +16,12 @@ These functions are DELIBERATELY pure and credential-free: they build the reques
 BODY + PATH only. The bearer credential is applied INSIDE the credential-blind
 broker worker (design §3 / Codex: never a vendor SDK on an arbitrary ``base_url``),
 so nothing here ever sees or embeds a secret. Fail loud on a malformed response —
-never fabricate an empty completion (Hard Rule #8).
+never fabricate an empty (or whitespace-only) completion (Hard Rule #8).
+
+The fail-loud contract governs the COMPLETION TEXT. Token ``usage`` is best-effort
+OPTIONAL telemetry: absent or malformed usage fields decode to ``None`` (unknown) —
+deliberately not a completion-shape failure, since many providers omit or vary usage
+and a valid reply must not be discarded over metadata.
 """
 
 from __future__ import annotations
@@ -79,7 +84,9 @@ def decode_openai_chat(response_body: Any) -> tuple[str, int | None, int | None]
         raise ProtocolDecodeError("openai_chat response has no choices")
     message = choices[0].get("message") if isinstance(choices[0], dict) else None
     text = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(text, str) or not text:
+    # Whitespace-only content is a semantically empty reply — fail loud, don't pass it
+    # off as a real completion (Codex review; Hard Rule #8).
+    if not isinstance(text, str) or not text.strip():
         raise ProtocolDecodeError("openai_chat response has no assistant content")
     usage = response_body.get("usage")
     in_tok = out_tok = None
@@ -132,7 +139,7 @@ def decode_anthropic_messages(response_body: Any) -> tuple[str, int | None, int 
         and isinstance(block.get("text"), str)
     ]
     text = "".join(p for p in text_parts if p)
-    if not text:
+    if not text.strip():  # whitespace-only is a semantically empty reply — fail loud
         raise ProtocolDecodeError("anthropic_messages response has no text block")
     usage = response_body.get("usage")
     in_tok = out_tok = None
