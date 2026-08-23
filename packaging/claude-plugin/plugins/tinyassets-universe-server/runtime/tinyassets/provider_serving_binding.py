@@ -11,7 +11,9 @@ from pathlib import Path
 from tinyassets.config import write_provider_assignment_projection
 from tinyassets.credential_vault import (
     LLMCredentialCustodyReference,
+    adopt_connection_grant_custody,
     adopt_llm_subscription_custody,
+    current_connection_grant_custody,
     current_llm_subscription_custody,
 )
 from tinyassets.custom_agents import (
@@ -189,6 +191,59 @@ def _write_failed_assignment(
         pass
 
 
+def _is_open_provider(name: str) -> bool:
+    return name.startswith("api_key_http:")
+
+
+def _open_serving_context(
+    base: Path, universe_id: str, owner_user_id: str, definition_id: str
+) -> tuple[str, str, str, str]:
+    """Resolve + validate an open api_key_http provider for serving.
+
+    Returns ``(provider_name, grant_id, connection_id, credential_ref)`` or raises.
+    The connection grant MUST be owned by the caller + bound to this universe + not
+    revoked — the bind-time isolation gate (authorize re-checks it at call time)."""
+    from tinyassets.providers.definition import get_definition
+    from tinyassets.providers.provider_resolver import provider_for_definition
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    definition = get_definition(universe_id, definition_id)
+    if definition is None or definition.access_method != "api_key_http":
+        raise ValueError(
+            "provider must be claude-code, codex, or a registered api_key_http "
+            "definition_id"
+        )
+    provider_name = provider_for_definition(definition).name
+    ledger = ConnectionLedger(base / "outbound.db")
+    grant = ledger.get_grant(definition.ref)
+    if grant is None or getattr(grant, "revoked_at", None) is not None:
+        raise PermissionError("open provider connection grant is absent or revoked")
+    if grant.owner_user_id != owner_user_id or grant.universe_id != universe_id:
+        raise PermissionError(
+            "open provider grant is not owned by the caller / bound to this universe"
+        )
+    resource = ledger._get_connection_resource(grant.connection_id)
+    if resource is None:
+        raise PermissionError("open provider connection resource is absent")
+    return provider_name, grant.grant_id, grant.connection_id, resource.credential_ref
+
+
+def _open_connection_id(base: Path, universe_id: str, provider_name: str) -> str:
+    """The connection_id backing an open serving provider name, for custody re-reads
+    that only have the provider name (validated fresh, so a revoked grant fails)."""
+    from tinyassets.providers.definition import get_definition
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    def_id = provider_name.split("api_key_http:", 1)[-1]
+    definition = get_definition(universe_id, def_id)
+    if definition is None or definition.access_method != "api_key_http":
+        raise PermissionError("open provider definition is absent")
+    grant = ConnectionLedger(base / "outbound.db").get_grant(definition.ref)
+    if grant is None or getattr(grant, "revoked_at", None) is not None:
+        raise PermissionError("open provider connection grant is absent or revoked")
+    return grant.connection_id
+
+
 def bind_serving_provider(
     *,
     base_path: str | Path,
@@ -206,8 +261,17 @@ def bind_serving_provider(
     uid = universe_id.strip()
     binding_id = agent_binding_id.strip()
     selected = provider.strip()
+    # open_grant carries (grant_id, connection_id, credential_ref) for an open
+    # api_key_http provider; None for a subscription-CLI provider. When set, the
+    # custody source below switches to the secret-free connection-grant custody and
+    # `selected` becomes the resolved executor name (api_key_http:<def-id>).
+    open_grant: tuple[str, str, str] | None = None
     if selected not in _PROVIDER_SERVICE:
-        raise ValueError("provider must be claude-code or codex")
+        provider_name, grant_id, connection_id, credential_ref = _open_serving_context(
+            base, uid, owner, selected
+        )
+        selected = provider_name
+        open_grant = (grant_id, connection_id, credential_ref)
     if selected == "claude-code":
         # claude-code serving is HELD BY DEFAULT. The OpenSpec design
         # (byo-llm-connect-flow/design.md §"Claude requester-local readiness")
@@ -344,13 +408,23 @@ def bind_serving_provider(
             # point cannot resurrect the previous assignment.
             with store.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
-                custody = adopt_llm_subscription_custody(
-                    conn,
-                    universe_dir=universe,
-                    owner_user_id=owner,
-                    universe_id=uid,
-                    service=_PROVIDER_SERVICE[selected],
-                )
+                if open_grant is not None:
+                    custody = adopt_connection_grant_custody(
+                        conn,
+                        owner_user_id=owner,
+                        universe_id=uid,
+                        grant_id=open_grant[0],
+                        connection_id=open_grant[1],
+                        credential_ref=open_grant[2],
+                    )
+                else:
+                    custody = adopt_llm_subscription_custody(
+                        conn,
+                        universe_dir=universe,
+                        owner_user_id=owner,
+                        universe_id=uid,
+                        service=_PROVIDER_SERVICE[selected],
+                    )
                 pending = _assignment(
                     owner_user_id=owner,
                     universe_id=uid,
@@ -373,13 +447,21 @@ def bind_serving_provider(
 
             with store.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
-                custody = current_llm_subscription_custody(
-                    conn,
-                    universe_dir=universe,
-                    owner_user_id=owner,
-                    universe_id=uid,
-                    service=_PROVIDER_SERVICE[selected],
-                )
+                if open_grant is not None:
+                    custody = current_connection_grant_custody(
+                        conn,
+                        owner_user_id=owner,
+                        universe_id=uid,
+                        connection_id=open_grant[1],
+                    )
+                else:
+                    custody = current_llm_subscription_custody(
+                        conn,
+                        universe_dir=universe,
+                        owner_user_id=owner,
+                        universe_id=uid,
+                        service=_PROVIDER_SERVICE[selected],
+                    )
                 if custody is None:
                     raise PermissionError("credential custody changed during assignment")
                 seed = ProviderWorkBindingSeed(
@@ -506,13 +588,23 @@ def _current_serving_authority(
         role="writer",
     ):
         raise PermissionError("connect your provider before enabling serving")
-    custody = current_llm_subscription_custody(
-        conn,
-        universe_dir=universe_dir,
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        service=_PROVIDER_SERVICE[assignment.provider],
-    )
+    if _is_open_provider(assignment.provider):
+        custody = current_connection_grant_custody(
+            conn,
+            owner_user_id=owner_user_id,
+            universe_id=universe_id,
+            connection_id=_open_connection_id(
+                Path(universe_dir).parent, universe_id, assignment.provider
+            ),
+        )
+    else:
+        custody = current_llm_subscription_custody(
+            conn,
+            universe_dir=universe_dir,
+            owner_user_id=owner_user_id,
+            universe_id=universe_id,
+            service=_PROVIDER_SERVICE[assignment.provider],
+        )
     if custody is None or (
         custody.reference_id != assignment.credential_reference_id
         or custody.generation != assignment.credential_reference_generation
