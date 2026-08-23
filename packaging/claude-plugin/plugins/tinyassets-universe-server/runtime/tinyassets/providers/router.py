@@ -61,6 +61,18 @@ _CONNECT_PROVIDER_MESSAGE = (
     "borrow platform credentials or start a metered trial."
 )
 
+# Per-call served output reservation when the caller sets no explicit max_tokens
+# (the production `_sandboxed_config` converse path leaves it None). This MUST be
+# decoupled from the binding's aggregate in-flight ceiling
+# (ServedProviderAuthority.max_tokens): substituting the whole ceiling made each
+# turn reserve the ENTIRE budget, so the second concurrent turn always bricked
+# regardless of how high the ceiling was raised (Codex 2026-08-22). A bounded
+# per-call reservation lets many concurrent turns share the ceiling. It is a
+# reservation estimate, not a hard generation cap (the CLI subprocess is not
+# passed a token limit — see finalize_served_provider_budget), so it only needs
+# to be generous for one reply while small relative to the aggregate ceiling.
+_SERVED_PER_CALL_MAX_TOKENS = 65_536
+
 
 def _provider_invocation_carrier(
     universe_context: UniverseContext | None,
@@ -490,7 +502,16 @@ class ProviderRouter:
             if served_authority.max_cost_microunits < 1:
                 raise PermissionError("served provider authority has no cost budget")
             if cfg.max_tokens is None:
-                cfg = replace(cfg, max_tokens=served_authority.max_tokens)
+                # Reserve a BOUNDED per-call output, not the whole aggregate
+                # ceiling — otherwise the first turn reserves the entire budget
+                # and the second concurrent turn bricks (Codex 2026-08-22). Cap
+                # to the ceiling so a small binding still validates.
+                cfg = replace(
+                    cfg,
+                    max_tokens=min(
+                        served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS
+                    ),
+                )
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)

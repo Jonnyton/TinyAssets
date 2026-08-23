@@ -327,6 +327,222 @@ def test_budget_reservation_revalidates_path_credential_at_moment_of_use(tmp_pat
         revoke_provider_request(capability)
 
 
+def test_many_concurrent_reservations_share_one_binding_without_bricking(tmp_path):
+    """One user driving many surfaces at once (plus automations) must not brick.
+
+    A served turn reserves ~len(system+prompt bytes) of in-flight budget; a
+    rebuilt persona/brain system prompt is ~15-30 KB. Ten simultaneous in-flight
+    reservations for the SAME binding (many surfaces + concurrent LangGraph
+    automations) must all be admitted under the concurrency-sized cap. The
+    in-flight cap is a runaway guard, not a spend limit, so legitimate
+    concurrency never trips it.
+    """
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.provider_assignment import (
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    universe_dir, _serving, capability, context = _served_context(
+        tmp_path,
+        path_backed=True,
+    )
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            reservations = [
+                reserve_served_provider_budget(
+                    tmp_path,
+                    universe_dir=universe_dir,
+                    authority=authority,
+                    requested_output_tokens=4_000,
+                    estimated_input_tokens=20_000,
+                )
+                for _ in range(10)
+            ]
+            assert len(reservations) == 10
+            assert all(r.output_tokens >= 1 for r in reservations)
+    finally:
+        revoke_provider_request(capability)
+
+
+def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):
+    """Regression oracle: the pre-fix 32_768 cap bricked at ~2 concurrent turns.
+
+    A single ~20 KB system-prompt turn nearly fills 32_768; the SECOND
+    simultaneous in-flight turn across any surface got ``output_tokens < 1`` and
+    surfaced as "budget exhausted". This pins the root cause the raised cap fixes.
+    """
+    import tinyassets.provider_serving_binding as serving_binding
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_assignment import (
+        authorize_served_provider_call,
+        reserve_served_provider_budget,
+    )
+
+    # Bake the OLD ceilings into the binding at creation time.
+    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 32_768)
+    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 10_000_000)
+    universe_dir, _serving, capability, context = _served_context(
+        tmp_path,
+        path_backed=True,
+    )
+    try:
+        with authorize_served_provider_call(
+            tmp_path,
+            universe_dir=universe_dir,
+            request_carrier=context.provider_request,
+            role="writer",
+            operation="converse",
+        ) as authority:
+            first = reserve_served_provider_budget(
+                tmp_path,
+                universe_dir=universe_dir,
+                authority=authority,
+                requested_output_tokens=4_000,
+                estimated_input_tokens=20_000,
+            )
+            assert first.output_tokens >= 1
+            with pytest.raises(ProviderAuthorityHeldError, match="budget"):
+                reserve_served_provider_budget(
+                    tmp_path,
+                    universe_dir=universe_dir,
+                    authority=authority,
+                    requested_output_tokens=4_000,
+                    estimated_input_tokens=20_000,
+                )
+    finally:
+        revoke_provider_request(capability)
+
+
+def test_served_none_max_tokens_reserves_bounded_per_call_not_whole_ceiling(tmp_path):
+    """Production converse path leaves max_tokens=None. The router must reserve a
+    BOUNDED per-call output, not the entire binding ceiling — else the first turn
+    reserves the whole budget and the second concurrent turn bricks regardless of
+    ceiling size (Codex 2026-08-22, the real production-path defect)."""
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers.router import (
+        _SERVED_PER_CALL_MAX_TOKENS,
+        ProviderRouter,
+    )
+
+    seen: dict[str, object] = {}
+
+    class _Rec(_RecordingProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            seen["max_tokens"] = config.max_tokens
+            return await super().complete(
+                prompt, system, config, universe_dir=universe_dir
+            )
+
+    _, _, capability, context = _served_context(tmp_path)
+    router = ProviderRouter({"codex": _Rec("codex")})
+    try:
+        asyncio.run(
+            router.call(
+                "writer", "hi", "sys",
+                config=ModelConfig(max_tokens=None),
+                operation="converse",
+                universe_context=context,
+            )
+        )
+    finally:
+        revoke_provider_request(capability)
+    # The per-call reservation is the bounded default, NOT the multi-million
+    # aggregate in-flight ceiling.
+    assert seen["max_tokens"] == _SERVED_PER_CALL_MAX_TOKENS
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows admission uses exclusive msvcrt file locks that serialize "
+    "even shared readers, so two same-universe calls cannot overlap in-flight "
+    "here; concurrent readers (fcntl LOCK_SH) run on the Linux prod/CI host, "
+    "which is where the concurrency budget brick actually occurs.",
+)
+def test_two_concurrent_served_none_max_tokens_calls_both_reach_provider(tmp_path):
+    """Two overlapping served turns on the production max_tokens=None path, the
+    first held in flight while the second reserves, must BOTH be admitted at
+    budget reservation and reach the provider — the concurrency brick the founder
+    hit. Pre-fix the first turn reserved the whole ceiling and the second got
+    'Provider authority budget is exhausted'.
+
+    Scope: this proves BUDGET ADMISSION under concurrency (this PR's fix). The
+    separate process-wide provider worker pool (ProviderRouter, 8 workers) is the
+    provider-execution concurrency control and merely queues excess turns; it is
+    not what bricked. Each worker claims and revokes its OWN request capability
+    in-thread (contextvars are per-thread), so the request-capability ContextVar
+    is never contaminated across threads or leaked into later tests.
+    """
+    import threading
+
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
+
+    both_in = threading.Event()
+    lock = threading.Lock()
+
+    class _Blocking(_RecordingProvider):
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            with lock:
+                self.calls += 1
+                n = self.calls
+            if n >= 2:
+                both_in.set()  # the second turn was admitted while the first waits
+            if not both_in.wait(timeout=5):
+                raise AssertionError(
+                    "second concurrent served turn was never admitted while the "
+                    "first was in flight"
+                )
+            return ProviderResponse(
+                text="ok", provider=self.name, model="f",
+                family=self.family, latency_ms=1.0,
+            )
+
+    # Set up the shared serving binding, then revoke the setup's main-thread
+    # capability immediately so only the per-worker in-thread capabilities are
+    # ever live (no ContextVar leak into later tests).
+    universe_dir, serving, setup_cap, _ = _served_context(tmp_path)
+    revoke_provider_request(setup_cap)
+    provider = _Blocking("codex")
+    router = ProviderRouter({"codex": provider})
+    results: dict[str, object] = {}
+
+    def worker(key, request_id):
+        cap, ctx = _fresh_served_request(
+            universe_dir, serving, request_id=request_id
+        )
+        try:
+            results[key] = asyncio.run(
+                router.call(
+                    "writer", key, "s", config=ModelConfig(max_tokens=None),
+                    operation="converse", universe_context=ctx,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced via assertion below
+            results[key] = exc
+        finally:
+            revoke_provider_request(cap)  # in-thread: no ContextVar contamination
+
+    t1 = threading.Thread(target=worker, args=("a", "req-a"))
+    t2 = threading.Thread(target=worker, args=("b", "req-b"))
+    t1.start()
+    t2.start()
+    t1.join(10)
+    t2.join(10)
+    assert provider.calls == 2, "both turns must reach the provider"
+    assert not isinstance(results.get("a"), Exception), results.get("a")
+    assert not isinstance(results.get("b"), Exception), results.get("b")
+    assert results["a"].text == "ok" and results["b"].text == "ok"
+
+
 @pytest.mark.parametrize("operation", [None, "run_graph"])
 def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     tmp_path,
