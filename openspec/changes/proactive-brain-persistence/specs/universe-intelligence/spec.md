@@ -28,5 +28,6 @@ re-asking what it has been told.
 
 - **GIVEN** a non-founder (lower-tier) conversation turn
 - **WHEN** the reply prompt is assembled
-- **THEN** it contains no brain-write instruction, and no facts from the visitor
-  are persisted
+- **THEN** it contains no brain-write instruction, so this change introduces no
+  proactive `write_brain` persistence for the visitor (the separate post-hoc
+  extractor is out of scope for this change)
