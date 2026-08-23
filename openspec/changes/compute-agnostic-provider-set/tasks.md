@@ -83,16 +83,25 @@ task-5 migration, sequenced after the open path is proven.
       target=connection). Registration-only, custody-clean; api_key_http refs a granted
       http connection (validated bound+owned), subscription_cli refs codex/claude-code.
       `tinyassets/api/compute_connection.py` + 11 tests; no advertised-handle regression.
-- [ ] 3.1c Node-execution wiring: TWO parts — (a) register the universe's open providers
-      at a universe-bound call [additive hook, ready], and (b) make selection HONOR the
-      open provider. BLOCKER for (b): `call_with_policy` short-circuits to role-based
-      `call()` when a universe_context is present (router.py:1024), IGNORING the per-node
-      policy; and `set_engine`/`bind_serving_provider` accept only codex/claude-code
-      (provider_serving_binding.py:209). So an open provider registers but nothing selects
-      it. (b) is an AUTHORITY-OWNED serving-path change (constrain-set-engine-provider-
-      authority owns allowed_providers; user-assigned-llm-policy owns per-node selection) —
-      careful, FULL-suite + Codex gated. Do NOT add the register-hook alone (dead code
-      until (b) lands). This is the security-critical serving change, done last + reviewed.
+- [x] 3.1c Routing building blocks (non-authority path): `_apply_open_preference`
+      (prepends a registered open provider to the chain), the register-hook at both call
+      chokepoints, and the set_engine `open_provider` mode. `router.py`/`call.py`/
+      `api/universe.py` + 7 tests; FULL suite 1480 passed, zero new regressions.
+- [ ] 3.1d LAST MILE — generalize the AUTHORITY grant to carry an open provider. Both
+      universe paths route via `served_authority.provider` (router.py:526) /
+      `invocation_carrier.provider` (line 541), set before the preference logic — so 3.1c
+      does not reach them. `authorize_served_provider_call` (provider_assignment.py:1033)
+      snapshots the subscription credential (CLI model); `ServedProviderAuthority` carries
+      `credential_snapshot_dir`. api_key_http has no subscription snapshot (credential is in
+      the connection grant, resolved by ApiKeyHttpProvider via universe_dir). Generalize
+      `ServedProviderAuthority` + `authorize_served_provider_call` +
+      `reserve_served_provider_budget` to a per-access-method credential model (CLI-snapshot
+      for subscription_cli; connection-grant/no-snapshot for api_key_http) + make
+      `bind_serving_provider` accept an open-provider def-id. AUTHORITY-OWNED
+      (constrain-set-engine-provider-authority) + security-critical (botched → breaks ALL
+      serving) → careful, FULL-suite + Codex gated, own focused pass. NOTE: the interactive
+      TOOL-USING agent on api_key_http additionally needs the agentic-over-API harness; the
+      single-completion converse turn works once this authority change lands.
 - [ ] 3.2 Preserve fail-loud, bounded cooldown, hard-writer-pin, per-universe privacy
       allowlist; privacy ceiling DOMINATES capability. Mutation-probe tests. Codex gate.
 
