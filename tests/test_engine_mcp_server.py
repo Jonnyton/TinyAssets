@@ -1027,3 +1027,18 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-intruder"}))
     # The grant is owned by owner-akh, not intruder-akh -> uniform not_found.
     assert _cc("grant_foreign_owner").get("error") == "not_found"
+
+
+def test_connect_compute_is_exposed_in_both_provider_allowlists():
+    """The server handler is dark unless the provider enabled-tools allowlists list
+    it (live 2026-08-23: served agent got tool_search "Found 0 tools" because it was
+    missing). Guard both served paths so it cannot silently drop out again."""
+    from tinyassets.providers.codex_provider import _ENGINE_MCP_ENABLED_TOOLS
+    from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED, _ENGINE_MCP_TOOLS
+
+    assert "connect_compute" in _ENGINE_MCP_ENABLED_TOOLS  # codex served path
+    assert "connect_compute" in _ENGINE_MCP_TOOLS  # claude served path
+    assert "mcp__tinyassets__connect_compute" in _ENGINE_MCP_ALLOWED
+    # And the server actually registers a handler by that name (exposure is real).
+    from tinyassets import engine_mcp_server as s
+    assert callable(getattr(s, "connect_compute", None))

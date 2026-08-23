@@ -220,6 +220,15 @@ _ENGINE_MCP_ENABLED_TOOLS = (
     "read_commons_shape",
     "read_brain",
     "write_brain",
+    # connect_compute (slice 4): the served agent can REGISTER a compute provider —
+    # the same self-serve primitive the browser connector has. SAFE to include here
+    # unlike remix_shape/run_graph (excluded above for the unsanitized cross-universe
+    # invoke path): connect_compute only REGISTERS a candidate descriptor — no
+    # execution, no cross-universe reach — and is owner-gated (admin ACL) +
+    # graph-pinned + secret-free + connection-isolated (Codex-approved). Without this
+    # a live webapp ui-test 2026-08-23 showed the served agent report `tool_search`
+    # "Found 0 tools" for compute registration though the handler shipped in bce0f188.
+    "connect_compute",
 )
 
 #: Force the served CWD project untrusted so codex never loads a project-level

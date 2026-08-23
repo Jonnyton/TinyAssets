@@ -157,6 +157,12 @@ _ENGINE_MCP_TOOLS = (
     "read_commons_shape",
     "read_brain",
     "write_brain",
+    # connect_compute (slice 4): register a compute provider from the served surface
+    # — the same primitive the browser connector has. Candidate-only registration (no
+    # execution, no cross-universe reach), owner-gated + graph-pinned + secret-free
+    # (Codex-approved), so it is safe alongside the read/brain handles even though
+    # remix_shape stays excluded for its unsanitized cross-author invoke path.
+    "connect_compute",
 )
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
