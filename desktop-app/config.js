@@ -10,10 +10,25 @@ const APP_URL = process.env.TINYASSETS_APP_URL || 'https://tinyassets.io/mcp/app
 
 // Hosts the window may navigate to in-app. Anything else opens in the system
 // browser. tinyassets.io serves the SPA + /mcp; *.authkit.app is WorkOS's hosted
-// sign-in page. Mirrors the Capacitor allowNavigation list.
+// sign-in page. The identity-provider domains below MUST stay in-window too: the
+// WorkOS "Continue with Google/…" step redirects the top-level frame to the IDP,
+// and if the IDP host isn't allow-listed the nav handler kicks it to the system
+// browser mid-redirect — which mangles the OAuth request (Google 500) and lands
+// the session in the wrong browser. Keeping the IDP in-window lets the full
+// round-trip complete and set the app's own cookie. Mirrors the Capacitor
+// allowNavigation list + the IDPs WorkOS AuthKit federates to.
 const ALLOWED_HOSTS = [
   'tinyassets.io',
   'authkit.app', // matched as a suffix, covers *.authkit.app
+  // OAuth identity providers (federated by WorkOS AuthKit):
+  'accounts.google.com',
+  'accounts.youtube.com', // Google OAuth CheckConnection iframe/redirect
+  'gstatic.com', // Google sign-in static assets
+  'googleusercontent.com', // Google avatar/asset host
+  'login.microsoftonline.com',
+  'login.live.com',
+  'github.com',
+  'appleid.apple.com',
 ];
 
 const BACKGROUND_COLOR = '#0b0b0f';

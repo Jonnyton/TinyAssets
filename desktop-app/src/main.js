@@ -63,7 +63,11 @@ function createWindow() {
   const loadingPage = path.join(__dirname, 'loading.html');
 
   function loadApp() {
+    // Guard: the window can be closed/destroyed before this async step runs
+    // (e.g. a fast quit), which otherwise throws "Object has been destroyed".
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.loadURL(APP_URL).catch(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
       mainWindow.loadFile(loadingPage, { query: { offline: '1' } });
     });
   }
