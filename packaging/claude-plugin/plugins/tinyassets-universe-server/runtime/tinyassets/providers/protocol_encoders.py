@@ -157,3 +157,22 @@ ENCODERS = {
     "openai_chat": (encode_openai_chat, decode_openai_chat),
     "anthropic_messages": (encode_anthropic_messages, decode_anthropic_messages),
 }
+
+#: The Anthropic Messages API REQUIRES an ``anthropic-version`` request header
+#: (independent of the api key). Pinned to the stable GA version.
+ANTHROPIC_VERSION = "2023-06-01"
+
+#: Protocol -> static (credential-free) request headers the executor must send on
+#: every call, beyond the auth header the broker applies from the connection's
+#: auth_scheme. anthropic_messages needs ``anthropic-version`` or the API 400s; the
+#: api key itself rides the connection's auth (auth_scheme="header",
+#: header_name="x-api-key" for Anthropic — never in these static headers).
+STATIC_HEADERS: dict[str, dict[str, str]] = {
+    "openai_chat": {},
+    "anthropic_messages": {"anthropic-version": ANTHROPIC_VERSION},
+}
+
+
+def static_headers_for(protocol: str) -> dict[str, str]:
+    """Static request headers for a protocol (empty for an unknown one)."""
+    return dict(STATIC_HEADERS.get(protocol, {}))
