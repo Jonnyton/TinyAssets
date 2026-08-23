@@ -5,8 +5,14 @@ Requirement source:
 
 Covers: owner (admin, not write) gate, the vault http deposit + connection +
 grant round-trip, endpoint SSRF pre-validation (nothing mutated on bad input),
-idempotency + secret rotation, cross-owner transfer refusal, response/log
-redaction, the write_graph dispatch, and the no-new-advertised-handle invariant.
+idempotency + secret rotation, policy-immutable conflict (endpoint-change is a
+conflict, never a silent reuse), inert-self-heal after a mid-provision fault,
+cross-owner transfer refusal, response/log redaction, the write_graph dispatch,
+and the no-new-advertised-handle invariant.
+
+The primitive is channel-agnostic: these tests use a neutral example host
+(``api.example.com``) on purpose. No real service is named anywhere in the code —
+the owner supplies the host + secret at build time.
 """
 
 from __future__ import annotations
@@ -91,14 +97,15 @@ def _make_universe(base: Path, uid: str, *, admin: str = "", write: str = "") ->
     return udir
 
 
-_SLACK_EP = [{"host": "slack.com", "path_template": "/api/chat.postMessage", "methods": ["POST"]}]
+# Neutral example host — the primitive names no real service.
+_EP = [{"host": "api.example.com", "path_template": "/v1/messages", "methods": ["POST"]}]
 
 
 def _connect(
     uid: str,
     *,
-    destination: str = "slack:acme",
-    secret: str = "xoxb-SECRET-token",
+    destination: str = "webhook:acme",
+    secret: str = "sk-SECRET-token",
     endpoints: Any = None,
     auth_scheme: str | None = None,
 ) -> dict[str, Any]:
@@ -107,7 +114,7 @@ def _connect(
     doc: dict[str, Any] = {
         "destination": destination,
         "secret": secret,
-        "allowed_endpoints": _SLACK_EP if endpoints is None else endpoints,
+        "allowed_endpoints": _EP if endpoints is None else endpoints,
     }
     if auth_scheme is not None:
         doc["auth_scheme"] = auth_scheme
@@ -143,29 +150,29 @@ def test_owner_provisions_http_connection_round_trip(base: Path) -> None:
 
     assert result["status"] == "provisioned"
     assert result["auth_scheme"] == "bearer"
-    assert result["destination"] == "slack:acme"
-    assert result["allowed_endpoints"][0]["host"] == "slack.com"
+    assert result["destination"] == "webhook:acme"
+    assert result["allowed_endpoints"][0]["host"] == "api.example.com"
     blob = json.dumps(result)
-    assert "xoxb-SECRET-token" not in blob
+    assert "sk-SECRET-token" not in blob
     assert "vault://http" not in blob  # credential_ref never surfaced
 
     # Vault: exactly one http record, keyed by destination, secret in `token`.
     recs = _http_records(udir)
     assert len(recs) == 1
-    assert recs[0]["destination"] == "slack:acme"
-    assert recs[0]["service"] == "slack:acme"
-    assert recs[0]["token"] == "xoxb-SECRET-token"
+    assert recs[0]["destination"] == "webhook:acme"
+    assert recs[0]["service"] == "webhook:acme"
+    assert recs[0]["token"] == "sk-SECRET-token"
 
     # Ledger: connection is http, endpoint stored, grant bound to the universe.
-    conn_id, grant_id = _ids(universe_id="u-owner", destination="slack:acme")
+    conn_id, grant_id = _ids(universe_id="u-owner", destination="webhook:acme")
     ledger = _ledger(base, "founder")
     resource = ledger._get_connection_resource(conn_id)
     assert resource is not None
     assert resource.connection_type == "http"
-    assert resource.destination == "slack:acme"
-    assert resource.credential_ref == "vault://http/slack:acme"
+    assert resource.destination == "webhook:acme"
+    assert resource.credential_ref == "vault://http/webhook:acme"
     assert resource.owner_user_id == "founder"
-    assert [e.host for e in resource.allowed_endpoints] == ["slack.com"]
+    assert [e.host for e in resource.allowed_endpoints] == ["api.example.com"]
     grant = ledger.get_grant(grant_id)
     assert grant is not None
     assert grant.universe_id == "u-owner"
@@ -186,12 +193,12 @@ def test_provision_routes_through_write_graph(base: Path) -> None:
             operation="connect_http",
             graph_id="u-route",
             payload_json=json.dumps(
-                {"destination": "slack:r", "secret": "xoxb-r", "allowed_endpoints": _SLACK_EP}
+                {"destination": "webhook:r", "secret": "sk-r", "allowed_endpoints": _EP}
             ),
         )
         payload = json.loads(raw)
         assert payload["status"] == "provisioned"
-        assert payload["destination"] == "slack:r"
+        assert payload["destination"] == "webhook:r"
     finally:
         importlib.reload(us)
 
@@ -278,8 +285,8 @@ def test_reprovision_is_idempotent_and_rotates_secret(base: Path) -> None:
     udir = _make_universe(base, "u-idem", admin="founder")
     _login("founder")
 
-    first = _connect("u-idem", secret="xoxb-v1")
-    second = _connect("u-idem", secret="xoxb-v2")
+    first = _connect("u-idem", secret="sk-v1")
+    second = _connect("u-idem", secret="sk-v2")
 
     # Same deterministic ids (one connection per (universe, destination)).
     assert first["connection_id"] == second["connection_id"]
@@ -287,7 +294,35 @@ def test_reprovision_is_idempotent_and_rotates_secret(base: Path) -> None:
     # Exactly one http record; the secret was rotated to v2.
     recs = _http_records(udir)
     assert len(recs) == 1
-    assert recs[0]["token"] == "xoxb-v2"
+    assert recs[0]["token"] == "sk-v2"
+
+
+def test_reprovision_with_changed_endpoints_is_a_conflict(base: Path) -> None:
+    """A re-provision that changes the egress policy (a different endpoint
+    allow-list) must be refused as a conflict BEFORE the vault write — never a
+    silent reuse of the old connection under a rotated secret. The owner must
+    revoke-then-reprovision to change policy (Codex review finding #2)."""
+    udir = _make_universe(base, "u-epchg", admin="founder")
+    _login("founder")
+
+    assert _connect("u-epchg", secret="sk-v1")["status"] == "provisioned"
+    changed = _connect(
+        "u-epchg",
+        secret="sk-v2",
+        endpoints=[
+            {"host": "other.example.com", "path_template": "/v1/messages", "methods": ["POST"]}
+        ],
+    )
+    assert changed == {"error": "connection_conflict", "resource": "connection"}
+    # Old secret + old endpoint policy are untouched — no rotation on conflict.
+    recs = _http_records(udir)
+    assert len(recs) == 1
+    assert recs[0]["token"] == "sk-v1"
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, _ = _ids(universe_id="u-epchg", destination="webhook:acme")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert [e.host for e in resource.allowed_endpoints] == ["api.example.com"]
 
 
 def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
@@ -310,6 +345,47 @@ def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
     assert recs[0]["token"] == "founder-secret"
 
 
+def test_inert_self_heal_after_grant_fault(base: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mid-provision fault (the grant write raises after the vault + connection
+    landed) leaves only INERT partial state — a connection with no grant, which
+    cannot authorize a call. The deterministic-id retry completes it (Codex review
+    finding #1: the claim is inert-self-heal, not all-or-nothing)."""
+    from tinyassets.storage import outbound_connections as oc
+
+    udir = _make_universe(base, "u-heal", admin="founder")
+    _login("founder")
+
+    real_grant = oc.ConnectionLedger.grant_connection
+    calls = {"n": 0}
+
+    def _flaky_grant(self: Any, *a: Any, **k: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("injected grant fault")
+        return real_grant(self, *a, **k)
+
+    monkeypatch.setattr(oc.ConnectionLedger, "grant_connection", _flaky_grant)
+
+    # First call: vault + connection land, grant raises. The fault surfaces, not
+    # a usable connection.
+    with pytest.raises(RuntimeError):
+        _connect("u-heal")
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, grant_id = _ids(universe_id="u-heal", destination="webhook:acme")
+    ledger = _ledger(base, "founder")
+    assert ledger._get_connection_resource(conn_id) is not None  # inert connection
+    assert ledger.get_grant(grant_id) is None  # no grant → cannot authorize a call
+
+    # Retry (same deterministic ids): reuses the inert connection, completes the
+    # grant. Now usable, exactly once.
+    healed = _connect("u-heal")
+    assert healed["status"] == "provisioned"
+    assert healed["connection_id"] == conn_id
+    assert ledger.get_grant(grant_id) is not None
+    assert len(_http_records(udir)) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Redaction + no advertised handle.
 # --------------------------------------------------------------------------- #
@@ -318,7 +394,7 @@ def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
 def test_response_and_logs_carry_no_secret(base: Path, caplog: pytest.LogCaptureFixture) -> None:
     _make_universe(base, "u-clean", admin="founder")
     _login("founder")
-    secret = "xoxb-SUPER-SECRET-do-not-echo"
+    secret = "sk-SUPER-SECRET-do-not-echo"
     with caplog.at_level("DEBUG"):
         result = _connect("u-clean", secret=secret)
     assert result["status"] == "provisioned"

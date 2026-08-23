@@ -1,15 +1,17 @@
 """Owner-scoped provisioning of a generic outbound ``http`` connection.
 
 ``write_graph target=connection operation=connect_http`` — the keystone that lets
-a universe owner build an outbound channel (Slack, any HTTPS API) their universe
-can act on via the ``authenticated_external_call`` effector. It is the sibling of
-``connect_llm``: an authenticated **admin** deposits a bearer secret into the
-per-universe vault and binds a validated ``http`` ``ConnectionLedger`` connection
-to the universe.
+a universe owner build an outbound channel to ANY HTTPS API their universe can act
+on via the ``authenticated_external_call`` effector. This handler is channel-
+agnostic by construction: it hard-codes no service. The owner supplies the host,
+path, and secret at build time, so a channel we never anticipated works the same
+way as any other — that is the whole point. It is the sibling of ``connect_llm``:
+an authenticated **admin** deposits a bearer secret into the per-universe vault and
+binds a validated ``http`` ``ConnectionLedger`` connection to the universe.
 
 Slice 1 scope + security posture (grounded in the outbound substrate):
-- **bearer only.** Slack and most HTTPS APIs use ``Authorization: Bearer``. This
-  keeps the credential single-secret (what the general vault resolver returns)
+- **bearer only.** Most HTTPS APIs authenticate with ``Authorization: Bearer``.
+  This keeps the credential single-secret (what the general vault resolver returns)
   and avoids the ``none``/``basic``/``header``/``oauth1a`` edge cases. Others are
   deferred.
 - **SSRF is already enforced by the substrate, not re-implemented here.**
@@ -22,9 +24,13 @@ Slice 1 scope + security posture (grounded in the outbound substrate):
   through and maps validation failures to a clean, secret-free error.
 - **Identity is (universe, destination)**, never the actor — so a second admin
   cannot mint a rival connection under the same consent key.
-- **Provision-or-rotate.** A repeat call for the same destination rotates the
-  secret and reuses the (idempotent) connection/grant. Hard ownership/type/
-  revocation mismatches are refused as a conflict before any vault write.
+- **Provision-or-rotate, policy-immutable.** A repeat call for the same
+  destination rotates the secret and reuses the (idempotent) connection/grant ONLY
+  when every immutable field matches (owner, type, class, auth scheme, scopes,
+  destination, credential_ref, and the endpoint allow-list). Any change to the
+  policy — a different endpoint allow-list included — is refused as a conflict
+  before any vault write, so a re-provision can never silently keep the old egress
+  policy under a rotated secret. Changing policy means revoke-then-reprovision.
 - **Never echoes the secret or the credential_ref.** Errors carry no secret.
 
 A live outbound call additionally requires the owner's effector consent for the
@@ -101,7 +107,7 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         "provider": resource.provider,
         "destination": resource.destination,
         "connection_class": resource.connection_class,
-        "auth_scheme": _AUTH_SCHEME,
+        "auth_scheme": resource.auth_scheme,
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "action_cap": (
             grant.unprompted_action_cap.as_dict()
@@ -123,7 +129,15 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     """Provision (or rotate) a generic http connection for the owner's universe.
 
     Returns a redacted projection on success and a sanitized error otherwise.
-    Every refusal leaves zero vault / connection / grant mutation.
+
+    Fail-closed model: every *refusal* (auth, validation, conflict) happens before
+    any write, so a refusal leaves zero vault / connection / grant mutation. A rare
+    mid-provision infrastructure fault (e.g. the grant write fails after the vault +
+    connection landed) leaves only INERT partial state — a connection with no grant,
+    or a vault record with no connection, neither of which can authorize a call —
+    which the idempotent, deterministic-id retry completes (self-heal). It never
+    leaves a usable half-connection, and it never rotates a live credential on a
+    conflicting re-provision (the conflict-check below refuses first).
     """
     from tinyassets.api import permissions
     from tinyassets.credential_vault import write_credential_vault
@@ -196,11 +210,12 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # rejection. Runtime SSRF (private-IP/rebinding/redirects/HTTPS) stays enforced
     # by the broker at request time — not re-implemented here.
     try:
-        _parse_allowed_endpoints(endpoints)
+        parsed_endpoints = _parse_allowed_endpoints(endpoints)
     except SsrfValidationError as exc:
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     except (ValueError, TypeError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    requested_endpoints = [e.as_dict() for e in parsed_endpoints]
 
     credential_ref = f"vault://http/{destination}"
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
@@ -210,16 +225,25 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     )
 
     # 4. Conflict-check the connection AND grant BEFORE depositing anything, so a
-    #    hard mismatch never rotates a credential. Credential-bearing read
-    #    (trusted server code); the ref never reaches the projection.
+    #    mismatch never rotates a credential. Compare EVERY immutable field (Codex
+    #    review): a re-provision may only reuse+rotate a byte-identical connection
+    #    (same owner/type/class/scheme/scopes/destination/ref/endpoints). Changing
+    #    the endpoint allow-list (or any field) is a conflict, never a silent reuse
+    #    of the old policy under a rotated secret — the owner must revoke first (a
+    #    dedicated update op is a follow-up). Credential-bearing read (trusted
+    #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
     if resource is not None and (
         resource.owner_user_id != actor
         or resource.connection_type != "http"
+        or resource.connection_class != "http"
         or resource.provider != "http"
+        or resource.auth_scheme != _AUTH_SCHEME
+        or tuple(resource.scopes) != ("http",)
         or resource.destination != destination
         or resource.credential_ref != credential_ref
         or resource.revoked_at is not None
+        or [e.as_dict() for e in resource.allowed_endpoints] != requested_endpoints
     ):
         return {"error": "connection_conflict", "resource": "connection"}
     existing_grant = ledger.get_grant(grant_id)
