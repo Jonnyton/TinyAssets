@@ -41,6 +41,7 @@ from tinyassets.graph_compiler import (
     CompilerError,
     EmptyResponseError,
     NodeEnqueueContext,
+    BranchExecutionContext,
     NodeTimeoutError,
     UnapprovedNodeError,
     compile_branch,
@@ -2194,10 +2195,13 @@ def _invoke_graph(
         "runtime_instance_id": "",
         "worker_id": "",
     }
+    run_actor = ""
+    run_universe = ""
     with _connect(base_path) as conn:
         identity_row = conn.execute(
             """
-            SELECT owner_user_id, daemon_id, runtime_instance_id, worker_id
+            SELECT owner_user_id, daemon_id, runtime_instance_id, worker_id,
+                   actor, queue_universe_id
             FROM runs WHERE run_id = ?
             """,
             (run_id,),
@@ -2209,6 +2213,27 @@ def _invoke_graph(
             "runtime_instance_id": identity_row["runtime_instance_id"] or "",
             "worker_id": identity_row["worker_id"] or "",
         }
+        run_actor = (identity_row["actor"] or "").strip()
+        run_universe = (identity_row["queue_universe_id"] or "").strip()
+
+    # Immutable per-run execution context (invoke_branch sanitization): who this run
+    # executes as, in which universe, and how trusted the running definition is. Built
+    # ONCE here from the authenticated run row + the branch's author — NEVER from a
+    # node spec, and re-derived fresh for each (child) run so provenance is transitive.
+    # provenance is "own" when the running branch was authored by the run actor, else
+    # "public-foreign" (a foreign/public/remixed branch), which delegated child
+    # authorization keys off. Depth carries the recursion counter.
+    _branch_author = (getattr(branch, "author", "") or "").strip()
+    _provenance = (
+        "own" if (run_actor and _branch_author and _branch_author == run_actor)
+        else "public-foreign"
+    )
+    execution_context = BranchExecutionContext(
+        actor=run_actor,
+        universe_id=run_universe,
+        caller_provenance=_provenance,
+        depth=invocation_depth,
+    )
 
     def _emit_node_status(node_id: str, status: str) -> None:
         if on_node_status is None:
@@ -2361,6 +2386,7 @@ def _invoke_graph(
             parent_run_id=run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
+            execution_context=execution_context,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -3988,17 +4014,32 @@ def poll_child_run_status(
     *,
     timeout_seconds: float = 300.0,
     poll_interval: float = 1.0,
+    expected_actor: str | None = None,
+    expected_universe_id: str | None = None,
 ) -> dict[str, Any]:
     """Block until *run_id* reaches a terminal status or *timeout_seconds* elapses.
 
     Returns the run record dict (same shape as ``get_run``).
     Raises ``TimeoutError`` if the run does not terminate in time.
     Raises ``KeyError`` if the run does not exist at poll time.
+
+    When ``expected_actor`` / ``expected_universe_id`` are supplied (invoke_branch
+    task 4.2), a run whose ``actor`` / ``queue_universe_id`` does not match is treated
+    as ABSENT — the SAME ``KeyError`` as a missing run, so a foreign run id planted in
+    parent state cannot be awaited and the await surface is not an existence oracle.
     """
+    want_actor = (expected_actor or "").strip()
+    want_universe = (expected_universe_id or "").strip()
     deadline = time.monotonic() + timeout_seconds
     while True:
         record = get_run(base_path, run_id)
         if record is None:
+            raise KeyError(f"Child run '{run_id}' not found in runs DB.")
+        if want_actor and (str(record.get("actor") or "").strip() != want_actor):
+            raise KeyError(f"Child run '{run_id}' not found in runs DB.")
+        if want_universe and (
+            str(record.get("queue_universe_id") or "").strip() != want_universe
+        ):
             raise KeyError(f"Child run '{run_id}' not found in runs DB.")
         if record.get("status") in _TERMINAL_STATUSES:
             return record

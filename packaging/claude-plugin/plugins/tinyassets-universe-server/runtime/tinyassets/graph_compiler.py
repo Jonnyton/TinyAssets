@@ -2242,6 +2242,110 @@ def _emit_invoke_design_used(
     )
 
 
+@dataclass(frozen=True)
+class BranchExecutionContext:
+    """Immutable per-run authority carried through every invoke_branch edge.
+
+    Built ONCE at the authenticated top-level run entry (never re-derived from the
+    mutable run record or a node spec) and threaded compile -> node builder -> invoke
+    closure -> child run -> child's builders. It is the single source of truth for who
+    the run executes as (``actor``), where (``universe_id``), and how much the running
+    definition is trusted (``caller_provenance``: ``own`` = authored by ``actor``, else
+    ``public-foreign``). A nested edge can only NARROW it; it never widens authority.
+    """
+
+    actor: str = ""
+    universe_id: str = ""
+    caller_provenance: str = "own"  # "own" | "public-foreign"
+    depth: int = 0
+
+
+#: Uniform refusal for any child ref that is absent OR not authorized — never reveal
+#: which, so the invoke surface is not an existence/authorization oracle.
+_CHILD_UNAVAILABLE = "invoke_branch child is not available"
+
+
+def _authorize_child_ref(
+    base: "Path", child_def_id: str, ctx: "BranchExecutionContext"
+) -> "Any":
+    """Authorize an AUTHOR-chosen child branch ref under DELEGATED authority.
+
+    The child id comes from the branch spec (author-controlled), so it is authorized
+    against what the AUTHORING definition may reference — NOT the runner's ambient
+    readability (the run actor is the potential victim; their own readability would
+    authorize a foreign spec's reference to the victim's private branch). Rule:
+      * ``own`` provenance (running def authored by ``ctx.actor``): may reference an
+        own-authored child (any visibility) OR any public child.
+      * ``public-foreign`` provenance: may reference ONLY a public child.
+    Returns the child ``BranchDefinition`` on success; raises ``CompilerError`` with a
+    uniform message otherwise (absent and unauthorized are indistinguishable).
+    """
+    from tinyassets.daemon_server import get_branch_definition
+
+    # 1) Fetch the raw descriptor; ANY failure (absent, unreadable, corrupt) is the
+    # SAME uniform refusal — no existence/ownership/error oracle (Codex exact-diff #5).
+    try:
+        raw = get_branch_definition(base, branch_def_id=child_def_id)
+    except Exception:  # noqa: BLE001 - absent/unreadable both -> uniform not-found
+        logger.debug("invoke_branch child fetch failed", exc_info=True)
+        raise CompilerError(_CHILD_UNAVAILABLE) from None
+    if not isinstance(raw, dict):
+        raise CompilerError(_CHILD_UNAVAILABLE)
+
+    # 2) Authorize on MINIMAL metadata BEFORE deserializing the full definition
+    # (Codex exact-diff #1): a malformed private body must not raise a distinguishable
+    # error. Missing/blank/malformed visibility is NOT public -> fail closed (#6).
+    visibility = str(raw.get("visibility") or "").strip().lower()
+    author = str(raw.get("author") or "").strip()
+    is_public = visibility == "public"
+    if ctx.caller_provenance == "own":
+        authorized = is_public or (bool(author) and author == ctx.actor)
+    else:
+        authorized = is_public
+    if not authorized:
+        raise CompilerError(_CHILD_UNAVAILABLE)
+
+    # 3) Only now deserialize; a malformed AUTHORIZED def is uniform too.
+    from tinyassets.branches import BranchDefinition as _BD
+
+    try:
+        return _BD.from_dict(raw)
+    except Exception:  # noqa: BLE001
+        logger.debug("invoke_branch child deserialize failed", exc_info=True)
+        raise CompilerError(_CHILD_UNAVAILABLE) from None
+
+
+def _enforce_foreign_mapping_confidentiality(
+    ctx: "BranchExecutionContext",
+    *,
+    inputs_mapping: dict[str, str],
+    output_mapping: dict[str, str],
+    node_id: str,
+) -> None:
+    """Restrict data plumbed across a FOREIGN-provenance invoke edge (task 4.1).
+
+    When a run invokes a definition it does NOT own (``caller_provenance`` !=
+    ``own``), a credential/secret/auth-state field must not be plumbed into the
+    child's inputs or harvested out of its output back into parent state. Both
+    sides of every mapping pair are classified with the SAME redaction key-classes
+    the agent-definition surface uses (``_is_sensitive_field_name``); any sensitive
+    key on a foreign edge fails closed at compile time. Own-provenance edges (the
+    runner's own shapes plumbing their own fields) are unrestricted.
+    """
+    if (ctx.caller_provenance or "").strip() == "own":
+        return
+    from tinyassets.custom_agents import _is_sensitive_field_name
+
+    for label, mapping in (("inputs_mapping", inputs_mapping), ("output_mapping", output_mapping)):
+        for parent_key, child_key in (mapping or {}).items():
+            for side in (parent_key, child_key):
+                if _is_sensitive_field_name(side):
+                    raise CompilerError(
+                        f"Node '{node_id}': foreign invoke_branch {label} may not map "
+                        f"a credential/secret/auth-state field ('{side}')."
+                    )
+
+
 def _build_invoke_branch_node(
     node: NodeDefinition,
     *,
@@ -2250,6 +2354,7 @@ def _build_invoke_branch_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_spec`` node.
 
@@ -2270,7 +2375,8 @@ def _build_invoke_branch_node(
     on_child_fail: str = spec.get("on_child_fail", "propagate")
     default_outputs = spec.get("default_outputs")
     retry_budget: int = int(spec.get("retry_budget", 1) or 1)
-    child_actor: str = spec.get("child_actor", "") or ""
+    # ``child_actor`` is DELIBERATELY ignored (removed 2026-08-23): an author-supplied
+    # actor is identity spoofing. The child always runs as the immutable ctx.actor.
 
     if not child_branch_def_id:
         raise CompilerError(
@@ -2289,31 +2395,37 @@ def _build_invoke_branch_node(
         )
 
     _base = Path(base_path)
+    _ctx = execution_context or BranchExecutionContext()
+    _enforce_foreign_mapping_confidentiality(
+        _ctx,
+        inputs_mapping=inputs_mapping,
+        output_mapping=output_mapping,
+        node_id=node.node_id,
+    )
 
     def _resolve_actor() -> str:
-        if child_actor:
-            return child_actor
-        if parent_run_id:
-            from tinyassets.runs import get_run
-
-            parent = get_run(_base, parent_run_id)
-            if parent:
-                return parent.get("actor") or "anonymous"
-        return "anonymous"
+        # The child runs as the parent run's authenticated actor — never a spec actor,
+        # never re-read from the mutable run record, never an anonymous fallback.
+        actor = (_ctx.actor or "").strip()
+        if not actor or actor == "anonymous":
+            raise CompilerError(
+                f"Node '{node.node_id}': invoke_branch has no authenticated "
+                f"execution context; refusing (fail-closed)."
+            )
+        return actor
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.branches import BranchDefinition as _BD
-        from tinyassets.daemon_server import get_branch_definition
-
-        raw = get_branch_definition(_base, branch_def_id=child_branch_def_id)
-        child_branch = _BD.from_dict(raw)
+        # Validate the actor FIRST (Codex exact-diff #4): an empty-actor run must fail
+        # closed before any child lookup, so it cannot distinguish public vs
+        # absent/private children by differing errors.
+        actor_arg = _resolve_actor()
+        # Then delegated authorization of the author-chosen child BEFORE any execute.
+        child_branch = _authorize_child_ref(_base, child_branch_def_id, _ctx)
 
         child_inputs: dict[str, Any] = {
             child_key: state.get(parent_key)
             for parent_key, child_key in inputs_mapping.items()
         }
-
-        actor_arg = _resolve_actor()
         if wait_mode == "blocking":
             # Phase A item 5 / Task #76b — on_child_fail policy + retry.
             # Blocking-mode invocation knows the child's terminal status
@@ -2396,6 +2508,7 @@ def _build_invoke_branch_version_node(
     provider_call: Callable[..., str] | None = None,
     depth: int = 0,
     parent_run_id: str = "",
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_version_spec`` node.
 
@@ -2421,7 +2534,7 @@ def _build_invoke_branch_version_node(
     on_child_fail: str = spec.get("on_child_fail", "propagate")
     default_outputs = spec.get("default_outputs")
     retry_budget: int = int(spec.get("retry_budget", 1) or 1)
-    child_actor: str = spec.get("child_actor", "") or ""
+    # ``child_actor`` is DELIBERATELY ignored (removed 2026-08-23) — spoofing vector.
 
     if not child_branch_version_id:
         raise CompilerError(
@@ -2441,17 +2554,42 @@ def _build_invoke_branch_version_node(
         )
 
     _base = Path(base_path)
+    _ctx = execution_context or BranchExecutionContext()
+    _enforce_foreign_mapping_confidentiality(
+        _ctx,
+        inputs_mapping=inputs_mapping,
+        output_mapping=output_mapping,
+        node_id=node.node_id,
+    )
 
     def _resolve_actor() -> str:
-        if child_actor:
-            return child_actor
-        if parent_run_id:
-            from tinyassets.runs import get_run
+        actor = (_ctx.actor or "").strip()
+        if not actor or actor == "anonymous":
+            raise CompilerError(
+                f"Node '{node.node_id}': invoke_branch_version has no authenticated "
+                f"execution context; refusing (fail-closed)."
+            )
+        return actor
 
-            parent = get_run(_base, parent_run_id)
-            if parent:
-                return parent.get("actor") or "anonymous"
-        return "anonymous"
+    def _authorize_version() -> None:
+        # Authorize BEFORE the snapshot loads (Codex exact-diff #2): resolve the
+        # version's definition via a METADATA-ONLY lookup (no snapshot load), then
+        # authorize under the delegated rule. Require NONEMPTY def-id equality so a
+        # version with no/def-mismatched id fails closed (#3). Any lookup failure is
+        # the same uniform refusal (#5).
+        from tinyassets.branch_versions import branch_version_def_id
+
+        try:
+            ver_def_id = branch_version_def_id(_base, child_branch_version_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("invoke_branch_version metadata lookup failed", exc_info=True)
+            raise CompilerError(_CHILD_UNAVAILABLE) from None
+        if not ver_def_id:
+            raise CompilerError(_CHILD_UNAVAILABLE)
+        child = _authorize_child_ref(_base, ver_def_id, _ctx)
+        child_def_id = (getattr(child, "branch_def_id", "") or "").strip()
+        if not child_def_id or child_def_id != ver_def_id:
+            raise CompilerError(_CHILD_UNAVAILABLE)
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on
@@ -2462,11 +2600,13 @@ def _build_invoke_branch_version_node(
             poll_child_run_status,
         )
 
+        # Actor FIRST (Codex exact-diff #4), then authorize before any snapshot load.
+        actor_arg = _resolve_actor()
+        _authorize_version()
         child_inputs: dict[str, Any] = {
             child_key: state.get(parent_key)
             for parent_key, child_key in inputs_mapping.items()
         }
-        actor_arg = _resolve_actor()
 
         def _resolve_branch_def_id_for_author() -> str:
             """Map child_branch_version_id → branch_def_id for author lookup.
@@ -2568,11 +2708,15 @@ def _build_await_branch_run_node(
     *,
     base_path: str | Path,
     event_sink: Callable[..., None] | None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``await_run_spec`` node.
 
     The callable reads a run_id from parent state, polls until the child run
-    reaches a terminal status, then writes declared output_mapping fields.
+    reaches a terminal status, then writes declared output_mapping fields. The
+    awaited run is BOUND to the execution context's actor + universe (task 4.2):
+    a run_id in parent state that resolves to a different actor/universe is refused
+    as not-found, so a foreign run id cannot be awaited via a planted state field.
     """
     from tinyassets.runs import poll_child_run_status
 
@@ -2587,6 +2731,7 @@ def _build_await_branch_run_node(
         )
 
     _base = Path(base_path)
+    _ctx = execution_context or BranchExecutionContext()
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         import json as _json
@@ -2598,6 +2743,8 @@ def _build_await_branch_run_node(
             )
         record = poll_child_run_status(
             _base, run_id, timeout_seconds=timeout_seconds,
+            expected_actor=(_ctx.actor or "").strip() or None,
+            expected_universe_id=(_ctx.universe_id or "").strip() or None,
         )
         raw_output = record.get("output") or {}
         if isinstance(raw_output, str):
@@ -2629,6 +2776,7 @@ def _build_node(
     enqueue_context: "NodeEnqueueContext | None" = None,
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2692,6 +2840,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_context=execution_context,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -2705,6 +2854,7 @@ def _build_node(
             provider_call=provider_call,
             parent_run_id=parent_run_id,
             depth=invocation_depth,
+            execution_context=execution_context,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -2715,6 +2865,7 @@ def _build_node(
             )
         inner = _build_await_branch_run_node(
             node, base_path=base_path, event_sink=event_sink,
+            execution_context=execution_context,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     # Fallback: a genuine body-less node in a non-domain-trusted
@@ -2815,6 +2966,7 @@ def compile_branch(
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
     universe_context: "UniverseContext | None" = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2937,6 +3089,7 @@ def compile_branch(
             enqueue_context=enqueue_context,
             enqueue_budget=enqueue_budget,
             universe_context=universe_context,
+            execution_context=execution_context,
         )
         fn = _guard_single_writer_merge_outputs(
             fn,
