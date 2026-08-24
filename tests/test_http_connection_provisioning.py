@@ -215,6 +215,141 @@ def test_connection_scope_is_the_endpoint_methods_not_a_type_token(base: Path) -
     assert "http" not in resource.scopes
 
 
+def _seed_legacy_http_connection(
+    base: Path,
+    uid: str,
+    *,
+    endpoints: Any = None,
+    old_secret: str = "old-secret",
+    grant_universe: str | None = None,
+) -> tuple[Path, str, str]:
+    """Write a PRE-FIX http connection: the legacy ("http",) scope token + an old
+    secret + a grant carrying the real ``_HTTP_ACTION_CAP`` (the shape a connection
+    provisioned before the #2521 scope fix actually has)."""
+    from tinyassets.api.http_connection import _HTTP_ACTION_CAP, _ids
+    from tinyassets.credential_vault import write_credential_vault
+
+    udir = _make_universe(base, uid, admin="founder")
+    conn_id, grant_id = _ids(universe_id=uid, destination="webhook:acme")
+    write_credential_vault(
+        udir,
+        [
+            {
+                "credential_type": "http",
+                "service": "webhook:acme",
+                "destination": "webhook:acme",
+                "token": old_secret,
+            }
+        ],
+        owner_user_id="founder",
+        universe_id=uid,
+    )
+    ledger = _ledger(base, "founder")
+    ledger.create_connection(
+        connection_id=conn_id,
+        owner_user_id="founder",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("http",),
+        provider="http",
+        destination="webhook:acme",
+        credential_ref="vault://http/webhook:acme",
+        allowed_endpoints=_EP if endpoints is None else endpoints,
+    )
+    ledger.grant_connection(
+        grant_id=grant_id,
+        connection_id=conn_id,
+        owner_user_id="founder",
+        universe_id=grant_universe or uid,
+        unprompted_action_cap=_HTTP_ACTION_CAP,
+    )
+    assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
+    return udir, conn_id, grant_id
+
+
+def test_legacy_http_scope_token_is_upgraded_in_place_not_stranded(base: Path) -> None:
+    """REGRESSION (Codex ADAPT, #2521).
+
+    A connection provisioned BEFORE the scope fix carries the legacy ("http",)
+    token. Re-provisioning it with the SAME policy must UPGRADE its scope to the
+    method union in place (a bounded, one-directional migration) and rotate the
+    secret — NOT strand it behind ``connection_conflict``, which deterministic ids +
+    the absence of a policy-update path would otherwise make unrecoverable.
+    """
+    udir, conn_id, _grant_id = _seed_legacy_http_connection(base, "u-legacy")
+    _login("founder")
+
+    result = _connect("u-legacy", secret="new-secret")  # SAME policy, rotated secret
+    assert result["status"] == "provisioned"  # NOT connection_conflict — upgraded.
+
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert tuple(resource.scopes) == ("POST",)  # upgraded from the ("http",) token
+    assert _http_records(udir)[0]["token"] == "new-secret"  # secret rotated
+
+
+def test_legacy_upgrade_is_deferred_until_after_a_successful_deposit(
+    base: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed credential deposit must leave the legacy ("http",) scope UNTOUCHED —
+    otherwise a failed rotation would activate the formerly-unusable connection with
+    the stale, un-rotated secret (Codex ADAPT re-review: fail-open ordering)."""
+    udir, conn_id, _grant_id = _seed_legacy_http_connection(base, "u-legacy-dep")
+    _login("founder")
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("deposit exploded")
+
+    # connect_http imports write_credential_vault fresh from the source module at
+    # call time, so patch the SOURCE, not the api.http_connection namespace.
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.write_credential_vault", _boom
+    )
+    result = _connect("u-legacy-dep", secret="new-secret")
+    assert result["error"] == "deposit_failed"
+
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert tuple(resource.scopes) == ("http",)  # NOT upgraded — still inert
+    assert _http_records(udir)[0]["token"] == "old-secret"  # secret NOT rotated
+
+
+def test_legacy_scope_untouched_on_grant_conflict(base: Path) -> None:
+    """A grant-conflict refusal must leave the legacy ("http",) scope UNTOUCHED —
+    the upgrade is deferred past the grant-conflict check."""
+    udir, conn_id, _g = _seed_legacy_http_connection(
+        base, "u-legacy-grant", grant_universe="u-OTHER-universe"
+    )
+    _login("founder")
+
+    result = _connect("u-legacy-grant", secret="new-secret")
+    assert result == {"error": "connection_conflict", "resource": "grant"}
+    assert tuple(_ledger(base, "founder")._get_connection_resource(conn_id).scopes) == (
+        "http",
+    )
+    assert _http_records(udir)[0]["token"] == "old-secret"  # nothing rotated
+
+
+def test_legacy_row_with_changed_policy_conflicts_scope_untouched(base: Path) -> None:
+    """A legacy row whose endpoint policy DIFFERS from the re-provision request is a
+    genuine conflict (not an upgrade); the legacy scope stays untouched."""
+    udir, conn_id, _g = _seed_legacy_http_connection(
+        base,
+        "u-legacy-policy",
+        endpoints=[
+            {"host": "api.example.com", "path_template": "/v1/other", "methods": ["POST"]}
+        ],
+    )
+    _login("founder")
+
+    # Default _EP is /v1/messages — a different endpoint set than seeded.
+    result = _connect("u-legacy-policy", secret="new-secret")
+    assert result == {"error": "connection_conflict", "resource": "connection"}
+    assert tuple(_ledger(base, "founder")._get_connection_resource(conn_id).scopes) == (
+        "http",
+    )
+    assert _http_records(udir)[0]["token"] == "old-secret"
+
+
 def test_provision_routes_through_write_graph(base: Path) -> None:
     import importlib
 

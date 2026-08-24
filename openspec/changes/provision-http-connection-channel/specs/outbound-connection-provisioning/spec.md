@@ -12,7 +12,11 @@ the target universe), deposit the supplied credential into the per-universe vaul
 (never echoing it), create an `http`-typed `ConnectionLedger` connection with a
 non-empty, validated endpoint allow-list and the `bearer` single-secret auth scheme
 (Slice 1 scope; `none`/`basic`/`header`/`oauth1a` deferred), and grant that
-connection to the universe. The primitive is channel-agnostic: it hard-codes no
+connection to the universe. The connection's SCOPE SHALL be the sorted,
+de-duplicated union of its endpoints' HTTP methods — the verb string the
+`authenticated_external_call` effector matches each request's verb against — never
+a coarse connection-type token, which admits no HTTP verb and would make every
+outbound call fail closed. The primitive is channel-agnostic: it hard-codes no
 service — the owner supplies host, path, and secret, so an unanticipated channel
 works identically. Creation and grant SHALL be idempotent with deterministic ids.
 Every *refusal* (auth, validation, conflict) SHALL happen before any write, leaving
@@ -72,3 +76,17 @@ never leave a usable half-connection.
   and a revoked deterministic resource then trips the `revoked_at` conflict on
   every re-provision), so a policy change requires a new destination until the
   dedicated policy-update operation follow-up lands
+
+#### Scenario: A pre-scope-fix connection's legacy scope is migrated in place, never stranded
+
+- **GIVEN** a connection provisioned before the scope was method-based, carrying the
+  legacy coarse scope token, otherwise policy-identical to a re-provision request
+- **WHEN** the owner calls connect_http again for that destination with the same policy
+- **THEN** the connection's scope is upgraded in place to the method union — a bounded,
+  one-directional migration guarded to the exact legacy token, so it can never widen,
+  narrow, or alter a real method-scoped set — and the secret is rotated; the row is NOT
+  stranded behind `connection_conflict` (which deterministic ids + the absence of a
+  policy-update path would otherwise make unrecoverable)
+- **AND** the migration is applied ONLY after the grant-conflict check passes AND the
+  credential deposit succeeds, so a deposit failure or grant refusal leaves the legacy
+  scope untouched and the connection inert (the inert-partial-state guarantee holds)
