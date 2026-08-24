@@ -415,3 +415,29 @@ def test_per_universe_spend_ceiling_counts_other_attempts(tmp_path: Path, monkey
 
     assert launches == ["launch"]
     assert _reservation_count(conn) == 2
+
+
+def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
+    """A real published version's content_hash is bare hex; the task carries
+    sha256:<hex>. The authority compare normalizes both, so a genuine version is
+    accepted (Codex #2, PR #2516) — and a truly different hash still fails closed."""
+    bare = "a" * 64
+    version = SimpleNamespace(
+        status="active",
+        branch_def_id="bdef-1",
+        content_hash=bare,
+        snapshot={"node_defs": [{"node_type": "prompt", "model_hint": "writer"}]},
+    )
+    monkeypatch.setattr(
+        "tinyassets.branch_versions.get_branch_version",
+        lambda *a, **k: version,
+    )
+    task = SimpleNamespace(
+        automation_branch_version="ver-1",
+        branch_def_id="bdef-1",
+        automation_subject_digest=f"sha256:{bare}",
+    )
+    assert background_provider._branch_roles(tmp_path, task) == ("writer",)
+    task.automation_subject_digest = "sha256:" + "b" * 64
+    with pytest.raises(PermissionError):
+        background_provider._branch_roles(tmp_path, task)

@@ -106,6 +106,17 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _normalize_content_digest(value: str) -> str:
+    """Both forms occur: branch_versions.content_hash is bare hex, but a task's
+    automation_subject_digest is `sha256:<hex>` (api/cloud_automations.py). Normalize
+    to the prefixed form so the authority compare doesn't fail every real version
+    (Codex #2, PR #2516). Empty stays empty so a missing digest never matches."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    return text if text.startswith("sha256:") else f"sha256:{text}"
+
+
 def _branch_roles(base_path: Path, task: Epoch2BranchTask) -> tuple[str, ...]:
     from tinyassets.branch_versions import get_branch_version
 
@@ -114,7 +125,8 @@ def _branch_roles(base_path: Path, task: Epoch2BranchTask) -> tuple[str, ...]:
         version is None
         or version.status != "active"
         or version.branch_def_id != task.branch_def_id
-        or version.content_hash != task.automation_subject_digest
+        or _normalize_content_digest(version.content_hash)
+        != _normalize_content_digest(task.automation_subject_digest)
     ):
         raise PermissionError("immutable Branch version is not current authority")
     node_defs = version.snapshot.get("node_defs", {})
