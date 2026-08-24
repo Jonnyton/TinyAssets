@@ -1084,3 +1084,23 @@ def test_read_graph_compute_target_lists_own_providers_end_to_end(monkeypatch, t
     monkeypatch.setattr(s, "_GRAPH_ID", "u-someone-else")
     other = json.loads(s.read_graph(target="compute"))
     assert other.get("error") == "not_found"  # no admin ACL there -> uniform not_found
+
+
+def test_served_allowlists_do_not_drift():
+    """The two served engine-MCP allowlists (codex + claude) MUST offer the SAME
+    tools — a codex-served and a claude-served universe get identical capability
+    (founder rule: all surfaces do the same things). run_graph drifting onto the
+    claude list ONLY (caught 2026-08-23) meant a codex-served founder could not run
+    automations at all; this guard prevents that class of silent divergence."""
+    from tinyassets.providers.codex_provider import (
+        _ENGINE_MCP_ENABLED_TOOLS as codex_tools,
+    )
+    from tinyassets.universe_intelligence import _ENGINE_MCP_TOOLS as claude_tools
+
+    assert set(codex_tools) == set(claude_tools), (
+        "served engine-MCP allowlists diverged: "
+        f"codex-only={set(codex_tools) - set(claude_tools)}, "
+        f"claude-only={set(claude_tools) - set(codex_tools)}"
+    )
+    # run_graph is the capability that lets a universe RUN automations from the app.
+    assert "run_graph" in codex_tools and "run_graph" in claude_tools

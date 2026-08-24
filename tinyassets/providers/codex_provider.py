@@ -216,6 +216,17 @@ _ENGINE_MCP_BEARER_ENV = "TINYASSETS_ENGINE_MCP_BEARER"
 _ENGINE_MCP_ENABLED_TOOLS = (
     "read_graph",
     "get_status",
+    # run_graph (2026-08-23): RUN one of this universe's OWN approved automations
+    # end-to-end from the served surface — the parity that lets a codex-served
+    # universe DO the workflow it built, not just read it. Matches the claude-served
+    # allowlist (_ENGINE_MCP_TOOLS), which already carried run_graph; its absence
+    # here was silent drift, so a codex-served founder could not run automations at
+    # all. SAFE now: the invoke_branch path is sanitized (#2498 — delegated authz +
+    # fail-closed actor + mapping/await confidentiality), and run_graph is itself
+    # hardened (per-universe run allowlist, author-gated run_branch, effect-spam
+    # rate limit, IDOR read/execute gate, founder-scoped capabilities). remix_shape
+    # + write_graph stay excluded pending their own review (cross-author / build).
+    "run_graph",
     "browse_commons",
     "read_commons_shape",
     "read_brain",
