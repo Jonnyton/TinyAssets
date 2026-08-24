@@ -382,6 +382,21 @@ def get_branch_version(
     return _row_to_version(row)
 
 
+def branch_version_def_id(base_path: str | Path, branch_version_id: str) -> str:
+    """Metadata-only lookup: the ``branch_def_id`` a version belongs to, WITHOUT
+    loading its (potentially large / private) snapshot. Used by the invoke_branch
+    authorization gate to authorize-before-snapshot-load. Empty string if absent."""
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT branch_def_id FROM branch_versions WHERE branch_version_id = ?",
+            (branch_version_id,),
+        ).fetchone()
+    if row is None:
+        return ""
+    return (row["branch_def_id"] or "").strip()
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,

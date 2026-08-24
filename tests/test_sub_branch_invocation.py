@@ -26,6 +26,7 @@ from tinyassets.branches import (
     NodeDefinition,
 )
 from tinyassets.graph_compiler import (
+    BranchExecutionContext,
     CompilerError,
     _build_await_branch_run_node,
     _build_invoke_branch_node,
@@ -34,6 +35,13 @@ from tinyassets.runs import (
     MAX_INVOKE_BRANCH_DEPTH,
     ChildRunAwaitTimeout,
     poll_child_run_status,
+)
+
+#: Default valid execution context for closure-unit tests that exercise
+#: output-mapping / failure-policy / emit behavior (not authorization). The
+#: authorization + fail-closed contract has its own dedicated tests below.
+_DEFAULT_TEST_CTX = BranchExecutionContext(
+    actor="tester", universe_id="u", caller_provenance="own"
 )
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -199,13 +207,17 @@ class TestInvokeBranchBlocking:
         child_branch_mock = MagicMock()
         child_branch_mock.validate.return_value = []
 
-        _child_raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
+        _child_raw = {"branch_def_id": "child", "name": "c",
+                      "visibility": "public", "node_defs": [], "edges": []}
         with (
             patch("tinyassets.daemon_server.get_branch_definition", return_value=_child_raw),
             patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
             patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
         ):
-            fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
+            fn = _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=_DEFAULT_TEST_CTX,
+            )
             result = fn({"parent_q": "what is 6x7?"})
 
         assert result == {"result": "42"}
@@ -238,13 +250,17 @@ class TestInvokeBranchAsync:
         child_branch_mock = MagicMock()
         child_branch_mock.validate.return_value = []
 
-        _child_raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
+        _child_raw = {"branch_def_id": "child", "name": "c",
+                      "visibility": "public", "node_defs": [], "edges": []}
         with (
             patch("tinyassets.daemon_server.get_branch_definition", return_value=_child_raw),
             patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
             patch("tinyassets.runs.execute_branch_async", return_value=queued_outcome),
         ):
-            fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
+            fn = _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=_DEFAULT_TEST_CTX,
+            )
             result = fn({})
 
         assert result == {"child_run_id": "async-child-99"}
@@ -276,7 +292,10 @@ class TestAwaitBranchRunNode:
             result = fn({"child_run_id": "child-99"})
 
         assert result == {"result": "hello"}
-        mock_poll.assert_called_once_with(tmp_path, "child-99", timeout_seconds=5.0)
+        mock_poll.assert_called_once_with(
+            tmp_path, "child-99", timeout_seconds=5.0,
+            expected_actor=None, expected_universe_id=None,
+        )
 
     def test_missing_run_id_raises_runtime_error(self, tmp_path):
         nd = NodeDefinition(
@@ -321,8 +340,7 @@ class TestRecursionDepthCap:
         with pytest.raises(CompilerError, match="recursion depth cap"):
             _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
-                depth=MAX_INVOKE_BRANCH_DEPTH,
-            )
+                depth=MAX_INVOKE_BRANCH_DEPTH, execution_context=_DEFAULT_TEST_CTX)
 
     def test_depth_below_cap_is_ok(self, tmp_path):
         nd = NodeDefinition(
@@ -337,8 +355,7 @@ class TestRecursionDepthCap:
         # Should not raise
         fn = _build_invoke_branch_node(
             nd, base_path=tmp_path, event_sink=None,
-            depth=MAX_INVOKE_BRANCH_DEPTH - 1,
-        )
+            depth=MAX_INVOKE_BRANCH_DEPTH - 1, execution_context=_DEFAULT_TEST_CTX)
         assert callable(fn)
 
 
@@ -476,6 +493,7 @@ class TestPollChildRunStatus:
             tmp_path,
             branch=branch,
             inputs={"child_run_id": child_run_id},
+            actor="tester",  # parent + awaited child share the actor (task 4.2 binding)
         )
 
         assert outcome.status == RUN_STATUS_INTERRUPTED
@@ -590,8 +608,24 @@ class TestValidateInvokeBranchVersionSpec:
         assert any("mutually exclusive" in e for e in errs)
 
 
+def _authorized_version_child_fixture(self):
+    """Default: the version resolves to a PUBLIC child (so invoke_branch
+    sanitization's authorize-before-snapshot passes). Tests exercising other
+    behavior (mapping/policy/retry) inherit this; auth-specific tests override it."""
+    from unittest.mock import patch
+    raw = {"branch_def_id": "child", "name": "c", "visibility": "public",
+           "node_defs": [], "edges": []}
+    with (
+        patch("tinyassets.branch_versions.branch_version_def_id", return_value="child"),
+        patch("tinyassets.daemon_server.get_branch_definition", return_value=raw),
+    ):
+        yield
+
+
 class TestCompileInvokeBranchVersionNode:
     """Compiler-level wiring for the new sibling builder."""
+
+    _auth = pytest.fixture(autouse=True)(_authorized_version_child_fixture)
 
     def test_compile_succeeds_with_valid_version_spec(self, tmp_path):
         from tinyassets.graph_compiler import compile_branch
@@ -650,8 +684,7 @@ class TestCompileInvokeBranchVersionNode:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
@@ -683,8 +716,7 @@ class TestCompileInvokeBranchVersionNode:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec:
             mock_exec.return_value = MagicMock(run_id="async-run-xyz")
@@ -707,8 +739,7 @@ class TestCompileInvokeBranchVersionNode:
         with pytest.raises(CompilerError, match="recursion depth cap"):
             _build_invoke_branch_version_node(
                 nd, base_path=tmp_path, event_sink=None,
-                depth=MAX_INVOKE_BRANCH_DEPTH,
-            )
+                depth=MAX_INVOKE_BRANCH_DEPTH, execution_context=_DEFAULT_TEST_CTX)
 
 
 # ─── Phase A item 5 (Task #76b) — on_child_fail policy + retry + ChildFailure ─
@@ -719,6 +750,8 @@ class TestChildFailurePolicy:
     invoke_branch_spec and invoke_branch_version_spec share the dispatch
     helper (`_dispatch_invoke_outcome`); tested via the version builder
     since it's the simpler mocking surface."""
+
+    _auth = pytest.fixture(autouse=True)(_authorized_version_child_fixture)
 
     def test_propagate_default_raises_child_failed_error(self, tmp_path):
         from tinyassets.graph_compiler import (
@@ -736,8 +769,7 @@ class TestChildFailurePolicy:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
@@ -766,8 +798,7 @@ class TestChildFailurePolicy:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
@@ -792,8 +823,7 @@ class TestChildFailurePolicy:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
@@ -828,8 +858,7 @@ class TestChildFailurePolicy:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         # First poll fails, second succeeds.
         poll_returns = [
@@ -867,8 +896,7 @@ class TestChildFailurePolicy:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
@@ -902,8 +930,7 @@ class TestChildFailurePolicy:
             },
         )
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None,
-        )
+            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
@@ -936,8 +963,7 @@ class TestChildFailurePolicy:
                 },
             )
             node_fn = _build_invoke_branch_version_node(
-                nd, base_path=tmp_path, event_sink=None,
-            )
+                nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
             with patch("tinyassets.runs.execute_branch_version_async") as m_exec, \
                  patch("tinyassets.runs.poll_child_run_status") as m_poll:
                 m_exec.return_value = MagicMock(run_id="r")
@@ -1040,250 +1066,391 @@ class TestOutputMappingSchemaValidation:
 # ─── Phase A item 5 / Task #76c — two-pool + child_actor + design_used ─────
 
 
-class TestChildActorHonoring:
-    """Phase A item 5 / Task #76c — invoke_branch_spec.child_actor flows
-    into the spawned child run as the ``actor`` kwarg. Defaults to
-    "anonymous" when unset."""
+class TestInvokeBranchExecutionContext:
+    """invoke_branch sanitization (2026-08-23): the child runs under the IMMUTABLE
+    BranchExecutionContext -- as ctx.actor (never a spec child_actor, never anonymous),
+    and the author-chosen child ref is authorized by DELEGATED authority (own ->
+    own/public; public-foreign -> public only)."""
 
-    def test_invoke_branch_threads_child_actor_blocking(self, tmp_path):
+    @staticmethod
+    def _ctx(actor="alice", provenance="own"):
+        from tinyassets.graph_compiler import BranchExecutionContext
+        return BranchExecutionContext(
+            actor=actor, universe_id="u", caller_provenance=provenance
+        )
+
+    @staticmethod
+    def _child_raw(visibility="public", author=""):
+        raw = {"branch_def_id": "child", "name": "c", "visibility": visibility,
+               "node_defs": [], "edges": []}
+        if author:
+            raw["author"] = author
+        return raw
+
+    def test_child_runs_as_context_actor_ignoring_spec_child_actor(self, tmp_path):
         from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             invoke_branch_spec={
-                "branch_def_id": "child",
-                "inputs_mapping": {},
-                "output_mapping": {"result": "answer"},
-                "wait_mode": "blocking",
-                "child_actor": "alice",
+                "branch_def_id": "child", "inputs_mapping": {},
+                "output_mapping": {"result": "answer"}, "wait_mode": "blocking",
+                "child_actor": "mallory",  # spoof attempt -- must be IGNORED
             },
         )
-        child_outcome = RunOutcome(
-            run_id="r1", status=RUN_STATUS_COMPLETED,
-            output={"answer": "ok"}, error="",
-        )
-        child_branch_mock = MagicMock()
-        child_branch_mock.validate.return_value = []
-        _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
-
+        child_outcome = RunOutcome(run_id="r1", status=RUN_STATUS_COMPLETED,
+                                   output={"answer": "ok"}, error="")
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
         with (
-            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
-            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw()),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch",
+                  return_value=child_outcome) as mock_exec,
+        ):
+            fn = _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=self._ctx(actor="alice"),
+            )
+            fn({})
+        assert mock_exec.call_args.kwargs["actor"] == "alice"  # ctx, not "mallory"
+
+    def test_no_execution_context_fails_closed(self, tmp_path):
+        from tinyassets.graph_compiler import CompilerError
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_spec={
+                "branch_def_id": "child", "inputs_mapping": {},
+                "output_mapping": {"result": "answer"}, "wait_mode": "blocking",
+            },
+        )
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
+        with (
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw()),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch") as mock_exec,
         ):
             fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
-            fn({})
+            with pytest.raises(CompilerError):
+                fn({})
+        assert mock_exec.call_count == 0
 
+    def test_own_provenance_may_invoke_own_private_child(self, tmp_path):
+        from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_spec={
+                "branch_def_id": "child", "inputs_mapping": {},
+                "output_mapping": {"result": "answer"}, "wait_mode": "blocking",
+            },
+        )
+        child_outcome = RunOutcome(run_id="r1", status=RUN_STATUS_COMPLETED,
+                                   output={"answer": "ok"}, error="")
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
+        child_mock.author = "alice"  # own-authored private child
+        with (
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw(visibility="private", author="alice")),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch",
+                  return_value=child_outcome) as mock_exec,
+        ):
+            fn = _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=self._ctx(actor="alice", provenance="own"),
+            )
+            fn({})
         assert mock_exec.call_args.kwargs["actor"] == "alice"
 
-    def test_invoke_branch_default_actor_anonymous(self, tmp_path):
+    def test_foreign_provenance_refused_private_child(self, tmp_path):
+        from tinyassets.graph_compiler import CompilerError
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_spec={
+                "branch_def_id": "victim-private", "inputs_mapping": {},
+                "output_mapping": {"result": "answer"}, "wait_mode": "blocking",
+            },
+        )
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
+        child_mock.author = "victim"
+        with (
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw(visibility="private")),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch") as mock_exec,
+        ):
+            fn = _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=self._ctx(actor="victim", provenance="public-foreign"),
+            )
+            with pytest.raises(CompilerError):
+                fn({})
+        assert mock_exec.call_count == 0
+
+    def test_foreign_provenance_may_invoke_public_child(self, tmp_path):
         from tinyassets.runs import RUN_STATUS_COMPLETED, RunOutcome
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             invoke_branch_spec={
-                "branch_def_id": "child",
-                "inputs_mapping": {},
-                "output_mapping": {"result": "answer"},
-                "wait_mode": "blocking",
-                # child_actor unset
+                "branch_def_id": "child", "inputs_mapping": {},
+                "output_mapping": {"result": "answer"}, "wait_mode": "blocking",
             },
         )
-        child_outcome = RunOutcome(
-            run_id="r1", status=RUN_STATUS_COMPLETED,
-            output={"answer": "ok"}, error="",
-        )
-        child_branch_mock = MagicMock()
-        child_branch_mock.validate.return_value = []
-        _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
-
+        child_outcome = RunOutcome(run_id="r1", status=RUN_STATUS_COMPLETED,
+                                   output={"answer": "ok"}, error="")
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
         with (
-            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
-            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw(visibility="public")),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch",
+                  return_value=child_outcome) as mock_exec,
         ):
-            fn = _build_invoke_branch_node(nd, base_path=tmp_path, event_sink=None)
+            fn = _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=self._ctx(actor="bob", provenance="public-foreign"),
+            )
             fn({})
+        assert mock_exec.call_args.kwargs["actor"] == "bob"
 
-        assert mock_exec.call_args.kwargs["actor"] == "anonymous"
-
-    def test_invoke_branch_async_threads_invocation_depth(self, tmp_path):
-        """Async path passes ``_invocation_depth=depth+1`` for two-pool routing."""
+    def test_async_still_threads_depth_under_context(self, tmp_path):
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             invoke_branch_spec={
-                "branch_def_id": "child",
-                "inputs_mapping": {},
-                "output_mapping": {"child_run_id": "ignored"},
-                "wait_mode": "async",
-                "child_actor": "bob",
+                "branch_def_id": "child", "inputs_mapping": {},
+                "output_mapping": {"child_run_id": "ignored"}, "wait_mode": "async",
+                "child_actor": "spoof",
             },
         )
-        child_branch_mock = MagicMock()
-        child_branch_mock.validate.return_value = []
-        _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
-
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
         with (
-            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
-            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw()),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
             patch("tinyassets.runs.execute_branch_async") as mock_async,
         ):
             mock_async.return_value = MagicMock(run_id="async-r1")
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None, depth=2,
+                execution_context=self._ctx(actor="alice"),
             )
             fn({})
-
         kwargs = mock_async.call_args.kwargs
-        assert kwargs["actor"] == "bob"
-        assert kwargs["_invocation_depth"] == 3  # depth=2 + 1
+        assert kwargs["actor"] == "alice"  # ctx, not "spoof"
+        assert kwargs["_invocation_depth"] == 3
 
-    def test_blocking_invoke_branch_inherits_parent_actor_and_threads_depth(self, tmp_path):
-        """Blocking child runs inherit parent actor unless child_actor overrides."""
-        from tinyassets.runs import (
-            RUN_STATUS_COMPLETED,
-            RunOutcome,
-            _prepare_run,
-            initialize_runs_db,
+    def test_version_authorizes_before_snapshot_and_runs_as_context_actor(self, tmp_path):
+        from tinyassets.graph_compiler import _build_invoke_branch_version_node
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_version_spec={
+                "branch_version_id": "child@abc12345", "wait_mode": "blocking",
+                "inputs_mapping": {}, "output_mapping": {"parent_out": "child_out"},
+                "child_actor": "carol",  # ignored
+            },
+        )
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
+        child_mock.branch_def_id = "child"
+        node_fn = _build_invoke_branch_version_node(
+            nd, base_path=tmp_path, event_sink=None, depth=1,
+            execution_context=self._ctx(actor="alice"),
+        )
+        with (
+            patch("tinyassets.branch_versions.branch_version_def_id",
+                  return_value="child"),
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw()),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch_version_async") as mock_exec,
+            patch("tinyassets.runs.poll_child_run_status") as mock_poll,
+        ):
+            mock_exec.return_value = MagicMock(run_id="r-x")
+            mock_poll.return_value = {"status": "completed", "output": {"child_out": "v"}}
+            node_fn({})
+        kwargs = mock_exec.call_args.kwargs
+        assert kwargs["actor"] == "alice"  # ctx, not "carol"
+        assert kwargs["_invocation_depth"] == 2
+
+    def test_version_foreign_private_refused_before_snapshot(self, tmp_path):
+        from tinyassets.graph_compiler import (
+            CompilerError,
+            _build_invoke_branch_version_node,
         )
 
-        initialize_runs_db(tmp_path)
-        parent_branch = BranchDefinition(
-            branch_def_id="parent",
-            name="parent",
-            entry_point="n1",
-            node_defs=[],
-            graph_nodes=[],
-            edges=[],
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_version_spec={
+                "branch_version_id": "victim@abc12345", "wait_mode": "blocking",
+                "inputs_mapping": {}, "output_mapping": {"parent_out": "child_out"},
+            },
         )
-        parent_run_id = _prepare_run(
-            tmp_path,
-            branch=parent_branch,
-            inputs={},
-            run_name="",
-            actor="alice",
+        child_mock = MagicMock()
+        child_mock.validate.return_value = []
+        child_mock.author = "victim"
+        child_mock.branch_def_id = "victim"
+        node_fn = _build_invoke_branch_version_node(
+            nd, base_path=tmp_path, event_sink=None, depth=1,
+            execution_context=self._ctx(actor="victim", provenance="public-foreign"),
+        )
+        with (
+            patch("tinyassets.branch_versions.branch_version_def_id",
+                  return_value="victim"),
+            patch("tinyassets.daemon_server.get_branch_definition",
+                  return_value=self._child_raw(visibility="private")),
+            patch("tinyassets.branches.BranchDefinition.from_dict",
+                  return_value=child_mock),
+            patch("tinyassets.runs.execute_branch_version_async") as mock_exec,
+            patch("tinyassets.runs.poll_child_run_status"),
+        ):
+            mock_exec.return_value = MagicMock(run_id="r-x")
+            with pytest.raises(CompilerError):
+                node_fn({})
+        assert mock_exec.call_count == 0  # authorized BEFORE snapshot load
+
+
+class TestInvokeBranchMappingConfidentiality:
+    """Task 4.1 — a FOREIGN-provenance invoke edge must not plumb a
+    credential/secret/auth-state field into a child's inputs or harvest one out of
+    its output; own-provenance edges (the runner's own shapes) stay unrestricted."""
+
+    @staticmethod
+    def _ctx(provenance="public-foreign"):
+        from tinyassets.graph_compiler import BranchExecutionContext
+        return BranchExecutionContext(
+            actor="alice", universe_id="u", caller_provenance=provenance
         )
 
+    def test_foreign_inputs_mapping_secret_key_refused_at_compile(self, tmp_path):
+        from tinyassets.graph_compiler import CompilerError
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             invoke_branch_spec={
                 "branch_def_id": "child",
-                "inputs_mapping": {},
-                "output_mapping": {"result": "answer"},
-                "wait_mode": "blocking",
+                "inputs_mapping": {"parent_q": "api_key"},  # secret-named child input
+                "output_mapping": {}, "wait_mode": "blocking",
             },
         )
-        child_outcome = RunOutcome(
-            run_id="r1",
-            status=RUN_STATUS_COMPLETED,
-            output={"answer": "ok"},
-            error="",
-        )
-        child_branch_mock = MagicMock()
-        child_branch_mock.validate.return_value = []
-        _raw = {"branch_def_id": "child", "name": "c", "node_defs": [], "edges": []}
-
-        with (
-            patch("tinyassets.daemon_server.get_branch_definition", return_value=_raw),
-            patch("tinyassets.branches.BranchDefinition.from_dict", return_value=child_branch_mock),
-            patch("tinyassets.runs.execute_branch", return_value=child_outcome) as mock_exec,
-        ):
-            fn = _build_invoke_branch_node(
-                nd,
-                base_path=tmp_path,
-                event_sink=None,
-                depth=2,
-                parent_run_id=parent_run_id,
+        with pytest.raises(CompilerError, match="credential/secret"):
+            _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=self._ctx("public-foreign"),
             )
-            result = fn({})
 
-        assert result == {"result": "ok"}
-        kwargs = mock_exec.call_args.kwargs
-        assert kwargs["actor"] == "alice"
-        assert kwargs["_invocation_depth"] == 3  # depth=2 + 1
-
-    def test_invoke_branch_version_threads_child_actor_and_depth(self, tmp_path):
-        """invoke_branch_version_spec passes child_actor + _invocation_depth."""
-        from tinyassets.graph_compiler import _build_invoke_branch_version_node
-
+    def test_foreign_output_mapping_secret_key_refused_at_compile(self, tmp_path):
+        from tinyassets.graph_compiler import CompilerError
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
-            invoke_branch_version_spec={
-                "branch_version_id": "child@abc12345",
+            invoke_branch_spec={
+                "branch_def_id": "child", "inputs_mapping": {},
+                "output_mapping": {"refresh_token": "answer"},  # secret-named parent key
                 "wait_mode": "blocking",
-                "inputs_mapping": {},
-                "output_mapping": {"parent_out": "child_out"},
-                "child_actor": "carol",
             },
         )
-        node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None, depth=1,
-        )
+        with pytest.raises(CompilerError, match="credential/secret"):
+            _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                execution_context=self._ctx("public-foreign"),
+            )
 
-        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
-             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
-            mock_exec.return_value = MagicMock(run_id="r-x")
-            mock_poll.return_value = {
-                "status": "completed",
-                "output": {"child_out": "v"},
-            }
-            node_fn({})
-
-        kwargs = mock_exec.call_args.kwargs
-        assert kwargs["actor"] == "carol"
-        assert kwargs["_invocation_depth"] == 2  # depth=1 + 1
-
-    def test_invoke_branch_version_inherits_parent_actor(self, tmp_path):
-        """Version-pinned child runs use the same parent-actor default."""
-        from tinyassets.graph_compiler import _build_invoke_branch_version_node
-        from tinyassets.runs import _prepare_run, initialize_runs_db
-
-        initialize_runs_db(tmp_path)
-        parent_branch = BranchDefinition(
-            branch_def_id="parent",
-            name="parent",
-            entry_point="n1",
-            node_defs=[],
-            graph_nodes=[],
-            edges=[],
-        )
-        parent_run_id = _prepare_run(
-            tmp_path,
-            branch=parent_branch,
-            inputs={},
-            run_name="",
-            actor="alice",
-        )
-
+    def test_own_provenance_secret_mapping_allowed(self, tmp_path):
+        # Differential: the SAME secret-named mapping under OWN provenance compiles
+        # (a universe plumbing its own fields between its own sub-branches).
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
-            invoke_branch_version_spec={
-                "branch_version_id": "child@abc12345",
+            invoke_branch_spec={
+                "branch_def_id": "child",
+                "inputs_mapping": {"parent_q": "api_key"},
+                "output_mapping": {"refresh_token": "answer"},
                 "wait_mode": "blocking",
-                "inputs_mapping": {},
-                "output_mapping": {"parent_out": "child_out"},
             },
         )
-        node_fn = _build_invoke_branch_version_node(
-            nd,
-            base_path=tmp_path,
-            event_sink=None,
-            depth=1,
-            parent_run_id=parent_run_id,
+        fn = _build_invoke_branch_node(
+            nd, base_path=tmp_path, event_sink=None,
+            execution_context=self._ctx("own"),
+        )
+        assert callable(fn)
+
+
+class TestAwaitRunActorUniverseBinding:
+    """Task 4.2 — await_branch_run binds the polled run to the execution
+    context's actor + universe; a foreign run id planted in state is refused."""
+
+    def _await_node(self):
+        return NodeDefinition(
+            node_id="n1", display_name="N1",
+            await_run_spec={"run_id_field": "child_run_id",
+                            "output_mapping": {"result": "answer"}},
         )
 
-        with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
-             patch("tinyassets.runs.poll_child_run_status") as mock_poll:
-            mock_exec.return_value = MagicMock(run_id="r-x")
-            mock_poll.return_value = {
-                "status": "completed",
-                "output": {"child_out": "v"},
-            }
-            node_fn({})
+    def test_foreign_actor_run_refused(self, tmp_path):
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            _build_await_branch_run_node,
+        )
+        foreign = {"run_id": "r-foreign", "status": "completed",
+                   "output": {"answer": "secret"}, "actor": "mallory",
+                   "queue_universe_id": "u"}
+        with patch("tinyassets.runs.get_run", return_value=foreign):
+            fn = _build_await_branch_run_node(
+                self._await_node(), base_path=tmp_path, event_sink=None,
+                execution_context=BranchExecutionContext(
+                    actor="alice", universe_id="u", caller_provenance="own"),
+            )
+            with pytest.raises(KeyError):
+                fn({"child_run_id": "r-foreign"})
 
-        kwargs = mock_exec.call_args.kwargs
-        assert kwargs["actor"] == "alice"
-        assert kwargs["_invocation_depth"] == 2
+    def test_foreign_universe_run_refused(self, tmp_path):
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            _build_await_branch_run_node,
+        )
+        foreign = {"run_id": "r-x", "status": "completed",
+                   "output": {"answer": "secret"}, "actor": "alice",
+                   "queue_universe_id": "other-universe"}
+        with patch("tinyassets.runs.get_run", return_value=foreign):
+            fn = _build_await_branch_run_node(
+                self._await_node(), base_path=tmp_path, event_sink=None,
+                execution_context=BranchExecutionContext(
+                    actor="alice", universe_id="u", caller_provenance="own"),
+            )
+            with pytest.raises(KeyError):
+                fn({"child_run_id": "r-x"})
+
+    def test_own_actor_universe_run_allowed(self, tmp_path):
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            _build_await_branch_run_node,
+        )
+        owned = {"run_id": "r-own", "status": "completed",
+                 "output": {"answer": "42"}, "actor": "alice",
+                 "queue_universe_id": "u"}
+        with patch("tinyassets.runs.get_run", return_value=owned):
+            fn = _build_await_branch_run_node(
+                self._await_node(), base_path=tmp_path, event_sink=None,
+                execution_context=BranchExecutionContext(
+                    actor="alice", universe_id="u", caller_provenance="own"),
+            )
+            assert fn({"child_run_id": "r-own"}) == {"result": "42"}
 
 
 class TestTwoPoolIsolation:
@@ -1351,11 +1518,11 @@ class TestTwoPoolIsolation:
         with pytest.raises(CompilerError, match="recursion depth cap"):
             _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None, depth=2,
+                execution_context=_DEFAULT_TEST_CTX,
             )
         # depth=1 with cap=2 should NOT raise.
         _build_invoke_branch_node(
-            nd, base_path=tmp_path, event_sink=None, depth=1,
-        )
+            nd, base_path=tmp_path, event_sink=None, depth=1, execution_context=_DEFAULT_TEST_CTX)
 
 
 class TestInvokeBranchDesignUsedEmit:
@@ -1416,8 +1583,7 @@ class TestInvokeBranchDesignUsedEmit:
         ):
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
-                parent_run_id="parent-run-1",
-            )
+                parent_run_id="parent-run-1", execution_context=_DEFAULT_TEST_CTX)
             fn({})
 
         with ce_connect(tmp_path) as conn:
@@ -1466,8 +1632,7 @@ class TestInvokeBranchDesignUsedEmit:
         ):
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
-                parent_run_id="parent-run-1",
-            )
+                parent_run_id="parent-run-1", execution_context=_DEFAULT_TEST_CTX)
             fn({})
 
         with ce_connect(tmp_path) as conn:
@@ -1512,8 +1677,7 @@ class TestInvokeBranchDesignUsedEmit:
         ):
             fn = _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
-                parent_run_id="parent-run-1",
-            )
+                parent_run_id="parent-run-1", execution_context=_DEFAULT_TEST_CTX)
             fn({})  # default policy → returns fallback updates, no raise
 
         with ce_connect(tmp_path) as conn:
@@ -1585,8 +1749,7 @@ class TestInvokeBranchVersionDesignUsedEmit:
         )
         node_fn = _build_invoke_branch_version_node(
             nd, base_path=tmp_path, event_sink=None,
-            parent_run_id="parent-run-7",
-        )
+            parent_run_id="parent-run-7", execution_context=_DEFAULT_TEST_CTX)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec, \
              patch("tinyassets.runs.poll_child_run_status") as mock_poll:
