@@ -24,6 +24,7 @@ from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.providers.call import call_provider
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
     SoulEditError,
     apply_soul_edit,
@@ -149,21 +150,11 @@ _ENGINE_DISALLOWED_TOOLS = (
 # tool exists for the follow-up but stays off every served allowlist until that
 # hardening lands. run_graph stays (pre-existing) but is being author-gated to
 # own-authored branches in the same follow-up.
-_ENGINE_MCP_TOOLS = (
-    "read_graph",
-    "get_status",
-    "run_graph",
-    "browse_commons",
-    "read_commons_shape",
-    "read_brain",
-    "write_brain",
-    # connect_compute (slice 4): register a compute provider from the served surface
-    # — the same primitive the browser connector has. Candidate-only registration (no
-    # execution, no cross-universe reach), owner-gated + graph-pinned + secret-free
-    # (Codex-approved), so it is safe alongside the read/brain handles even though
-    # remix_shape stays excluded for its unsanitized cross-author invoke path.
-    "connect_compute",
-)
+# Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
+# shared verbatim with the codex surface (codex_provider._ENGINE_MCP_ENABLED_TOOLS)
+# so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same
+# things). To change what the served agent can do, edit served_tools.py once.
+_ENGINE_MCP_TOOLS = SERVED_ENGINE_MCP_TOOLS
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
 # the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).

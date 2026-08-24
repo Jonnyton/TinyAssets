@@ -1095,12 +1095,13 @@ def test_served_allowlists_do_not_drift():
     from tinyassets.providers.codex_provider import (
         _ENGINE_MCP_ENABLED_TOOLS as codex_tools,
     )
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
     from tinyassets.universe_intelligence import _ENGINE_MCP_TOOLS as claude_tools
 
-    assert set(codex_tools) == set(claude_tools), (
-        "served engine-MCP allowlists diverged: "
-        f"codex-only={set(codex_tools) - set(claude_tools)}, "
-        f"claude-only={set(claude_tools) - set(codex_tools)}"
-    )
+    # Structural guarantee: both surfaces reference the SAME canonical tuple, so
+    # they cannot drift by construction (not merely "equal today").
+    assert codex_tools is SERVED_ENGINE_MCP_TOOLS
+    assert claude_tools is SERVED_ENGINE_MCP_TOOLS
+    assert codex_tools is claude_tools
     # run_graph is the capability that lets a universe RUN automations from the app.
-    assert "run_graph" in codex_tools and "run_graph" in claude_tools
+    assert "run_graph" in SERVED_ENGINE_MCP_TOOLS
