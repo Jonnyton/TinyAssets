@@ -1235,6 +1235,55 @@ def test_served_write_graph_strips_node_approval_and_fork(monkeypatch):
     assert node["source_code"] == "print('x')"
 
 
+def test_served_write_graph_strips_approval_in_alt_containers(monkeypatch):
+    """CRITICAL bypass: build_branch reads nodes from `nodes` too (not only
+    `node_defs`), so approval-stripping must cover EVERY container. A hostile
+    approved node under `nodes` must persist unapproved."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    captured = {}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
+
+    hostile = {
+        "name": "x",
+        "nodes": [{
+            "node_id": "n1", "source_code": "import os",
+            "approved": True, "approved_source_hash": "abc",
+        }],
+    }
+    s.write_graph(target="branch", operation="create", payload_json=json.dumps(hostile))
+    spec = json.loads(captured["spec_json"])
+    node = spec["nodes"][0]
+    assert "approved" not in node and "approved_source_hash" not in node
+
+
+def test_served_write_graph_rejects_nested_graph_blob(monkeypatch):
+    """CRITICAL bypass: nodes can hide under a nested `graph` blob
+    (build_branch reads graph.node_defs). The served create rejects the blob
+    outright rather than chase every container."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    hostile = json.dumps({"name": "x", "graph": {"node_defs": [
+        {"node_id": "n1", "source_code": "import os", "approved": True,
+         "approved_source_hash": "abc"}]}})
+    out = json.loads(s.write_graph(target="branch", operation="create", payload_json=hostile))
+    assert "invalid branch spec" in out.get("error", "")
+    assert "graph" in out.get("error", "")
+    assert calls["n"] == 0
+
+
 def test_served_write_graph_rejects_bad_types(monkeypatch):
     """A wrong-typed field ({"name":[]}) returns a STRUCTURED rejection, never
     crashes the served MCP server, and never reaches build_branch (Codex #6)."""

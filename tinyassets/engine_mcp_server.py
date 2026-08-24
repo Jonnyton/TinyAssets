@@ -396,50 +396,79 @@ def run_graph(
 # Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
 # turn structurally cannot fire an effect or submit a run.
 _WRITE_GRAPH_OPS = frozenset({"create"})
-#: Node fields a served create must NEVER carry. approval/provenance would let the
-#: agent self-approve executable source (run-time gate is hash-only); author is
-#: server-derived; fork_from would copy a foreign node. Stripped from every node.
-_SERVED_NODE_STRIP_FIELDS = (
+#: Fields a served create must NEVER carry, stripped from EVERY dict in the spec
+#: (recursively). approval/provenance would let the agent self-approve executable
+#: source (the run-time gate is hash-only, and _staged_branch_from_spec accepts
+#: nodes under node_defs, nodes, AND a nested graph blob — so a per-container strip
+#: is bypassable; strip everywhere). author is server-derived; fork/publish would
+#: fork a foreign shape or expose it publicly.
+_SERVED_STRIP_FIELDS_DEEP = frozenset({
     "approved", "approved_by", "approved_at", "approved_source_hash",
-    "approval_reason", "author", "fork_from",
-)
-#: Top-level spec fields that would expose or fork the branch — off this surface.
-_SERVED_SPEC_STRIP_FIELDS = ("fork_from", "fork_from_version", "published", "public")
+    "approval_reason", "author", "fork_from", "fork_from_version",
+    "published", "public",
+})
 #: DoS bounds on a served build payload.
 _SERVED_MAX_SPEC_BYTES = 256 * 1024
 _SERVED_MAX_NODES = 100
+_SERVED_MAX_SPEC_DEPTH = 40
 
 
 def _sanitize_served_branch_spec(spec: dict) -> None:
     """Strip everything a served (autonomous) create must not carry, IN PLACE.
 
-    Security (Codex adapt 2026-08-23): removes approval/provenance + author +
-    fork from every node so the shape persists unapproved and same-author (findings
-    1/2/4), and forces private (finding 3). Raises ValueError on a structurally
-    invalid spec so the caller returns a structured rejection instead of crashing
-    downstream on a wrong-typed field (finding 6).
+    Security (Codex adapt 2026-08-23): the raw build_branch spec is a permissive
+    surface — ``_staged_branch_from_spec`` reads nodes from ``node_defs``,
+    ``nodes``, OR a nested ``graph`` blob, and accepts caller-supplied approval
+    provenance whose hash is self-computable (→ a forged approved source_code node
+    + the live run_graph = RCE). So:
+
+      * reject the nested ``graph`` response-shape (a served agent submits the flat
+        canonical spec; the blob is an obfuscation vector for hiding nodes);
+      * RECURSIVELY strip approval/author/fork/publish from every dict, so no
+        container can smuggle them (findings 1/2/4);
+      * force ``visibility=private`` (finding 3 — no self-publish);
+      * type-check + cap nodes and depth (finding 6 — a wrong-typed or pathological
+        payload returns a structured rejection, never crashes the server).
     """
-    for f in _SERVED_SPEC_STRIP_FIELDS:
-        spec.pop(f, None)
+    if isinstance(spec.get("graph"), dict):
+        raise ValueError(
+            "submit a flat branch spec (node_defs/edges/entry_point), not a "
+            "nested 'graph' blob"
+        )
+
+    def _strip(obj, depth):
+        if depth > _SERVED_MAX_SPEC_DEPTH:
+            raise ValueError("spec nested too deeply")
+        if isinstance(obj, dict):
+            for f in _SERVED_STRIP_FIELDS_DEEP:
+                obj.pop(f, None)
+            for v in obj.values():
+                _strip(v, depth + 1)
+        elif isinstance(obj, list):
+            for v in obj:
+                _strip(v, depth + 1)
+
+    _strip(spec, 0)
     spec["visibility"] = "private"
     for f in ("name", "description", "entry_point", "domain_id", "goal_id"):
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
-    nodes = spec.get("node_defs")
-    if nodes is None:
-        return
-    if not isinstance(nodes, list):
-        raise ValueError("node_defs must be a list")
-    if len(nodes) > _SERVED_MAX_NODES:
+    total_nodes = 0
+    for container in ("node_defs", "nodes"):
+        nodes = spec.get(container)
+        if nodes is None:
+            continue
+        if not isinstance(nodes, list):
+            raise ValueError(f"{container} must be a list")
+        total_nodes += len(nodes)
+        for n in nodes:
+            if not isinstance(n, dict):
+                raise ValueError(f"each {container} entry must be a JSON object")
+            for f in ("node_id", "display_name", "source_code", "prompt_template"):
+                if f in n and not isinstance(n[f], str):
+                    raise ValueError(f"node field '{f}' must be a string")
+    if total_nodes > _SERVED_MAX_NODES:
         raise ValueError(f"too many nodes (max {_SERVED_MAX_NODES})")
-    for n in nodes:
-        if not isinstance(n, dict):
-            raise ValueError("each node_def must be a JSON object")
-        for f in _SERVED_NODE_STRIP_FIELDS:
-            n.pop(f, None)
-        for f in ("node_id", "display_name", "source_code", "prompt_template"):
-            if f in n and not isinstance(n[f], str):
-                raise ValueError(f"node field '{f}' must be a string")
 
 
 @mcp.tool
@@ -541,7 +570,7 @@ def write_graph(
     try:
         try:
             spec = json.loads(payload_json or "{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return json.dumps({"error": "payload_json must be valid JSON."})
         if not isinstance(spec, dict):
             return json.dumps({"error": "payload_json must be a JSON object."})
