@@ -518,6 +518,17 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                             "surface; only the channel-agnostic "
                             f"'{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL}' node is allowed"
                         )
+                # The run-time effector dispatches EVERY entry in the list, so a single
+                # node with N duplicate sinks fires N outbound calls — bypassing a
+                # node-count cap (Codex #1, PR #2517). The one channel sink is only ever
+                # needed once per node (the destination lives in the run-time packet, not
+                # here), so require exactly [] or [authenticated_external_call]: one node,
+                # one dispatch, so the effect-node cap is the true outbound ceiling.
+                if len(effects) > 1:
+                    raise ValueError(
+                        "a node may declare the channel sink at most once; use a "
+                        "separate node per outbound call"
+                    )
                 if effects:
                     effect_nodes += 1
             # The typed 'handoffs' path (outbound_boundary) is a DIFFERENT effect
@@ -1333,7 +1344,14 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         return json.dumps({"error": "payload must be a JSON object."})
     if not isinstance(payload_obj, dict):
         return json.dumps({"error": "payload must be a JSON object."})
-    channel_type = str(payload_obj.get("channel_type") or "").strip()
+    # A consent payload is a flat string map. Reject any non-string value here so a
+    # malformed member (e.g. channel_type=["source_code"]) returns a structured error
+    # instead of raising AttributeError deep in the impl's .strip() (Codex #2, PR #2517)
+    # — and so a list-wrapped "source_code" cannot slip past the source_code refusal.
+    for key, value in payload_obj.items():
+        if not isinstance(value, str):
+            return json.dumps({"error": f"payload '{key}' must be a string."})
+    channel_type = (payload_obj.get("channel_type") or "").strip()
     if channel_type == "source_code":
         # RCE closure: source_code approval sets approved_source_hash, the execution
         # gate the create-only served write_graph strips. Keep it off this surface.

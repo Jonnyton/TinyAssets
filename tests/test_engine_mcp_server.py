@@ -1414,6 +1414,28 @@ def test_served_write_graph_effects_must_be_string_list(monkeypatch):
     assert calls["n"] == 0
 
 
+def test_served_write_graph_rejects_duplicate_effect_sinks(monkeypatch):
+    """One node with duplicate sink entries fires N outbound calls at run time,
+    bypassing the node-count cap (Codex #1). A node may declare the channel sink at
+    most once — [] or [authenticated_external_call]."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    dup = {"name": "x", "node_defs": [{"node_id": "n1", "effects": [
+        "authenticated_external_call", "authenticated_external_call",
+    ]}]}
+    out = json.loads(s.write_graph(target="branch", operation="create",
+                                   payload_json=json.dumps(dup)))
+    assert "at most once" in out.get("error", "")
+    assert calls["n"] == 0
+
+
 def test_served_write_graph_caps_effect_node_count(monkeypatch):
     """A served channel graph is bounded to a small number of effect-declaring nodes
     (structural per-build ceiling on outbound volume)."""

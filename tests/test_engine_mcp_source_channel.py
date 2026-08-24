@@ -90,6 +90,22 @@ def test_source_channel_rejects_malformed_payload(monkeypatch):
     assert cap == {}
 
 
+def test_source_channel_rejects_non_string_members(monkeypatch):
+    """A non-string payload member returns a structured error, never crashes the impl
+    with AttributeError, and can't smuggle a list-wrapped 'source_code' past the refusal
+    (Codex #2)."""
+    s = _bind(monkeypatch)
+    cap = _patch_impl(monkeypatch)
+    for bad in (
+        '{"channel_type":["source_code"],"destination":"d"}',
+        '{"channel_type":"authenticated_external_call","destination":123}',
+        '{"channel_type":{"x":1},"destination":"d"}',
+    ):
+        out = json.loads(s.source_channel(action="approve", payload=bad))
+        assert "must be a string" in out["error"], bad
+    assert cap == {}  # impl never reached — no crash, no mutation
+
+
 def test_source_channel_approve_pins_universe_and_least_privilege(monkeypatch):
     s = _bind(monkeypatch, graph="u-pinned", allow=("u-pinned",))
     cap = _patch_impl(monkeypatch)
