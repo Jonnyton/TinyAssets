@@ -1138,65 +1138,9 @@ def test_served_write_graph_branch_only(monkeypatch):
     assert captured["kw"]["action"] == "build_branch"
 
 
-def test_served_write_graph_create_forces_private(monkeypatch):
-    """A served create is PRIVATE to the universe — a spec cannot self-declare
-    public (publishing to the commons is a separate, consent-gated browser step)."""
-    import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
-    captured = {}
-    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
-
-    s.write_graph(target="branch", operation="create",
-                  payload_json='{"name":"x","visibility":"public"}')
-    assert captured["action"] == "build_branch"
-    spec = json.loads(captured["spec_json"])
-    assert spec["visibility"] == "private", "served create must force private"
-
-
-def test_served_write_graph_patch_calls_patch_branch(monkeypatch):
-    """patch of a readable own branch reaches patch_branch with the id + changes
-    (patch_branch re-checks authorship: BUG-081)."""
-    import tinyassets.api.branches as br
-    import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
-    monkeypatch.setattr(br, "_resolve_readable_branch", lambda bid, base: {"id": bid})
-    captured = {}
-    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
-
-    s.write_graph(target="branch", operation="patch", branch_id="b-own",
-                  changes_json='[{"op":"noop"}]')
-    assert captured["action"] == "patch_branch"
-    assert captured["branch_def_id"] == "b-own"
-    assert captured["changes_json"] == '[{"op":"noop"}]'
-
-
-def test_served_write_graph_refused_off_allowlist(monkeypatch):
-    """write_graph is a WRITE — refuse unless this universe is on the allowlist."""
-    import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-not-listed")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
-    calls = {"n": 0}
-    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="branch", operation="create"))
-    assert "not enabled for this universe" in out.get("error", "")
-    assert calls["n"] == 0
-
-
-def test_served_write_graph_bad_operation_refused(monkeypatch):
-    """An operation outside {create, patch} is refused before the write."""
+def test_served_write_graph_create_only(monkeypatch):
+    """Only operation=create is served — patch/publish/remix/delete are refused
+    (editing/publishing/forking stay in the browser flow), before any write."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1206,8 +1150,9 @@ def test_served_write_graph_bad_operation_refused(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="branch", operation="delete"))
-    assert "operation must be one of" in out.get("error", "")
+    for op in ("patch", "publish", "remix", "delete", "bind_provider"):
+        out = json.loads(s.write_graph(target="branch", operation=op))
+        assert "operation='create'" in out.get("error", ""), op
     assert calls["n"] == 0
 
 
@@ -1223,13 +1168,76 @@ def test_served_write_graph_requires_explicit_operation(monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation=""))
-    assert "operation must be one of" in out.get("error", "")
+    assert "operation='create'" in out.get("error", "")
     assert calls["n"] == 0
 
 
-def test_served_write_graph_public_and_provider_ops_refused(monkeypatch):
-    """publish/remix (public exposure / cross-author) and every automation op are
-    NOT reachable served — they stay in the browser flow or their own slice."""
+def test_served_write_graph_create_forces_private(monkeypatch):
+    """A served create is PRIVATE to the universe — a spec cannot self-declare
+    public/published (publishing is a separate, consent-gated browser step)."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    captured = {}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
+
+    s.write_graph(target="branch", operation="create",
+                  payload_json='{"name":"x","visibility":"public","published":true}')
+    assert captured["action"] == "build_branch"
+    spec = json.loads(captured["spec_json"])
+    assert spec["visibility"] == "private", "served create must force private"
+    assert "published" not in spec, "published must be stripped"
+
+
+def test_served_write_graph_strips_node_approval_and_fork(monkeypatch):
+    """CRITICAL (Codex adapt): a served create must not be able to smuggle an
+    APPROVED source_code node (self-computable hash -> RCE via the live run_graph),
+    a forged author, or a per-node fork. Every approval/author/fork field is
+    stripped from every node before build_branch, and the top-level fork_from too."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    captured = {}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
+
+    hostile = {
+        "name": "x",
+        "fork_from": "v-foreign",
+        "node_defs": [{
+            "node_id": "n1",
+            "display_name": "n1",
+            "source_code": "print('x')",
+            "approved": True,
+            "approved_source_hash": "deadbeef",
+            "approved_by": "founder",
+            "approved_at": "2026-01-01",
+            "approval_reason": "trust me",
+            "author": "someone-else",
+            "fork_from": "v-foreign",
+        }],
+    }
+    s.write_graph(target="branch", operation="create", payload_json=json.dumps(hostile))
+    spec = json.loads(captured["spec_json"])
+    assert "fork_from" not in spec, "top-level fork_from must be stripped"
+    node = spec["node_defs"][0]
+    for banned in ("approved", "approved_source_hash", "approved_by", "approved_at",
+                   "approval_reason", "author", "fork_from"):
+        assert banned not in node, f"{banned} must be stripped from a served node"
+    # The legit shape survives.
+    assert node["source_code"] == "print('x')"
+
+
+def test_served_write_graph_rejects_bad_types(monkeypatch):
+    """A wrong-typed field ({"name":[]}) returns a STRUCTURED rejection, never
+    crashes the served MCP server, and never reaches build_branch (Codex #6)."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1239,16 +1247,15 @@ def test_served_write_graph_public_and_provider_ops_refused(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    # branch publish/remix → op not in {create, patch}; automation → not target=branch.
-    for target, op in (("branch", "publish"), ("branch", "remix"),
-                       ("automation", "bind_provider"), ("automation", "rebind")):
-        out = json.loads(s.write_graph(target=target, operation=op))
-        assert out.get("error"), (target, op)
+    for bad in ('{"name":[]}', '{"node_defs":"nope"}', '{"node_defs":[123]}',
+                '{"node_defs":[{"node_id":[]}]}'):
+        out = json.loads(s.write_graph(target="branch", operation="create", payload_json=bad))
+        assert "invalid branch spec" in out.get("error", ""), bad
     assert calls["n"] == 0
 
 
-def test_served_write_graph_patch_requires_branch_id(monkeypatch):
-    """patch without a branch_id is refused before any read/write."""
+def test_served_write_graph_payload_too_large(monkeypatch):
+    """A served build payload past the DoS bound is refused before parse/persist."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1258,15 +1265,14 @@ def test_served_write_graph_patch_requires_branch_id(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="branch", operation="patch"))
-    assert "requires branch_id" in out.get("error", "")
+    out = json.loads(s.write_graph(target="branch", operation="create",
+                                   payload_json="x" * (300 * 1024)))
+    assert "too large" in out.get("error", "").lower()
     assert calls["n"] == 0
 
 
-def test_served_write_graph_patch_foreign_branch_not_found(monkeypatch):
-    """Patching a branch the universe may not read reads as not-found (IDOR gate),
-    and never reaches the write."""
-    import tinyassets.api.branches as br
+def test_served_write_graph_too_many_nodes(monkeypatch):
+    """A spec past the node cap is a structured rejection, not a persisted build."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1274,12 +1280,27 @@ def test_served_write_graph_patch_foreign_branch_not_found(monkeypatch):
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
-    monkeypatch.setattr(br, "_resolve_readable_branch", lambda bid, base: None)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="branch", operation="patch",
-                                   branch_id="b-foreign", changes_json="{}"))
-    assert "not found" in out.get("error", "").lower()
+    spec = {"name": "x", "node_defs": [{"node_id": f"n{i}"} for i in range(101)]}
+    out = json.loads(s.write_graph(target="branch", operation="create",
+                                   payload_json=json.dumps(spec)))
+    assert "too many nodes" in out.get("error", "")
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_refused_off_allowlist(monkeypatch):
+    """write_graph is a WRITE — refuse unless this universe is on the allowlist."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-not-listed")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation="create"))
+    assert "not enabled for this universe" in out.get("error", "")
     assert calls["n"] == 0
 
 

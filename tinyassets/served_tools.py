@@ -45,15 +45,20 @@ from __future__ import annotations
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
 #:   write_graph   — BUILD a branch (the "when the user creates things" parity).
-#:       REBUILT 2026-08-23 as a purpose-built, BRANCH-ONLY handler
-#:       (engine_mcp_server.write_graph, target=branch, op in {create, patch}). It
-#:       no longer delegates to the broad connector write_graph — it calls the
-#:       author-gated, EFFECT-FREE extensions functions DIRECTLY (build_branch /
-#:       patch_branch) with least-privilege caps (no submit_request), so the
-#:       automation / version / provider-rebind paths that failed three earlier
-#:       Codex rounds are simply unreachable. Stays DARK (registered, not
-#:       allowlisted) only until a fresh Codex exact-diff review of THIS handler
-#:       clears it — then it moves into the tuple below. run_graph — approved +
+#:       REBUILT 2026-08-23 as a purpose-built, CREATE-ONLY branch handler
+#:       (engine_mcp_server.write_graph, target=branch, op=create). It no longer
+#:       delegates to the broad connector write_graph — it SANITIZES the spec and
+#:       calls the author-gated, EFFECT-FREE build_branch DIRECTLY with least-
+#:       privilege caps (no submit_request). A Codex exact-diff review (VERDICT
+#:       adapt) found raw build_branch let a served turn forge an approved
+#:       source_code node (→ RCE via the live run_graph), fork a foreign version,
+#:       or self-publish; the handler now strips every approval/author/fork field
+#:       from each node (source persists UNAPPROVED — run_graph refuses it until
+#:       the founder approves via the browser), forces visibility=private, and
+#:       type/size-guards the spec. EDIT (patch) is a separate reviewed slice (its
+#:       op set can publish / change visibility / fork). Stays DARK (registered,
+#:       not allowlisted) until a Codex re-review of the adapted handler clears the
+#:       two criticals — then it moves into the tuple below. run_graph — approved +
 #:       live — already covers the RUN parity.
 #:   remix_shape   — cross-author commons remix
 #:   grant_effector_consent / channel-connection verbs — user-built channels
