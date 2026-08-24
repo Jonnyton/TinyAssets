@@ -179,6 +179,20 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
   actually building, triage it (premise-verify → archive dead/landed changes)
   before proposing new ones. Legacy oversized changes are grandfathered for
   visibility, not blessed — pick concrete slices, don't fan out child changes.
+- **Reviews pipeline; never idle on one [all sessions, host 2026-08-24].** A
+  dispatched cross-family/peer review (or any background agent) runs on the
+  peer's budget and re-invokes you when it returns, so it gates LANDING
+  (merge/deploy/flip-on), NOT your forward progress. The standard build pipeline
+  for every session: build slice A → dispatch its review in the **background**
+  (`peer_agent.py` / `codex_review.py`, `run_in_background`) → **immediately pick
+  up the next lane** → fold each verdict in when it lands (fix findings →
+  re-review → land). A pending review is a wait state, not a stopping point: do
+  NOT stop, sit idle, or ask the host "should I wait?" while one runs. This
+  complements *Finish before starting* — the review IS part of finishing the
+  slice, so you advance the pipeline while it runs rather than blocking on it.
+  (Only genuine external blockers — a host-only secret/decision, a broken
+  harness, an unresolved review verdict on THE lane you'd advance into — stop a
+  lane; pick a different lane instead of idling.)
 
 #### OpenSpec drain [temporary bridge until cloud cutover]
 
