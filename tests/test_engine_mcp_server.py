@@ -1347,6 +1347,58 @@ def test_served_write_graph_preserves_opaque_workflow_data(monkeypatch):
     assert "author" not in node and "approved" not in node
 
 
+def test_served_write_graph_rejects_invoke_and_effects(monkeypatch):
+    """Combined build+run confinement (Codex 2026-08-24): a served build must not
+    declare sub-branch invocation (unbounded child fan-out + own-wrapper→foreign
+    child data mapping) or node effects (one run amplifies a consented effect).
+    Reject them before they reach build_branch."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    def _spec(node):
+        return {"name": "x", "node_defs": [{"node_id": "n1", **node}]}
+    cases = [
+        _spec({"invoke_branch_spec": {"branch_def_id": "b"}}),
+        _spec({"invoke_branch_version_spec": {"v": "x"}}),
+        _spec({"await_run_spec": {"run_id": "r"}}),
+        _spec({"effects": ["authenticated_external_call"]}),
+    ]
+    for spec in cases:
+        out = json.loads(s.write_graph(target="branch", operation="create",
+                                       payload_json=json.dumps(spec)))
+        assert "not available on the served build surface" in out.get("error", ""), spec
+    assert calls["n"] == 0
+    # Empty effects list is fine (means "no effects") — builds normally.
+    ok = {"name": "x", "node_defs": [{"node_id": "n1", "prompt_template": "hi", "effects": []}]}
+    s.write_graph(target="branch", operation="create", payload_json=json.dumps(ok))
+    assert calls["n"] == 1
+
+
+def test_served_write_graph_byte_cap_counts_utf8(monkeypatch):
+    """The payload DoS bound counts ENCODED UTF-8 bytes, not str length — a
+    multibyte payload just under the char count but over the byte cap is refused."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    # 200k of a 3-byte char = 600k bytes > 256k cap, but only 200k chars.
+    payload = "☃" * (200 * 1024)
+    out = json.loads(s.write_graph(target="branch", operation="create", payload_json=payload))
+    assert "too large" in out.get("error", "").lower()
+    assert calls["n"] == 0
+
+
 def test_served_write_graph_rejects_bad_types(monkeypatch):
     """A wrong-typed field ({"name":[]}) returns a STRUCTURED rejection, never
     crashes the served MCP server, and never reaches build_branch (Codex #6)."""

@@ -468,6 +468,28 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                     "node_ref is not allowed on the served create surface; "
                     "define nodes inline"
                 )
+            # Sub-branch invocation + declared effects are NOT on the served build
+            # surface yet (Codex build+run confinement review 2026-08-24). A built
+            # invoke_branch/await_run node fans out child runs that bypass the
+            # engine-MCP admission ledger (O(100^depth) blow-up) AND lets an
+            # own-authored wrapper map data into a public FOREIGN child (own
+            # provenance skips the mapping-confidentiality guard); a declared effect
+            # can be dispatched many times from a single admitted run. These arrive
+            # with the channel/consent + per-root-run budget slice — reject for now
+            # (fail loud) so a served build is a self-contained graph.
+            for banned in ("invoke_branch_spec", "invoke_branch_version_spec",
+                           "await_run_spec"):
+                if n.get(banned):
+                    raise ValueError(
+                        f"{banned} is not available on the served build surface "
+                        "yet; build a self-contained graph (sub-branch invocation "
+                        "arrives with the channel/consent slice)"
+                    )
+            if n.get("effects"):
+                raise ValueError(
+                    "declaring node effects is not available on the served build "
+                    "surface yet (effects arrive with the channel/consent slice)"
+                )
             for f in _SERVED_STRIP_NODE_FIELDS:
                 n.pop(f, None)
             for f in ("node_id", "display_name", "source_code", "prompt_template"):
@@ -551,8 +573,9 @@ def write_graph(
                 "stay in the browser flow."
             ),
         })
-    # DoS bound before we parse/persist anything.
-    if len(payload_json or "") > _SERVED_MAX_SPEC_BYTES:
+    # DoS bound before we parse/persist anything — measured in ENCODED UTF-8
+    # bytes (a multibyte payload undercounts with len() on the str).
+    if len((payload_json or "").encode("utf-8")) > _SERVED_MAX_SPEC_BYTES:
         return json.dumps({
             "error": f"payload_json too large (max {_SERVED_MAX_SPEC_BYTES} bytes).",
         })
