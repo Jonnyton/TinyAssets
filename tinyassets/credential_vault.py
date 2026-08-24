@@ -1496,6 +1496,59 @@ def cleanup_llm_credential_snapshot(snapshot: LLMCredentialSnapshot | None) -> N
         logger.warning("credential snapshot cleanup could not remove tracked directory")
 
 
+def scavenge_orphaned_launch_credentials(
+    universe_dir: str | Path,
+    *,
+    max_age_seconds: float = 3600.0,
+    now: float | None = None,
+) -> int:
+    """Reclaim orphaned provider-launch-credential dirs left by a crash (Codex #4, #2516).
+
+    The per-call ``finally`` cleanup covers ordinary returns + Python exceptions, but a
+    SIGKILL / process termination between snapshot creation and that cleanup leaves plaintext
+    credential material on disk indefinitely. This is the startup/periodic reclamation:
+    age-based + identity-safe. It removes only ``codex-*`` directories under THIS universe's
+    snapshot root whose mtime is older than ``max_age_seconds`` — kept well above the 30-min
+    lease + max provider-call duration, so an in-flight call's snapshot is never swept — and,
+    on POSIX, only those owned by us. Never raises; returns the count reclaimed.
+    """
+    import time as _time
+
+    root = Path(universe_dir) / ".runtime" / "provider-launch-credentials"
+    try:
+        if not root.is_dir():
+            return 0
+    except OSError:
+        return 0
+    cutoff = (now if now is not None else _time.time()) - max(0.0, float(max_age_seconds))
+    try:
+        with os.scandir(root) as entries:
+            candidates = [Path(e.path) for e in entries if e.name.startswith("codex-")]
+    except (OSError, PermissionError):
+        return 0
+    get_uid = getattr(os, "geteuid", None)
+    removed = 0
+    for directory in candidates:
+        try:
+            file_stat = directory.lstat()
+        except (OSError, PermissionError):
+            continue
+        if _is_snapshot_reparse_point(file_stat) or not stat.S_ISDIR(file_stat.st_mode):
+            continue
+        if file_stat.st_mtime > cutoff:
+            continue  # too recent — could back an in-flight provider call
+        if callable(get_uid) and file_stat.st_uid != get_uid():
+            continue  # not ours — never touch another owner's directory
+        try:
+            _remove_snapshot_tree(
+                directory, expected_identity=_snapshot_file_identity(file_stat)
+            )
+            removed += 1
+        except Exception:  # noqa: BLE001 - reclamation is best-effort, never raises
+            logger.warning("could not scavenge orphaned launch-credential directory")
+    return removed
+
+
 def snapshot_llm_subscription_credential(
     *,
     universe_dir: str | Path,

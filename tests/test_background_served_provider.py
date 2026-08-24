@@ -476,3 +476,32 @@ def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monk
     ).fetchone()
     assert launched is None  # the fence blocked the launch (reservation never armed)
     assert state["n"] >= 2  # the launch fence re-validated the version
+
+
+def test_scavenge_orphaned_launch_credentials(tmp_path: Path) -> None:
+    """Startup reclamation removes stale (crash-orphaned) codex-* credential dirs but
+    leaves in-flight (recent) ones and non-codex entries (Codex #4, #2516)."""
+    import os
+    import time as _t
+
+    from tinyassets.credential_vault import scavenge_orphaned_launch_credentials
+
+    root = tmp_path / ".runtime" / "provider-launch-credentials"
+    root.mkdir(parents=True)
+    old = root / "codex-staleaaaa"
+    old.mkdir()
+    (old / "cred.json").write_text("secret")
+    recent = root / "codex-freshbbbb"
+    recent.mkdir()
+    (recent / "cred.json").write_text("secret")
+    other = root / "notcodex"
+    other.mkdir()
+    aged = _t.time() - 7200
+    os.utime(old, (aged, aged))
+    removed = scavenge_orphaned_launch_credentials(tmp_path, max_age_seconds=3600)
+    assert removed == 1
+    assert not old.exists()      # stale orphan reclaimed
+    assert recent.exists()       # too recent — could back an in-flight call
+    assert other.exists()        # not a codex- snapshot dir
+    # idempotent: a second sweep with nothing stale removes nothing.
+    assert scavenge_orphaned_launch_credentials(tmp_path, max_age_seconds=3600) == 0
