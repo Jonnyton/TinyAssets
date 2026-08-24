@@ -198,3 +198,17 @@ def test_patch_rejects_non_json_and_non_list(monkeypatch):
                                    payload_json='{"op":"set_name"}'))
     assert "must be a JSON array" in bad["error"]
     assert seen == {}
+
+
+def test_patch_rejects_dict_description_fields(monkeypatch):
+    """description reaches a text column via add_node / add_state_field; a dict there
+    persists malformed (Codex #4 re-review). Both refused pre-storage."""
+    s = _bind(monkeypatch)
+    seen = _capture(monkeypatch)
+    for op in (
+        {"op": "add_node", "node_id": "n1", "description": {"x": 1}},
+        {"op": "add_state_field", "name": "s", "description": {"x": 1}},
+    ):
+        out = _patch(s, [op])
+        assert "must be a string" in out["error"], op
+    assert seen == {}

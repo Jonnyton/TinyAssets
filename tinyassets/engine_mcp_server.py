@@ -542,7 +542,8 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 )
             for f in _SERVED_STRIP_NODE_FIELDS:
                 n.pop(f, None)
-            for f in ("node_id", "display_name", "source_code", "prompt_template"):
+            for f in ("node_id", "display_name", "source_code", "prompt_template",
+                      "description"):
                 if f in n and not isinstance(n[f], str):
                     raise ValueError(f"node field '{f}' must be a string")
     if total_nodes > _SERVED_MAX_NODES:
@@ -655,6 +656,15 @@ def _sanitize_served_patch_changes(changes: object) -> str:
                     not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
                 ):
                     raise ValueError("patch set_tags 'tags' must be a list of strings")
+            if kind == "add_state_field":
+                # name/description reach text columns; a dict/list there persists
+                # malformed (Codex #4 re-review). default_value is intentionally
+                # any-JSON and is not constrained here.
+                for f in ("name", "description"):
+                    if f in op and not isinstance(op[f], str):
+                        raise ValueError(
+                            f"patch add_state_field '{f}' must be a string"
+                        )
         else:
             raise ValueError(
                 f"patch op '{kind or '(empty)'}' is not allowed on the served edit "
