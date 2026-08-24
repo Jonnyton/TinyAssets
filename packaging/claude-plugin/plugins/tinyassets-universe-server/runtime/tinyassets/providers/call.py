@@ -124,6 +124,16 @@ class UniverseBoundProviderCall:
         supplied = universe_context
         if supplied is not None and supplied is not self.universe_context:
             raise PermissionError("provider policy cannot substitute universe context")
+        delegated = getattr(self.provider_call, "call_with_policy_sync", None)
+        if callable(delegated):
+            return delegated(
+                role,
+                prompt,
+                system,
+                policy,
+                config,
+                difficulty,
+            )
         if _real_router is None:
             from tinyassets.exceptions import AllProvidersExhaustedError
 

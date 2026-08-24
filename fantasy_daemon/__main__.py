@@ -1533,6 +1533,32 @@ def _try_execute_claimed_branch_task(
             if governed_provider_call is not None:
                 provider_call = governed_provider_call
 
+        if is_epoch2:
+            from tinyassets.runtime.claimed_branch_execution import (
+                ClaimedBranchExecutorIdentity,
+                execute_claimed_branch_task,
+            )
+
+            return execute_claimed_branch_task(
+                base_path,
+                claimed_task,
+                ClaimedBranchExecutorIdentity(
+                    daemon_id=daemon_id,
+                    worker_id=executor_worker_id,
+                    runtime_instance_id=executor_runtime_id,
+                    on_node_status=on_node_status,
+                    heartbeat=(
+                        (lambda: branch_task_heartbeat(force=True))
+                        if branch_task_heartbeat is not None
+                        else None
+                    ),
+                    heartbeat_interval_seconds=(
+                        _branch_task_heartbeat_interval_seconds()
+                    ),
+                ),
+                provider_call,
+            )
+
         execution_kwargs = {
             "inputs": _branch_task_inputs_for_execution(claimed_task),
             "run_name": run_name,

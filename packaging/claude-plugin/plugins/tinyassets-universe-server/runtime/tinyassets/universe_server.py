@@ -3169,7 +3169,21 @@ def main(
 
         _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
         app = create_streamable_http_app()
-        uvicorn.run(app, host=host, port=port)
+        assigned_consumer = None
+        from tinyassets.runtime.assigned_queue_consumer import (
+            AssignedQueueConsumer,
+            assigned_queue_consumer_enabled,
+        )
+        from tinyassets.storage import data_dir as assigned_data_dir
+
+        if assigned_queue_consumer_enabled():
+            assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
+            assigned_consumer.start()
+        try:
+            uvicorn.run(app, host=host, port=port)
+        finally:
+            if assigned_consumer is not None:
+                assigned_consumer.stop()
         return
 
     from tinyassets.api.visibility import run_visibility_startup_gate
@@ -3177,6 +3191,15 @@ def main(
     from tinyassets.storage import data_dir
 
     writer_barrier = prepare_service_writer_barrier(data_dir())
+    assigned_consumer = None
+    from tinyassets.runtime.assigned_queue_consumer import (
+        AssignedQueueConsumer,
+        assigned_queue_consumer_enabled,
+    )
+
+    if assigned_queue_consumer_enabled():
+        assigned_consumer = AssignedQueueConsumer(data_dir())
+        assigned_consumer.start()
     try:
         run_visibility_startup_gate()
         if transport == "sse":
@@ -3186,6 +3209,8 @@ def main(
         else:
             raise ValueError(f"Unknown transport: {transport}")
     finally:
+        if assigned_consumer is not None:
+            assigned_consumer.stop()
         writer_barrier.release()
 
 
