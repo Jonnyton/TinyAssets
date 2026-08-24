@@ -1128,10 +1128,12 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     assert rows[0]["connection_id"] and rows[0]["grant_id"]
     assert rows[0]["allowed_endpoints"][0]["host"] == "api.example.com"
     assert "sk-not-echoed" not in json.dumps(out)
-    # Graph-pinned + owner-scoped: pointed at a universe the founder holds no
-    # connections in, the list is EMPTY — never another owner's connections. The
-    # owner_user_id filter in list_grants is the leak boundary (a served read is also
-    # pinned to its own _GRAPH_ID, so this cross-universe case can't arise in prod).
+    # Graph-pinned: pointed at a different (here connection-less) universe the served
+    # read returns an empty list — and in production the agent cannot vary _GRAPH_ID
+    # at all, so it only ever reads its own universe. (Owner-level isolation on a
+    # SHARED universe is the job of
+    # test_connections_list_isolates_by_owner_not_just_universe, which actually
+    # deposits a second owner's connection; this assertion is only a graph-pin check.)
     monkeypatch.setattr(s, "_GRAPH_ID", "u-not-mine")
     other = json.loads(s.read_graph(target="connections"))
     assert other.get("connections") == [] and other.get("count") == 0

@@ -57,10 +57,13 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         "destination": resource.destination,
         "connection_class": resource.connection_class,
         "scopes": list(resource.scopes),
-        # Redacted egress allow-list (host/path/methods only — no secret): an http
-        # channel connection carries these so the agent can read back the exact
-        # host + path it must emit in an authenticated_external_call packet. A
-        # github pipe has none, so this is an empty list there.
+        # Redacted egress allow-list: host, path_template, methods, and the
+        # query/param descriptors (allowed_query, param_patterns, query_patterns,
+        # required_query) — i.e. the owner's OWN declared egress policy, never the
+        # credential (ConnectionView carries no credential_ref). An http channel
+        # connection exposes these so the agent can read back the exact host + path
+        # it must emit in an authenticated_external_call packet; a github pipe has
+        # none, so this is an empty list there.
         "allowed_endpoints": [
             ep.as_dict() for ep in (getattr(resource, "allowed_endpoints", ()) or ())
         ],

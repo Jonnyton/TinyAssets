@@ -90,3 +90,33 @@ never leave a usable half-connection.
 - **AND** the migration is applied ONLY after the grant-conflict check passes AND the
   credential deposit succeeds, so a deposit failure or grant refusal leaves the legacy
   scope untouched and the connection inert (the inert-partial-state guarantee holds)
+
+### Requirement: A universe can read back its own outbound connections, channel-agnostically
+
+`read_graph target=connections` SHALL list EVERY connection granted to the universe —
+generic http channel connections (any deposited destination: Slack, Discord, any HTTPS
+endpoint) alongside github pipes — as REDACTED views. Each row SHALL carry the
+`connection_id`, `grant_id`, `destination` label, `connection_class`, `scopes`, the
+grant's `action_cap`, and the connection's redacted `allowed_endpoints`
+(host/path/methods/query descriptors — the owner's declared egress policy, never the
+credential), so the caller can build an `authenticated_external_call` node from the
+listed facts WITHOUT the owner hand-copying ids. The listing SHALL be owner-scoped: it
+returns only connections whose grant `owner_user_id` is the caller, so a collaborator on
+a shared universe never sees another owner's connections, and no `credential_ref` or
+vault secret ever appears. This read target SHALL also be available on the served
+engine-MCP surface (graph-pinned to the agent's own universe).
+
+#### Scenario: The list includes generic http channel connections, redacted
+
+- **GIVEN** an owner who deposited an http connection for some destination via connect_http
+- **WHEN** they read `target=connections`
+- **THEN** the response includes that connection with its `connection_id`, `grant_id`,
+  `destination`, `connection_class="http"`, and redacted `allowed_endpoints`, and it
+  contains no secret or `credential_ref`
+
+#### Scenario: The listing isolates by owner on a shared universe
+
+- **GIVEN** two admins of the same universe who have each deposited a connection
+- **WHEN** either admin reads `target=connections`
+- **THEN** each sees ONLY their own connection, never the other owner's — because the
+  listing filters on the grant's `owner_user_id`, not merely the universe

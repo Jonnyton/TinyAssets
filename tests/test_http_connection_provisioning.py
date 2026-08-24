@@ -383,6 +383,63 @@ def test_connections_list_includes_http_channel_connections(base: Path) -> None:
     assert "credential_ref" not in row and "vault://" not in json.dumps(result)
 
 
+def test_connections_list_isolates_by_owner_not_just_universe(base: Path) -> None:
+    """SECURITY (Codex ADAPT #2524): the connections list isolates by OWNER, not only
+    by universe.
+
+    Two ADMINS of the SAME universe each deposit a connection; each must see ONLY
+    their own — never the other owner's. If the ``owner_user_id`` filter in
+    ``list_grants`` were dropped, each would see BOTH connections and this fails
+    (the include-http test only varied the universe, so it would have stayed green
+    without that filter — this is the real cross-owner probe Codex asked for).
+    """
+    from tinyassets.api.cloud_connections import cloud_connections
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    _make_universe(base, "u-shared", admin="founder")
+    grant_universe_access(
+        base, universe_id="u-shared", actor_id="collab", permission="admin",
+        granted_by="founder",
+    )
+
+    # Seed two connections in the SAME universe owned by DIFFERENT principals
+    # directly at the ledger (the credential vault is single-owner-per-universe, so
+    # two owners cannot both deposit via connect_http — but the list's isolation is a
+    # property of the list_grants owner filter, which this exercises head-on).
+    def _seed(owner: str, dest: str, conn_id: str, grant_id: str) -> None:
+        ledger = ConnectionLedger(
+            base / "outbound.db", verify_authenticated_principal=lambda: owner
+        )
+        ledger.create_connection(
+            connection_id=conn_id, owner_user_id=owner, connection_class="http",
+            connection_type="http", auth_scheme="bearer", scopes=("POST",),
+            provider="http", destination=dest, credential_ref=f"vault://http/{dest}",
+            allowed_endpoints=_EP,
+        )
+        ledger.grant_connection(
+            grant_id=grant_id, connection_id=conn_id, owner_user_id=owner,
+            universe_id="u-shared",
+        )
+
+    _seed("founder", "webhook:founders", "http_founder", "grant_founder")
+    _seed("collab", "webhook:collabs", "http_collab", "grant_collab")
+
+    # Collaborator sees ONLY their own connection, never the founder's. Removing the
+    # owner_user_id filter from list_grants would surface "http_founder" here.
+    _login("collab")
+    theirs = cloud_connections(action="list", universe_id="u-shared")
+    tids = {c["connection_id"] for c in theirs["connections"]}
+    assert "http_collab" in tids, f"collab should see own connection: {theirs}"
+    assert "http_founder" not in tids, f"cross-owner leak: collab saw founder's: {theirs}"
+
+    # Symmetric: the founder sees only theirs, never the collaborator's.
+    _login("founder")
+    mine = cloud_connections(action="list", universe_id="u-shared")
+    mids = {c["connection_id"] for c in mine["connections"]}
+    assert "http_founder" in mids and "http_collab" not in mids
+
+
 def test_provision_routes_through_write_graph(base: Path) -> None:
     import importlib
 
