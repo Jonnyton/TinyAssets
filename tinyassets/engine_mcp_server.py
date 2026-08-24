@@ -395,7 +395,7 @@ def run_graph(
 # run_graph (u-tiny only) until a branch↔universe binding lands (Codex finding 3).
 # Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
 # turn structurally cannot fire an effect or submit a run.
-_WRITE_GRAPH_OPS = frozenset({"create"})
+_WRITE_GRAPH_OPS = frozenset({"create", "delete"})
 #: Top-level spec fields that would fork or publicly expose the branch.
 _SERVED_STRIP_TOP_FIELDS = ("fork_from", "fork_from_version", "published", "public")
 #: Node fields a served create must NEVER carry, stripped at each node's TOP level
@@ -484,15 +484,27 @@ def write_graph(
     name: str = "",
     description: str = "",
     payload_json: str = "",
+    branch_id: str = "",
     idempotency_key: str = "",
 ) -> str:
-    """Build one of YOUR OWN universe's workflow shapes (branches).
+    """Build or delete one of YOUR OWN universe's workflow shapes (branches).
 
     Use this to CREATE the workflow you want — the build half of build+run parity
-    (run it afterward with run_graph).
+    (run it afterward with run_graph) — or DELETE a workflow you authored.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your universe).
+
+      Build the FLAT shape, not the nested ``graph`` object that read_graph returns:
+      a top-level ``node_defs`` list of ``{node_id, display_name, prompt_template,
+      input_keys, output_keys}`` nodes, plus ``edges`` (``[{from_node, to_node}]``)
+      and ``entry_point``. A nested ``graph`` blob, a ``node_ref``, ``fork_from``,
+      declared node ``effects``, or ``invoke_branch``/``await_run`` sub-calls are
+      rejected on this surface (build a self-contained graph).
+
+    - ``operation="delete"`` — permanently delete a branch you AUTHORED, by
+      ``branch_id``. A branch you did not author reads as not-found. Irreversible —
+      use it to clean up your own stale/test workflows.
 
     A branch is a stored graph SHAPE — building one fires NO effects and issues NO
     provider authority. Actually RUNNING it (with side effects) is a separate step
@@ -505,9 +517,10 @@ def write_graph(
 
     Args:
         target: must be ``branch`` (the only served build target).
-        operation: must be ``create``.
-        payload_json: a complete Branch spec (JSON object).
-        name / description: optional metadata folded into the spec.
+        operation: ``create`` or ``delete``.
+        payload_json: a complete FLAT Branch spec (JSON object) for ``create``.
+        branch_id: the branch to ``delete`` (must be one you authored).
+        name / description: optional metadata folded into a ``create`` spec.
         idempotency_key: dedupes a retried create.
     """
     import json
@@ -538,21 +551,21 @@ def write_graph(
                 "not built here."
             ),
         })
-    # Require the EXPLICIT create op: empty/unknown must never fall through, and
+    # Require an EXPLICIT allowlisted op: empty/unknown must never fall through.
     # EDIT (patch) is a separate reviewed slice — its op set can publish / change
     # visibility / fork / carry approval, so it is not exposed here yet.
     op = (operation or "").strip().lower()
     if op not in _WRITE_GRAPH_OPS:
         return json.dumps({
             "error": (
-                "write_graph on the served surface supports operation='create' "
-                f"only (got '{operation or '(empty)'}'). Editing an existing "
+                "write_graph on the served surface supports operation='create' or "
+                f"'delete' (got '{operation or '(empty)'}'). Editing an existing "
                 "branch, publishing to the commons, and forking a public shape "
                 "stay in the browser flow."
             ),
         })
-    # DoS bound before we parse/persist anything.
-    if len(payload_json or "") > _SERVED_MAX_SPEC_BYTES:
+    # DoS bound before we parse/persist anything (create carries the payload).
+    if op == "create" and len(payload_json or "") > _SERVED_MAX_SPEC_BYTES:
         return json.dumps({
             "error": f"payload_json too large (max {_SERVED_MAX_SPEC_BYTES} bytes).",
         })
@@ -574,6 +587,21 @@ def write_graph(
     # build_branch DIRECTLY — never the multi-target connector write_graph.
     token = _bind_founder_identity(_REMIX_CAPABILITIES)
     try:
+        if op == "delete":
+            bid = (branch_id or "").strip()
+            if not bid:
+                return json.dumps({"error": "write_graph delete requires branch_id."})
+            # delete_branch is author-gated + readability-gated in the impl
+            # (_resolve_readable_branch + _branch_authorized): a branch you did not
+            # author reads as not-found, and only your OWN branch is removed. This
+            # is permanent — it is how you clean up your own stale/test workflows.
+            try:
+                return _extensions_impl(action="delete_branch", branch_def_id=bid)
+            except (AttributeError, TypeError, ValueError, KeyError) as exc:
+                return json.dumps({
+                    "error": f"branch delete rejected ({type(exc).__name__}).",
+                })
+        # op == "create"
         try:
             spec = json.loads(payload_json or "{}")
         except (json.JSONDecodeError, RecursionError):

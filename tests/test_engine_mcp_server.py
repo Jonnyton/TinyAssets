@@ -1138,9 +1138,9 @@ def test_served_write_graph_branch_only(monkeypatch):
     assert captured["kw"]["action"] == "build_branch"
 
 
-def test_served_write_graph_create_only(monkeypatch):
-    """Only operation=create is served — patch/publish/remix/delete are refused
-    (editing/publishing/forking stay in the browser flow), before any write."""
+def test_served_write_graph_create_delete_only(monkeypatch):
+    """Only create + delete are served — patch/publish/remix/bind_provider are
+    refused (editing/publishing/forking stay in the browser flow), before any write."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1150,9 +1150,52 @@ def test_served_write_graph_create_only(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    for op in ("patch", "publish", "remix", "delete", "bind_provider"):
+    for op in ("patch", "publish", "remix", "bind_provider"):
         out = json.loads(s.write_graph(target="branch", operation=op))
-        assert "operation='create'" in out.get("error", ""), op
+        assert "create' or" in out.get("error", ""), op
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_delete_author_gated(monkeypatch):
+    """operation=delete routes to the author-gated delete_branch (impl enforces
+    author + readability: a foreign branch reads as not-found). Requires branch_id."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    captured = {"n": 0, "kw": None}
+
+    def _fake(**kw):
+        captured["n"] += 1
+        captured["kw"] = kw
+        return '{"status":"deleted"}'
+
+    monkeypatch.setattr(ext, "_extensions_impl", _fake)
+    # delete without a branch_id is refused before any write.
+    out = json.loads(s.write_graph(target="branch", operation="delete"))
+    assert "requires branch_id" in out.get("error", "")
+    assert captured["n"] == 0
+    # delete with a branch_id routes to the author-gated delete_branch action.
+    s.write_graph(target="branch", operation="delete", branch_id="b-own")
+    assert captured["kw"]["action"] == "delete_branch"
+    assert captured["kw"]["branch_def_id"] == "b-own"
+
+
+def test_served_write_graph_delete_fails_closed_off_allowlist(monkeypatch):
+    """delete is a WRITE — refuse unless this universe is on the run allowlist."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-x")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation="delete", branch_id="b"))
+    assert "not enabled for this universe" in out.get("error", "")
     assert calls["n"] == 0
 
 
