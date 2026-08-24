@@ -41,8 +41,9 @@ from __future__ import annotations
 #:       admits a founder-owned OR a PUBLIC-foreign branch (a foreign PRIVATE
 #:       branch is refused); the delegated-authority sanitization is what keeps
 #:       that safe, not an author gate.
-#:   write_graph   — BUILD a branch (the "when the user creates things" parity),
-#:       CREATE-ONLY, target=branch. Purpose-built (NOT the broad connector
+#:   write_graph   — BUILD or EDIT a branch (the "when the user creates/changes
+#:       things" parity), target=branch, operation=create OR patch. Purpose-built
+#:       (NOT the broad connector
 #:       write_graph): it SANITIZES the spec and calls the author-gated,
 #:       EFFECT-FREE build_branch directly with least-privilege caps (no
 #:       submit_request). Two Codex review rounds (2026-08-23) hardened it — every
@@ -58,8 +59,11 @@ from __future__ import annotations
 #:       and build_branch's approval surface is broad enough that the robust
 #:       multi-tenant fix is a force-unapproved build MODE (clear approval after
 #:       any inherit/deref, before persist) + a branch↔universe binding. EDIT
-#:       (patch) stays off this surface (its op set can publish / change
-#:       visibility / fork) — a separate reviewed slice.
+#:       (operation=patch, 2026-08-24): edit an OWN branch in place — safe self-edit
+#:       ops (add/remove edges+nodes, retune a node's prompt/source, rename, retag,
+#:       skills) ALLOWLISTED; publish / set-visibility-public / fork REFUSED; an
+#:       add_node op runs the SAME create per-node sanitizer; update_node may not
+#:       become a sub-branch invoker; author-gated + transactional patch_branch.
 #:
 #:   source_channel — APPROVE an outbound channel for your own universe (the consent
 #:       half of "add a channel via the channel-agnostic node"). Owner-gated
@@ -84,7 +88,6 @@ from __future__ import annotations
 #:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
-#:   write_graph PATCH/edit — see above (separate slice)
 #:   remix_shape   — cross-author commons remix
 #:   connect_http  — deposits a RAW SECRET; stays on the browser deposit form
 #:   a proper per-root-run effect-dispatch cap (all surfaces) — the served build cap on

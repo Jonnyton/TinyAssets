@@ -15,10 +15,16 @@
 > are author-scoped not universe-scoped, and build_branch's approval surface is
 > broad — the robust multi-tenant fix is a force-unapproved build MODE (clear
 > approval after any inherit/deref, before persist) + a branch↔universe binding.
-> **DEFERRED to their own reviewed slices:** `write_graph` PATCH/edit (its op set
-> can publish / change visibility / fork), `remix_shape`, and the channel/consent
-> verbs (§2.2). The parallel-allowlist drift class (§2.3) is closed structurally by
-> the single-source `tinyassets/served_tools.py` tuple both providers import.
+> **`write_graph` PATCH/edit DONE (2026-08-24):** `operation="patch"` edits an OWN
+> branch in place — `_sanitize_served_patch_changes` allowlists safe self-edit ops
+> (edges/state/entry_point/remove_node, name/description/tags/goal, skills), REFUSES
+> `set_published`/`set_visibility`/`set_fork_from`, runs an `add_node` op through the
+> SAME create per-node sanitizer, and blocks `update_node` sub-branch-invoke fields;
+> routes to the author-gated transactional `patch_branch`. Same allowlist + rate
+> limit + author-scope residual as create. **STILL DEFERRED:** `remix_shape`
+> (cross-author commons remix); the channel/consent verbs are DONE (§2.2). The
+> parallel-allowlist drift class (§2.3) is closed structurally by the single-source
+> `tinyassets/served_tools.py` tuple both providers import.
 
 ## 1. Design + authority
 
