@@ -292,9 +292,10 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    the dedicated update op follow-up lands. Credential-bearing read (trusted
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
+    legacy_scope_upgrade = False
     if resource is not None:
         # Every immutable field EXCEPT scopes must match for either idempotent reuse
-        # or the bounded legacy-scope upgrade below.
+        # or the bounded legacy-scope upgrade applied at the END of this handler.
         non_scope_mismatch = (
             resource.owner_user_id != actor
             or resource.connection_type != "http"
@@ -312,10 +313,14 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         # token, which the authenticated_external_call effector can never match
         # (it checks the HTTP verb against resource.scopes). Deterministic ids +
         # no policy-update path would otherwise strand such a row forever behind the
-        # conflict check. When it is OTHERWISE policy-identical, UPGRADE its scope in
-        # place to the method union — a bounded, one-directional migration from the
-        # legacy token to the very methods its own endpoints already permit (widens
-        # nothing: the per-endpoint methods gate is unchanged). Codex ADAPT, #2521.
+        # conflict check. When it is OTHERWISE policy-identical, its scope is UPGRADED
+        # to the method union — a bounded, one-directional migration to the very
+        # methods its own endpoints already permit (widens nothing: the per-endpoint
+        # methods gate is unchanged). Codex ADAPT, #2521. The upgrade is DEFERRED to
+        # the end of this handler (after the grant-conflict check AND a successful
+        # credential deposit) so a deposit failure or grant refusal leaves the legacy
+        # row inert — never activating a formerly-unusable connection with the stale,
+        # un-rotated secret (Codex ADAPT re-review: fail-open ordering).
         legacy_scope_upgrade = (
             not non_scope_mismatch
             and not scopes_match
@@ -323,11 +328,6 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         )
         if non_scope_mismatch or (not scopes_match and not legacy_scope_upgrade):
             return {"error": "connection_conflict", "resource": "connection"}
-        if legacy_scope_upgrade:
-            ledger._upgrade_http_connection_scopes(
-                connection_id=connection_id, scopes=http_scopes
-            )
-            resource = ledger._get_connection_resource(connection_id)
     existing_grant = ledger.get_grant(grant_id)
     if existing_grant is not None and (
         existing_grant.connection_id != connection_id
@@ -400,6 +400,16 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             universe_id=uid,
             unprompted_action_cap=_HTTP_ACTION_CAP,
         )
+
+    # 8. Bounded legacy-scope migration — applied ONLY now that the grant-conflict
+    #    check passed and the credential deposit succeeded above, so any earlier
+    #    failure left the legacy ("http",) scope untouched and the connection inert.
+    #    The UPDATE is CAS-guarded on the exact legacy token (never a real scope set).
+    if legacy_scope_upgrade:
+        ledger._upgrade_http_connection_scopes(
+            connection_id=connection_id, scopes=http_scopes
+        )
+        resource = ledger._get_connection_resource(connection_id)
 
     return _project(resource, grant)
 
