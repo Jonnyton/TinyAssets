@@ -209,11 +209,9 @@ _ENGINE_MCP_BEARER_ENV = "TINYASSETS_ENGINE_MCP_BEARER"
 #: Belt-and-suspenders with the server's own registration: even if a tool is
 #: added to the server, it is not callable unless listed here. PUBLISH is
 #: deliberately absent (deferred to the consent-gated slice — Codex ADAPT #5).
-# The served codex turn (e.g. the phone) gets the SAFE set: read-only commons +
-# own-universe reads + the governed brain loop. remix_shape and run_graph are
-# EXCLUDED here — Codex re-review 2026-08-22 found remix->run / run-foreign-public
-# reproduces a cross-universe code-execution path (child invoke_branch closure not
-# yet sanitized); they stay dark on this path until that hardening lands.
+# run_graph + write_graph ARE included (2026-08-23): the invoke_branch closure is
+# now sanitized (#2498), so a run/build reaching a public branch is safe.
+# remix_shape (cross-author fork) stays EXCLUDED pending its own review slice.
 # Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
 # shared verbatim with the claude surface (universe_intelligence._ENGINE_MCP_TOOLS)
 # so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same

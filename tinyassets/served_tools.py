@@ -32,11 +32,15 @@ from __future__ import annotations
 #:       provider (candidate-only, owner-gated, graph-pinned, secret-free; no
 #:       execution / cross-universe reach)
 #:   run_graph                                                   — RUN one of THIS
-#:       universe's own approved automations end-to-end (the "do the workflow you
-#:       built" parity). Safe: invoke_branch is sanitized (#2498) and run_graph is
-#:       independently hardened (per-universe run allowlist, author-gated
-#:       run_branch, effect-spam rate limit, IDOR read/execute gate, founder-scoped
-#:       capabilities).
+#:       universe's approved automations end-to-end (the "do the workflow you
+#:       built" parity). Safety rests on #2498's sanitized invoke_branch
+#:       (delegated child-authority + fail-closed actor + mapping/await
+#:       confidentiality) PLUS run_graph's own gates: per-universe run allowlist,
+#:       effect-spam rate limit, IDOR read/execute gate, founder-scoped
+#:       capabilities. NOTE: run_graph is NOT author-only — its branch resolver
+#:       admits a founder-owned OR a PUBLIC-foreign branch (a foreign PRIVATE
+#:       branch is refused); the delegated-authority sanitization is what keeps
+#:       that safe, not an author gate.
 #:   write_graph                                                 — BUILD one of THIS
 #:       universe's own automations (branch create/remix/patch/publish) and MANAGE
 #:       an automation (create/pause/resume/stop/rebind) — the "when the user

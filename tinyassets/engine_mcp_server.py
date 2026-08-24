@@ -279,12 +279,16 @@ def run_graph(
     for, rather than describing it: read your graph with ``read_graph
     target="graph"`` to find the branch, then run it here.
 
-    Confinement (slice 2, 2026-08-19): the run executes as the FOUNDER and is
-    author-gated by ``run_branch`` — a branch your universe did not author is
-    refused, never run. The run is pinned to YOUR universe (its effects and
-    records land under your universe, not another). Spend is bounded by the
-    served-provider budget reservation and the per-run recursion limit; an
-    effect-only branch spends no provider budget at all.
+    Confinement (slice 2, 2026-08-19; comment corrected 2026-08-23): the run
+    executes as the FOUNDER and is authorized by ``run_branch``'s branch
+    resolver, which admits a founder-owned OR a PUBLIC branch and refuses a
+    foreign PRIVATE one (it is NOT author-only). Safe execution of a public
+    foreign branch rests on the sanitized invoke_branch path (#2498: delegated
+    child-authority, fail-closed actor, mapping/await confidentiality), not on an
+    author gate. The run is pinned to YOUR universe (its effects and records land
+    under your universe, not another). Spend is bounded by the served-provider
+    budget reservation and the per-run recursion limit; an effect-only branch
+    spends no provider budget at all.
 
     Args:
         branch_def_id: The branch definition id to run (from ``read_graph
