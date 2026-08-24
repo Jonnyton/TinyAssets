@@ -635,26 +635,76 @@ def test_get_status_request_identity_ignores_environment_actor(monkeypatch) -> N
     assert "my_user" not in json.dumps(payload, sort_keys=True)
 
 
-def test_get_status_recent_conversation_is_founder_gated(tmp_path) -> None:
-    """The recent_conversation peek is FOUNDER-only. A non-founder/anonymous
-    reader must not receive it, even when the universe has recorded turns —
-    the shared conversation thread must never leak through a status read."""
-    import os
+def test_get_status_recent_conversation_denied_anonymous(tmp_path, monkeypatch) -> None:
+    """The peek is FOUNDER-only. An anonymous reader must not receive it even
+    with the opt-in set and recorded turns present — the shared conversation
+    thread must never leak through a status read."""
+    from tinyassets.auth.middleware import auth_middleware
+    from tinyassets.conversation_store import record_exchange
 
-    os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     uid = "peek_universe"
     udir = tmp_path / uid
     udir.mkdir(parents=True, exist_ok=True)
-    # Record a turn so there IS content to leak if the gate were to fail.
-    from tinyassets.conversation_store import record_exchange
-
     record_exchange(udir, "principal:someone", "secret question", "secret answer")
 
-    payload = json.loads(get_status(universe_id=uid))
-    # Anonymous test caller has no write/founder grant → peek withheld.
+    auth_middleware(None)  # anonymous request
+    payload = json.loads(get_status(universe_id=uid, include_conversation=True))
     assert "recent_conversation" not in payload, (
-        "conversation peek must be withheld from a non-founder reader"
+        "conversation peek must be withheld from an anonymous reader"
     )
     assert "secret answer" not in json.dumps(payload), (
         "recorded conversation content must not leak into a non-founder status read"
     )
+
+
+def test_get_status_recent_conversation_optin_gate_and_isolation(
+    tmp_path, monkeypatch
+) -> None:
+    """Opt-out default, founder opt-in, non-founder denial, and per-principal
+    isolation of co-located founders sharing one universe DB.
+
+    Covers Codex 2026-08-23 must-fix. The two permission calls the peek makes
+    (`universe_access_allows`, `current_actor_id`) are stubbed so the test
+    exercises the peek's gate + fence + principal-keyed session directly, without
+    the universe-provisioning/create-scope machinery."""
+    from tinyassets.api import permissions
+    from tinyassets.conversation_store import record_exchange
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "shared_universe"
+    udir = tmp_path / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    # Two founders' turns co-located in ONE universe DB, keyed by principal.
+    record_exchange(udir, "principal:founder-a", "A question", "A answer")
+    record_exchange(udir, "principal:founder-b", "B question", "B answer")
+
+    def _as(actor: str, allowed: bool) -> None:
+        monkeypatch.setattr(permissions, "current_actor_id", lambda: actor)
+        monkeypatch.setattr(
+            permissions, "universe_access_allows", lambda _uid, write=False: allowed
+        )
+
+    # Opt-OUT default: founder A, but no include_conversation → no transcript.
+    _as("founder-a", True)
+    assert "recent_conversation" not in json.loads(get_status(universe_id=uid))
+
+    # Opt-IN: founder A sees ONLY A's own turns, fenced as untrusted.
+    _as("founder-a", True)
+    pa = json.loads(get_status(universe_id=uid, include_conversation=True))
+    rc = pa["recent_conversation"]
+    assert rc["content_is_untrusted"] is True
+    texts_a = " ".join(t["text"] for t in rc["turns"])
+    assert "A answer" in texts_a and "B answer" not in texts_a  # principal isolation
+
+    # Co-located founder B sees ONLY B's own turns, never A's.
+    _as("founder-b", True)
+    pb = json.loads(get_status(universe_id=uid, include_conversation=True))
+    texts_b = " ".join(t["text"] for t in pb["recent_conversation"]["turns"])
+    assert "B answer" in texts_b and "A answer" not in texts_b
+
+    # Non-founder (no write access): peek withheld entirely, no content leak.
+    _as("stranger", False)
+    pc = json.loads(get_status(universe_id=uid, include_conversation=True))
+    assert "recent_conversation" not in pc
+    assert "A answer" not in json.dumps(pc) and "B answer" not in json.dumps(pc)
