@@ -24,6 +24,7 @@ from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.providers.call import call_provider
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
     SoulEditError,
     apply_soul_edit,
@@ -109,8 +110,9 @@ _ENGINE_DISALLOWED_TOOLS = (
 # ``graph_id`` / ``universe_id`` parameter, and the founder identity gates reads
 # of a PRIVATE universe.
 #
-# Slice 2 (2026-08-19): ``run_graph`` — run one of the universe's OWN branches
-# end-to-end (author-gated + allowlisted + rate-limited).
+# Slice 2 (2026-08-19): ``run_graph`` — run a branch end-to-end (founder-owned OR
+# public; foreign-private refused — NOT author-only), allowlisted + rate-limited;
+# safe execution of a public branch rests on #2498's invoke sanitization.
 #
 # Slice 3 (2026-08-22): the SHARED COMMONS. ``browse_commons`` +
 # ``read_commons_shape`` are READ-ONLY over PUBLIC cross-universe shapes (the
@@ -143,27 +145,19 @@ _ENGINE_DISALLOWED_TOOLS = (
 # no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
 # injected into the next turn."
 #
-# remix_shape is intentionally NOT listed: Codex re-review 2026-08-22 found the
-# remix->run path still reaches a foreign child branch's forged-approval code
-# (the invoke_branch closure is not yet sanitized on cross-author remix). The
-# tool exists for the follow-up but stays off every served allowlist until that
-# hardening lands. run_graph stays (pre-existing) but is being author-gated to
-# own-authored branches in the same follow-up.
-_ENGINE_MCP_TOOLS = (
-    "read_graph",
-    "get_status",
-    "run_graph",
-    "browse_commons",
-    "read_commons_shape",
-    "read_brain",
-    "write_brain",
-    # connect_compute (slice 4): register a compute provider from the served surface
-    # — the same primitive the browser connector has. Candidate-only registration (no
-    # execution, no cross-universe reach), owner-gated + graph-pinned + secret-free
-    # (Codex-approved), so it is safe alongside the read/brain handles even though
-    # remix_shape stays excluded for its unsanitized cross-author invoke path.
-    "connect_compute",
-)
+# remix_shape is intentionally NOT listed yet: it is cross-author (fork a foreign
+# public shape) and gets its own review slice in the served-agent-build-run
+# OpenSpec change. run_graph + write_graph ARE enabled (2026-08-23): the
+# invoke_branch closure is now sanitized (#2498 — delegated child-authority,
+# fail-closed actor, mapping/await confidentiality), so a run reaching a public
+# branch is safe. run_graph is NOT author-only (its resolver admits founder-owned
+# or public; foreign-private is refused) — the sanitization, not an author gate,
+# is what keeps that safe.
+# Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
+# shared verbatim with the codex surface (codex_provider._ENGINE_MCP_ENABLED_TOOLS)
+# so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same
+# things). To change what the served agent can do, edit served_tools.py once.
+_ENGINE_MCP_TOOLS = SERVED_ENGINE_MCP_TOOLS
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
 # the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).

@@ -279,12 +279,16 @@ def run_graph(
     for, rather than describing it: read your graph with ``read_graph
     target="graph"`` to find the branch, then run it here.
 
-    Confinement (slice 2, 2026-08-19): the run executes as the FOUNDER and is
-    author-gated by ``run_branch`` — a branch your universe did not author is
-    refused, never run. The run is pinned to YOUR universe (its effects and
-    records land under your universe, not another). Spend is bounded by the
-    served-provider budget reservation and the per-run recursion limit; an
-    effect-only branch spends no provider budget at all.
+    Confinement (slice 2, 2026-08-19; comment corrected 2026-08-23): the run
+    executes as the FOUNDER and is authorized by ``run_branch``'s branch
+    resolver, which admits a founder-owned OR a PUBLIC branch and refuses a
+    foreign PRIVATE one (it is NOT author-only). Safe execution of a public
+    foreign branch rests on the sanitized invoke_branch path (#2498: delegated
+    child-authority, fail-closed actor, mapping/await confidentiality), not on an
+    author gate. The run is pinned to YOUR universe (its effects and records land
+    under your universe, not another). Spend is bounded by the served-provider
+    budget reservation and the per-run recursion limit; an effect-only branch
+    spends no provider budget at all.
 
     Args:
         branch_def_id: The branch definition id to run (from ``read_graph
@@ -354,6 +358,170 @@ def run_graph(
             graph_id=_GRAPH_ID,
             run_name=(run_name or "").strip(),
             inputs_json=(inputs_json or "").strip(),
+        )
+    finally:
+        _current_identity.reset(token)
+
+
+# ── Build + manage own automations (creation parity, 2026-08-23) ─────────────
+# The served agent could RUN (run_graph) but not BUILD its automations — so a
+# founder in the app could not ask their universe to CREATE a workflow, only run
+# an existing one. This closes that gap (founder: "that should also be true when
+# the user creates things"). It delegates to the connector write_graph impl but
+# CONFINES the served surface to two safe targets — BUILD a branch and MANAGE an
+# automation (incl. pause/stop). Credential/connection deposits (connect_http /
+# connect_llm / connect_compute-with-secret), cross-author agent publish, goals,
+# and requests are DELIBERATELY not reachable here: a credential must never enter
+# a served turn's payload (it would land in the LLM context) — those stay in the
+# secure browser deposit flow. Same confinement as run_graph: own universe
+# (_GRAPH_ID), founder identity, per-universe run allowlist + effect rate limit.
+_WRITE_GRAPH_TARGETS = frozenset({"branch", "automation"})
+_WRITE_GRAPH_OPS = {
+    # BUILD a workflow shape in your own universe. NOT `publish` — publishing a
+    # branch exposes it PUBLICLY to the commons, a consent-gated action that stays
+    # in the browser/connector flow (Codex exact-diff 2026-08-23).
+    "branch": frozenset({"create", "remix", "patch"}),
+    # MANAGE an automation you own — pause/stop/resume. NOT `bind_provider`/
+    # `reconcile_provider` (issuing a provider binding is a provider-authority
+    # action) and NOT `rebind` — rebind with a {"provider":...} payload reaches
+    # provider_rebind_alias and issues provider authority BEFORE the automation
+    # lookup (Codex re-review 2026-08-23), so it stays off the served surface too.
+    "automation": frozenset({"create", "pause", "resume", "stop"}),
+}
+#: Branch operations that reference an EXISTING branch by id — must pass the same
+#: readability/ownership gate as run_graph (a foreign-private branch id reads as
+#: not-found), so a served turn cannot patch a branch it may not read.
+_WRITE_GRAPH_BRANCH_REF_OPS = frozenset({"patch"})
+
+
+@mcp.tool
+def write_graph(
+    target: str = "",
+    operation: str = "",
+    name: str = "",
+    description: str = "",
+    tags: str = "",
+    visibility: str = "public",
+    branch_id: str = "",
+    automation_id: str = "",
+    payload_json: str = "",
+    changes_json: str = "",
+    expected_revision: int = 0,
+    branch_version_id: str = "",
+    agent_binding_id: str = "",
+    idempotency_key: str = "",
+) -> str:
+    """Build or manage one of YOUR OWN universe's automations.
+
+    Use this to CREATE the workflow you want, not just run an existing one.
+
+    - ``target="branch"`` — ``create`` / ``remix`` / ``patch`` a Branch graph (a
+      workflow shape). Pass a complete Branch spec in ``payload_json`` for
+      create/remix; ``changes_json`` for patch. (Publishing a branch to the public
+      commons is consent-gated and stays in the browser/connector flow.)
+    - ``target="automation"`` — ``create`` / ``pause`` / ``resume`` / ``stop`` an
+      automation you own (e.g. pause background work). (Provider (re)binding stays
+      off the served surface.)
+
+    Confinement: runs as the FOUNDER, pinned to YOUR universe; own-universe only.
+    Depositing a credential or wiring an outbound connection is NOT done here —
+    that stays in the secure browser connection flow so a secret never enters a
+    served turn. Bounded by the same run allowlist + rate limit as run_graph.
+
+    Args:
+        target: ``branch`` or ``automation``.
+        operation: the branch/automation operation (see above).
+        payload_json: Branch spec (create/remix) or automation spec (create).
+        changes_json: patch changes for ``target="branch"`` ``operation="patch"``.
+        branch_id / automation_id / branch_version_id / expected_revision /
+        agent_binding_id / name / description / tags / visibility /
+        idempotency_key: forwarded to the write as applicable.
+    """
+    import json
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    from tinyassets.engine_mcp_http import run_graph_allowlist
+
+    if _GRAPH_ID not in run_graph_allowlist():
+        return json.dumps({
+            "error": (
+                "write_graph is not enabled for this universe yet; it is limited "
+                "to a vetted founder while its multi-tenant confinement is "
+                "hardened."
+            ),
+        })
+    t = (target or "").strip().lower()
+    if t not in _WRITE_GRAPH_TARGETS:
+        return json.dumps({
+            "error": (
+                "write_graph on the served surface supports only "
+                f"{sorted(_WRITE_GRAPH_TARGETS)} (build a branch / manage an "
+                "automation). Connections, credentials, agents, goals, and "
+                f"requests stay in the browser flow; got target='{target}'."
+            ),
+        })
+    # Require an EXPLICIT, allowlisted operation (Codex exact-diff 2026-08-23): an
+    # empty operation must never fall through to the connector's default.
+    op = (operation or "").strip().lower()
+    allowed_ops = _WRITE_GRAPH_OPS[t]
+    if op not in allowed_ops:
+        return json.dumps({
+            "error": (
+                f"write_graph target='{t}' operation must be one of "
+                f"{sorted(allowed_ops)}; got '{operation or '(empty)'}'."
+            ),
+        })
+    # Readability/ownership scope for anything that references an EXISTING branch or
+    # branch VERSION by id (Codex exact-diff 2026-08-23): a foreign-private id must
+    # read as not-found so a served turn cannot patch a branch it may not read, or
+    # bind an automation onto a version it may not read.
+    bid = (branch_id or "").strip()
+    if t == "branch" and op in _WRITE_GRAPH_BRANCH_REF_OPS and bid:
+        from tinyassets.api.branches import _base_path, _resolve_readable_branch
+
+        if _resolve_readable_branch(bid, str(_base_path())) is None:
+            return json.dumps({"error": f"Branch '{bid}' not found."})
+    bvid = (branch_version_id or "").strip()
+    if t == "automation" and bvid:
+        from tinyassets.api.branches import _base_path, _resolve_readable_version
+
+        if _resolve_readable_version(bvid, str(_base_path())) is None:
+            return json.dumps({"error": f"Branch version '{bvid}' not found."})
+    # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
+    # refuse the write, not admit it (Codex exact-diff 2026-08-23).
+    if not _engine_run_admit(fail_closed=True):
+        return json.dumps({
+            "error": (
+                f"write_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+            ),
+        })
+
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.universe_server import write_graph as _impl
+
+    # Write capabilities bound ONLY for this call; graph_id PINNED to this
+    # universe so the write records under it and own-universe authz applies.
+    token = _bind_founder_identity(_RUN_CAPABILITIES)
+    try:
+        return _impl(
+            target=t,
+            operation=operation,
+            name=name,
+            description=description,
+            tags=tags,
+            visibility=visibility,
+            graph_id=_GRAPH_ID,
+            branch_id=branch_id,
+            automation_id=automation_id,
+            payload_json=payload_json,
+            changes_json=changes_json,
+            expected_revision=expected_revision,
+            branch_version_id=branch_version_id,
+            agent_binding_id=agent_binding_id,
+            idempotency_key=idempotency_key,
         )
     finally:
         _current_identity.reset(token)

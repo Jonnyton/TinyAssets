@@ -30,6 +30,7 @@ from tinyassets.providers.base import (
     get_sandbox_status,
     subprocess_env_for_provider,
 )
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 
 def _no_window_kwargs() -> dict:
@@ -208,28 +209,14 @@ _ENGINE_MCP_BEARER_ENV = "TINYASSETS_ENGINE_MCP_BEARER"
 #: Belt-and-suspenders with the server's own registration: even if a tool is
 #: added to the server, it is not callable unless listed here. PUBLISH is
 #: deliberately absent (deferred to the consent-gated slice — Codex ADAPT #5).
-# The served codex turn (e.g. the phone) gets the SAFE set: read-only commons +
-# own-universe reads + the governed brain loop. remix_shape and run_graph are
-# EXCLUDED here — Codex re-review 2026-08-22 found remix->run / run-foreign-public
-# reproduces a cross-universe code-execution path (child invoke_branch closure not
-# yet sanitized); they stay dark on this path until that hardening lands.
-_ENGINE_MCP_ENABLED_TOOLS = (
-    "read_graph",
-    "get_status",
-    "browse_commons",
-    "read_commons_shape",
-    "read_brain",
-    "write_brain",
-    # connect_compute (slice 4): the served agent can REGISTER a compute provider —
-    # the same self-serve primitive the browser connector has. SAFE to include here
-    # unlike remix_shape/run_graph (excluded above for the unsanitized cross-universe
-    # invoke path): connect_compute only REGISTERS a candidate descriptor — no
-    # execution, no cross-universe reach — and is owner-gated (admin ACL) +
-    # graph-pinned + secret-free + connection-isolated (Codex-approved). Without this
-    # a live webapp ui-test 2026-08-23 showed the served agent report `tool_search`
-    # "Found 0 tools" for compute registration though the handler shipped in bce0f188.
-    "connect_compute",
-)
+# run_graph + write_graph ARE included (2026-08-23): the invoke_branch closure is
+# now sanitized (#2498), so a run/build reaching a public branch is safe.
+# remix_shape (cross-author fork) stays EXCLUDED pending its own review slice.
+# Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
+# shared verbatim with the claude surface (universe_intelligence._ENGINE_MCP_TOOLS)
+# so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same
+# things). To change what the served agent can do, edit served_tools.py once.
+_ENGINE_MCP_ENABLED_TOOLS = SERVED_ENGINE_MCP_TOOLS
 
 #: Force the served CWD project untrusted so codex never loads a project-level
 #: ``/workspace/.codex/config.toml`` (which a crafted universe could ship with its
