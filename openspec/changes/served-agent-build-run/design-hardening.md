@@ -98,3 +98,41 @@ Core binding tests:
 - A direct persistence attempt cannot replace a branch across universe IDs.
 - Public cross-universe commons reads remain allowed; private reads and all mutations require exact universe binding.
 Verification: Windows checkout, HEAD `d74373d8`, 2026-08-23; focused sanitizer plus general-builder inheritance suite passed: `9 passed in 5.11s`. No repository files were edited; the pre-existing untracked `uv.lock` remains untouched.
+
+---
+
+## write_brain persistent prompt-injection (Codex cross-tool review 2026-08-24)
+
+**PRE-EXISTING** (write_brain + read_commons_shape were live before the write_graph
+create slice; surfaced by the cross-tool pass, not introduced by #2509).
+
+**The vector (lethal-trifecta on the brain):**
+1. An attacker publishes a public branch/agent whose text contains instructions.
+2. The served agent reads it via `read_commons_shape` (or WebFetch) — returned with
+   NO untrusted-content envelope (`engine_mcp_server.read_commons_shape` →
+   `branches.py:539`).
+3. The prompt-injectable agent is induced to call `write_brain` with that content.
+4. `commit_learning` persists the body and labels its source
+   `founder conversation (<actor>)` — losing the true provenance
+   (`universe_intelligence.py:633-635`).
+5. Next turn the body is concatenated VERBATIM into the system prompt under
+   `# What I know so far` (`universe_intelligence.py:347,435`) — so the injected
+   instructions persistently steer an agent holding founder-bound `write_graph`,
+   `run_graph`, `connect_compute`, and brain-write authority.
+
+Graph pinning, filesystem governance, and section whitelisting do NOT stop this —
+it is semantic authority laundering.
+
+**Do NOT** simply remove `write_brain` from the served allowlist — that regresses
+the founder's shipped proactive-brain-persistence feature (#2482).
+
+**Durable fix (design decision for the founder — his feature + a safety tradeoff):**
+- Brain writes require **server-verifiable founder provenance** — e.g. a one-use
+  learning grant minted from the authenticated founder *utterance* this turn, or a
+  trusted post-turn writer that sees only that utterance (not tool/commons output).
+- Tool/commons-derived observations are stored as **untrusted data** and are NEVER
+  inserted verbatim into system-role grounding — render them in a clearly delimited
+  untrusted section the model is instructed not to treat as instructions.
+- Related but distinct from the 2026-08-06 `commit_learning` visibility concern
+  (that is about confidential founder input leaking OUT; this is about untrusted
+  input steering IN).
