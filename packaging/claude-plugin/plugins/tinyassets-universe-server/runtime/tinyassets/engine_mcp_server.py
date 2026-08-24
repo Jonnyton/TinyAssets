@@ -363,35 +363,118 @@ def run_graph(
         _current_identity.reset(token)
 
 
-# ── Build + manage own automations (creation parity, 2026-08-23) ─────────────
-# The served agent could RUN (run_graph) but not BUILD its automations — so a
-# founder in the app could not ask their universe to CREATE a workflow, only run
-# an existing one. This closes that gap (founder: "that should also be true when
-# the user creates things"). It delegates to the connector write_graph impl but
-# CONFINES the served surface to two safe targets — BUILD a branch and MANAGE an
-# automation (incl. pause/stop). Credential/connection deposits (connect_http /
-# connect_llm / connect_compute-with-secret), cross-author agent publish, goals,
-# and requests are DELIBERATELY not reachable here: a credential must never enter
-# a served turn's payload (it would land in the LLM context) — those stay in the
-# secure browser deposit flow. Same confinement as run_graph: own universe
-# (_GRAPH_ID), founder identity, per-universe run allowlist + effect rate limit.
-_WRITE_GRAPH_TARGETS = frozenset({"branch", "automation"})
-_WRITE_GRAPH_OPS = {
-    # BUILD a workflow shape in your own universe. NOT `publish` — publishing a
-    # branch exposes it PUBLICLY to the commons, a consent-gated action that stays
-    # in the browser/connector flow (Codex exact-diff 2026-08-23).
-    "branch": frozenset({"create", "remix", "patch"}),
-    # MANAGE an automation you own — pause/stop/resume. NOT `bind_provider`/
-    # `reconcile_provider` (issuing a provider binding is a provider-authority
-    # action) and NOT `rebind` — rebind with a {"provider":...} payload reaches
-    # provider_rebind_alias and issues provider authority BEFORE the automation
-    # lookup (Codex re-review 2026-08-23), so it stays off the served surface too.
-    "automation": frozenset({"create", "pause", "resume", "stop"}),
-}
-#: Branch operations that reference an EXISTING branch by id — must pass the same
-#: readability/ownership gate as run_graph (a foreign-private branch id reads as
-#: not-found), so a served turn cannot patch a branch it may not read.
-_WRITE_GRAPH_BRANCH_REF_OPS = frozenset({"patch"})
+# ── Build your own workflow shapes (creation parity, 2026-08-23) ─────────────
+# The served agent could RUN (run_graph) but not BUILD its workflows. This closes
+# that half (founder: "that should also be true when the user creates things").
+#
+# Purpose-built + narrow ON PURPOSE. It does NOT delegate to the swiss-army
+# connector write_graph (whose automation/version/provider-rebind paths failed
+# three Codex rounds). It supports EXACTLY target=branch, operation=create, and
+# calls the author-gated, EFFECT-FREE extensions function build_branch directly —
+# after SANITIZING the spec so an autonomous served turn cannot exceed a plain
+# private-shape build. A Codex exact-diff review (2026-08-23, VERDICT adapt) found
+# that build_branch, called raw, still let a served turn:
+#   (1) forge an APPROVED source_code node — approval is validated only by
+#       approved_source_hash == sha256(source), a caller-computable value, and
+#       run_graph is already live → RCE. FIX: strip every approval/provenance
+#       field from every node so nodes persist UNAPPROVED; run_graph's
+#       _validate_source_code then refuses them until the founder approves the
+#       source through the browser (an authority path this surface cannot reach).
+#   (2) fork a readable foreign version via spec.fork_from → cross-author copy.
+#       FIX: strip fork_from.
+#   (3) self-declare public / publish. FIX: force visibility=private, strip
+#       published/public/fork.
+#   (4) crash the tool with a wrong-typed field ({"name":[]} → name.strip()).
+#       FIX: type-check the spec + a byte/node cap, and wrap the build in a
+#       structured-error catch.
+# EDIT (patch) is deliberately NOT on this surface yet: patch's op set can
+# set_published / set_visibility / set_fork_from / carry approval on add_node, so
+# it needs its own reviewed op-allowlist slice (tracked: served-agent-build-run).
+# Multi-tenant note: branches are author-scoped, not universe-scoped, so cross-
+# own-universe isolation rests on the same per-universe allowlist that gates
+# run_graph (u-tiny only) until a branch↔universe binding lands (Codex finding 3).
+# Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
+# turn structurally cannot fire an effect or submit a run.
+_WRITE_GRAPH_OPS = frozenset({"create"})
+#: Top-level spec fields that would fork or publicly expose the branch.
+_SERVED_STRIP_TOP_FIELDS = ("fork_from", "fork_from_version", "published", "public")
+#: Node fields a served create must NEVER carry, stripped at each node's TOP level
+#: (where build_branch reads them). approval/provenance would let the agent self-
+#: approve executable source (the run-time gate is hash-only); author is server-
+#: derived; fork_from would copy a foreign node.
+_SERVED_STRIP_NODE_FIELDS = (
+    "approved", "approved_by", "approved_at", "approved_source_hash",
+    "approval_reason", "author", "fork_from",
+)
+#: DoS bounds on a served build payload.
+_SERVED_MAX_SPEC_BYTES = 256 * 1024
+_SERVED_MAX_NODES = 100
+
+
+def _sanitize_served_branch_spec(spec: dict) -> None:
+    """Strip everything a served (autonomous) create must not carry, IN PLACE.
+
+    Security (Codex adapt 2026-08-23, two rounds). build_branch is a permissive
+    surface; the vectors and their fixes:
+
+      * ``graph`` blob — ``_staged_branch_from_spec`` reads nodes from a nested
+        ``graph`` response-shape (hiding nodes past a per-container strip). REJECT.
+      * ``node_ref`` — a node may reference an existing readable public/standalone
+        node, and build_branch dereferences it and INHERITS its stored approval;
+        approval is hash-only (self-computable), so a pre-forged public node copied
+        in this way would run (→ RCE via the live run_graph). REJECT node_ref (a
+        served agent defines nodes inline).
+      * submitted approval/author/fork on a node → strip at each node's top level so
+        the node persists UNAPPROVED (run_graph's _validate_source_code then refuses
+        it until the founder approves the source in the browser); publish/fork at
+        the top level → strip + force visibility=private.
+
+    Stripping is NODE-LEVEL, not recursive: a blanket recursive strip corrupted
+    legitimate opaque workflow data (a user's ``state_schema.default_value`` or
+    skill metadata that happens to contain a key named ``author``/``public`` —
+    Codex round-2 #2). Raises ValueError on a structurally invalid spec so the
+    caller returns a structured rejection instead of crashing downstream.
+    """
+    if isinstance(spec.get("graph"), dict):
+        raise ValueError(
+            "submit a flat branch spec (node_defs/edges/entry_point), not a "
+            "nested 'graph' blob"
+        )
+    if "node_ref" in spec:
+        raise ValueError(
+            "node_ref is not allowed on the served create surface; define nodes "
+            "inline"
+        )
+    for f in _SERVED_STRIP_TOP_FIELDS:
+        spec.pop(f, None)
+    spec["visibility"] = "private"
+    for f in ("name", "description", "entry_point", "domain_id", "goal_id"):
+        if f in spec and not isinstance(spec[f], str):
+            raise ValueError(f"'{f}' must be a string")
+    total_nodes = 0
+    for container in ("node_defs", "nodes"):
+        nodes = spec.get(container)
+        if nodes is None:
+            continue
+        if not isinstance(nodes, list):
+            raise ValueError(f"{container} must be a list")
+        total_nodes += len(nodes)
+        for n in nodes:
+            if not isinstance(n, dict):
+                raise ValueError(f"each {container} entry must be a JSON object")
+            # A node that copies a pre-approved public/standalone node → RCE.
+            if "node_ref" in n:
+                raise ValueError(
+                    "node_ref is not allowed on the served create surface; "
+                    "define nodes inline"
+                )
+            for f in _SERVED_STRIP_NODE_FIELDS:
+                n.pop(f, None)
+            for f in ("node_id", "display_name", "source_code", "prompt_template"):
+                if f in n and not isinstance(n[f], str):
+                    raise ValueError(f"node field '{f}' must be a string")
+    if total_nodes > _SERVED_MAX_NODES:
+        raise ValueError(f"too many nodes (max {_SERVED_MAX_NODES})")
 
 
 @mcp.tool
@@ -400,42 +483,32 @@ def write_graph(
     operation: str = "",
     name: str = "",
     description: str = "",
-    tags: str = "",
-    visibility: str = "public",
-    branch_id: str = "",
-    automation_id: str = "",
     payload_json: str = "",
-    changes_json: str = "",
-    expected_revision: int = 0,
-    branch_version_id: str = "",
-    agent_binding_id: str = "",
     idempotency_key: str = "",
 ) -> str:
-    """Build or manage one of YOUR OWN universe's automations.
+    """Build one of YOUR OWN universe's workflow shapes (branches).
 
-    Use this to CREATE the workflow you want, not just run an existing one.
+    Use this to CREATE the workflow you want — the build half of build+run parity
+    (run it afterward with run_graph).
 
-    - ``target="branch"`` — ``create`` / ``remix`` / ``patch`` a Branch graph (a
-      workflow shape). Pass a complete Branch spec in ``payload_json`` for
-      create/remix; ``changes_json`` for patch. (Publishing a branch to the public
-      commons is consent-gated and stays in the browser/connector flow.)
-    - ``target="automation"`` — ``create`` / ``pause`` / ``resume`` / ``stop`` an
-      automation you own (e.g. pause background work). (Provider (re)binding stays
-      off the served surface.)
+    - ``operation="create"`` — create a new Branch graph from a complete Branch
+      spec in ``payload_json`` (stored PRIVATE to your universe).
 
-    Confinement: runs as the FOUNDER, pinned to YOUR universe; own-universe only.
-    Depositing a credential or wiring an outbound connection is NOT done here —
-    that stays in the secure browser connection flow so a secret never enters a
-    served turn. Bounded by the same run allowlist + rate limit as run_graph.
+    A branch is a stored graph SHAPE — building one fires NO effects and issues NO
+    provider authority. Actually RUNNING it (with side effects) is a separate step
+    via run_graph, and any source_code node you build is stored UNAPPROVED: it will
+    only execute after you approve its source through the browser. Publishing to the
+    public commons, forking others' shapes, wiring connections/credentials, and
+    EDITING an existing branch stay off this surface (browser flow / reviewed
+    follow-ups), so a secret never enters a served turn. Runs as the FOUNDER,
+    pinned to your universe. Bounded by the same allowlist + rate limit as run_graph.
 
     Args:
-        target: ``branch`` or ``automation``.
-        operation: the branch/automation operation (see above).
-        payload_json: Branch spec (create/remix) or automation spec (create).
-        changes_json: patch changes for ``target="branch"`` ``operation="patch"``.
-        branch_id / automation_id / branch_version_id / expected_revision /
-        agent_binding_id / name / description / tags / visibility /
-        idempotency_key: forwarded to the write as applicable.
+        target: must be ``branch`` (the only served build target).
+        operation: must be ``create``.
+        payload_json: a complete Branch spec (JSON object).
+        name / description: optional metadata folded into the spec.
+        idempotency_key: dedupes a retried create.
     """
     import json
 
@@ -452,45 +525,39 @@ def write_graph(
                 "hardened."
             ),
         })
+    # Served build surface is BRANCH-ONLY on purpose: automations/connections/
+    # publish carry provider-authority, version, and secret paths that stay off
+    # this surface (build a branch here; everything else via the browser flow).
     t = (target or "").strip().lower()
-    if t not in _WRITE_GRAPH_TARGETS:
+    if t != "branch":
         return json.dumps({
             "error": (
-                "write_graph on the served surface supports only "
-                f"{sorted(_WRITE_GRAPH_TARGETS)} (build a branch / manage an "
-                "automation). Connections, credentials, agents, goals, and "
-                f"requests stay in the browser flow; got target='{target}'."
+                "write_graph on the served surface builds workflow SHAPES only: "
+                f"target must be 'branch' (got '{target or '(empty)'}'). "
+                "Automations, connections, credentials, agents, and goals are "
+                "not built here."
             ),
         })
-    # Require an EXPLICIT, allowlisted operation (Codex exact-diff 2026-08-23): an
-    # empty operation must never fall through to the connector's default.
+    # Require the EXPLICIT create op: empty/unknown must never fall through, and
+    # EDIT (patch) is a separate reviewed slice — its op set can publish / change
+    # visibility / fork / carry approval, so it is not exposed here yet.
     op = (operation or "").strip().lower()
-    allowed_ops = _WRITE_GRAPH_OPS[t]
-    if op not in allowed_ops:
+    if op not in _WRITE_GRAPH_OPS:
         return json.dumps({
             "error": (
-                f"write_graph target='{t}' operation must be one of "
-                f"{sorted(allowed_ops)}; got '{operation or '(empty)'}'."
+                "write_graph on the served surface supports operation='create' "
+                f"only (got '{operation or '(empty)'}'). Editing an existing "
+                "branch, publishing to the commons, and forking a public shape "
+                "stay in the browser flow."
             ),
         })
-    # Readability/ownership scope for anything that references an EXISTING branch or
-    # branch VERSION by id (Codex exact-diff 2026-08-23): a foreign-private id must
-    # read as not-found so a served turn cannot patch a branch it may not read, or
-    # bind an automation onto a version it may not read.
-    bid = (branch_id or "").strip()
-    if t == "branch" and op in _WRITE_GRAPH_BRANCH_REF_OPS and bid:
-        from tinyassets.api.branches import _base_path, _resolve_readable_branch
-
-        if _resolve_readable_branch(bid, str(_base_path())) is None:
-            return json.dumps({"error": f"Branch '{bid}' not found."})
-    bvid = (branch_version_id or "").strip()
-    if t == "automation" and bvid:
-        from tinyassets.api.branches import _base_path, _resolve_readable_version
-
-        if _resolve_readable_version(bvid, str(_base_path())) is None:
-            return json.dumps({"error": f"Branch version '{bvid}' not found."})
+    # DoS bound before we parse/persist anything.
+    if len(payload_json or "") > _SERVED_MAX_SPEC_BYTES:
+        return json.dumps({
+            "error": f"payload_json too large (max {_SERVED_MAX_SPEC_BYTES} bytes).",
+        })
     # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
-    # refuse the write, not admit it (Codex exact-diff 2026-08-23).
+    # refuse the write, not admit it.
     if not _engine_run_admit(fail_closed=True):
         return json.dumps({
             "error": (
@@ -499,30 +566,41 @@ def write_graph(
             ),
         })
 
+    from tinyassets.api.extensions import _extensions_impl
     from tinyassets.auth.middleware import _current_identity
-    from tinyassets.universe_server import write_graph as _impl
 
-    # Write capabilities bound ONLY for this call; graph_id PINNED to this
-    # universe so the write records under it and own-universe authz applies.
-    token = _bind_founder_identity(_RUN_CAPABILITIES)
+    # Least-privilege BUILD caps (no submit_request → a build turn structurally
+    # cannot fire an effect or submit a run). Call the author-gated, EFFECT-FREE
+    # build_branch DIRECTLY — never the multi-target connector write_graph.
+    token = _bind_founder_identity(_REMIX_CAPABILITIES)
     try:
-        return _impl(
-            target=t,
-            operation=operation,
-            name=name,
-            description=description,
-            tags=tags,
-            visibility=visibility,
-            graph_id=_GRAPH_ID,
-            branch_id=branch_id,
-            automation_id=automation_id,
-            payload_json=payload_json,
-            changes_json=changes_json,
-            expected_revision=expected_revision,
-            branch_version_id=branch_version_id,
-            agent_binding_id=agent_binding_id,
-            idempotency_key=idempotency_key,
-        )
+        try:
+            spec = json.loads(payload_json or "{}")
+        except (json.JSONDecodeError, RecursionError):
+            return json.dumps({"error": "payload_json must be valid JSON."})
+        if not isinstance(spec, dict):
+            return json.dumps({"error": "payload_json must be a JSON object."})
+        # Strip approval/author/fork from every node + force private (Codex adapt).
+        try:
+            _sanitize_served_branch_spec(spec)
+        except ValueError as exc:
+            return json.dumps({"error": f"invalid branch spec: {exc}"})
+        if name:
+            spec.setdefault("name", name)
+        if description:
+            spec.setdefault("description", description)
+        # A wrong-typed field that slips the pre-check must return a structured
+        # rejection, never crash the served MCP server (Codex finding 6).
+        try:
+            return _extensions_impl(
+                action="build_branch",
+                spec_json=json.dumps(spec, separators=(",", ":")),
+                request_id=idempotency_key,
+            )
+        except (AttributeError, TypeError, ValueError, KeyError) as exc:
+            return json.dumps({
+                "error": f"branch build rejected ({type(exc).__name__}).",
+            })
     finally:
         _current_identity.reset(token)
 

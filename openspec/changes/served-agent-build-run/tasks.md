@@ -1,5 +1,25 @@
 # Tasks — Served agent can build + run its own automations
 
+> **Progress (2026-08-23).** Sliced for safety after a Codex exact-diff review
+> (`adapt`, 6 findings). **RUN parity: DONE + LIVE** — `run_graph` is in
+> `SERVED_ENGINE_MCP_TOOLS` and activated for `u-tiny` via the run allowlist.
+> **BUILD parity: create-only, SHIPPED (un-darked 2026-08-23)** — `write_graph` is
+> a CREATE-only, `target=branch` handler that calls the author-gated, effect-free
+> `build_branch` directly after `_sanitize_served_branch_spec` (node-level strip of
+> approval/author/fork; rejects `node_ref` + nested `graph` blob; forces
+> visibility=private; size/node/type guards). Hardened across two Codex rounds
+> (6→2→0 open findings); every known path to a persisted APPROVED source_code node
+> is closed, and run_graph's fail-closed `_validate_source_code` is the runtime
+> backstop. Un-darked per founder MVP call (3 rounds is enough for an MVP); gated to
+> the `u-tiny` run allowlist. **RESIDUAL (pre-second-user harden gate):** branches
+> are author-scoped not universe-scoped, and build_branch's approval surface is
+> broad — the robust multi-tenant fix is a force-unapproved build MODE (clear
+> approval after any inherit/deref, before persist) + a branch↔universe binding.
+> **DEFERRED to their own reviewed slices:** `write_graph` PATCH/edit (its op set
+> can publish / change visibility / fork), `remix_shape`, and the channel/consent
+> verbs (§2.2). The parallel-allowlist drift class (§2.3) is closed structurally by
+> the single-source `tinyassets/served_tools.py` tuple both providers import.
+
 ## 1. Design + authority
 
 - [ ] 1.1 Confirm the acting identity for served build/run is the VERIFIED request
