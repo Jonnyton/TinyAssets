@@ -22,6 +22,7 @@ from typing import Any
 
 from tinyassets.branch_tasks import BranchTask
 from tinyassets.execution_subject import ExecutionSubject
+from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.automation_activations import (
     AutomationActivationExecutor,
     AutomationActivationStore,
@@ -32,6 +33,7 @@ from tinyassets.storage.request_admissions import (
     QUEUE_PROTOCOL_VERSION,
     RequestAdmissionStore,
     _quarantine_row_digest,
+    _stale_task_integrity_digest,
     expected_idempotency_hash_re,
 )
 
@@ -156,6 +158,18 @@ class Epoch2OperationalRead:
 
 
 @dataclass(frozen=True)
+class StaleCapacityCancellationPlan:
+    """CAS evidence for one reviewed stale epoch-2 task."""
+
+    branch_task_id: str
+    universe_id: str
+    queued_at: str
+    grant_generation: int
+    body_digest: str
+    row_digest: str
+
+
+@dataclass(frozen=True)
 class Epoch2ClaimedRequest:
     """Minimal private Request/task view bound to one live reservation."""
 
@@ -211,6 +225,57 @@ class Epoch2BranchTaskAdapter:
                 ),
             )
         ]
+
+    def plan_stale_capacity_cancellation(
+        self,
+        *,
+        cutoff: datetime,
+        capacity_matcher: Callable[[Epoch2BranchTask], bool],
+        policy_matcher: Callable[[Epoch2BranchTask], bool] | None = None,
+    ) -> list[StaleCapacityCancellationPlan]:
+        """Read a mutation-free plan for retired cloud-capacity tasks."""
+        cutoff = _as_utc(cutoff)
+        database = self.base_path / DB_FILENAME
+        if not database.is_file():
+            return []
+        uri = f"{database.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            rows = self._store._v2_integrity_cursor(
+                conn,
+                pending_only=True,
+                include_disabled=False,
+            ).fetchall()
+
+        planned: list[StaleCapacityCancellationPlan] = []
+        for stored in rows:
+            row = dict(stored)
+            queued_at = _parse_timestamp(str(row.get("queued_at") or ""))
+            if (
+                queued_at is None
+                or queued_at > cutoff
+                or row.get("automation_executor_class") != "cloud"
+                or _classify_epoch2_row(row) is not None
+            ):
+                continue
+            task = _as_epoch2_task(row)
+            if (
+                policy_matcher is not None
+                and not policy_matcher(task)
+            ) or capacity_matcher(task):
+                continue
+            planned.append(StaleCapacityCancellationPlan(
+                branch_task_id=task.branch_task_id,
+                universe_id=task.universe_id,
+                queued_at=task.queued_at,
+                grant_generation=int(
+                    row["linked_admission_grant_generation"]
+                ),
+                body_digest=str(row["linked_admission_body_digest"]),
+                row_digest=_stale_task_integrity_digest(row),
+            ))
+        return sorted(planned, key=lambda item: item.branch_task_id)
 
     def list_live_claimed_requests(
         self,
@@ -935,6 +1000,12 @@ def _parse_timestamp(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _classify_epoch2_row(
