@@ -1202,9 +1202,29 @@ def test_served_write_graph_public_and_provider_ops_refused(monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
     for target, op in (("branch", "publish"), ("automation", "bind_provider"),
-                       ("automation", "reconcile_provider")):
+                       ("automation", "reconcile_provider"), ("automation", "rebind")):
         out = json.loads(s.write_graph(target=target, operation=op))
         assert "operation must be one of" in out.get("error", ""), (target, op)
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_automation_foreign_version_not_found(monkeypatch):
+    """Automation create referencing a branch VERSION the universe may not read
+    reads as not-found (a foreign-private version must not be selectable)."""
+    import tinyassets.api.branches as br
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    monkeypatch.setattr(br, "_resolve_readable_version", lambda vid, base: None)
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="automation", operation="create",
+                                   branch_version_id="v-foreign", payload_json="{}"))
+    assert "not found" in out.get("error", "").lower()
     assert calls["n"] == 0
 
 

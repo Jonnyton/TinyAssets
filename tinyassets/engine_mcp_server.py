@@ -381,10 +381,12 @@ _WRITE_GRAPH_OPS = {
     # branch exposes it PUBLICLY to the commons, a consent-gated action that stays
     # in the browser/connector flow (Codex exact-diff 2026-08-23).
     "branch": frozenset({"create", "remix", "patch"}),
-    # MANAGE an automation you own — pause/stop/resume/rebind. NOT
-    # `bind_provider`/`reconcile_provider` — issuing a provider binding is a
-    # provider-authority action, kept off the served surface pending its own review.
-    "automation": frozenset({"create", "pause", "resume", "stop", "rebind"}),
+    # MANAGE an automation you own — pause/stop/resume. NOT `bind_provider`/
+    # `reconcile_provider` (issuing a provider binding is a provider-authority
+    # action) and NOT `rebind` — rebind with a {"provider":...} payload reaches
+    # provider_rebind_alias and issues provider authority BEFORE the automation
+    # lookup (Codex re-review 2026-08-23), so it stays off the served surface too.
+    "automation": frozenset({"create", "pause", "resume", "stop"}),
 }
 #: Branch operations that reference an EXISTING branch by id — must pass the same
 #: readability/ownership gate as run_graph (a foreign-private branch id reads as
@@ -413,11 +415,13 @@ def write_graph(
 
     Use this to CREATE the workflow you want, not just run an existing one.
 
-    - ``target="branch"`` — ``create`` / ``remix`` / ``patch`` / ``publish`` a
-      Branch graph (a workflow shape). Pass a complete Branch spec in
-      ``payload_json`` for create/remix; ``changes_json`` for patch.
-    - ``target="automation"`` — ``create`` / ``pause`` / ``resume`` / ``stop`` /
-      ``rebind`` an automation you own (e.g. pause background work).
+    - ``target="branch"`` — ``create`` / ``remix`` / ``patch`` a Branch graph (a
+      workflow shape). Pass a complete Branch spec in ``payload_json`` for
+      create/remix; ``changes_json`` for patch. (Publishing a branch to the public
+      commons is consent-gated and stays in the browser/connector flow.)
+    - ``target="automation"`` — ``create`` / ``pause`` / ``resume`` / ``stop`` an
+      automation you own (e.g. pause background work). (Provider (re)binding stays
+      off the served surface.)
 
     Confinement: runs as the FOUNDER, pinned to YOUR universe; own-universe only.
     Depositing a credential or wiring an outbound connection is NOT done here —
@@ -469,15 +473,22 @@ def write_graph(
                 f"{sorted(allowed_ops)}; got '{operation or '(empty)'}'."
             ),
         })
-    # Readability/ownership scope for branch operations that reference an EXISTING
-    # branch by id (Codex exact-diff 2026-08-23): a foreign-private branch id must
-    # read as not-found so a served turn cannot patch a branch it may not read.
+    # Readability/ownership scope for anything that references an EXISTING branch or
+    # branch VERSION by id (Codex exact-diff 2026-08-23): a foreign-private id must
+    # read as not-found so a served turn cannot patch a branch it may not read, or
+    # bind an automation onto a version it may not read.
     bid = (branch_id or "").strip()
     if t == "branch" and op in _WRITE_GRAPH_BRANCH_REF_OPS and bid:
         from tinyassets.api.branches import _base_path, _resolve_readable_branch
 
         if _resolve_readable_branch(bid, str(_base_path())) is None:
             return json.dumps({"error": f"Branch '{bid}' not found."})
+    bvid = (branch_version_id or "").strip()
+    if t == "automation" and bvid:
+        from tinyassets.api.branches import _base_path, _resolve_readable_version
+
+        if _resolve_readable_version(bvid, str(_base_path())) is None:
+            return json.dumps({"error": f"Branch version '{bvid}' not found."})
     # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
     # refuse the write, not admit it (Codex exact-diff 2026-08-23).
     if not _engine_run_admit(fail_closed=True):
