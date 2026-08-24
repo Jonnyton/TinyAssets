@@ -9,14 +9,18 @@ move later without changing the caller contract.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import sqlite3
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from tinyassets import daemon_server
+from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.request_admissions import (
     OPERATOR_CAPABILITY,
     QUEUE_PROTOCOL_VERSION,
@@ -30,6 +34,125 @@ RUNTIME_CONTROL_STATUSES = {
     "resume": "provisioned",
     "restart": "restart_requested",
 }
+
+
+@dataclass(frozen=True)
+class StaleCloudWorkerRuntimeRetirementPlan:
+    """CAS evidence for one reviewed stale cloud-worker runtime."""
+
+    instance_id: str
+    universe_id: str
+    worker_id: str
+    updated_at: float
+    row_digest: str
+
+
+def _runtime_heartbeat_is_stale(
+    base_path: str | Path,
+    row: Mapping[str, Any],
+    *,
+    cutoff: datetime,
+    now: datetime,
+) -> bool:
+    from tinyassets.api.universe import _worker_liveness
+
+    metadata = json.loads(str(row["metadata_json"] or "{}"))
+    worker_id = str(metadata.get("worker_id") or "")
+    liveness = _worker_liveness(
+        Path(base_path) / str(row["universe_id"]),
+        now=now,
+    )
+    matching = [
+        worker
+        for worker in liveness.get("workers", [])
+        if (
+            str(worker.get("runtime_instance_id") or "")
+            == str(row["instance_id"])
+            or str(worker.get("worker_id") or "") == worker_id
+        )
+    ]
+    if not matching:
+        return not any(
+            worker.get("parse_error")
+            and not worker.get("worker_id")
+            and not worker.get("runtime_instance_id")
+            for worker in liveness.get("workers", [])
+        )
+    threshold_seconds = max(0.0, (now - cutoff).total_seconds())
+    return all(
+        not worker.get("parse_error")
+        and float(worker.get("beat_age_s", -1)) >= threshold_seconds
+        for worker in matching
+    )
+
+
+def plan_stale_cloud_worker_runtime_retirement(
+    base_path: str | Path,
+    *,
+    cutoff: datetime,
+) -> list[StaleCloudWorkerRuntimeRetirementPlan]:
+    """Read a mutation-free plan for dead retired-fleet runtimes."""
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    cutoff = cutoff.astimezone(timezone.utc)
+    database = Path(base_path) / DB_FILENAME
+    if not database.is_file():
+        return []
+    uri = f"{database.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        has_task_store = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'branch_tasks_v2'"
+        ).fetchone()
+        if has_task_store is None:
+            return []
+        rows = conn.execute(
+            "SELECT * FROM author_runtime_instances "
+            "WHERE status = 'provisioned' ORDER BY instance_id"
+        ).fetchall()
+        now = datetime.now(timezone.utc)
+        planned: list[StaleCloudWorkerRuntimeRetirementPlan] = []
+        for row in rows:
+            try:
+                metadata = json.loads(str(row["metadata_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            worker_id = str(metadata.get("worker_id") or "").strip()
+            if (
+                metadata.get("runtime_registration") != "cloud_worker"
+                or not worker_id
+                or float(row["updated_at"]) > cutoff.timestamp()
+                or not _runtime_heartbeat_is_stale(
+                    base_path,
+                    row,
+                    cutoff=cutoff,
+                    now=now,
+                )
+            ):
+                continue
+            active_ownership = conn.execute(
+                """
+                SELECT 1 FROM branch_tasks_v2
+                WHERE claimed_by = ?
+                  AND status IN ('running', 'cancel_requested')
+                LIMIT 1
+                """,
+                (worker_id,),
+            ).fetchone()
+            if active_ownership is not None:
+                continue
+            planned.append(StaleCloudWorkerRuntimeRetirementPlan(
+                instance_id=str(row["instance_id"]),
+                universe_id=str(row["universe_id"]),
+                worker_id=worker_id,
+                updated_at=float(row["updated_at"]),
+                row_digest=daemon_server._runtime_reconcile_digest(row),
+            ))
+    return planned
 
 
 def _daemon_id_from_author_id(author_id: str) -> str:

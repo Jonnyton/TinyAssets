@@ -17,6 +17,8 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1334,15 +1336,114 @@ def retire_runtime_instance(
     instance_id: str,
 ) -> dict[str, Any]:
     with _connect(base_path) as conn:
-        conn.execute(
-            """
-            UPDATE author_runtime_instances
-            SET status = 'retired', updated_at = ?
-            WHERE instance_id = ?
-            """,
-            (_now(), instance_id),
+        return _retire_runtime_instance_locked(conn, instance_id=instance_id)
+
+
+def retire_runtime_instance_if_stale(
+    base_path: str | Path,
+    *,
+    instance_id: str,
+    cutoff: datetime,
+    expected_updated_at: float,
+    expected_row_digest: str,
+) -> dict[str, Any] | None:
+    """Retire one exact reviewed stale cloud-worker runtime under CAS."""
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    cutoff = cutoff.astimezone(timezone.utc)
+    with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM author_runtime_instances WHERE instance_id = ?",
+            (instance_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        metadata = _json_loads(row["metadata_json"], {})
+        worker_id = (
+            str(metadata.get("worker_id") or "").strip()
+            if isinstance(metadata, dict)
+            else ""
         )
-    return get_runtime_instance(base_path, instance_id=instance_id)
+        if not all((
+            row["status"] == "provisioned",
+            isinstance(metadata, dict),
+            metadata.get("runtime_registration") == "cloud_worker",
+            bool(worker_id),
+            float(row["updated_at"]) == float(expected_updated_at),
+            float(row["updated_at"]) <= cutoff.timestamp(),
+            _runtime_reconcile_digest(row) == expected_row_digest,
+        )):
+            return None
+        active_ownership = conn.execute(
+            """
+            SELECT 1 FROM branch_tasks_v2
+            WHERE claimed_by = ?
+              AND status IN ('running', 'cancel_requested')
+            LIMIT 1
+            """,
+            (worker_id,),
+        ).fetchone()
+        if active_ownership is not None:
+            return None
+        from tinyassets.daemon_registry import _runtime_heartbeat_is_stale
+
+        if not _runtime_heartbeat_is_stale(
+            base_path,
+            row,
+            cutoff=cutoff,
+            now=datetime.now(timezone.utc),
+        ):
+            return None
+        return _retire_runtime_instance_locked(conn, instance_id=instance_id)
+
+
+def _retire_runtime_instance_locked(
+    conn: sqlite3.Connection,
+    *,
+    instance_id: str,
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        UPDATE author_runtime_instances
+        SET status = 'retired', updated_at = ?
+        WHERE instance_id = ?
+        """,
+        (_now(), instance_id),
+    )
+    row = conn.execute(
+        "SELECT * FROM author_runtime_instances WHERE instance_id = ?",
+        (instance_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(instance_id)
+    return _runtime_from_row(row)
+
+
+def _runtime_reconcile_digest(row: Mapping[str, Any]) -> str:
+    payload = {
+        key: row[key]
+        for key in (
+            "instance_id",
+            "universe_id",
+            "author_id",
+            "provider_name",
+            "model_name",
+            "branch_id",
+            "status",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "metadata_json",
+        )
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def update_runtime_instance_status(

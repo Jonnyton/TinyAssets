@@ -1557,7 +1557,6 @@ class RequestAdmissionStore:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                at = _clock_iso(self._clock)
                 row = conn.execute(
                     "SELECT * FROM branch_tasks_v2 "
                     "WHERE branch_task_id = ?",
@@ -1565,64 +1564,126 @@ class RequestAdmissionStore:
                 ).fetchone()
                 if row is None:
                     raise KeyError(branch_task_id)
-                if row["status"] in TERMINAL_STATUSES:
-                    conn.commit()
-                    return _task_row(row)
-                if row["status"] == "cancel_requested":
-                    conn.commit()
-                    return _task_row(row)
-                new_status = (
-                    "cancelled"
-                    if row["status"] == "pending"
-                    else "cancel_requested"
-                )
-                terminal_at = at if new_status == "cancelled" else None
-                conn.execute(
-                    """
-                    UPDATE branch_tasks_v2
-                    SET status = ?, terminal_at = COALESCE(?, terminal_at)
-                    WHERE branch_task_id = ?
-                    """,
-                    (new_status, terminal_at, branch_task_id),
-                )
-                if terminal_at is not None:
-                    conn.execute(
-                        """
-                        UPDATE request_admissions
-                        SET terminal_at = ?, updated_at = ?
-                        WHERE admission_id = ?
-                        """,
-                        (terminal_at, at, row["admission_id"]),
-                    )
-                conn.execute(
-                    """
-                    UPDATE user_requests
-                    SET status = ?, updated_at = ?
-                    WHERE request_id = ?
-                    """,
-                    (
-                        new_status,
-                        _epoch_seconds(at),
-                        row["request_id"],
-                    ),
-                )
-                self._append_task_event(
-                    conn,
-                    row,
-                    event_type=new_status,
-                    event_at=at,
-                    detail={},
-                )
-                updated = conn.execute(
-                    "SELECT * FROM branch_tasks_v2 "
-                    "WHERE branch_task_id = ?",
-                    (branch_task_id,),
-                ).fetchone()
+                updated = self._request_v2_cancel_locked(conn, row)
                 conn.commit()
-                return _task_row(updated)
+                return updated
             except Exception:
                 conn.rollback()
                 raise
+
+    def cancel_pending_v2_task_if_stale(
+        self,
+        branch_task_id: str,
+        *,
+        cutoff: datetime,
+        expected_queued_at: str,
+        expected_grant_generation: int,
+        expected_body_digest: str,
+        expected_row_digest: str,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        """Cancel one exact reviewed stale task under a write-lock CAS."""
+        if reason != "stale_awaiting_compatible_capacity_retired_fleet":
+            raise ValueError("unsupported stale task cancellation reason")
+        cutoff_value = cutoff
+        if cutoff_value.tzinfo is None:
+            cutoff_value = cutoff_value.replace(tzinfo=timezone.utc)
+        cutoff_value = cutoff_value.astimezone(timezone.utc)
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._v2_integrity_cursor(
+                    conn,
+                    pending_only=False,
+                    include_disabled=True,
+                    branch_task_id=branch_task_id,
+                ).fetchone()
+                if row is None:
+                    conn.commit()
+                    return None
+                evidence = dict(row)
+                queued_at = _parse_iso_datetime(
+                    expected_queued_at,
+                    name="expected_queued_at",
+                )
+                if not all((
+                    evidence["status"] == "pending",
+                    evidence["disabled"] == 0,
+                    evidence["queued_at"] == expected_queued_at,
+                    int(evidence["linked_admission_grant_generation"])
+                    == expected_grant_generation,
+                    evidence["linked_admission_body_digest"]
+                    == expected_body_digest,
+                    _stale_task_integrity_digest(evidence)
+                    == expected_row_digest,
+                    queued_at <= cutoff_value,
+                )):
+                    conn.commit()
+                    return None
+                updated = self._request_v2_cancel_locked(
+                    conn,
+                    row,
+                    detail={"reason": reason},
+                )
+                conn.commit()
+                return updated
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _request_v2_cancel_locked(
+        self,
+        conn: sqlite3.Connection,
+        row: Mapping[str, Any],
+        *,
+        detail: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        at = _clock_iso(self._clock)
+        if row["status"] in TERMINAL_STATUSES:
+            return _task_row(row)
+        if row["status"] == "cancel_requested":
+            return _task_row(row)
+        new_status = (
+            "cancelled" if row["status"] == "pending" else "cancel_requested"
+        )
+        terminal_at = at if new_status == "cancelled" else None
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET status = ?, terminal_at = COALESCE(?, terminal_at)
+            WHERE branch_task_id = ?
+            """,
+            (new_status, terminal_at, row["branch_task_id"]),
+        )
+        if terminal_at is not None:
+            conn.execute(
+                """
+                UPDATE request_admissions
+                SET terminal_at = ?, updated_at = ?
+                WHERE admission_id = ?
+                """,
+                (terminal_at, at, row["admission_id"]),
+            )
+        conn.execute(
+            """
+            UPDATE user_requests
+            SET status = ?, updated_at = ?
+            WHERE request_id = ?
+            """,
+            (new_status, _epoch_seconds(at), row["request_id"]),
+        )
+        self._append_task_event(
+            conn,
+            row,
+            event_type=new_status,
+            event_at=at,
+            detail=dict(detail or {}),
+        )
+        updated = conn.execute(
+            "SELECT * FROM branch_tasks_v2 WHERE branch_task_id = ?",
+            (row["branch_task_id"],),
+        ).fetchone()
+        return _task_row(updated)
 
     def list_expired_v2_tasks(self) -> list[dict[str, Any]]:
         with self.connection() as conn:
@@ -2519,6 +2580,14 @@ def _quarantine_row_digest(row: Mapping[str, Any]) -> str:
     }
     digest_snapshot.pop("disabled", None)
     digest_snapshot.pop("quarantine_reason", None)
+    digest_snapshot.pop("source_rowid", None)
+    canonical = _canonicalize_quarantine_value(digest_snapshot)
+    return hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+
+
+def _stale_task_integrity_digest(row: Mapping[str, Any]) -> str:
+    """Bind a stale-task review to the complete joined integrity evidence."""
+    digest_snapshot = dict(row)
     digest_snapshot.pop("source_rowid", None)
     canonical = _canonicalize_quarantine_value(digest_snapshot)
     return hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
