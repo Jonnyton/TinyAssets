@@ -125,8 +125,14 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
             "(write_graph target=source_channel operation=approve)",
             "for a live post, TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED must be "
             "on for the daemon",
-            "build a node whose effect is authenticated_external_call, emitting a "
-            "packet with this connection_id + grant_id",
+            "build a node whose effect is authenticated_external_call: its "
+            "source_code must return (under one of its output_keys) a json.dumps "
+            "packet of EXACTLY {\"sink\":\"authenticated_external_call\", "
+            "\"connection_id\":\"<this connection_id>\", "
+            "\"grant_id\":\"<this grant_id>\", \"verb\":\"<HTTP method, e.g. POST>\", "
+            "\"request\":{\"method\":\"<HTTP method>\", \"host\":\"<an allowed host>\", "
+            "\"path\":\"<an allowed path>\", \"body\":{...}}} — connection_id and "
+            "grant_id are REQUIRED (do not use 'destination'/'payload' keys)",
         ],
     }
 

@@ -720,6 +720,32 @@ def write_graph(
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
 
+    **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
+    ANY HTTPS API with no service-specific code.** A node declaring
+    ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
+    the run, reading its instruction from one of its ``output_keys``. Prereqs, done
+    once in the browser flow (NOT here — they carry secrets): ``connect_http``
+    deposits the connection + grant and pins the host/path/method allow-list, and
+    ``source_channel operation=approve`` grants the destination consent. The node's
+    ``source_code`` MUST return, under one of its ``output_keys``, a ``json.dumps``
+    string of a packet of EXACTLY this shape (the effector rejects anything else —
+    do NOT invent ``destination`` / ``payload`` keys)::
+
+        {"sink": "authenticated_external_call",
+         "connection_id": "<the connection_id connect_http returned>",
+         "grant_id":      "<the grant_id connect_http returned>",
+         "verb":          "POST",          # the HTTP method
+         "request": {"method": "POST",      # if present, must equal verb
+                     "host": "<a host from the connection's allow-list>",
+                     "path": "<a path from the connection's allow-list>",
+                     "body": { ... }}}      # JSON body to send
+
+    ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
+    connect_http; ``verb`` is the HTTP method (it is matched against the connection's
+    granted scope). The source_code node stays UNAPPROVED until the founder approves
+    it in the browser, and the call only fires when the daemon's outbound-HTTP flag
+    is on — so a build here is always safe.
+
     A branch is a stored graph SHAPE — building/editing one fires NO effects and
     issues NO provider authority. Actually RUNNING it (with side effects) is a
     separate step via run_graph, and any source_code node stays UNAPPROVED until you
