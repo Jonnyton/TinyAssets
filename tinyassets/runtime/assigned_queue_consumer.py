@@ -73,6 +73,11 @@ class AssignedQueueConsumer:
         self._active: dict[str, Future[Any]] = {}
 
     def start(self) -> None:
+        # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
+        # start()ing a consumer must spin up NO coordinator thread — the dark guarantee
+        # is "no side effect when off", not merely "no DB writes".
+        if not assigned_queue_consumer_enabled():
+            return
         if self._thread is not None:
             return
         self._thread = threading.Thread(

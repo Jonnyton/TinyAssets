@@ -278,3 +278,39 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
 
     assert finishes == [(task.branch_task_id, "failed")]
     consumer.stop()
+
+
+def test_start_is_a_noop_when_dark(tmp_path, monkeypatch) -> None:
+    """With the flag unset, start() spins up NO coordinator thread — the dark guarantee
+    is 'no side effect when off', not merely 'no DB writes' (Codex #6, #2516)."""
+    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
+    c = AssignedQueueConsumer(tmp_path)
+    c.start()
+    assert c._thread is None
+    c.stop()
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "on")
+    c.start()
+    assert c._thread is not None
+    c.stop()
+
+
+def test_migrate_creates_no_background_authority_schema_when_dark(tmp_path) -> None:
+    """A dark consumer leaves ZERO background-authority schema: migrate creates the
+    epoch-2 tables but NOT the consumer's authority tables — the shared claim guard is
+    missing-table-safe (Codex #6, #2516)."""
+    import sqlite3
+
+    from tinyassets.storage.request_admissions import migrate_request_admission_schema
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        migrate_request_admission_schema(conn)
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "branch_tasks_v2" in tables
+        assert "background_branch_authority_owners" not in tables
+        assert "background_branch_bindings" not in tables
+    finally:
+        conn.close()

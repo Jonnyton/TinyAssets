@@ -1031,13 +1031,23 @@ def _transaction_allows_epoch2_lifecycle(
     ).fetchone()
     if active is not None:
         return False
-    authority_owner = conn.execute(
-        """
-        SELECT state FROM background_branch_authority_owners
-        WHERE owner_kind = 'queue_task' AND owner_id = ? LIMIT 1
-        """,
-        (task["branch_task_id"],),
-    ).fetchone()
+    try:
+        authority_owner = conn.execute(
+            """
+            SELECT state FROM background_branch_authority_owners
+            WHERE owner_kind = 'queue_task' AND owner_id = ? LIMIT 1
+            """,
+            (task["branch_task_id"],),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        # The background-authority schema is created lazily by the assigned-queue
+        # consumer's own store, and ONLY when the consumer is enabled and writes an
+        # owner. When the consumer is dark the table need not exist — a missing table
+        # means no owner holds authority, so the shared epoch-2 claim proceeds. This is
+        # what lets the dark consumer create ZERO schema at migrate time (Codex #6, #2516).
+        if "no such table" not in str(exc).lower():
+            raise
+        authority_owner = None
     if authority_owner is not None and authority_owner["state"] == "target_authority_held":
         return False
     return AutomationActivationStore.validate_claim_in_transaction(

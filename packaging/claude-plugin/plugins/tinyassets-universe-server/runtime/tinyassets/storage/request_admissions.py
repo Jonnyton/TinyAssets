@@ -2520,16 +2520,12 @@ def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
 
     conn.executescript(_SCHEMA)
     # The shared epoch-2 claim guard (_transaction_allows_epoch2_lifecycle) reads
-    # background_branch_authority_owners on THIS connection to avoid double-claiming
-    # a task the assigned-queue consumer already holds. That table lives in the same
-    # DB file (db_path), so its schema must exist here even when the consumer is
-    # disabled — the table simply stays empty. Idempotent CREATE ... IF NOT EXISTS,
-    # imported locally to keep the storage package import order cycle-free.
-    from tinyassets.storage.background_branch_authority import (
-        _SCHEMA as _BACKGROUND_AUTHORITY_SCHEMA,
-    )
-
-    conn.executescript(_BACKGROUND_AUTHORITY_SCHEMA)
+    # background_branch_authority_owners on THIS connection to avoid double-claiming a
+    # task the assigned-queue consumer holds. That table is created LAZILY by the
+    # consumer's own store only when the consumer is enabled; the guard is
+    # missing-table-safe (treats a missing table as "no owner"), so we deliberately do
+    # NOT create the background-authority schema here — a dark consumer leaves ZERO
+    # schema behind (Codex #6, #2516).
     task_columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(branch_tasks_v2)")
