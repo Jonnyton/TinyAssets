@@ -37,10 +37,23 @@
 - [ ] 2.1 Add `write_graph`, `run_graph`, `remix_shape` to
       `_ENGINE_MCP_ENABLED_TOOLS` (codex_provider.py) and the matching
       `_ENGINE_MCP_TOOLS` (universe_intelligence.py) — keep the two lists in sync.
-- [ ] 2.2 Add the channel/consent verbs (`grant_effector_consent`,
-      `approve_source_channel`, the generic authenticated-external-call +
-      named-connection primitive) so channels are USER-built via the one
+- [~] 2.2 Add the channel/consent verbs so channels are USER-built via the one
       channel-agnostic node, not hard-coded effectors.
+      **CONSENT half DONE (2026-08-25, PR pending):** served `source_channel`
+      (action=approve, SINK-ONLY) exposed in `engine_mcp_server.py` + the
+      `SERVED_ENGINE_MCP_TOOLS` tuple — mirrors `connect_compute` (allowlist gate,
+      graph-pin, least-privilege write, owner-ACL via impl, secret-free).
+      `channel_type=="source_code"` REFUSED (preserves the create-only write_graph
+      RCE closure); 7 adversarial tests. **BUILD half DONE (2026-08-25):**
+      `_sanitize_served_branch_spec` now allows ONLY the `authenticated_external_call`
+      effect sink (allowlist — every other sink incl. `wiki_write_back` refused; the
+      typed `handoffs` path refused) capped at `_SERVED_MAX_EFFECT_NODES=5` per build; the
+      6 run-time gates (packet, server-owned universe, grant-bound-to-universe, soul
+      authority, per-destination consent, outbound flag + SSRF) fire per dispatch
+      regardless of the declaration. `connect_http` (raw secret) stays on the browser
+      form. **OWED:** a proper per-root-run effect-dispatch cap for ALL surfaces (the
+      per-build effect-node count is the interim bound); Codex cross-family review of the
+      slice before any flip-on.
 - [ ] 2.3 Extend the grounding-file/allowlist drift guard so the two served
       allowlists cannot diverge silently (the parallel-list drift class).
 

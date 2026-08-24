@@ -409,6 +409,12 @@ _SERVED_STRIP_NODE_FIELDS = (
 #: DoS bounds on a served build payload.
 _SERVED_MAX_SPEC_BYTES = 256 * 1024
 _SERVED_MAX_NODES = 100
+#: Effect-spam bound: a served-built graph may declare at most this many
+#: effect-carrying nodes (each fires at most once per run — loops/invoke are already
+#: rejected). Structural per-build ceiling on outbound volume while a proper per-root-run
+#: effect-dispatch cap (all surfaces) is a tracked follow-up; run-time gates (consent,
+#: connection grant, outbound flag, SSRF) still fire per dispatch regardless.
+_SERVED_MAX_EFFECT_NODES = 5
 
 
 def _sanitize_served_branch_spec(spec: dict) -> None:
@@ -452,6 +458,7 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
     total_nodes = 0
+    effect_nodes = 0
     for container in ("node_defs", "nodes"):
         nodes = spec.get(container)
         if nodes is None:
@@ -485,10 +492,42 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                         "yet; build a self-contained graph (sub-branch invocation "
                         "arrives with the channel/consent slice)"
                     )
-            if n.get("effects"):
+            # Channel/consent slice: the ONE channel-agnostic effect node
+            # (authenticated_external_call) is allowed; every other sink is refused
+            # (an allowlist, not a denylist — the platform ships exactly two sinks and
+            # channels stay USER-built via this one node, never hard-coded effectors).
+            # Building declares only the sink NAME and fires nothing; the run-time
+            # effector re-checks the connection grant bound to THIS universe + the
+            # per-destination effector consent + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED
+            # + SSRF, regardless of this declaration. The consent itself is granted via
+            # the served source_channel verb.
+            effects = n.get("effects")
+            if effects is not None:
+                from tinyassets.effectors.authenticated_external_call import (
+                    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+                )
+
+                if not isinstance(effects, list) or not all(
+                    isinstance(e, str) for e in effects
+                ):
+                    raise ValueError("node 'effects' must be a JSON array of strings")
+                for sink in effects:
+                    if sink != EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL:
+                        raise ValueError(
+                            f"effect sink '{sink}' is not available on the served build "
+                            "surface; only the channel-agnostic "
+                            f"'{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL}' node is allowed"
+                        )
+                if effects:
+                    effect_nodes += 1
+            # The typed 'handoffs' path (outbound_boundary) is a DIFFERENT effect
+            # mechanism from the channel-agnostic node — reject it fail-loud rather than
+            # let it slip through the served build surface (it is not stripped elsewhere).
+            if n.get("handoffs"):
                 raise ValueError(
-                    "declaring node effects is not available on the served build "
-                    "surface yet (effects arrive with the channel/consent slice)"
+                    "declaring node 'handoffs' is not available on the served build "
+                    "surface; route outbound work through the authenticated_external_call "
+                    "channel node"
                 )
             for f in _SERVED_STRIP_NODE_FIELDS:
                 n.pop(f, None)
@@ -497,6 +536,11 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                     raise ValueError(f"node field '{f}' must be a string")
     if total_nodes > _SERVED_MAX_NODES:
         raise ValueError(f"too many nodes (max {_SERVED_MAX_NODES})")
+    if effect_nodes > _SERVED_MAX_EFFECT_NODES:
+        raise ValueError(
+            f"too many effect-declaring nodes (max {_SERVED_MAX_EFFECT_NODES}); "
+            "keep a served channel graph small"
+        )
 
 
 @mcp.tool

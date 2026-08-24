@@ -74,13 +74,21 @@ from __future__ import annotations
 #:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:
+#: write_graph (BUILD half of the channel slice, 2026-08-25): the ONE channel-agnostic
+#:   effect node (``authenticated_external_call``) is now allowed in a served create — an
+#:   allowlist (every other sink, incl. ``wiki_write_back``, and the typed ``handoffs``
+#:   path are refused), capped at a small effect-node count per build. Building declares
+#:   only the sink NAME and fires nothing; the run-time effector re-checks the
+#:   connection-grant-bound-to-this-universe + per-destination consent (granted via
+#:   source_channel) + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED + SSRF per dispatch.
+#:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
 #:   write_graph PATCH/edit — see above (separate slice)
 #:   remix_shape   — cross-author commons remix
 #:   connect_http  — deposits a RAW SECRET; stays on the browser deposit form
-#:   authenticated_external_call effect declaration in write_graph — the BUILD half of the
-#:       channel slice (allow the one channel-agnostic effect node); its own reviewed slice
+#:   a proper per-root-run effect-dispatch cap (all surfaces) — the served build cap on
+#:       effect-node count is the interim structural bound
 SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "read_graph",
     "get_status",
