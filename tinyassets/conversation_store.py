@@ -139,6 +139,43 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def load_recent_readonly(
+    universe_dir: "str | Path",
+    session_id: str,
+    *,
+    limit: int = DEFAULT_LIMIT,
+) -> list["Msg"]:
+    """Read-only sibling of ``load_recent`` for pure-read callers (get_status).
+
+    Opens the store with SQLite ``mode=ro`` and runs NO schema DDL/migration, so
+    observing the transcript never mutates the DB (the ``_connect`` path runs
+    ``executescript``/``ALTER``/``CREATE INDEX`` and would violate a pure-read
+    contract). Empty on ANY trouble — missing store, missing table, or read error
+    — exactly like ``load_recent``'s fail-open contract.
+    """
+    if not session_id:
+        return []
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            rows = conn.execute(
+                "SELECT speaker, content, ts FROM conversation_turns "
+                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
+                (session_id, max(1, int(limit))),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_coerce_ts(t))
+            for sp, ct, t in reversed(rows)
+        ]
+    except Exception:  # noqa: BLE001 - read-only peek is a bonus, never a blocker
+        return []
+
+
 def record_turn(
     universe_dir: "str | Path",
     session_id: str,
