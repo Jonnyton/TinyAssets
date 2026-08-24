@@ -41,24 +41,23 @@ from __future__ import annotations
 #:       admits a founder-owned OR a PUBLIC-foreign branch (a foreign PRIVATE
 #:       branch is refused); the delegated-authority sanitization is what keeps
 #:       that safe, not an author gate.
-#:   write_graph                                                 — BUILD one of THIS
-#:       universe's own automations (branch create/remix/patch/publish) and MANAGE
-#:       an automation (create/pause/resume/stop/rebind) — the "when the user
-#:       creates things" parity. The served handler CONFINES write_graph to those
-#:       two targets: credential/connection deposits, cross-author agent publish,
-#:       goals, and requests are NOT reachable served (a secret must never enter a
-#:       served turn) and stay in the secure browser flow. Same run-allowlist +
-#:       rate-limit confinement as run_graph.
 #:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
+#:   write_graph   — BUILD a branch / manage an automation (the "when the user
+#:       creates things" parity). The confined served handler IS implemented +
+#:       tested (engine_mcp_server.write_graph, target in {branch, automation}),
+#:       but confining the broad connector handler surfaced authority quirks over
+#:       three Codex rounds (rebind provider-backdoor, foreign-version selection),
+#:       so it stays DARK (registered, not allowlisted) until a dedicated
+#:       purpose-built review clears it. run_graph — approved + live — is enough for
+#:       the RUN parity; write_graph exposure is the next slice.
 #:   remix_shape   — cross-author commons remix
 #:   grant_effector_consent / channel-connection verbs — user-built channels
 SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "read_graph",
     "get_status",
     "run_graph",
-    "write_graph",
     "browse_commons",
     "read_commons_shape",
     "read_brain",
