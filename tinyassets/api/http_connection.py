@@ -259,6 +259,18 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     except (ValueError, TypeError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     requested_endpoints = [e.as_dict() for e in parsed_endpoints]
+    # The connection SCOPE for an http connection is the set of HTTP methods it
+    # permits — that is the "connection scope string" the authenticated_external_call
+    # effector matches the packet ``verb`` against (proxy/broker check
+    # ``verb in resource.scopes``). It MUST be the verbs, not a literal ("http",)
+    # type token: the latter admits NO verb, so every outbound POST failed
+    # "verb outside granted connection scope" and the whole http channel was dead on
+    # arrival (found by the first end-to-end live channel test, 2026-08-24). Methods
+    # are already uppercased + de-duped + guaranteed non-empty by
+    # ``_validate_endpoint_methods``; sort for a deterministic, idempotency-stable
+    # scope tuple. connection_type/connection_class/provider ("http") carry the type
+    # discrimination, so scopes is free to hold the verbs.
+    http_scopes = tuple(sorted({m for e in parsed_endpoints for m in e.methods}))
 
     credential_ref = f"vault://http/{destination}"
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
@@ -286,7 +298,7 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         or resource.connection_class != "http"
         or resource.provider != "http"
         or resource.auth_scheme != _AUTH_SCHEME
-        or tuple(resource.scopes) != ("http",)
+        or tuple(resource.scopes) != http_scopes
         or resource.destination != destination
         or resource.credential_ref != credential_ref
         or resource.revoked_at is not None
@@ -345,7 +357,7 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
                 connection_class="http",
                 connection_type="http",
                 auth_scheme=_AUTH_SCHEME,
-                scopes=("http",),
+                scopes=http_scopes,
                 provider="http",
                 destination=destination,
                 credential_ref=credential_ref,

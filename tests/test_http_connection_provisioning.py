@@ -179,6 +179,42 @@ def test_owner_provisions_http_connection_round_trip(base: Path) -> None:
     assert grant.connection_id == conn_id
 
 
+def test_connection_scope_is_the_endpoint_methods_not_a_type_token(base: Path) -> None:
+    """REGRESSION (first end-to-end live channel test, 2026-08-24).
+
+    An http connection's SCOPE must be the set of HTTP methods its endpoints
+    permit — the ``verb`` the ``authenticated_external_call`` effector matches
+    against (``verb in resource.scopes`` in both the ScopedConnectionProxy and the
+    CredentialBlindBroker). ``connect_http`` used to hardcode the literal
+    ``("http",)`` type token, which contains NO verb, so every outbound POST failed
+    ``"verb 'POST' is outside the granted connection scope"`` and the whole http
+    channel was dead on arrival. The effector's own test harness proves the working
+    contract is method-scoped (``_setup(... scopes=("POST",))``); this pins that
+    ``connect_http`` produces exactly that shape.
+    """
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-scope", admin="founder")
+    _login("founder")
+
+    result = _connect(
+        "u-scope",
+        endpoints=[
+            {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["POST"]},
+            {"host": "api.example.com", "path_template": "/v1/files", "methods": ["get", "PUT"]},
+        ],
+    )
+    assert result["status"] == "provisioned"
+
+    conn_id, _grant_id = _ids(universe_id="u-scope", destination="webhook:acme")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert resource is not None
+    # Sorted, uppercased, de-duped union of every endpoint's methods — the verbs the
+    # effector accepts — and specifically NOT the ("http",) type token.
+    assert tuple(resource.scopes) == ("GET", "POST", "PUT")
+    assert "http" not in resource.scopes
+
+
 def test_provision_routes_through_write_graph(base: Path) -> None:
     import importlib
 
