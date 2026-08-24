@@ -395,7 +395,7 @@ def run_graph(
 # run_graph (u-tiny only) until a branch↔universe binding lands (Codex finding 3).
 # Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
 # turn structurally cannot fire an effect or submit a run.
-_WRITE_GRAPH_OPS = frozenset({"create"})
+_WRITE_GRAPH_OPS = frozenset({"create", "patch"})
 #: Top-level spec fields that would fork or publicly expose the branch.
 _SERVED_STRIP_TOP_FIELDS = ("fork_from", "fork_from_version", "published", "public")
 #: Node fields a served create must NEVER carry, stripped at each node's TOP level
@@ -406,6 +406,13 @@ _SERVED_STRIP_NODE_FIELDS = (
     "approved", "approved_by", "approved_at", "approved_source_hash",
     "approval_reason", "author", "fork_from",
 )
+#: Text-metadata fields that reach text columns and must be strings wherever they appear
+#: in a node spec or a state_schema entry — a dict/list there persists malformed (Codex #4).
+_SERVED_NODE_TEXT_FIELDS = (
+    "node_id", "display_name", "source_code", "prompt_template", "description",
+    "node_type", "model_hint",
+)
+_SERVED_STATE_FIELD_TEXT = ("name", "description", "reducer")
 #: DoS bounds on a served build payload.
 _SERVED_MAX_SPEC_BYTES = 256 * 1024
 _SERVED_MAX_NODES = 100
@@ -457,6 +464,24 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
     for f in ("name", "description", "entry_point", "domain_id", "goal_id"):
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
+    # state_schema entries carry text-metadata fields (name/description/reducer) that
+    # reach text columns; a dict/list there persists malformed (Codex #4). Tolerant of
+    # both shapes (a `{"fields": [...]}` object or a bare list); default_value/field_name
+    # and any unrecognized shape are left untouched so opaque workflow data survives.
+    state_schema = spec.get("state_schema")
+    if isinstance(state_schema, dict):
+        state_entries = state_schema.get("fields")
+    elif isinstance(state_schema, list):
+        state_entries = state_schema
+    else:
+        state_entries = None
+    if isinstance(state_entries, list):
+        for sf in state_entries:
+            if not isinstance(sf, dict):
+                continue
+            for f in _SERVED_STATE_FIELD_TEXT:
+                if f in sf and not isinstance(sf[f], str):
+                    raise ValueError(f"state field '{f}' must be a string")
     total_nodes = 0
     effect_nodes = 0
     for container in ("node_defs", "nodes"):
@@ -542,7 +567,7 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 )
             for f in _SERVED_STRIP_NODE_FIELDS:
                 n.pop(f, None)
-            for f in ("node_id", "display_name", "source_code", "prompt_template"):
+            for f in _SERVED_NODE_TEXT_FIELDS:
                 if f in n and not isinstance(n[f], str):
                     raise ValueError(f"node field '{f}' must be a string")
     if total_nodes > _SERVED_MAX_NODES:
@@ -554,6 +579,124 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         )
 
 
+# ── Served EDIT surface (write_graph operation="patch", served-agent-build-run §2.2) ──
+# The "modify your workflow in place" half of build parity — a served universe can EDIT
+# its own branches, not only create-then-rebuild (the gap the 2026-08-24 live test
+# surfaced). patch_branch is a heterogeneous op batch; its op set can publish / change
+# visibility / fork / add an unsanitized node, so the served surface ALLOWLISTS the safe
+# self-edit ops and refuses the rest.
+#
+#: Safe self-edit ops: pure topology/state/metadata changes on the OWN private branch —
+#: they fire nothing, grant no authority, and cannot publish or approve. Skill WRITE ops
+#: (add/update/set_skills) carry snapshot objects that need their own validation and are
+#: a tracked follow-up; only remove_skill is exposed.
+_SERVED_PATCH_SAFE_OPS = frozenset({
+    "add_edge", "remove_edge", "add_conditional_edge", "remove_conditional_edge",
+    "add_state_field", "remove_state_field", "set_entry_point", "remove_node",
+    "set_name", "set_description", "set_tags", "set_goal", "unset_goal",
+    "remove_skill",
+})
+#: Refused outright: these expose the branch publicly or graft a foreign lineage — the
+#: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
+_SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set_fork_from"})
+#: A served update_node may ONLY retune content. The downstream _apply_node_updates
+#: allowlist permits tools_allowed / enabled / retry_policy / llm_policy / input_keys /
+#: output_keys, so an update could RE-ACTIVATE an already-approved node with new
+#: capabilities WITHOUT re-invalidating its approval hash (Codex #1, PR #2518). Restrict to
+#: content fields (a source_code edit still clears approval downstream).
+_SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
+    "op", "node_id", "prompt_template", "source_code", "display_name",
+})
+#: Metadata setter ops whose single field must be a string, else SQLite raises
+#: ProgrammingError or persists a malformed value (Codex #4, PR #2518).
+_SERVED_PATCH_STR_SETTERS = {
+    "set_name": "name", "set_description": "description", "set_goal": "goal_id",
+}
+_SERVED_MAX_PATCH_OPS = 100
+
+
+def _sanitize_served_patch_changes(changes: object) -> str:
+    """Validate a served patch op batch and return the sanitized changes_json.
+
+    Allowlist by op kind: safe topology/metadata ops pass (with per-op field-type
+    validation); publish/visibility/fork ops are refused; an ``add_node`` op is run
+    through the SAME per-node create sanitizer and may NOT declare an effect (channel
+    nodes are added via create, which caps them, so repeated patches cannot accumulate
+    effect nodes past the ceiling); an ``update_node`` may only retune content, never
+    execution/data authority. Raises ValueError on any violation.
+    """
+    import json
+
+    if not isinstance(changes, list):
+        raise ValueError("patch changes must be a JSON array of ops")
+    if len(changes) > _SERVED_MAX_PATCH_OPS:
+        raise ValueError(f"too many patch ops (max {_SERVED_MAX_PATCH_OPS})")
+    for op in changes:
+        if not isinstance(op, dict):
+            raise ValueError("each patch op must be a JSON object")
+        kind = str(op.get("op") or "").strip().lower()
+        if kind in _SERVED_PATCH_DANGEROUS_OPS:
+            raise ValueError(
+                f"patch op '{kind}' is not available on the served edit surface; "
+                "publishing to the commons, changing visibility, and forking a shape "
+                "stay in the browser flow"
+            )
+        if kind == "add_node":
+            # Reuse the create per-node sanitizer by wrapping the op's node fields as a
+            # one-node spec; it strips approval/author/fork, rejects node_ref/invoke/
+            # handoffs, and type-checks node fields.
+            node = {k: v for k, v in op.items() if k != "op"}
+            wrapper = {"node_defs": [node]}
+            _sanitize_served_branch_spec(wrapper)
+            sanitized = wrapper["node_defs"][0]
+            if sanitized.get("effects"):
+                # No effect/channel nodes via patch: the batch cap can't see the branch's
+                # EXISTING effect nodes, so repeated patches would accumulate past the
+                # ceiling (Codex #3). Channel nodes are added via create (capped per build).
+                raise ValueError(
+                    "adding an effect/channel node via patch is not available on the "
+                    "served edit surface; create a branch with the channel node instead"
+                )
+            op.clear()
+            op["op"] = "add_node"
+            op.update(sanitized)
+        elif kind == "update_node":
+            for field in op:
+                if field not in _SERVED_PATCH_UPDATE_NODE_ALLOWED:
+                    raise ValueError(
+                        f"patch update_node may not set '{field}' on the served edit "
+                        "surface (only node_id + prompt_template/source_code/display_name)"
+                    )
+            for field in ("node_id", "prompt_template", "source_code", "display_name"):
+                if field in op and not isinstance(op[field], str):
+                    raise ValueError(f"patch update_node '{field}' must be a string")
+        elif kind in _SERVED_PATCH_SAFE_OPS:
+            setter = _SERVED_PATCH_STR_SETTERS.get(kind)
+            if setter is not None and setter in op and not isinstance(op[setter], str):
+                raise ValueError(f"patch '{kind}' field '{setter}' must be a string")
+            if kind == "set_tags":
+                tags = op.get("tags")
+                if tags is not None and (
+                    not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
+                ):
+                    raise ValueError("patch set_tags 'tags' must be a list of strings")
+            if kind == "add_state_field":
+                # name/description/reducer reach text columns; a dict/list there
+                # persists malformed (Codex #4). default_value is intentionally any-JSON
+                # and is not constrained here.
+                for f in _SERVED_STATE_FIELD_TEXT:
+                    if f in op and not isinstance(op[f], str):
+                        raise ValueError(
+                            f"patch add_state_field '{f}' must be a string"
+                        )
+        else:
+            raise ValueError(
+                f"patch op '{kind or '(empty)'}' is not allowed on the served edit "
+                "surface"
+            )
+    return json.dumps(changes, separators=(",", ":"))
+
+
 @mcp.tool
 def write_graph(
     target: str = "",
@@ -562,30 +705,37 @@ def write_graph(
     description: str = "",
     payload_json: str = "",
     idempotency_key: str = "",
+    branch_id: str = "",
 ) -> str:
-    """Build one of YOUR OWN universe's workflow shapes (branches).
+    """Build or EDIT one of YOUR OWN universe's workflow shapes (branches).
 
-    Use this to CREATE the workflow you want — the build half of build+run parity
-    (run it afterward with run_graph).
+    The build half of build+run parity (run it afterward with run_graph).
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your universe).
+    - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
+      ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
+      edges + nodes, retune a node's prompt/source, rename, retag, add skills). The
+      edit is transactional (all-or-nothing). Publishing to the commons, changing
+      visibility to public, and forking a foreign shape are NOT available here (they
+      stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
 
-    A branch is a stored graph SHAPE — building one fires NO effects and issues NO
-    provider authority. Actually RUNNING it (with side effects) is a separate step
-    via run_graph, and any source_code node you build is stored UNAPPROVED: it will
-    only execute after you approve its source through the browser. Publishing to the
-    public commons, forking others' shapes, wiring connections/credentials, and
-    EDITING an existing branch stay off this surface (browser flow / reviewed
-    follow-ups), so a secret never enters a served turn. Runs as the FOUNDER,
-    pinned to your universe. Bounded by the same allowlist + rate limit as run_graph.
+    A branch is a stored graph SHAPE — building/editing one fires NO effects and
+    issues NO provider authority. Actually RUNNING it (with side effects) is a
+    separate step via run_graph, and any source_code node stays UNAPPROVED until you
+    approve its source through the browser. Wiring connections/credentials stays off
+    this surface, so a secret never enters a served turn. Runs as the FOUNDER, on a
+    branch you authored. Bounded by the same allowlist + rate limit as run_graph.
 
     Args:
         target: must be ``branch`` (the only served build target).
-        operation: must be ``create``.
-        payload_json: a complete Branch spec (JSON object).
-        name / description: optional metadata folded into the spec.
-        idempotency_key: dedupes a retried create.
+        operation: ``create`` or ``patch``.
+        payload_json: for create, a complete Branch spec (JSON object); for patch, a
+            JSON array of edit ops.
+        branch_id: for patch, the id of YOUR branch to edit (required for patch).
+        name / description: optional metadata folded into a create spec.
+        idempotency_key: dedupes a retried create; for patch it only labels the
+            request (patch is transactional but not replay-deduplicated).
     """
     import json
 
@@ -615,17 +765,16 @@ def write_graph(
                 "not built here."
             ),
         })
-    # Require the EXPLICIT create op: empty/unknown must never fall through, and
-    # EDIT (patch) is a separate reviewed slice — its op set can publish / change
-    # visibility / fork / carry approval, so it is not exposed here yet.
+    # Require an EXPLICIT known op: empty/unknown must never fall through. create +
+    # patch are served; the dangerous ops within a patch (publish / change visibility
+    # / fork) are refused by _sanitize_served_patch_changes, not here.
     op = (operation or "").strip().lower()
     if op not in _WRITE_GRAPH_OPS:
         return json.dumps({
             "error": (
-                "write_graph on the served surface supports operation='create' "
-                f"only (got '{operation or '(empty)'}'). Editing an existing "
-                "branch, publishing to the commons, and forking a public shape "
-                "stay in the browser flow."
+                "write_graph on the served surface supports operation='create' or "
+                f"'patch' (got '{operation or '(empty)'}'). Publishing to the "
+                "commons and forking a public shape stay in the browser flow."
             ),
         })
     # DoS bound before we parse/persist anything — measured in ENCODED UTF-8
@@ -653,11 +802,50 @@ def write_graph(
     token = _bind_founder_identity(_REMIX_CAPABILITIES)
     try:
         try:
-            spec = json.loads(payload_json or "{}")
+            payload = json.loads(payload_json or ("[]" if op == "patch" else "{}"))
         except (json.JSONDecodeError, RecursionError):
             return json.dumps({"error": "payload_json must be valid JSON."})
-        if not isinstance(spec, dict):
+        if op == "patch":
+            # EDIT an existing OWN branch. patch_branch is author-gated (actor ==
+            # branch author, no env fallback) and transactional; the sanitizer
+            # allowlists safe self-edit ops and refuses publish/visibility/fork +
+            # unsanitized node content. RESIDUALS (tracked, same class as create,
+            # deferred behind the u-tiny allowlist for single-founder): (a) branches
+            # are author-scoped not universe-scoped, so the branch↔universe binding is
+            # still owed before multi-tenant (a founder cannot cross into another
+            # actor's branch, but has no per-universe isolation of their own);
+            # (b) patch_branch has no expected-version CAS, so concurrent served
+            # patches can lost-update — a post-live concurrency harden gate.
+            bid = (branch_id or "").strip()
+            if not bid:
+                return json.dumps({
+                    "error": (
+                        "operation='patch' requires branch_id (the id of your "
+                        "branch to edit)."
+                    ),
+                })
+            try:
+                changes_json = _sanitize_served_patch_changes(payload)
+            except ValueError as exc:
+                return json.dumps({"error": f"invalid patch: {exc}"})
+            # Broadened backstop (Codex #4): field validation above closes the known
+            # crash vectors, but any residual storage/domain error must return a
+            # structured rejection, never propagate out of the served MCP tool.
+            try:
+                return _extensions_impl(
+                    action="patch_branch",
+                    branch_def_id=bid,
+                    changes_json=changes_json,
+                    request_id=idempotency_key,
+                )
+            except Exception as exc:  # noqa: BLE001 - served surface must fail structured
+                return json.dumps({
+                    "error": f"branch patch rejected ({type(exc).__name__}).",
+                })
+        # op == "create"
+        if not isinstance(payload, dict):
             return json.dumps({"error": "payload_json must be a JSON object."})
+        spec = payload
         # Strip approval/author/fork from every node + force private (Codex adapt).
         try:
             _sanitize_served_branch_spec(spec)

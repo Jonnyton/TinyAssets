@@ -2732,6 +2732,30 @@ class ConnectionLedger:
         # credential_ref back from the default read/create API (Codex FIX 3).
         return resource.to_view()
 
+    def _upgrade_http_connection_scopes(
+        self, *, connection_id: str, scopes: tuple[str, ...]
+    ) -> None:
+        """Bounded, one-directional migration of the legacy ("http",) scope token.
+
+        connect_http originally stored an http connection's scope as the literal
+        ("http",) type token, which the authenticated_external_call effector could
+        never match against the packet HTTP verb (#2521). This rewrites such a row's
+        scope to the concrete method-union. It is deliberately GUARDED by
+        ``scopes_json = '["http"]'`` in the WHERE clause: it can ONLY ever replace
+        the exact legacy token, so it can never silently widen, narrow, or alter a
+        real method-scoped set — a row already carrying method scopes is untouched.
+        """
+        new_scopes = tuple(_required("scope", scope) for scope in scopes)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE outbound_connections
+                SET scopes_json = ?
+                WHERE connection_id = ? AND scopes_json = ?
+                """,
+                (json.dumps(list(new_scopes)), connection_id, json.dumps(["http"])),
+            )
+
     def _get_connection_resource(
         self, connection_id: str
     ) -> ConnectionResource | None:
