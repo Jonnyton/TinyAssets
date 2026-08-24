@@ -57,6 +57,15 @@
     .composer-input{flex:1;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       border-radius:12px;padding:.7rem .8rem;font:inherit;resize:none;max-height:40vh}
     .btn--send{align-self:flex-end}
+    .btn--attach{align-self:flex-end;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
+      padding:.55rem .6rem;font-size:1.1rem;line-height:1}
+    .btn--attach:hover{background:var(--surface)}
+    .attachments{display:flex;flex-wrap:wrap;gap:.4rem;padding:.4rem 1rem 0}
+    .chip{display:inline-flex;align-items:center;gap:.4rem;background:var(--surface-2);border:1px solid var(--line);
+      border-radius:999px;padding:.2rem .6rem;font-size:.78rem;color:var(--ink)}
+    .chip--warn{border-color:#b3541e;color:#e08a4a}
+    .chip button{background:none;border:none;color:var(--ink-dim);cursor:pointer;font-size:.9rem;padding:0;line-height:1}
+    .chip button:hover{color:var(--ink)}
     .status-line{min-height:1.15rem;padding:0 1rem .4rem;font-size:.78rem;color:var(--ink-dim);text-align:center}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
@@ -109,7 +118,12 @@
           <div class="waking-sub">Say hello to begin.</div>
         </div>
       </div>
+      <div id="attachments" class="attachments" hidden></div>
       <form id="composer" class="composer">
+        <input id="file-input" type="file" multiple hidden
+               accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
+        <button id="btn-attach" class="btn btn--attach" type="button"
+                title="Attach a file" aria-label="Attach a file">📎</button>
         <textarea id="composer-input" class="composer-input" rows="1"
                   placeholder="Message your universe" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
@@ -578,8 +592,11 @@
     appendMessage("system","Your universe returned an unexpected response.");
   }
 
-  async function sendTurn(message){
-    appendMessage("founder",message);
+  async function sendTurn(message, display){
+    // `display` is what the founder sees in their bubble (compact when a file is
+    // attached); `message` is the full text sent to the universe (file content
+    // embedded verbatim). They differ only when an attachment rode along.
+    appendMessage("founder", display || message);
     const input=$("composer-input"); input.value=""; input.style.height="auto";
     $("btn-send").disabled=true; setStatusLine("Your universe is thinking...");
     try{
@@ -910,8 +927,55 @@
     $("btn-openai-setup-done").addEventListener("click",connectOpenAIDevice);
     $("btn-claude-connect").addEventListener("click",connectClaude);
     $("btn-signin").addEventListener("click",beginSignIn);
+    // ---- File attachments (paperclip): read text files client-side and embed
+    // them VERBATIM into the turn (Hard Rule #9: uploads preserved verbatim).
+    // Text-only + size-capped for now; a real binary/large-file upload endpoint
+    // is a follow-up. ----
+    const ATTACH_MAX_BYTES = 200*1024;   // per-file inline cap
+    const ATTACH_TOTAL_MAX = 400*1024;   // total inline cap across pending files
+    let pendingAttachments = [];         // {name, size, text?, warn?}
+    function fmtBytes(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB"; }
+    function looksBinary(t){ for(var i=0;i<t.length;i++){ if(t.charCodeAt(i)===0) return true; } return false; }
+    function renderChips(){
+      const box=$("attachments"); box.innerHTML=""; box.hidden = pendingAttachments.length===0;
+      pendingAttachments.forEach((a,i)=>{
+        const chip=document.createElement("span");
+        chip.className="chip"+(a.warn?" chip--warn":"");
+        const label=document.createElement("span");
+        label.textContent="📎 "+a.name+(a.warn?" — "+a.warn:" ("+fmtBytes(a.size)+")");
+        const x=document.createElement("button");
+        x.type="button"; x.textContent="✕"; x.setAttribute("aria-label","Remove "+a.name);
+        x.addEventListener("click",()=>{ pendingAttachments.splice(i,1); renderChips(); });
+        chip.appendChild(label); chip.appendChild(x); box.appendChild(chip);
+      });
+    }
+    async function handleFiles(files){
+      let total = pendingAttachments.reduce((s,a)=>s+(a.text?a.text.length:0),0);
+      for(const f of files){
+        if(f.size>ATTACH_MAX_BYTES){ pendingAttachments.push({name:f.name,size:f.size,warn:"too large to attach inline yet"}); continue; }
+        let text; try{ text=await f.text(); }catch(_e){ pendingAttachments.push({name:f.name,size:f.size,warn:"could not read"}); continue; }
+        if(looksBinary(text)){ pendingAttachments.push({name:f.name,size:f.size,warn:"binary files aren't supported inline yet"}); continue; }
+        if(total+text.length>ATTACH_TOTAL_MAX){ pendingAttachments.push({name:f.name,size:f.size,warn:"skipped — attachment total too large"}); continue; }
+        total+=text.length; pendingAttachments.push({name:f.name,size:f.size,text:text});
+      }
+      renderChips();
+    }
+    function buildTurn(typed){
+      const usable=pendingAttachments.filter(a=>a.text);
+      if(usable.length===0) return {send:typed, display:typed};
+      const blocks=usable.map(a=>"----- attached file: "+a.name+" ("+fmtBytes(a.size)+") -----\n"+a.text+"\n----- end of "+a.name+" -----").join("\n\n");
+      const names=usable.map(a=>"📎 "+a.name).join(", ");
+      return { send: typed ? blocks+"\n\n"+typed : blocks,
+               display: typed ? typed+"\n\n"+names : names };
+    }
+    $("btn-attach").addEventListener("click",()=>$("file-input").click());
+    $("file-input").addEventListener("change",async(e)=>{ await handleFiles(e.target.files); e.target.value=""; });
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
-      const m=$("composer-input").value.trim(); if(m) sendTurn(m); });
+      const typed=$("composer-input").value.trim();
+      const {send,display}=buildTurn(typed);
+      if(!send) return;                 // nothing typed and no readable attachment
+      pendingAttachments=[]; renderChips();
+      sendTurn(send, display); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
