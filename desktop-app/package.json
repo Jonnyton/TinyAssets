@@ -1,0 +1,40 @@
+{
+  "name": "tinyassets-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TinyAssets desktop app — a thin Electron shell over the live TinyAssets web app (https://tinyassets.io/mcp/app), mirroring the Android Capacitor shell so all surfaces share one synced universe.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win nsis zip",
+    "dist:winportable": "electron-builder --win zip"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "io.tinyassets.app",
+    "productName": "TinyAssets",
+    "files": [
+      "src/**/*",
+      "config.js",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility"
+    }
+  }
+}
