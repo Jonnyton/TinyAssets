@@ -41,31 +41,36 @@ from __future__ import annotations
 #:       admits a founder-owned OR a PUBLIC-foreign branch (a foreign PRIVATE
 #:       branch is refused); the delegated-authority sanitization is what keeps
 #:       that safe, not an author gate.
+#:   write_graph   — BUILD a branch (the "when the user creates things" parity),
+#:       CREATE-ONLY, target=branch. Purpose-built (NOT the broad connector
+#:       write_graph): it SANITIZES the spec and calls the author-gated,
+#:       EFFECT-FREE build_branch directly with least-privilege caps (no
+#:       submit_request). Two Codex review rounds (2026-08-23) hardened it — every
+#:       known path to a persisted APPROVED source_code node is closed: submitted
+#:       approval/author/fork stripped at node level, `node_ref` (foreign-node
+#:       dereference) rejected, nested `graph` blob rejected, `fork_from` stripped,
+#:       visibility forced private, size/node/type guards. A served-built
+#:       source_code node persists UNAPPROVED, so run_graph's fail-closed
+#:       _validate_source_code refuses to execute it until the founder approves the
+#:       source via the browser. Gated to the same per-universe run allowlist as
+#:       run_graph (u-tiny). RESIDUAL, tracked as the pre-second-user harden gate
+#:       (served-agent-build-run): branches are author-scoped not universe-scoped,
+#:       and build_branch's approval surface is broad enough that the robust
+#:       multi-tenant fix is a force-unapproved build MODE (clear approval after
+#:       any inherit/deref, before persist) + a branch↔universe binding. EDIT
+#:       (patch) stays off this surface (its op set can publish / change
+#:       visibility / fork) — a separate reviewed slice.
 #:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
-#:   write_graph   — BUILD a branch (the "when the user creates things" parity).
-#:       REBUILT 2026-08-23 as a purpose-built, CREATE-ONLY branch handler
-#:       (engine_mcp_server.write_graph, target=branch, op=create). It no longer
-#:       delegates to the broad connector write_graph — it SANITIZES the spec and
-#:       calls the author-gated, EFFECT-FREE build_branch DIRECTLY with least-
-#:       privilege caps (no submit_request). A Codex exact-diff review (VERDICT
-#:       adapt) found raw build_branch let a served turn forge an approved
-#:       source_code node (→ RCE via the live run_graph), fork a foreign version,
-#:       or self-publish; the handler now strips every approval/author/fork field
-#:       from each node (source persists UNAPPROVED — run_graph refuses it until
-#:       the founder approves via the browser), forces visibility=private, and
-#:       type/size-guards the spec. EDIT (patch) is a separate reviewed slice (its
-#:       op set can publish / change visibility / fork). Stays DARK (registered,
-#:       not allowlisted) until a Codex re-review of the adapted handler clears the
-#:       two criticals — then it moves into the tuple below. run_graph — approved +
-#:       live — already covers the RUN parity.
+#:   write_graph PATCH/edit — see above (separate slice)
 #:   remix_shape   — cross-author commons remix
 #:   grant_effector_consent / channel-connection verbs — user-built channels
 SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "read_graph",
     "get_status",
     "run_graph",
+    "write_graph",
     "browse_commons",
     "read_commons_shape",
     "read_brain",
