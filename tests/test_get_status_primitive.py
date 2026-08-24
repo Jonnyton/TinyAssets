@@ -633,3 +633,28 @@ def test_get_status_request_identity_ignores_environment_actor(monkeypatch) -> N
         "v1:anonymous:"
     )
     assert "my_user" not in json.dumps(payload, sort_keys=True)
+
+
+def test_get_status_recent_conversation_is_founder_gated(tmp_path) -> None:
+    """The recent_conversation peek is FOUNDER-only. A non-founder/anonymous
+    reader must not receive it, even when the universe has recorded turns —
+    the shared conversation thread must never leak through a status read."""
+    import os
+
+    os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
+    uid = "peek_universe"
+    udir = tmp_path / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    # Record a turn so there IS content to leak if the gate were to fail.
+    from tinyassets.conversation_store import record_exchange
+
+    record_exchange(udir, "principal:someone", "secret question", "secret answer")
+
+    payload = json.loads(get_status(universe_id=uid))
+    # Anonymous test caller has no write/founder grant → peek withheld.
+    assert "recent_conversation" not in payload, (
+        "conversation peek must be withheld from a non-founder reader"
+    )
+    assert "secret answer" not in json.dumps(payload), (
+        "recorded conversation content must not leak into a non-founder status read"
+    )
