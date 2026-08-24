@@ -441,3 +441,38 @@ def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
     task.automation_subject_digest = "sha256:" + "b" * 64
     with pytest.raises(PermissionError):
         background_provider._branch_roles(tmp_path, task)
+
+
+def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    """A version current at the initial check but rolled_back by the launch fence must
+    fail closed — the fence re-validates the immutable Branch version (Codex #3, #2516)."""
+    task, conn, _assignment, _current, events = _authority_fixture(tmp_path, monkeypatch)
+    state = {"n": 0}
+
+    def _roles(*_a):
+        state["n"] += 1
+        if state["n"] > 1:  # first call ok (initial), later call (launch fence) rolled back
+            raise PermissionError("immutable Branch version is not current authority")
+        return ("writer",)
+
+    monkeypatch.setattr(background_provider, "_branch_roles", _roles)
+    raw_calls: list[str] = []
+
+    def raw_provider(*_a, **_k):
+        # The provider adapter fires the launch fence, which re-validates the version.
+        _k["universe_context"].served_provider.before_provider_launch()
+        raw_calls.append("raw")
+        return "x"
+
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path, task, _lease(), raw_provider
+    )
+    with pytest.raises(ProviderAuthorityHeldError):
+        session("prompt")
+    assert raw_calls == []  # fence raised before the provider ran
+    launched = conn.execute(
+        "SELECT 1 FROM assigned_queue_provider_reservations "
+        "WHERE state='launch_started'"
+    ).fetchone()
+    assert launched is None  # the fence blocked the launch (reservation never armed)
+    assert state["n"] >= 2  # the launch fence re-validated the version

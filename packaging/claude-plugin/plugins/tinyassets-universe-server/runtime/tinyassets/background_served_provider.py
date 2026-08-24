@@ -405,6 +405,15 @@ class _BackgroundAssignedProviderSession:
                     )
                 ):
                     raise PermissionError("automation authority changed before launch")
+                # Re-validate the immutable Branch version at the launch fence (Codex #3,
+                # #2516). branch_versions lives in a SEPARATE DB (runs_db) from this
+                # admission CAS, so it cannot be locked in the same transaction — but
+                # re-reading it HERE, in the before_provider_launch fence, narrows the
+                # rollback TOCTOU from the whole snapshot-creation window to this fence: a
+                # version concurrently flipped to rolled_back (or a digest/branch change)
+                # fails closed before the provider is launched, instead of the earlier
+                # one-time check going stale.
+                _branch_roles(self._base_path, self._task)
                 assignment = load_provider_assignment_in_transaction(
                     conn, universe_id=self._task.universe_id
                 )
