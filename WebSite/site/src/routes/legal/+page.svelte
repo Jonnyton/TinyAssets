@@ -47,6 +47,18 @@
     </ul>
 
     <h2 id="privacy">Privacy</h2>
+    <p><strong>What the apps collect (web, Android, desktop).</strong> All three apps
+    are the same client of the hosted service and handle data the same way. We
+    collect: (1) a <strong>sign-in identity</strong> — your email and a user id, via
+    WorkOS AuthKit — used only to authenticate you and bind your universe to your
+    account; (2) the <strong>AI provider credential</strong> you choose to deposit
+    (a subscription token or API key) — sent straight to a secure per-universe vault
+    over TLS, <strong>never through the chat/LLM</strong>, used only so your universe
+    can run on the compute you gave it, never sold, never used for ads, never
+    training data; (3) the <strong>messages and files you send your universe</strong>
+    — used to provide the service. All data is encrypted in transit. We do not sell
+    your data, show ads, or use third-party ad trackers. You can request deletion of
+    your account and its data at any time via <a href="mailto:{legal.contact.legal}">{legal.contact.legal}</a>.</p>
     <p><strong>Concept-layer public; instance-layer private; never training data.</strong> The <em>shape</em> of your workflow (which nodes, what edges, what state schema) is public — that's the commons. The <em>contents</em> you process (your documents, your prompts, your fills) stay on your machine or in owner-only storage. We do not train models on your data and never will.</p>
     <p>Per-piece visibility is judged by your chatbot per request, not by us. <strong>The chatbot proposes; you confirm. No cached consent.</strong></p>
     <p>You may export or delete your data at any time. The <code>/account</code> page (Phase 2) provides a 30-day grace-window deletion flow per CCPA / GDPR Article 17.</p>

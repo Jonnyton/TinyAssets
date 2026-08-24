@@ -1,0 +1,98 @@
+name: Android release AAB
+
+# Builds a signed Android App Bundle (.aab) for Google Play from the upload
+# keystore (provided as repo secrets — see docs/ops/google-play-launch.md §3).
+# The web app itself ships instantly; a new AAB is only needed when the native
+# shell / config changes. Runs on demand (workflow_dispatch) or on a mobile-v* tag.
+#
+# Signing: gradle builds the UNSIGNED bundle (no committed signing config to leak),
+# then we sign the .aab with the upload key via jarsigner. Google re-signs with the
+# real app-signing key via Play App Signing (enroll on first upload). The keystore
+# secret is exposed ONLY to the signing step and is decoded to a runner-temp file
+# that is removed after use.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["mobile-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-aab:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install JS deps (lockfile-pinned)
+        working-directory: mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Add + sync Android platform
+        working-directory: mobile
+        run: |
+          npx --no-install cap add android
+          npx --no-install cap sync android
+
+      - name: Register the tinyassets:// deep link (in-app OAuth return)
+        working-directory: mobile
+        run: |
+          python3 scripts/add_app_scheme.py
+          grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
+
+      - name: Build unsigned release bundle
+        working-directory: mobile/android
+        run: ./gradlew bundleRelease --no-daemon --stacktrace
+
+      - name: Locate the bundle
+        id: findaab
+        run: |
+          set -euo pipefail
+          aab="$(find mobile/android/app/build/outputs/bundle/release -name '*.aab' | head -1)"
+          [ -n "$aab" ] || { echo "::error::no .aab produced"; exit 1; }
+          echo "aab=$aab" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the bundle with the upload key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          AAB: ${{ steps.findaab.outputs.aab }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::ANDROID_UPLOAD_KEYSTORE_B64 not set — add the upload keystore secrets (docs/ops/google-play-launch.md §3) before building a release."
+            exit 1
+          fi
+          ks="$RUNNER_TEMP/upload.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks"
+          trap 'rm -f "$ks"' EXIT
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD" \
+            "$AAB" "$KEY_ALIAS"
+          jarsigner -verify "$AAB"
+          echo "signed $AAB with upload key"
+
+      - name: Upload signed AAB artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tinyassets-release-aab
+          path: ${{ steps.findaab.outputs.aab }}
+          if-no-files-found: error
