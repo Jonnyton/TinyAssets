@@ -215,6 +215,66 @@ def test_connection_scope_is_the_endpoint_methods_not_a_type_token(base: Path) -
     assert "http" not in resource.scopes
 
 
+def test_legacy_http_scope_token_is_upgraded_in_place_not_stranded(base: Path) -> None:
+    """REGRESSION (Codex ADAPT, #2521).
+
+    A connection provisioned BEFORE the scope fix carries the legacy ("http",)
+    token. Re-provisioning it with the SAME policy must UPGRADE its scope to the
+    method union in place (a bounded, one-directional migration) and rotate the
+    secret — NOT strand it behind ``connection_conflict``, which deterministic ids +
+    the absence of a policy-update path would otherwise make unrecoverable.
+    """
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.credential_vault import write_credential_vault
+
+    udir = _make_universe(base, "u-legacy", admin="founder")
+    _login("founder")
+    conn_id, grant_id = _ids(universe_id="u-legacy", destination="webhook:acme")
+
+    # Simulate a pre-fix row: legacy ("http",) scope + an old secret + a grant.
+    write_credential_vault(
+        udir,
+        [
+            {
+                "credential_type": "http",
+                "service": "webhook:acme",
+                "destination": "webhook:acme",
+                "token": "old-secret",
+            }
+        ],
+        owner_user_id="founder",
+        universe_id="u-legacy",
+    )
+    ledger = _ledger(base, "founder")
+    ledger.create_connection(
+        connection_id=conn_id,
+        owner_user_id="founder",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("http",),
+        provider="http",
+        destination="webhook:acme",
+        credential_ref="vault://http/webhook:acme",
+        allowed_endpoints=_EP,
+    )
+    ledger.grant_connection(
+        grant_id=grant_id,
+        connection_id=conn_id,
+        owner_user_id="founder",
+        universe_id="u-legacy",
+    )
+    assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
+
+    # Re-provision with the SAME policy and a rotated secret.
+    result = _connect("u-legacy", secret="new-secret")
+    assert result["status"] == "provisioned"  # NOT connection_conflict — upgraded.
+
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert tuple(resource.scopes) == ("POST",)  # upgraded from the ("http",) token
+    assert _http_records(udir)[0]["token"] == "new-secret"  # secret rotated
+
+
 def test_provision_routes_through_write_graph(base: Path) -> None:
     import importlib
 

@@ -292,20 +292,42 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    the dedicated update op follow-up lands. Credential-bearing read (trusted
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
-    if resource is not None and (
-        resource.owner_user_id != actor
-        or resource.connection_type != "http"
-        or resource.connection_class != "http"
-        or resource.provider != "http"
-        or resource.auth_scheme != _AUTH_SCHEME
-        or tuple(resource.scopes) != http_scopes
-        or resource.destination != destination
-        or resource.credential_ref != credential_ref
-        or resource.revoked_at is not None
-        or _canonical_policy([e.as_dict() for e in resource.allowed_endpoints])
-        != _canonical_policy(requested_endpoints)
-    ):
-        return {"error": "connection_conflict", "resource": "connection"}
+    if resource is not None:
+        # Every immutable field EXCEPT scopes must match for either idempotent reuse
+        # or the bounded legacy-scope upgrade below.
+        non_scope_mismatch = (
+            resource.owner_user_id != actor
+            or resource.connection_type != "http"
+            or resource.connection_class != "http"
+            or resource.provider != "http"
+            or resource.auth_scheme != _AUTH_SCHEME
+            or resource.destination != destination
+            or resource.credential_ref != credential_ref
+            or resource.revoked_at is not None
+            or _canonical_policy([e.as_dict() for e in resource.allowed_endpoints])
+            != _canonical_policy(requested_endpoints)
+        )
+        scopes_match = tuple(resource.scopes) == http_scopes
+        # A connection provisioned BEFORE the scope fix carries the legacy ("http",)
+        # token, which the authenticated_external_call effector can never match
+        # (it checks the HTTP verb against resource.scopes). Deterministic ids +
+        # no policy-update path would otherwise strand such a row forever behind the
+        # conflict check. When it is OTHERWISE policy-identical, UPGRADE its scope in
+        # place to the method union — a bounded, one-directional migration from the
+        # legacy token to the very methods its own endpoints already permit (widens
+        # nothing: the per-endpoint methods gate is unchanged). Codex ADAPT, #2521.
+        legacy_scope_upgrade = (
+            not non_scope_mismatch
+            and not scopes_match
+            and tuple(resource.scopes) == ("http",)
+        )
+        if non_scope_mismatch or (not scopes_match and not legacy_scope_upgrade):
+            return {"error": "connection_conflict", "resource": "connection"}
+        if legacy_scope_upgrade:
+            ledger._upgrade_http_connection_scopes(
+                connection_id=connection_id, scopes=http_scopes
+            )
+            resource = ledger._get_connection_resource(connection_id)
     existing_grant = ledger.get_grant(grant_id)
     if existing_grant is not None and (
         existing_grant.connection_id != connection_id
