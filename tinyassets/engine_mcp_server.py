@@ -1204,6 +1204,120 @@ def connect_compute(
         _current_identity.reset(token)
 
 
+# ── Source-channel consent (channel-add parity, served-agent-build-run §2.2) ──────
+# The CONSENT step of "add a channel via the channel-agnostic node". The served agent
+# already has write_graph (build a branch) and run_graph (run it); what it lacks is the
+# OWNER-gated approval that lets an authenticated_external_call node's outbound call fire
+# (e.g. a Slack post, or any HTTPS API the founder connected). This exposes the SAME
+# owner-gated source_channel primitive the browser chatbot has (universe_server
+# write_graph target=source_channel) — the hardened path whose granted_by is the
+# authenticated admin-ACL owner, NOT the legacy ambient-actor grant_effector_consent.
+#
+# Safety:
+#  * SINK CONSENT ONLY. channel_type=="source_code" is REFUSED here. Approving a
+#    source_code node sets approved_source_hash, the run-time code-execution gate that the
+#    create-only served write_graph deliberately strips (approval is hash-only /
+#    self-computable). Re-exposing it would reopen the build-unapproved-code -> approve ->
+#    run RCE the sanitizer closes; source_code approval stays a human/browser action, and
+#    run_graph's fail-closed _validate_source_code is the backstop.
+#  * Only action=="approve" is served (set_policy/get_policy are not exposed yet).
+#  * owner-gated (source_channel's impl requires an admin ACL row for the bound founder;
+#    anonymous / read-write collaborators get auth_failed), graph-PINNED (universe_id is
+#    never caller-supplied — the agent cannot approve for another universe), secret-free
+#    (consent is a (sink, destination) allow, never a credential — the token is deposited
+#    out of band via the browser form / connect_http, deliberately NOT exposed here), and
+#    held to the vetted-founder run_graph allowlist while multi-tenant confinement hardens.
+#    The outbound call still needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED to fire.
+#  * Strict least privilege (mirror connect_compute): consent is a pure WRITE.
+_SOURCE_CHANNEL_CAPABILITIES = ("write",)
+
+
+@mcp.tool
+def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> str:
+    """Approve an outbound CHANNEL for YOUR OWN universe (no secret).
+
+    The consent step of adding a channel via the channel-agnostic node — the SAME
+    owner-gated primitive the founder's browser chatbot has. After you build a branch
+    with an ``authenticated_external_call`` node (write_graph) and its http connection is
+    deposited out of band (the secure browser form / connect_http), this grants the
+    effector consent that lets that node's outbound call actually fire (e.g. a Slack post,
+    or any HTTPS API you connected).
+
+    NO SECRET crosses this surface — consent is a ``(sink, destination)`` allow, never a
+    credential. Approving executable ``source_code`` is NOT available here (that stays a
+    human/browser action); this approves outbound-channel sinks only.
+
+    Args:
+        action: ``approve`` — grant effector consent for an outbound sink. Required.
+        branch_id: Optional branch context (unused for a pure sink consent).
+        payload: JSON object ``{"channel_type": "<sink, e.g. authenticated_external_call>",
+            "destination": "<the connection's configured destination>"}``.
+    """
+    import json
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    # Vetted-founder gate (same bar as connect_compute/run_graph): an engine-surface
+    # WRITE stays limited while multi-tenant confinement is hardened.
+    from tinyassets.engine_mcp_http import run_graph_allowlist
+
+    if _GRAPH_ID not in run_graph_allowlist():
+        return json.dumps({
+            "error": (
+                "source_channel is not enabled for this universe yet; it is "
+                "limited to a vetted founder while multi-tenant engine-write "
+                "confinement is hardened."
+            ),
+        })
+    act = (action or "").strip().lower()
+    if act != "approve":
+        return json.dumps({
+            "error": (
+                "source_channel supports action=approve (outbound sink consent) on "
+                "the served surface."
+            ),
+        })
+    raw = (payload or "").strip()
+    if not raw:
+        return json.dumps({
+            "error": "payload (a JSON object with channel_type + destination) is required.",
+        })
+    try:
+        payload_obj = json.loads(raw)
+    except (ValueError, TypeError):
+        return json.dumps({"error": "payload must be a JSON object."})
+    if not isinstance(payload_obj, dict):
+        return json.dumps({"error": "payload must be a JSON object."})
+    channel_type = str(payload_obj.get("channel_type") or "").strip()
+    if channel_type == "source_code":
+        # RCE closure: source_code approval sets approved_source_hash, the execution
+        # gate the create-only served write_graph strips. Keep it off this surface.
+        return json.dumps({
+            "error": (
+                "source_code approval is not available on the served surface; approve "
+                "executable source in the browser. This verb approves outbound channel "
+                "sinks only."
+            ),
+        })
+
+    from tinyassets.api.source_channel import source_channel as _impl
+    from tinyassets.auth.middleware import _current_identity
+
+    # graph_id is PINNED — the agent cannot approve a channel for another universe.
+    token = _bind_founder_identity(_SOURCE_CHANNEL_CAPABILITIES)
+    try:
+        result = _impl(
+            action="approve",
+            universe_id=_GRAPH_ID,
+            branch_id=(branch_id or "").strip(),
+            payload=payload_obj,
+        )
+        return result if isinstance(result, str) else json.dumps(result, default=str)
+    finally:
+        _current_identity.reset(token)
+
+
 if __name__ == "__main__":
     # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
     # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
