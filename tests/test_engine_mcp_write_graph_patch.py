@@ -212,3 +212,17 @@ def test_patch_rejects_dict_description_fields(monkeypatch):
         out = _patch(s, [op])
         assert "must be a string" in out["error"], op
     assert seen == {}
+
+
+def test_patch_rejects_dict_text_metadata_class(monkeypatch):
+    """The text-metadata class (Codex #4, all rounds): name/description/reducer +
+    node_type must be strings across state_schema and node specs."""
+    s = _bind(monkeypatch)
+    seen = _capture(monkeypatch)
+    for op in (
+        {"op": "add_state_field", "name": "s", "reducer": {"bad": 3}},
+        {"op": "add_state_field", "name": "s", "description": {"bad": 1}},
+        {"op": "add_node", "node_id": "n", "node_type": {"bad": 1}},
+    ):
+        assert "must be a string" in _patch(s, [op])["error"], op
+    assert seen == {}

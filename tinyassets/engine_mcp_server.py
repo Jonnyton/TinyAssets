@@ -406,6 +406,13 @@ _SERVED_STRIP_NODE_FIELDS = (
     "approved", "approved_by", "approved_at", "approved_source_hash",
     "approval_reason", "author", "fork_from",
 )
+#: Text-metadata fields that reach text columns and must be strings wherever they appear
+#: in a node spec or a state_schema entry — a dict/list there persists malformed (Codex #4).
+_SERVED_NODE_TEXT_FIELDS = (
+    "node_id", "display_name", "source_code", "prompt_template", "description",
+    "node_type", "model_hint",
+)
+_SERVED_STATE_FIELD_TEXT = ("name", "description", "reducer")
 #: DoS bounds on a served build payload.
 _SERVED_MAX_SPEC_BYTES = 256 * 1024
 _SERVED_MAX_NODES = 100
@@ -457,6 +464,24 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
     for f in ("name", "description", "entry_point", "domain_id", "goal_id"):
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
+    # state_schema entries carry text-metadata fields (name/description/reducer) that
+    # reach text columns; a dict/list there persists malformed (Codex #4). Tolerant of
+    # both shapes (a `{"fields": [...]}` object or a bare list); default_value/field_name
+    # and any unrecognized shape are left untouched so opaque workflow data survives.
+    state_schema = spec.get("state_schema")
+    if isinstance(state_schema, dict):
+        state_entries = state_schema.get("fields")
+    elif isinstance(state_schema, list):
+        state_entries = state_schema
+    else:
+        state_entries = None
+    if isinstance(state_entries, list):
+        for sf in state_entries:
+            if not isinstance(sf, dict):
+                continue
+            for f in _SERVED_STATE_FIELD_TEXT:
+                if f in sf and not isinstance(sf[f], str):
+                    raise ValueError(f"state field '{f}' must be a string")
     total_nodes = 0
     effect_nodes = 0
     for container in ("node_defs", "nodes"):
@@ -542,8 +567,7 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 )
             for f in _SERVED_STRIP_NODE_FIELDS:
                 n.pop(f, None)
-            for f in ("node_id", "display_name", "source_code", "prompt_template",
-                      "description"):
+            for f in _SERVED_NODE_TEXT_FIELDS:
                 if f in n and not isinstance(n[f], str):
                     raise ValueError(f"node field '{f}' must be a string")
     if total_nodes > _SERVED_MAX_NODES:
@@ -657,10 +681,10 @@ def _sanitize_served_patch_changes(changes: object) -> str:
                 ):
                     raise ValueError("patch set_tags 'tags' must be a list of strings")
             if kind == "add_state_field":
-                # name/description reach text columns; a dict/list there persists
-                # malformed (Codex #4 re-review). default_value is intentionally
-                # any-JSON and is not constrained here.
-                for f in ("name", "description"):
+                # name/description/reducer reach text columns; a dict/list there
+                # persists malformed (Codex #4). default_value is intentionally any-JSON
+                # and is not constrained here.
+                for f in _SERVED_STATE_FIELD_TEXT:
                     if f in op and not isinstance(op[f], str):
                         raise ValueError(
                             f"patch add_state_field '{f}' must be a string"
