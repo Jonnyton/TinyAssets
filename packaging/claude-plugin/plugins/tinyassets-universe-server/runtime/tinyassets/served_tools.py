@@ -44,14 +44,17 @@ from __future__ import annotations
 #:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
-#:   write_graph   — BUILD a branch / manage an automation (the "when the user
-#:       creates things" parity). The confined served handler IS implemented +
-#:       tested (engine_mcp_server.write_graph, target in {branch, automation}),
-#:       but confining the broad connector handler surfaced authority quirks over
-#:       three Codex rounds (rebind provider-backdoor, foreign-version selection),
-#:       so it stays DARK (registered, not allowlisted) until a dedicated
-#:       purpose-built review clears it. run_graph — approved + live — is enough for
-#:       the RUN parity; write_graph exposure is the next slice.
+#:   write_graph   — BUILD a branch (the "when the user creates things" parity).
+#:       REBUILT 2026-08-23 as a purpose-built, BRANCH-ONLY handler
+#:       (engine_mcp_server.write_graph, target=branch, op in {create, patch}). It
+#:       no longer delegates to the broad connector write_graph — it calls the
+#:       author-gated, EFFECT-FREE extensions functions DIRECTLY (build_branch /
+#:       patch_branch) with least-privilege caps (no submit_request), so the
+#:       automation / version / provider-rebind paths that failed three earlier
+#:       Codex rounds are simply unreachable. Stays DARK (registered, not
+#:       allowlisted) only until a fresh Codex exact-diff review of THIS handler
+#:       clears it — then it moves into the tuple below. run_graph — approved +
+#:       live — already covers the RUN parity.
 #:   remix_shape   — cross-author commons remix
 #:   grant_effector_consent / channel-connection verbs — user-built channels
 SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (

@@ -1107,12 +1107,13 @@ def test_served_allowlists_do_not_drift():
     assert "run_graph" in SERVED_ENGINE_MCP_TOOLS
 
 
-def test_served_write_graph_confines_target(monkeypatch):
-    """Served write_graph reaches the impl ONLY for branch/automation; a
-    connection/agent/goal/request/universe target is refused BEFORE any write, so
-    a credential/connection deposit can never happen through a served turn."""
+def test_served_write_graph_branch_only(monkeypatch):
+    """Served write_graph builds workflow SHAPES only: target must be 'branch'.
+    automation/connection/agent/goal/request/universe are refused BEFORE any write,
+    so a credential/connection deposit or provider-authority action can never
+    happen through a served turn. A branch create reaches build_branch."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
@@ -1125,106 +1126,140 @@ def test_served_write_graph_confines_target(monkeypatch):
         captured["kw"] = kw
         return "{}"
 
-    monkeypatch.setattr(us, "write_graph", _fake)
+    monkeypatch.setattr(ext, "_extensions_impl", _fake)
 
-    for bad in ("connection", "agent", "goal", "request", "universe"):
+    for bad in ("automation", "connection", "agent", "goal", "request", "universe"):
         out = json.loads(s.write_graph(target=bad, operation="create"))
-        assert "served surface supports only" in out.get("error", ""), bad
-    assert captured["n"] == 0, "a confined target must never reach the write impl"
+        assert "must be 'branch'" in out.get("error", ""), bad
+    assert captured["n"] == 0, "a non-branch target must never reach the write impl"
 
-    # Safe targets delegate, pinned to this universe.
+    # target=branch create reaches the author-gated, effect-free build_branch.
     s.write_graph(target="branch", operation="create", payload_json="{}")
-    assert captured["kw"]["target"] == "branch"
-    assert captured["kw"]["graph_id"] == "u-9"
-    s.write_graph(target="automation", operation="pause", automation_id="a-1")
-    assert captured["kw"]["target"] == "automation"
-    assert captured["kw"]["operation"] == "pause"
-    assert captured["kw"]["graph_id"] == "u-9"
+    assert captured["kw"]["action"] == "build_branch"
+
+
+def test_served_write_graph_create_forces_private(monkeypatch):
+    """A served create is PRIVATE to the universe — a spec cannot self-declare
+    public (publishing to the commons is a separate, consent-gated browser step)."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    captured = {}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
+
+    s.write_graph(target="branch", operation="create",
+                  payload_json='{"name":"x","visibility":"public"}')
+    assert captured["action"] == "build_branch"
+    spec = json.loads(captured["spec_json"])
+    assert spec["visibility"] == "private", "served create must force private"
+
+
+def test_served_write_graph_patch_calls_patch_branch(monkeypatch):
+    """patch of a readable own branch reaches patch_branch with the id + changes
+    (patch_branch re-checks authorship: BUG-081)."""
+    import tinyassets.api.branches as br
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    monkeypatch.setattr(br, "_resolve_readable_branch", lambda bid, base: {"id": bid})
+    captured = {}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
+
+    s.write_graph(target="branch", operation="patch", branch_id="b-own",
+                  changes_json='[{"op":"noop"}]')
+    assert captured["action"] == "patch_branch"
+    assert captured["branch_def_id"] == "b-own"
+    assert captured["changes_json"] == '[{"op":"noop"}]'
 
 
 def test_served_write_graph_refused_off_allowlist(monkeypatch):
     """write_graph is a WRITE — refuse unless this universe is on the allowlist."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-not-listed")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create"))
     assert "not enabled for this universe" in out.get("error", "")
     assert calls["n"] == 0
 
 
 def test_served_write_graph_bad_operation_refused(monkeypatch):
-    """An operation outside the target's allowed set is refused before the write."""
+    """An operation outside {create, patch} is refused before the write."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="automation", operation="publish"))
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation="delete"))
     assert "operation must be one of" in out.get("error", "")
     assert calls["n"] == 0
 
 
 def test_served_write_graph_requires_explicit_operation(monkeypatch):
-    """Empty operation must be refused, never fall through to a connector default."""
+    """Empty operation must be refused, never fall through to a default write."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation=""))
     assert "operation must be one of" in out.get("error", "")
     assert calls["n"] == 0
 
 
 def test_served_write_graph_public_and_provider_ops_refused(monkeypatch):
-    """publish (public exposure) and bind_provider (provider authority) are NOT
-    reachable served — they stay in the browser/connector flow."""
+    """publish/remix (public exposure / cross-author) and every automation op are
+    NOT reachable served — they stay in the browser flow or their own slice."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
-    for target, op in (("branch", "publish"), ("automation", "bind_provider"),
-                       ("automation", "reconcile_provider"), ("automation", "rebind")):
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    # branch publish/remix → op not in {create, patch}; automation → not target=branch.
+    for target, op in (("branch", "publish"), ("branch", "remix"),
+                       ("automation", "bind_provider"), ("automation", "rebind")):
         out = json.loads(s.write_graph(target=target, operation=op))
-        assert "operation must be one of" in out.get("error", ""), (target, op)
+        assert out.get("error"), (target, op)
     assert calls["n"] == 0
 
 
-def test_served_write_graph_automation_foreign_version_not_found(monkeypatch):
-    """Automation create referencing a branch VERSION the universe may not read
-    reads as not-found (a foreign-private version must not be selectable)."""
-    import tinyassets.api.branches as br
+def test_served_write_graph_patch_requires_branch_id(monkeypatch):
+    """patch without a branch_id is refused before any read/write."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
-    monkeypatch.setattr(br, "_resolve_readable_version", lambda vid, base: None)
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="automation", operation="create",
-                                   branch_version_id="v-foreign", payload_json="{}"))
-    assert "not found" in out.get("error", "").lower()
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation="patch"))
+    assert "requires branch_id" in out.get("error", "")
     assert calls["n"] == 0
 
 
@@ -1232,8 +1267,8 @@ def test_served_write_graph_patch_foreign_branch_not_found(monkeypatch):
     """Patching a branch the universe may not read reads as not-found (IDOR gate),
     and never reaches the write."""
     import tinyassets.api.branches as br
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
@@ -1241,7 +1276,7 @@ def test_served_write_graph_patch_foreign_branch_not_found(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     monkeypatch.setattr(br, "_resolve_readable_branch", lambda bid, base: None)
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="patch",
                                    branch_id="b-foreign", changes_json="{}"))
     assert "not found" in out.get("error", "").lower()
@@ -1250,8 +1285,8 @@ def test_served_write_graph_patch_foreign_branch_not_found(monkeypatch):
 
 def test_served_write_graph_admission_fails_closed(monkeypatch):
     """Admission is fail-closed: a DB blip refuses the write rather than admits."""
+    import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
-    import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
@@ -1259,7 +1294,7 @@ def test_served_write_graph_admission_fails_closed(monkeypatch):
     seen = {}
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
     calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create", payload_json="{}"))
     assert seen.get("fail_closed") is True
     assert "rate limit" in out.get("error", "").lower()
