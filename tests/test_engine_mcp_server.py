@@ -1171,3 +1171,76 @@ def test_served_write_graph_bad_operation_refused(monkeypatch):
     out = json.loads(s.write_graph(target="automation", operation="publish"))
     assert "operation must be one of" in out.get("error", "")
     assert calls["n"] == 0
+
+
+def test_served_write_graph_requires_explicit_operation(monkeypatch):
+    """Empty operation must be refused, never fall through to a connector default."""
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation=""))
+    assert "operation must be one of" in out.get("error", "")
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_public_and_provider_ops_refused(monkeypatch):
+    """publish (public exposure) and bind_provider (provider authority) are NOT
+    reachable served — they stay in the browser/connector flow."""
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    for target, op in (("branch", "publish"), ("automation", "bind_provider"),
+                       ("automation", "reconcile_provider")):
+        out = json.loads(s.write_graph(target=target, operation=op))
+        assert "operation must be one of" in out.get("error", ""), (target, op)
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_patch_foreign_branch_not_found(monkeypatch):
+    """Patching a branch the universe may not read reads as not-found (IDOR gate),
+    and never reaches the write."""
+    import tinyassets.api.branches as br
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    monkeypatch.setattr(br, "_resolve_readable_branch", lambda bid, base: None)
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation="patch",
+                                   branch_id="b-foreign", changes_json="{}"))
+    assert "not found" in out.get("error", "").lower()
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_admission_fails_closed(monkeypatch):
+    """Admission is fail-closed: a DB blip refuses the write rather than admits."""
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    seen = {}
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
+    calls = {"n": 0}
+    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
+    out = json.loads(s.write_graph(target="branch", operation="create", payload_json="{}"))
+    assert seen.get("fail_closed") is True
+    assert "rate limit" in out.get("error", "").lower()
+    assert calls["n"] == 0

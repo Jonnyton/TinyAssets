@@ -377,14 +377,19 @@ def run_graph(
 # (_GRAPH_ID), founder identity, per-universe run allowlist + effect rate limit.
 _WRITE_GRAPH_TARGETS = frozenset({"branch", "automation"})
 _WRITE_GRAPH_OPS = {
-    # BUILD a workflow shape in your own universe.
-    "branch": frozenset({"create", "remix", "patch", "publish"}),
-    # MANAGE an automation you own — including pause/stop/resume.
-    "automation": frozenset({
-        "create", "pause", "resume", "stop", "rebind",
-        "bind_provider", "reconcile_provider",
-    }),
+    # BUILD a workflow shape in your own universe. NOT `publish` — publishing a
+    # branch exposes it PUBLICLY to the commons, a consent-gated action that stays
+    # in the browser/connector flow (Codex exact-diff 2026-08-23).
+    "branch": frozenset({"create", "remix", "patch"}),
+    # MANAGE an automation you own — pause/stop/resume/rebind. NOT
+    # `bind_provider`/`reconcile_provider` — issuing a provider binding is a
+    # provider-authority action, kept off the served surface pending its own review.
+    "automation": frozenset({"create", "pause", "resume", "stop", "rebind"}),
 }
+#: Branch operations that reference an EXISTING branch by id — must pass the same
+#: readability/ownership gate as run_graph (a foreign-private branch id reads as
+#: not-found), so a served turn cannot patch a branch it may not read.
+_WRITE_GRAPH_BRANCH_REF_OPS = frozenset({"patch"})
 
 
 @mcp.tool
@@ -453,18 +458,29 @@ def write_graph(
                 f"requests stay in the browser flow; got target='{target}'."
             ),
         })
+    # Require an EXPLICIT, allowlisted operation (Codex exact-diff 2026-08-23): an
+    # empty operation must never fall through to the connector's default.
     op = (operation or "").strip().lower()
     allowed_ops = _WRITE_GRAPH_OPS[t]
-    if op and op not in allowed_ops:
+    if op not in allowed_ops:
         return json.dumps({
             "error": (
                 f"write_graph target='{t}' operation must be one of "
-                f"{sorted(allowed_ops)}; got '{operation}'."
+                f"{sorted(allowed_ops)}; got '{operation or '(empty)'}'."
             ),
         })
-    # Effect-spam rate limit (shared with run_graph): a prompt-injected engine
-    # must not be able to spam branch/automation writes.
-    if not _engine_run_admit():
+    # Readability/ownership scope for branch operations that reference an EXISTING
+    # branch by id (Codex exact-diff 2026-08-23): a foreign-private branch id must
+    # read as not-found so a served turn cannot patch a branch it may not read.
+    bid = (branch_id or "").strip()
+    if t == "branch" and op in _WRITE_GRAPH_BRANCH_REF_OPS and bid:
+        from tinyassets.api.branches import _base_path, _resolve_readable_branch
+
+        if _resolve_readable_branch(bid, str(_base_path())) is None:
+            return json.dumps({"error": f"Branch '{bid}' not found."})
+    # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
+    # refuse the write, not admit it (Codex exact-diff 2026-08-23).
+    if not _engine_run_admit(fail_closed=True):
         return json.dumps({
             "error": (
                 f"write_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
