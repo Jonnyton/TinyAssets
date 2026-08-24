@@ -37,17 +37,24 @@ from __future__ import annotations
 #:       independently hardened (per-universe run allowlist, author-gated
 #:       run_branch, effect-spam rate limit, IDOR read/execute gate, founder-scoped
 #:       capabilities).
+#:   write_graph                                                 — BUILD one of THIS
+#:       universe's own automations (branch create/remix/patch/publish) and MANAGE
+#:       an automation (create/pause/resume/stop/rebind) — the "when the user
+#:       creates things" parity. The served handler CONFINES write_graph to those
+#:       two targets: credential/connection deposits, cross-author agent publish,
+#:       goals, and requests are NOT reachable served (a secret must never enter a
+#:       served turn) and stay in the secure browser flow. Same run-allowlist +
+#:       rate-limit confinement as run_graph.
 #:
 #: Deliberately EXCLUDED pending their own review (tracked by the
-#: ``served-agent-build-run`` OpenSpec change — creation + cross-author + channels):
-#:   write_graph   — BUILD/patch branch graphs from the served surface (not yet a
-#:                   served handler; the "when the user creates things" parity slice)
+#: ``served-agent-build-run`` OpenSpec change):
 #:   remix_shape   — cross-author commons remix
 #:   grant_effector_consent / channel-connection verbs — user-built channels
 SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "read_graph",
     "get_status",
     "run_graph",
+    "write_graph",
     "browse_commons",
     "read_commons_shape",
     "read_brain",
