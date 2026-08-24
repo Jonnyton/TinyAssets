@@ -60,10 +60,15 @@ from __future__ import annotations
 #:       multi-tenant fix is a force-unapproved build MODE (clear approval after
 #:       any inherit/deref, before persist) + a branch↔universe binding. EDIT
 #:       (operation=patch, 2026-08-24): edit an OWN branch in place — safe self-edit
-#:       ops (add/remove edges+nodes, retune a node's prompt/source, rename, retag,
-#:       skills) ALLOWLISTED; publish / set-visibility-public / fork REFUSED; an
-#:       add_node op runs the SAME create per-node sanitizer; update_node may not
-#:       become a sub-branch invoker; author-gated + transactional patch_branch.
+#:       ops (add/remove edges+nodes+state, set entry_point, rename/retag/goal,
+#:       remove_skill) ALLOWLISTED; publish / set-visibility-public / fork REFUSED; an
+#:       add_node op runs the SAME create per-node sanitizer and may NOT declare an
+#:       effect (channel nodes go through create, which caps them); update_node may
+#:       ONLY retune content (prompt/source/display_name) — never execution/data
+#:       authority (tools_allowed/enabled/input_keys/retry_policy/invoke); metadata
+#:       field types validated; author-gated + transactional patch_branch. Codex ADAPT
+#:       (PR #2518) closed. Residuals tracked (same as create): author-scoped not
+#:       universe-scoped, and no expected-version CAS (concurrency harden gate).
 #:
 #:   source_channel — APPROVE an outbound channel for your own universe (the consent
 #:       half of "add a channel via the channel-agnostic node"). Owner-gated

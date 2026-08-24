@@ -561,35 +561,44 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
 # visibility / fork / add an unsanitized node, so the served surface ALLOWLISTS the safe
 # self-edit ops and refuses the rest.
 #
-#: Safe self-edit ops: pure topology/state/metadata/skill changes on the OWN private
-#: branch — they fire nothing, grant no authority, and cannot publish or approve.
+#: Safe self-edit ops: pure topology/state/metadata changes on the OWN private branch —
+#: they fire nothing, grant no authority, and cannot publish or approve. Skill WRITE ops
+#: (add/update/set_skills) carry snapshot objects that need their own validation and are
+#: a tracked follow-up; only remove_skill is exposed.
 _SERVED_PATCH_SAFE_OPS = frozenset({
     "add_edge", "remove_edge", "add_conditional_edge", "remove_conditional_edge",
     "add_state_field", "remove_state_field", "set_entry_point", "remove_node",
     "set_name", "set_description", "set_tags", "set_goal", "unset_goal",
-    "add_skill", "update_skill", "remove_skill", "set_skills",
+    "remove_skill",
 })
 #: Refused outright: these expose the branch publicly or graft a foreign lineage — the
 #: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
 _SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set_fork_from"})
-#: update_node's own allowlist already blocks effects/approval/author, but it DOES permit
-#: these sub-branch-invoke fields (the fan-out/foreign-map vector the create sanitizer
-#: rejects) — so reject them on a served update_node too.
-_SERVED_PATCH_UPDATE_INVOKE_FIELDS = (
-    "invoke_branch_spec", "invoke_branch_version_spec", "await_run_spec",
-)
+#: A served update_node may ONLY retune content. The downstream _apply_node_updates
+#: allowlist permits tools_allowed / enabled / retry_policy / llm_policy / input_keys /
+#: output_keys, so an update could RE-ACTIVATE an already-approved node with new
+#: capabilities WITHOUT re-invalidating its approval hash (Codex #1, PR #2518). Restrict to
+#: content fields (a source_code edit still clears approval downstream).
+_SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
+    "op", "node_id", "prompt_template", "source_code", "display_name",
+})
+#: Metadata setter ops whose single field must be a string, else SQLite raises
+#: ProgrammingError or persists a malformed value (Codex #4, PR #2518).
+_SERVED_PATCH_STR_SETTERS = {
+    "set_name": "name", "set_description": "description", "set_goal": "goal_id",
+}
 _SERVED_MAX_PATCH_OPS = 100
 
 
 def _sanitize_served_patch_changes(changes: object) -> str:
     """Validate a served patch op batch and return the sanitized changes_json.
 
-    Allowlist by op kind: safe topology/metadata/skill ops pass; publish/visibility/fork
-    ops are refused; an ``add_node`` op is run through the SAME per-node create sanitizer
-    (reject node_ref/invoke/handoffs, strip approval/author/fork, allowlist the one channel
-    effect sink) by wrapping it as a one-node spec; an ``update_node`` may not turn a node
-    into a sub-branch invoker. Raises ValueError on any violation. Same effect-node cap as
-    create, across the batch.
+    Allowlist by op kind: safe topology/metadata ops pass (with per-op field-type
+    validation); publish/visibility/fork ops are refused; an ``add_node`` op is run
+    through the SAME per-node create sanitizer and may NOT declare an effect (channel
+    nodes are added via create, which caps them, so repeated patches cannot accumulate
+    effect nodes past the ceiling); an ``update_node`` may only retune content, never
+    execution/data authority. Raises ValueError on any violation.
     """
     import json
 
@@ -597,7 +606,6 @@ def _sanitize_served_patch_changes(changes: object) -> str:
         raise ValueError("patch changes must be a JSON array of ops")
     if len(changes) > _SERVED_MAX_PATCH_OPS:
         raise ValueError(f"too many patch ops (max {_SERVED_MAX_PATCH_OPS})")
-    effect_nodes = 0
     for op in changes:
         if not isinstance(op, dict):
             raise ValueError("each patch op must be a JSON object")
@@ -611,32 +619,47 @@ def _sanitize_served_patch_changes(changes: object) -> str:
         if kind == "add_node":
             # Reuse the create per-node sanitizer by wrapping the op's node fields as a
             # one-node spec; it strips approval/author/fork, rejects node_ref/invoke/
-            # handoffs, and allowlists effects to the one channel sink (<=1/node).
+            # handoffs, and type-checks node fields.
             node = {k: v for k, v in op.items() if k != "op"}
             wrapper = {"node_defs": [node]}
             _sanitize_served_branch_spec(wrapper)
             sanitized = wrapper["node_defs"][0]
             if sanitized.get("effects"):
-                effect_nodes += 1
+                # No effect/channel nodes via patch: the batch cap can't see the branch's
+                # EXISTING effect nodes, so repeated patches would accumulate past the
+                # ceiling (Codex #3). Channel nodes are added via create (capped per build).
+                raise ValueError(
+                    "adding an effect/channel node via patch is not available on the "
+                    "served edit surface; create a branch with the channel node instead"
+                )
             op.clear()
             op["op"] = "add_node"
             op.update(sanitized)
         elif kind == "update_node":
-            for field in _SERVED_PATCH_UPDATE_INVOKE_FIELDS:
-                if op.get(field):
+            for field in op:
+                if field not in _SERVED_PATCH_UPDATE_NODE_ALLOWED:
                     raise ValueError(
                         f"patch update_node may not set '{field}' on the served edit "
-                        "surface (no sub-branch invocation)"
+                        "surface (only node_id + prompt_template/source_code/display_name)"
                     )
-        elif kind not in _SERVED_PATCH_SAFE_OPS:
+            for field in ("node_id", "prompt_template", "source_code", "display_name"):
+                if field in op and not isinstance(op[field], str):
+                    raise ValueError(f"patch update_node '{field}' must be a string")
+        elif kind in _SERVED_PATCH_SAFE_OPS:
+            setter = _SERVED_PATCH_STR_SETTERS.get(kind)
+            if setter is not None and setter in op and not isinstance(op[setter], str):
+                raise ValueError(f"patch '{kind}' field '{setter}' must be a string")
+            if kind == "set_tags":
+                tags = op.get("tags")
+                if tags is not None and (
+                    not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
+                ):
+                    raise ValueError("patch set_tags 'tags' must be a list of strings")
+        else:
             raise ValueError(
                 f"patch op '{kind or '(empty)'}' is not allowed on the served edit "
                 "surface"
             )
-    if effect_nodes > _SERVED_MAX_EFFECT_NODES:
-        raise ValueError(
-            f"too many effect-declaring nodes in one patch (max {_SERVED_MAX_EFFECT_NODES})"
-        )
     return json.dumps(changes, separators=(",", ":"))
 
 
@@ -677,7 +700,8 @@ def write_graph(
             JSON array of edit ops.
         branch_id: for patch, the id of YOUR branch to edit (required for patch).
         name / description: optional metadata folded into a create spec.
-        idempotency_key: dedupes a retried create/patch.
+        idempotency_key: dedupes a retried create; for patch it only labels the
+            request (patch is transactional but not replay-deduplicated).
     """
     import json
 
@@ -751,8 +775,13 @@ def write_graph(
             # EDIT an existing OWN branch. patch_branch is author-gated (actor ==
             # branch author, no env fallback) and transactional; the sanitizer
             # allowlists safe self-edit ops and refuses publish/visibility/fork +
-            # unsanitized node content. Universe pin rests on the run_graph allowlist
-            # + author scope (same pre-multi-tenant residual as create).
+            # unsanitized node content. RESIDUALS (tracked, same class as create,
+            # deferred behind the u-tiny allowlist for single-founder): (a) branches
+            # are author-scoped not universe-scoped, so the branch↔universe binding is
+            # still owed before multi-tenant (a founder cannot cross into another
+            # actor's branch, but has no per-universe isolation of their own);
+            # (b) patch_branch has no expected-version CAS, so concurrent served
+            # patches can lost-update — a post-live concurrency harden gate.
             bid = (branch_id or "").strip()
             if not bid:
                 return json.dumps({
@@ -765,6 +794,9 @@ def write_graph(
                 changes_json = _sanitize_served_patch_changes(payload)
             except ValueError as exc:
                 return json.dumps({"error": f"invalid patch: {exc}"})
+            # Broadened backstop (Codex #4): field validation above closes the known
+            # crash vectors, but any residual storage/domain error must return a
+            # structured rejection, never propagate out of the served MCP tool.
             try:
                 return _extensions_impl(
                     action="patch_branch",
@@ -772,7 +804,7 @@ def write_graph(
                     changes_json=changes_json,
                     request_id=idempotency_key,
                 )
-            except (AttributeError, TypeError, ValueError, KeyError) as exc:
+            except Exception as exc:  # noqa: BLE001 - served surface must fail structured
                 return json.dumps({
                     "error": f"branch patch rejected ({type(exc).__name__}).",
                 })

@@ -99,13 +99,28 @@ def test_patch_add_node_strips_approval(monkeypatch):
     assert sent[0] == {"op": "add_node", "node_id": "n1"}
 
 
-def test_patch_update_node_rejects_invoke(monkeypatch):
+def test_patch_update_node_allowlist_blocks_authority_fields(monkeypatch):
+    """update_node may only retune content — execution/data-authority fields
+    (tools_allowed/enabled/retry_policy/llm_policy/input_keys/output_keys) and the
+    sub-branch-invoke fields are refused, so an update can't re-activate an approved
+    node with new powers without re-invalidating approval (Codex #1)."""
     s = _bind(monkeypatch)
     seen = _capture(monkeypatch)
-    out = _patch(s, [{"op": "update_node", "node_id": "n1", "invoke_branch_spec": {"x": 1}}])
-    assert "no sub-branch invocation" in out["error"]
+    for danger in (
+        {"tools_allowed": ["enqueue_branch_run"]},
+        {"enabled": True},
+        {"retry_policy": {"max_retries": 99}},
+        {"llm_policy": {"preferred_provider": "x"}},
+        {"input_keys": ["secret"]},
+        {"output_keys": ["x"]},
+        {"invoke_branch_spec": {"x": 1}},
+    ):
+        out = _patch(s, [{"op": "update_node", "node_id": "n1", **danger}])
+        assert "may not set" in out["error"], danger
     assert seen == {}
-    # a plain content edit is fine and routes through.
+    # a non-string content field is refused; a plain content edit routes through.
+    bad = _patch(s, [{"op": "update_node", "node_id": "n1", "source_code": ["x"]}])
+    assert "must be a string" in bad["error"]
     _patch(s, [{"op": "update_node", "node_id": "n1", "prompt_template": "new"}])
     assert seen["action"] == "patch_branch"
 
@@ -134,18 +149,46 @@ def test_patch_rejects_unknown_op(monkeypatch):
     assert seen == {}
 
 
-def test_patch_caps_effect_nodes_in_batch(monkeypatch):
-    from tinyassets import engine_mcp_server as s_mod
-
+def test_patch_rejects_effect_add_node(monkeypatch):
+    """No effect/channel node via patch: the batch cap can't see the branch's EXISTING
+    effect nodes, so repeated patches would accumulate past the ceiling (Codex #3).
+    Channel nodes are added via create (capped per build)."""
     s = _bind(monkeypatch)
     seen = _capture(monkeypatch)
-    over = [
-        {"op": "add_node", "node_id": f"n{i}", "effects": ["authenticated_external_call"]}
-        for i in range(s_mod._SERVED_MAX_EFFECT_NODES + 1)
-    ]
-    out = _patch(s, over)
-    assert "too many effect-declaring nodes" in out["error"]
+    out = _patch(s, [{"op": "add_node", "node_id": "n1",
+                      "effects": ["authenticated_external_call"]}])
+    assert "create a branch with the channel node" in out["error"]
     assert seen == {}
+
+
+def test_patch_rejects_malformed_metadata(monkeypatch):
+    """Non-string metadata would crash SQLite or persist malformed (Codex #4)."""
+    s = _bind(monkeypatch)
+    seen = _capture(monkeypatch)
+    for op in (
+        {"op": "set_description", "description": {"x": 1}},
+        {"op": "set_name", "name": []},
+        {"op": "set_tags", "tags": "notalist"},
+    ):
+        out = _patch(s, [op])
+        assert "must be a" in out["error"], op
+    assert seen == {}
+
+
+def test_patch_rejects_skill_write_ops(monkeypatch):
+    """Skill add/update/set carry snapshot objects (tracked follow-up); only
+    remove_skill is exposed on the served edit surface."""
+    s = _bind(monkeypatch)
+    seen = _capture(monkeypatch)
+    for op in (
+        {"op": "add_skill", "skill": {"id": "x"}},
+        {"op": "update_skill", "skill": {"id": "x"}},
+        {"op": "set_skills", "skills": []},
+    ):
+        assert "not allowed" in _patch(s, [op])["error"], op
+    assert seen == {}
+    _patch(s, [{"op": "remove_skill", "skill_id": "x"}])
+    assert seen["action"] == "patch_branch"
 
 
 def test_patch_rejects_non_json_and_non_list(monkeypatch):
