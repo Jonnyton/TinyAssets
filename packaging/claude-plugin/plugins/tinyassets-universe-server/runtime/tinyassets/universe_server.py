@@ -2622,7 +2622,7 @@ _mcp_wiki = _register_structured_tool(
 # ---------------------------------------------------------------------------
 
 
-def get_status(universe_id: str = "") -> str:
+def get_status(universe_id: str = "", include_conversation: bool = False) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
     Chatbots call this whenever they need ground-truth daemon facts.
@@ -2644,8 +2644,15 @@ def get_status(universe_id: str = "") -> str:
 
     Args:
         universe_id: Optional universe scope. Defaults to active universe.
+        include_conversation: Founder-only opt-in (default false). When true and
+            the caller is this universe's founder, the response carries a fenced,
+            read-only ``recent_conversation`` peek at the shared cross-surface
+            conversation thread (web/desktop/phone/connector). Off by default so
+            the raw transcript never rides into routine status reads.
     """
-    return _get_status_impl(universe_id=universe_id)
+    return _get_status_impl(
+        universe_id=universe_id, include_conversation=include_conversation
+    )
 
 
 _mcp_get_status = _register_structured_tool(
