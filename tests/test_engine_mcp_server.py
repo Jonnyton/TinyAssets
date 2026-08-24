@@ -1086,6 +1086,57 @@ def test_read_graph_compute_target_lists_own_providers_end_to_end(monkeypatch, t
     assert other.get("error") == "not_found"  # no admin ACL there -> uniform not_found
 
 
+def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
+    monkeypatch, tmp_path
+):
+    """The served read_graph accepts target=connections (pinned to this universe) and
+    lists the universe's own http CHANNEL connections — so the agent self-serves the
+    connection_id / grant_id / host / path for an authenticated_external_call node
+    instead of asking the owner to paste them back. Channel-agnostic: any deposited
+    destination appears identically, and no secret is included."""
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.api.http_connection import connect_http
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import grant_universe_access
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "u-conn-read"
+    (tmp_path / uid).mkdir(parents=True)
+    grant_universe_access(tmp_path, universe_id=uid, actor_id="founder-cx",
+                          permission="admin", granted_by="founder-cx")
+    tok = _current_identity.set(Identity(user_id="founder-cx", username="founder-cx",
+                                         capabilities=["read", "list", "write"]))
+    try:
+        dep = connect_http(universe_id=uid, payload=json.dumps({
+            "destination": "webhook:anything",
+            "secret": "sk-not-echoed",
+            "allowed_endpoints": [{"host": "api.example.com",
+                                   "path_template": "/v1/messages", "methods": ["POST"]}],
+        }))
+        assert dep["status"] == "provisioned", dep
+    finally:
+        _current_identity.reset(tok)
+
+    assert "connections" in s._PINNED_READ_TARGETS
+    monkeypatch.setattr(s, "_ACTOR_ID", "founder-cx")
+    monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    out = json.loads(s.read_graph(target="connections"))
+    rows = [c for c in out.get("connections", []) if c["destination"] == "webhook:anything"]
+    assert len(rows) == 1, out
+    assert rows[0]["connection_class"] == "http"
+    assert rows[0]["connection_id"] and rows[0]["grant_id"]
+    assert rows[0]["allowed_endpoints"][0]["host"] == "api.example.com"
+    assert "sk-not-echoed" not in json.dumps(out)
+    # Graph-pinned + owner-scoped: pointed at a universe the founder holds no
+    # connections in, the list is EMPTY — never another owner's connections. The
+    # owner_user_id filter in list_grants is the leak boundary (a served read is also
+    # pinned to its own _GRAPH_ID, so this cross-universe case can't arise in prod).
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-not-mine")
+    other = json.loads(s.read_graph(target="connections"))
+    assert other.get("connections") == [] and other.get("count") == 0
+
+
 def test_served_allowlists_do_not_drift():
     """The two served engine-MCP allowlists (codex + claude) MUST offer the SAME
     tools — a codex-served and a claude-served universe get identical capability

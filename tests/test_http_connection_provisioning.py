@@ -350,6 +350,39 @@ def test_legacy_row_with_changed_policy_conflicts_scope_untouched(base: Path) ->
     assert _http_records(udir)[0]["token"] == "old-secret"
 
 
+def test_connections_list_includes_http_channel_connections(base: Path) -> None:
+    """REGRESSION: read_graph target=connections (cloud_connections 'list') must list
+    a universe's http CHANNEL connections, not just github pipes — channel-agnostically.
+
+    The served agent needs to read back a connection's connection_id / grant_id /
+    allowed host+path itself to build an authenticated_external_call node; without
+    this it had to ask the owner to paste those ids by hand. Any deposited http
+    destination appears identically — no per-service code.
+    """
+    from tinyassets.api.cloud_connections import cloud_connections
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-list", admin="founder")
+    _login("founder")
+    _connect("u-list", destination="webhook:slack-like")  # generic http deposit
+    conn_id, grant_id = _ids(universe_id="u-list", destination="webhook:slack-like")
+
+    result = cloud_connections(action="list", universe_id="u-list")
+    conns = result["connections"]
+    http = [c for c in conns if c["connection_id"] == conn_id]
+    assert len(http) == 1, f"http channel connection not listed: {conns}"
+    row = http[0]
+    assert row["grant_id"] == grant_id
+    assert row["destination"] == "webhook:slack-like"
+    assert row["connection_class"] == "http"
+    # The redacted egress allow-list gives the agent the exact host/path to emit.
+    assert row["allowed_endpoints"][0]["host"] == "api.example.com"
+    assert "POST" in row["allowed_endpoints"][0]["methods"]
+    # No secret ever surfaces in the listing.
+    assert "sk-SECRET-token" not in json.dumps(result)
+    assert "credential_ref" not in row and "vault://" not in json.dumps(result)
+
+
 def test_provision_routes_through_write_graph(base: Path) -> None:
     import importlib
 
