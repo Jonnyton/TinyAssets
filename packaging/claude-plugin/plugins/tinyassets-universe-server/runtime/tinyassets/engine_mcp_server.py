@@ -182,7 +182,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
-_PINNED_READ_TARGETS = frozenset({"status", "graph", "compute"})
+_PINNED_READ_TARGETS = frozenset({"status", "graph", "compute", "connections"})
 
 
 def _binding_error() -> str | None:
@@ -212,9 +212,15 @@ def read_graph(target: str = "status") -> str:
 
     Args:
         target: What to read: ``status`` (a factual daemon + serving snapshot),
-            ``graph`` (inspect your universe's graph), or ``compute`` (list the
+            ``graph`` (inspect your universe's graph), ``compute`` (list the
             compute providers registered for your universe — the read sibling of
-            registering one with ``connect_compute``). Any other value is refused.
+            registering one with ``connect_compute``), or ``connections`` (list the
+            outbound channel connections your universe has — every http channel the
+            owner deposited plus any github pipe, each with its ``connection_id``,
+            ``grant_id``, ``destination`` label, and allowed ``host``/``path``, so
+            you can build an authenticated_external_call node without asking the
+            owner to paste those ids back; secrets are never included). Any other
+            value is refused.
     """
     import json
 
