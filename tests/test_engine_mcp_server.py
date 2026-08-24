@@ -1347,11 +1347,56 @@ def test_served_write_graph_preserves_opaque_workflow_data(monkeypatch):
     assert "author" not in node and "approved" not in node
 
 
-def test_served_write_graph_rejects_invoke_and_effects(monkeypatch):
-    """Combined build+run confinement (Codex 2026-08-24): a served build must not
-    declare sub-branch invocation (unbounded child fan-out + own-wrapper→foreign
-    child data mapping) or node effects (one run amplifies a consented effect).
-    Reject them before they reach build_branch."""
+def test_served_write_graph_rejects_invoke_allows_channel_effect(monkeypatch):
+    """Combined build+run confinement (Codex 2026-08-24 + channel/consent slice
+    2026-08-25): a served build must not declare sub-branch invocation, a NON-channel
+    effect sink, or the typed handoffs path — but the ONE channel-agnostic node
+    (authenticated_external_call) IS allowed. Building declares only the sink name and
+    fires nothing; its outbound call stays gated at run time by the connection grant +
+    per-destination consent + the outbound flag + SSRF."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+
+    def _impl(**kw):
+        calls["n"] += 1
+        return "{}"
+
+    monkeypatch.setattr(ext, "_extensions_impl", _impl)
+
+    def _spec(node):
+        return {"name": "x", "node_defs": [{"node_id": "n1", **node}]}
+
+    reject = [
+        _spec({"invoke_branch_spec": {"branch_def_id": "b"}}),
+        _spec({"invoke_branch_version_spec": {"v": "x"}}),
+        _spec({"await_run_spec": {"run_id": "r"}}),
+        _spec({"effects": ["wiki_write_back"]}),   # a real sink, but not the channel node
+        _spec({"effects": ["arbitrary_sink"]}),    # unknown sink
+        _spec({"handoffs": [{"adapter": "x"}]}),   # typed-effect path stays off-surface
+    ]
+    for spec in reject:
+        out = json.loads(s.write_graph(target="branch", operation="create",
+                                       payload_json=json.dumps(spec)))
+        assert "not available on the served build surface" in out.get("error", ""), spec
+    assert calls["n"] == 0
+    # The ONE channel-agnostic effect node IS allowed — builds normally.
+    ok = _spec({"prompt_template": "hi", "effects": ["authenticated_external_call"]})
+    s.write_graph(target="branch", operation="create", payload_json=json.dumps(ok))
+    assert calls["n"] == 1
+    # Empty effects list is fine (means "no effects").
+    ok2 = _spec({"prompt_template": "hi", "effects": []})
+    s.write_graph(target="branch", operation="create", payload_json=json.dumps(ok2))
+    assert calls["n"] == 2
+
+
+def test_served_write_graph_effects_must_be_string_list(monkeypatch):
+    """A malformed effects declaration is a structured rejection, never reaches build."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1361,22 +1406,64 @@ def test_served_write_graph_rejects_invoke_and_effects(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    def _spec(node):
-        return {"name": "x", "node_defs": [{"node_id": "n1", **node}]}
-    cases = [
-        _spec({"invoke_branch_spec": {"branch_def_id": "b"}}),
-        _spec({"invoke_branch_version_spec": {"v": "x"}}),
-        _spec({"await_run_spec": {"run_id": "r"}}),
-        _spec({"effects": ["authenticated_external_call"]}),
-    ]
-    for spec in cases:
+    for bad in ("authenticated_external_call", [123], [{"sink": "x"}]):
+        spec = {"name": "x", "node_defs": [{"node_id": "n1", "effects": bad}]}
         out = json.loads(s.write_graph(target="branch", operation="create",
                                        payload_json=json.dumps(spec)))
-        assert "not available on the served build surface" in out.get("error", ""), spec
+        assert "must be a JSON array of strings" in out.get("error", ""), bad
     assert calls["n"] == 0
-    # Empty effects list is fine (means "no effects") — builds normally.
-    ok = {"name": "x", "node_defs": [{"node_id": "n1", "prompt_template": "hi", "effects": []}]}
-    s.write_graph(target="branch", operation="create", payload_json=json.dumps(ok))
+
+
+def test_served_write_graph_rejects_duplicate_effect_sinks(monkeypatch):
+    """One node with duplicate sink entries fires N outbound calls at run time,
+    bypassing the node-count cap (Codex #1). A node may declare the channel sink at
+    most once — [] or [authenticated_external_call]."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    dup = {"name": "x", "node_defs": [{"node_id": "n1", "effects": [
+        "authenticated_external_call", "authenticated_external_call",
+    ]}]}
+    out = json.loads(s.write_graph(target="branch", operation="create",
+                                   payload_json=json.dumps(dup)))
+    assert "at most once" in out.get("error", "")
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_caps_effect_node_count(monkeypatch):
+    """A served channel graph is bounded to a small number of effect-declaring nodes
+    (structural per-build ceiling on outbound volume)."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    over = s._SERVED_MAX_EFFECT_NODES + 1
+    nodes = [
+        {"node_id": f"n{i}", "effects": ["authenticated_external_call"]}
+        for i in range(over)
+    ]
+    out = json.loads(s.write_graph(target="branch", operation="create",
+                                   payload_json=json.dumps({"name": "x", "node_defs": nodes})))
+    assert "too many effect-declaring nodes" in out.get("error", "")
+    assert calls["n"] == 0
+    # At the cap it builds.
+    at = [
+        {"node_id": f"n{i}", "effects": ["authenticated_external_call"]}
+        for i in range(s._SERVED_MAX_EFFECT_NODES)
+    ]
+    s.write_graph(target="branch", operation="create",
+                  payload_json=json.dumps({"name": "x", "node_defs": at}))
     assert calls["n"] == 1
 
 

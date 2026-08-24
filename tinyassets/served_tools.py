@@ -61,11 +61,34 @@ from __future__ import annotations
 #:       (patch) stays off this surface (its op set can publish / change
 #:       visibility / fork) — a separate reviewed slice.
 #:
+#:   source_channel — APPROVE an outbound channel for your own universe (the consent
+#:       half of "add a channel via the channel-agnostic node"). Owner-gated
+#:       (source_channel's impl requires an admin ACL row for the bound founder;
+#:       anonymous / read-write collaborators get auth_failed), graph-PINNED
+#:       (universe_id is never caller-supplied), SECRET-FREE (consent is a
+#:       (sink, destination) allow — the token is deposited out of band via the browser
+#:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:
+#:       channel_type=="source_code" is refused (that approval sets approved_source_hash,
+#:       the code-execution gate the create-only write_graph strips — keeping it off this
+#:       surface preserves the RCE closure). action=approve only; set_policy/get_policy
+#:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
+#:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
+#:
+#: write_graph (BUILD half of the channel slice, 2026-08-25): the ONE channel-agnostic
+#:   effect node (``authenticated_external_call``) is now allowed in a served create — an
+#:   allowlist (every other sink, incl. ``wiki_write_back``, and the typed ``handoffs``
+#:   path are refused), capped at a small effect-node count per build. Building declares
+#:   only the sink NAME and fires nothing; the run-time effector re-checks the
+#:   connection-grant-bound-to-this-universe + per-destination consent (granted via
+#:   source_channel) + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED + SSRF per dispatch.
+#:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
 #:   write_graph PATCH/edit — see above (separate slice)
 #:   remix_shape   — cross-author commons remix
-#:   grant_effector_consent / channel-connection verbs — user-built channels
+#:   connect_http  — deposits a RAW SECRET; stays on the browser deposit form
+#:   a proper per-root-run effect-dispatch cap (all surfaces) — the served build cap on
+#:       effect-node count is the interim structural bound
 SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "read_graph",
     "get_status",
@@ -76,4 +99,5 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "read_brain",
     "write_brain",
     "connect_compute",
+    "source_channel",
 )
