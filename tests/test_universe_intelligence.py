@@ -465,6 +465,65 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
     assert "Alex" in (udir / "founder.md").read_text(encoding="utf-8")
 
 
+# -- cross-surface continuity directive (founder 2026-08-23; Codex adapt) --------
+
+_CONTINUITY_MARKER = "CONTINUITY ACROSS SURFACES"
+
+
+def _capture_writer_call(monkeypatch, udir):
+    """Wire converse so the WRITER call's (prompt, system) are captured."""
+    captured: dict = {}
+
+    def fake_call_provider(prompt, system="", *, role="writer",
+                           universe_context=None, **_kw):
+        if "strict JSON" in system:  # the learning-extraction call, not the writer
+            return "{}"
+        captured.update(prompt=prompt, system=system)
+        return "ok"
+
+    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
+    monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    return captured
+
+
+def test_continuity_directive_rides_founder_turn_with_history(tmp_path, monkeypatch):
+    udir = _seed(tmp_path)
+    cap = _capture_writer_call(monkeypatch, udir)
+    history = [("You", "we were reshaping the website to be app-first"),
+               ("Universe", "yes — open the web app first")]
+    ui.converse("u-test", "hi", tier=interlocutor.FOUNDER,
+                conversation_history=history)
+    # Directive is appended to the TRUSTED system prompt...
+    assert _CONTINUITY_MARKER in cap["system"]
+    # ...while the actual (untrusted) history rides in the user turn, NOT the system.
+    assert "reshaping the website" in cap["prompt"]
+    assert "reshaping the website" not in cap["system"]
+
+
+def test_continuity_directive_absent_without_history(tmp_path, monkeypatch):
+    udir = _seed(tmp_path)
+    cap = _capture_writer_call(monkeypatch, udir)
+    # Founder turn, but a genuine first contact (no prior thread) → no directive,
+    # so it can never pressure the model to invent a "we were working on X".
+    ui.converse("u-test", "hi", tier=interlocutor.FOUNDER, conversation_history=[])
+    assert _CONTINUITY_MARKER not in cap["system"]
+    assert cap["prompt"] == "hi"
+
+
+def test_continuity_directive_never_rides_non_founder(tmp_path, monkeypatch):
+    udir = _seed(tmp_path)
+    cap = _capture_writer_call(monkeypatch, udir)
+    # A non-founder turn is not GRANTED, so history_block is "" regardless of what
+    # is passed — the directive must not ride and prior-thread text must not leak.
+    history = [("You", "secret founder-only plan we discussed")]
+    ui.converse("u-test", "hello", tier=interlocutor.T1,
+                conversation_history=history)
+    assert _CONTINUITY_MARKER not in cap["system"]
+    assert "secret founder-only plan" not in cap["prompt"]
+    assert "secret founder-only plan" not in cap["system"]
+
+
 # -- interactive sole-writer retry policy (no synchronous sleep on the ingress
 #    path; the router no longer cools the sole writer on a transient timeout) --
 
