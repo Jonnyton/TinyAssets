@@ -1284,6 +1284,69 @@ def test_served_write_graph_rejects_nested_graph_blob(monkeypatch):
     assert calls["n"] == 0
 
 
+def test_served_write_graph_rejects_node_ref(monkeypatch):
+    """CRITICAL (Codex round-2 #1): a node may carry node_ref, which build_branch
+    dereferences and INHERITS the referenced node's stored (hash-only, self-
+    computable) approval — a pre-forged public node copied this way would run.
+    Reject node_ref (top-level and per-node) before it can reach build_branch."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    calls = {"n": 0}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
+    # per-node node_ref (copy a foreign approved node)
+    per_node = json.dumps({"name": "x", "node_defs": [
+        {"node_id": "n1", "node_ref": {"source": "pub-branch", "node_id": "evil"}}]})
+    out = json.loads(s.write_graph(target="branch", operation="create", payload_json=per_node))
+    assert "node_ref is not allowed" in out.get("error", "")
+    # top-level node_ref
+    top = json.dumps({"name": "x", "node_ref": {"source": "pub-branch", "node_id": "evil"}})
+    out2 = json.loads(s.write_graph(target="branch", operation="create", payload_json=top))
+    assert "node_ref is not allowed" in out2.get("error", "")
+    assert calls["n"] == 0
+
+
+def test_served_write_graph_preserves_opaque_workflow_data(monkeypatch):
+    """REQUIRED (Codex round-2 #2): stripping is NODE-LEVEL, not recursive — a
+    user's opaque nested data (e.g. a state field default_value that happens to
+    contain a key named 'author'/'public') must survive untouched, while the
+    node's OWN top-level approval/author fields are still stripped."""
+    import tinyassets.api.extensions as ext
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    captured = {}
+    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
+
+    spec = {
+        "name": "x",
+        "state_schema": {"fields": [
+            {"field_name": "meta",
+             "default_value": {"author": "Ada", "public": True, "mode": "safe"}}]},
+        "node_defs": [{
+            "node_id": "n1", "prompt_template": "hi",
+            "author": "someone-else", "approved": True,
+            "config": {"author": "kept-here", "public": False},
+        }],
+    }
+    s.write_graph(target="branch", operation="create", payload_json=json.dumps(spec))
+    out = json.loads(captured["spec_json"])
+    # Opaque nested data preserved verbatim.
+    dv = out["state_schema"]["fields"][0]["default_value"]
+    assert dv == {"author": "Ada", "public": True, "mode": "safe"}
+    node = out["node_defs"][0]
+    assert node["config"] == {"author": "kept-here", "public": False}
+    # But the node's OWN authoritative approval/author fields are stripped.
+    assert "author" not in node and "approved" not in node
+
+
 def test_served_write_graph_rejects_bad_types(monkeypatch):
     """A wrong-typed field ({"name":[]}) returns a STRUCTURED rejection, never
     crashes the served MCP server, and never reaches build_branch (Codex #6)."""

@@ -396,59 +396,57 @@ def run_graph(
 # Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
 # turn structurally cannot fire an effect or submit a run.
 _WRITE_GRAPH_OPS = frozenset({"create"})
-#: Fields a served create must NEVER carry, stripped from EVERY dict in the spec
-#: (recursively). approval/provenance would let the agent self-approve executable
-#: source (the run-time gate is hash-only, and _staged_branch_from_spec accepts
-#: nodes under node_defs, nodes, AND a nested graph blob — so a per-container strip
-#: is bypassable; strip everywhere). author is server-derived; fork/publish would
-#: fork a foreign shape or expose it publicly.
-_SERVED_STRIP_FIELDS_DEEP = frozenset({
+#: Top-level spec fields that would fork or publicly expose the branch.
+_SERVED_STRIP_TOP_FIELDS = ("fork_from", "fork_from_version", "published", "public")
+#: Node fields a served create must NEVER carry, stripped at each node's TOP level
+#: (where build_branch reads them). approval/provenance would let the agent self-
+#: approve executable source (the run-time gate is hash-only); author is server-
+#: derived; fork_from would copy a foreign node.
+_SERVED_STRIP_NODE_FIELDS = (
     "approved", "approved_by", "approved_at", "approved_source_hash",
-    "approval_reason", "author", "fork_from", "fork_from_version",
-    "published", "public",
-})
+    "approval_reason", "author", "fork_from",
+)
 #: DoS bounds on a served build payload.
 _SERVED_MAX_SPEC_BYTES = 256 * 1024
 _SERVED_MAX_NODES = 100
-_SERVED_MAX_SPEC_DEPTH = 40
 
 
 def _sanitize_served_branch_spec(spec: dict) -> None:
     """Strip everything a served (autonomous) create must not carry, IN PLACE.
 
-    Security (Codex adapt 2026-08-23): the raw build_branch spec is a permissive
-    surface — ``_staged_branch_from_spec`` reads nodes from ``node_defs``,
-    ``nodes``, OR a nested ``graph`` blob, and accepts caller-supplied approval
-    provenance whose hash is self-computable (→ a forged approved source_code node
-    + the live run_graph = RCE). So:
+    Security (Codex adapt 2026-08-23, two rounds). build_branch is a permissive
+    surface; the vectors and their fixes:
 
-      * reject the nested ``graph`` response-shape (a served agent submits the flat
-        canonical spec; the blob is an obfuscation vector for hiding nodes);
-      * RECURSIVELY strip approval/author/fork/publish from every dict, so no
-        container can smuggle them (findings 1/2/4);
-      * force ``visibility=private`` (finding 3 — no self-publish);
-      * type-check + cap nodes and depth (finding 6 — a wrong-typed or pathological
-        payload returns a structured rejection, never crashes the server).
+      * ``graph`` blob — ``_staged_branch_from_spec`` reads nodes from a nested
+        ``graph`` response-shape (hiding nodes past a per-container strip). REJECT.
+      * ``node_ref`` — a node may reference an existing readable public/standalone
+        node, and build_branch dereferences it and INHERITS its stored approval;
+        approval is hash-only (self-computable), so a pre-forged public node copied
+        in this way would run (→ RCE via the live run_graph). REJECT node_ref (a
+        served agent defines nodes inline).
+      * submitted approval/author/fork on a node → strip at each node's top level so
+        the node persists UNAPPROVED (run_graph's _validate_source_code then refuses
+        it until the founder approves the source in the browser); publish/fork at
+        the top level → strip + force visibility=private.
+
+    Stripping is NODE-LEVEL, not recursive: a blanket recursive strip corrupted
+    legitimate opaque workflow data (a user's ``state_schema.default_value`` or
+    skill metadata that happens to contain a key named ``author``/``public`` —
+    Codex round-2 #2). Raises ValueError on a structurally invalid spec so the
+    caller returns a structured rejection instead of crashing downstream.
     """
     if isinstance(spec.get("graph"), dict):
         raise ValueError(
             "submit a flat branch spec (node_defs/edges/entry_point), not a "
             "nested 'graph' blob"
         )
-
-    def _strip(obj, depth):
-        if depth > _SERVED_MAX_SPEC_DEPTH:
-            raise ValueError("spec nested too deeply")
-        if isinstance(obj, dict):
-            for f in _SERVED_STRIP_FIELDS_DEEP:
-                obj.pop(f, None)
-            for v in obj.values():
-                _strip(v, depth + 1)
-        elif isinstance(obj, list):
-            for v in obj:
-                _strip(v, depth + 1)
-
-    _strip(spec, 0)
+    if "node_ref" in spec:
+        raise ValueError(
+            "node_ref is not allowed on the served create surface; define nodes "
+            "inline"
+        )
+    for f in _SERVED_STRIP_TOP_FIELDS:
+        spec.pop(f, None)
     spec["visibility"] = "private"
     for f in ("name", "description", "entry_point", "domain_id", "goal_id"):
         if f in spec and not isinstance(spec[f], str):
@@ -464,6 +462,14 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         for n in nodes:
             if not isinstance(n, dict):
                 raise ValueError(f"each {container} entry must be a JSON object")
+            # A node that copies a pre-approved public/standalone node → RCE.
+            if "node_ref" in n:
+                raise ValueError(
+                    "node_ref is not allowed on the served create surface; "
+                    "define nodes inline"
+                )
+            for f in _SERVED_STRIP_NODE_FIELDS:
+                n.pop(f, None)
             for f in ("node_id", "display_name", "source_code", "prompt_template"):
                 if f in n and not isinstance(n[f], str):
                     raise ValueError(f"node field '{f}' must be a string")
