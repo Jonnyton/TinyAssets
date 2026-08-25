@@ -174,7 +174,14 @@ class AssignedQueueConsumer:
         for universe_id in serving_universes:
             try:
                 audience = self._publish_heartbeat(universe_id)
-                pending = adapter.list_candidates(universe_id=universe_id, limit=20)
+                # Only a task THIS consumer could claim defers activation; a pending
+                # task it will never attempt (live: a legacy owner-queued run) must
+                # not block a resumed automation from ever producing its slice.
+                pending = [
+                    task
+                    for task in adapter.list_candidates(universe_id=universe_id, limit=20)
+                    if _consumer_skip_reason(task) is None
+                ]
                 if (
                     not pending
                     and audience is not None
