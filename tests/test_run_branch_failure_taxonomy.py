@@ -749,3 +749,21 @@ class TestProviderNotBound:
     def test_real_credential_expiry_still_auth_expired(self):
         exc = RuntimeError("auth expired, please renew token")
         assert _classify_run_error(exc, "b1")["failure_class"] == "permission_denied:auth_expired"
+
+
+def test_provider_not_bound_action_names_the_node_pin():
+    """Live 2026-08-25: a node pinned a registered-but-not-serving provider and the
+    generic message let the assistant report a platform bug. The action must tell a
+    user to compare the node's pin with the serving selection."""
+    from tinyassets.api.runs import _PROVIDER_NOT_BOUND_ACTION, _classify_run_outcome_error
+
+    for text in (_PROVIDER_NOT_BOUND_ACTION,):
+        assert "llm_policy.preferred_provider" in text
+        assert "read_graph target=compute" in text
+        assert "Registration is not selection." in text
+    failure_class, action = _classify_run_outcome_error(
+        "Provider call failed in node 'check_provider': Connect your provider "
+        "before running this universe."
+    )
+    assert failure_class == "permission_denied:provider_not_bound"
+    assert action == _PROVIDER_NOT_BOUND_ACTION
