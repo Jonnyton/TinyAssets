@@ -78,6 +78,12 @@ class ServedProviderAuthority:
     credential_service: str
     credential_snapshot_dir: Path | None = field(repr=False, compare=False)
     request_capability: object = field(repr=False, compare=False)
+    operation: str = "converse"
+    allowed_roles: tuple[str, ...] = ("writer",)
+    budget_owner: str = "served_request"
+    before_provider_launch: object | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -1097,6 +1097,51 @@ class SQLiteBackgroundBranchAuthorityStore:
         if self._busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
 
+    @staticmethod
+    def read_authority_in_transaction(
+        conn: sqlite3.Connection,
+        *,
+        logical_attempt_key: str,
+    ) -> tuple[BackgroundBranchBinding, BackgroundBranchAttempt] | None:
+        """Integrity-check one binding/attempt pair in a caller-owned fence."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("background authority read requires a transaction")
+        attempt_row = conn.execute(
+            "SELECT * FROM background_branch_attempts WHERE logical_attempt_key = ?",
+            (logical_attempt_key,),
+        ).fetchone()
+        if attempt_row is None:
+            return None
+        attempt = _attempt_from_row(attempt_row)
+        binding_row = conn.execute(
+            "SELECT * FROM background_branch_bindings WHERE binding_id = ?",
+            (attempt.binding_id,),
+        ).fetchone()
+        if binding_row is None:
+            return None
+        binding = _binding_from_row(binding_row)
+        if not _attempt_matches_binding(attempt, binding):
+            raise sqlite3.DatabaseError("background authority pair is inconsistent")
+        return binding, attempt
+
+    @staticmethod
+    def read_queue_owner_in_transaction(
+        conn: sqlite3.Connection,
+        *,
+        owner_id: str,
+    ) -> BackgroundBranchAuthorityOwnerRecord | None:
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("background owner read requires a transaction")
+        row = conn.execute(
+            """
+            SELECT * FROM background_branch_authority_owners
+            WHERE owner_kind = ? AND owner_id = ?
+            """,
+            (BackgroundBranchAuthorityOwnerKind.QUEUE_TASK.value, owner_id),
+        ).fetchone()
+        return _owner_from_row(row) if row is not None else None
+
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         path = db_path(self.base_path)

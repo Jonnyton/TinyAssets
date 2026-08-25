@@ -33,6 +33,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkExecutionClaimState,
     ProviderWorkReceiptService,
     ProviderWorkReceiptState,
+    provider_work_binding_class,
 )
 from tinyassets.storage import db_path
 from tinyassets.storage.provider_work_authority import (
@@ -40,6 +41,23 @@ from tinyassets.storage.provider_work_authority import (
 )
 
 NOW = datetime(2026, 8, 1, 6, 0, tzinfo=timezone.utc)
+
+
+def test_background_branch_run_has_distinct_binding_identity_class() -> None:
+    assert (
+        provider_work_binding_class(
+            allowed_operations=("background_branch_run",),
+            allowed_roles=("writer", "judge"),
+        )
+        == "background_branch_run"
+    )
+    assert (
+        provider_work_binding_class(
+            allowed_operations=("converse",),
+            allowed_roles=("writer",),
+        )
+        == "serving"
+    )
 
 
 def _seed(**overrides: object) -> ProviderWorkBindingSeed:
@@ -499,10 +517,14 @@ def test_universe_receipt_preserves_exact_authorized_role_set(tmp_path) -> None:
         authority,
         allowed_roles=("writer", "reviewer"),
     )
-    receipt = ProviderWorkReceiptService(
-        store,
-        _UniverseWorkResolver(multi_role),
-    ).issue(root).record
+    receipt = (
+        ProviderWorkReceiptService(
+            store,
+            _UniverseWorkResolver(multi_role),
+        )
+        .issue(root)
+        .record
+    )
 
     assert receipt is not None
     assert receipt.allowed_roles == ("writer", "reviewer")
@@ -1445,9 +1467,7 @@ def test_cloud_branch_store_rejects_object_new_claim_grant(tmp_path) -> None:
         store._claim_or_renew_cloud_branch(request, forged)
 
     with store.connection() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM provider_work_execution_claims"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM provider_work_execution_claims").fetchone()[0]
     assert count == 0
 
 
