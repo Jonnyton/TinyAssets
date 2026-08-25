@@ -331,6 +331,23 @@ def _ensure_runs_recovery() -> None:
 _FAILURE_TAXONOMY: list[tuple[type, str, str]] = []
 
 
+# Live browser finding 2026-08-25: a branch whose node pinned a REGISTERED but
+# not-serving compute provider (llm_policy.preferred_provider) failed with this
+# class, and the assistant reported it to the user as a platform bug ("the runner
+# is not reading serving state") because nothing said a pin was in play. Name the
+# pin explicitly so a user of any surface can resolve it themselves.
+_PROVIDER_NOT_BOUND_ACTION = (
+    "No serving provider is bound for this run. If a node pins a specific "
+    "compute provider (llm_policy.preferred_provider), that exact provider must "
+    "be the universe's serving provider - compare read_graph target=branch "
+    "(the pin) with read_graph target=compute (registered) and the serving "
+    "selection; either make the pinned provider serving, or remove the pin so "
+    "the run uses whatever the universe serves. If nothing is registered yet, "
+    "register one first (connect_compute). Registration is not selection. Not a "
+    "credential problem and not host-actionable."
+)
+
+
 def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
     """Build the (exc_type, failure_class, suggested_action) table lazily."""
     rows: list[tuple[type, str, str]] = []
@@ -354,12 +371,7 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
     rows.append((
         ProviderAuthorityHeldError,
         "permission_denied:provider_not_bound",
-        (
-            "No serving provider is bound to this universe. If one is already "
-            "registered (read_graph target=compute lists them), select it as the "
-            "serving provider; otherwise register one first (connect_compute). Not "
-            "a credential problem and not host-actionable."
-        ),
+        _PROVIDER_NOT_BOUND_ACTION,
     ))
     rows.append((
         RecursionError,
@@ -515,12 +527,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "connect your provider" in msg or "serving provider is bound" in msg:
         return (
             "permission_denied:provider_not_bound",
-            (
-            "No serving provider is bound to this universe. If one is already "
-            "registered (read_graph target=compute lists them), select it as the "
-            "serving provider; otherwise register one first (connect_compute). Not "
-            "a credential problem and not host-actionable."
-        ),
+            _PROVIDER_NOT_BOUND_ACTION,
         )
     if "auth expir" in msg or "token expir" in msg or "credential" in msg:
         return (
