@@ -279,7 +279,7 @@ def test_claim_exception_is_recorded_as_a_named_refusal(
         item for item in summary["diagnostics"]
         if item["branch_task_id"] == branch_task_id
     )
-    assert diagnostic["operational_state"] == "awaiting_background_authority"
+    assert diagnostic["operational_state"] == "consumer_error"
     assert diagnostic["reason"] == "claim_error:RuntimeError"
     assert summary["eligible_pending_count"] == 0
 
@@ -322,6 +322,51 @@ def test_pending_task_the_consumer_skips_gets_a_named_reason(
         assert consumer.poll_once() == 0
     finally:
         consumer.stop()
-    assert _refusal_reason(tmp_path, branch_task_id) == "executor_class_tray"
+    assert _refusal_reason(tmp_path, branch_task_id) == "requires_executor_class:tray"
     task = Epoch2BranchTaskAdapter(tmp_path).get(branch_task_id)
     assert task is not None and task.status == "pending"
+    summary = _epoch2_operational_snapshot(tmp_path / "universe_alice")
+    diagnostic = next(
+        item for item in summary["diagnostics"]
+        if item["branch_task_id"] == branch_task_id
+    )
+    assert diagnostic["operational_state"] == "awaiting_compatible_executor"
+    assert diagnostic["reason"] == "requires_executor_class:tray"
+
+
+def test_unclaimable_candidate_does_not_starve_the_next(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Codex ADAPT on #2543: the first eligible-but-unclaimable task must not
+    starve a claimable task behind it in the same universe."""
+    from dataclasses import replace
+
+    branch_task_id, _audience = _seed_claimable_background_path(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    original = adapter.get(branch_task_id)
+    assert original is not None
+    ghost = replace(original, branch_task_id="bt2_" + "f" * 32)
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter, "list_candidates", lambda self, **k: [ghost, original]
+    )
+    real_claim = Epoch2BranchTaskAdapter.claim_assigned
+
+    def _claim(self, candidate, **kwargs):
+        if candidate.branch_task_id == ghost.branch_task_id:
+            raise RuntimeError("ghost cannot be claimed")
+        return real_claim(self, candidate, **kwargs)
+
+    monkeypatch.setattr(Epoch2BranchTaskAdapter, "claim_assigned", _claim)
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    deferred = _DeferredExecutor()
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = deferred
+    try:
+        assert consumer.poll_once() == 1
+    finally:
+        consumer.stop()
+    assert _refusal_reason(tmp_path, ghost.branch_task_id) == "claim_error:RuntimeError"
+    claimed = adapter.get(branch_task_id)
+    assert claimed is not None and claimed.status == "running"

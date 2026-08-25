@@ -835,7 +835,7 @@ class Epoch2BranchTaskAdapter:
                 and task is not None
                 and authority_refusal
             ):
-                operational_state = "awaiting_background_authority"
+                operational_state = _refusal_operational_state(authority_refusal)
                 reason = authority_refusal
             elif (
                 row.get("status") == "pending"
@@ -1184,6 +1184,20 @@ def _transaction_allows_assigned_consumer(
         candidate=candidate,
         consumer_lease=consumer_lease,
     ) is None
+
+
+def _refusal_operational_state(reason: str) -> str:
+    """Type a consumer-recorded refusal for the status view: only authority
+    predicates mean 'awaiting_background_authority'; a task this consumer is not
+    the executor for is 'awaiting_compatible_executor'; a consumer failure is a
+    'consumer_error' (Codex ADAPT on #2543: a tray task is not awaiting authority)."""
+    if reason.startswith(("claim_error:", "explain_error:")):
+        return "consumer_error"
+    if reason == "refusal_unexplained":
+        return "consumer_error"
+    if reason.startswith(("requires_executor_class:", "consumer_not_applicable:")):
+        return "awaiting_compatible_executor"
+    return "awaiting_background_authority"
 
 
 def _assigned_consumer_refusal_reason(
