@@ -333,7 +333,15 @@ def _consumer_reason(base: Path, control: CloudAutomationControl) -> str | None:
         )
     except Exception:  # noqa: BLE001 - a projection read must never fail the surface
         return None
-    return reasons.get(f"automation:{control.automation_id}")
+    for key in (
+        f"automation:{control.automation_id}",
+        f"universe:{control.universe_id}:{control.principal_id or '-'}",
+        f"universe:{control.universe_id}:-",
+    ):
+        reason = reasons.get(key)
+        if reason and not reason.startswith("ok:"):
+            return reason
+    return None
 
 
 def _projection(
