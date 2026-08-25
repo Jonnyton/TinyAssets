@@ -23,14 +23,18 @@ background attempt - NOT that a production adapter obeys ``max_tokens`` (Codex #
 tracked separately).
 
 This PASSED against the real stores at head da141cbc (finalization proof for Codex
-REJECT #2, re-proving #1) - see the xfail below for why it is parked. The seams it walked to get here — each a real store the production
-path touches — are listed in the draft PR body, along with the two real bugs it found
+REJECT #2, re-proving #1)
+- see the xfail below for why it is parked. The seams it walked to get here (each a
+real store the production path touches) are listed in the draft PR body, along with
+the two real bugs it found
 (the ``agent_binding_id`` key mismatch; the hard-coded ``converse`` reserve gate).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 # Codex REJECT #4 (2026-08-25): the acceptance path this proof relied on - the router
 # honouring a pre-set ``served_provider`` - was refuted (no in-process provenance
