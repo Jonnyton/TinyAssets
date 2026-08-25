@@ -411,6 +411,9 @@ def test_orphan_pending_task_does_not_block_activation(
             setup.control.automation_id,
         )
         assert active is not None and active.state.value == "active"
+        # Next poll: the orphan is passed over WITH a reason and the produced
+        # slice behind it is claimed - nothing starves, nothing is silent.
+        assert consumer.poll_once() == 1
     finally:
         consumer.stop()
     assert (
