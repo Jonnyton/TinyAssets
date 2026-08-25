@@ -31,6 +31,8 @@ The existing interactive serving binding is deliberately only `converse`/`writer
 
 5. **Shared executor with an explicit identity object.** The neutral runtime function receives the storage root, claimed task, `ClaimedBranchExecutorIdentity`, and provider call. `fantasy_daemon` remains a wrapper and the daemon consumer supplies its own identity and heartbeat callback. Run reservation, immutable version execution, cancellation, receipts, continuation fences, and delegated authorization inputs remain unchanged.
 
+**Reconciled execution shape (2026-08-24).** `AssignedQueueConsumer` claims only with its boot-unique process `AssignedConsumerLease`; after claiming, it reuses the active background Branch binding's owner-authorized `daemon_id` and `runtime_id` to hydrate `ClaimedBranchExecutorIdentity`, terminalizing with a named reason when that binding or identity is unavailable. Inside the launch fence, each provider call issues/reuses the `background_branch_run` provider-work binding, durable receipt and execution claim, then arms exactly one `ProviderInvocationCarrier` for the router's `UniverseContext`; it never fabricates a descriptor worker or build identity, routes through the cloud-worker audience path, or supplies caller-populated `served_provider` authority.
+
 6. **Bounded failure containment.** The consumer owns one coordinator thread and a fixed-size executor. It permits one active task per universe and a small global maximum. An authority failure releases the exact claim to a retryable authority-held projection; arbitrary task exceptions are logged and terminalized without escaping the worker future or daemon main thread.
 
 ## Risks / Trade-offs

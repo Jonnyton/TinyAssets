@@ -445,6 +445,23 @@ class ProviderRouter:
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
 
+        # A context that ALREADY carries an authorized ServedProviderAuthority (the
+        # daemon-owned background consumer fences its own authority per call in
+        # background_served_provider._authorize_launch and injects it here) must
+        # NOT be re-authorized as a founder-facing served turn: that path demands a
+        # live provider_request the background has none of, so it raised
+        # ProviderAuthorityHeldError and the real background path could never
+        # launch (Codex REJECT #1, PR #2528). Only an UN-authorized context is
+        # fenced here.
+        # REVERTED (Codex REJECT #4 on #2531): an earlier head honoured a pre-set
+        # ``served_provider`` on the context so the background consumer could inject
+        # its authority. ServedProviderAuthority is a plain dataclass, and no
+        # in-process provenance scheme (registry, sentinel fence) survived review:
+        # 'if arbitrary in-process Python is the adversary, no underscore, sentinel,
+        # or same-process secret suffices'. The correct route for background is the
+        # server-minted, pid-bound, ONE-USE ProviderInvocationCarrier (the
+        # ``provider_invocation`` branch below) - the next lane. Until then a context
+        # without a carrier is re-fenced as a served turn: fail closed.
         if universe_context is not None and universe_context.provider_invocation is None:
             from tinyassets.provider_assignment import authorize_served_provider_call
 
@@ -776,9 +793,28 @@ class ProviderRouter:
             logger.info("Trying provider %s for role=%s", provider_name, role)
             try:
                 budget_reservation = None
-                if (
-                    served_authority is not None
-                    and served_authority.budget_owner == "served_request"
+                # EVERY served authority — founder-facing served turns
+                # ("served_request") AND daemon-owned background attempts
+                # ("background_attempt") — goes THROUGH this reserve-before-launch /
+                # finalize-actuals-after machinery. It used to admit only
+                # "served_request", so background calls reserved nothing and
+                # created no actual-usage row, which made the consumer's rolling
+                # cap blind to real spend (Codex REJECT #2/#6, PR #2528). The one
+                # genuinely served-ONLY step is consuming a live request
+                # capability, which background does not carry — skipped below when
+                # absent; reservation + finalization are common to both.
+                if served_authority is not None and served_authority.budget_owner not in (
+                    "served_request",
+                    "background_attempt",
+                ):
+                    # An authority with an UNKNOWN budget owner must never reach a
+                    # provider: it would skip the reservation block below and launch
+                    # with no budget at all (Codex REJECT #3 reproduced exactly this
+                    # with a forged authority). Fail closed before routing.
+                    raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+                if served_authority is not None and served_authority.budget_owner in (
+                    "served_request",
+                    "background_attempt",
                 ):
                     from tinyassets.auth.middleware import (
                         consume_provider_request_invocation,
@@ -791,10 +827,11 @@ class ProviderRouter:
                     )
 
                     try:
-                        consume_provider_request_invocation(
-                            served_authority.request_capability,
-                            limit=served_authority.request_max_invocations,
-                        )
+                        if served_authority.request_capability is not None:
+                            consume_provider_request_invocation(
+                                served_authority.request_capability,
+                                limit=served_authority.request_max_invocations,
+                            )
                     except PermissionError as exc:
                         raise ProviderAuthorityHeldError(
                             _CONNECT_PROVIDER_MESSAGE
@@ -811,6 +848,7 @@ class ProviderRouter:
                         universe_dir.parent,
                         universe_dir=universe_dir,
                         authority=served_authority,
+                        role=role,
                         requested_output_tokens=cfg.max_tokens,
                         estimated_input_tokens=estimated_input_tokens,
                         call_timeout_s=getattr(cfg, "timeout", None),

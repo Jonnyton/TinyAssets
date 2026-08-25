@@ -2442,6 +2442,7 @@ def prepare_claimed_cloud_provider_call(
     daemon_id: str,
     provider_call: Callable[..., str],
     clock: Callable[[], datetime] | None = None,
+    allow_test_fixtures: bool = False,
 ) -> Callable[..., str] | None:
     """Claim exact background/provider authority for one cloud queue task.
 
@@ -2523,7 +2524,11 @@ def prepare_claimed_cloud_provider_call(
     )
     if continuation is None or continuation.continuation_id != continuation_id:
         raise PermissionError("prepared cloud continuation is unavailable")
-    provider_store = SQLiteProviderWorkAuthorityStore(root_path, clock=now_clock)
+    provider_store = SQLiteProviderWorkAuthorityStore(
+        root_path,
+        clock=now_clock,
+        allow_test_fixtures=allow_test_fixtures,
+    )
     provider_binding = provider_store.get(continuation.provider_binding_id)
     if provider_binding is None:
         raise PermissionError("cloud provider binding is unavailable")

@@ -9,19 +9,26 @@ import os
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from tinyassets.background_branch_authority import BackgroundBranchBindingStatus
+from tinyassets.background_branch_authority import (
+    BackgroundBranchAttemptLifecycle,
+    BackgroundBranchBindingStatus,
+    BackgroundBranchExecutorClass,
+)
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_assignment import (
-    ServedProviderAuthority,
-    _ensure_served_budget_schema,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
 )
 from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
+    ProviderUniverseWorkAuthority,
+    ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
     ProviderWorkBindingFence,
     ProviderWorkBindingRoot,
@@ -29,6 +36,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkBindingService,
     ProviderWorkBindingState,
 )
+from tinyassets.runtime.claimed_branch_execution import ClaimedBranchExecutorIdentity
 
 BACKGROUND_BRANCH_RUN_OPERATION = "background_branch_run"
 _DEFAULT_MAX_INVOCATIONS = 64
@@ -37,6 +45,98 @@ _DEFAULT_MAX_COST_MICROUNITS = 25_000_000
 _SUPPORTED_BRANCH_ROLES = frozenset({"writer", "judge", "extract", "embed"})
 logger = logging.getLogger(__name__)
 
+
+class BackgroundExecutorIdentityError(PermissionError):
+    """A claimed task has no current owner-authorized executor identity."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def load_background_executor_identity(
+    base_path: str | Path,
+    claimed_task: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+    *,
+    heartbeat: Callable[[], None] | None = None,
+) -> ClaimedBranchExecutorIdentity:
+    """Reuse the daemon/runtime identity authorized by the background binding."""
+
+    from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+    from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+    if claimed_task.claimed_by != consumer_lease.consumer_id:
+        raise BackgroundExecutorIdentityError("background_consumer_lease_mismatch")
+    root = Path(base_path)
+    admission_store = RequestAdmissionStore(root)
+    background_store = SQLiteBackgroundBranchAuthorityStore(root)
+    with admission_store.connection() as conn:
+        conn.execute("BEGIN")
+        row = conn.execute(
+            """
+            SELECT body_digest, grant_generation
+            FROM request_admissions
+            WHERE admission_id = ? AND request_id = ? AND branch_task_id = ?
+            """,
+            (
+                claimed_task.admission_id,
+                claimed_task.request_id,
+                claimed_task.branch_task_id,
+            ),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            raise BackgroundExecutorIdentityError("background_binding_absent")
+        logical_key = build_request_task_attempt_key(
+            tenant_id=claimed_task.actor_id,
+            request_id=claimed_task.request_id,
+            admission_id=claimed_task.admission_id,
+            task_id=claimed_task.branch_task_id,
+            body_digest=str(row["body_digest"]),
+            admission_generation=int(row["grant_generation"]),
+        )
+        authority = background_store.read_authority_in_transaction(
+            conn,
+            logical_attempt_key=logical_key,
+        )
+        conn.rollback()
+    if authority is None:
+        raise BackgroundExecutorIdentityError("background_binding_absent")
+    binding, attempt = authority
+    now = datetime.now(timezone.utc)
+    if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
+        raise BackgroundExecutorIdentityError("background_binding_inactive")
+    if binding.expires_at is None or _utc(binding.expires_at) <= now:
+        raise BackgroundExecutorIdentityError("background_binding_expired")
+    if attempt.lifecycle not in {
+        BackgroundBranchAttemptLifecycle.CLAIMED,
+        BackgroundBranchAttemptLifecycle.RUNNING,
+    }:
+        raise BackgroundExecutorIdentityError("background_attempt_inactive")
+    if attempt.lease_expires_at is None or _utc(attempt.lease_expires_at) <= now:
+        raise BackgroundExecutorIdentityError("background_attempt_lease_expired")
+    if (
+        binding.universe_id != claimed_task.universe_id
+        or binding.branch_def_id != claimed_task.branch_def_id
+        or binding.pinned_branch_version_id != claimed_task.automation_branch_version
+    ):
+        raise BackgroundExecutorIdentityError("background_binding_target_mismatch")
+    if binding.authorizing_principal_id != claimed_task.actor_id:
+        raise BackgroundExecutorIdentityError("background_binding_principal_mismatch")
+    if BackgroundBranchExecutorClass.CLOUD not in binding.permitted_executor_classes:
+        raise BackgroundExecutorIdentityError("background_binding_executor_class_unavailable")
+    if not binding.daemon_id or not binding.runtime_id:
+        raise BackgroundExecutorIdentityError("background_binding_executor_identity_missing")
+    return ClaimedBranchExecutorIdentity(
+        daemon_id=binding.daemon_id,
+        worker_id=consumer_lease.consumer_id,
+        runtime_instance_id=binding.runtime_id,
+        heartbeat=heartbeat,
+    )
 
 def _hold_background_authority(base_path: Path, task: Epoch2BranchTask) -> None:
     """Project the exact queue authority owner to a retryable held state."""
@@ -107,6 +207,296 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _background_timestamp(value: str | datetime, *after: str) -> str:
+    parsed = value if isinstance(value, datetime) else _utc(value)
+    parsed = parsed.astimezone(timezone.utc)
+    for prior in after:
+        prior_value = _utc(prior)
+        if parsed <= prior_value:
+            parsed = prior_value + timedelta(microseconds=1)
+    return parsed.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def claim_background_queue_authority_in_transaction(
+    conn: sqlite3.Connection,
+    task: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+    *,
+    claimed_at: str,
+    lease_expires_at: str,
+) -> bool:
+    """Claim the canonical attempt and create its queue owner with the task CAS."""
+
+    from tinyassets.background_branch_authority import (
+        BackgroundBranchAttemptFence,
+        BackgroundBranchBindingFence,
+    )
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerRecord,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+        _SQLiteBackgroundBranchAuthorityTransaction,
+    )
+
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("background queue authority claim requires a transaction")
+    if task.claimed_by:
+        return False
+    row = conn.execute(
+        """
+        SELECT body_digest, grant_generation, actor_id
+        FROM request_admissions
+        WHERE admission_id = ? AND request_id = ? AND branch_task_id = ?
+        """,
+        (task.admission_id, task.request_id, task.branch_task_id),
+    ).fetchone()
+    if row is None:
+        return False
+    logical_key = build_request_task_attempt_key(
+        tenant_id=str(row["actor_id"]),
+        request_id=task.request_id,
+        admission_id=task.admission_id,
+        task_id=task.branch_task_id,
+        body_digest=str(row["body_digest"]),
+        admission_generation=int(row["grant_generation"]),
+    )
+    authority = SQLiteBackgroundBranchAuthorityStore.read_authority_in_transaction(
+        conn,
+        logical_attempt_key=logical_key,
+    )
+    if authority is None:
+        return False
+    binding, attempt = authority
+    now = _utc(claimed_at)
+    lease_expiry = _utc(lease_expires_at)
+    exact = (
+        binding.status is BackgroundBranchBindingStatus.ACTIVE,
+        binding.expires_at is not None,
+        binding.expires_at is not None and _utc(binding.expires_at) > now,
+        binding.expires_at is not None and lease_expiry <= _utc(binding.expires_at),
+        binding.authorizing_principal_id == str(row["actor_id"]),
+        binding.universe_id == task.universe_id,
+        binding.branch_def_id == task.branch_def_id,
+        binding.pinned_branch_version_id == task.automation_branch_version,
+        BackgroundBranchExecutorClass.CLOUD in binding.permitted_executor_classes,
+        bool(binding.daemon_id),
+        bool(binding.runtime_id),
+        attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
+        attempt.lease_expires_at is None,
+        attempt.branch_version_id == task.automation_branch_version,
+        attempt.branch_content_digest == task.automation_subject_digest,
+        attempt.executor_audience.daemon_id == binding.daemon_id,
+        attempt.executor_audience.runtime_id == binding.runtime_id,
+        lease_expiry > now,
+        consumer_lease.consumer_id.startswith("assigned-consumer:"),
+        _utc(consumer_lease.expires_at) >= lease_expiry,
+    )
+    if not all(exact):
+        return False
+    transaction = _SQLiteBackgroundBranchAuthorityTransaction(conn)
+    transitioned_at = _background_timestamp(claimed_at, attempt.updated_at)
+    claimed_attempt = replace(
+        attempt,
+        lease_generation=attempt.lease_generation + 1,
+        lease_expires_at=_background_timestamp(lease_expires_at),
+        lifecycle=BackgroundBranchAttemptLifecycle.CLAIMED,
+        updated_at=transitioned_at,
+    )
+    attempt_result = transaction.compare_and_swap_attempt(
+        attempt_id=attempt.attempt_id,
+        expected=BackgroundBranchAttemptFence(attempt),
+        replacement=claimed_attempt,
+    )
+    if attempt_result.record != claimed_attempt:
+        return False
+    if transaction.get_owner(
+        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+        owner_id=task.branch_task_id,
+    ) is not None:
+        return False
+    owner = BackgroundBranchAuthorityOwnerRecord(
+        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+        owner_id=task.branch_task_id,
+        universe_id=binding.universe_id,
+        authorizing_principal_id=binding.authorizing_principal_id,
+        source_generation=attempt.source_generation,
+        transition_generation=1,
+        state=BackgroundBranchAuthorityOwnerState.PENDING,
+        binding=BackgroundBranchBindingFence(binding),
+        attempt=BackgroundBranchAttemptFence(claimed_attempt),
+        hold_reason=None,
+        updated_at=transitioned_at,
+    )
+    return transaction.insert_owner(owner).record == owner
+
+
+def start_background_queue_authority(
+    base_path: str | Path,
+    task: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+) -> None:
+    """CAS one claimed queue owner and attempt into their running states."""
+
+    from tinyassets.background_branch_authority import BackgroundBranchAttemptFence
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerFence,
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+
+    if task.claimed_by != consumer_lease.consumer_id:
+        raise BackgroundExecutorIdentityError("background_consumer_lease_mismatch")
+    store = SQLiteBackgroundBranchAuthorityStore(base_path)
+    with store.transaction() as transaction:
+        owner = transaction.get_owner(
+            owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+            owner_id=task.branch_task_id,
+        )
+        if owner is None:
+            raise BackgroundExecutorIdentityError("background_queue_owner_missing")
+        if (
+            owner.state is not BackgroundBranchAuthorityOwnerState.PENDING
+            or owner.binding is None
+            or owner.attempt is None
+        ):
+            raise BackgroundExecutorIdentityError("background_queue_owner_inactive")
+        binding = transaction.get_binding(owner.binding.expected_record.binding_id)
+        attempt = transaction.get_attempt_by_logical_key(
+            owner.attempt.expected_record.logical_attempt_key
+        )
+        now = datetime.now(timezone.utc)
+        if binding != owner.binding.expected_record:
+            raise BackgroundExecutorIdentityError("background_binding_stale")
+        if binding.expires_at is None or _utc(binding.expires_at) <= now:
+            raise BackgroundExecutorIdentityError("background_binding_expired")
+        if attempt != owner.attempt.expected_record:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        if attempt.lifecycle is not BackgroundBranchAttemptLifecycle.CLAIMED:
+            raise BackgroundExecutorIdentityError("background_attempt_inactive")
+        if attempt.lease_expires_at is None or _utc(attempt.lease_expires_at) <= now:
+            raise BackgroundExecutorIdentityError("background_attempt_lease_expired")
+        transitioned_at = _background_timestamp(now, owner.updated_at, attempt.updated_at)
+        running_attempt = replace(
+            attempt,
+            lifecycle=BackgroundBranchAttemptLifecycle.RUNNING,
+            updated_at=transitioned_at,
+        )
+        attempt_result = transaction.compare_and_swap_attempt(
+            attempt_id=attempt.attempt_id,
+            expected=BackgroundBranchAttemptFence(attempt),
+            replacement=running_attempt,
+        )
+        if attempt_result.record != running_attempt:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        running_owner = replace(
+            owner,
+            transition_generation=owner.transition_generation + 1,
+            state=BackgroundBranchAuthorityOwnerState.RUNNING,
+            attempt=BackgroundBranchAttemptFence(running_attempt),
+            updated_at=transitioned_at,
+        )
+        owner_result = transaction.compare_and_swap_owner(
+            expected=BackgroundBranchAuthorityOwnerFence(owner),
+            replacement=running_owner,
+        )
+        if owner_result.record != running_owner:
+            raise BackgroundExecutorIdentityError("background_queue_owner_changed")
+
+
+def terminalize_background_queue_authority(
+    base_path: str | Path,
+    task: Epoch2BranchTask,
+    *,
+    status: str,
+    reason: str,
+) -> None:
+    """CAS the queue authority and its attempt to one conclusive terminal state."""
+
+    from tinyassets.background_branch_authority import BackgroundBranchAttemptFence
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerFence,
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+
+    owner_states = {
+        "succeeded": BackgroundBranchAuthorityOwnerState.SUCCEEDED,
+        "failed": BackgroundBranchAuthorityOwnerState.FAILED,
+        "cancelled": BackgroundBranchAuthorityOwnerState.CANCELLED,
+    }
+    attempt_states = {
+        "succeeded": BackgroundBranchAttemptLifecycle.SUCCEEDED,
+        "failed": BackgroundBranchAttemptLifecycle.FAILED,
+        "cancelled": BackgroundBranchAttemptLifecycle.CANCELLED,
+    }
+    if status not in owner_states or not reason.strip():
+        raise ValueError("background terminal status and reason are required")
+    store = SQLiteBackgroundBranchAuthorityStore(base_path)
+    with store.transaction() as transaction:
+        owner = transaction.get_owner(
+            owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+            owner_id=task.branch_task_id,
+        )
+        if owner is None:
+            raise BackgroundExecutorIdentityError("background_queue_owner_missing")
+        if owner.state not in {
+            BackgroundBranchAuthorityOwnerState.PENDING,
+            BackgroundBranchAuthorityOwnerState.RUNNING,
+        } or owner.attempt is None:
+            raise BackgroundExecutorIdentityError("background_queue_owner_inactive")
+        attempt = transaction.get_attempt_by_logical_key(
+            owner.attempt.expected_record.logical_attempt_key
+        )
+        if attempt != owner.attempt.expected_record:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        transitioned_at = _background_timestamp(
+            datetime.now(timezone.utc), owner.updated_at, attempt.updated_at
+        )
+        attempt_state = attempt_states[status]
+        if attempt.lifecycle is BackgroundBranchAttemptLifecycle.CLAIMED:
+            attempt_state = BackgroundBranchAttemptLifecycle.CANCELLED
+        terminal_attempt = replace(
+            attempt,
+            lease_generation=attempt.lease_generation + 1,
+            lease_expires_at=None,
+            lifecycle=attempt_state,
+            hold_reason=None,
+            terminal_reason=reason,
+            updated_at=transitioned_at,
+        )
+        attempt_result = transaction.compare_and_swap_attempt(
+            attempt_id=attempt.attempt_id,
+            expected=BackgroundBranchAttemptFence(attempt),
+            replacement=terminal_attempt,
+        )
+        if attempt_result.record != terminal_attempt:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        terminal_owner = replace(
+            owner,
+            transition_generation=owner.transition_generation + 1,
+            state=owner_states[status],
+            attempt=BackgroundBranchAttemptFence(terminal_attempt),
+            hold_reason=None,
+            updated_at=transitioned_at,
+        )
+        owner_result = transaction.compare_and_swap_owner(
+            expected=BackgroundBranchAuthorityOwnerFence(owner),
+            replacement=terminal_owner,
+        )
+        if owner_result.record != terminal_owner:
+            raise BackgroundExecutorIdentityError("background_queue_owner_changed")
+
+
 def _normalize_content_digest(value: str) -> str:
     """Both forms occur: branch_versions.content_hash is bare hex, but a task's
     automation_subject_digest is `sha256:<hex>` (api/cloud_automations.py). Normalize
@@ -147,29 +537,6 @@ def _branch_roles(base_path: Path, task: Epoch2BranchTask) -> tuple[str, ...]:
     if not roles.issubset(_SUPPORTED_BRANCH_ROLES):
         raise PermissionError("immutable Branch requests an unsupported provider role")
     return tuple(sorted(roles))
-
-
-def _ensure_reservation_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS assigned_queue_provider_reservations (
-            reservation_id TEXT PRIMARY KEY,
-            branch_task_id TEXT NOT NULL,
-            attempt_id TEXT NOT NULL,
-            budget_owner TEXT NOT NULL,
-            provider_binding_id TEXT NOT NULL,
-            provider_binding_generation INTEGER NOT NULL,
-            provider_binding_digest TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            role TEXT NOT NULL,
-            max_tokens INTEGER NOT NULL,
-            max_cost_microunits INTEGER NOT NULL,
-            state TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(branch_task_id, reservation_id)
-        )
-        """
-    )
 
 
 class _SeedResolver:
@@ -323,209 +690,36 @@ class _BackgroundAssignedProviderSession:
                 system=system,
                 invocation_index=invocation_index,
                 declared_providers=declared_providers,
-            ) as authority:
+            ) as launch:
                 from tinyassets.config import load_universe_config
-                from tinyassets.providers.base import UniverseContext
+                from tinyassets.providers.base import ModelConfig, UniverseContext
 
+                carrier, snapshot_dir, provider = launch
                 universe_dir = self._base_path / self._task.universe_id
                 call_kwargs = dict(kwargs)
+                call_config = config
+                if snapshot_dir is not None:
+                    if call_config is None:
+                        call_config = ModelConfig()
+                    if not isinstance(call_config, ModelConfig):
+                        raise TypeError("background provider config must be a ModelConfig")
+                    call_config = replace(
+                        call_config,
+                        credential_snapshot_dir=snapshot_dir,
+                    )
                 call_kwargs.update(
                     operation=BACKGROUND_BRANCH_RUN_OPERATION,
                     universe_context=UniverseContext(
                         universe_dir=universe_dir,
                         config=load_universe_config(universe_dir),
-                        served_provider=authority,
+                        provider_invocation=carrier,
                     ),
                 )
                 result = self._provider_call(
-                    prompt, system, role=role, config=config, **call_kwargs
+                    prompt, system, role=role, config=call_config, **call_kwargs
                 )
                 self._call_index = invocation_index
-                # The call returned: the router has finalized this call's REAL usage
-                # into served_provider_budget_reservations (keyed by the binding),
-                # so this attempt's row must stop being charged at its ESTIMATED
-                # share — flip it off 'reserved' so the rolling cap counts the
-                # finalized actuals instead (Codex findings #1/#5, #2516). A call
-                # that raises leaves the row 'reserved' (usage unknown → still
-                # charged conservatively at the estimate).
-                self._settle_reservation(invocation_index, role, prompt, system)
-                return result, authority.provider
-
-    def _settle_reservation(
-        self, invocation_index: int, role: str, prompt: str, system: str
-    ) -> None:
-        """Flip this attempt's reservation off 'reserved' once its call returned.
-
-        The row's id is the same deterministic ``aqpr_`` key ``_authorize_launch``
-        reserved under (branch task + invocation + digest of role/prompt/system),
-        so this touches exactly that row and nothing else. Best-effort: a failure
-        here must never turn a successful provider call into a failed one — the
-        row simply stays charged at its (conservative) estimate.
-        """
-        from tinyassets.storage.request_admissions import RequestAdmissionStore
-
-        prompt_digest = hashlib.sha256(
-            json.dumps([role, prompt, system], ensure_ascii=False).encode("utf-8")
-        ).hexdigest()
-        reservation_id = (
-            f"aqpr_{self._task.branch_task_id}_{invocation_index}_{prompt_digest[:16]}"
-        )
-        try:
-            with RequestAdmissionStore(self._base_path).connection() as conn:
-                # The row is 'reserved' at reserve time and 'launch_started' once
-                # _arm_launch armed the actual provider launch — a returned call
-                # may find it in EITHER state, and both mean "done, usage is now
-                # finalized in the served store". Never touch any other state.
-                conn.execute(
-                    "UPDATE assigned_queue_provider_reservations SET state='settled' "
-                    "WHERE reservation_id=? AND state IN ('reserved', 'launch_started')",
-                    (reservation_id,),
-                )
-                conn.commit()
-        except Exception:  # noqa: BLE001 - settlement is best-effort, never fatal
-            logger.exception("background reservation settlement failed")
-
-    def _arm_launch(
-        self,
-        *,
-        reservation_id: str,
-        logical_attempt_key: str,
-        expected_attempt: Any,
-        expected_binding: Any,
-        expected_provider_binding: Any,
-        expected_assignment: Any,
-        expected_custody: Any,
-        agent: dict[str, Any],
-        role: str,
-    ) -> None:
-        """Final exact CAS immediately before the provider boundary."""
-
-        from tinyassets.provider_assignment import load_provider_assignment_in_transaction
-        from tinyassets.provider_serving_binding import _current_serving_authority
-        from tinyassets.storage.background_branch_authority import (
-            SQLiteBackgroundBranchAuthorityStore,
-        )
-        from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
-        from tinyassets.storage.request_admissions import RequestAdmissionStore
-
-        admission_store = RequestAdmissionStore(self._base_path)
-        provider_store = SQLiteProviderWorkAuthorityStore(self._base_path)
-        universe_dir = self._base_path / self._task.universe_id
-        with admission_store.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                task = conn.execute(
-                    "SELECT * FROM branch_tasks_v2 WHERE branch_task_id=? LIMIT 1",
-                    (self._task.branch_task_id,),
-                ).fetchone()
-                if task is None or not all(
-                    (
-                        task["status"] in {"running", "cancel_requested"},
-                        task["claimed_by"] == self._consumer_lease.consumer_id,
-                        task["claimed_at"] == self._task.claimed_at,
-                        _utc(str(task["lease_expires_at"])) > datetime.now(timezone.utc),
-                        task["automation_activation_epoch"]
-                        == self._task.automation_activation_epoch,
-                        task["automation_subject_ref"] == self._task.automation_subject_ref,
-                        task["automation_subject_digest"] == self._task.automation_subject_digest,
-                    )
-                ):
-                    raise PermissionError("task authority changed before launch")
-                activation = conn.execute(
-                    "SELECT * FROM automation_activations "
-                    "WHERE universe_id=? AND automation_id=? LIMIT 1",
-                    (self._task.universe_id, self._task.automation_id),
-                ).fetchone()
-                if activation is None or not all(
-                    (
-                        activation["state"] == "active",
-                        activation["epoch"] == self._task.automation_activation_epoch,
-                        activation["subject_ref"] == self._task.automation_subject_ref,
-                        activation["subject_digest"] == self._task.automation_subject_digest,
-                        activation["immutable_branch_version"]
-                        == self._task.automation_branch_version,
-                        activation["lease_id"] == self._task.automation_lease_id,
-                    )
-                ):
-                    raise PermissionError("automation authority changed before launch")
-                # Re-validate the immutable Branch version at the launch fence (Codex #3,
-                # #2516). branch_versions lives in a SEPARATE DB (runs_db) from this
-                # admission CAS, so it cannot be locked in the same transaction — but
-                # re-reading it HERE, in the before_provider_launch fence, narrows the
-                # rollback TOCTOU from the whole snapshot-creation window to this fence: a
-                # version concurrently flipped to rolled_back (or a digest/branch change)
-                # fails closed before the provider is launched, instead of the earlier
-                # one-time check going stale.
-                _branch_roles(self._base_path, self._task)
-                assignment = load_provider_assignment_in_transaction(
-                    conn, universe_id=self._task.universe_id
-                )
-                current_assignment, _serving_binding, custody = _current_serving_authority(
-                    conn,
-                    store=provider_store,
-                    universe_dir=universe_dir,
-                    owner_user_id=expected_assignment.owner_user_id,
-                    universe_id=self._task.universe_id,
-                    agent=agent,
-                )
-                background = SQLiteBackgroundBranchAuthorityStore.read_authority_in_transaction(
-                    conn, logical_attempt_key=logical_attempt_key
-                )
-                authority_owner = (
-                    SQLiteBackgroundBranchAuthorityStore.read_queue_owner_in_transaction(
-                        conn, owner_id=self._task.branch_task_id
-                    )
-                )
-                if (
-                    assignment != expected_assignment
-                    or current_assignment != expected_assignment
-                    or custody != expected_custody
-                    or background != (expected_binding, expected_attempt)
-                    or authority_owner is None
-                    or authority_owner.state.value == "target_authority_held"
-                    or authority_owner.binding is None
-                    or authority_owner.attempt is None
-                    or authority_owner.binding.expected_record != expected_binding
-                    or authority_owner.attempt.expected_record != expected_attempt
-                    or not provider_store.validate_in_transaction(
-                        conn,
-                        binding_id=expected_provider_binding.binding_id,
-                        binding_generation=expected_provider_binding.generation,
-                        binding_digest=expected_provider_binding.binding_digest,
-                        owner_user_id=expected_assignment.owner_user_id,
-                        universe_id=self._task.universe_id,
-                        provider=expected_assignment.provider,
-                        operation=BACKGROUND_BRANCH_RUN_OPERATION,
-                        role=role,
-                    )
-                ):
-                    raise PermissionError("provider authority changed before launch")
-                cursor = conn.execute(
-                    "UPDATE assigned_queue_provider_reservations "
-                    "SET state='launch_started' WHERE reservation_id=? "
-                    "AND state='reserved'",
-                    (reservation_id,),
-                )
-                if cursor.rowcount != 1:
-                    raise PermissionError("provider reservation is not launchable")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-
-    def _arm_launch_or_hold(self, **kwargs: Any) -> None:
-        from tinyassets.exceptions import ProviderAuthorityHeldError
-
-        try:
-            self._arm_launch(**kwargs)
-        except Exception as exc:
-            try:
-                _hold_background_authority(self._base_path, self._task)
-            except Exception:  # noqa: BLE001 - retain the original authority failure
-                logger.exception("background authority hold projection failed")
-            raise ProviderAuthorityHeldError(
-                "Assigned background provider authority changed before launch."
-            ) from exc
+                return result, provider
 
     @contextmanager
     def _authorize_launch(
@@ -536,7 +730,7 @@ class _BackgroundAssignedProviderSession:
         system: str,
         invocation_index: int,
         declared_providers: set[str],
-    ) -> Iterator[ServedProviderAuthority]:
+    ) -> Iterator[tuple[ProviderInvocationCarrier, Path | None, str]]:
         from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
         from tinyassets.credential_vault import snapshot_llm_subscription_credential
         from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -554,7 +748,7 @@ class _BackgroundAssignedProviderSession:
         held = "Assigned background provider authority is unavailable; retry after repair."
         universe_dir = self._base_path / self._task.universe_id
         snapshot = None
-        authority = None
+        carrier = None
         try:
             roles = _branch_roles(self._base_path, self._task)
             if role not in roles:
@@ -654,21 +848,28 @@ class _BackgroundAssignedProviderSession:
                         if background_authority is None:
                             raise PermissionError("background Branch attempt is unavailable")
                         binding, attempt = background_authority
-                        authority_owner = background_store.read_queue_owner_in_transaction(
-                            conn, owner_id=self._task.branch_task_id
-                        )
-                        if (
-                            authority_owner is None
-                            or authority_owner.state.value == "target_authority_held"
-                            or authority_owner.binding is None
-                            or authority_owner.attempt is None
-                            or authority_owner.binding.expected_record != binding
-                            or authority_owner.attempt.expected_record != attempt
+                        if binding.status is BackgroundBranchBindingStatus.ACTIVE and (
+                            binding.expires_at is None or _utc(binding.expires_at) <= now
                         ):
-                            raise PermissionError("background queue authority is held or stale")
+                            raise BackgroundExecutorIdentityError(
+                                "background_binding_expired"
+                            )
                         if not all(
                             (
                                 binding.status is BackgroundBranchBindingStatus.ACTIVE,
+                                binding.expires_at is not None,
+                                binding.expires_at is not None
+                                and _utc(binding.expires_at) > now,
+                                binding.authorizing_principal_id
+                                == assignment.owner_user_id,
+                                binding.universe_id == self._task.universe_id,
+                                binding.branch_def_id == self._task.branch_def_id,
+                                binding.pinned_branch_version_id
+                                == self._task.automation_branch_version,
+                                BackgroundBranchExecutorClass.CLOUD
+                                in binding.permitted_executor_classes,
+                                bool(binding.daemon_id),
+                                bool(binding.runtime_id),
                                 attempt.binding_id == binding.binding_id,
                                 attempt.binding_generation == binding.generation,
                                 attempt.binding_digest == binding.binding_digest,
@@ -678,18 +879,14 @@ class _BackgroundAssignedProviderSession:
                                 attempt.branch_version_id == self._task.automation_branch_version,
                                 attempt.branch_content_digest
                                 == self._task.automation_subject_digest,
-                                attempt.lifecycle.value
-                                not in {
-                                    "authority_held",
-                                    "target_authority_held",
-                                    "revoked",
-                                    "expired",
-                                    "succeeded",
-                                    "failed",
-                                    "cancelled",
+                                attempt.lifecycle
+                                in {
+                                    BackgroundBranchAttemptLifecycle.CLAIMED,
+                                    BackgroundBranchAttemptLifecycle.RUNNING,
                                 },
-                                attempt.lease_expires_at is None
-                                or _utc(attempt.lease_expires_at) > now,
+                                attempt.lease_expires_at is not None,
+                                attempt.lease_expires_at is not None
+                                and _utc(attempt.lease_expires_at) > now,
                                 attempt.remaining_count > 0,
                                 attempt.remaining_cost_microunits > 0,
                             )
@@ -737,193 +934,130 @@ class _BackgroundAssignedProviderSession:
                         provider_binding = _current_background_binding(
                             conn, provider_store=provider_store, seed=seed
                         )
-                        _ensure_reservation_schema(conn)
-                        prompt_digest = hashlib.sha256(
-                            json.dumps([role, prompt, system], ensure_ascii=False).encode("utf-8")
-                        ).hexdigest()
-                        reservation_id = (
-                            f"aqpr_{self._task.branch_task_id}_{invocation_index}_"
-                            f"{prompt_digest[:16]}"
-                        )
-                        budget_owner = (
-                            f"universe:{self._task.universe_id}:{BACKGROUND_BRANCH_RUN_OPERATION}"
-                        )
-                        token_share = max(1, max_tokens // max_invocations)
-                        cost_share = max(1, max_cost // max_invocations)
-                        existing = conn.execute(
-                            "SELECT state FROM assigned_queue_provider_reservations "
-                            "WHERE reservation_id=?",
-                            (reservation_id,),
-                        ).fetchone()
-                        if existing is not None and existing["state"] != "reserved":
-                            raise PermissionError("background provider launch is already armed")
-                        if existing is not None:
-                            conn.execute(
-                                "DELETE FROM assigned_queue_provider_reservations "
-                                "WHERE reservation_id=? AND state='reserved'",
-                                (reservation_id,),
-                            )
-                        # Rolling cumulative cap charged against REAL spend (Codex
-                        # findings #1/#5, #2516). Previously this summed each prior
-                        # attempt's ESTIMATED share (SUM(max_tokens)) — a reservation
-                        # was never replaced by what the call actually used, so the
-                        # cap enforced against inflated estimates and could never
-                        # learn true spend. The router already finalizes ACTUAL
-                        # usage per call into served_provider_budget_reservations
-                        # (same sqlite file, keyed by the provider binding the
-                        # consumer records on its own row), so charge:
-                        #   finalized ACTUAL tokens/cost for this budget owner
-                        #   + the ESTIMATED share of attempts still in flight
-                        #     (no finalized row yet — genuinely unknown usage).
-                        # This is a true rolling cumulative budget, not a per-call
-                        # estimate ledger; it reuses the served-budget settlement
-                        # rather than inventing a second one.
-                        # The served store's reservation_id is random
-                        # (served_budget_<hex>) — it can NOT be joined to the
-                        # consumer's aqpr_ id. The stable shared key is the provider
-                        # BINDING (id + generation): a binding belongs to exactly one
-                        # universe, so its finalized actuals ARE this universe's real
-                        # background spend. In-flight attempts (consumer rows still
-                        # 'reserved', i.e. the call has not returned yet) are charged
-                        # at their estimated share, since their usage is genuinely
-                        # unknown until the router finalizes it; settled rows are
-                        # excluded here because their real cost is already counted
-                        # via the served store.
-                        _ensure_served_budget_schema(conn)
-                        actuals = conn.execute(
-                            """
-                            SELECT COALESCE(SUM(actual_total_tokens), 0),
-                                   COALESCE(SUM(actual_cost_microunits), 0)
-                            FROM served_provider_budget_reservations
-                            WHERE binding_id=? AND binding_generation=?
-                              AND actual_total_tokens IS NOT NULL
-                            """,
-                            (provider_binding.binding_id, provider_binding.generation),
-                        ).fetchone()
-                        in_flight = conn.execute(
-                            """
-                            SELECT COUNT(*), COALESCE(SUM(max_tokens),0),
-                                   COALESCE(SUM(max_cost_microunits),0)
-                            FROM assigned_queue_provider_reservations
-                            WHERE budget_owner=? AND operation=? AND state='reserved'
-                            """,
-                            (budget_owner, BACKGROUND_BRANCH_RUN_OPERATION),
-                        ).fetchone()
-                        invocations_so_far = conn.execute(
-                            "SELECT COUNT(*) FROM assigned_queue_provider_reservations "
-                            "WHERE budget_owner=? AND operation=?",
-                            (budget_owner, BACKGROUND_BRANCH_RUN_OPERATION),
-                        ).fetchone()
-                        totals = (
-                            int(invocations_so_far[0]),
-                            int(actuals[0]) + int(in_flight[1]),
-                            int(actuals[1]) + int(in_flight[2]),
-                        )
-                        if (
-                            int(totals[0]) >= max_invocations
-                            or int(totals[1]) + token_share > max_tokens
-                            or int(totals[2]) + cost_share > max_cost
-                        ):
-                            raise PermissionError("background provider budget is exhausted")
-                        conn.execute(
-                            """
-                            INSERT INTO assigned_queue_provider_reservations VALUES
-                            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)
-                            """,
-                            (
-                                reservation_id,
-                                self._task.branch_task_id,
-                                attempt.attempt_id,
-                                budget_owner,
-                                provider_binding.binding_id,
-                                provider_binding.generation,
-                                provider_binding.binding_digest,
-                                BACKGROUND_BRANCH_RUN_OPERATION,
-                                role,
-                                token_share,
-                                cost_share,
-                                now.isoformat(),
-                            ),
-                        )
                         if _is_open_provider(assignment.provider):
                             snapshot = None
-                            authority_kind = "connection_grant"
-                            service = "http"
-                            snapshot_generation = custody.generation
-                            snapshot_digest = custody.reference_digest
                         else:
                             snapshot = snapshot_llm_subscription_credential(
-                                universe_dir=universe_dir, custody=custody
+                                universe_dir=universe_dir,
+                                custody=custody,
                             )
-                            authority_kind = "subscription_snapshot"
-                            service = {"codex": "codex", "claude-code": "claude"}.get(
-                                assignment.provider, ""
-                            )
-                            if not service:
-                                raise PermissionError("assigned provider is unsupported")
-                            snapshot_generation = snapshot.generation
-                            snapshot_digest = snapshot.reference_digest
-                        conn.execute(
-                            "UPDATE assigned_queue_provider_reservations "
-                            "SET state='launch_started' "
-                            "WHERE reservation_id=? AND state='reserved'",
-                            (reservation_id,),
-                        )
-                        conn.execute(
-                            "UPDATE assigned_queue_provider_reservations "
-                            "SET state='reserved' WHERE reservation_id=? "
-                            "AND state='launch_started'",
-                            (reservation_id,),
-                        )
-                        authority = ServedProviderAuthority(
-                            authority_kind=authority_kind,
-                            provider=assignment.provider,
-                            max_invocations=max_invocations,
-                            request_max_invocations=0,
-                            max_tokens=token_share,
-                            max_cost_microunits=cost_share,
-                            owner_user_id=assignment.owner_user_id,
-                            universe_id=self._task.universe_id,
-                            agent_binding_id=str(agent["binding_id"]),
-                            binding_revision=int(agent["revision"]),
-                            binding_id=provider_binding.binding_id,
-                            binding_generation=provider_binding.generation,
-                            binding_digest=provider_binding.binding_digest,
-                            credential_reference_id=custody.reference_id,
-                            credential_reference_generation=snapshot_generation,
-                            credential_reference_digest=snapshot_digest,
-                            credential_service=service,
-                            credential_snapshot_dir=(snapshot.directory if snapshot else None),
-                            request_capability=None,
-                            operation=BACKGROUND_BRANCH_RUN_OPERATION,
-                            allowed_roles=roles,
-                            budget_owner="background_attempt",
-                            before_provider_launch=lambda: self._arm_launch_or_hold(
-                                reservation_id=reservation_id,
-                                logical_attempt_key=logical_key,
-                                expected_attempt=attempt,
-                                expected_binding=binding,
-                                expected_provider_binding=provider_binding,
-                                expected_assignment=assignment,
-                                expected_custody=custody,
-                                agent=agent,
-                                role=role,
+                        authority = ProviderUniverseWorkAuthority(
+                            root=ProviderUniverseWorkRoot(
+                                work_item_kind="background_attempt",
+                                work_item_id=attempt.attempt_id,
                             ),
+                            binding=provider_binding,
+                            principal_id=binding.authorizing_principal_id,
+                            actor_id=str(binding.daemon_id),
+                            operation=BACKGROUND_BRANCH_RUN_OPERATION,
+                            role=role,
+                            allowed_roles=roles,
+                            executor_class="cloud",
+                            max_invocations=max_invocations,
+                            max_tokens=max_tokens,
+                            max_cost_microunits=max_cost,
+                            expires_at=provider_binding.expires_at,
+                            execution_subject=ExecutionSubject(
+                                kind=ExecutionSubjectKind.BRANCH_VERSION,
+                                ref=self._task.automation_branch_version,
+                                digest=self._task.automation_subject_digest,
+                            ),
+                            branch_def_id=self._task.branch_def_id,
+                            branch_version_id=self._task.automation_branch_version,
+                        )
+                        prompt_digest = hashlib.sha256(
+                            json.dumps(
+                                [role, prompt, system],
+                                ensure_ascii=False,
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        invocation_key = (
+                            f"background-branch:{self._task.branch_task_id}:"
+                            f"{invocation_index}:{prompt_digest}"
+                        )
+                        token_base, token_remainder = divmod(
+                            max_tokens,
+                            max_invocations,
+                        )
+                        cost_base, cost_remainder = divmod(
+                            max_cost,
+                            max_invocations,
+                        )
+                        token_share = token_base + int(
+                            invocation_index <= token_remainder
+                        )
+                        cost_share = cost_base + int(
+                            invocation_index <= cost_remainder
+                        )
+                        if token_share < 1 or cost_share < 1:
+                            raise PermissionError(
+                                "background provider invocation budget is exhausted"
+                            )
+                        claim_nonce_digest = "sha256:" + hashlib.sha256(
+                            json.dumps(
+                                [
+                                    binding.binding_id,
+                                    binding.binding_digest,
+                                    attempt.attempt_id,
+                                    provider_binding.binding_id,
+                                    self._task.branch_task_id,
+                                ],
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        lease_seconds = min(
+                            3600,
+                            int(
+                                (
+                                    _utc(str(row["lease_expires_at"])) - now
+                                ).total_seconds()
+                            ),
+                        )
+                        if lease_seconds < 1:
+                            raise PermissionError(
+                                "background provider claim lease is expired"
+                            )
+                        carrier = (
+                            provider_store
+                            ._reserve_and_arm_background_branch_carrier_in_transaction(
+                                conn,
+                                authority=authority,
+                                worker_id=str(binding.daemon_id),
+                                runtime_id=str(binding.runtime_id),
+                                claim_nonce_digest=claim_nonce_digest,
+                                lease_seconds=lease_seconds,
+                                invocation_key=invocation_key,
+                                role=role,
+                                max_tokens=token_share,
+                                max_cost_microunits=cost_share,
+                            )
                         )
                         conn.commit()
                     except Exception:
                         conn.rollback()
                         raise
-                yield authority
+                assert carrier is not None
+                yield carrier, snapshot.directory if snapshot else None, assignment.provider
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
-            if authority is not None:
+            if carrier is not None:
                 raise
-            try:
-                _hold_background_authority(self._base_path, self._task)
-            except Exception:  # noqa: BLE001 - preserve the primary hold reason
-                logger.exception("background authority hold projection failed")
+            if isinstance(exc, BackgroundExecutorIdentityError):
+                try:
+                    terminalize_background_queue_authority(
+                        self._base_path,
+                        self._task,
+                        status="failed",
+                        reason=exc.reason,
+                    )
+                except Exception:  # noqa: BLE001 - preserve the primary failure reason
+                    logger.exception("background authority terminal projection failed")
+            else:
+                try:
+                    _hold_background_authority(self._base_path, self._task)
+                except Exception:  # noqa: BLE001 - preserve the primary hold reason
+                    logger.exception("background authority hold projection failed")
             raise ProviderAuthorityHeldError(held) from exc
         finally:
             from tinyassets.credential_vault import cleanup_llm_credential_snapshot
@@ -967,5 +1101,7 @@ def authorize_background_served_provider_call(
 
 __all__ = [
     "BACKGROUND_BRANCH_RUN_OPERATION",
+    "BackgroundExecutorIdentityError",
     "authorize_background_served_provider_call",
+    "load_background_executor_identity",
 ]
