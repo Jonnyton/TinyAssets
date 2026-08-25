@@ -370,3 +370,53 @@ def test_unclaimable_candidate_does_not_starve_the_next(
     assert _refusal_reason(tmp_path, ghost.branch_task_id) == "claim_error:RuntimeError"
     claimed = adapter.get(branch_task_id)
     assert claimed is not None and claimed.status == "running"
+
+
+def test_orphan_pending_task_does_not_block_activation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Live 2026-08-25 (prod 796076a0): the founder resumed an automation through the
+    chatbot and nothing was produced - the pump was gated on 'no pending task at
+    all', and a legacy owner-queued task the consumer can never claim was pending."""
+    from dataclasses import replace
+
+    definition, setup = _prepare_live_automation(tmp_path)
+    template_id, _audience = _seed_claimable_background_path(tmp_path / "template")
+    template = Epoch2BranchTaskAdapter(tmp_path / "template").get(template_id)
+    assert template is not None
+    orphan = replace(
+        template,
+        branch_task_id="bt2_" + "0" * 32,
+        universe_id=definition.universe_id,
+        automation_id="",
+        automation_executor_class="",
+        automation_branch_version="",
+    )
+    real_list = Epoch2BranchTaskAdapter.list_candidates
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter,
+        "list_candidates",
+        lambda self, **kwargs: [orphan] + real_list(self, **kwargs),
+    )
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    deferred = _DeferredExecutor()
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = deferred
+    try:
+        assert consumer.poll_once() == 0
+        active = AutomationActivationStore(tmp_path).get(
+            definition.universe_id,
+            setup.control.automation_id,
+        )
+        assert active is not None and active.state.value == "active"
+        # Next poll: the orphan is passed over WITH a reason and the produced
+        # slice behind it is claimed - nothing starves, nothing is silent.
+        assert consumer.poll_once() == 1
+    finally:
+        consumer.stop()
+    assert (
+        _refusal_reason(tmp_path, orphan.branch_task_id)
+        == "consumer_not_applicable:assigned_cloud_automation"
+    )
