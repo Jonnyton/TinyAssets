@@ -1567,7 +1567,7 @@ def _epoch2_operational_read(
     result.summary["consumer_pump"] = [
         {"key": key, "reason": reason}
         for key, reason in sorted(refusals.items())
-        if key.startswith(("automation:", "universe:"))
+        if key.startswith(("automation:", "universe:")) and not reason.startswith("ok:")
     ]
     result.summary["capacity_evidence_available"] = not capacity_error
     # Name the admission gate when capacity is zero; a bare 0 is unactionable.
