@@ -11,19 +11,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from tinyassets.background_served_provider import (
-    authorize_background_served_provider_call,
-)
 from tinyassets.branch_tasks_v2 import (
     EPOCH2_TASK_LEASE_SECONDS,
     AssignedConsumerLease,
     Epoch2BranchTask,
     Epoch2BranchTaskAdapter,
 )
-from tinyassets.runtime.claimed_branch_execution import (
-    ClaimedBranchExecutorIdentity,
-    execute_claimed_branch_task,
-)
+from tinyassets.runtime.claimed_branch_execution import execute_claimed_branch_task
 
 logger = logging.getLogger(__name__)
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -119,11 +113,16 @@ class AssignedQueueConsumer:
 
         if not assigned_queue_consumer_enabled():
             return 0
+        from tinyassets.background_served_provider import (
+            claim_background_queue_authority_in_transaction,
+        )
         from tinyassets.provider_serving_binding import list_serving_universes
 
         adapter = Epoch2BranchTaskAdapter(self.base_path)
         adapter.recover_expired(
-            target_recovery_guard=lambda task: task.claimed_by.startswith("assigned-consumer:")
+            target_recovery_guard=lambda task: task.claimed_by.startswith(
+                ("assigned-consumer:", "worker_assigned_")
+            )
         )
         with self._lock:
             finished = [uid for uid, future in self._active.items() if future.done()]
@@ -158,10 +157,15 @@ class AssignedQueueConsumer:
                 consumer_id=self.consumer_id,
                 lease_id=self.lease_id,
                 expires_at=(
-                    datetime.now(timezone.utc) + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS)
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS + 1)
                 ).isoformat(),
             )
-            claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
+            claimed = adapter.claim_assigned(
+                candidate,
+                consumer_lease=lease,
+                authority_claim=claim_background_queue_authority_in_transaction,
+            )
             if claimed is None:
                 continue
             future = self._executor.submit(self._execute, claimed, lease)
@@ -197,18 +201,55 @@ class AssignedQueueConsumer:
                 raise RunCancelledError("assigned queue task cancellation requested")
 
         try:
+            from tinyassets.background_served_provider import (
+                BackgroundExecutorIdentityError,
+                authorize_background_served_provider_call,
+                load_background_executor_identity,
+                start_background_queue_authority,
+                terminalize_background_queue_authority,
+            )
+
+            try:
+                start_background_queue_authority(
+                    self.base_path,
+                    claimed_task,
+                    lease,
+                )
+                executor_identity = load_background_executor_identity(
+                    self.base_path,
+                    claimed_task,
+                    lease,
+                    heartbeat=heartbeat,
+                )
+            except BackgroundExecutorIdentityError as exc:
+                try:
+                    terminalize_background_queue_authority(
+                        self.base_path,
+                        claimed_task,
+                        status="failed",
+                        reason=exc.reason,
+                    )
+                except BackgroundExecutorIdentityError:
+                    logger.exception(
+                        "assigned queue authority failure terminalization failed task=%s",
+                        claimed_task.branch_task_id,
+                    )
+                adapter.finish(
+                    claimed_task.branch_task_id,
+                    worker_id=lease.consumer_id,
+                    status="failed",
+                    detail={"error": exc.reason},
+                )
+                return
             provider_call = authorize_background_served_provider_call(
-                self.base_path, claimed_task, lease
+                self.base_path,
+                claimed_task,
+                lease,
             )
             success, error, detail = execute_claimed_branch_task(
                 self.base_path,
                 claimed_task,
-                ClaimedBranchExecutorIdentity(
-                    daemon_id=self.consumer_id,
-                    worker_id=self.consumer_id,
-                    runtime_instance_id=self.lease_id,
-                    heartbeat=heartbeat,
-                ),
+                executor_identity,
                 provider_call,
             )
             terminal = (
@@ -218,6 +259,12 @@ class AssignedQueueConsumer:
             )
             if error:
                 detail = {**detail, "error": error}
+            terminalize_background_queue_authority(
+                self.base_path,
+                claimed_task,
+                status=terminal,
+                reason=error or f"background_task_{terminal}",
+            )
             adapter.finish(
                 claimed_task.branch_task_id,
                 worker_id=lease.consumer_id,
@@ -241,6 +288,23 @@ class AssignedQueueConsumer:
                 return
             logger.exception("assigned queue task failed task=%s", claimed_task.branch_task_id)
             try:
+                from tinyassets.background_served_provider import (
+                    BackgroundExecutorIdentityError,
+                    terminalize_background_queue_authority,
+                )
+
+                try:
+                    terminalize_background_queue_authority(
+                        self.base_path,
+                        claimed_task,
+                        status="failed",
+                        reason=f"assigned_consumer_exception:{type(exc).__name__}",
+                    )
+                except BackgroundExecutorIdentityError:
+                    logger.exception(
+                        "assigned queue authority exception terminalization failed task=%s",
+                        claimed_task.branch_task_id,
+                    )
                 adapter.finish(
                     claimed_task.branch_task_id,
                     worker_id=lease.consumer_id,

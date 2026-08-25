@@ -43,8 +43,10 @@ from tinyassets.cloud_automation_continuation import (
     PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
-    prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
+)
+from tinyassets.cloud_automation_continuation import (
+    prepare_claimed_cloud_provider_call as _prepare_claimed_cloud_provider_call,
 )
 from tinyassets.cloud_automation_control import (
     CloudAutomationTriggerFence,
@@ -86,8 +88,6 @@ from tinyassets.storage.cloud_automation_control import CloudAutomationControlSt
 from tinyassets.storage.outbound_connections import (
     ActionCap,
     ConnectionLedger,
-    GrantResolutionError,
-    ScopedConnectionProxy,
 )
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
@@ -98,6 +98,16 @@ from tinyassets.user_owned_cloud_automation import (
     acceptance_scenario_digest,
     repository_spec_baseline_scenario,
 )
+
+
+def prepare_claimed_cloud_provider_call(*args, **kwargs):
+    """Exercise the legacy fixture-installed binding path only in this test module."""
+
+    return _prepare_claimed_cloud_provider_call(
+        *args,
+        **kwargs,
+        allow_test_fixtures=True,
+    )
 
 NOW = datetime(2026, 8, 1, 5, 0, tzinfo=timezone.utc)
 BODY_DIGEST = f"sha256:{'e' * 64}"
@@ -112,6 +122,8 @@ def _definition(
     *,
     max_tokens: int = 100_000,
     max_cost_microunits: int = 5_000_000,
+    branch_version_id: str = "branch_repo_spec_loop@abc12345",
+    branch_content_digest: str = f"sha256:{'b' * 64}",
 ) -> RepositorySpecWorkDefinition:
     return RepositorySpecWorkDefinition.from_dict(
         {
@@ -122,8 +134,8 @@ def _definition(
             "accepted_spec_ref": "openspec/specs/example/spec.md",
             "accepted_spec_digest": f"sha256:{'a' * 64}",
             "branch_def_id": "branch_repo_spec_loop",
-            "branch_version_id": "branch_repo_spec_loop@abc12345",
-            "branch_content_digest": f"sha256:{'b' * 64}",
+            "branch_version_id": branch_version_id,
+            "branch_content_digest": branch_content_digest,
             "acceptance_scenario_id": "scenario:repo-spec-baseline-v1",
             "acceptance_scenario_digest": acceptance_scenario_digest(
                 repository_spec_baseline_scenario()
@@ -209,6 +221,8 @@ def _fixture(
     max_tokens: int = 100_000,
     max_cost_microunits: int = 5_000_000,
     allowed_roles: tuple[str, ...] = ("writer",),
+    branch_version_id: str = "branch_repo_spec_loop@abc12345",
+    branch_content_digest: str = f"sha256:{'b' * 64}",
 ) -> tuple[
     RepositorySpecWorkDefinition,
     PreparedCloudContinuationRequest,
@@ -260,6 +274,8 @@ def _fixture(
         provider_binding.binding_id,
         max_tokens=max_tokens,
         max_cost_microunits=max_cost_microunits,
+        branch_version_id=branch_version_id,
+        branch_content_digest=branch_content_digest,
     )
 
     ledger = ConnectionLedger(
@@ -870,8 +886,6 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
     assert renewed is not None
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     calls: list[dict[str, object]] = []
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
@@ -930,8 +944,6 @@ def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     current = [NOW + timedelta(seconds=2)]
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -995,8 +1007,6 @@ def test_claimed_cloud_task_explicitly_renews_expired_provider_claim(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     current = [NOW + timedelta(seconds=2)]
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1066,8 +1076,6 @@ def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     budgets: list[tuple[int, int]] = []
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1103,8 +1111,6 @@ def test_restarted_cloud_session_preserves_durable_budget_ordinal(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     budgets: list[tuple[int, int]] = []
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1216,8 +1222,6 @@ def test_cloud_claim_revalidates_roots_after_grant_mint(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     original = SQLiteProviderWorkAuthorityStore._claim_or_renew_cloud_branch
 
     def stop_after_grant(self, request, grant):
@@ -1255,8 +1259,6 @@ def test_cloud_launch_rejects_task_lease_newer_than_attempt_lease(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     current = [NOW + timedelta(seconds=2)]
     session = prepare_claimed_cloud_provider_call(
         tmp_path,
@@ -1308,8 +1310,6 @@ def test_claimed_cloud_task_governs_policy_provider_call(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     received: list[dict[str, object]] = []
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
@@ -1371,8 +1371,6 @@ def test_claimed_cloud_task_accepts_only_binding_declared_roles(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     received: list[str] = []
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1406,8 +1404,6 @@ def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     provider_called = False
 
     def provider_call(*_args, **_kwargs):
@@ -1460,8 +1456,6 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     invoked: list[str] = []
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
@@ -1524,8 +1518,6 @@ def test_provider_family_drift_blocks_claim_and_launch(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     with RequestAdmissionStore(tmp_path).connection() as conn:
         conn.execute(
             """
@@ -1573,8 +1565,6 @@ def test_cloud_provider_session_revalidates_authority_before_each_call(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     provider_called = False
 
     def provider_call(*_args, **_kwargs):

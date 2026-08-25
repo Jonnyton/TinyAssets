@@ -431,6 +431,166 @@ def _same_claim_intent(
     return left == right
 
 
+def _background_receipt_authority(
+    conn: sqlite3.Connection,
+    receipt: ProviderUniverseWorkReceipt,
+    *,
+    now: datetime,
+    claim: ProviderWorkExecutionClaim | None = None,
+) -> tuple[object, object, object]:
+    """Reconstruct one background launch root from canonical rows only."""
+
+    from tinyassets.background_branch_authority import (
+        BackgroundBranchAttemptLifecycle,
+        BackgroundBranchBindingStatus,
+    )
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerFence,
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
+    from tinyassets.storage.background_branch_authority import (
+        _attempt_from_row,
+        _attempt_matches_binding,
+        _binding_from_row,
+        _owner_from_row,
+        _SQLiteBackgroundBranchAuthorityTransaction,
+    )
+
+    def expires_after(value: str | None) -> bool:
+        if value is None:
+            return False
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.tzinfo is not None and parsed.astimezone(timezone.utc) > now
+
+    try:
+        attempt_row = conn.execute(
+            "SELECT * FROM background_branch_attempts WHERE attempt_id = ?",
+            (receipt.work_item_id,),
+        ).fetchone()
+        if attempt_row is None:
+            raise PermissionError("background provider attempt is missing")
+        attempt = _attempt_from_row(attempt_row)
+        binding_row = conn.execute(
+            "SELECT * FROM background_branch_bindings WHERE binding_id = ?",
+            (attempt.binding_id,),
+        ).fetchone()
+        if binding_row is None:
+            raise PermissionError("background provider binding is missing")
+        binding = _binding_from_row(binding_row)
+        owner_rows = conn.execute(
+            """
+            SELECT * FROM background_branch_authority_owners
+            WHERE owner_kind = ?
+              AND json_extract(record_json, '$.attempt.attempt_id') = ?
+            """,
+            (BackgroundBranchAuthorityOwnerKind.QUEUE_TASK.value, attempt.attempt_id),
+        ).fetchall()
+        if len(owner_rows) != 1:
+            raise PermissionError("background queue authority owner is missing or ambiguous")
+        owner = _owner_from_row(owner_rows[0])
+        task = conn.execute(
+            """
+            SELECT t.*, a.actor_id, a.body_digest, a.grant_generation
+            FROM branch_tasks_v2 AS t
+            JOIN request_admissions AS a
+              ON a.admission_id = t.admission_id
+             AND a.request_id = t.request_id
+             AND a.branch_task_id = t.branch_task_id
+            WHERE t.branch_task_id = ?
+            LIMIT 1
+            """,
+            (owner.owner_id,),
+        ).fetchone()
+        if task is None:
+            raise PermissionError("background queue task authority is missing")
+        logical_key = build_request_task_attempt_key(
+            tenant_id=str(task["actor_id"]),
+            request_id=str(task["request_id"]),
+            admission_id=str(task["admission_id"]),
+            task_id=str(task["branch_task_id"]),
+            body_digest=str(task["body_digest"]),
+            admission_generation=int(task["grant_generation"]),
+        )
+        subject = receipt.execution_subject
+        exact = (
+            binding.status is BackgroundBranchBindingStatus.ACTIVE,
+            expires_after(binding.expires_at),
+            _attempt_matches_binding(attempt, binding),
+            attempt.lifecycle
+            in {
+                BackgroundBranchAttemptLifecycle.CLAIMED,
+                BackgroundBranchAttemptLifecycle.RUNNING,
+            },
+            expires_after(attempt.lease_expires_at),
+            owner.binding is not None,
+            owner.binding is not None and owner.binding.expected_record == binding,
+            owner.attempt is not None,
+            owner.attempt is not None and owner.attempt.expected_record == attempt,
+            owner.universe_id == binding.universe_id,
+            owner.authorizing_principal_id == binding.authorizing_principal_id,
+            owner.source_generation == attempt.source_generation,
+            logical_key == attempt.logical_attempt_key,
+            task["status"] in {"running", "cancel_requested"},
+            bool(str(task["claimed_by"] or "").strip()),
+            expires_after(str(task["lease_expires_at"] or "")),
+            str(task["universe_id"]) == binding.universe_id,
+            str(task["branch_def_id"]) == binding.branch_def_id,
+            str(task["automation_branch_version"]) == attempt.branch_version_id,
+            str(task["automation_subject_digest"]) == attempt.branch_content_digest,
+            str(task["actor_id"]) == binding.authorizing_principal_id,
+            receipt.work_item_id == attempt.attempt_id,
+            receipt.principal_id == binding.authorizing_principal_id,
+            receipt.actor_id == binding.daemon_id,
+            receipt.universe_id == binding.universe_id,
+            receipt.branch_def_id == binding.branch_def_id,
+            receipt.branch_version_id == attempt.branch_version_id,
+            subject is not None,
+            subject is not None and subject.ref == attempt.branch_version_id,
+            subject is not None and subject.digest == attempt.branch_content_digest,
+            expires_after(receipt.expires_at),
+            datetime.fromisoformat(receipt.expires_at.replace("Z", "+00:00"))
+            <= datetime.fromisoformat(binding.expires_at.replace("Z", "+00:00")),
+            datetime.fromisoformat(receipt.expires_at.replace("Z", "+00:00"))
+            <= datetime.fromisoformat(attempt.lease_expires_at.replace("Z", "+00:00")),
+        )
+        if not all(exact):
+            raise PermissionError("background provider authority is stale or mismatched")
+        if claim is not None and (
+            claim.worker_id != binding.daemon_id
+            or claim.runtime_id != binding.runtime_id
+        ):
+            raise PermissionError("background provider claim identity is mismatched")
+        if owner.state is BackgroundBranchAuthorityOwnerState.PENDING:
+            transitioned_at = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+            owner_updated = datetime.fromisoformat(owner.updated_at.replace("Z", "+00:00"))
+            if datetime.fromisoformat(transitioned_at.replace("Z", "+00:00")) <= owner_updated:
+                transitioned_at = (owner_updated + timedelta(microseconds=1)).isoformat(
+                    timespec="microseconds"
+                ).replace("+00:00", "Z")
+            replacement = replace(
+                owner,
+                transition_generation=owner.transition_generation + 1,
+                state=BackgroundBranchAuthorityOwnerState.RUNNING,
+                updated_at=transitioned_at,
+            )
+            result = _SQLiteBackgroundBranchAuthorityTransaction(conn).compare_and_swap_owner(
+                expected=BackgroundBranchAuthorityOwnerFence(owner),
+                replacement=replacement,
+            )
+            if result.record != replacement:
+                raise PermissionError("background queue authority owner changed")
+            owner = replacement
+        if owner.state is not BackgroundBranchAuthorityOwnerState.RUNNING:
+            raise PermissionError("background queue authority owner is not running")
+        return binding, attempt, owner
+    except PermissionError:
+        raise
+    except (KeyError, TypeError, ValueError, sqlite3.Error) as exc:
+        raise PermissionError("cloud Branch durable authority is unavailable") from exc
+
+
 class _Transaction:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -737,7 +897,7 @@ class _Transaction:
         *,
         now: datetime,
         agent_store_grant: object | None = None,
-        allow_cloud_background_fixture: bool = False,
+        allow_test_fixtures: bool = False,
     ) -> ProviderWorkExecutionClaimWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -749,13 +909,6 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
-        if (
-            receipt.work_item_kind == "background_attempt"
-            and not allow_cloud_background_fixture
-        ):
-            raise PermissionError(
-                "cloud Branch claims require current service authority"
-            )
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
                 agent_store_grant
@@ -793,6 +946,13 @@ class _Transaction:
             return ProviderWorkExecutionClaimWriteResult(
                 ProviderWorkAuthorityWriteOutcome.STALE,
                 None,
+            )
+        if receipt.work_item_kind == "background_attempt" and not allow_test_fixtures:
+            _background_receipt_authority(
+                self._conn,
+                receipt,
+                now=now,
+                claim=candidate,
             )
         existing = self._conn.execute(
             "SELECT * FROM provider_work_execution_claims WHERE receipt_id = ?",
@@ -842,7 +1002,7 @@ class _Transaction:
         now: datetime,
         created_at: str,
         agent_store_grant: object | None = None,
-        allow_cloud_background_fixture: bool = False,
+        allow_test_fixtures: bool = False,
     ) -> ProviderInvocationReservationWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -854,13 +1014,6 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
-        if (
-            receipt.work_item_kind == "background_attempt"
-            and not allow_cloud_background_fixture
-        ):
-            raise PermissionError(
-                "cloud Branch reservations require current service authority"
-            )
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
                 agent_store_grant
@@ -904,6 +1057,13 @@ class _Transaction:
             return ProviderInvocationReservationWriteResult(
                 ProviderWorkAuthorityWriteOutcome.STALE,
                 None,
+            )
+        if receipt.work_item_kind == "background_attempt" and not allow_test_fixtures:
+            _background_receipt_authority(
+                self._conn,
+                receipt,
+                now=now,
+                claim=claim,
             )
         existing = self._conn.execute(
             """
@@ -998,7 +1158,7 @@ class _Transaction:
         *,
         now: datetime,
         agent_store_grant: object | None = None,
-        allow_cloud_background_fixture: bool = False,
+        allow_test_fixtures: bool = False,
     ) -> ProviderInvocationReservationWriteResult:
         if agent_store_grant is not None:
             agent_authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
@@ -1021,13 +1181,6 @@ class _Transaction:
                     None,
                 )
             receipt = _receipt_record(receipt_row)
-            if (
-                receipt.work_item_kind == "background_attempt"
-                and not allow_cloud_background_fixture
-            ):
-                raise PermissionError(
-                    "cloud Branch launch requires current service authority"
-                )
             if receipt.work_item_kind == "agent_invocation":
                 SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(None)
 
@@ -1087,6 +1240,13 @@ class _Transaction:
             (receipt.binding_id,),
         ).fetchone()
         binding = _record(binding_row) if binding_row is not None else None
+        if receipt.work_item_kind == "background_attempt" and not allow_test_fixtures:
+            _background_receipt_authority(
+                self._conn,
+                receipt,
+                now=now,
+                claim=claim,
+            )
         current = (
             receipt.receipt_digest == request.receipt_digest,
             receipt.state is ProviderWorkReceiptState.ACTIVE,
@@ -1577,7 +1737,7 @@ class SQLiteProviderWorkAuthorityStore:
                 request,
                 candidate,
                 now=now,
-                allow_cloud_background_fixture=self._allow_test_fixtures,
+                allow_test_fixtures=self._allow_test_fixtures,
             )
 
     def _claim_or_renew_cloud_branch(
@@ -1633,7 +1793,7 @@ class SQLiteProviderWorkAuthorityStore:
                     request,
                     candidate,
                     now=now,
-                    allow_cloud_background_fixture=True,
+                    allow_test_fixtures=self._allow_test_fixtures,
                 )
                 current = result.record
                 if (
@@ -1714,7 +1874,7 @@ class SQLiteProviderWorkAuthorityStore:
                 request,
                 now=now,
                 created_at=self._timestamp(now),
-                allow_cloud_background_fixture=self._allow_test_fixtures,
+                allow_test_fixtures=self._allow_test_fixtures,
             )
 
     def arm_launch(
@@ -1728,7 +1888,7 @@ class SQLiteProviderWorkAuthorityStore:
             result = transaction.arm_launch(
                 request,
                 now=now,
-                allow_cloud_background_fixture=self._allow_test_fixtures,
+                allow_test_fixtures=self._allow_test_fixtures,
             )
         if result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED or result.record is None:
             return result
@@ -1784,7 +1944,7 @@ class SQLiteProviderWorkAuthorityStore:
             request,
             now=now,
             created_at=self._timestamp(now),
-            allow_cloud_background_fixture=True,
+            allow_test_fixtures=self._allow_test_fixtures,
         )
         if (
             reserved.record is None
@@ -1800,7 +1960,7 @@ class SQLiteProviderWorkAuthorityStore:
         armed = transaction.arm_launch(
             launch,
             now=now,
-            allow_cloud_background_fixture=True,
+            allow_test_fixtures=self._allow_test_fixtures,
         )
         if (
             armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
@@ -1809,6 +1969,133 @@ class SQLiteProviderWorkAuthorityStore:
             or armed.claim is None
         ):
             raise PermissionError("provider invocation reservation could not be armed")
+        return _mint_provider_invocation_carrier(
+            armed.receipt,
+            armed.claim,
+            armed.record,
+            _provider_invocation_store_mint_proof(armed.record),
+        )
+
+    def _reserve_and_arm_background_branch_carrier_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        authority: ProviderUniverseWorkAuthority,
+        worker_id: str,
+        runtime_id: str,
+        claim_nonce_digest: str,
+        lease_seconds: int,
+        invocation_key: str,
+        role: str,
+        max_tokens: int,
+        max_cost_microunits: int,
+    ) -> ProviderInvocationCarrier:
+        """Issue/claim from durable background state and arm atomically."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("background Branch launch requires an active transaction")
+
+        now = self._now()
+        transaction = _Transaction(conn)
+        receipt_candidate = _receipt_from_authority(
+            authority,
+            created_at=self._timestamp(now),
+        )
+        issued = transaction._issue_universe_receipt(
+            authority,
+            receipt_candidate,
+            now=now,
+        )
+        if (
+            issued.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or issued.record is None
+        ):
+            raise PermissionError("background provider receipt is unavailable")
+        receipt = issued.record
+        receipt_expiry = datetime.fromisoformat(
+            receipt.expires_at.removesuffix("Z") + "+00:00"
+        )
+        bounded_lease_seconds = min(
+            lease_seconds,
+            int((receipt_expiry - now).total_seconds()),
+        )
+        if bounded_lease_seconds < 1:
+            raise PermissionError("background provider claim lease is expired")
+        claim_request = ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id=worker_id,
+            runtime_id=runtime_id,
+            claim_nonce_digest=claim_nonce_digest,
+            lease_seconds=bounded_lease_seconds,
+        )
+        claim_candidate = _claim_from_request(
+            claim_request,
+            created_at=self._timestamp(now),
+            lease_expires_at=self._timestamp(
+                now + timedelta(seconds=bounded_lease_seconds)
+            ),
+        )
+        claimed = transaction.claim_receipt(
+            claim_request,
+            claim_candidate,
+            now=now,
+            allow_test_fixtures=self._allow_test_fixtures,
+        )
+        if (
+            claimed.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or claimed.record is None
+        ):
+            raise PermissionError("background provider execution claim is unavailable")
+        claim = claimed.record
+        request = ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key=invocation_key,
+            operation=authority.operation,
+            role=role,
+            max_tokens=max_tokens,
+            max_cost_microunits=max_cost_microunits,
+        )
+        reserved = transaction.reserve_invocation(
+            request,
+            now=now,
+            created_at=self._timestamp(now),
+            allow_test_fixtures=self._allow_test_fixtures,
+        )
+        if (
+            reserved.record is None
+            or reserved.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or reserved.record.state is not ProviderInvocationReservationState.RESERVED
+        ):
+            raise PermissionError("background provider invocation is unavailable")
+        armed = transaction.arm_launch(
+            ProviderInvocationLaunchRequest.from_reservation(reserved.record),
+            now=now,
+            allow_test_fixtures=self._allow_test_fixtures,
+        )
+        if (
+            armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or armed.record is None
+            or armed.receipt is None
+            or armed.claim is None
+        ):
+            raise PermissionError("background provider invocation could not be armed")
         return _mint_provider_invocation_carrier(
             armed.receipt,
             armed.claim,

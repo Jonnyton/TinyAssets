@@ -175,3 +175,22 @@ def test_route_is_mcp_app_get(monkeypatch):
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
+
+
+def test_app_embeds_build_and_serves_matching_header(monkeypatch):
+    """Refresh-on-deploy: the page embeds the served build sha in its config and the
+    handler sends the same value as X-TinyAssets-Build, so the SPA's HEAD probe can
+    detect a newer deploy and reload (the founder saw a pre-deploy form in an app
+    that had been open across a deploy)."""
+    import asyncio
+
+    from tinyassets import onboarding
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setattr(onboarding, "build_sha", lambda: "deadbeefcafe")
+    resp = asyncio.run(onboarding._handle_app(object()))
+    assert resp.status_code == 200
+    assert resp.headers["X-TinyAssets-Build"] == "deadbeefcafe"
+    body = resp.body.decode("utf-8")
+    assert '"build": "deadbeefcafe"' in body
+    assert "checkForNewBuild" in body
