@@ -49,14 +49,24 @@ template + methods validated) — reject empty (SSRF boundary).
    `http_grant_<32>` (mirror `cloud_connections._ids`).
 4. Idempotent create: `get_connection_resource` first; if None →
    `create_connection(connection_id, owner_user_id=actor, connection_class="http",
-   connection_type="http", auth_scheme="bearer", scopes=("http",),
-   provider="http", destination, credential_ref, allowed_endpoints)`; else
-   conflict-check EVERY immutable field (owner, connection_type, connection_class,
-   provider, auth_scheme, scopes, destination, credential_ref, revoked_at, AND the
-   endpoint allow-list compared as an UNORDERED set — `_canonical_policy` sorts
-   endpoints/methods/query names so a reorder stays idempotent) → any real mismatch,
-   including a changed endpoint set, returns `{"error":"connection_conflict"}`
-   BEFORE the vault write.
+   connection_type="http", auth_scheme="bearer", scopes=<method-union>,
+   provider="http", destination, credential_ref, allowed_endpoints)`. The connection
+   SCOPE is the sorted/uppercased/de-duped union of the endpoints' HTTP methods — the
+   verb string the `authenticated_external_call` effector matches the packet `verb`
+   against (`verb in resource.scopes`). It must NOT be the literal `("http",)` type
+   token (which admits no HTTP verb, so every outbound call fails "verb outside
+   granted connection scope"; #2521). `connection_type`/`connection_class`/`provider`
+   ("http") carry the type discrimination. Else conflict-check EVERY immutable field
+   (owner, connection_type, connection_class, provider, auth_scheme, scopes,
+   destination, credential_ref, revoked_at, AND the endpoint allow-list compared as an
+   UNORDERED set — `_canonical_policy` sorts endpoints/methods/query names so a reorder
+   stays idempotent) → any real mismatch, including a changed endpoint set, returns
+   `{"error":"connection_conflict"}` BEFORE the vault write. EXCEPTION (bounded legacy
+   migration): a pre-fix row whose only difference is the legacy `("http",)` scope,
+   otherwise policy-identical, is UPGRADED in place to the method union
+   (`_upgrade_http_connection_scopes`, guarded by `scopes_json = '["http"]'`) rather
+   than stranded — deterministic ids + no policy-update path would otherwise make it
+   unrecoverable.
 5. Idempotent grant: `get_grant` first; if None → `grant_connection(grant_id,
    connection_id, owner_user_id=actor, universe_id=uid,
    unprompted_action_cap=ActionCap("http_calls", <cap>, "requests"))`; else

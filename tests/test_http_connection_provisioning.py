@@ -179,6 +179,267 @@ def test_owner_provisions_http_connection_round_trip(base: Path) -> None:
     assert grant.connection_id == conn_id
 
 
+def test_connection_scope_is_the_endpoint_methods_not_a_type_token(base: Path) -> None:
+    """REGRESSION (first end-to-end live channel test, 2026-08-24).
+
+    An http connection's SCOPE must be the set of HTTP methods its endpoints
+    permit — the ``verb`` the ``authenticated_external_call`` effector matches
+    against (``verb in resource.scopes`` in both the ScopedConnectionProxy and the
+    CredentialBlindBroker). ``connect_http`` used to hardcode the literal
+    ``("http",)`` type token, which contains NO verb, so every outbound POST failed
+    ``"verb 'POST' is outside the granted connection scope"`` and the whole http
+    channel was dead on arrival. The effector's own test harness proves the working
+    contract is method-scoped (``_setup(... scopes=("POST",))``); this pins that
+    ``connect_http`` produces exactly that shape.
+    """
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-scope", admin="founder")
+    _login("founder")
+
+    result = _connect(
+        "u-scope",
+        endpoints=[
+            {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["POST"]},
+            {"host": "api.example.com", "path_template": "/v1/files", "methods": ["get", "PUT"]},
+        ],
+    )
+    assert result["status"] == "provisioned"
+
+    conn_id, _grant_id = _ids(universe_id="u-scope", destination="webhook:acme")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert resource is not None
+    # Sorted, uppercased, de-duped union of every endpoint's methods — the verbs the
+    # effector accepts — and specifically NOT the ("http",) type token.
+    assert tuple(resource.scopes) == ("GET", "POST", "PUT")
+    assert "http" not in resource.scopes
+
+
+def _seed_legacy_http_connection(
+    base: Path,
+    uid: str,
+    *,
+    endpoints: Any = None,
+    old_secret: str = "old-secret",
+    grant_universe: str | None = None,
+) -> tuple[Path, str, str]:
+    """Write a PRE-FIX http connection: the legacy ("http",) scope token + an old
+    secret + a grant carrying the real ``_HTTP_ACTION_CAP`` (the shape a connection
+    provisioned before the #2521 scope fix actually has)."""
+    from tinyassets.api.http_connection import _HTTP_ACTION_CAP, _ids
+    from tinyassets.credential_vault import write_credential_vault
+
+    udir = _make_universe(base, uid, admin="founder")
+    conn_id, grant_id = _ids(universe_id=uid, destination="webhook:acme")
+    write_credential_vault(
+        udir,
+        [
+            {
+                "credential_type": "http",
+                "service": "webhook:acme",
+                "destination": "webhook:acme",
+                "token": old_secret,
+            }
+        ],
+        owner_user_id="founder",
+        universe_id=uid,
+    )
+    ledger = _ledger(base, "founder")
+    ledger.create_connection(
+        connection_id=conn_id,
+        owner_user_id="founder",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("http",),
+        provider="http",
+        destination="webhook:acme",
+        credential_ref="vault://http/webhook:acme",
+        allowed_endpoints=_EP if endpoints is None else endpoints,
+    )
+    ledger.grant_connection(
+        grant_id=grant_id,
+        connection_id=conn_id,
+        owner_user_id="founder",
+        universe_id=grant_universe or uid,
+        unprompted_action_cap=_HTTP_ACTION_CAP,
+    )
+    assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
+    return udir, conn_id, grant_id
+
+
+def test_legacy_http_scope_token_is_upgraded_in_place_not_stranded(base: Path) -> None:
+    """REGRESSION (Codex ADAPT, #2521).
+
+    A connection provisioned BEFORE the scope fix carries the legacy ("http",)
+    token. Re-provisioning it with the SAME policy must UPGRADE its scope to the
+    method union in place (a bounded, one-directional migration) and rotate the
+    secret — NOT strand it behind ``connection_conflict``, which deterministic ids +
+    the absence of a policy-update path would otherwise make unrecoverable.
+    """
+    udir, conn_id, _grant_id = _seed_legacy_http_connection(base, "u-legacy")
+    _login("founder")
+
+    result = _connect("u-legacy", secret="new-secret")  # SAME policy, rotated secret
+    assert result["status"] == "provisioned"  # NOT connection_conflict — upgraded.
+
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert tuple(resource.scopes) == ("POST",)  # upgraded from the ("http",) token
+    assert _http_records(udir)[0]["token"] == "new-secret"  # secret rotated
+
+
+def test_legacy_upgrade_is_deferred_until_after_a_successful_deposit(
+    base: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed credential deposit must leave the legacy ("http",) scope UNTOUCHED —
+    otherwise a failed rotation would activate the formerly-unusable connection with
+    the stale, un-rotated secret (Codex ADAPT re-review: fail-open ordering)."""
+    udir, conn_id, _grant_id = _seed_legacy_http_connection(base, "u-legacy-dep")
+    _login("founder")
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("deposit exploded")
+
+    # connect_http imports write_credential_vault fresh from the source module at
+    # call time, so patch the SOURCE, not the api.http_connection namespace.
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.write_credential_vault", _boom
+    )
+    result = _connect("u-legacy-dep", secret="new-secret")
+    assert result["error"] == "deposit_failed"
+
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert tuple(resource.scopes) == ("http",)  # NOT upgraded — still inert
+    assert _http_records(udir)[0]["token"] == "old-secret"  # secret NOT rotated
+
+
+def test_legacy_scope_untouched_on_grant_conflict(base: Path) -> None:
+    """A grant-conflict refusal must leave the legacy ("http",) scope UNTOUCHED —
+    the upgrade is deferred past the grant-conflict check."""
+    udir, conn_id, _g = _seed_legacy_http_connection(
+        base, "u-legacy-grant", grant_universe="u-OTHER-universe"
+    )
+    _login("founder")
+
+    result = _connect("u-legacy-grant", secret="new-secret")
+    assert result == {"error": "connection_conflict", "resource": "grant"}
+    assert tuple(_ledger(base, "founder")._get_connection_resource(conn_id).scopes) == (
+        "http",
+    )
+    assert _http_records(udir)[0]["token"] == "old-secret"  # nothing rotated
+
+
+def test_legacy_row_with_changed_policy_conflicts_scope_untouched(base: Path) -> None:
+    """A legacy row whose endpoint policy DIFFERS from the re-provision request is a
+    genuine conflict (not an upgrade); the legacy scope stays untouched."""
+    udir, conn_id, _g = _seed_legacy_http_connection(
+        base,
+        "u-legacy-policy",
+        endpoints=[
+            {"host": "api.example.com", "path_template": "/v1/other", "methods": ["POST"]}
+        ],
+    )
+    _login("founder")
+
+    # Default _EP is /v1/messages — a different endpoint set than seeded.
+    result = _connect("u-legacy-policy", secret="new-secret")
+    assert result == {"error": "connection_conflict", "resource": "connection"}
+    assert tuple(_ledger(base, "founder")._get_connection_resource(conn_id).scopes) == (
+        "http",
+    )
+    assert _http_records(udir)[0]["token"] == "old-secret"
+
+
+def test_connections_list_includes_http_channel_connections(base: Path) -> None:
+    """REGRESSION: read_graph target=connections (cloud_connections 'list') must list
+    a universe's http CHANNEL connections, not just github pipes — channel-agnostically.
+
+    The served agent needs to read back a connection's connection_id / grant_id /
+    allowed host+path itself to build an authenticated_external_call node; without
+    this it had to ask the owner to paste those ids by hand. Any deposited http
+    destination appears identically — no per-service code.
+    """
+    from tinyassets.api.cloud_connections import cloud_connections
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-list", admin="founder")
+    _login("founder")
+    _connect("u-list", destination="webhook:slack-like")  # generic http deposit
+    conn_id, grant_id = _ids(universe_id="u-list", destination="webhook:slack-like")
+
+    result = cloud_connections(action="list", universe_id="u-list")
+    conns = result["connections"]
+    http = [c for c in conns if c["connection_id"] == conn_id]
+    assert len(http) == 1, f"http channel connection not listed: {conns}"
+    row = http[0]
+    assert row["grant_id"] == grant_id
+    assert row["destination"] == "webhook:slack-like"
+    assert row["connection_class"] == "http"
+    # The redacted egress allow-list gives the agent the exact host/path to emit.
+    assert row["allowed_endpoints"][0]["host"] == "api.example.com"
+    assert "POST" in row["allowed_endpoints"][0]["methods"]
+    # No secret ever surfaces in the listing.
+    assert "sk-SECRET-token" not in json.dumps(result)
+    assert "credential_ref" not in row and "vault://" not in json.dumps(result)
+
+
+def test_connections_list_isolates_by_owner_not_just_universe(base: Path) -> None:
+    """SECURITY (Codex ADAPT #2524): the connections list isolates by OWNER, not only
+    by universe.
+
+    Two ADMINS of the SAME universe each deposit a connection; each must see ONLY
+    their own — never the other owner's. If the ``owner_user_id`` filter in
+    ``list_grants`` were dropped, each would see BOTH connections and this fails
+    (the include-http test only varied the universe, so it would have stayed green
+    without that filter — this is the real cross-owner probe Codex asked for).
+    """
+    from tinyassets.api.cloud_connections import cloud_connections
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    _make_universe(base, "u-shared", admin="founder")
+    grant_universe_access(
+        base, universe_id="u-shared", actor_id="collab", permission="admin",
+        granted_by="founder",
+    )
+
+    # Seed two connections in the SAME universe owned by DIFFERENT principals
+    # directly at the ledger (the credential vault is single-owner-per-universe, so
+    # two owners cannot both deposit via connect_http — but the list's isolation is a
+    # property of the list_grants owner filter, which this exercises head-on).
+    def _seed(owner: str, dest: str, conn_id: str, grant_id: str) -> None:
+        ledger = ConnectionLedger(
+            base / "outbound.db", verify_authenticated_principal=lambda: owner
+        )
+        ledger.create_connection(
+            connection_id=conn_id, owner_user_id=owner, connection_class="http",
+            connection_type="http", auth_scheme="bearer", scopes=("POST",),
+            provider="http", destination=dest, credential_ref=f"vault://http/{dest}",
+            allowed_endpoints=_EP,
+        )
+        ledger.grant_connection(
+            grant_id=grant_id, connection_id=conn_id, owner_user_id=owner,
+            universe_id="u-shared",
+        )
+
+    _seed("founder", "webhook:founders", "http_founder", "grant_founder")
+    _seed("collab", "webhook:collabs", "http_collab", "grant_collab")
+
+    # Collaborator sees ONLY their own connection, never the founder's. Removing the
+    # owner_user_id filter from list_grants would surface "http_founder" here.
+    _login("collab")
+    theirs = cloud_connections(action="list", universe_id="u-shared")
+    tids = {c["connection_id"] for c in theirs["connections"]}
+    assert "http_collab" in tids, f"collab should see own connection: {theirs}"
+    assert "http_founder" not in tids, f"cross-owner leak: collab saw founder's: {theirs}"
+
+    # Symmetric: the founder sees only theirs, never the collaborator's.
+    _login("founder")
+    mine = cloud_connections(action="list", universe_id="u-shared")
+    mids = {c["connection_id"] for c in mine["connections"]}
+    assert "http_founder" in mids and "http_collab" not in mids
+
+
 def test_provision_routes_through_write_graph(base: Path) -> None:
     import importlib
 
@@ -255,11 +516,91 @@ def test_empty_endpoints_rejected(base: Path) -> None:
 
 
 def test_unsupported_auth_scheme_rejected(base: Path) -> None:
+    """A scheme the broker cannot sign is refused at the door, nothing written.
+    (``header`` is engine-signable but needs a per-connection header NAME the ledger
+    does not persist yet, so it stays off the deposit door; ``none`` has nothing to
+    deposit.)"""
     udir = _make_universe(base, "u-as", admin="founder")
     _login("founder")
-    result = _connect("u-as", auth_scheme="oauth1a")
-    assert result["error"] == "unsupported_auth_scheme"
+    for bad in ("digest", "header", "none", "hmac"):
+        result = _connect("u-as", auth_scheme=bad)
+        assert result["error"] == "unsupported_auth_scheme", bad
+        assert set(result["allowed_auth_schemes"]) == {"bearer", "basic", "oauth1a"}
     assert _http_records(udir) == []
+
+
+def test_oauth1a_scheme_deposits_generically(base: Path) -> None:
+    """GENERIC UNLOCK: ``auth_scheme=oauth1a`` is accepted at the deposit door.
+
+    The engine already signs OAuth 1.0a end-to-end (``_build_http_secret_bundle``
+    parses the four-value JSON, ``_oauth1a_authorization`` signs), but the door was
+    bearer-only — which blocked X/Twitter posting and every other OAuth 1.0a API
+    with no way around it. This is a scheme unlock, NOT a per-service path: the
+    destination label is whatever the owner is connecting.
+    """
+    from tinyassets.api.http_connection import _ids
+
+    udir = _make_universe(base, "u-o1", admin="founder")
+    _login("founder")
+    bundle = json.dumps({
+        "api_key": "ck", "api_secret": "cs",
+        "access_token": "at", "access_token_secret": "ats",
+    })
+    result = _connect(
+        "u-o1", destination="x:my-account", secret=bundle, auth_scheme="oauth1a",
+        endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
+    )
+    assert result["status"] == "provisioned", result
+    assert result["auth_scheme"] == "oauth1a"
+    assert "ats" not in json.dumps(result) and "cs" not in json.dumps(result)
+
+    # Stored as ONE opaque string per connection (the broker parses it at request
+    # time) and the connection row carries the scheme so the child signs correctly.
+    conn_id, _g = _ids(universe_id="u-o1", destination="x:my-account")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert resource.auth_scheme == "oauth1a"
+    assert _http_records(udir)[0]["token"] == bundle
+
+    # Idempotent re-provision with the SAME scheme rotates; a DIFFERENT scheme for
+    # the same destination is a policy change → conflict, nothing rotated.
+    again = _connect(
+        "u-o1", destination="x:my-account", secret=bundle.replace("ats", "ats2"),
+        auth_scheme="oauth1a",
+        endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
+    )
+    assert again["status"] == "provisioned"
+    assert "ats2" in _http_records(udir)[0]["token"]
+    clash = _connect(
+        "u-o1", destination="x:my-account", secret="plain-bearer", auth_scheme="bearer",
+        endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
+    )
+    assert clash == {"error": "connection_conflict", "resource": "connection"}
+    assert "ats2" in _http_records(udir)[0]["token"]  # untouched
+
+
+def test_oauth1a_malformed_bundle_rejected_before_any_write(base: Path) -> None:
+    """The secret's SHAPE is validated at the door (mirroring the broker's parser)
+    so a malformed multi-value credential fails BEFORE any write — never as a
+    mysterious failed outbound call later. Error messages carry no secret material."""
+    udir = _make_universe(base, "u-o2", admin="founder")
+    _login("founder")
+    cases = {
+        "not-json-at-all": "must be a JSON object",
+        json.dumps(["a", "b"]): "must be a JSON object",
+        json.dumps({"api_key": "k", "api_secret": "s"}): "missing: access_token",
+    }
+    for bad, expect in cases.items():
+        r = _connect("u-o2", secret=bad, auth_scheme="oauth1a")
+        assert r["error"] == "connection_setup_invalid", (bad, r)
+        assert expect in r["detail"], (bad, r)
+        assert "k" != r["detail"] and bad not in r["detail"]  # no secret echoed
+    assert _http_records(udir) == []  # nothing written by any refusal
+
+    # basic: must be username:password
+    r = _connect("u-o2", secret="no-colon-here", auth_scheme="basic")
+    assert r["error"] == "connection_setup_invalid" and "username:password" in r["detail"]
+    ok = _connect("u-o2", secret="user:pa:ss", auth_scheme="basic")
+    assert ok["status"] == "provisioned" and ok["auth_scheme"] == "basic"
 
 
 def test_ssrf_endpoint_rejected_nothing_mutated(base: Path) -> None:

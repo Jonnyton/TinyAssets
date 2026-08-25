@@ -57,6 +57,16 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         "destination": resource.destination,
         "connection_class": resource.connection_class,
         "scopes": list(resource.scopes),
+        # Redacted egress allow-list: host, path_template, methods, and the
+        # query/param descriptors (allowed_query, param_patterns, query_patterns,
+        # required_query) — i.e. the owner's OWN declared egress policy, never the
+        # credential (ConnectionView carries no credential_ref). An http channel
+        # connection exposes these so the agent can read back the exact host + path
+        # it must emit in an authenticated_external_call packet; a github pipe has
+        # none, so this is an empty list there.
+        "allowed_endpoints": [
+            ep.as_dict() for ep in (getattr(resource, "allowed_endpoints", ()) or ())
+        ],
         "action_cap": (
             grant.unprompted_action_cap.as_dict()
             if grant.unprompted_action_cap is not None
@@ -184,11 +194,19 @@ def cloud_connections(
             return {"error": "connection_conflict", "resource": "grant"}
         return _project(resource, grant)
     if normalized == "list":
+        # List EVERY connection granted to this universe, channel-agnostically:
+        # github pipes AND generic http channel connections (Slack, Discord, or any
+        # HTTPS endpoint the owner deposited via connect_http). No per-service code —
+        # the owner-chosen `destination` label IS the channel identity, and each row
+        # carries the connection_id + grant_id + allowed_endpoints the agent needs to
+        # build an authenticated_external_call node WITHOUT the owner pasting them
+        # back by hand. Redacted views only (no credential_ref), scoped to the
+        # owner's grants for THIS universe.
         ledger = _ledger(actor)
         rows = []
         for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid):
             resource = ledger.get_connection(grant.connection_id)
-            if resource is not None and resource.connection_class == "pull-request-writer":
+            if resource is not None:
                 rows.append(_project(resource, grant))
         return {"universe_id": uid, "connections": rows, "count": len(rows)}
     return {

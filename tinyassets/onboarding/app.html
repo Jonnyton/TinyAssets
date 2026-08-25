@@ -199,7 +199,13 @@
             <input id="http-path" type="text" placeholder="/api/v1/chat/completions" /></label>
           <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
             <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
-          <label class="field"><span>API key / token</span>
+          <label class="field"><span>How it authenticates</span>
+            <select id="http-auth-scheme">
+              <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
+              <option value="basic">Username &amp; password (basic auth)</option>
+              <option value="oauth1a">OAuth 1.0a — 4 keys (X/Twitter and similar)</option>
+            </select></label>
+          <label class="field"><span id="http-secret-label">API key / token</span>
             <textarea id="http-secret" rows="2" placeholder="Your API key or bearer token"></textarea></label>
           <button id="btn-connect-http" class="btn btn--primary">Deposit API connection</button>
           <div id="http-result" class="notice" role="status"></div>
@@ -548,9 +554,30 @@
         await this.ensureInit();
         return this._rpc(method, params, opts, true);
       }
+      // Gateway / restart blips: during a deploy the daemon restarts (~90s) and
+      // the tunnel answers 502/503/504 with an HTML page. That body is neither
+      // JSON nor SSE, so it used to surface as the generic, misleading "no JSON
+      // or SSE frame" — hiding the real cause and hitting the founder mid-chat on
+      // deploy nights. Retry ONCE after a short pause (the daemon is usually back),
+      // and if it still fails, name the real status instead of the parse error.
+      if((resp.status===502||resp.status===503||resp.status===504) && !_retried){
+        await new Promise(r=>setTimeout(r,2500));
+        return this._rpc(method, params, opts, true);
+      }
+      if(resp.status>=500){
+        throw new Error("your universe is restarting or briefly unavailable (HTTP "+resp.status+") — try again in a moment");
+      }
       const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       if(opts.expectResult===false) return null;
-      const rpc=this._parse(await resp.text());
+      const bodyText=await resp.text();
+      let rpc;
+      try{ rpc=this._parse(bodyText); }
+      catch(parseErr){
+        // Any other non-JSON body: report the HTTP status, never the bare parse
+        // error, so a real cause (e.g. an auth/edge page) is diagnosable.
+        if(!resp.ok) throw new Error("unexpected reply from your universe (HTTP "+resp.status+")");
+        throw parseErr;
+      }
       if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
       return rpc.result;
     },
@@ -585,9 +612,11 @@
     // converse/chat turn — so the universe can then register an OpenRouter/OpenAI
     // compute provider on it, or build a channel (Slack/X/...) via the
     // authenticated_external_call effect. The channel-agnostic way to add any API.
-    connectHTTP(destination,secret,allowedEndpoints){
+    connectHTTP(destination,secret,allowedEndpoints,authScheme){
+      const payload={destination,secret,allowed_endpoints:allowedEndpoints};
+      if(authScheme) payload.auth_scheme=authScheme;   // bearer (default) | basic | oauth1a
       return this.callTool("write_graph",{target:"connection",operation:"connect_http",
-        payload_json:JSON.stringify({destination,secret,allowed_endpoints:allowedEndpoints})});
+        payload_json:JSON.stringify(payload)});
     },
     connectCompute(payload){
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
@@ -683,12 +712,18 @@
       return;
     }
     engineConnected = true;
-    showView("chat"); startHeartbeat(); $("composer-input").focus();
+    showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
   }
+  // Proactively establish the MCP session the moment chat opens, so the user's FIRST
+  // message runs on an already-warm session instead of racing the inline ensureInit +
+  // the fire-and-forget notifications/initialized on cold load. That race is what made
+  // the very first message fail with "no JSON or SSE frame" and then self-recover on the
+  // 2nd message. Fire-and-forget: a real error still surfaces on the first actual turn.
+  function warmSession(){ try{ MCP.ensureInit().catch(()=>{}); }catch(_e){} }
   function onEngineConnected(){
     engineConnected = true;
     $("btn-connect-back").textContent = "Go to your universe";
-    setTimeout(()=>{ showView("chat"); startHeartbeat(); $("composer-input").focus(); }, 1200);
+    setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
@@ -1030,18 +1065,40 @@
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Deposit failed: "+err.message; }
       finally{ btn.disabled=false; }
     });
+    // The credential box follows the chosen scheme so the user knows exactly what to
+    // paste — no scheme-specific pages, just a generic form that explains itself.
+    const secretHints={
+      bearer:["API key / token","Your API key or bearer token"],
+      basic:["Username:password","username:password"],
+      oauth1a:["OAuth 1.0a keys — one per line","API key\nAPI key secret\nAccess token\nAccess token secret"],
+    };
+    $("http-auth-scheme").addEventListener("change",()=>{
+      const h=secretHints[$("http-auth-scheme").value]||secretHints.bearer;
+      $("http-secret-label").textContent=h[0]; $("http-secret").placeholder=h[1];
+      $("http-secret").rows=$("http-auth-scheme").value==="oauth1a"?4:2;
+    });
     $("btn-connect-http").addEventListener("click",async()=>{
       const dest=$("http-destination").value.trim(), host=$("http-host").value.trim();
       const path=$("http-path").value.trim(), methodsRaw=$("http-methods").value.trim();
-      const secretEl=$("http-secret"), secret=secretEl.value.trim();
+      const secretEl=$("http-secret"), scheme=$("http-auth-scheme").value;
+      let secret=secretEl.value.trim();
       const out=$("http-result"), btn=$("btn-connect-http");
-      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and API key."; return; }
+      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential."; return; }
+      // OAuth 1.0a: the user pastes the four values one per line (in the order the
+      // provider's developer portal shows them); the form assembles the JSON bundle
+      // the connection stores, so nobody has to hand-write JSON. Generic: any 1.0a API.
+      if(scheme==="oauth1a"){
+        const lines=secret.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+        if(lines.length!==4){ out.textContent="OAuth 1.0a needs exactly 4 lines: API key, API key secret, access token, access token secret."; return; }
+        secret=JSON.stringify({api_key:lines[0],api_secret:lines[1],access_token:lines[2],access_token_secret:lines[3]});
+      }
+      if(scheme==="basic"&&!secret.includes(":")){ out.textContent="Basic auth needs username:password."; return; }
       const methods=(methodsRaw||"POST").split(",").map(m=>m.trim().toUpperCase()).filter(Boolean);
       const endpoint={host,methods}; if(path) endpoint.path_template=path;
       secretEl.value="";  // clear the secret from the DOM BEFORE any await, on every path
       btn.disabled=true; out.textContent="Depositing securely...";
       try{
-        const r=await MCP.connectHTTP(dest,secret,[endpoint]);
+        const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);
         if(r&&r.error){ out.textContent="Couldn't add it: "+r.error; }
         else{ out.textContent="Added — your universe can now use "+host+". Ask it to register this as compute (e.g. OpenRouter) or wire a channel with it.";
               $("http-destination").value=""; $("http-host").value=""; $("http-path").value=""; }
