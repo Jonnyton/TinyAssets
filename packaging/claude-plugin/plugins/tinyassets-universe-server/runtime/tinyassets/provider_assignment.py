@@ -327,84 +327,6 @@ def reconcile_served_budget_leases(base_path: str | Path) -> int:
 
 
 
-# --------------------------------------------------------------------------- #
-# Issued-authority FENCE (Codex REJECT #2 + #3 on #2531).
-#
-# A ServedProviderAuthority is a plain frozen dataclass, so ANY caller can build one
-# of the right SHAPE. Authority must be established by PROVENANCE. The first attempt
-# was a registry with a PUBLIC register_issued_authority() — which an attacker could
-# simply call on its own forgery (self-blessing, not provenance). This replaces it
-# with the same unforgeable-capability pattern the request-capability layer uses
-# (auth/middleware.ProviderRequestCapability):
-#
-#   * ``IssuedAuthorityFence`` cannot be constructed (``__init__`` raises), mutated
-#     (``__setattr__`` raises), or serialized (``__reduce__`` raises). Instances are
-#     built ONLY by the module-private ``_mint_issued_authority`` via
-#     ``object.__new__`` + ``object.__setattr__``.
-#   * Each fence carries the module-private sentinel ``_MINT_SECRET`` (a bare
-#     ``object()`` created at import) and the exact authority object it blesses.
-#     Nothing outside this module can obtain or forge that sentinel; there is NO
-#     public "register" primitive at all.
-#   * The two genuine mint sites (``authorize_served_provider_call`` below and the
-#     background ``_authorize_launch``) mint a fence for the exact object they
-#     yield and hold it open for the fenced call only; the router verifies with
-#     ``is_issued_authority(authority)`` which checks identity (``is``) against the
-#     currently-open fence — a recycled id(), an equal-but-different object, or a
-#     stale fence never passes.
-# --------------------------------------------------------------------------- #
-_MINT_SECRET = object()
-_ISSUED_AUTHORITY_LOCK = threading.Lock()
-_OPEN_FENCES: dict[int, "IssuedAuthorityFence"] = {}
-
-
-class IssuedAuthorityFence:
-    """Validator-owned proof that one exact authority object was genuinely issued."""
-
-    __slots__ = ("_secret", "_authority")
-
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("issued-authority fences are minted only by the validator")
-
-    def __setattr__(self, _name: str, _value: object) -> None:
-        raise AttributeError("issued-authority fences are immutable")
-
-    def __reduce__(self):
-        raise TypeError("issued-authority fences are non-serializable")
-
-
-def _mint_issued_authority(authority: "ServedProviderAuthority") -> "IssuedAuthorityFence":
-    """MODULE-PRIVATE. Open a fence for ``authority`` for the duration of one call.
-
-    Callers outside the two genuine mint sites must never reach this; it is not
-    exported and is deliberately underscore-private. Pair with ``_close_fence``.
-    """
-    fence = object.__new__(IssuedAuthorityFence)
-    object.__setattr__(fence, "_secret", _MINT_SECRET)
-    object.__setattr__(fence, "_authority", authority)
-    with _ISSUED_AUTHORITY_LOCK:
-        _OPEN_FENCES[id(authority)] = fence
-    return fence
-
-
-def _close_fence(authority: "ServedProviderAuthority") -> None:
-    with _ISSUED_AUTHORITY_LOCK:
-        _OPEN_FENCES.pop(id(authority), None)
-
-
-def is_issued_authority(authority: object) -> bool:
-    """True iff ``authority`` IS the exact object a genuine mint site holds open now."""
-    with _ISSUED_AUTHORITY_LOCK:
-        fence = _OPEN_FENCES.get(id(authority))
-    if fence is None or type(fence) is not IssuedAuthorityFence:
-        return False
-    # Both checks are identity: the module-private sentinel proves the fence came
-    # from _mint_issued_authority; the authority identity defeats id() recycling.
-    return (
-        object.__getattribute__(fence, "_secret") is _MINT_SECRET
-        and object.__getattribute__(fence, "_authority") is authority
-    )
-
-
 # The daemon-owned background operation (mirrors
 # background_served_provider.BACKGROUND_BRANCH_RUN_OPERATION; kept as a literal here
 # because that module imports this one — importing back would be circular).
@@ -1436,11 +1358,7 @@ def authorize_served_provider_call(
                         request_capability=capability,
                     )
                 conn.rollback()
-            _mint_issued_authority(authority)
-            try:
-                yield authority
-            finally:
-                _close_fence(authority)
+            yield authority
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
