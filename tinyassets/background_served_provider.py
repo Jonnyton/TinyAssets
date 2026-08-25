@@ -227,6 +227,16 @@ def claim_background_queue_authority_in_transaction(
 ) -> bool:
     """Claim the canonical attempt and create its queue owner with the task CAS."""
 
+    reason = explain_background_queue_authority_in_transaction(
+        conn,
+        task,
+        consumer_lease,
+        claimed_at=claimed_at,
+        lease_expires_at=lease_expires_at,
+    )
+    if reason is not None:
+        return False
+
     from tinyassets.background_branch_authority import (
         BackgroundBranchAttemptFence,
         BackgroundBranchBindingFence,
@@ -242,10 +252,6 @@ def claim_background_queue_authority_in_transaction(
         _SQLiteBackgroundBranchAuthorityTransaction,
     )
 
-    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
-        raise ValueError("background queue authority claim requires a transaction")
-    if task.claimed_by:
-        return False
     row = conn.execute(
         """
         SELECT body_digest, grant_generation, actor_id
@@ -254,8 +260,7 @@ def claim_background_queue_authority_in_transaction(
         """,
         (task.admission_id, task.request_id, task.branch_task_id),
     ).fetchone()
-    if row is None:
-        return False
+    assert row is not None
     logical_key = build_request_task_attempt_key(
         tenant_id=str(row["actor_id"]),
         request_id=task.request_id,
@@ -264,39 +269,17 @@ def claim_background_queue_authority_in_transaction(
         body_digest=str(row["body_digest"]),
         admission_generation=int(row["grant_generation"]),
     )
-    authority = SQLiteBackgroundBranchAuthorityStore.read_authority_in_transaction(
-        conn,
-        logical_attempt_key=logical_key,
-    )
-    if authority is None:
-        return False
+    try:
+        authority = SQLiteBackgroundBranchAuthorityStore.read_authority_in_transaction(
+            conn,
+            logical_attempt_key=logical_key,
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).lower():
+            raise
+        authority = None
+    assert authority is not None
     binding, attempt = authority
-    now = _utc(claimed_at)
-    lease_expiry = _utc(lease_expires_at)
-    exact = (
-        binding.status is BackgroundBranchBindingStatus.ACTIVE,
-        binding.expires_at is not None,
-        binding.expires_at is not None and _utc(binding.expires_at) > now,
-        binding.expires_at is not None and lease_expiry <= _utc(binding.expires_at),
-        binding.authorizing_principal_id == str(row["actor_id"]),
-        binding.universe_id == task.universe_id,
-        binding.branch_def_id == task.branch_def_id,
-        binding.pinned_branch_version_id == task.automation_branch_version,
-        BackgroundBranchExecutorClass.CLOUD in binding.permitted_executor_classes,
-        bool(binding.daemon_id),
-        bool(binding.runtime_id),
-        attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
-        attempt.lease_expires_at is None,
-        attempt.branch_version_id == task.automation_branch_version,
-        attempt.branch_content_digest == task.automation_subject_digest,
-        attempt.executor_audience.daemon_id == binding.daemon_id,
-        attempt.executor_audience.runtime_id == binding.runtime_id,
-        lease_expiry > now,
-        consumer_lease.consumer_id.startswith("assigned-consumer:"),
-        _utc(consumer_lease.expires_at) >= lease_expiry,
-    )
-    if not all(exact):
-        return False
     transaction = _SQLiteBackgroundBranchAuthorityTransaction(conn)
     transitioned_at = _background_timestamp(claimed_at, attempt.updated_at)
     claimed_attempt = replace(
@@ -313,11 +296,6 @@ def claim_background_queue_authority_in_transaction(
     )
     if attempt_result.record != claimed_attempt:
         return False
-    if transaction.get_owner(
-        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
-        owner_id=task.branch_task_id,
-    ) is not None:
-        return False
     owner = BackgroundBranchAuthorityOwnerRecord(
         owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
         owner_id=task.branch_task_id,
@@ -332,6 +310,127 @@ def claim_background_queue_authority_in_transaction(
         updated_at=transitioned_at,
     )
     return transaction.insert_owner(owner).record == owner
+
+
+def explain_background_queue_authority_in_transaction(
+    conn: sqlite3.Connection,
+    task: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+    *,
+    claimed_at: str,
+    lease_expires_at: str,
+) -> str | None:
+    """Return the first queue-authority claim predicate without writing."""
+
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerKind,
+    )
+    from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("background queue authority explain requires a transaction")
+    if task.claimed_by:
+        return "task_already_claimed"
+    row = conn.execute(
+        """
+        SELECT body_digest, grant_generation, actor_id
+        FROM request_admissions
+        WHERE admission_id = ? AND request_id = ? AND branch_task_id = ?
+        """,
+        (task.admission_id, task.request_id, task.branch_task_id),
+    ).fetchone()
+    if row is None:
+        return "no_admission_row"
+    logical_key = build_request_task_attempt_key(
+        tenant_id=str(row["actor_id"]),
+        request_id=task.request_id,
+        admission_id=task.admission_id,
+        task_id=task.branch_task_id,
+        body_digest=str(row["body_digest"]),
+        admission_generation=int(row["grant_generation"]),
+    )
+    authority = SQLiteBackgroundBranchAuthorityStore.read_authority_in_transaction(
+        conn,
+        logical_attempt_key=logical_key,
+    )
+    if authority is None:
+        return "no_background_authority"
+    binding, attempt = authority
+    now = _utc(claimed_at)
+    lease_expiry = _utc(lease_expires_at)
+    predicates = (
+        (binding.status is BackgroundBranchBindingStatus.ACTIVE, "binding_not_active"),
+        (binding.expires_at is not None, "binding_expired"),
+        (
+            binding.expires_at is not None and _utc(binding.expires_at) > now,
+            "binding_expired",
+        ),
+        (
+            binding.expires_at is not None and lease_expiry <= _utc(binding.expires_at),
+            "binding_lease_too_short",
+        ),
+        (
+            binding.authorizing_principal_id == str(row["actor_id"]),
+            "binding_principal_mismatch",
+        ),
+        (binding.universe_id == task.universe_id, "binding_universe_mismatch"),
+        (binding.branch_def_id == task.branch_def_id, "binding_branch_mismatch"),
+        (
+            binding.pinned_branch_version_id == task.automation_branch_version,
+            "binding_version_mismatch",
+        ),
+        (
+            BackgroundBranchExecutorClass.CLOUD in binding.permitted_executor_classes,
+            "binding_executor_class_missing",
+        ),
+        (bool(binding.daemon_id), "binding_daemon_missing"),
+        (bool(binding.runtime_id), "binding_runtime_missing"),
+        (
+            attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
+            "attempt_not_reserved",
+        ),
+        (attempt.lease_expires_at is None, "attempt_lease_present"),
+        (
+            attempt.branch_version_id == task.automation_branch_version,
+            "attempt_version_mismatch",
+        ),
+        (
+            attempt.branch_content_digest == task.automation_subject_digest,
+            "attempt_digest_mismatch",
+        ),
+        (
+            attempt.executor_audience.daemon_id == binding.daemon_id,
+            "attempt_daemon_mismatch",
+        ),
+        (
+            attempt.executor_audience.runtime_id == binding.runtime_id,
+            "attempt_runtime_mismatch",
+        ),
+        (lease_expiry > now, "claim_lease_invalid"),
+        (
+            consumer_lease.consumer_id.startswith(
+                ("assigned-consumer:", "worker_assigned_")
+            ),
+            "consumer_identity_invalid",
+        ),
+        (
+            _utc(consumer_lease.expires_at) >= lease_expiry,
+            "consumer_lease_too_short",
+        ),
+    )
+    for allowed, reason in predicates:
+        if not allowed:
+            return reason
+    owner = SQLiteBackgroundBranchAuthorityStore.read_queue_owner_in_transaction(
+        conn,
+        owner_id=task.branch_task_id,
+    )
+    if owner is not None and owner.owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK:
+        return "queue_owner_exists"
+    return None
 
 
 def start_background_queue_authority(

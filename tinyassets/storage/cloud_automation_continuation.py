@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -451,6 +452,112 @@ class SQLiteCloudAutomationContinuationStore:
                 return CloudContinuationWriteResult(
                     CloudContinuationWriteOutcome.APPLIED,
                     record,
+                )
+            except Exception:
+                conn.rollback()
+                raise
+
+    def bind_background_runtime(
+        self,
+        *,
+        expected_current: PreparedCloudContinuation,
+        expected_background: BackgroundBranchBinding,
+    ) -> CloudContinuationWriteResult:
+        """CAS a prepared continuation onto its runtime-bound authority fence."""
+
+        exact = (
+            expected_background.binding_id
+            == expected_current.background_binding_id,
+            expected_background.authorizing_principal_id
+            == expected_current.principal_id,
+            expected_background.universe_id == expected_current.universe_id,
+            expected_background.branch_def_id == expected_current.branch_def_id,
+            expected_background.pinned_branch_version_id
+            == expected_current.branch_version_id,
+            bool(expected_background.daemon_id),
+            bool(expected_background.runtime_id),
+        )
+        if not all(exact):
+            raise ValueError("runtime-bound background authority changes lane identity")
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        provisional = replace(
+            expected_current,
+            continuation_digest="sha256:" + "0" * 64,
+            background_binding_generation=expected_background.generation,
+            background_binding_digest=expected_background.binding_digest,
+            updated_at=now.astimezone(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z"),
+        )
+        replacement = replace(
+            provisional,
+            continuation_digest=provisional.expected_digest(),
+        )
+        if replacement == expected_current:
+            return CloudContinuationWriteResult(
+                CloudContinuationWriteOutcome.REPLAYED,
+                replacement,
+            )
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current_row = conn.execute(
+                    """
+                    SELECT * FROM cloud_automation_continuations
+                    WHERE universe_id = ? AND automation_id = ?
+                    """,
+                    (
+                        expected_current.universe_id,
+                        expected_current.automation_id,
+                    ),
+                ).fetchone()
+                if current_row is None or _record(current_row) != expected_current:
+                    raise PermissionError("prepared_continuation_not_current")
+                background = conn.execute(
+                    """
+                    SELECT record_json FROM background_branch_bindings
+                    WHERE binding_id = ? AND generation = ? AND status = 'active'
+                    """,
+                    (
+                        expected_background.binding_id,
+                        expected_background.generation,
+                    ),
+                ).fetchone()
+                if (
+                    background is None
+                    or background["record_json"]
+                    != json.dumps(
+                        expected_background.to_dict(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                ):
+                    raise PermissionError("background_binding_not_current")
+                cursor = conn.execute(
+                    """
+                    UPDATE cloud_automation_continuations
+                    SET continuation_digest = ?, record_json = ?
+                    WHERE continuation_id = ? AND generation = ?
+                      AND continuation_digest = ? AND record_json = ?
+                    """,
+                    (
+                        replacement.continuation_digest,
+                        _json(replacement),
+                        expected_current.continuation_id,
+                        expected_current.generation,
+                        expected_current.continuation_digest,
+                        _json(expected_current),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise PermissionError("prepared_continuation_not_current")
+                conn.commit()
+                return CloudContinuationWriteResult(
+                    CloudContinuationWriteOutcome.APPLIED,
+                    replacement,
                 )
             except Exception:
                 conn.rollback()

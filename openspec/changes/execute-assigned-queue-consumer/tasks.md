@@ -29,7 +29,7 @@ and `prepare_cloud_automation` mints bindings with `runtime_id=None`, so
 `claim_background_queue_authority_in_transaction` can never pass `bool(binding.runtime_id)` until an
 activation with a real executor audience rotates the binding.
 
-- [ ] 5.1 Failing tests first (real store, mirror `tests/test_background_budget_finalization_e2e.py`):
+- [x] 5.1 Failing tests first (real store, mirror `tests/test_background_budget_finalization_e2e.py`):
   (a) flag on: `poll_once()` writes one supervisor heartbeat per serving universe that
       `tinyassets/api/universe.py::_classify_epoch2_workers` accepts (alive, subprocess_alive,
       capabilities incl. OPERATOR_CAPABILITY, queue_protocol_version) so `compatible_worker_count >= 1`
@@ -48,14 +48,14 @@ activation with a real executor audience rotates the binding.
       instance the consumer registered once per boot>, worker_id=consumer_id)`, produces the due trigger
       via `produce_one_due_cloud_automation_slice`, and a later `poll_once()` claims + executes the
       resulting task through the existing carrier path (owner PENDING->RUNNING->terminal). Flag off: nothing.
-- [ ] 5.2 Implement: beat writer (reuse `supervisor_heartbeat_filename` + the cloud_worker beat shape),
+- [x] 5.2 Implement: beat writer (reuse `supervisor_heartbeat_filename` + the cloud_worker beat shape),
       refusal ledger + explain path, activation/production inside `poll_once` under the process lease
       (port the cloud_worker loop body ~L1080-1240 WITHOUT the `os.environ[...] =` identity mutation:
       identity flows only through the audience object; never `create_daemon(created_by=<owner>)` on a
       user's behalf - reuse the binding's daemon / `select_project_loop_daemon` as prepare did), and the
       status projection in `tinyassets/api/universe.py`.
-- [ ] 5.3 Legacy pending tasks with no claimable authority are NOT deleted or cancelled server-side;
+- [x] 5.3 Legacy pending tasks with no claimable authority are NOT deleted or cancelled server-side;
       they are surfaced with their named reason (5.1b) so the owner decides via the user surface.
-- [ ] 5.4 Ruff + touched suites green (`tests/test_background_served_provider.py`,
+- [x] 5.4 Ruff + touched suites green (`tests/test_background_served_provider.py`,
       `tests/test_background_budget_finalization_e2e.py`, `tests/test_assigned_queue_consumer*.py`,
       status tests); plugin mirror parity; no deploy/enable changes (flag already live).

@@ -1528,6 +1528,17 @@ def _epoch2_operational_read(
         return bool(workers)
 
     try:
+        from tinyassets.runtime.assigned_queue_consumer import (
+            assigned_queue_refusal_freshness_seconds,
+        )
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
+
+        refusals = AssignedQueueRefusalStore(base_path).fresh_reasons(
+            universe_id=udir.name,
+            max_age_seconds=assigned_queue_refusal_freshness_seconds(),
+        )
         result = Epoch2BranchTaskAdapter(
             base_path,
         ).operational_read(
@@ -1535,6 +1546,9 @@ def _epoch2_operational_read(
             capacity_matcher=capacity_matches,
             policy_matcher=lambda task: cfg.tier_enabled(
                 task.trigger_source
+            ),
+            authority_refusal_matcher=lambda task: refusals.get(
+                task.branch_task_id, ""
             ),
             include_unscoped_invalid=(
                 _may_view_unscoped_epoch2_integrity(udir)
