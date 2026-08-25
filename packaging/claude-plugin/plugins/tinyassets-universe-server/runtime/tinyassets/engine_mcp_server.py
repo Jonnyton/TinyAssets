@@ -735,10 +735,13 @@ def write_graph(
     the run, reading its instruction from one of its ``output_keys``. Prereqs, done
     once (they carry secrets, so NOT through this chat): the owner deposits the
     credential IN THE APP. Tell them: tap "Connect / add API connection" at the
-    top of this app, fill "Deposit API connection" (name, host, path, method;
-    choose how it authenticates: "OAuth 1.0a - 4 keys" for X/Twitter, pasting
-    the four keys one per line, or a bearer token for most APIs), then come back
-    and say it's done. NEVER send the user to a separate/external "browser
+    top of this app (that is the button's CURRENT label - if you remember an
+    older name for it from an earlier conversation, that memory is stale), fill
+    "Deposit API connection" (name, host, path, method; choose how it
+    authenticates: "OAuth 1.0a - 4 keys" for X/Twitter, which shows FOUR
+    LABELLED BOXES - API Key, API Key Secret, Access Token, Access Token Secret,
+    one value per box, never all four in one field - or a bearer token for most
+    APIs), then come back and say it's done. NEVER send the user to a separate/external "browser
     flow": the form is in this same app, one tap away. That deposit is
     ``connect_http``: it stores the connection + grant and pins the
     host/path/method allow-list. Then ``source_channel operation=approve`` grants

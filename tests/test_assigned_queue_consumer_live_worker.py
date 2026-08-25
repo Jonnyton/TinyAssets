@@ -495,7 +495,10 @@ def test_pump_records_provider_mismatch_instead_of_silently_skipping(
     reason = _reason_for_key(tmp_path, key)
     assert reason == "provider_mismatch:automation=codex,serving=claude-code", reason
     summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
-    assert {"key": key, "reason": reason} in summary["consumer_pump"]
+    entry = next(item for item in summary["consumer_pump"] if item["key"] == key)
+    assert entry["reason"] == reason
+    # The remedy travels with the reason: this is the text the agent relays.
+    assert "rebind" in entry["next_action"].lower()
     from tinyassets.api.cloud_automations import _consumer_reason
 
     assert _consumer_reason(tmp_path, setup.control) == reason
