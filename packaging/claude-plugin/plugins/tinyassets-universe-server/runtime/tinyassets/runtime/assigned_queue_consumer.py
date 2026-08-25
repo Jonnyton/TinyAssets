@@ -528,7 +528,7 @@ class AssignedQueueConsumer:
             # return a value on every poll, and a diagnostic that only runs when
             # activation yields nothing would never be evaluated (found by the
             # regression test for this slice). A success below overwrites it.
-            self._record_pump_preconditions(
+            unexplained = self._record_pump_preconditions(
                 refusal_store,
                 universe_id,
                 principal_id,
@@ -579,6 +579,17 @@ class AssignedQueueConsumer:
                     "ok:produced",
                 )
                 return True
+            # Nothing activated and nothing produced: an automation that passed every
+            # precondition and still was not produced must say so, or the owner sees
+            # an ACTIVE automation doing nothing with no reason anywhere (live
+            # 2026-08-25: consumer_pump came back empty for exactly this shape).
+            for automation_id in unexplained:
+                self._record_reason(
+                    refusal_store,
+                    f"automation:{automation_id}",
+                    universe_id,
+                    "production_declined",
+                )
         return False
 
     def _record_pump_preconditions(
@@ -588,11 +599,17 @@ class AssignedQueueConsumer:
         principal_id: str,
         audience: Any,
         serving_provider: str,
-    ) -> None:
+    ) -> list[str]:
         """Evaluate the SAME fence production applies (Codex ADAPT on #2548): the
         concrete runtime must be the provider-bound worker for the automation's
-        provider binding. A weaker name compare could diagnose falsely."""
+        provider binding. A weaker name compare could diagnose falsely.
+
+        Returns the automations that passed every precondition, so the caller can
+        record `production_declined` for any that still are not produced.
+        """
         from tinyassets.daemon_registry import runtime_matches_worker_provider
+
+        unexplained: list[str] = []
         from tinyassets.storage.cloud_automation_continuation import (
             SQLiteCloudAutomationContinuationStore,
         )
@@ -604,13 +621,26 @@ class AssignedQueueConsumer:
         )
 
         try:
-            automation_ids = CloudAutomationControlStore(
-                self.base_path
-            ).list_claimable_automation_ids(
+            controls = CloudAutomationControlStore(self.base_path)
+            automation_ids = controls.list_claimable_automation_ids(
                 universe_id=universe_id,
                 principal_id=principal_id,
                 limit=100,
             )
+            # An ACTIVE automation with no due/expired trigger is not claimable at
+            # all; without this arm it would be invisible rather than explained.
+            for control in controls.list_controls(universe_id=universe_id, limit=100):
+                if (
+                    control.desired_state.value == "active"
+                    and control.automation_id not in automation_ids
+                    and (not principal_id or control.principal_id == principal_id)
+                ):
+                    self._record_reason(
+                        refusal_store,
+                        f"automation:{control.automation_id}",
+                        universe_id,
+                        "no_due_trigger",
+                    )
             continuations = SQLiteCloudAutomationContinuationStore(self.base_path)
             providers = SQLiteProviderWorkAuthorityStore(self.base_path)
             for automation_id in automation_ids:
@@ -645,10 +675,13 @@ class AssignedQueueConsumer:
                         "provider_mismatch:automation="
                         f"{binding.provider},serving={serving_provider or 'none'}",
                     )
+                    continue
+                unexplained.append(automation_id)
         except Exception:  # noqa: BLE001 - a precondition read must never stop the pump
             logger.exception(
                 "assigned queue pump precondition read failed universe=%s", universe_id
             )
+        return unexplained
 
     def _execute(
         self,

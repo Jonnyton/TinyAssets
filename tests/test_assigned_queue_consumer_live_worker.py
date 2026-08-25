@@ -522,3 +522,39 @@ def test_pump_exception_is_recorded_per_principal(
     principal_keys = [k for k in reasons if k.startswith(f"universe:{definition.universe_id}:")]
     assert principal_keys, reasons
     assert all(reasons[k] == "activate_error:RuntimeError" for k in principal_keys)
+
+
+def test_active_automation_that_produces_nothing_still_gets_a_reason(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Live 2026-08-25 (prod 878d533b): consumer_pump came back EMPTY for a resumed
+    automation - activation and production both returned None and every precondition
+    passed, so nothing was recorded. An ACTIVE automation doing nothing must say why."""
+    definition, setup = _prepare_live_automation(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    fake = _CountingProvider()
+    previous_router = provider_call_module.get_provider_router()
+    previous_force_mock = provider_call_module.is_force_mock()
+    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
+    provider_call_module.set_force_mock(False)
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=2)
+    deferred = _DeferredExecutor()
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = deferred
+    try:
+        assert consumer.poll_once() == 0
+        assert consumer.poll_once() == 1
+        deferred.run()
+        assert deferred.future is not None
+        deferred.future.result(timeout=10)
+        # Idle: activation and production both decline, every precondition passes.
+        assert consumer.poll_once() == 0
+    finally:
+        consumer.stop()
+        provider_call_module.set_provider_router(previous_router)
+        provider_call_module.set_force_mock(previous_force_mock)
+    reason = _refusal_reason(tmp_path, f"automation:{setup.control.automation_id}")
+    assert reason in {"no_due_trigger", "production_declined"}, reason
+    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
+    assert [item for item in summary["consumer_pump"] if item["reason"] == reason]
