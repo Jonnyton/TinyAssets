@@ -2,7 +2,10 @@
 
 Setup (run ONCE by the human host, not by user-sim):
 
-    powershell -Command "Start-Process 'C:\\Users\\Jonathan\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe' -ArgumentList '--user-data-dir=C:\\Users\\Jonathan\\.claude-ai-profile','--remote-debugging-port=9222','--no-first-run','--disable-blink-features=AutomationControlled','https://claude.ai/new'"
+    powershell -Command "$exe = Get-ChildItem \\"$env:LOCALAPPDATA\\ms-playwright\\" -Directory | Where-Object Name -match '^chromium-\\d+$' | Sort-Object Name -Descending | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName 'chrome-win64\\chrome.exe' }; Start-Process $exe -ArgumentList '--user-data-dir=C:\\Users\\Jonathan\\.claude-ai-profile','--remote-debugging-port=9222','--no-first-run','--disable-blink-features=AutomationControlled','https://claude.ai/new'"
+    # (picks the NEWEST Playwright Chromium build - a hard-coded build number rots each time
+    #  Playwright updates: 1208 -> 1228 silently made the launch a no-op on 2026-08-25.
+    #  Verify with: python scripts/claude_chat.py status)
 
 Then log into claude.ai in that window, ensure the TinyAssets custom connector is enabled, and keep the window visible. Single-tab rule: user-sim will navigate the existing tab, not open new ones.
 
