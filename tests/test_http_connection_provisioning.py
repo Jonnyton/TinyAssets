@@ -596,11 +596,39 @@ def test_oauth1a_malformed_bundle_rejected_before_any_write(base: Path) -> None:
         assert "k" != r["detail"] and bad not in r["detail"]  # no secret echoed
     assert _http_records(udir) == []  # nothing written by any refusal
 
-    # basic: must be username:password
-    r = _connect("u-o2", secret="no-colon-here", auth_scheme="basic")
-    assert r["error"] == "connection_setup_invalid" and "username:password" in r["detail"]
+    # basic: BOTH halves non-empty, mirroring the broker exactly (Codex ADAPT: the
+    # door used to accept "user:", ":pw", ":" and write a credential dispatch would
+    # then reject — malformed input must be refused at the door, never written).
+    for bad in ("no-colon-here", "user:", ":pw", ":"):
+        r = _connect("u-o2", secret=bad, auth_scheme="basic")
+        assert r["error"] == "connection_setup_invalid", bad
+        assert "username:password" in r["detail"], bad
+        # No secret material echoed: the message is a CONSTANT that never embeds the
+        # input. (A bare ":" input trivially "appears" inside the constant
+        # "username:password", so check the constant, not substring-absence.)
+        assert r["detail"] == "basic secret must be username:password (both non-empty)"
+    assert _http_records(udir) == []
     ok = _connect("u-o2", secret="user:pa:ss", auth_scheme="basic")
     assert ok["status"] == "provisioned" and ok["auth_scheme"] == "basic"
+
+
+def test_non_string_or_empty_auth_scheme_is_refused_not_defaulted(base: Path) -> None:
+    """An EXPLICIT falsy / non-string auth_scheme is a malformed request and must be
+    refused — not silently coerced to bearer (Codex ADAPT). Only an ABSENT key takes
+    the bearer default."""
+    from tinyassets.api.http_connection import connect_http
+
+    udir = _make_universe(base, "u-o3", admin="founder")
+    _login("founder")
+    for bad in ("", "   ", 0, False, [], {"scheme": "bearer"}):
+        doc = {"destination": "webhook:acme", "secret": "sk", "allowed_endpoints": _EP,
+               "auth_scheme": bad}
+        r = connect_http(universe_id="u-o3", payload=json.dumps(doc))
+        assert r["error"] == "unsupported_auth_scheme", (bad, r)
+    assert _http_records(udir) == []
+    # Absent key → bearer default, as before.
+    ok = _connect("u-o3")
+    assert ok["status"] == "provisioned" and ok["auth_scheme"] == "bearer"
 
 
 def test_ssrf_endpoint_rejected_nothing_mutated(base: Path) -> None:
