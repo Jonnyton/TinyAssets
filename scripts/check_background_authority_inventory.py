@@ -68,6 +68,25 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # `status == "pending"`, and must still pass the exact worker + activation
     # claim transaction below before anything executes.
     CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "recover_expired"),
+    # Reviewed 2026-08-25 (assigned-queue consumer, execute-assigned-queue-consumer
+    # change). `AssignedQueueConsumer.poll_once` runs the same queue-owner lease
+    # maintenance the fleet dispatcher does above: `recover_expired()` reclaims
+    # expired epoch-2 claims over the canonical store and grants NO execution
+    # authority. Recovered tasks are filtered to this universe and to
+    # `status == "pending"`, and must still pass the exact worker + activation
+    # claim transaction (and the served-authority fence) before anything runs. The
+    # consumer is dark by default (TINYASSETS_ASSIGNED_QUEUE_CONSUMER=off).
+    CallSite(
+        "tinyassets/runtime/assigned_queue_consumer.py",
+        "AssignedQueueConsumer.poll_once",
+        "recover_expired",
+    ),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
+        "runtime/tinyassets/runtime/assigned_queue_consumer.py",
+        "AssignedQueueConsumer.poll_once",
+        "recover_expired",
+    ),
     CallSite(
         "fantasy_daemon/__main__.py",
         "_try_execute_claimed_branch_task",
