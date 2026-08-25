@@ -1062,12 +1062,13 @@
       const secretEl=$("http-secret"), scheme=$("http-auth-scheme").value;
       let secret=secretEl.value.trim();
       const out=$("http-result"), btn=$("btn-connect-http");
-      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential."; return; }
-      // Clear the secret from the DOM FIRST — before validation, before any await —
-      // so a malformed submission never leaves the pasted credential sitting visible
-      // in the textarea (Codex: validation returns used to precede the clear). The
-      // value lives only in this local from here on.
+      // Clear the secret from the DOM FIRST — before EVERY validation return,
+      // including the presence check, and before any await — so no submission
+      // (missing name/host, malformed bundle, or success) ever leaves the pasted
+      // credential sitting visible in the textarea (Codex: the presence-check
+      // return preceded the clear). The value lives only in this local from here on.
       secretEl.value="";
+      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
       // OAuth 1.0a: the user pastes the four values one per line (in the order the
       // provider's developer portal shows them); the form assembles the JSON bundle
       // the connection stores, so nobody has to hand-write JSON. Generic: any 1.0a API.

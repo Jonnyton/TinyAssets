@@ -620,7 +620,9 @@ def test_non_string_or_empty_auth_scheme_is_refused_not_defaulted(base: Path) ->
 
     udir = _make_universe(base, "u-o3", admin="founder")
     _login("founder")
-    for bad in ("", "   ", 0, False, [], {"scheme": "bearer"}):
+    # `None` = an EXPLICIT `"auth_scheme": null` on the wire — refused, not treated
+    # as absent (Codex ADAPT re-review: null used to provision a bearer credential).
+    for bad in (None, "", "   ", 0, False, [], {"scheme": "bearer"}):
         doc = {"destination": "webhook:acme", "secret": "sk", "allowed_endpoints": _EP,
                "auth_scheme": bad}
         r = connect_http(universe_id="u-o3", payload=json.dumps(doc))
