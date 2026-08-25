@@ -516,11 +516,91 @@ def test_empty_endpoints_rejected(base: Path) -> None:
 
 
 def test_unsupported_auth_scheme_rejected(base: Path) -> None:
+    """A scheme the broker cannot sign is refused at the door, nothing written.
+    (``header`` is engine-signable but needs a per-connection header NAME the ledger
+    does not persist yet, so it stays off the deposit door; ``none`` has nothing to
+    deposit.)"""
     udir = _make_universe(base, "u-as", admin="founder")
     _login("founder")
-    result = _connect("u-as", auth_scheme="oauth1a")
-    assert result["error"] == "unsupported_auth_scheme"
+    for bad in ("digest", "header", "none", "hmac"):
+        result = _connect("u-as", auth_scheme=bad)
+        assert result["error"] == "unsupported_auth_scheme", bad
+        assert set(result["allowed_auth_schemes"]) == {"bearer", "basic", "oauth1a"}
     assert _http_records(udir) == []
+
+
+def test_oauth1a_scheme_deposits_generically(base: Path) -> None:
+    """GENERIC UNLOCK: ``auth_scheme=oauth1a`` is accepted at the deposit door.
+
+    The engine already signs OAuth 1.0a end-to-end (``_build_http_secret_bundle``
+    parses the four-value JSON, ``_oauth1a_authorization`` signs), but the door was
+    bearer-only — which blocked X/Twitter posting and every other OAuth 1.0a API
+    with no way around it. This is a scheme unlock, NOT a per-service path: the
+    destination label is whatever the owner is connecting.
+    """
+    from tinyassets.api.http_connection import _ids
+
+    udir = _make_universe(base, "u-o1", admin="founder")
+    _login("founder")
+    bundle = json.dumps({
+        "api_key": "ck", "api_secret": "cs",
+        "access_token": "at", "access_token_secret": "ats",
+    })
+    result = _connect(
+        "u-o1", destination="x:my-account", secret=bundle, auth_scheme="oauth1a",
+        endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
+    )
+    assert result["status"] == "provisioned", result
+    assert result["auth_scheme"] == "oauth1a"
+    assert "ats" not in json.dumps(result) and "cs" not in json.dumps(result)
+
+    # Stored as ONE opaque string per connection (the broker parses it at request
+    # time) and the connection row carries the scheme so the child signs correctly.
+    conn_id, _g = _ids(universe_id="u-o1", destination="x:my-account")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert resource.auth_scheme == "oauth1a"
+    assert _http_records(udir)[0]["token"] == bundle
+
+    # Idempotent re-provision with the SAME scheme rotates; a DIFFERENT scheme for
+    # the same destination is a policy change → conflict, nothing rotated.
+    again = _connect(
+        "u-o1", destination="x:my-account", secret=bundle.replace("ats", "ats2"),
+        auth_scheme="oauth1a",
+        endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
+    )
+    assert again["status"] == "provisioned"
+    assert "ats2" in _http_records(udir)[0]["token"]
+    clash = _connect(
+        "u-o1", destination="x:my-account", secret="plain-bearer", auth_scheme="bearer",
+        endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
+    )
+    assert clash == {"error": "connection_conflict", "resource": "connection"}
+    assert "ats2" in _http_records(udir)[0]["token"]  # untouched
+
+
+def test_oauth1a_malformed_bundle_rejected_before_any_write(base: Path) -> None:
+    """The secret's SHAPE is validated at the door (mirroring the broker's parser)
+    so a malformed multi-value credential fails BEFORE any write — never as a
+    mysterious failed outbound call later. Error messages carry no secret material."""
+    udir = _make_universe(base, "u-o2", admin="founder")
+    _login("founder")
+    cases = {
+        "not-json-at-all": "must be a JSON object",
+        json.dumps(["a", "b"]): "must be a JSON object",
+        json.dumps({"api_key": "k", "api_secret": "s"}): "missing: access_token",
+    }
+    for bad, expect in cases.items():
+        r = _connect("u-o2", secret=bad, auth_scheme="oauth1a")
+        assert r["error"] == "connection_setup_invalid", (bad, r)
+        assert expect in r["detail"], (bad, r)
+        assert "k" != r["detail"] and bad not in r["detail"]  # no secret echoed
+    assert _http_records(udir) == []  # nothing written by any refusal
+
+    # basic: must be username:password
+    r = _connect("u-o2", secret="no-colon-here", auth_scheme="basic")
+    assert r["error"] == "connection_setup_invalid" and "username:password" in r["detail"]
+    ok = _connect("u-o2", secret="user:pa:ss", auth_scheme="basic")
+    assert ok["status"] == "provisioned" and ok["auth_scheme"] == "basic"
 
 
 def test_ssrf_endpoint_rejected_nothing_mutated(base: Path) -> None:

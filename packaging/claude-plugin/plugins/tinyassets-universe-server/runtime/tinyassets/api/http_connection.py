@@ -62,8 +62,44 @@ from tinyassets.storage.outbound_connections import (
     _parse_allowed_endpoints,
 )
 
-# Only bearer for Slice 1 (single-secret; matches the general vault resolver).
-_AUTH_SCHEME = "bearer"
+# Default when the caller names no scheme (the common single-token API case).
+_DEFAULT_AUTH_SCHEME = "bearer"
+#: Auth schemes this deposit door accepts — exactly the set the broker child can
+#: sign (see ``_SUPPORTED_HTTP_AUTH_SCHEMES`` / ``_build_http_secret_bundle`` in
+#: storage/outbound_connections.py), minus ``none`` (a no-credential connection
+#: has nothing to deposit) and ``header`` (needs a per-connection header NAME the
+#: ledger does not yet persist). Generic on purpose: ``oauth1a`` is what makes
+#: X/Twitter — and every other OAuth 1.0a API — depositable with no service code.
+_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "oauth1a"})
+_OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
+
+
+def _secret_shape_error(scheme: str, secret: str) -> str:
+    """Return a secret-free error string if ``secret`` is malformed for ``scheme``.
+
+    Mirrors the broker's ``_build_http_secret_bundle`` contract so the door and the
+    request-time parser agree; never includes any part of the secret in the message.
+    """
+    if scheme == "basic":
+        return "" if ":" in secret else "basic secret must be username:password"
+    if scheme == "oauth1a":
+        try:
+            values = json.loads(secret)
+        except (TypeError, ValueError):
+            return (
+                "oauth1a secret must be a JSON object with api_key, api_secret, "
+                "access_token, access_token_secret"
+            )
+        if not isinstance(values, dict):
+            return "oauth1a secret must be a JSON object"
+        missing = [
+            name
+            for name in _OAUTH1A_FIELDS
+            if not isinstance(values.get(name), str) or not values.get(name)
+        ]
+        if missing:
+            return "oauth1a secret is missing: " + ", ".join(missing)
+    return ""
 
 # Strict destination grammar: this one value keys the vault record (service +
 # destination), the connection identity, and — downstream — effector consent and
@@ -227,12 +263,22 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             ),
         }
 
-    scheme = str(document.get("auth_scheme") or _AUTH_SCHEME).strip().lower()
-    if scheme != _AUTH_SCHEME:
+    # Any auth scheme the engine already signs is accepted at the deposit door —
+    # channel-agnostically. The broker signs bearer/basic/header/oauth1a/none per
+    # connection (`_build_http_secret_bundle` + `_apply_auth`); until now this door
+    # was bearer-only, which silently blocked every OAuth 1.0a service (X/Twitter
+    # posting, and any other 1.0a API) even though the engine handled it end-to-end.
+    # Unlocking the scheme here (NOT adding a per-service path) is what keeps
+    # "add a channel we haven't tried" working with zero service-specific code.
+    scheme = str(document.get("auth_scheme") or _DEFAULT_AUTH_SCHEME).strip().lower()
+    if scheme not in _DEPOSITABLE_AUTH_SCHEMES:
         return {
             "error": "unsupported_auth_scheme",
-            "detail": "slice 1 supports auth_scheme=bearer only",
-            "allowed_auth_schemes": [_AUTH_SCHEME],
+            "detail": (
+                "auth_scheme must be one of "
+                + ", ".join(sorted(_DEPOSITABLE_AUTH_SCHEMES))
+            ),
+            "allowed_auth_schemes": sorted(_DEPOSITABLE_AUTH_SCHEMES),
         }
 
     secret = document.get("secret")
@@ -240,6 +286,15 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         return {"error": "connection_setup_invalid", "detail": "secret is required"}
     if len(secret) > _MAX_SECRET_CHARS:
         return {"error": "connection_setup_invalid", "detail": "secret is too large"}
+    # Validate the secret's SHAPE for the scheme at the door, mirroring exactly what
+    # the broker child will demand at request time — so a malformed multi-value
+    # credential is rejected BEFORE anything is written, not discovered as a failed
+    # outbound call later. The vault stores one opaque string per connection; for
+    # oauth1a that string is a JSON object of the four OAuth values, for basic it is
+    # "username:password". The values themselves are never inspected or echoed.
+    shape_error = _secret_shape_error(scheme, secret)
+    if shape_error:
+        return {"error": "connection_setup_invalid", "detail": shape_error}
 
     endpoints = document.get("allowed_endpoints")
     if not isinstance(endpoints, list) or not endpoints:
@@ -307,7 +362,7 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             or resource.connection_type != "http"
             or resource.connection_class != "http"
             or resource.provider != "http"
-            or resource.auth_scheme != _AUTH_SCHEME
+            or resource.auth_scheme != scheme
             or resource.destination != destination
             or resource.credential_ref != credential_ref
             or resource.revoked_at is not None
@@ -384,7 +439,7 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
                 owner_user_id=actor,
                 connection_class="http",
                 connection_type="http",
-                auth_scheme=_AUTH_SCHEME,
+                auth_scheme=scheme,
                 scopes=http_scopes,
                 provider="http",
                 destination=destination,

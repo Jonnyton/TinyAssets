@@ -91,6 +91,40 @@ never leave a usable half-connection.
   credential deposit succeeds, so a deposit failure or grant refusal leaves the legacy
   scope untouched and the connection inert (the inert-partial-state guarantee holds)
 
+### Requirement: The deposit door accepts every auth scheme the broker can sign, generically
+
+`connect_http` SHALL accept `auth_scheme` ∈ {`bearer` (default), `basic`, `oauth1a`} — the
+schemes the broker child already signs — rather than `bearer` only. This is a scheme
+unlock, never a per-service path: an OAuth 1.0a API (X/Twitter and any other) is
+connected through the identical generic deposit with the owner-chosen `destination` as
+its only identity. `header` stays off the door until the ledger persists a per-connection
+header name; `none` has nothing to deposit. The vault SHALL store ONE opaque string per
+connection: the raw token for `bearer`, `username:password` for `basic`, and a JSON
+object `{api_key, api_secret, access_token, access_token_secret}` for `oauth1a` — the
+same encodings the broker's `_build_http_secret_bundle` parses at request time. The
+door SHALL validate the secret's SHAPE for the scheme before any write (mirroring the
+broker's parser) so a malformed multi-value credential is refused up front, never
+discovered as a failed outbound call; refusal messages SHALL carry no secret material.
+The connection row SHALL record the scheme, and a re-provision with a DIFFERENT scheme
+for the same destination is a policy change → `connection_conflict`, nothing rotated.
+
+#### Scenario: An OAuth 1.0a service is connected with no service-specific code
+
+- **GIVEN** an owner with the four OAuth 1.0a values for some service
+- **WHEN** they call connect_http with `auth_scheme=oauth1a`, a JSON object of those
+  four values as the secret, and that service's endpoint allow-list
+- **THEN** the connection is provisioned with `auth_scheme="oauth1a"`, the bundle is
+  stored as one opaque vault string, no value is echoed, and the universe's
+  `authenticated_external_call` node can sign requests to it at run time
+
+#### Scenario: A malformed multi-value secret is refused before any write
+
+- **GIVEN** `auth_scheme=oauth1a` with a secret that is not a JSON object or lacks one
+  of the four values (or `basic` without a `:`)
+- **WHEN** connect_http runs
+- **THEN** it returns `connection_setup_invalid` naming the missing field, deposits
+  nothing, and creates no connection or grant
+
 ### Requirement: A universe can read back its own outbound connections, channel-agnostically
 
 `read_graph target=connections` SHALL list EVERY connection granted to the universe —
