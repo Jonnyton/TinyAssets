@@ -905,7 +905,12 @@ class _BackgroundAssignedProviderSession:
                             max_cost_microunits=cost_share,
                             owner_user_id=assignment.owner_user_id,
                             universe_id=self._task.universe_id,
-                            agent_binding_id=str(agent["binding_id"]),
+                            # resolve_serving_agent_binding returns the agent_bindings
+                            # row keyed "agent_binding_id" (custom_agents.py). The unit
+                            # fixture stubbed it as "binding_id", so this read matched
+                            # the STUB and KeyError'd on every real launch — caught only
+                            # by the real-store e2e test (Codex REJECT #1, second cause).
+                            agent_binding_id=str(agent["agent_binding_id"]),
                             binding_revision=int(agent["revision"]),
                             binding_id=provider_binding.binding_id,
                             binding_generation=provider_binding.generation,

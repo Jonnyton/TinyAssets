@@ -248,7 +248,9 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         serving_module,
         "resolve_serving_agent_binding",
-        lambda *_a, **_k: {"binding_id": "agent-a", "revision": 2},
+        # REAL shape (agent_bindings row): the key is "agent_binding_id". The old
+        # stub said "binding_id" and hid a KeyError on every real launch.
+        lambda *_a, **_k: {"agent_binding_id": "agent-a", "revision": 2},
     )
     current_assignment = {"value": assignment}
     monkeypatch.setattr(
