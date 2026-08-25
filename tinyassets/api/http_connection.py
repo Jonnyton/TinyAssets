@@ -64,6 +64,9 @@ from tinyassets.storage.outbound_connections import (
 
 # Default when the caller names no scheme (the common single-token API case).
 _DEFAULT_AUTH_SCHEME = "bearer"
+# Sentinel distinguishing an ABSENT auth_scheme key from an explicit null/falsy
+# value: only absence takes the bearer default; any explicit non-string is refused.
+_ABSENT = object()
 #: Auth schemes this deposit door accepts — exactly the set the broker child can
 #: sign (see ``_SUPPORTED_HTTP_AUTH_SCHEMES`` / ``_build_http_secret_bundle`` in
 #: storage/outbound_connections.py), minus ``none`` (a no-credential connection
@@ -81,7 +84,12 @@ def _secret_shape_error(scheme: str, secret: str) -> str:
     request-time parser agree; never includes any part of the secret in the message.
     """
     if scheme == "basic":
-        return "" if ":" in secret else "basic secret must be username:password"
+        # Mirror the broker exactly: BOTH halves must be non-empty ("user:", ":pw",
+        # and ":" are refused here, not written and rejected at dispatch later).
+        username, sep, password = secret.partition(":")
+        if not sep or not username or not password:
+            return "basic secret must be username:password (both non-empty)"
+        return ""
     if scheme == "oauth1a":
         try:
             values = json.loads(secret)
@@ -272,7 +280,18 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # posting, and any other 1.0a API) even though the engine handled it end-to-end.
     # Unlocking the scheme here (NOT adding a per-service path) is what keeps
     # "add a channel we haven't tried" working with zero service-specific code.
-    scheme = str(document.get("auth_scheme") or _DEFAULT_AUTH_SCHEME).strip().lower()
+    # Key PRESENCE decides the default, not the value: only an ABSENT key takes
+    # bearer. An explicit `"auth_scheme": null` is a malformed request and must be
+    # refused like any other non-string (Codex: null was treated as absent).
+    raw_scheme = document.get("auth_scheme", _ABSENT)
+    if raw_scheme is _ABSENT:
+        scheme = _DEFAULT_AUTH_SCHEME
+    elif isinstance(raw_scheme, str) and raw_scheme.strip():
+        scheme = raw_scheme.strip().lower()
+    else:
+        # An explicit non-string / empty scheme is a malformed request, NOT an
+        # invitation to silently default to bearer (Codex: falsy schemes defaulted).
+        scheme = ""
     if scheme not in _DEPOSITABLE_AUTH_SCHEMES:
         return {
             "error": "unsupported_auth_scheme",

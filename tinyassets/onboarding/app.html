@@ -1083,19 +1083,27 @@
       const secretEl=$("http-secret"), scheme=$("http-auth-scheme").value;
       let secret=secretEl.value.trim();
       const out=$("http-result"), btn=$("btn-connect-http");
-      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential."; return; }
+      // Clear the secret from the DOM FIRST — before EVERY validation return,
+      // including the presence check, and before any await — so no submission
+      // (missing name/host, malformed bundle, or success) ever leaves the pasted
+      // credential sitting visible in the textarea (Codex: the presence-check
+      // return preceded the clear). The value lives only in this local from here on.
+      secretEl.value="";
+      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
       // OAuth 1.0a: the user pastes the four values one per line (in the order the
       // provider's developer portal shows them); the form assembles the JSON bundle
       // the connection stores, so nobody has to hand-write JSON. Generic: any 1.0a API.
       if(scheme==="oauth1a"){
         const lines=secret.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-        if(lines.length!==4){ out.textContent="OAuth 1.0a needs exactly 4 lines: API key, API key secret, access token, access token secret."; return; }
+        if(lines.length!==4){ out.textContent="OAuth 1.0a needs exactly 4 lines: API key, API key secret, access token, access token secret. Please paste them again."; return; }
         secret=JSON.stringify({api_key:lines[0],api_secret:lines[1],access_token:lines[2],access_token_secret:lines[3]});
       }
-      if(scheme==="basic"&&!secret.includes(":")){ out.textContent="Basic auth needs username:password."; return; }
+      if(scheme==="basic"){
+        const i=secret.indexOf(":");
+        if(i<=0||i===secret.length-1){ out.textContent="Basic auth needs username:password (both non-empty). Please paste it again."; return; }
+      }
       const methods=(methodsRaw||"POST").split(",").map(m=>m.trim().toUpperCase()).filter(Boolean);
       const endpoint={host,methods}; if(path) endpoint.path_template=path;
-      secretEl.value="";  // clear the secret from the DOM BEFORE any await, on every path
       btn.disabled=true; out.textContent="Depositing securely...";
       try{
         const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);
