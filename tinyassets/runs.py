@@ -38,10 +38,10 @@ from typing import Any, Callable
 
 from tinyassets.branches import BranchDefinition
 from tinyassets.graph_compiler import (
+    BranchExecutionContext,
     CompilerError,
     EmptyResponseError,
     NodeEnqueueContext,
-    BranchExecutionContext,
     NodeTimeoutError,
     UnapprovedNodeError,
     compile_branch,
@@ -4245,6 +4245,9 @@ ACTIONABLE_BY: dict[str, str] = {
     "node_not_approved": "host",
     "permission_denied:approval_required": "host",
     "permission_denied:auth_expired": "host",
+    # chatbot: the fix is another tool call (select/bind a registered provider),
+    # never a host credential rotation.
+    "permission_denied:provider_not_bound": "chatbot",
     # chatbot — recoverable via another tool call
     "quota_exhausted": "chatbot",
     "provider_overloaded": "chatbot",

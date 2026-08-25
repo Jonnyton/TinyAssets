@@ -506,3 +506,20 @@ def test_mermaid_label_escapes_quotes_and_newlines(branch_env):
     assert "'quotes'" in mermaid
     # Newline in label collapsed to space, not a real newline breaking syntax
     assert "Node with 'quotes' and newline" in mermaid
+
+
+def test_read_graph_branches_lists_own_workflows_by_name_and_id(branch_env):
+    """read_graph target=branches: a user can find a workflow BY NAME (name + branch_def_id
+    + tags) without already knowing its internal id. Claude.ai hit "Global workflow
+    enumeration is not exposed by the advertised handles" when asked to rename a
+    workflow (2026-08-25) and had to ask the user for the id. This closes that."""
+    us, _ = branch_env
+    created = _call(us, "create_branch", name="Compute plug-and-play check",
+                    description="one-node provider check")
+    bid = created["branch_def_id"]
+    listing = json.loads(us.read_graph(target="branches"))
+    rows = listing["branches"]
+    assert listing["count"] == len(rows) >= 1
+    mine = [r for r in rows if r["name"] == "Compute plug-and-play check"]
+    assert len(mine) == 1, rows
+    assert mine[0]["branch_def_id"] == bid  # the id the user never had to know

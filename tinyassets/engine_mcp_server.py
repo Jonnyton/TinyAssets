@@ -182,7 +182,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
-_PINNED_READ_TARGETS = frozenset({"status", "graph", "compute", "connections"})
+_PINNED_READ_TARGETS = frozenset({"status", "graph", "branches", "compute", "connections"})
 
 
 def _binding_error() -> str | None:
@@ -212,7 +212,10 @@ def read_graph(target: str = "status") -> str:
 
     Args:
         target: What to read: ``status`` (a factual daemon + serving snapshot),
-            ``graph`` (inspect your universe's graph), ``compute`` (list the
+            ``graph`` (inspect your universe's graph), ``branches`` (list YOUR OWN
+            workflows by name + ``branch_def_id`` + tags — use it to find the id of a
+            workflow the user names before you read/patch/run it; never ask the user
+            for an internal id), ``compute`` (list the
             compute providers registered for your universe — the read sibling of
             registering one with ``connect_compute``), or ``connections`` (list the
             outbound channel connections your universe has — every http channel the
@@ -730,9 +733,16 @@ def write_graph(
     ANY HTTPS API with no service-specific code.** A node declaring
     ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
     the run, reading its instruction from one of its ``output_keys``. Prereqs, done
-    once in the browser flow (NOT here — they carry secrets): ``connect_http``
-    deposits the connection + grant and pins the host/path/method allow-list, and
-    ``source_channel operation=approve`` grants the destination consent. The node's
+    once (they carry secrets, so NOT through this chat): the owner deposits the
+    credential IN THE APP. Tell them: tap "Connect / add API connection" at the
+    top of this app, fill "Deposit API connection" (name, host, path, method;
+    choose how it authenticates: "OAuth 1.0a - 4 keys" for X/Twitter, pasting
+    the four keys one per line, or a bearer token for most APIs), then come back
+    and say it's done. NEVER send the user to a separate/external "browser
+    flow": the form is in this same app, one tap away. That deposit is
+    ``connect_http``: it stores the connection + grant and pins the
+    host/path/method allow-list. Then ``source_channel operation=approve`` grants
+    the destination consent (you can do that part). The node's
     ``source_code`` MUST return, under one of its ``output_keys``, a ``json.dumps``
     string of a packet of EXACTLY this shape (the effector rejects anything else —
     do NOT invent ``destination`` / ``payload`` keys)::
@@ -1419,8 +1429,10 @@ def connect_compute(
     an automation actually run on it, select it afterward via the branch's
     ``llm_policy`` (preferred_provider = the returned definition_id).
 
-    NO SECRET crosses this surface. For an ``api_key_http`` provider you must FIRST
-    deposit the credential out of band (the secure browser form / ``connect_http``),
+    NO SECRET crosses this surface. For an ``api_key_http`` provider the owner must
+    FIRST deposit the credential in the app's "Deposit API connection" form (tap
+    "Connect / add API connection" at the top of this app; same app, one tap; it
+    is ``connect_http``),
     which grants an http connection to this universe; pass that grant's id as ``ref``.
     For a ``subscription_cli`` provider the ``ref`` is the CLI name (``codex`` /
     ``claude-code``) and the subscription is deposited via ``connect_llm``.
@@ -1519,7 +1531,8 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     The consent step of adding a channel via the channel-agnostic node — the SAME
     owner-gated primitive the founder's browser chatbot has. After you build a branch
     with an ``authenticated_external_call`` node (write_graph) and its http connection is
-    deposited out of band (the secure browser form / connect_http), this grants the
+    deposited by the owner in the app's "Deposit API connection" form (tap "Connect /
+    add API connection" at the top of this app; it is connect_http), this grants the
     effector consent that lets that node's outbound call actually fire (e.g. a Slack post,
     or any HTTPS API you connected).
 

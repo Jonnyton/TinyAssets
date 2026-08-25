@@ -478,7 +478,8 @@ def read_graph(
     """Read TinyAssets graph state without changing it.
 
     Args:
-        target: What to read: status, graphs, graph, goals, goal, runs, run,
+        target: What to read: status, graphs, graph, branches (your own workflows
+            by name + branch_def_id), goals, goal, runs, run,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
             agent_binding.
         graph_id: Optional graph/universe identifier.
@@ -510,6 +511,16 @@ def read_graph(
         return _universe_impl(action="list", limit=limit)
     if normalized == "graph":
         return _universe_impl(action="inspect", universe_id=graph_id)
+    if normalized == "branches":
+        # The universe's OWN workflows by name + branch_def_id (+ tags/goal). Until
+        # now a user had to already know a branch's internal id to read/edit/run
+        # it — Claude.ai hit "Global workflow enumeration is not exposed by the
+        # advertised handles" when asked to rename a workflow (2026-08-25). The
+        # extensions layer already hides branches bound to non-public goals.
+        # scope="mine": the caller's OWN workflows, published or not. The default
+        # scope ("published") hides every private branch a user just built — which
+        # is precisely the "I can't find the workflow you named" failure.
+        return _extensions_impl(action="list_branches", scope="mine", limit=limit)
     if normalized == "goals":
         if query:
             return _goals_impl(action="search", query=query, limit=limit)
@@ -716,7 +727,19 @@ def write_graph(
         priority_weight: Requested numeric priority in inclusive range 0-100.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
-            only the branch's author can edit it.
+            only the branch's author can edit it. This is NOT JSON Patch — each op is
+            ``{"op": <name>, ...}`` with these recognized names: metadata —
+            ``set_name`` {name}, ``set_description`` {description}, ``set_tags``
+            {tags: FULL replacement list, so include the tags you want to keep},
+            ``set_goal`` {goal_id}, ``unset_goal``; structure — ``add_node`` {node_id,
+            display_name, prompt_template|source_code, ...}, ``update_node`` {node_id,
+            ...fields}, ``remove_node`` {node_id}, ``add_edge``/``remove_edge``
+            {from, to}, ``add_conditional_edge``/``remove_conditional_edge``,
+            ``add_state_field``/``remove_state_field``, ``set_entry_point``
+            {node_id}; skills — ``add_skill``/``update_skill``/``remove_skill``/
+            ``set_skills``; visibility — ``set_published``, ``set_visibility``,
+            ``set_fork_from``. Any other name (``set``, ``replace``, ``add``,
+            ``rename``, ``add_tag``...) is refused as ``unknown op``.
         agent_definition_id: Public definition to bind, or successor
             definition selected by a binding update.
         agent_binding_id: Existing private binding for operation=update.
