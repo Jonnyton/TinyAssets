@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.branch_tasks_v2 import (
+    DESCRIPTOR_VALIDITY_SECONDS,
     EPOCH2_TASK_LEASE_SECONDS,
     AssignedConsumerLease,
     Epoch2BranchTask,
     Epoch2BranchTaskAdapter,
     WorkerClaimDescriptor,
+    read_worker_claim_descriptor,
 )
 from tinyassets.runtime.claimed_branch_execution import (
     ClaimedBranchExecutorIdentity,
@@ -77,9 +79,14 @@ class AssignedQueueConsumer:
         # (prepare_claimed_cloud_provider_call -> runtime_matches_worker_provider):
         # one registered daemon for this consumer process, plus one provisioned
         # runtime + queue descriptor PER serving universe (a runtime is universe-bound).
-        self.worker_id = f"assigned-worker:{boot}"
+        self._worker_prefix = f"assigned-worker:{boot}"
         self._daemon_id: str = ""
         self._runtimes: dict[str, str] = {}  # universe_id -> runtime_instance_id
+        # The exact persisted descriptor per universe. The claim's trusted reader
+        # re-reads it from the store, so the value presented at claim time must be
+        # byte-identical to what was persisted (Codex #5: construct once, persist,
+        # claim with that value; refresh inside the protocol's validity window).
+        self._descriptors: dict[str, WorkerClaimDescriptor] = {}
 
     def start(self) -> None:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
@@ -116,26 +123,48 @@ class AssignedQueueConsumer:
         self._daemon_id = str(daemon["daemon_id"])
         return self._daemon_id
 
+    def worker_id_for(self, universe_id: str) -> str:
+        """Boot-unique worker identity PER universe (the claim lookup key)."""
+        return f"{self._worker_prefix}:{universe_id}"
+
     def _ensure_runtime(self, universe_id: str, provider_name: str) -> str:
-        """Provision (once per universe) the runtime + queue descriptor a claim needs."""
+        """Provision (once per universe) the runtime a claim needs; returns its id."""
         cached = self._runtimes.get(universe_id)
         if cached:
             return cached
-        from tinyassets.daemon_registry import ensure_daemon_runtime, set_worker_queue_descriptor
+        from tinyassets.daemon_registry import ensure_daemon_runtime
 
-        daemon_id = self._ensure_daemon()
         runtime = ensure_daemon_runtime(
             self.base_path,
-            daemon_id=daemon_id,
+            daemon_id=self._ensure_daemon(),
             universe_id=universe_id,
             provider_name=provider_name,
             model_name=provider_name,
             created_by="assigned-queue-consumer",
-            worker_id=self.worker_id,
+            worker_id=self.worker_id_for(universe_id),
             metadata={"automation_executor_class": "cloud"},
         )
         runtime_id = str(runtime["runtime_instance_id"])
-        descriptor = self._descriptor(universe_id, runtime_id)
+        self._runtimes[universe_id] = runtime_id
+        return runtime_id
+
+    def _current_descriptor(self, universe_id: str, runtime_id: str) -> WorkerClaimDescriptor:
+        """The persisted descriptor for this universe, refreshed inside its validity.
+
+        The protocol accepts a descriptor for at most DESCRIPTOR_VALIDITY_SECONDS; the
+        claim transaction re-reads the PERSISTED one and requires equality with what is
+        presented. So: build once, persist, cache the exact object, and re-issue only
+        when it is about to expire (never on every poll).
+        """
+        from tinyassets.daemon_registry import set_worker_queue_descriptor
+
+        cached = self._descriptors.get(universe_id)
+        now = datetime.now(timezone.utc)
+        if cached is not None:
+            expires = datetime.fromisoformat(cached.expires_at)
+            if (expires - now).total_seconds() > DESCRIPTOR_VALIDITY_SECONDS / 3:
+                return cached
+        descriptor = self._descriptor(universe_id, runtime_id, now=now)
         set_worker_queue_descriptor(
             self.base_path,
             runtime_instance_id=runtime_id,
@@ -151,25 +180,30 @@ class AssignedQueueConsumer:
                 "expires_at": descriptor.expires_at,
                 "executor_class": "cloud",
             },
-            expected_worker_id=self.worker_id,
+            expected_worker_id=descriptor.worker_id,
         )
-        self._runtimes[universe_id] = runtime_id
-        return runtime_id
+        self._descriptors[universe_id] = descriptor
+        return descriptor
 
-    def _descriptor(self, universe_id: str, runtime_id: str) -> WorkerClaimDescriptor:
+    def _descriptor(
+        self, universe_id: str, runtime_id: str, *, now: datetime | None = None
+    ) -> WorkerClaimDescriptor:
         from tinyassets.storage.automation_activations import AutomationActivationExecutor
 
+        issued = now or datetime.now(timezone.utc)
         return WorkerClaimDescriptor(
             queue_protocol_version=QUEUE_PROTOCOL_VERSION,
             capabilities=frozenset({OPERATOR_CAPABILITY}),
-            worker_id=self.worker_id,
+            worker_id=self.worker_id_for(universe_id),
             runtime_instance_id=runtime_id,
             boot_id=self.consumer_id,
             build_sha="0" * 40,
             config_hash="sha256:" + "0" * 64,
             universe_id=universe_id,
+            # Inside the protocol's validity window (was the 30-minute LEASE window —
+            # Codex #5: "the real claim path cannot claim even one task").
             expires_at=(
-                datetime.now(timezone.utc) + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS)
+                issued + timedelta(seconds=DESCRIPTOR_VALIDITY_SECONDS - 10)
             ).isoformat(),
             executor_class=AutomationActivationExecutor.CLOUD,
         )
@@ -218,7 +252,9 @@ class AssignedQueueConsumer:
 
         adapter = Epoch2BranchTaskAdapter(self.base_path)
         adapter.recover_expired(
-            target_recovery_guard=lambda task: task.claimed_by.startswith("assigned-consumer:")
+            target_recovery_guard=lambda task: task.claimed_by.startswith(
+                ("assigned-consumer:", "assigned-worker:")
+            )
         )
         with self._lock:
             finished = [uid for uid, future in self._active.items() if future.done()]
@@ -250,7 +286,7 @@ class AssignedQueueConsumer:
             if candidate is None:
                 continue
             lease = AssignedConsumerLease(
-                consumer_id=self.worker_id,
+                consumer_id=self.worker_id_for(universe_id),
                 lease_id=self.lease_id,
                 expires_at=(
                     datetime.now(timezone.utc) + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS)
@@ -269,11 +305,14 @@ class AssignedQueueConsumer:
                     "assigned queue worker registration failed universe=%s", universe_id
                 )
                 continue
-            descriptor = self._descriptor(universe_id, runtime_id)
+            descriptor = self._current_descriptor(universe_id, runtime_id)
+            # The reader is the store's trusted PERSISTED-descriptor read, never an
+            # echo of what we present (Codex #5: the transaction's trusted-reader
+            # contract).
             claimed = adapter.claim(
                 candidate.branch_task_id,
                 descriptor=descriptor,
-                descriptor_reader=lambda _conn, _worker_id, _d=descriptor: _d,
+                descriptor_reader=read_worker_claim_descriptor,
             )
             if claimed is None:
                 continue
@@ -320,6 +359,17 @@ class AssignedQueueConsumer:
             )
             from tinyassets.providers.call import call_provider
 
+            # Execution boundary: the exact persisted worker/runtime tuple must be
+            # proven, never best-effort (Codex #5). A generic read may stay
+            # unhydrated; a task we are about to RUN may not.
+            if not claimed_task.executor_worker_id or not claimed_task.executor_runtime_id:
+                adapter.finish(
+                    claimed_task.branch_task_id,
+                    worker_id=lease.consumer_id,
+                    status="failed",
+                    detail={"error": "executor_identity_unproven"},
+                )
+                return
             provider_call = prepare_claimed_cloud_provider_call(
                 self.base_path,
                 claimed_task=claimed_task,
@@ -327,13 +377,21 @@ class AssignedQueueConsumer:
                 provider_call=call_provider,
             )
             if provider_call is None:
-                raise PermissionError("task is not a prepared cloud continuation")
+                # Not a prepared cloud continuation: nothing this path can ever run.
+                # Terminalize (Codex #5: releasing it just reclaims it forever).
+                adapter.finish(
+                    claimed_task.branch_task_id,
+                    worker_id=lease.consumer_id,
+                    status="failed",
+                    detail={"error": "not_prepared_cloud_continuation"},
+                )
+                return
             success, error, detail = execute_claimed_branch_task(
                 self.base_path,
                 claimed_task,
                 ClaimedBranchExecutorIdentity(
                     daemon_id=self._ensure_daemon(),
-                    worker_id=self.worker_id,
+                    worker_id=claimed_task.executor_worker_id,
                     runtime_instance_id=claimed_task.executor_runtime_id,
                     heartbeat=heartbeat,
                 ),

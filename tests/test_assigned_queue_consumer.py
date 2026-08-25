@@ -241,6 +241,10 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
     # the cloud-continuation suite), keep the concurrency-cap logic under test.
     monkeypatch.setattr(AssignedQueueConsumer, "_ensure_runtime", lambda self, u, p: f"rt-{u}")
     monkeypatch.setattr(AssignedQueueConsumer, "_assigned_provider", lambda self, u: "codex")
+    monkeypatch.setattr(
+        AssignedQueueConsumer, "_current_descriptor",
+        lambda self, u, r: self._descriptor(u, r),
+    )
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
     consumer._executor.shutdown(wait=False, cancel_futures=True)
     consumer._executor = _Executor()
