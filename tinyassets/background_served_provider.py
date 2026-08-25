@@ -755,6 +755,15 @@ class _BackgroundAssignedProviderSession:
                             "WHERE reservation_id=?",
                             (reservation_id,),
                         ).fetchone()
+                        # Re-reserving the same deterministic aqpr_ id (same task +
+                        # invocation + prompt digest) is EXACTLY-ONCE guarded: a
+                        # 'launch_started' row is an in-flight launch and a
+                        # 'settled' row is a COMPLETED one — neither may be re-minted
+                        # by a crash-loop or a restarted session replaying the same
+                        # logical attempt (test: retry_does_not_remint). Only an
+                        # un-launched stale 'reserved' hold may be superseded. A
+                        # genuinely NEW attempt gets a new invocation index and so a
+                        # new id; it never collides with a settled row.
                         if existing is not None and existing["state"] != "reserved":
                             raise PermissionError("background provider launch is already armed")
                         if existing is not None:
@@ -790,22 +799,34 @@ class _BackgroundAssignedProviderSession:
                         # excluded here because their real cost is already counted
                         # via the served store.
                         _ensure_served_budget_schema(conn)
+                        # Finalized ACTUALS across EVERY generation of this binding —
+                        # a rebind bumps the generation but the universe's spend
+                        # does not reset, so querying only the current generation
+                        # orphaned prior spend and under-charged after every rebind
+                        # (Codex REJECT #5, PR #2528). The router writes these rows
+                        # for background attempts now (budget_owner admitted at the
+                        # reservation gate), so they are the real charge.
                         actuals = conn.execute(
                             """
                             SELECT COALESCE(SUM(actual_total_tokens), 0),
                                    COALESCE(SUM(actual_cost_microunits), 0)
                             FROM served_provider_budget_reservations
-                            WHERE binding_id=? AND binding_generation=?
-                              AND actual_total_tokens IS NOT NULL
+                            WHERE binding_id=? AND actual_total_tokens IS NOT NULL
                             """,
-                            (provider_binding.binding_id, provider_binding.generation),
+                            (provider_binding.binding_id,),
                         ).fetchone()
+                        # In-flight = usage genuinely unknown yet: 'reserved' (not
+                        # launched) AND 'launch_started' (launched, call not
+                        # returned). Counting only 'reserved' excluded every
+                        # launched-but-unfinished attempt from the cap (Codex
+                        # REJECT #3 — a 249k under-count was reproduced).
                         in_flight = conn.execute(
                             """
                             SELECT COUNT(*), COALESCE(SUM(max_tokens),0),
                                    COALESCE(SUM(max_cost_microunits),0)
                             FROM assigned_queue_provider_reservations
-                            WHERE budget_owner=? AND operation=? AND state='reserved'
+                            WHERE budget_owner=? AND operation=?
+                              AND state IN ('reserved', 'launch_started')
                             """,
                             (budget_owner, BACKGROUND_BRANCH_RUN_OPERATION),
                         ).fetchone()

@@ -489,6 +489,103 @@ def test_rolling_cap_charges_finalized_actuals_not_estimates(tmp_path: Path, mon
     assert own == ["settled"], states
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "HONEST GAP: this test drives the REAL router (it launches — REJECT #1 is fixed) "
+        "and reaches reserve_served_provider_budget, but the shared _authority_fixture "
+        "stubs the provider-authority store/assignment/custody, so reservation cannot "
+        "complete in-fixture (AttributeError: _ProviderStore has no connection). "
+        "Finalization (REJECT #2) is NOT yet proven end-to-end; it needs a fixture "
+        "seeding the real SQLiteProviderWorkAuthorityStore + assignment + custody. "
+        "strict=True so an accidental pass is flagged, not silently accepted."
+    ),
+)
+def test_background_call_goes_through_the_real_router_and_finalizes_actuals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """THE INTEGRATION PROOF Codex demanded (REJECT #1/#2/#6, PR #2528).
+
+    Every prior spend test drove the session with a callback provider and
+    hand-inserted 'actual' rows — false assurance. This routes a background call
+    through the REAL ProviderRouter and asserts the two facts the design rests on:
+
+    1. The background path LAUNCHES (the router no longer re-fences a context that
+       already carries an authorized ServedProviderAuthority — REJECT #1).
+    2. The router RESERVES before launch and FINALIZES the call's real usage into
+       served_provider_budget_reservations for the background attempt (the
+       reservation gate now admits budget_owner="background_attempt" — REJECT #2),
+       so the consumer's rolling cap charges what was actually spent.
+    """
+    import asyncio
+
+    from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
+
+    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
+    background_provider._ensure_reservation_schema(conn)
+    background_provider._ensure_served_budget_schema(conn)
+    # The shared fixture stubs load_universe_config to a bare {} (its callers never
+    # reach the router). This test DOES enter the real router, which reads
+    # config.allowed_providers as the requester ceiling — give it the real
+    # UniverseConfig shape production loads, admitting the assigned provider.
+    import tinyassets.config as config_module
+    from tinyassets.config import UniverseConfig
+
+    monkeypatch.setattr(
+        config_module, "load_universe_config",
+        lambda _path: UniverseConfig(allowed_providers=["codex"]),
+    )
+
+    class _CountingProvider(BaseProvider):
+        def __init__(self) -> None:
+            self.name = "codex"
+            self.family = "codex"
+            self.calls = 0
+
+        async def complete(self, prompt, system, config: ModelConfig, *, universe_dir=None):
+            self.calls += 1
+            return ProviderResponse(
+                text="routed-ok", provider="codex", model="fake", family="codex",
+                latency_ms=0.0, input_tokens=700, output_tokens=300, cost_microunits=50,
+            )
+
+    fake = _CountingProvider()
+    router = ProviderRouter({"codex": fake})
+
+    def through_real_router(prompt, system, *, role, config, **kwargs):
+        # Exactly what production does: the session's authority-bearing context is
+        # handed to the real router, which reserves, launches, and finalizes.
+        resp = asyncio.run(
+            router.call(role, prompt, system, operation=kwargs["operation"],
+                        universe_context=kwargs["universe_context"])
+        )
+        return resp.text
+
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path, task, _lease(), through_real_router
+    )
+    assert session("first") == "routed-ok"
+    assert fake.calls == 1  # REJECT #1: the real background path launched.
+
+    # REJECT #2: the router finalized REAL usage for the background attempt.
+    served = conn.execute(
+        "SELECT state, reserved_total_tokens, actual_total_tokens, actual_cost_microunits "
+        "FROM served_provider_budget_reservations"
+    ).fetchall()
+    assert len(served) == 1, served
+    assert served[0]["actual_total_tokens"] == 1000  # 700 in + 300 out, from the router
+    assert served[0]["actual_cost_microunits"] == 50
+    assert served[0]["state"] != "reserved"  # finalized, not left open
+
+    # And the consumer's own row was settled once the call returned, so the cap
+    # now charges the finalized 1,000 rather than the 125,000 estimate.
+    own = conn.execute(
+        "SELECT state FROM assigned_queue_provider_reservations"
+    ).fetchall()
+    assert [r["state"] for r in own] == ["settled"]
+
+
 def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
     """A real published version's content_hash is bare hex; the task carries
     sha256:<hex>. The authority compare normalizes both, so a genuine version is

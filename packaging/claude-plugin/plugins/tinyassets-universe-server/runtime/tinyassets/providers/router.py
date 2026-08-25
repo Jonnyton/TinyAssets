@@ -445,7 +445,19 @@ class ProviderRouter:
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
 
-        if universe_context is not None and universe_context.provider_invocation is None:
+        # A context that ALREADY carries an authorized ServedProviderAuthority (the
+        # daemon-owned background consumer fences its own authority per call in
+        # background_served_provider._authorize_launch and injects it here) must
+        # NOT be re-authorized as a founder-facing served turn: that path demands a
+        # live provider_request the background has none of, so it raised
+        # ProviderAuthorityHeldError and the real background path could never
+        # launch (Codex REJECT #1, PR #2528). Only an UN-authorized context is
+        # fenced here.
+        if (
+            universe_context is not None
+            and universe_context.provider_invocation is None
+            and universe_context.served_provider is None
+        ):
             from tinyassets.provider_assignment import authorize_served_provider_call
 
             if (
@@ -776,9 +788,19 @@ class ProviderRouter:
             logger.info("Trying provider %s for role=%s", provider_name, role)
             try:
                 budget_reservation = None
-                if (
-                    served_authority is not None
-                    and served_authority.budget_owner == "served_request"
+                # EVERY served authority — founder-facing served turns
+                # ("served_request") AND daemon-owned background attempts
+                # ("background_attempt") — goes THROUGH this reserve-before-launch /
+                # finalize-actuals-after machinery. It used to admit only
+                # "served_request", so background calls reserved nothing and
+                # created no actual-usage row, which made the consumer's rolling
+                # cap blind to real spend (Codex REJECT #2/#6, PR #2528). The one
+                # genuinely served-ONLY step is consuming a live request
+                # capability, which background does not carry — skipped below when
+                # absent; reservation + finalization are common to both.
+                if served_authority is not None and served_authority.budget_owner in (
+                    "served_request",
+                    "background_attempt",
                 ):
                     from tinyassets.auth.middleware import (
                         consume_provider_request_invocation,
@@ -791,10 +813,11 @@ class ProviderRouter:
                     )
 
                     try:
-                        consume_provider_request_invocation(
-                            served_authority.request_capability,
-                            limit=served_authority.request_max_invocations,
-                        )
+                        if served_authority.request_capability is not None:
+                            consume_provider_request_invocation(
+                                served_authority.request_capability,
+                                limit=served_authority.request_max_invocations,
+                            )
                     except PermissionError as exc:
                         raise ProviderAuthorityHeldError(
                             _CONNECT_PROVIDER_MESSAGE
