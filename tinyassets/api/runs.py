@@ -343,6 +343,24 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
         ))
     except ImportError:
         pass
+    # A held provider authority ("Connect your provider ...") is NOT an expired
+    # credential. Matched by TYPE here because its own message text contains the
+    # word "credentials", which the substring net below used to misread as
+    # permission_denied:auth_expired / actionable_by=host (live browser finding
+    # 2026-08-25: a registered-but-unbound provider told the user the HOST must
+    # rotate a key).
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    rows.append((
+        ProviderAuthorityHeldError,
+        "permission_denied:provider_not_bound",
+        (
+            "No serving provider is bound to this universe. If one is already "
+            "registered (read_graph target=compute lists them), select it as the "
+            "serving provider; otherwise register one first (connect_compute). Not "
+            "a credential problem and not host-actionable."
+        ),
+    ))
     rows.append((
         RecursionError,
         "recursion_limit",
@@ -493,6 +511,16 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "context_length_exceeded",
             "Input or accumulated state is too long for this provider;"
             " try a branch with fewer nodes or a higher-context model.",
+        )
+    if "connect your provider" in msg or "serving provider is bound" in msg:
+        return (
+            "permission_denied:provider_not_bound",
+            (
+            "No serving provider is bound to this universe. If one is already "
+            "registered (read_graph target=compute lists them), select it as the "
+            "serving provider; otherwise register one first (connect_compute). Not "
+            "a credential problem and not host-actionable."
+        ),
         )
     if "auth expir" in msg or "token expir" in msg or "credential" in msg:
         return (

@@ -720,3 +720,32 @@ class TestActionableByOnListRecentRuns:
         # No failure → empty failure_class → empty actionable_by (not "user").
         assert row["failure_class"] == ""
         assert row["actionable_by"] == ""
+
+
+class TestProviderNotBound:
+    """Live browser finding 2026-08-25: a registered-but-unbound serving provider was
+    classified permission_denied:auth_expired / actionable_by=host because the held-
+    authority message itself contains the word "credentials"."""
+
+    def test_held_authority_is_provider_not_bound_not_auth_expired(self):
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+        from tinyassets.providers.router import _CONNECT_PROVIDER_MESSAGE
+
+        exc = ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+        result = _classify_run_error(exc, "b1")
+        assert result["failure_class"] == "permission_denied:provider_not_bound"
+        assert result["actionable_by"] == "chatbot"
+        assert "select" in result["suggested_action"].lower()
+        assert "rotate" not in result["suggested_action"].lower()
+
+    def test_stored_error_string_form_is_provider_not_bound(self):
+        from tinyassets.api.runs import _classify_run_outcome_error
+        from tinyassets.providers.router import _CONNECT_PROVIDER_MESSAGE
+
+        klass, action = _classify_run_outcome_error(_CONNECT_PROVIDER_MESSAGE)
+        assert klass == "permission_denied:provider_not_bound"
+        assert "credential" not in klass
+
+    def test_real_credential_expiry_still_auth_expired(self):
+        exc = RuntimeError("auth expired, please renew token")
+        assert _classify_run_error(exc, "b1")["failure_class"] == "permission_denied:auth_expired"
