@@ -344,6 +344,17 @@ def _consumer_reason(base: Path, control: CloudAutomationControl) -> str | None:
     return None
 
 
+def _consumer_projection(base: Path, control: CloudAutomationControl) -> dict[str, Any]:
+    """The live worker's reason plus what the owner should do about it."""
+    from tinyassets.consumer_reason_actions import consumer_next_action
+
+    reason = _consumer_reason(base, control)
+    return {
+        "reason": reason,
+        "next_action": consumer_next_action(reason) if reason else "",
+    }
+
+
 def _projection(
     control: CloudAutomationControl,
     *,
@@ -401,7 +412,7 @@ def _projection(
         "automation": _control_projection(control),
         "activation": _activation_projection(activation),
         "health": health.to_dict(),
-        "consumer": {"reason": _consumer_reason(base, control)},
+        "consumer": _consumer_projection(base, control),
         "definition": definition.to_dict(),
         "baseline_evaluation": control.baseline_evaluation,
         "current_trigger": (

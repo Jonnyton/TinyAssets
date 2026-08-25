@@ -1564,8 +1564,13 @@ def _epoch2_operational_read(
     # Why the consumer is not producing work for this universe right now:
     # per-automation preconditions (provider_mismatch:..., no_prepared_continuation)
     # and per-principal pump outcomes (no_daemon_for_principal, produce_error:...).
+    # Each machine reason ships with the plain-language next step, because these
+    # strings are what the served agent relays to the user (cold desktop test
+    # 2026-08-25: it relayed provider_mismatch and then offered to investigate).
+    from tinyassets.consumer_reason_actions import consumer_next_action
+
     result.summary["consumer_pump"] = [
-        {"key": key, "reason": reason}
+        {"key": key, "reason": reason, "next_action": consumer_next_action(reason)}
         for key, reason in sorted(refusals.items())
         if key.startswith(("automation:", "universe:")) and not reason.startswith("ok:")
     ]
