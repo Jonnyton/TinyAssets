@@ -727,7 +727,19 @@ def write_graph(
         priority_weight: Requested numeric priority in inclusive range 0-100.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
-            only the branch's author can edit it.
+            only the branch's author can edit it. This is NOT JSON Patch — each op is
+            ``{"op": <name>, ...}`` with these recognized names: metadata —
+            ``set_name`` {name}, ``set_description`` {description}, ``set_tags``
+            {tags: FULL replacement list, so include the tags you want to keep},
+            ``set_goal`` {goal_id}, ``unset_goal``; structure — ``add_node`` {node_id,
+            display_name, prompt_template|source_code, ...}, ``update_node`` {node_id,
+            ...fields}, ``remove_node`` {node_id}, ``add_edge``/``remove_edge``
+            {from, to}, ``add_conditional_edge``/``remove_conditional_edge``,
+            ``add_state_field``/``remove_state_field``, ``set_entry_point``
+            {node_id}; skills — ``add_skill``/``update_skill``/``remove_skill``/
+            ``set_skills``; visibility — ``set_published``, ``set_visibility``,
+            ``set_fork_from``. Any other name (``set``, ``replace``, ``add``,
+            ``rename``, ``add_tag``...) is refused as ``unknown op``.
         agent_definition_id: Public definition to bind, or successor
             definition selected by a binding update.
         agent_binding_id: Existing private binding for operation=update.
