@@ -65,6 +65,14 @@ def _consumer_skip_reason(task: Epoch2BranchTask) -> str | None:
     return None
 
 
+def _runtime_provider_name(base_path: Path, universe_id: str) -> str:
+    """The provider this consumer's runtime serves for a universe ('' if none)."""
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    assignment = load_provider_assignment(base_path, universe_id=universe_id)
+    return "" if assignment is None else str(assignment.provider or "")
+
+
 def assigned_queue_refusal_freshness_seconds() -> float:
     return 5 * _configured_poll_seconds()
 
@@ -290,11 +298,20 @@ class AssignedQueueConsumer:
         task: Epoch2BranchTask,
         reason: str,
     ) -> None:
+        self._record_reason(refusal_store, task.branch_task_id, task.universe_id, reason)
+
+    def _record_reason(
+        self,
+        refusal_store: Any,
+        key: str,
+        universe_id: str,
+        reason: str,
+    ) -> None:
         # Re-record an unchanged reason only every half freshness window: the
-        # status read still always sees a fresh row, without one upsert per task
+        # status read still always sees a fresh row, without one upsert per key
         # per poll (Codex ADAPT on #2543: write amplification).
         now = time.monotonic()
-        previous = self._recorded.get(task.branch_task_id)
+        previous = self._recorded.get(key)
         window = min(
             assigned_queue_refusal_freshness_seconds(), 5 * self.poll_seconds
         )
@@ -306,17 +323,15 @@ class AssignedQueueConsumer:
             return
         try:
             refusal_store.record(
-                branch_task_id=task.branch_task_id,
-                universe_id=task.universe_id,
+                branch_task_id=key,
+                universe_id=universe_id,
                 reason=reason,
                 observed_at=datetime.now(timezone.utc).isoformat(),
                 consumer_id=self.consumer_id,
             )
-            self._recorded[task.branch_task_id] = (reason, now)
+            self._recorded[key] = (reason, now)
         except Exception:  # noqa: BLE001 - the ledger must never take the loop down
-            logger.exception(
-                "assigned queue refusal record failed task=%s", task.branch_task_id
-            )
+            logger.exception("assigned queue refusal record failed key=%s", key)
 
     def _consumer_lease(self) -> AssignedConsumerLease:
         return AssignedConsumerLease(
@@ -453,6 +468,9 @@ class AssignedQueueConsumer:
             produce_one_due_cloud_automation_slice,
             reconcile_one_terminal_cloud_automation,
         )
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
         from tinyassets.storage.cloud_automation_control import (
             CloudAutomationControlStore,
         )
@@ -468,14 +486,21 @@ class AssignedQueueConsumer:
         principals = sorted({control.principal_id for control in controls})
         if not principals:
             principals = [""]
+        refusal_store = AssignedQueueRefusalStore(self.base_path)
+        serving_provider = _runtime_provider_name(self.base_path, universe_id)
         for principal_id in principals:
             audience = default_audience
+            pump_key = f"universe:{universe_id}:{principal_id or '-'}"
             if principal_id:
                 context = self._serving_runtime(
                     universe_id,
                     principal_id=principal_id,
                 )
                 if context is None:
+                    # Live 2026-08-25: this `continue` was invisible. Say why.
+                    self._record_reason(
+                        refusal_store, pump_key, universe_id, "no_daemon_for_principal"
+                    )
                     continue
                 daemon, runtime = context
                 audience = BackgroundBranchExecutorAudience(
@@ -489,19 +514,107 @@ class AssignedQueueConsumer:
                 "audience": audience,
                 "principal_id": principal_id,
             }
-            activated = activate_one_requested_cloud_automation(
-                self.base_path,
-                **kwargs,
-            )
+            try:
+                activated = activate_one_requested_cloud_automation(
+                    self.base_path,
+                    **kwargs,
+                )
+            except Exception as exc:  # noqa: BLE001 - visible, never silent
+                logger.exception("assigned queue activation raised %s", pump_key)
+                self._record_reason(
+                    refusal_store,
+                    pump_key,
+                    universe_id,
+                    f"activate_error:{type(exc).__name__}",
+                )
+                continue
             if activated is not None:
                 return True
-            produced = produce_one_due_cloud_automation_slice(
-                self.base_path,
-                **kwargs,
+            # The production fence silently skips an automation whose provider
+            # binding is not the provider this consumer's runtime serves (live
+            # 2026-08-25: every automation was bound to claude-code while the
+            # universe served codex). Record that per automation, so the owner can
+            # rebind the automation or switch what the universe serves.
+            self._record_pump_preconditions(
+                refusal_store,
+                universe_id,
+                principal_id,
+                serving_provider,
             )
+            try:
+                produced = produce_one_due_cloud_automation_slice(
+                    self.base_path,
+                    **kwargs,
+                )
+            except Exception as exc:  # noqa: BLE001 - visible, never silent
+                logger.exception("assigned queue production raised %s", pump_key)
+                self._record_reason(
+                    refusal_store,
+                    pump_key,
+                    universe_id,
+                    f"produce_error:{type(exc).__name__}",
+                )
+                continue
             if produced is not None:
                 return True
         return False
+
+    def _record_pump_preconditions(
+        self,
+        refusal_store: Any,
+        universe_id: str,
+        principal_id: str,
+        serving_provider: str,
+    ) -> None:
+        from tinyassets.storage.cloud_automation_continuation import (
+            SQLiteCloudAutomationContinuationStore,
+        )
+        from tinyassets.storage.cloud_automation_control import (
+            CloudAutomationControlStore,
+        )
+        from tinyassets.storage.provider_work_authority import (
+            SQLiteProviderWorkAuthorityStore,
+        )
+
+        try:
+            automation_ids = CloudAutomationControlStore(
+                self.base_path
+            ).list_claimable_automation_ids(
+                universe_id=universe_id,
+                principal_id=principal_id,
+                limit=100,
+            )
+            continuations = SQLiteCloudAutomationContinuationStore(self.base_path)
+            providers = SQLiteProviderWorkAuthorityStore(self.base_path)
+            for automation_id in automation_ids:
+                key = f"automation:{automation_id}"
+                continuation = continuations.get(
+                    universe_id=universe_id,
+                    automation_id=automation_id,
+                )
+                if continuation is None:
+                    self._record_reason(
+                        refusal_store, key, universe_id, "no_prepared_continuation"
+                    )
+                    continue
+                binding = providers.get(continuation.provider_binding_id)
+                if binding is None:
+                    self._record_reason(
+                        refusal_store, key, universe_id, "provider_binding_missing"
+                    )
+                    continue
+                if binding.provider != serving_provider:
+                    self._record_reason(
+                        refusal_store,
+                        key,
+                        universe_id,
+                        "provider_mismatch:automation="
+                        f"{binding.provider},serving={serving_provider or 'none'}",
+                    )
+        except Exception:  # noqa: BLE001 - a precondition read must never stop the pump
+            logger.exception(
+                "assigned queue pump precondition read failed universe=%s", universe_id
+            )
 
     def _execute(
         self,

@@ -420,3 +420,96 @@ def test_orphan_pending_task_does_not_block_activation(
         _refusal_reason(tmp_path, orphan.branch_task_id)
         == "consumer_not_applicable:assigned_cloud_automation"
     )
+
+
+def _reason_for_key(base: Path, key: str) -> str | None:
+    return _refusal_reason(base, key)
+
+
+def test_pump_records_provider_mismatch_instead_of_silently_skipping(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Live 2026-08-25 (prod c5c36eb2): the founder resumed an automation, nothing was
+    produced, and nothing said why - its provider binding was claude-code while the
+    universe served codex, and the production fence skips silently."""
+    import tinyassets.runtime.assigned_queue_consumer as consumer_module
+
+    definition, setup = _prepare_live_automation(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    monkeypatch.setattr(
+        consumer_module, "_runtime_provider_name", lambda base, universe: "other-provider"
+    )
+    # Prod shape: the automation is idle with a due slice (claimable). The store
+    # excludes an automation while its slice is still running, so model it.
+    from tinyassets.storage.cloud_automation_control import (
+        CloudAutomationControlStore,
+    )
+
+    monkeypatch.setattr(
+        CloudAutomationControlStore,
+        "list_claimable_automation_ids",
+        lambda self, **kwargs: [setup.control.automation_id],
+    )
+    fake = _CountingProvider()
+    previous_router = provider_call_module.get_provider_router()
+    previous_force_mock = provider_call_module.is_force_mock()
+    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
+    provider_call_module.set_force_mock(False)
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=2)
+    deferred = _DeferredExecutor()
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = deferred
+    try:
+        # Activation still converges (it is provider-agnostic) ...
+        assert consumer.poll_once() == 0
+        active = AutomationActivationStore(tmp_path).get(
+            definition.universe_id,
+            setup.control.automation_id,
+        )
+        assert active is not None and active.state.value == "active"
+        # ... its first slice is claimed and completes ...
+        assert consumer.poll_once() == 1
+        deferred.run()
+        assert deferred.future is not None
+        deferred.future.result(timeout=10)
+        # ... and once idle (the prod shape: activated, nothing pending), the
+        # production pass records WHY the next slice will not be produced.
+        assert consumer.poll_once() == 0
+    finally:
+        consumer.stop()
+        provider_call_module.set_provider_router(previous_router)
+        provider_call_module.set_force_mock(previous_force_mock)
+    key = f"automation:{setup.control.automation_id}"
+    reason = _reason_for_key(tmp_path, key)
+    assert reason is not None and reason.startswith("provider_mismatch:automation=")
+    assert reason.endswith(",serving=other-provider")
+    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
+    assert {"key": key, "reason": reason} in summary["consumer_pump"]
+
+
+def test_pump_exception_is_recorded_per_principal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import tinyassets.cloud_automation_runtime as runtime_module
+
+    definition, _setup = _prepare_live_automation(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated activation failure")
+
+    monkeypatch.setattr(
+        runtime_module, "activate_one_requested_cloud_automation", _boom
+    )
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    try:
+        assert consumer.poll_once() == 0
+    finally:
+        consumer.stop()
+    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
+    reasons = {item["key"]: item["reason"] for item in summary["consumer_pump"]}
+    principal_keys = [k for k in reasons if k.startswith(f"universe:{definition.universe_id}:")]
+    assert principal_keys, reasons
+    assert all(reasons[k] == "activate_error:RuntimeError" for k in principal_keys)

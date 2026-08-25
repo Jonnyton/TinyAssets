@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe
@@ -316,6 +317,25 @@ def _current_branch_task_state(current_trigger: Any) -> str:
     return ""
 
 
+def _consumer_reason(base: Path, control: CloudAutomationControl) -> str | None:
+    """The live consumer's fresh reason for not producing this automation, if any."""
+    try:
+        from tinyassets.runtime.assigned_queue_consumer import (
+            assigned_queue_refusal_freshness_seconds,
+        )
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
+
+        reasons = AssignedQueueRefusalStore(base).fresh_reasons(
+            universe_id=control.universe_id,
+            max_age_seconds=assigned_queue_refusal_freshness_seconds(),
+        )
+    except Exception:  # noqa: BLE001 - a projection read must never fail the surface
+        return None
+    return reasons.get(f"automation:{control.automation_id}")
+
+
 def _projection(
     control: CloudAutomationControl,
     *,
@@ -373,6 +393,7 @@ def _projection(
         "automation": _control_projection(control),
         "activation": _activation_projection(activation),
         "health": health.to_dict(),
+        "consumer": {"reason": _consumer_reason(base, control)},
         "definition": definition.to_dict(),
         "baseline_evaluation": control.baseline_evaluation,
         "current_trigger": (
@@ -445,7 +466,10 @@ def cloud_automations(
         provider_rebind_alias = isinstance(candidate, dict) and (
             "provider" in candidate and "definition" not in candidate
         )
-    if normalized in {"bind_provider", "reconcile_provider", "rebind_provider"} or provider_rebind_alias:
+    if (
+        normalized in {"bind_provider", "reconcile_provider", "rebind_provider"}
+        or provider_rebind_alias
+    ):
         try:
             document = json.loads(payload) if isinstance(payload, str) else payload
         except (TypeError, ValueError, json.JSONDecodeError):
