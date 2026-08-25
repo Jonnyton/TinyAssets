@@ -182,7 +182,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
-_PINNED_READ_TARGETS = frozenset({"status", "graph", "compute", "connections"})
+_PINNED_READ_TARGETS = frozenset({"status", "graph", "branches", "compute", "connections"})
 
 
 def _binding_error() -> str | None:
@@ -212,7 +212,10 @@ def read_graph(target: str = "status") -> str:
 
     Args:
         target: What to read: ``status`` (a factual daemon + serving snapshot),
-            ``graph`` (inspect your universe's graph), ``compute`` (list the
+            ``graph`` (inspect your universe's graph), ``branches`` (list YOUR OWN
+            workflows by name + ``branch_def_id`` + tags — use it to find the id of a
+            workflow the user names before you read/patch/run it; never ask the user
+            for an internal id), ``compute`` (list the
             compute providers registered for your universe — the read sibling of
             registering one with ``connect_compute``), or ``connections`` (list the
             outbound channel connections your universe has — every http channel the

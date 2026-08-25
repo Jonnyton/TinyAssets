@@ -478,7 +478,8 @@ def read_graph(
     """Read TinyAssets graph state without changing it.
 
     Args:
-        target: What to read: status, graphs, graph, goals, goal, runs, run,
+        target: What to read: status, graphs, graph, branches (your own workflows
+            by name + branch_def_id), goals, goal, runs, run,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
             agent_binding.
         graph_id: Optional graph/universe identifier.
@@ -510,6 +511,16 @@ def read_graph(
         return _universe_impl(action="list", limit=limit)
     if normalized == "graph":
         return _universe_impl(action="inspect", universe_id=graph_id)
+    if normalized == "branches":
+        # The universe's OWN workflows by name + branch_def_id (+ tags/goal). Until
+        # now a user had to already know a branch's internal id to read/edit/run
+        # it — Claude.ai hit "Global workflow enumeration is not exposed by the
+        # advertised handles" when asked to rename a workflow (2026-08-25). The
+        # extensions layer already hides branches bound to non-public goals.
+        # scope="mine": the caller's OWN workflows, published or not. The default
+        # scope ("published") hides every private branch a user just built — which
+        # is precisely the "I can't find the workflow you named" failure.
+        return _extensions_impl(action="list_branches", scope="mine", limit=limit)
     if normalized == "goals":
         if query:
             return _goals_impl(action="search", query=query, limit=limit)

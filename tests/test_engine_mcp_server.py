@@ -1139,6 +1139,40 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     assert other.get("connections") == [] and other.get("count") == 0
 
 
+def test_read_graph_branches_target_lists_own_workflows_end_to_end(monkeypatch, tmp_path):
+    """The served read_graph accepts target=branches (pinned to this universe) and lists
+    the universe's OWN workflows by name + branch_def_id, so the agent can resolve a
+    workflow the user names without asking for an internal id (the gap Claude.ai hit
+    2026-08-25: "Global workflow enumeration is not exposed by the advertised handles")."""
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.api.extensions import _extensions_impl
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import grant_universe_access
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "u-branches-read"
+    (tmp_path / uid).mkdir(parents=True)
+    grant_universe_access(tmp_path, universe_id=uid, actor_id="founder-br",
+                          permission="admin", granted_by="founder-br")
+    tok = _current_identity.set(Identity(user_id="founder-br", username="founder-br",
+                                         capabilities=["read", "list", "write"]))
+    try:
+        created = json.loads(_extensions_impl(
+            action="create_branch", name="Compute smoke check", description="x",
+        ))
+        assert created.get("status") == "created", created
+    finally:
+        _current_identity.reset(tok)
+
+    assert "branches" in s._PINNED_READ_TARGETS
+    monkeypatch.setattr(s, "_ACTOR_ID", "founder-br")
+    monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    out = json.loads(s.read_graph(target="branches"))
+    names = {r["name"]: r["branch_def_id"] for r in out.get("branches", [])}
+    assert names.get("Compute smoke check") == created["branch_def_id"], out
+
+
 def test_served_allowlists_do_not_drift():
     """The two served engine-MCP allowlists (codex + claude) MUST offer the SAME
     tools — a codex-served and a claude-served universe get identical capability
