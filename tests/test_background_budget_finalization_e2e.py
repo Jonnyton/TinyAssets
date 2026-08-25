@@ -1,248 +1,154 @@
-"""END-TO-END finalization proof for the background budget path (Codex REJECT #2, #2528).
+"""Real-store end-to-end proof of the PRODUCTION background provider path.
 
-Composes the production-faithful cloud-automation harness from
-``tests/test_cloud_automation_continuation.py`` (real activation store, real background
-binding, a REAL provider-work binding row via ``install_test_binding``, real
-``commit_admission``, the real attempt-issuance service, the real Epoch-2 claim
-adapter) with the served-side seeding from ``tests/test_provider_served_router.py``
-(``write_credential_vault`` -> ``publish_definition`` -> ``create_binding`` ->
-``bind_serving_provider`` -> ``set_serving``, which is what makes
-``reserve_served_provider_budget``'s assignment + custody gates pass), then drives ONE
-background call through the REAL ``ProviderRouter`` and asserts the router
-reserved-before-launch and FINALIZED the call's actual usage for the
-``budget_owner="background_attempt"`` attempt.
+History: this file began as the finalization proof for Codex REJECT #2 on #2531, built on
+a caller-populated ``ServedProviderAuthority`` the router honoured. Codex REJECT #4 settled
+that no in-process provenance scheme is sound ("if arbitrary in-process Python is the
+adversary, no underscore, sentinel, or same-process secret suffices"), so the consumer was
+re-routed through the repo's hardened path instead, and this proof was rewritten to drive
+THAT path against every real store:
 
-No SimpleNamespace stubs, no in-memory hand-DDL: the whole schema comes up through
-the real boot bring-up (``initialize_author_server``). Three monkeypatches, all
-named honestly: ``_branch_roles`` (a roles lookup on ``branch_versions``, unrelated
-to budget) and the ``datetime`` of both ``background_served_provider`` and
-``storage.provider_work_authority`` frozen to the harness ``NOW`` (the rows are
-anchored at 2026-08-01; this aligns the clocks, it does not bypass a budget gate).
-It proves the reserve->finalize persistence of ``ProviderResponse`` usage for a
-background attempt - NOT that a production adapter obeys ``max_tokens`` (Codex #6,
-tracked separately).
+    _claimable_cloud_path (real admission/continuation/authority/queue stores)
+      -> descriptor-based claim (hydrates executor_worker_id / executor_runtime_id)
+      -> prepare_claimed_cloud_provider_call  (the consumer's actual call)
+      -> _ClaimedCloudProviderSession
+      -> _reserve_and_arm_cloud_branch_carrier_in_transaction
+      -> a server-minted, pid-bound, ONE-USE ProviderInvocationCarrier
+      -> the REAL ProviderRouter (carrier branch: chain pinned to the carrier's provider,
+         cfg.max_tokens pinned to the carrier's bound)
+      -> provider.complete
 
-This PASSED against the real stores at head da141cbc (finalization proof for Codex
-REJECT #2, re-proving #1)
-- see the xfail below for why it is parked. The seams it walked to get here (each a
-real store the production path touches) are listed in the draft PR body, along with
-the two real bugs it found
-(the ``agent_binding_id`` key mismatch; the hard-coded ``converse`` reserve gate).
+No test-side authority is constructed anywhere: the only thing faked is the provider at the
+end of the chain (a counting stub). Monkeypatches: none.
 """
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-# Codex REJECT #4 (2026-08-25): the acceptance path this proof relied on - the router
-# honouring a pre-set ``served_provider`` - was refuted (no in-process provenance
-# scheme is sound against in-process Python; three attempts were each reproduced
-# around). The reserve->finalize persistence it demonstrated is REAL, but it can
-# only be re-proven once the background consumer carries the server-minted,
-# pid-bound, ONE-USE ``ProviderInvocationCarrier`` (receipt -> claim -> reservation
-# mint) instead of a public ``served_provider`` field, with all provider launch
-# sites funnelled through one guarded boundary. strict=True: it must not pass by
-# accident.
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "background authority must ride the one-use ProviderInvocationCarrier, not a "
-        "caller-populated served_provider (Codex REJECT #4 on #2531); re-enable once "
-        "the consumer mints a carrier and the router has one guarded launch boundary."
-    ),
-)
-
-OWNER = "acct_alice"
-UNIVERSE = "universe_alice"
+from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+from tinyassets.cloud_automation_continuation import prepare_claimed_cloud_provider_call
+from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.providers.router import ProviderRouter
+from tinyassets.storage.provider_work_authority import db_path as authority_db_path
 
 
-def _seed_served_side(base: Path) -> None:
-    """The exact public calls a universe makes to get a 'ready' served assignment
-    (which reserve_served_provider_budget validates) on the SAME owner/universe the
-    continuation harness uses."""
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, publish_definition
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+class _CountingProvider(BaseProvider):
+    def __init__(self) -> None:
+        self.name = "codex"
+        self.family = "codex"
+        self.calls: list[ModelConfig] = []
 
-    universe_dir = base / UNIVERSE
-    universe_dir.mkdir(parents=True, exist_ok=True)
-    write_credential_vault(
-        universe_dir,
-        [{"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="}],
-        owner_user_id=OWNER,
-        universe_id=UNIVERSE,
-    )
-    definition = publish_definition(
-        base,
-        author_id=OWNER,
-        payload={
-            "schema_version": 1,
-            "name": "Served",
-            "description": "budget e2e fixture",
-            "tags": ["test"],
-            "components": {"identity": {"kind": "soul", "config": {}}},
-        },
-    )
-    agent = create_binding(
-        base,
-        universe_id=UNIVERSE,
-        definition_id=definition["agent_definition_id"],
-        created_by=OWNER,
-        payload={
-            "schema_version": 1,
-            "name": "served binding",
-            "role": "operator",
-            "goals": [],
-            "components": {},
-        },
-    )
-    connected = bind_serving_provider(
-        base_path=base,
-        universe_dir=universe_dir,
-        owner_user_id=OWNER,
-        universe_id=UNIVERSE,
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=1,
-        provider="codex",
-    )
-    set_serving(
-        base_path=base,
-        universe_dir=universe_dir,
-        owner_user_id=OWNER,
-        universe_id=UNIVERSE,
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=connected["agent_binding"]["revision"],
-        enabled=True,
-    )
+    async def complete(self, prompt, system, config: ModelConfig, *, universe_dir=None):
+        self.calls.append(config)
+        return ProviderResponse(
+            text="routed-ok", provider="codex", model="fake", family="codex",
+            latency_ms=0.0, input_tokens=700, output_tokens=300, cost_microunits=50,
+        )
 
 
-def test_background_call_reserves_and_finalizes_actual_usage_end_to_end(
-    tmp_path: Path, monkeypatch
-) -> None:
-    import asyncio
-    import sqlite3
+def _real_router_call(fake: _CountingProvider):
+    """The consumer's provider_call shape, routed through the REAL ProviderRouter."""
+    router = ProviderRouter({"codex": fake})
 
-    import tinyassets.background_served_provider as background_provider
+    def through_real_router(prompt, system="", *, role="writer", **kwargs):
+        return asyncio.run(router.call(
+            role, prompt, system,
+            operation=kwargs["operation"],
+            universe_context=kwargs["universe_context"],
+        )).text
+
+    return through_real_router
+
+
+def test_consumer_path_launches_through_one_use_carrier_on_real_stores(tmp_path: Path) -> None:
     from tests.test_cloud_automation_continuation import (
         BRANCH_TASK_ID,
         NOW,
         _claimable_cloud_path,
     )
-    from tinyassets.background_branch_authority_service import (
-        BackgroundBranchAttemptFence,
-        BackgroundBranchAuthorityOwnerKind,
-        BackgroundBranchAuthorityOwnerRecord,
-        BackgroundBranchAuthorityOwnerState,
-        BackgroundBranchBindingFence,
+
+    _fixture, _continuation, _admission, audience, _attempt, _claimed = _claimable_cloud_path(
+        tmp_path
     )
-    from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTaskAdapter
-    from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
-    from tinyassets.providers.router import ProviderRouter
-    from tinyassets.storage import db_path
-
-    base = tmp_path
-    # The ENTIRE production-faithful chain in one call (self-initializing): real daemon
-    # + runtime + queue descriptor, activation store, background binding, a real
-    # provider-work binding row, prepare -> activate -> claimable commit_admission ->
-    # real attempt-issuance service -> real Epoch-2 claim. Returns the live claim.
-    fixture, continuation, admission, audience, attempt, claimed_request = (
-        _claimable_cloud_path(base)
-    )
-    binding = fixture[3].get_binding(fixture[1].background_binding_id)
-    assert binding is not None
-    # QUEUE_TASK owner fenced to the exact binding + attempt. FINDING: no production
-    # code path mints this owner today (insert_owner is only ever called from the store
-    # tests), so the consumer's owner gate is currently unsatisfiable in prod. Seeded
-    # here as a REAL row (PENDING is the only valid QUEUE_TASK state); the prod minting
-    # is a separate gap to close.
-    fixture[3].insert_owner(BackgroundBranchAuthorityOwnerRecord(
-        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
-        owner_id=BRANCH_TASK_ID,
-        universe_id=UNIVERSE,
-        authorizing_principal_id=OWNER,
-        source_generation=attempt.source_generation,
-        transition_generation=1,
-        state=BackgroundBranchAuthorityOwnerState.PENDING,
-        binding=BackgroundBranchBindingFence(binding),
-        attempt=BackgroundBranchAttemptFence(attempt),
-        hold_reason=None,
-        updated_at=NOW.isoformat().replace("+00:00", "Z"),
-    ))
-    # The consumer's session needs the Epoch2BranchTask row (claimed_by set by the
-    # real claim above) and a lease whose consumer_id IS that claimant.
-    claimed = Epoch2BranchTaskAdapter(base, clock=lambda: NOW).get(BRANCH_TASK_ID)
-    assert claimed is not None and claimed.claimed_by == claimed_request.claimed_by
-    lease = AssignedConsumerLease(
-        consumer_id=claimed.claimed_by,
-        lease_id="assigned-lease:e2e",
-        expires_at="2099-01-01T01:00:00+00:00",
-    )
-
-    # --- served side: makes reserve_served_provider_budget's gates pass -----------
-    _seed_served_side(base)
-    monkeypatch.setattr(background_provider, "_branch_roles", lambda *_a: ("writer",))
-    # The harness pins every lease/claim to NOW (2026-08-01); the consumer compares
-    # them against a hard datetime.now(). Freeze the consumer's clock to the SAME
-    # instant the rows were written under — faithful, not a future-dated fake lease.
-    from datetime import datetime as _real_datetime
-
-    class _FrozenDatetime(_real_datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return NOW if tz is None else NOW.astimezone(tz)
-
-    monkeypatch.setattr(background_provider, "datetime", _FrozenDatetime)
-    # The reserve gate constructs its OWN SQLiteProviderWorkAuthorityStore with the
-    # default wall clock and checks the background binding's expires_at (NOW+30m in
-    # harness time) against it — freeze that module's clock to NOW as well. Pure
-    # test-clock artifact: real bindings carry real future expiries.
-    import tinyassets.storage.provider_work_authority as _pwa_module
-
-    monkeypatch.setattr(_pwa_module, "datetime", _FrozenDatetime)
-
-    # --- the real router with a counting fake provider --------------------------
-    class _CountingProvider(BaseProvider):
-        def __init__(self) -> None:
-            self.name = "codex"
-            self.family = "codex"
-            self.calls = 0
-
-        async def complete(self, prompt, system, config: ModelConfig, *, universe_dir=None):
-            self.calls += 1
-            return ProviderResponse(
-                text="routed-ok", provider="codex", model="fake", family="codex",
-                latency_ms=0.0, input_tokens=700, output_tokens=300, cost_microunits=50,
-            )
+    # A heartbeat renews the claim resolution the cloud path revalidates against
+    # (canonical authority); the fixture is anchored to a frozen NOW.
+    assert Epoch2BranchTaskAdapter(
+        tmp_path, clock=lambda: NOW + timedelta(seconds=2)
+    ).heartbeat(BRANCH_TASK_ID, worker_id=audience.worker_id) is not None
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    # The claim hydrated the executor identity the cloud path authorizes against — no
+    # by-hand assignment (the bug fixed at _as_execution_task).
+    assert task.executor_worker_id == audience.worker_id
+    assert task.executor_runtime_id == audience.runtime_id
 
     fake = _CountingProvider()
-    router = ProviderRouter({"codex": fake})
-
-    def through_real_router(prompt, system, *, role, config, **kwargs):
-        return asyncio.run(router.call(
-            role, prompt, system, operation=kwargs["operation"],
-            universe_context=kwargs["universe_context"],
-        )).text
-
-    session = background_provider._BackgroundAssignedProviderSession(
-        base, claimed, lease, through_real_router
+    authorized = prepare_claimed_cloud_provider_call(
+        tmp_path,
+        claimed_task=task,
+        daemon_id=audience.daemon_id,
+        provider_call=_real_router_call(fake),
+        clock=lambda: NOW + timedelta(seconds=2),  # fixture is frozen at NOW
     )
-    assert session("first") == "routed-ok"
-    assert fake.calls == 1  # REJECT #1: the real background path launched.
+    assert authorized is not None  # a prepared cloud continuation: the consumer runs it
 
-    conn = sqlite3.connect(db_path(base))
+    assert authorized("first", "system") == "routed-ok"
+    assert len(fake.calls) == 1  # the real router launched the real provider
+
+    # The carrier's bound is a HARD pre-launch bound on the config the provider sees
+    # (Codex #6: a reservation is only accounting unless the launch is capped).
+    launched_cfg = fake.calls[0]
+    assert launched_cfg.max_tokens is not None and launched_cfg.max_tokens >= 1
+
+    # And it rode a ONE-USE carrier reserved on the real authority store: exactly one
+    # reservation row for this launch, keyed to the claim.
+    conn = sqlite3.connect(authority_db_path(tmp_path))
     conn.row_factory = sqlite3.Row
-    served_rows = conn.execute(
-        "SELECT state, actual_total_tokens, actual_cost_microunits "
-        "FROM served_provider_budget_reservations"
+    rows = conn.execute(
+        "SELECT state, ordinal, claim_id FROM provider_invocation_reservations"
     ).fetchall()
-    # REJECT #2: the router reserved AND finalized REAL usage for the background attempt.
-    assert len(served_rows) == 1, [dict(r) for r in served_rows]
-    assert served_rows[0]["actual_total_tokens"] == 1000
-    assert served_rows[0]["actual_cost_microunits"] == 50
-    assert served_rows[0]["state"] != "reserved"
-    own = [r["state"] for r in conn.execute(
-        "SELECT state FROM assigned_queue_provider_reservations"
-    )]
-    assert own == ["settled"]
+    assert len(rows) == 1, [dict(r) for r in rows]
+    assert rows[0]["ordinal"] == 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "carrier usage accounting gap: the one-use carrier path CONSUMES its reservation "
+        "but records no actuals (no actual_* on provider_invocation_reservations, no "
+        "post-call finalize). Pre-activation blocker for the rolling cap; lane tracked in "
+        "draft #2531."
+    ),
+)
+def test_carrier_launch_records_actual_usage(tmp_path: Path) -> None:
+    from tests.test_cloud_automation_continuation import (
+        BRANCH_TASK_ID,
+        NOW,
+        _claimable_cloud_path,
+    )
+
+    _fixture, _c, _a, audience, _at, _cl = _claimable_cloud_path(tmp_path)
+    assert Epoch2BranchTaskAdapter(
+        tmp_path, clock=lambda: NOW + timedelta(seconds=2)
+    ).heartbeat(BRANCH_TASK_ID, worker_id=audience.worker_id) is not None
+    task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
+    fake = _CountingProvider()
+    authorized = prepare_claimed_cloud_provider_call(
+        tmp_path, claimed_task=task, daemon_id=audience.daemon_id,
+        provider_call=_real_router_call(fake),
+        clock=lambda: NOW + timedelta(seconds=2),  # fixture is frozen at NOW
+    )
+    assert authorized is not None
+    authorized("first", "system")
+    conn = sqlite3.connect(authority_db_path(tmp_path))
+    conn.row_factory = sqlite3.Row
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(provider_invocation_reservations)")}
+    assert "actual_total_tokens" in cols  # does not exist yet — the gap
+    row = conn.execute(
+        "SELECT actual_total_tokens FROM provider_invocation_reservations"
+    ).fetchone()
+    assert row["actual_total_tokens"] == 1000
