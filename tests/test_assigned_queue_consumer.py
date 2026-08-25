@@ -242,7 +242,9 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(AssignedQueueConsumer, "_ensure_runtime", lambda self, u, p: f"rt-{u}")
     monkeypatch.setattr(
         AssignedQueueConsumer, "_assignment",
-        lambda self, u: type("A", (), {"provider": "codex", "owner_user_id": "acct_alice", "state": "ready"})(),
+        lambda self, u: type(
+            "A", (), {"provider": "codex", "owner_user_id": "acct_alice", "state": "ready"}
+        )(),
     )
     monkeypatch.setattr(
         AssignedQueueConsumer, "_current_descriptor",
