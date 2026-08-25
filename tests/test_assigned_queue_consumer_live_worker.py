@@ -241,3 +241,132 @@ def test_consumer_activates_then_claims_and_executes_without_env_identity(
     assert terminal is not None and terminal.status == "succeeded", terminal.error
     assert len(fake.calls) == 1
     assert {name: os.environ.get(name) for name in identity_names} == identity_before
+
+
+def _refusal_reason(base: Path, branch_task_id: str) -> str | None:
+    with sqlite3.connect(db_path(base)) as conn:
+        row = conn.execute(
+            "SELECT reason FROM assigned_queue_refusals WHERE branch_task_id = ?",
+            (branch_task_id,),
+        ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def test_claim_exception_is_recorded_as_a_named_refusal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Live finding 2026-08-25 (prod 5477680c): a claim that RAISED left the task
+    'eligible' with no reason - the beat kept flowing while the claim loop died on
+    every poll, invisibly. An exception must land in the same ledger."""
+    branch_task_id, _audience = _seed_claimable_background_path(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+
+    def _boom(self, candidate, **_kwargs):
+        raise RuntimeError("simulated prod-only claim failure")
+
+    monkeypatch.setattr(Epoch2BranchTaskAdapter, "claim_assigned", _boom)
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    try:
+        assert consumer.poll_once() == 0
+    finally:
+        consumer.stop()
+    assert _refusal_reason(tmp_path, branch_task_id) == "claim_error:RuntimeError"
+    task = Epoch2BranchTaskAdapter(tmp_path).get(branch_task_id)
+    assert task is not None and task.status == "pending"
+    summary = _epoch2_operational_snapshot(tmp_path / "universe_alice")
+    diagnostic = next(
+        item for item in summary["diagnostics"]
+        if item["branch_task_id"] == branch_task_id
+    )
+    assert diagnostic["operational_state"] == "consumer_error"
+    assert diagnostic["reason"] == "claim_error:RuntimeError"
+    assert summary["eligible_pending_count"] == 0
+
+
+def test_unexplained_refusal_is_still_recorded(tmp_path: Path, monkeypatch) -> None:
+    branch_task_id, _audience = _seed_claimable_background_path(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter, "claim_assigned", lambda self, c, **k: None
+    )
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter, "explain_assigned_refusal", lambda self, c, **k: None
+    )
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    try:
+        assert consumer.poll_once() == 0
+    finally:
+        consumer.stop()
+    assert _refusal_reason(tmp_path, branch_task_id) == "refusal_unexplained"
+
+
+def test_pending_task_the_consumer_skips_gets_a_named_reason(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A pending task that fails the consumer's own candidate filter used to be
+    skipped with no trace, so get_status still called it 'eligible'."""
+    from dataclasses import replace
+
+    branch_task_id, _audience = _seed_claimable_background_path(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    original = Epoch2BranchTaskAdapter(tmp_path).get(branch_task_id)
+    assert original is not None
+    tray = replace(original, automation_executor_class="tray")
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter, "list_candidates", lambda self, **k: [tray]
+    )
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    try:
+        assert consumer.poll_once() == 0
+    finally:
+        consumer.stop()
+    assert _refusal_reason(tmp_path, branch_task_id) == "requires_executor_class:tray"
+    task = Epoch2BranchTaskAdapter(tmp_path).get(branch_task_id)
+    assert task is not None and task.status == "pending"
+    summary = _epoch2_operational_snapshot(tmp_path / "universe_alice")
+    diagnostic = next(
+        item for item in summary["diagnostics"]
+        if item["branch_task_id"] == branch_task_id
+    )
+    assert diagnostic["operational_state"] == "awaiting_compatible_executor"
+    assert diagnostic["reason"] == "requires_executor_class:tray"
+
+
+def test_unclaimable_candidate_does_not_starve_the_next(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Codex ADAPT on #2543: the first eligible-but-unclaimable task must not
+    starve a claimable task behind it in the same universe."""
+    from dataclasses import replace
+
+    branch_task_id, _audience = _seed_claimable_background_path(tmp_path)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    original = adapter.get(branch_task_id)
+    assert original is not None
+    ghost = replace(original, branch_task_id="bt2_" + "f" * 32)
+    monkeypatch.setattr(
+        Epoch2BranchTaskAdapter, "list_candidates", lambda self, **k: [ghost, original]
+    )
+    real_claim = Epoch2BranchTaskAdapter.claim_assigned
+
+    def _claim(self, candidate, **kwargs):
+        if candidate.branch_task_id == ghost.branch_task_id:
+            raise RuntimeError("ghost cannot be claimed")
+        return real_claim(self, candidate, **kwargs)
+
+    monkeypatch.setattr(Epoch2BranchTaskAdapter, "claim_assigned", _claim)
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    deferred = _DeferredExecutor()
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = deferred
+    try:
+        assert consumer.poll_once() == 1
+    finally:
+        consumer.stop()
+    assert _refusal_reason(tmp_path, ghost.branch_task_id) == "claim_error:RuntimeError"
+    claimed = adapter.get(branch_task_id)
+    assert claimed is not None and claimed.status == "running"
