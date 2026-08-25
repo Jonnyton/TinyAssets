@@ -76,6 +76,8 @@
     .muted{color:var(--ink-dim);font-size:.9em}
     .bigcode{display:inline-block;font-size:1.5rem;letter-spacing:.12em;padding:.3rem .6rem;border-radius:8px;background:var(--surface);border:1px solid var(--line)}
     .provider-card textarea{width:100%;box-sizing:border-box;margin:.5rem 0}
+    .preset-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:.25rem 0 .75rem}
+    .preset-row .btn--link{padding:.15rem .4rem}
     .connect-advanced{margin-top:1.25rem;border-top:1px solid var(--line);padding-top:1rem}
     .connect-advanced summary{cursor:pointer;color:var(--ink-dim)}
     .field{display:block;margin:.8rem 0}
@@ -193,13 +195,20 @@
           universe then builds on it (register it as compute, or wire a channel).</p>
           <label class="field"><span>Name (a label you'll recognize)</span>
             <input id="http-destination" type="text" placeholder="e.g. openrouter or slack-webhook" /></label>
+          <div class="preset-row">
+            <span class="muted">Doing a common one? Fill it in for me:</span>
+            <button type="button" class="btn btn--link" id="preset-x">X / Twitter (post)</button>
+            <button type="button" class="btn btn--link" id="preset-openrouter">OpenRouter (free LLMs)</button>
+            <button type="button" class="btn btn--link" id="preset-slack">Slack webhook</button>
+          </div>
           <label class="field"><span>API host</span>
             <input id="http-host" type="text" placeholder="e.g. openrouter.ai or api.x.com" /></label>
           <label class="field"><span>Path it may call <span class="muted">(optional; default any path)</span></span>
             <input id="http-path" type="text" placeholder="e.g. /api/v1/chat/completions or /2/tweets" /></label>
           <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
             <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
-          <label class="field"><span>How it authenticates</span>
+          <label class="field"><span>How it authenticates
+              <span class="muted">(X/Twitter needs "OAuth 1.0a - 4 keys"; most other APIs use a bearer token)</span></span>
             <select id="http-auth-scheme">
               <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
               <option value="basic">Username &amp; password (basic auth)</option>
@@ -1085,6 +1094,41 @@
       basic:["Username:password","username:password"],
       oauth1a:["OAuth 1.0a keys","(use the four boxes below)"],
     };
+    // The four X fields live behind the auth-type select, so a user who does not
+    // know X needs OAuth 1.0a never sees them (founder, 2026-08-25: "its still very
+    // confusing where goes what"). These presets fill the generic form the user
+    // could fill by hand - no per-service code path, the deposit is the same
+    // connect_http for every service.
+    function applyPreset(values){
+      const scheme=$("http-auth-scheme");
+      Object.entries(values).forEach(([id,value])=>{ const el=$(id); if(el) el.value=value; });
+      scheme.dispatchEvent(new Event("change"));
+      const first=values["http-auth-scheme"]==="oauth1a" ? $("http-oauth1a-api-key") : $("http-secret");
+      if(first) first.focus();
+    }
+    $("preset-x").addEventListener("click",()=>applyPreset({
+      "http-destination":"x:posting", "http-host":"api.x.com", "http-path":"/2/tweets",
+      "http-methods":"POST", "http-auth-scheme":"oauth1a",
+    }));
+    $("preset-openrouter").addEventListener("click",()=>applyPreset({
+      "http-destination":"openrouter", "http-host":"openrouter.ai",
+      "http-path":"/api/v1/chat/completions", "http-methods":"POST", "http-auth-scheme":"bearer",
+    }));
+    $("preset-slack").addEventListener("click",()=>applyPreset({
+      "http-destination":"slack-webhook", "http-host":"hooks.slack.com",
+      "http-path":"", "http-methods":"POST", "http-auth-scheme":"bearer",
+    }));
+    // Typing an X host is the same signal: switch to the four labelled boxes rather
+    // than letting someone paste four secrets into one bearer field.
+    $("http-host").addEventListener("input",()=>{
+      const host=$("http-host").value.trim().toLowerCase();
+      const isX=/(^|\.)(x\.com|twitter\.com)$/.test(host)||host==="api.x.com"||host==="api.twitter.com";
+      const scheme=$("http-auth-scheme");
+      if(isX && scheme.value!=="oauth1a"){
+        scheme.value="oauth1a"; scheme.dispatchEvent(new Event("change"));
+        $("http-result").textContent="X/Twitter posting uses OAuth 1.0a - switched to the four-key form below.";
+      }
+    });
     $("http-auth-scheme").addEventListener("change",()=>{
       const scheme=$("http-auth-scheme").value;
       const h=secretHints[scheme]||secretHints.bearer;
