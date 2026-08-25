@@ -808,6 +808,15 @@ class ProviderRouter:
                 # genuinely served-ONLY step is consuming a live request
                 # capability, which background does not carry — skipped below when
                 # absent; reservation + finalization are common to both.
+                if served_authority is not None and served_authority.budget_owner not in (
+                    "served_request",
+                    "background_attempt",
+                ):
+                    # An authority with an UNKNOWN budget owner must never reach a
+                    # provider: it would skip the reservation block below and launch
+                    # with no budget at all (Codex REJECT #3 reproduced exactly this
+                    # with a forged authority). Fail closed before routing.
+                    raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
                 if served_authority is not None and served_authority.budget_owner in (
                     "served_request",
                     "background_attempt",

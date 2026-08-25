@@ -227,29 +227,31 @@ def test_background_call_reserves_and_finalizes_actual_usage_end_to_end(
 
 
 def test_forged_served_provider_on_a_context_is_refused_before_launch(tmp_path: Path) -> None:
-    """Codex REJECT on #2531, reproduced and closed.
+    """Codex REJECT #2 + #3 on #2531, reproduced and closed.
 
     ``ServedProviderAuthority`` is a plain frozen dataclass: anyone can build one of
-    the right SHAPE and hand it to the router on a ``UniverseContext``. Before the
-    fix, the router honoured such a pre-set ``served_provider`` and launched the
-    provider with no authenticated request and no background issuance proof (Codex
-    reproduced an actual launch). Authority is now established by PROVENANCE: the
-    router honours a pre-set authority only if it IS the very object a genuine mint
-    site currently holds open (identity, not equality). A forged lookalike must be
-    refused BEFORE any provider is called; the same object, once registered by a
-    mint site, is honoured — proving the check keys on issuance, not shape.
+    the right SHAPE. Authority is therefore established by PROVENANCE through a
+    validator-owned, unforgeable fence (the same pattern as
+    ``auth.middleware.ProviderRequestCapability``): there is NO public "register"
+    primitive (REJECT #3: the first fix had one, so an attacker could self-bless a
+    forgery), the fence cannot be constructed or serialized, and only the two
+    genuine mint sites (inside ``provider_assignment`` / ``_authorize_launch``) mint
+    one. Separately, an authority with an UNKNOWN ``budget_owner`` must fail closed
+    before routing — it would otherwise skip the reservation block and launch with
+    no budget (REJECT #3 reproduced exactly that).
+
+    Genuine provenance is proven by the real-store e2e above (the background mint
+    site opens a fence and the router launches); this test proves every forgery
+    path is refused with ZERO provider calls.
     """
     import asyncio
 
     import pytest
 
+    import tinyassets.provider_assignment as pa
     from tinyassets.config import UniverseConfig
     from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import (
-        ServedProviderAuthority,
-        register_issued_authority,
-        unregister_issued_authority,
-    )
+    from tinyassets.provider_assignment import IssuedAuthorityFence, ServedProviderAuthority
     from tinyassets.providers.base import (
         BaseProvider,
         ModelConfig,
@@ -275,50 +277,62 @@ def test_forged_served_provider_on_a_context_is_refused_before_launch(tmp_path: 
     router = ProviderRouter({"codex": fake})
     universe_dir = tmp_path / "u-forge"
     universe_dir.mkdir()
-    forged = ServedProviderAuthority(
-        authority_kind="subscription_snapshot", provider="codex",
-        max_invocations=10, request_max_invocations=0, max_tokens=100_000,
-        max_cost_microunits=1_000_000, owner_user_id="attacker",
-        universe_id="u-forge", agent_binding_id="b", binding_revision=1,
-        binding_id="bid", binding_generation=1, binding_digest="d",
-        credential_reference_id="c", credential_reference_generation=1,
-        credential_reference_digest="cd", credential_service="codex",
-        credential_snapshot_dir=universe_dir, request_capability=None,
-        operation="background_branch_run", allowed_roles=("writer",),
-        budget_owner="background_attempt",
-    )
-    context = UniverseContext(
-        universe_dir=universe_dir,
-        config=UniverseConfig(allowed_providers=["codex"]),
-        served_provider=forged,  # looks exactly like a real one
-    )
 
-    # THE ATTACK: refused before any provider launch.
-    with pytest.raises(ProviderAuthorityHeldError):
+    def forged(budget_owner: str) -> ServedProviderAuthority:
+        return ServedProviderAuthority(
+            authority_kind="subscription_snapshot", provider="codex",
+            max_invocations=10, request_max_invocations=0, max_tokens=100_000,
+            max_cost_microunits=1_000_000, owner_user_id="attacker",
+            universe_id="u-forge", agent_binding_id="b", binding_revision=1,
+            binding_id="bid", binding_generation=1, binding_digest="d",
+            credential_reference_id="c", credential_reference_generation=1,
+            credential_reference_digest="cd", credential_service="codex",
+            credential_snapshot_dir=universe_dir, request_capability=None,
+            operation="background_branch_run", allowed_roles=("writer",),
+            budget_owner=budget_owner,
+        )
+
+    def attempt(authority: ServedProviderAuthority) -> None:
+        context = UniverseContext(
+            universe_dir=universe_dir,
+            config=UniverseConfig(allowed_providers=["codex"]),
+            served_provider=authority,
+        )
         asyncio.run(router.call(
             "writer", "p", "s", operation="background_branch_run", universe_context=context,
         ))
+
+    # ATTACK 1 (REJECT #2): a shape-perfect forgery is refused before any launch.
+    with pytest.raises(ProviderAuthorityHeldError):
+        attempt(forged("background_attempt"))
     assert fake.calls == 0
 
-    # CONTROL: the SAME object, once a mint site registers it, passes the provenance
-    # check (it then proceeds to the real reservation gates, which refuse this
-    # unbacked authority for OTHER reasons — the point is the router no longer
-    # rejects on provenance). Provenance keys on issuance, not on shape.
-    register_issued_authority(forged)
+    # ATTACK 2 (REJECT #3): self-blessing is impossible — no public register primitive
+    # exists, and the fence cannot be constructed, mutated, or serialized.
+    assert not hasattr(pa, "register_issued_authority")
+    with pytest.raises(TypeError):
+        IssuedAuthorityFence()
+    with pytest.raises(TypeError):
+        IssuedAuthorityFence(forged("background_attempt"))
+    # Even a hand-built fence object smuggled into the open-fence table is refused:
+    # its _secret is not the module-private sentinel.
+    smuggled = object.__new__(IssuedAuthorityFence)
+    object.__setattr__(smuggled, "_secret", object())  # not _MINT_SECRET
+    victim = forged("background_attempt")
+    object.__setattr__(smuggled, "_authority", victim)
+    with pa._ISSUED_AUTHORITY_LOCK:
+        pa._OPEN_FENCES[id(victim)] = smuggled
     try:
-        with pytest.raises(Exception) as excinfo:
-            asyncio.run(router.call(
-                "writer", "p", "s", operation="background_branch_run",
-                universe_context=context,
-            ))
-        # It got PAST the provenance gate into the reservation machinery.
-        assert "Connect your provider" not in str(excinfo.value)
+        assert pa.is_issued_authority(victim) is False
+        with pytest.raises(ProviderAuthorityHeldError):
+            attempt(victim)
     finally:
-        unregister_issued_authority(forged)
+        with pa._ISSUED_AUTHORITY_LOCK:
+            pa._OPEN_FENCES.pop(id(victim), None)
     assert fake.calls == 0
-    # And after unregistering, the identical object is a forgery again.
+
+    # ATTACK 3 (REJECT #3): an UNKNOWN budget_owner can no longer skip reservation
+    # and launch unbudgeted — refused before routing, zero provider calls.
     with pytest.raises(ProviderAuthorityHeldError):
-        asyncio.run(router.call(
-            "writer", "p", "s", operation="background_branch_run", universe_context=context,
-        ))
+        attempt(forged("free_lunch"))
     assert fake.calls == 0

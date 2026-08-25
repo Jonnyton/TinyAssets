@@ -17,11 +17,11 @@ from tinyassets.background_branch_authority import BackgroundBranchBindingStatus
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 from tinyassets.provider_assignment import (
     ServedProviderAuthority,
+    _close_fence,
     _ensure_served_budget_schema,
+    _mint_issued_authority,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
-    register_issued_authority,
-    unregister_issued_authority,
 )
 from tinyassets.provider_work_authority import (
     ProviderWorkAuthorityWriteOutcome,
@@ -944,11 +944,11 @@ class _BackgroundAssignedProviderSession:
                         raise
                 # Register the exact object for the fenced call so the router can tell
                 # this genuine, issued authority from a caller-constructed lookalike.
-                register_issued_authority(authority)
+                _mint_issued_authority(authority)
                 try:
                     yield authority
                 finally:
-                    unregister_issued_authority(authority)
+                    _close_fence(authority)
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
