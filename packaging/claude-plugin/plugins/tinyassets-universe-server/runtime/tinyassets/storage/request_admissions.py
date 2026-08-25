@@ -1550,6 +1550,59 @@ class RequestAdmissionStore:
                 conn.rollback()
                 raise
 
+    def release_v2_task_claim(
+        self,
+        branch_task_id: str,
+        *,
+        worker_id: str,
+        claimed_at: str,
+        reason: str,
+    ) -> bool:
+        """Return an exact live claim to pending without changing attempt identity."""
+
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                at = _clock_iso(self._clock)
+                row = conn.execute(
+                    "SELECT * FROM branch_tasks_v2 WHERE branch_task_id = ?",
+                    (branch_task_id,),
+                ).fetchone()
+                if row is None:
+                    conn.commit()
+                    return False
+                cursor = conn.execute(
+                    """
+                    UPDATE branch_tasks_v2
+                    SET status = 'pending', claimed_by = '', claimed_at = NULL,
+                        heartbeat_at = NULL, lease_expires_at = NULL
+                    WHERE branch_task_id = ? AND status = 'running'
+                      AND claimed_by = ? AND claimed_at = ?
+                      AND disabled = 0
+                    """,
+                    (branch_task_id, worker_id, claimed_at),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return False
+                conn.execute(
+                    "UPDATE user_requests SET status = 'pending', updated_at = ? "
+                    "WHERE request_id = ?",
+                    (_epoch_seconds(at), row["request_id"]),
+                )
+                self._append_task_event(
+                    conn,
+                    row,
+                    event_type="authority_held",
+                    event_at=at,
+                    detail={"reason": _required(reason, "reason")},
+                )
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+
     def request_v2_cancel(
         self,
         branch_task_id: str,
@@ -1705,7 +1758,10 @@ class RequestAdmissionStore:
                 """,
                 (now,),
             ).fetchall()
-        return [_task_row(row) for row in rows]
+        # Keep the guard snapshot byte-for-byte comparable with the row read
+        # again under BEGIN IMMEDIATE.  Normalizing JSON/bools here makes the
+        # later CAS reject every unchanged row.
+        return [dict(row) for row in rows]
 
     def recover_expired_v2_tasks(
         self,
@@ -2463,6 +2519,13 @@ def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
     """Create the epoch-2 schema on the active pre-traffic DB connection."""
 
     conn.executescript(_SCHEMA)
+    # The shared epoch-2 claim guard (_transaction_allows_epoch2_lifecycle) reads
+    # background_branch_authority_owners on THIS connection to avoid double-claiming a
+    # task the assigned-queue consumer holds. That table is created LAZILY by the
+    # consumer's own store only when the consumer is enabled; the guard is
+    # missing-table-safe (treats a missing table as "no owner"), so we deliberately do
+    # NOT create the background-authority schema here — a dark consumer leaves ZERO
+    # schema behind (Codex #6, #2516).
     task_columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(branch_tasks_v2)")

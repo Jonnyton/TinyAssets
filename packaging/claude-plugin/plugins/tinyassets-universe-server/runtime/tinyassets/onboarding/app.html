@@ -554,9 +554,30 @@
         await this.ensureInit();
         return this._rpc(method, params, opts, true);
       }
+      // Gateway / restart blips: during a deploy the daemon restarts (~90s) and
+      // the tunnel answers 502/503/504 with an HTML page. That body is neither
+      // JSON nor SSE, so it used to surface as the generic, misleading "no JSON
+      // or SSE frame" — hiding the real cause and hitting the founder mid-chat on
+      // deploy nights. Retry ONCE after a short pause (the daemon is usually back),
+      // and if it still fails, name the real status instead of the parse error.
+      if((resp.status===502||resp.status===503||resp.status===504) && !_retried){
+        await new Promise(r=>setTimeout(r,2500));
+        return this._rpc(method, params, opts, true);
+      }
+      if(resp.status>=500){
+        throw new Error("your universe is restarting or briefly unavailable (HTTP "+resp.status+") — try again in a moment");
+      }
       const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       if(opts.expectResult===false) return null;
-      const rpc=this._parse(await resp.text());
+      const bodyText=await resp.text();
+      let rpc;
+      try{ rpc=this._parse(bodyText); }
+      catch(parseErr){
+        // Any other non-JSON body: report the HTTP status, never the bare parse
+        // error, so a real cause (e.g. an auth/edge page) is diagnosable.
+        if(!resp.ok) throw new Error("unexpected reply from your universe (HTTP "+resp.status+")");
+        throw parseErr;
+      }
       if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
       return rpc.result;
     },

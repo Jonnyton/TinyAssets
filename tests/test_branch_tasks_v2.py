@@ -21,6 +21,7 @@ from tinyassets.branch_tasks import (
     read_queue,
 )
 from tinyassets.branch_tasks_v2 import (
+    AssignedConsumerLease,
     Epoch2BranchTaskAdapter,
     WorkerClaimDescriptor,
 )
@@ -165,6 +166,169 @@ def epoch2(
     committed = _commit(tmp_path)
     clock = _MutableClock("2026-07-24T08:01:00+00:00")
     return Epoch2BranchTaskAdapter(tmp_path, clock=clock), committed, clock
+
+
+def test_assigned_consumer_claim_is_single_winner_and_exact_lease(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    active = activations.activate(
+        expected=activations.create_stopped(
+            universe_id="universe-a", automation_id="automation-a"
+        ),
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=_activation_subject("branch-version-a"),
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    committed = _commit(tmp_path, automation_activation=active)
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path, clock=_MutableClock("2026-07-24T08:01:00+00:00")
+    )
+    candidate = adapter.get(committed["branch_task_id"])
+    assert candidate is not None
+    lease_a = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-a",
+        lease_id="lease-a",
+        expires_at="2026-07-24T08:02:00+00:00",
+    )
+    lease_b = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-b",
+        lease_id="lease-b",
+        expires_at="2026-07-24T08:02:00+00:00",
+    )
+
+    won = adapter.claim_assigned(candidate, consumer_lease=lease_a)
+    lost = adapter.claim_assigned(candidate, consumer_lease=lease_b)
+
+    assert won is not None
+    assert won.claimed_by == lease_a.consumer_id
+    assert lost is None
+
+
+def test_assigned_consumer_release_requires_exact_claim_fence(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    active = activations.activate(
+        expected=activations.create_stopped(
+            universe_id="universe-a", automation_id="automation-a"
+        ),
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=_activation_subject("branch-version-a"),
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    committed = _commit(tmp_path, automation_activation=active)
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path, clock=_MutableClock("2026-07-24T08:01:00+00:00")
+    )
+    candidate = adapter.get(committed["branch_task_id"])
+    assert candidate is not None
+    lease = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-a",
+        lease_id="lease-a",
+        expires_at="2026-07-24T08:02:00+00:00",
+    )
+    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
+    assert claimed is not None
+
+    assert not adapter.release_assigned(
+        claimed,
+        consumer_lease=replace(lease, consumer_id="assigned-consumer:other"),
+        reason="authority_held",
+    )
+    assert adapter.release_assigned(
+        claimed,
+        consumer_lease=lease,
+        reason="authority_held",
+    )
+    assert adapter.get(claimed.branch_task_id).status == "pending"
+
+
+def test_assigned_consumer_claim_rejects_activation_rotation(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    active = activations.activate(
+        expected=activations.create_stopped(
+            universe_id="universe-a", automation_id="automation-a"
+        ),
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=_activation_subject("branch-version-a"),
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    committed = _commit(tmp_path, automation_activation=active)
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path, clock=_MutableClock("2026-07-24T08:01:00+00:00")
+    )
+    candidate = adapter.get(committed["branch_task_id"])
+    assert candidate is not None
+    rebound = activations.rebind(
+        expected=active,
+        subject=_activation_subject("branch-version-b"),
+        lease_id="activation-lease-b",
+    )
+    assert rebound is not None
+    lease = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-a",
+        lease_id="lease-a",
+        expires_at="2026-07-24T08:02:00+00:00",
+    )
+
+    assert adapter.claim_assigned(candidate, consumer_lease=lease) is None
+    assert adapter.get(candidate.branch_task_id).status == "pending"
+
+
+def test_assigned_consumer_restart_recovers_expired_claim_for_one_new_winner(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    active = activations.activate(
+        expected=activations.create_stopped(
+            universe_id="universe-a", automation_id="automation-a"
+        ),
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=_activation_subject("branch-version-a"),
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    committed = _commit(tmp_path, automation_activation=active)
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
+    candidate = adapter.get(committed["branch_task_id"])
+    assert candidate is not None
+    first_lease = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-a",
+        lease_id="lease-a",
+        expires_at="2026-07-24T08:02:00+00:00",
+    )
+    assert adapter.claim_assigned(
+        candidate, consumer_lease=first_lease, lease_seconds=30
+    ) is not None
+
+    clock.set("2026-07-24T08:01:31+00:00")
+    recovered = adapter.recover_expired(
+        target_recovery_guard=lambda task: task.claimed_by.startswith(
+            "assigned-consumer:"
+        )
+    )
+    assert [task.status for task in recovered] == ["pending"]
+    second_lease = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-b",
+        lease_id="lease-b",
+        expires_at="2026-07-24T08:03:00+00:00",
+    )
+    reclaimed = adapter.claim_assigned(
+        recovered[0], consumer_lease=second_lease, lease_seconds=30
+    )
+    assert reclaimed is not None
+    assert reclaimed.claimed_by == second_lease.consumer_id
 
 
 def test_pretraffic_migration_adds_lease_column_to_existing_v2_store(

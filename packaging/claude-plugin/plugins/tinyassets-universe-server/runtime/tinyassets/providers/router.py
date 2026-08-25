@@ -513,8 +513,11 @@ class ProviderRouter:
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
         if served_authority is not None:
-            if operation != "converse" or role != "writer":
-                raise PermissionError("served provider authority is converse/writer only")
+            if (
+                operation != served_authority.operation
+                or role not in served_authority.allowed_roles
+            ):
+                raise PermissionError("provider role or operation is outside authority")
             if served_authority.max_tokens < 1:
                 raise PermissionError("served provider authority has no token budget")
             if served_authority.max_cost_microunits < 1:
@@ -773,7 +776,10 @@ class ProviderRouter:
             logger.info("Trying provider %s for role=%s", provider_name, role)
             try:
                 budget_reservation = None
-                if served_authority is not None:
+                if (
+                    served_authority is not None
+                    and served_authority.budget_owner == "served_request"
+                ):
                     from tinyassets.auth.middleware import (
                         consume_provider_request_invocation,
                     )
@@ -811,6 +817,11 @@ class ProviderRouter:
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 try:
+                    before_launch = getattr(
+                        served_authority, "before_provider_launch", None
+                    ) if served_authority is not None else None
+                    if callable(before_launch):
+                        before_launch()
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )

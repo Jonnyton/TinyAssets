@@ -1379,11 +1379,11 @@ def provider_work_binding_class(
 ) -> str:
     """Server-derived identity slot without adding a second binding model."""
 
-    return (
-        "serving"
-        if allowed_operations == ("converse",) and allowed_roles == ("writer",)
-        else "default"
-    )
+    if allowed_operations == ("converse",) and allowed_roles == ("writer",):
+        return "serving"
+    if allowed_operations == ("background_branch_run",):
+        return "background_branch_run"
+    return "default"
 
 
 def _from_seed(seed: ProviderWorkBindingSeed, *, created_at: str) -> ProviderWorkBinding:
@@ -1720,4 +1720,5 @@ __all__ = [
     "ProviderUniverseWorkResolver",
     "ProviderUniverseWorkRoot",
     "provider_work_binding_id",
+    "provider_work_binding_class",
 ]
