@@ -194,9 +194,9 @@
           <label class="field"><span>Name (a label you'll recognize)</span>
             <input id="http-destination" type="text" placeholder="e.g. openrouter or slack-webhook" /></label>
           <label class="field"><span>API host</span>
-            <input id="http-host" type="text" placeholder="e.g. openrouter.ai" /></label>
+            <input id="http-host" type="text" placeholder="e.g. openrouter.ai or api.x.com" /></label>
           <label class="field"><span>Path it may call <span class="muted">(optional; default any path)</span></span>
-            <input id="http-path" type="text" placeholder="/api/v1/chat/completions" /></label>
+            <input id="http-path" type="text" placeholder="e.g. /api/v1/chat/completions or /2/tweets" /></label>
           <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
             <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
           <label class="field"><span>How it authenticates</span>
@@ -205,8 +205,21 @@
               <option value="basic">Username &amp; password (basic auth)</option>
               <option value="oauth1a">OAuth 1.0a — 4 keys (X/Twitter and similar)</option>
             </select></label>
-          <label class="field"><span id="http-secret-label">API key / token</span>
+          <label class="field" id="http-secret-field"><span id="http-secret-label">API key / token</span>
             <textarea id="http-secret" rows="2" placeholder="Your API key or bearer token"></textarea></label>
+          <div id="http-oauth1a" hidden>
+            <p class="muted">The four values your provider's developer portal shows for your app
+              (X/Twitter: Developer Portal &rarr; your app &rarr; <em>Keys and tokens</em>; the app
+              needs Read and Write permission). Each goes in its own box:</p>
+            <label class="field"><span>API Key <span class="muted">(also called Consumer Key)</span></span>
+              <input id="http-oauth1a-api-key" type="password" autocomplete="off" /></label>
+            <label class="field"><span>API Key Secret <span class="muted">(Consumer Secret)</span></span>
+              <input id="http-oauth1a-api-secret" type="password" autocomplete="off" /></label>
+            <label class="field"><span>Access Token</span>
+              <input id="http-oauth1a-access-token" type="password" autocomplete="off" /></label>
+            <label class="field"><span>Access Token Secret</span>
+              <input id="http-oauth1a-access-token-secret" type="password" autocomplete="off" /></label>
+          </div>
           <button id="btn-connect-http" class="btn btn--primary">Deposit API connection</button>
           <div id="http-result" class="notice" role="status"></div>
         </div>
@@ -1070,12 +1083,15 @@
     const secretHints={
       bearer:["API key / token","Your API key or bearer token"],
       basic:["Username:password","username:password"],
-      oauth1a:["OAuth 1.0a keys — one per line","API key\nAPI key secret\nAccess token\nAccess token secret"],
+      oauth1a:["OAuth 1.0a keys","(use the four boxes below)"],
     };
     $("http-auth-scheme").addEventListener("change",()=>{
-      const h=secretHints[$("http-auth-scheme").value]||secretHints.bearer;
+      const scheme=$("http-auth-scheme").value;
+      const h=secretHints[scheme]||secretHints.bearer;
       $("http-secret-label").textContent=h[0]; $("http-secret").placeholder=h[1];
-      $("http-secret").rows=$("http-auth-scheme").value==="oauth1a"?4:2;
+      // OAuth 1.0a: four labeled boxes instead of a "one per line" textarea — a
+      // person with X's four values should never have to guess what goes where.
+      $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a");
     });
     $("btn-connect-http").addEventListener("click",async()=>{
       const dest=$("http-destination").value.trim(), host=$("http-host").value.trim();
@@ -1083,21 +1099,23 @@
       const secretEl=$("http-secret"), scheme=$("http-auth-scheme").value;
       let secret=secretEl.value.trim();
       const out=$("http-result"), btn=$("btn-connect-http");
+      // OAuth 1.0a: assemble the bundle from the four labeled boxes, clearing each
+      // from the DOM immediately (same hygiene as the textarea below).
+      let oauth1aMissing=false;
+      if(scheme==="oauth1a"){
+        const ids=["http-oauth1a-api-key","http-oauth1a-api-secret","http-oauth1a-access-token","http-oauth1a-access-token-secret"];
+        const vals=ids.map(id=>{ const el=$(id); const v=el.value.trim(); el.value=""; return v; });
+        oauth1aMissing=vals.some(v=>!v);
+        secret=oauth1aMissing?"":JSON.stringify({api_key:vals[0],api_secret:vals[1],access_token:vals[2],access_token_secret:vals[3]});
+      }
       // Clear the secret from the DOM FIRST — before EVERY validation return,
       // including the presence check, and before any await — so no submission
       // (missing name/host, malformed bundle, or success) ever leaves the pasted
       // credential sitting visible in the textarea (Codex: the presence-check
       // return preceded the clear). The value lives only in this local from here on.
       secretEl.value="";
+      if(scheme==="oauth1a"&&oauth1aMissing){ out.textContent="All four OAuth 1.0a values are needed: API Key, API Key Secret, Access Token, Access Token Secret. Please enter them again."; return; }
       if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
-      // OAuth 1.0a: the user pastes the four values one per line (in the order the
-      // provider's developer portal shows them); the form assembles the JSON bundle
-      // the connection stores, so nobody has to hand-write JSON. Generic: any 1.0a API.
-      if(scheme==="oauth1a"){
-        const lines=secret.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-        if(lines.length!==4){ out.textContent="OAuth 1.0a needs exactly 4 lines: API key, API key secret, access token, access token secret. Please paste them again."; return; }
-        secret=JSON.stringify({api_key:lines[0],api_secret:lines[1],access_token:lines[2],access_token_secret:lines[3]});
-      }
       if(scheme==="basic"){
         const i=secret.indexOf(":");
         if(i<=0||i===secret.length-1){ out.textContent="Basic auth needs username:password (both non-empty). Please paste it again."; return; }
