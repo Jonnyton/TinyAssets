@@ -1561,6 +1561,14 @@ def _epoch2_operational_read(
         )
     result.summary["compatible_worker_count"] = len(workers)
     result.summary["consumer_ready"] = consumer_ready
+    # Why the consumer is not producing work for this universe right now:
+    # per-automation preconditions (provider_mismatch:..., no_prepared_continuation)
+    # and per-principal pump outcomes (no_daemon_for_principal, produce_error:...).
+    result.summary["consumer_pump"] = [
+        {"key": key, "reason": reason}
+        for key, reason in sorted(refusals.items())
+        if key.startswith(("automation:", "universe:"))
+    ]
     result.summary["capacity_evidence_available"] = not capacity_error
     # Name the admission gate when capacity is zero; a bare 0 is unactionable.
     if capacity_evidence and not workers:
