@@ -453,21 +453,16 @@ class ProviderRouter:
         # ProviderAuthorityHeldError and the real background path could never
         # launch (Codex REJECT #1, PR #2528). Only an UN-authorized context is
         # fenced here.
-        if universe_context is not None and universe_context.served_provider is not None:
-            from tinyassets.provider_assignment import is_issued_authority
-
-            # A pre-set served_provider is honoured ONLY if it is the very object a
-            # genuine mint site (served authorize_served_provider_call, or the
-            # background _authorize_launch) currently holds open. A caller-built
-            # ServedProviderAuthority of identical shape is NOT authority (Codex
-            # REJECT on #2531 reproduced a launch with a forged one). Fail closed.
-            if not is_issued_authority(universe_context.served_provider):
-                raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
-        if (
-            universe_context is not None
-            and universe_context.provider_invocation is None
-            and universe_context.served_provider is None
-        ):
+        # REVERTED (Codex REJECT #4 on #2531): an earlier head honoured a pre-set
+        # ``served_provider`` on the context so the background consumer could inject
+        # its authority. ServedProviderAuthority is a plain dataclass, and no
+        # in-process provenance scheme (registry, sentinel fence) survived review:
+        # 'if arbitrary in-process Python is the adversary, no underscore, sentinel,
+        # or same-process secret suffices'. The correct route for background is the
+        # server-minted, pid-bound, ONE-USE ProviderInvocationCarrier (the
+        # ``provider_invocation`` branch below) - the next lane. Until then a context
+        # without a carrier is re-fenced as a served turn: fail closed.
+        if universe_context is not None and universe_context.provider_invocation is None:
             from tinyassets.provider_assignment import authorize_served_provider_call
 
             if (
