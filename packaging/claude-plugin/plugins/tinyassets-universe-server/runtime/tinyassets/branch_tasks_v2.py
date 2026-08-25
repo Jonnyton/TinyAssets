@@ -55,6 +55,7 @@ class Epoch2BranchTask(BranchTask):
     automation_subject_digest: str = ""
     automation_branch_version: str = ""
     automation_lease_id: str = ""
+    claimed_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,21 @@ class WorkerClaimContext:
 
     descriptor: WorkerClaimDescriptor
     daemon_id: str
+
+
+@dataclass(frozen=True)
+class AssignedConsumerLease:
+    """Boot-scoped daemon lease used only to fence queue ownership."""
+
+    consumer_id: str
+    lease_id: str
+    expires_at: str
+
+    def __post_init__(self) -> None:
+        if not self.consumer_id.strip() or not self.lease_id.strip():
+            raise ValueError("assigned consumer lease identity is required")
+        if _parse_timestamp(self.expires_at) is None:
+            raise ValueError("assigned consumer lease expiry is invalid")
 
 
 DescriptorReader = Callable[
@@ -423,6 +439,61 @@ class Epoch2BranchTaskAdapter:
             claim_check=transaction_check,
         )
         return self._as_execution_task(row) if row is not None else None
+
+    def claim_assigned(
+        self,
+        candidate: Epoch2BranchTask,
+        *,
+        consumer_lease: AssignedConsumerLease,
+        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
+    ) -> Epoch2BranchTask | None:
+        """CAS one exact automation task to a boot-scoped daemon consumer."""
+
+        if not isinstance(candidate, Epoch2BranchTask) or not isinstance(
+            consumer_lease, AssignedConsumerLease
+        ):
+            return None
+
+        def transaction_check(
+            conn: sqlite3.Connection,
+            task: Mapping[str, Any],
+            transaction_at: str,
+        ) -> bool:
+            return _transaction_allows_assigned_consumer(
+                conn,
+                task,
+                transaction_at=transaction_at,
+                candidate=candidate,
+                consumer_lease=consumer_lease,
+            )
+
+        row = self._store.claim_v2_task(
+            candidate.branch_task_id,
+            worker_id=consumer_lease.consumer_id,
+            queue_protocol_version=QUEUE_PROTOCOL_VERSION,
+            capabilities=(OPERATOR_CAPABILITY,),
+            lease_seconds=lease_seconds,
+            claim_check=transaction_check,
+        )
+        return self._as_execution_task(row) if row is not None else None
+
+    def release_assigned(
+        self,
+        claimed_task: Epoch2BranchTask,
+        *,
+        consumer_lease: AssignedConsumerLease,
+        reason: str,
+    ) -> bool:
+        """Release only the exact live claim; never mint another attempt."""
+
+        if claimed_task.claimed_by != consumer_lease.consumer_id:
+            return False
+        return self._store.release_v2_task_claim(
+            claimed_task.branch_task_id,
+            worker_id=consumer_lease.consumer_id,
+            claimed_at=claimed_task.claimed_at,
+            reason=reason,
+        )
 
     def resume(
         self,
@@ -960,6 +1031,25 @@ def _transaction_allows_epoch2_lifecycle(
     ).fetchone()
     if active is not None:
         return False
+    try:
+        authority_owner = conn.execute(
+            """
+            SELECT state FROM background_branch_authority_owners
+            WHERE owner_kind = 'queue_task' AND owner_id = ? LIMIT 1
+            """,
+            (task["branch_task_id"],),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        # The background-authority schema is created lazily by the assigned-queue
+        # consumer's own store, and ONLY when the consumer is enabled and writes an
+        # owner. When the consumer is dark the table need not exist — a missing table
+        # means no owner holds authority, so the shared epoch-2 claim proceeds. This is
+        # what lets the dark consumer create ZERO schema at migrate time (Codex #6, #2516).
+        if "no such table" not in str(exc).lower():
+            raise
+        authority_owner = None
+    if authority_owner is not None and authority_owner["state"] == "target_authority_held":
+        return False
     return AutomationActivationStore.validate_claim_in_transaction(
         conn,
         universe_id=str(task["universe_id"]),
@@ -972,6 +1062,70 @@ def _transaction_allows_epoch2_lifecycle(
             "digest": task["automation_subject_digest"],
         }),
         lease_id=str(task["automation_lease_id"]),
+    )
+
+
+def _transaction_allows_assigned_consumer(
+    conn: sqlite3.Connection,
+    task: Mapping[str, Any],
+    *,
+    transaction_at: str,
+    candidate: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+) -> bool:
+    """Validate immutable task + activation facts inside the claim transaction."""
+
+    now = _parse_timestamp(transaction_at)
+    consumer_expiry = _parse_timestamp(consumer_lease.expires_at)
+    if now is None or consumer_expiry is None or consumer_expiry <= now:
+        return False
+    if _classify_epoch2_row(task) is not None:
+        return False
+    exact_fields = {
+        "branch_task_id": candidate.branch_task_id,
+        "admission_id": candidate.admission_id,
+        "request_id": candidate.request_id,
+        "universe_id": candidate.universe_id,
+        "branch_def_id": candidate.branch_def_id,
+        "automation_id": candidate.automation_id,
+        "automation_activation_epoch": candidate.automation_activation_epoch,
+        "automation_executor_class": candidate.automation_executor_class,
+        "automation_subject_kind": candidate.automation_subject_kind,
+        "automation_subject_ref": candidate.automation_subject_ref,
+        "automation_subject_digest": candidate.automation_subject_digest,
+        "automation_branch_version": candidate.automation_branch_version,
+        "automation_lease_id": candidate.automation_lease_id,
+    }
+    if any(task.get(field) != value for field, value in exact_fields.items()):
+        return False
+    if not candidate.automation_id or candidate.automation_executor_class != "cloud":
+        return False
+    active = conn.execute(
+        """
+        SELECT 1 FROM branch_tasks_v2
+        WHERE universe_id = ? AND automation_id = ?
+          AND branch_task_id != ?
+          AND status IN ('running', 'cancel_requested') AND disabled = 0
+        LIMIT 1
+        """,
+        (candidate.universe_id, candidate.automation_id, candidate.branch_task_id),
+    ).fetchone()
+    if active is not None:
+        return False
+    return AutomationActivationStore.validate_claim_in_transaction(
+        conn,
+        universe_id=candidate.universe_id,
+        automation_id=candidate.automation_id,
+        epoch=candidate.automation_activation_epoch,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=ExecutionSubject.from_dict(
+            {
+                "kind": candidate.automation_subject_kind,
+                "ref": candidate.automation_subject_ref,
+                "digest": candidate.automation_subject_digest,
+            }
+        ),
+        lease_id=candidate.automation_lease_id,
     )
 
 
@@ -1491,11 +1645,13 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
             row.get("automation_branch_version") or ""
         ),
         automation_lease_id=str(row.get("automation_lease_id") or ""),
+        claimed_at=str(row.get("claimed_at") or ""),
     )
 
 
 __all__ = [
     "Epoch2BranchTask",
+    "AssignedConsumerLease",
     "Epoch2BranchTaskAdapter",
     "Epoch2ClaimedRequest",
     "Epoch2OperationalRead",
