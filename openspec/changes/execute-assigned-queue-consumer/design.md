@@ -50,3 +50,14 @@ Land dark with `TINYASSETS_ASSIGNED_QUEUE_CONSUMER` absent/off. Existing fleet a
 ## Open Questions
 
 None for the dark build. Load-derived tuning of concurrency and spend ceilings remains post-live hardening.
+
+## Consumer is the live worker (2026-08-25, from the live flip)
+
+The daemon-owned consumer replaces the cloud_worker fleet as the queue's worker, so it must also own the
+three things the fleet used to own: the liveness beat that `get_status` reads, the activation of a
+resumed automation into its first admitted slice (and due-trigger slice production), and a *visible*
+reason whenever it declines a candidate. Refusals are computed by a read-only explain path that mirrors
+the claim predicates one-for-one and are recorded per task, never inferred from worker beats. The
+consumer registers one runtime instance per boot and passes identity only through
+`BackgroundBranchExecutorAudience`; no environment-variable identity, no forged daemons or principals.
+Legacy tasks that can never pass the claim are surfaced, not mutated.
