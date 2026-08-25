@@ -417,6 +417,78 @@ def test_per_universe_spend_ceiling_counts_other_attempts(tmp_path: Path, monkey
     assert _reservation_count(conn) == 2
 
 
+def test_rolling_cap_charges_finalized_actuals_not_estimates(tmp_path: Path, monkeypatch) -> None:
+    """Codex findings #1/#5 (#2516): the rolling cap must charge REAL spend.
+
+    A prior attempt reserved a 125,000-token ESTIMATE (half the 250,000 default
+    ceiling) but its call actually used only 1,000 tokens, which the router
+    finalized into served_provider_budget_reservations. Under the old
+    SUM(max_tokens) logic that attempt still counted as 125,000 and a second
+    125,000 share would exhaust the cap. Now the settled attempt is charged at its
+    finalized ACTUAL (1,000), so the next call is admitted — the cap has learned
+    true spend. (test_per_universe_spend_ceiling_counts_other_attempts keeps the
+    complementary guarantee: an IN-FLIGHT 'launch_started' attempt with unknown
+    usage is still charged conservatively at its estimate and DOES exhaust.)
+    """
+    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
+    background_provider._ensure_reservation_schema(conn)
+    background_provider._ensure_served_budget_schema(conn)
+    # The prior attempt: SETTLED (its call returned), estimate 125,000.
+    conn.execute(
+        "INSERT INTO assigned_queue_provider_reservations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "reservation-prior",
+            "bt2_" + "9" * 32,
+            "attempt-prior",
+            "universe:universe-a:background_branch_run",
+            "provider-background-a",
+            6,
+            "sha256:" + "3" * 64,
+            "background_branch_run",
+            "writer",
+            125_000,
+            5_000,
+            "settled",
+            "2099-01-01T00:00:00+00:00",
+        ),
+    )
+    # ...and what it REALLY used, as the router finalized it (keyed by the binding).
+    conn.execute(
+        """
+        INSERT INTO served_provider_budget_reservations
+          (reservation_id, binding_id, binding_generation, state,
+           reserved_total_tokens, reserved_cost_microunits,
+           actual_total_tokens, actual_cost_microunits, created_at, lease_deadline)
+        VALUES (?, ?, ?, 'succeeded', ?, ?, ?, ?, 0, NULL)
+        """,
+        ("served_budget_prior", "provider-background-a", 6, 125_000, 5_000, 1_000, 40),
+    )
+    conn.commit()
+    launches: list[str] = []
+
+    def raw_provider(*_args, **kwargs):
+        kwargs["universe_context"].served_provider.before_provider_launch()
+        launches.append("launch")
+        return "ok"
+
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path, task, _lease(), raw_provider
+    )
+    # Admitted: 1,000 actual + this call's 125,000 share < 250,000 ceiling.
+    assert session("next") == "ok"
+    assert launches == ["launch"]
+    # And this call's own row was settled once it returned.
+    states = {
+        r["reservation_id"]: r["state"]
+        for r in conn.execute(
+            "SELECT reservation_id, state FROM assigned_queue_provider_reservations"
+        )
+    }
+    assert states["reservation-prior"] == "settled"
+    own = [s for rid, s in states.items() if rid != "reservation-prior"]
+    assert own == ["settled"], states
+
+
 def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
     """A real published version's content_hash is bare hex; the task carries
     sha256:<hex>. The authority compare normalizes both, so a genuine version is

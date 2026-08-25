@@ -17,6 +17,7 @@ from tinyassets.background_branch_authority import BackgroundBranchBindingStatus
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 from tinyassets.provider_assignment import (
     ServedProviderAuthority,
+    _ensure_served_budget_schema,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
 )
@@ -340,7 +341,49 @@ class _BackgroundAssignedProviderSession:
                     prompt, system, role=role, config=config, **call_kwargs
                 )
                 self._call_index = invocation_index
+                # The call returned: the router has finalized this call's REAL usage
+                # into served_provider_budget_reservations (keyed by the binding),
+                # so this attempt's row must stop being charged at its ESTIMATED
+                # share — flip it off 'reserved' so the rolling cap counts the
+                # finalized actuals instead (Codex findings #1/#5, #2516). A call
+                # that raises leaves the row 'reserved' (usage unknown → still
+                # charged conservatively at the estimate).
+                self._settle_reservation(invocation_index, role, prompt, system)
                 return result, authority.provider
+
+    def _settle_reservation(
+        self, invocation_index: int, role: str, prompt: str, system: str
+    ) -> None:
+        """Flip this attempt's reservation off 'reserved' once its call returned.
+
+        The row's id is the same deterministic ``aqpr_`` key ``_authorize_launch``
+        reserved under (branch task + invocation + digest of role/prompt/system),
+        so this touches exactly that row and nothing else. Best-effort: a failure
+        here must never turn a successful provider call into a failed one — the
+        row simply stays charged at its (conservative) estimate.
+        """
+        from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+        prompt_digest = hashlib.sha256(
+            json.dumps([role, prompt, system], ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        reservation_id = (
+            f"aqpr_{self._task.branch_task_id}_{invocation_index}_{prompt_digest[:16]}"
+        )
+        try:
+            with RequestAdmissionStore(self._base_path).connection() as conn:
+                # The row is 'reserved' at reserve time and 'launch_started' once
+                # _arm_launch armed the actual provider launch — a returned call
+                # may find it in EITHER state, and both mean "done, usage is now
+                # finalized in the served store". Never touch any other state.
+                conn.execute(
+                    "UPDATE assigned_queue_provider_reservations SET state='settled' "
+                    "WHERE reservation_id=? AND state IN ('reserved', 'launch_started')",
+                    (reservation_id,),
+                )
+                conn.commit()
+        except Exception:  # noqa: BLE001 - settlement is best-effort, never fatal
+            logger.exception("background reservation settlement failed")
 
     def _arm_launch(
         self,
@@ -720,15 +763,62 @@ class _BackgroundAssignedProviderSession:
                                 "WHERE reservation_id=? AND state='reserved'",
                                 (reservation_id,),
                             )
-                        totals = conn.execute(
+                        # Rolling cumulative cap charged against REAL spend (Codex
+                        # findings #1/#5, #2516). Previously this summed each prior
+                        # attempt's ESTIMATED share (SUM(max_tokens)) — a reservation
+                        # was never replaced by what the call actually used, so the
+                        # cap enforced against inflated estimates and could never
+                        # learn true spend. The router already finalizes ACTUAL
+                        # usage per call into served_provider_budget_reservations
+                        # (same sqlite file, keyed by the provider binding the
+                        # consumer records on its own row), so charge:
+                        #   finalized ACTUAL tokens/cost for this budget owner
+                        #   + the ESTIMATED share of attempts still in flight
+                        #     (no finalized row yet — genuinely unknown usage).
+                        # This is a true rolling cumulative budget, not a per-call
+                        # estimate ledger; it reuses the served-budget settlement
+                        # rather than inventing a second one.
+                        # The served store's reservation_id is random
+                        # (served_budget_<hex>) — it can NOT be joined to the
+                        # consumer's aqpr_ id. The stable shared key is the provider
+                        # BINDING (id + generation): a binding belongs to exactly one
+                        # universe, so its finalized actuals ARE this universe's real
+                        # background spend. In-flight attempts (consumer rows still
+                        # 'reserved', i.e. the call has not returned yet) are charged
+                        # at their estimated share, since their usage is genuinely
+                        # unknown until the router finalizes it; settled rows are
+                        # excluded here because their real cost is already counted
+                        # via the served store.
+                        _ensure_served_budget_schema(conn)
+                        actuals = conn.execute(
+                            """
+                            SELECT COALESCE(SUM(actual_total_tokens), 0),
+                                   COALESCE(SUM(actual_cost_microunits), 0)
+                            FROM served_provider_budget_reservations
+                            WHERE binding_id=? AND binding_generation=?
+                              AND actual_total_tokens IS NOT NULL
+                            """,
+                            (provider_binding.binding_id, provider_binding.generation),
+                        ).fetchone()
+                        in_flight = conn.execute(
                             """
                             SELECT COUNT(*), COALESCE(SUM(max_tokens),0),
                                    COALESCE(SUM(max_cost_microunits),0)
                             FROM assigned_queue_provider_reservations
-                            WHERE budget_owner=? AND operation=?
+                            WHERE budget_owner=? AND operation=? AND state='reserved'
                             """,
                             (budget_owner, BACKGROUND_BRANCH_RUN_OPERATION),
                         ).fetchone()
+                        invocations_so_far = conn.execute(
+                            "SELECT COUNT(*) FROM assigned_queue_provider_reservations "
+                            "WHERE budget_owner=? AND operation=?",
+                            (budget_owner, BACKGROUND_BRANCH_RUN_OPERATION),
+                        ).fetchone()
+                        totals = (
+                            int(invocations_so_far[0]),
+                            int(actuals[0]) + int(in_flight[1]),
+                            int(actuals[1]) + int(in_flight[2]),
+                        )
                         if (
                             int(totals[0]) >= max_invocations
                             or int(totals[1]) + token_share > max_tokens
