@@ -213,9 +213,12 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
             assert limit == 20
             return [tasks[universe_id]]
 
-        def claim_assigned(self, candidate, *, consumer_lease):
-            claims.append(candidate.universe_id)
-            return candidate
+        def claim(self, branch_task_id, *, descriptor, descriptor_reader):
+            claims.append(descriptor.universe_id)
+            return next(
+                t for t in self.list_candidates(universe_id=descriptor.universe_id, limit=20)
+                if t.branch_task_id == branch_task_id
+            )
 
     class _Executor:
         def submit(self, *_args):
@@ -233,6 +236,11 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
         "list_serving_universes",
         lambda _base_path: ["universe-a", "universe-b"],
     )
+    # A bare temp store has no provider assignment; the new claim path registers a
+    # real worker runtime per universe first — stub that seam (it is exercised by
+    # the cloud-continuation suite), keep the concurrency-cap logic under test.
+    monkeypatch.setattr(AssignedQueueConsumer, "_ensure_runtime", lambda self, u, p: f"rt-{u}")
+    monkeypatch.setattr(AssignedQueueConsumer, "_assigned_provider", lambda self, u: "codex")
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
     consumer._executor.shutdown(wait=False, cancel_futures=True)
     consumer._executor = _Executor()
@@ -256,9 +264,12 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
             finishes.append((branch_task_id, status))
 
     monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
+    import tinyassets.cloud_automation_continuation as continuation_module
+
+    monkeypatch.setattr(AssignedQueueConsumer, "_ensure_daemon", lambda self: "daemon-a")
     monkeypatch.setattr(
-        consumer_module,
-        "authorize_background_served_provider_call",
+        continuation_module,
+        "prepare_claimed_cloud_provider_call",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("task boom")),
     )
     task = Epoch2BranchTask(

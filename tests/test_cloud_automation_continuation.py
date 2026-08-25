@@ -86,8 +86,6 @@ from tinyassets.storage.cloud_automation_control import CloudAutomationControlSt
 from tinyassets.storage.outbound_connections import (
     ActionCap,
     ConnectionLedger,
-    GrantResolutionError,
-    ScopedConnectionProxy,
 )
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,

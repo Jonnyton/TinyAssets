@@ -11,18 +11,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from tinyassets.background_served_provider import (
-    authorize_background_served_provider_call,
-)
 from tinyassets.branch_tasks_v2 import (
     EPOCH2_TASK_LEASE_SECONDS,
     AssignedConsumerLease,
     Epoch2BranchTask,
     Epoch2BranchTaskAdapter,
+    WorkerClaimDescriptor,
 )
 from tinyassets.runtime.claimed_branch_execution import (
     ClaimedBranchExecutorIdentity,
     execute_claimed_branch_task,
+)
+from tinyassets.storage.request_admissions import (
+    OPERATOR_CAPABILITY,
+    QUEUE_PROTOCOL_VERSION,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,13 @@ class AssignedQueueConsumer:
         )
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
+        # Worker identity the cloud provider path authorizes against
+        # (prepare_claimed_cloud_provider_call -> runtime_matches_worker_provider):
+        # one registered daemon for this consumer process, plus one provisioned
+        # runtime + queue descriptor PER serving universe (a runtime is universe-bound).
+        self.worker_id = f"assigned-worker:{boot}"
+        self._daemon_id: str = ""
+        self._runtimes: dict[str, str] = {}  # universe_id -> runtime_instance_id
 
     def start(self) -> None:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
@@ -87,6 +96,92 @@ class AssignedQueueConsumer:
             daemon=True,
         )
         self._thread.start()
+
+    def _ensure_daemon(self) -> str:
+        """Register (or reuse) this consumer's daemon identity. Idempotent by name."""
+        if self._daemon_id:
+            return self._daemon_id
+        from tinyassets.daemon_registry import create_daemon
+
+        daemon = create_daemon(
+            self.base_path,
+            display_name="TinyAssets assigned-queue consumer",
+            created_by="assigned-queue-consumer",
+            soul_mode="soul",
+            soul_text=(
+                "Run queued automation tasks on each universe's own assigned provider, "
+                "one bounded provider call at a time, never on host credentials."
+            ),
+        )
+        self._daemon_id = str(daemon["daemon_id"])
+        return self._daemon_id
+
+    def _ensure_runtime(self, universe_id: str, provider_name: str) -> str:
+        """Provision (once per universe) the runtime + queue descriptor a claim needs."""
+        cached = self._runtimes.get(universe_id)
+        if cached:
+            return cached
+        from tinyassets.daemon_registry import ensure_daemon_runtime, set_worker_queue_descriptor
+
+        daemon_id = self._ensure_daemon()
+        runtime = ensure_daemon_runtime(
+            self.base_path,
+            daemon_id=daemon_id,
+            universe_id=universe_id,
+            provider_name=provider_name,
+            model_name=provider_name,
+            created_by="assigned-queue-consumer",
+            worker_id=self.worker_id,
+            metadata={"automation_executor_class": "cloud"},
+        )
+        runtime_id = str(runtime["runtime_instance_id"])
+        descriptor = self._descriptor(universe_id, runtime_id)
+        set_worker_queue_descriptor(
+            self.base_path,
+            runtime_instance_id=runtime_id,
+            descriptor={
+                "queue_protocol_version": descriptor.queue_protocol_version,
+                "capabilities": sorted(descriptor.capabilities),
+                "worker_id": descriptor.worker_id,
+                "runtime_instance_id": descriptor.runtime_instance_id,
+                "boot_id": descriptor.boot_id,
+                "build_sha": descriptor.build_sha,
+                "config_hash": descriptor.config_hash,
+                "universe_id": descriptor.universe_id,
+                "expires_at": descriptor.expires_at,
+                "executor_class": "cloud",
+            },
+            expected_worker_id=self.worker_id,
+        )
+        self._runtimes[universe_id] = runtime_id
+        return runtime_id
+
+    def _descriptor(self, universe_id: str, runtime_id: str) -> WorkerClaimDescriptor:
+        from tinyassets.storage.automation_activations import AutomationActivationExecutor
+
+        return WorkerClaimDescriptor(
+            queue_protocol_version=QUEUE_PROTOCOL_VERSION,
+            capabilities=frozenset({OPERATOR_CAPABILITY}),
+            worker_id=self.worker_id,
+            runtime_instance_id=runtime_id,
+            boot_id=self.consumer_id,
+            build_sha="0" * 40,
+            config_hash="sha256:" + "0" * 64,
+            universe_id=universe_id,
+            expires_at=(
+                datetime.now(timezone.utc) + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS)
+            ).isoformat(),
+            executor_class=AutomationActivationExecutor.CLOUD,
+        )
+
+    def _assigned_provider(self, universe_id: str) -> str:
+        """The provider the universe's founder assigned for serving (codex/claude-code)."""
+        from tinyassets.provider_assignment import load_provider_assignment
+
+        assignment = load_provider_assignment(self.base_path, universe_id=universe_id)
+        if assignment is None or assignment.state != "ready":
+            raise PermissionError("assigned provider is unavailable")
+        return str(assignment.provider)
 
     def _scavenge_orphaned_credentials(self) -> None:
         """Startup reclamation of orphaned provider-launch-credential dirs a crash left
@@ -155,13 +250,31 @@ class AssignedQueueConsumer:
             if candidate is None:
                 continue
             lease = AssignedConsumerLease(
-                consumer_id=self.consumer_id,
+                consumer_id=self.worker_id,
                 lease_id=self.lease_id,
                 expires_at=(
                     datetime.now(timezone.utc) + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS)
                 ).isoformat(),
             )
-            claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
+            # Claim as a REAL worker (descriptor-based), not a synthetic consumer lease:
+            # the cloud provider path authorizes the claimant's worker + runtime identity
+            # (runtime_matches_worker_provider), and the claim hydrates that identity
+            # onto the task (executor_worker_id / executor_runtime_id).
+            try:
+                runtime_id = self._ensure_runtime(
+                    universe_id, self._assigned_provider(universe_id)
+                )
+            except Exception:  # noqa: BLE001 - one universe's registration cannot stall the poll
+                logger.exception(
+                    "assigned queue worker registration failed universe=%s", universe_id
+                )
+                continue
+            descriptor = self._descriptor(universe_id, runtime_id)
+            claimed = adapter.claim(
+                candidate.branch_task_id,
+                descriptor=descriptor,
+                descriptor_reader=lambda _conn, _worker_id, _d=descriptor: _d,
+            )
             if claimed is None:
                 continue
             future = self._executor.submit(self._execute, claimed, lease)
@@ -197,16 +310,31 @@ class AssignedQueueConsumer:
                 raise RunCancelledError("assigned queue task cancellation requested")
 
         try:
-            provider_call = authorize_background_served_provider_call(
-                self.base_path, claimed_task, lease
+            # The hardened background provider path (Codex REJECT #4 on #2531): a
+            # server-minted, pid-bound, ONE-USE ProviderInvocationCarrier per call,
+            # reserved from the task's receipt and armed inside a transaction — never a
+            # caller-populated ServedProviderAuthority. Returns None when the task is
+            # not a prepared cloud continuation (nothing to run on this path).
+            from tinyassets.cloud_automation_continuation import (
+                prepare_claimed_cloud_provider_call,
             )
+            from tinyassets.providers.call import call_provider
+
+            provider_call = prepare_claimed_cloud_provider_call(
+                self.base_path,
+                claimed_task=claimed_task,
+                daemon_id=self._ensure_daemon(),
+                provider_call=call_provider,
+            )
+            if provider_call is None:
+                raise PermissionError("task is not a prepared cloud continuation")
             success, error, detail = execute_claimed_branch_task(
                 self.base_path,
                 claimed_task,
                 ClaimedBranchExecutorIdentity(
-                    daemon_id=self.consumer_id,
-                    worker_id=self.consumer_id,
-                    runtime_instance_id=self.lease_id,
+                    daemon_id=self._ensure_daemon(),
+                    worker_id=self.worker_id,
+                    runtime_instance_id=claimed_task.executor_runtime_id,
                     heartbeat=heartbeat,
                 ),
                 provider_call,
