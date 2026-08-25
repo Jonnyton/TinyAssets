@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 import tinyassets.background_served_provider as background_provider
-from tinyassets.background_branch_authority import BackgroundBranchBindingStatus
+from tinyassets.background_branch_authority import (
+    BackgroundBranchBindingStatus,
+    BackgroundBranchExecutorClass,
+)
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.providers.base import UniverseContext
@@ -89,6 +92,9 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         );
         """
     )
+    from tinyassets.storage.provider_work_authority import _SCHEMA
+
+    conn.executescript(_SCHEMA)
     task = _task()
     conn.execute(
         "INSERT INTO branch_tasks_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -168,16 +174,13 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         generation=attempt.binding_generation,
         binding_digest=attempt.binding_digest,
         status=BackgroundBranchBindingStatus.ACTIVE,
-    )
-    authority_owner = SimpleNamespace(
-        state=SimpleNamespace(value="active"),
-        binding=SimpleNamespace(expected_record=background_binding),
-        attempt=SimpleNamespace(expected_record=attempt),
-    )
-    provider_binding = SimpleNamespace(
-        binding_id="provider-background-a",
-        generation=6,
-        binding_digest="sha256:" + "3" * 64,
+        authorizing_principal_id=attempt.authorizing_principal_id,
+        universe_id=attempt.universe_id,
+        branch_def_id=attempt.branch_def_id,
+        pinned_branch_version_id=attempt.branch_version_id,
+        permitted_executor_classes=(BackgroundBranchExecutorClass.CLOUD,),
+        daemon_id="daemon_background_a",
+        runtime_id="runtime_background_a",
     )
 
     class _BackgroundStore:
@@ -189,18 +192,6 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
             assert logical_attempt_key
             return background_binding, attempt
 
-        @staticmethod
-        def read_queue_owner_in_transaction(_conn, *, owner_id):
-            assert owner_id == task.branch_task_id
-            return authority_owner
-
-    class _ProviderStore:
-        def __init__(self, _base_path):
-            pass
-
-        def validate_in_transaction(self, _conn, **_kwargs):
-            return True
-
     monkeypatch.setattr(background_provider, "_branch_roles", lambda *_a: ("writer",))
     monkeypatch.setattr(
         background_provider, "provider_assignment_admission", lambda: _AdmissionFence()
@@ -210,18 +201,11 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         "load_provider_assignment_in_transaction",
         lambda *_a, **_k: assignment,
     )
-    monkeypatch.setattr(
-        background_provider,
-        "_current_background_binding",
-        lambda *_a, **_k: provider_binding,
-    )
-
     import tinyassets.config as config_module
     import tinyassets.credential_vault as vault_module
     import tinyassets.provider_assignment as assignment_module
     import tinyassets.provider_serving_binding as serving_module
     import tinyassets.storage.background_branch_authority as background_store_module
-    import tinyassets.storage.provider_work_authority as provider_store_module
     import tinyassets.storage.request_admissions as admission_store_module
 
     monkeypatch.setattr(config_module, "load_universe_config", lambda _path: {})
@@ -234,11 +218,6 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         admission_store_module,
         "RequestAdmissionStore",
         lambda _base_path: _AdmissionStore(conn),
-    )
-    monkeypatch.setattr(
-        provider_store_module,
-        "SQLiteProviderWorkAuthorityStore",
-        _ProviderStore,
     )
     monkeypatch.setattr(
         background_store_module,
@@ -289,14 +268,8 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
 
 
 def _reservation_count(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master "
-        "WHERE type='table' AND name='assigned_queue_provider_reservations'"
-    ).fetchone()
-    if row[0] == 0:
-        return 0
     return int(
-        conn.execute("SELECT COUNT(*) FROM assigned_queue_provider_reservations").fetchone()[0]
+        conn.execute("SELECT COUNT(*) FROM provider_invocation_reservations").fetchone()[0]
     )
 
 
@@ -355,8 +328,11 @@ def test_budget_is_reserved_before_launch_snapshot_is_cleaned_and_retry_does_not
     launches: list[int] = []
 
     def raw_provider(*_args, **_kwargs):
-        _kwargs["universe_context"].served_provider.before_provider_launch()
-        row = conn.execute("SELECT state FROM assigned_queue_provider_reservations").fetchone()
+        carrier = _kwargs["universe_context"].provider_invocation
+        assert carrier.validate_for_call(
+            role="writer", operation=background_provider.BACKGROUND_BRANCH_RUN_OPERATION
+        ) == "codex"
+        row = conn.execute("SELECT state FROM provider_invocation_reservations").fetchone()
         assert row["state"] == "launch_started"
         launches.append(1)
         events.append("launch")
@@ -378,32 +354,15 @@ def test_budget_is_reserved_before_launch_snapshot_is_cleaned_and_retry_does_not
     assert _reservation_count(conn) == 1
 
 
-def test_per_universe_spend_ceiling_counts_other_attempts(tmp_path: Path, monkeypatch) -> None:
+def test_background_binding_invocation_ceiling_is_durable(tmp_path: Path, monkeypatch) -> None:
     task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    background_provider._ensure_reservation_schema(conn)
-    conn.execute(
-        "INSERT INTO assigned_queue_provider_reservations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            "reservation-other",
-            "bt2_" + "9" * 32,
-            "attempt-other",
-            "universe:universe-a:background_branch_run",
-            "provider-background-a",
-            6,
-            "sha256:" + "3" * 64,
-            "background_branch_run",
-            "writer",
-            125_000,
-            5_000,
-            "launch_started",
-            "2099-01-01T00:00:00+00:00",
-        ),
-    )
-    conn.commit()
     launches: list[str] = []
 
     def raw_provider(*_args, **kwargs):
-        kwargs["universe_context"].served_provider.before_provider_launch()
+        carrier = kwargs["universe_context"].provider_invocation
+        carrier.validate_for_call(
+            role="writer", operation=background_provider.BACKGROUND_BRANCH_RUN_OPERATION
+        )
         launches.append("launch")
         return "ok"
 
@@ -412,125 +371,61 @@ def test_per_universe_spend_ceiling_counts_other_attempts(tmp_path: Path, monkey
     )
 
     assert session("first") == "ok"
+    assert session("second") == "ok"
     with pytest.raises(ProviderAuthorityHeldError):
-        session("second")
+        session("third")
 
-    assert launches == ["launch"]
+    assert launches == ["launch", "launch"]
     assert _reservation_count(conn) == 2
 
 
-def test_rolling_cap_charges_finalized_actuals_not_estimates(tmp_path: Path, monkeypatch) -> None:
-    """Codex findings #1/#5 (#2516): the rolling cap must charge REAL spend.
-
-    A prior attempt reserved a 125,000-token ESTIMATE (half the 250,000 default
-    ceiling) but its call actually used only 1,000 tokens, which the router
-    finalized into served_provider_budget_reservations. Under the old
-    SUM(max_tokens) logic that attempt still counted as 125,000 and a second
-    125,000 share would exhaust the cap. Now the settled attempt is charged at its
-    finalized ACTUAL (1,000), so the next call is admitted — the cap has learned
-    true spend. (test_per_universe_spend_ceiling_counts_other_attempts keeps the
-    complementary guarantee: an IN-FLIGHT 'launch_started' attempt with unknown
-    usage is still charged conservatively at its estimate and DOES exhaust.)
-    """
+def test_carrier_reservations_are_unique_ordered_and_armed_before_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
     task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    background_provider._ensure_reservation_schema(conn)
-    background_provider._ensure_served_budget_schema(conn)
-    # The prior attempt: SETTLED (its call returned), estimate 125,000.
-    conn.execute(
-        "INSERT INTO assigned_queue_provider_reservations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            "reservation-prior",
-            "bt2_" + "9" * 32,
-            "attempt-prior",
-            "universe:universe-a:background_branch_run",
-            "provider-background-a",
-            6,
-            "sha256:" + "3" * 64,
-            "background_branch_run",
-            "writer",
-            125_000,
-            5_000,
-            "settled",
-            "2099-01-01T00:00:00+00:00",
-        ),
-    )
-    # ...and what it REALLY used, as the router finalized it (keyed by the binding).
-    conn.execute(
-        """
-        INSERT INTO served_provider_budget_reservations
-          (reservation_id, binding_id, binding_generation, state,
-           reserved_total_tokens, reserved_cost_microunits,
-           actual_total_tokens, actual_cost_microunits, created_at, lease_deadline)
-        VALUES (?, ?, ?, 'succeeded', ?, ?, ?, ?, 0, NULL)
-        """,
-        ("served_budget_prior", "provider-background-a", 6, 125_000, 5_000, 1_000, 40),
-    )
-    conn.commit()
     launches: list[str] = []
 
     def raw_provider(*_args, **kwargs):
-        kwargs["universe_context"].served_provider.before_provider_launch()
+        carrier = kwargs["universe_context"].provider_invocation
+        carrier.validate_for_call(
+            role="writer", operation=background_provider.BACKGROUND_BRANCH_RUN_OPERATION
+        )
         launches.append("launch")
         return "ok"
 
     session = background_provider._BackgroundAssignedProviderSession(
         tmp_path, task, _lease(), raw_provider
     )
-    # Admitted: 1,000 actual + this call's 125,000 share < 250,000 ceiling.
-    assert session("next") == "ok"
-    assert launches == ["launch"]
-    # And this call's own row was settled once it returned.
-    states = {
-        r["reservation_id"]: r["state"]
-        for r in conn.execute(
-            "SELECT reservation_id, state FROM assigned_queue_provider_reservations"
-        )
-    }
-    assert states["reservation-prior"] == "settled"
-    own = [s for rid, s in states.items() if rid != "reservation-prior"]
-    assert own == ["settled"], states
+    assert session("first") == "ok"
+    assert session("second") == "ok"
+    rows = conn.execute(
+        "SELECT invocation_key, ordinal, state "
+        "FROM provider_invocation_reservations ORDER BY ordinal"
+    ).fetchall()
+    assert launches == ["launch", "launch"]
+    assert [row["ordinal"] for row in rows] == [1, 2]
+    assert len({row["invocation_key"] for row in rows}) == 2
+    assert [row["state"] for row in rows] == ["launch_started", "launch_started"]
 
 
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "HONEST GAP: this test drives the REAL router (it launches — REJECT #1 is fixed) "
-        "and reaches reserve_served_provider_budget, but the shared _authority_fixture "
-        "stubs the provider-authority store/assignment/custody, so reservation cannot "
-        "complete in-fixture (AttributeError: _ProviderStore has no connection). "
-        "Finalization (REJECT #2) is NOT yet proven end-to-end; it needs a fixture "
-        "seeding the real SQLiteProviderWorkAuthorityStore + assignment + custody. "
-        "strict=True so an accidental pass is flagged, not silently accepted."
+        "HONEST GAP: the real router consumes the one-use invocation carrier and "
+        "launches, but provider_invocation_reservations do not yet persist actual "
+        "token/cost finalization. strict=True flags completion of that accounting."
     ),
 )
-def test_background_call_goes_through_the_real_router_and_finalizes_actuals(
+def test_background_carrier_actuals_are_finalized_by_the_real_router(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """THE INTEGRATION PROOF Codex demanded (REJECT #1/#2/#6, PR #2528).
-
-    Every prior spend test drove the session with a callback provider and
-    hand-inserted 'actual' rows — false assurance. This routes a background call
-    through the REAL ProviderRouter and asserts the two facts the design rests on:
-
-    1. The background path LAUNCHES (the router no longer re-fences a context that
-       already carries an authorized ServedProviderAuthority — REJECT #1).
-    2. The router RESERVES before launch and FINALIZES the call's real usage into
-       served_provider_budget_reservations for the background attempt (the
-       reservation gate now admits budget_owner="background_attempt" — REJECT #2),
-       so the consumer's rolling cap charges what was actually spent.
-    """
+    """The carrier launches through the router; actual accounting remains explicit."""
     import asyncio
 
     from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
     from tinyassets.providers.router import ProviderRouter
 
     task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    background_provider._ensure_reservation_schema(conn)
-    background_provider._ensure_served_budget_schema(conn)
-    # The shared fixture stubs load_universe_config to a bare {} (its callers never
-    # reach the router). This test DOES enter the real router, which reads
-    # config.allowed_providers as the requester ceiling — give it the real
-    # UniverseConfig shape production loads, admitting the assigned provider.
     import tinyassets.config as config_module
     from tinyassets.config import UniverseConfig
 
@@ -568,24 +463,13 @@ def test_background_call_goes_through_the_real_router_and_finalizes_actuals(
         tmp_path, task, _lease(), through_real_router
     )
     assert session("first") == "routed-ok"
-    assert fake.calls == 1  # REJECT #1: the real background path launched.
-
-    # REJECT #2: the router finalized REAL usage for the background attempt.
-    served = conn.execute(
-        "SELECT state, reserved_total_tokens, actual_total_tokens, actual_cost_microunits "
-        "FROM served_provider_budget_reservations"
-    ).fetchall()
-    assert len(served) == 1, served
-    assert served[0]["actual_total_tokens"] == 1000  # 700 in + 300 out, from the router
-    assert served[0]["actual_cost_microunits"] == 50
-    assert served[0]["state"] != "reserved"  # finalized, not left open
-
-    # And the consumer's own row was settled once the call returned, so the cap
-    # now charges the finalized 1,000 rather than the 125,000 estimate.
-    own = conn.execute(
-        "SELECT state FROM assigned_queue_provider_reservations"
-    ).fetchall()
-    assert [r["state"] for r in own] == ["settled"]
+    assert fake.calls == 1
+    reservation = conn.execute(
+        "SELECT state, record_json FROM provider_invocation_reservations"
+    ).fetchone()
+    assert reservation["state"] == "succeeded"
+    assert '"actual_total_tokens":1000' in reservation["record_json"]
+    assert '"actual_cost_microunits":50' in reservation["record_json"]
 
 
 def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
@@ -615,23 +499,18 @@ def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
 
 
 def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monkeypatch) -> None:
-    """A version current at the initial check but rolled_back by the launch fence must
-    fail closed — the fence re-validates the immutable Branch version (Codex #3, #2516)."""
+    """A rolled-back immutable Branch version cannot mint a launch carrier."""
     task, conn, _assignment, _current, events = _authority_fixture(tmp_path, monkeypatch)
     state = {"n": 0}
 
     def _roles(*_a):
         state["n"] += 1
-        if state["n"] > 1:  # first call ok (initial), later call (launch fence) rolled back
-            raise PermissionError("immutable Branch version is not current authority")
-        return ("writer",)
+        raise PermissionError("immutable Branch version is not current authority")
 
     monkeypatch.setattr(background_provider, "_branch_roles", _roles)
     raw_calls: list[str] = []
 
     def raw_provider(*_a, **_k):
-        # The provider adapter fires the launch fence, which re-validates the version.
-        _k["universe_context"].served_provider.before_provider_launch()
         raw_calls.append("raw")
         return "x"
 
@@ -642,11 +521,11 @@ def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monk
         session("prompt")
     assert raw_calls == []  # fence raised before the provider ran
     launched = conn.execute(
-        "SELECT 1 FROM assigned_queue_provider_reservations "
+        "SELECT 1 FROM provider_invocation_reservations "
         "WHERE state='launch_started'"
     ).fetchone()
     assert launched is None  # the fence blocked the launch (reservation never armed)
-    assert state["n"] >= 2  # the launch fence re-validated the version
+    assert state["n"] == 1
 
 
 def test_scavenge_orphaned_launch_credentials(tmp_path: Path) -> None:

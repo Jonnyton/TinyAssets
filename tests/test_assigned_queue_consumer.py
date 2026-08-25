@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import Future
 from pathlib import Path
 
+import pytest
+
 import tinyassets.runtime.assigned_queue_consumer as consumer_module
 from tinyassets.background_served_provider import (
     BACKGROUND_BRANCH_RUN_OPERATION,
@@ -213,12 +215,9 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
             assert limit == 20
             return [tasks[universe_id]]
 
-        def claim(self, branch_task_id, *, descriptor, descriptor_reader):
-            claims.append(descriptor.universe_id)
-            return next(
-                t for t in self.list_candidates(universe_id=descriptor.universe_id, limit=20)
-                if t.branch_task_id == branch_task_id
-            )
+        def claim_assigned(self, candidate, *, consumer_lease):
+            claims.append(consumer_lease.consumer_id)
+            return candidate
 
     class _Executor:
         def submit(self, *_args):
@@ -236,27 +235,14 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
         "list_serving_universes",
         lambda _base_path: ["universe-a", "universe-b"],
     )
-    # A bare temp store has no provider assignment; the new claim path registers a
-    # real worker runtime per universe first — stub that seam (it is exercised by
-    # the cloud-continuation suite), keep the concurrency-cap logic under test.
-    monkeypatch.setattr(AssignedQueueConsumer, "_ensure_runtime", lambda self, u, p: f"rt-{u}")
-    monkeypatch.setattr(
-        AssignedQueueConsumer, "_assignment",
-        lambda self, u: type(
-            "A", (), {"provider": "codex", "owner_user_id": "acct_alice", "state": "ready"}
-        )(),
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer, "_current_descriptor",
-        lambda self, u, r: self._descriptor(u, r),
-    )
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
     consumer._executor.shutdown(wait=False, cancel_futures=True)
     consumer._executor = _Executor()
 
     assert consumer.poll_once() == 1
     assert consumer.poll_once() == 0
-    assert claims == ["universe-a"]
+    assert claims == [consumer.consumer_id]
+    assert not hasattr(consumer, "worker_id_for")
     consumer.stop()
 
 
@@ -273,12 +259,18 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
             finishes.append((branch_task_id, status))
 
     monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
-    import tinyassets.cloud_automation_continuation as continuation_module
+    from tinyassets.runtime.claimed_branch_execution import ClaimedBranchExecutorIdentity
 
-    monkeypatch.setattr(AssignedQueueConsumer, "_ensure_daemon", lambda self, u: "daemon-a")
     monkeypatch.setattr(
-        continuation_module,
-        "prepare_claimed_cloud_provider_call",
+        "tinyassets.background_served_provider.load_background_executor_identity",
+        lambda *_a, **_k: ClaimedBranchExecutorIdentity(
+            daemon_id="daemon-a",
+            worker_id="assigned-consumer:boot-a",
+            runtime_instance_id="runtime-a",
+        ),
+    )
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.authorize_background_served_provider_call",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("task boom")),
     )
     task = Epoch2BranchTask(
@@ -297,6 +289,56 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
     consumer._execute(task, lease)
 
     assert finishes == [(task.branch_task_id, "failed")]
+    consumer.stop()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "background_binding_absent",
+        "background_binding_inactive",
+        "background_binding_executor_identity_missing",
+    ],
+)
+def test_background_binding_identity_failure_terminalizes_with_named_reason(
+    tmp_path: Path, monkeypatch, reason: str
+) -> None:
+    finishes: list[dict[str, str]] = []
+
+    class _Adapter:
+        def __init__(self, _base_path):
+            pass
+
+        def finish(self, _branch_task_id, *, worker_id, status, detail):
+            assert worker_id == "assigned-consumer:boot-a"
+            assert status == "failed"
+            finishes.append(detail)
+
+    from tinyassets.background_served_provider import BackgroundExecutorIdentityError
+
+    monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.load_background_executor_identity",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            BackgroundExecutorIdentityError(reason)
+        ),
+    )
+    task = Epoch2BranchTask(
+        branch_task_id="bt2_" + "a" * 32,
+        branch_def_id="branch-a",
+        universe_id="universe-a",
+        claimed_by="assigned-consumer:boot-a",
+    )
+    lease = AssignedConsumerLease(
+        consumer_id="assigned-consumer:boot-a",
+        lease_id="assigned-lease:boot-a",
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+
+    consumer._execute(task, lease)
+
+    assert finishes == [{"error": reason}]
     consumer.stop()
 
 

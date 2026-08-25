@@ -1816,6 +1816,152 @@ class SQLiteProviderWorkAuthorityStore:
             _provider_invocation_store_mint_proof(armed.record),
         )
 
+    def _reserve_and_arm_background_branch_carrier_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        authority: ProviderUniverseWorkAuthority,
+        worker_id: str,
+        runtime_id: str,
+        claim_nonce_digest: str,
+        lease_seconds: int,
+        invocation_key: str,
+        role: str,
+        max_tokens: int,
+        max_cost_microunits: int,
+        authority_fence: object,
+    ) -> ProviderInvocationCarrier:
+        """Issue/claim the background binding and arm one invocation atomically."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("background Branch launch requires an active transaction")
+        from tinyassets.background_served_provider import (
+            _BackgroundBranchInvocationAuthorityFence,
+        )
+
+        intent = (
+            authority,
+            worker_id,
+            runtime_id,
+            claim_nonce_digest,
+            lease_seconds,
+            invocation_key,
+            role,
+            max_tokens,
+            max_cost_microunits,
+        )
+        if type(authority_fence) is not _BackgroundBranchInvocationAuthorityFence:
+            raise PermissionError("background Branch launch authority was not revalidated")
+        authority_fence._consume(intent)
+
+        now = self._now()
+        transaction = _Transaction(conn)
+        receipt_candidate = _receipt_from_authority(
+            authority,
+            created_at=self._timestamp(now),
+        )
+        issued = transaction._issue_universe_receipt(
+            authority,
+            receipt_candidate,
+            now=now,
+        )
+        if (
+            issued.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or issued.record is None
+        ):
+            raise PermissionError("background provider receipt is unavailable")
+        receipt = issued.record
+        receipt_expiry = datetime.fromisoformat(
+            receipt.expires_at.removesuffix("Z") + "+00:00"
+        )
+        bounded_lease_seconds = min(
+            lease_seconds,
+            int((receipt_expiry - now).total_seconds()),
+        )
+        if bounded_lease_seconds < 1:
+            raise PermissionError("background provider claim lease is expired")
+        claim_request = ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id=worker_id,
+            runtime_id=runtime_id,
+            claim_nonce_digest=claim_nonce_digest,
+            lease_seconds=bounded_lease_seconds,
+        )
+        claim_candidate = _claim_from_request(
+            claim_request,
+            created_at=self._timestamp(now),
+            lease_expires_at=self._timestamp(
+                now + timedelta(seconds=bounded_lease_seconds)
+            ),
+        )
+        claimed = transaction.claim_receipt(
+            claim_request,
+            claim_candidate,
+            now=now,
+            allow_cloud_background_fixture=True,
+        )
+        if (
+            claimed.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or claimed.record is None
+        ):
+            raise PermissionError("background provider execution claim is unavailable")
+        claim = claimed.record
+        request = ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key=invocation_key,
+            operation=authority.operation,
+            role=role,
+            max_tokens=max_tokens,
+            max_cost_microunits=max_cost_microunits,
+        )
+        reserved = transaction.reserve_invocation(
+            request,
+            now=now,
+            created_at=self._timestamp(now),
+            allow_cloud_background_fixture=True,
+        )
+        if (
+            reserved.record is None
+            or reserved.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or reserved.record.state is not ProviderInvocationReservationState.RESERVED
+        ):
+            raise PermissionError("background provider invocation is unavailable")
+        armed = transaction.arm_launch(
+            ProviderInvocationLaunchRequest.from_reservation(reserved.record),
+            now=now,
+            allow_cloud_background_fixture=True,
+        )
+        if (
+            armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or armed.record is None
+            or armed.receipt is None
+            or armed.claim is None
+        ):
+            raise PermissionError("background provider invocation could not be armed")
+        return _mint_provider_invocation_carrier(
+            armed.receipt,
+            armed.claim,
+            armed.record,
+            _provider_invocation_store_mint_proof(armed.record),
+        )
+
     def list_reservations(
         self,
         receipt_id: str,

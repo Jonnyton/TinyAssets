@@ -110,6 +110,8 @@ def _definition(
     *,
     max_tokens: int = 100_000,
     max_cost_microunits: int = 5_000_000,
+    branch_version_id: str = "branch_repo_spec_loop@abc12345",
+    branch_content_digest: str = f"sha256:{'b' * 64}",
 ) -> RepositorySpecWorkDefinition:
     return RepositorySpecWorkDefinition.from_dict(
         {
@@ -120,8 +122,8 @@ def _definition(
             "accepted_spec_ref": "openspec/specs/example/spec.md",
             "accepted_spec_digest": f"sha256:{'a' * 64}",
             "branch_def_id": "branch_repo_spec_loop",
-            "branch_version_id": "branch_repo_spec_loop@abc12345",
-            "branch_content_digest": f"sha256:{'b' * 64}",
+            "branch_version_id": branch_version_id,
+            "branch_content_digest": branch_content_digest,
             "acceptance_scenario_id": "scenario:repo-spec-baseline-v1",
             "acceptance_scenario_digest": acceptance_scenario_digest(
                 repository_spec_baseline_scenario()
@@ -207,6 +209,8 @@ def _fixture(
     max_tokens: int = 100_000,
     max_cost_microunits: int = 5_000_000,
     allowed_roles: tuple[str, ...] = ("writer",),
+    branch_version_id: str = "branch_repo_spec_loop@abc12345",
+    branch_content_digest: str = f"sha256:{'b' * 64}",
 ) -> tuple[
     RepositorySpecWorkDefinition,
     PreparedCloudContinuationRequest,
@@ -258,6 +262,8 @@ def _fixture(
         provider_binding.binding_id,
         max_tokens=max_tokens,
         max_cost_microunits=max_cost_microunits,
+        branch_version_id=branch_version_id,
+        branch_content_digest=branch_content_digest,
     )
 
     ledger = ConnectionLedger(
