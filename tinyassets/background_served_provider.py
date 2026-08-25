@@ -6,17 +6,16 @@ import hashlib
 import json
 import logging
 import os
-import secrets
 import sqlite3
 import threading
-import weakref
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from tinyassets.background_branch_authority import (
+    BackgroundBranchAttemptLifecycle,
     BackgroundBranchBindingStatus,
     BackgroundBranchExecutorClass,
 )
@@ -107,14 +106,19 @@ def load_background_executor_identity(
         conn.rollback()
     if authority is None:
         raise BackgroundExecutorIdentityError("background_binding_absent")
-    binding, _attempt = authority
+    binding, attempt = authority
     now = datetime.now(timezone.utc)
-    if (
-        binding.status is not BackgroundBranchBindingStatus.ACTIVE
-        or binding.expires_at is not None
-        and _utc(binding.expires_at) <= now
-    ):
+    if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
         raise BackgroundExecutorIdentityError("background_binding_inactive")
+    if binding.expires_at is None or _utc(binding.expires_at) <= now:
+        raise BackgroundExecutorIdentityError("background_binding_expired")
+    if attempt.lifecycle not in {
+        BackgroundBranchAttemptLifecycle.CLAIMED,
+        BackgroundBranchAttemptLifecycle.RUNNING,
+    }:
+        raise BackgroundExecutorIdentityError("background_attempt_inactive")
+    if attempt.lease_expires_at is None or _utc(attempt.lease_expires_at) <= now:
+        raise BackgroundExecutorIdentityError("background_attempt_lease_expired")
     if (
         binding.universe_id != claimed_task.universe_id
         or binding.branch_def_id != claimed_task.branch_def_id
@@ -133,69 +137,6 @@ def load_background_executor_identity(
         runtime_instance_id=binding.runtime_id,
         heartbeat=heartbeat,
     )
-
-
-_BACKGROUND_INVOCATION_FENCE_LOCK = threading.Lock()
-_ACTIVE_BACKGROUND_INVOCATION_FENCES: dict[
-    str,
-    tuple[weakref.ReferenceType["_BackgroundBranchInvocationAuthorityFence"], tuple[Any, ...], int],
-] = {}
-
-
-class _BackgroundBranchInvocationAuthorityFence:
-    """One-use proof minted only after the background launch roots revalidate."""
-
-    __slots__ = ("_fence_id", "_issuer_pid", "__weakref__")
-
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("background Branch invocation fences are service-issued")
-
-    def __setattr__(self, _name: str, _value: object) -> None:
-        raise AttributeError("background Branch invocation fences are immutable")
-
-    def __reduce__(self):
-        raise TypeError("background Branch invocation fences are non-serializable")
-
-    def _consume(self, intent: tuple[Any, ...]) -> None:
-        current_pid = os.getpid()
-        with _BACKGROUND_INVOCATION_FENCE_LOCK:
-            entry = _ACTIVE_BACKGROUND_INVOCATION_FENCES.get(self._fence_id)
-            if (
-                type(self) is not _BackgroundBranchInvocationAuthorityFence
-                or self._issuer_pid != current_pid
-                or entry is None
-                or entry[0]() is not self
-                or entry[1] != intent
-                or entry[2] != current_pid
-            ):
-                raise PermissionError("background Branch invocation fence is invalid")
-            del _ACTIVE_BACKGROUND_INVOCATION_FENCES[self._fence_id]
-
-
-def _discard_background_invocation_fence(fence_id: str, issuer_pid: int) -> None:
-    if issuer_pid != os.getpid():
-        return
-    with _BACKGROUND_INVOCATION_FENCE_LOCK:
-        _ACTIVE_BACKGROUND_INVOCATION_FENCES.pop(fence_id, None)
-
-
-def _mint_background_invocation_fence(
-    intent: tuple[Any, ...],
-) -> _BackgroundBranchInvocationAuthorityFence:
-    fence_id = secrets.token_hex(32)
-    issuer_pid = os.getpid()
-    fence = object.__new__(_BackgroundBranchInvocationAuthorityFence)
-    object.__setattr__(fence, "_fence_id", fence_id)
-    object.__setattr__(fence, "_issuer_pid", issuer_pid)
-    weakref.finalize(fence, _discard_background_invocation_fence, fence_id, issuer_pid)
-    with _BACKGROUND_INVOCATION_FENCE_LOCK:
-        _ACTIVE_BACKGROUND_INVOCATION_FENCES[fence_id] = (
-            weakref.ref(fence),
-            intent,
-            issuer_pid,
-        )
-    return fence
-
 
 def _hold_background_authority(base_path: Path, task: Epoch2BranchTask) -> None:
     """Project the exact queue authority owner to a retryable held state."""
@@ -264,6 +205,296 @@ def _utc(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("timestamp must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def _background_timestamp(value: str | datetime, *after: str) -> str:
+    parsed = value if isinstance(value, datetime) else _utc(value)
+    parsed = parsed.astimezone(timezone.utc)
+    for prior in after:
+        prior_value = _utc(prior)
+        if parsed <= prior_value:
+            parsed = prior_value + timedelta(microseconds=1)
+    return parsed.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def claim_background_queue_authority_in_transaction(
+    conn: sqlite3.Connection,
+    task: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+    *,
+    claimed_at: str,
+    lease_expires_at: str,
+) -> bool:
+    """Claim the canonical attempt and create its queue owner with the task CAS."""
+
+    from tinyassets.background_branch_authority import (
+        BackgroundBranchAttemptFence,
+        BackgroundBranchBindingFence,
+    )
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerRecord,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.cloud_automation_continuation import build_request_task_attempt_key
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+        _SQLiteBackgroundBranchAuthorityTransaction,
+    )
+
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("background queue authority claim requires a transaction")
+    if task.claimed_by:
+        return False
+    row = conn.execute(
+        """
+        SELECT body_digest, grant_generation, actor_id
+        FROM request_admissions
+        WHERE admission_id = ? AND request_id = ? AND branch_task_id = ?
+        """,
+        (task.admission_id, task.request_id, task.branch_task_id),
+    ).fetchone()
+    if row is None:
+        return False
+    logical_key = build_request_task_attempt_key(
+        tenant_id=str(row["actor_id"]),
+        request_id=task.request_id,
+        admission_id=task.admission_id,
+        task_id=task.branch_task_id,
+        body_digest=str(row["body_digest"]),
+        admission_generation=int(row["grant_generation"]),
+    )
+    authority = SQLiteBackgroundBranchAuthorityStore.read_authority_in_transaction(
+        conn,
+        logical_attempt_key=logical_key,
+    )
+    if authority is None:
+        return False
+    binding, attempt = authority
+    now = _utc(claimed_at)
+    lease_expiry = _utc(lease_expires_at)
+    exact = (
+        binding.status is BackgroundBranchBindingStatus.ACTIVE,
+        binding.expires_at is not None,
+        binding.expires_at is not None and _utc(binding.expires_at) > now,
+        binding.expires_at is not None and lease_expiry <= _utc(binding.expires_at),
+        binding.authorizing_principal_id == str(row["actor_id"]),
+        binding.universe_id == task.universe_id,
+        binding.branch_def_id == task.branch_def_id,
+        binding.pinned_branch_version_id == task.automation_branch_version,
+        BackgroundBranchExecutorClass.CLOUD in binding.permitted_executor_classes,
+        bool(binding.daemon_id),
+        bool(binding.runtime_id),
+        attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
+        attempt.lease_expires_at is None,
+        attempt.branch_version_id == task.automation_branch_version,
+        attempt.branch_content_digest == task.automation_subject_digest,
+        attempt.executor_audience.daemon_id == binding.daemon_id,
+        attempt.executor_audience.runtime_id == binding.runtime_id,
+        lease_expiry > now,
+        consumer_lease.consumer_id.startswith("assigned-consumer:"),
+        _utc(consumer_lease.expires_at) >= lease_expiry,
+    )
+    if not all(exact):
+        return False
+    transaction = _SQLiteBackgroundBranchAuthorityTransaction(conn)
+    transitioned_at = _background_timestamp(claimed_at, attempt.updated_at)
+    claimed_attempt = replace(
+        attempt,
+        lease_generation=attempt.lease_generation + 1,
+        lease_expires_at=_background_timestamp(lease_expires_at),
+        lifecycle=BackgroundBranchAttemptLifecycle.CLAIMED,
+        updated_at=transitioned_at,
+    )
+    attempt_result = transaction.compare_and_swap_attempt(
+        attempt_id=attempt.attempt_id,
+        expected=BackgroundBranchAttemptFence(attempt),
+        replacement=claimed_attempt,
+    )
+    if attempt_result.record != claimed_attempt:
+        return False
+    if transaction.get_owner(
+        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+        owner_id=task.branch_task_id,
+    ) is not None:
+        return False
+    owner = BackgroundBranchAuthorityOwnerRecord(
+        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+        owner_id=task.branch_task_id,
+        universe_id=binding.universe_id,
+        authorizing_principal_id=binding.authorizing_principal_id,
+        source_generation=attempt.source_generation,
+        transition_generation=1,
+        state=BackgroundBranchAuthorityOwnerState.PENDING,
+        binding=BackgroundBranchBindingFence(binding),
+        attempt=BackgroundBranchAttemptFence(claimed_attempt),
+        hold_reason=None,
+        updated_at=transitioned_at,
+    )
+    return transaction.insert_owner(owner).record == owner
+
+
+def start_background_queue_authority(
+    base_path: str | Path,
+    task: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+) -> None:
+    """CAS one claimed queue owner and attempt into their running states."""
+
+    from tinyassets.background_branch_authority import BackgroundBranchAttemptFence
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerFence,
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+
+    if task.claimed_by != consumer_lease.consumer_id:
+        raise BackgroundExecutorIdentityError("background_consumer_lease_mismatch")
+    store = SQLiteBackgroundBranchAuthorityStore(base_path)
+    with store.transaction() as transaction:
+        owner = transaction.get_owner(
+            owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+            owner_id=task.branch_task_id,
+        )
+        if owner is None:
+            raise BackgroundExecutorIdentityError("background_queue_owner_missing")
+        if (
+            owner.state is not BackgroundBranchAuthorityOwnerState.PENDING
+            or owner.binding is None
+            or owner.attempt is None
+        ):
+            raise BackgroundExecutorIdentityError("background_queue_owner_inactive")
+        binding = transaction.get_binding(owner.binding.expected_record.binding_id)
+        attempt = transaction.get_attempt_by_logical_key(
+            owner.attempt.expected_record.logical_attempt_key
+        )
+        now = datetime.now(timezone.utc)
+        if binding != owner.binding.expected_record:
+            raise BackgroundExecutorIdentityError("background_binding_stale")
+        if binding.expires_at is None or _utc(binding.expires_at) <= now:
+            raise BackgroundExecutorIdentityError("background_binding_expired")
+        if attempt != owner.attempt.expected_record:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        if attempt.lifecycle is not BackgroundBranchAttemptLifecycle.CLAIMED:
+            raise BackgroundExecutorIdentityError("background_attempt_inactive")
+        if attempt.lease_expires_at is None or _utc(attempt.lease_expires_at) <= now:
+            raise BackgroundExecutorIdentityError("background_attempt_lease_expired")
+        transitioned_at = _background_timestamp(now, owner.updated_at, attempt.updated_at)
+        running_attempt = replace(
+            attempt,
+            lifecycle=BackgroundBranchAttemptLifecycle.RUNNING,
+            updated_at=transitioned_at,
+        )
+        attempt_result = transaction.compare_and_swap_attempt(
+            attempt_id=attempt.attempt_id,
+            expected=BackgroundBranchAttemptFence(attempt),
+            replacement=running_attempt,
+        )
+        if attempt_result.record != running_attempt:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        running_owner = replace(
+            owner,
+            transition_generation=owner.transition_generation + 1,
+            state=BackgroundBranchAuthorityOwnerState.RUNNING,
+            attempt=BackgroundBranchAttemptFence(running_attempt),
+            updated_at=transitioned_at,
+        )
+        owner_result = transaction.compare_and_swap_owner(
+            expected=BackgroundBranchAuthorityOwnerFence(owner),
+            replacement=running_owner,
+        )
+        if owner_result.record != running_owner:
+            raise BackgroundExecutorIdentityError("background_queue_owner_changed")
+
+
+def terminalize_background_queue_authority(
+    base_path: str | Path,
+    task: Epoch2BranchTask,
+    *,
+    status: str,
+    reason: str,
+) -> None:
+    """CAS the queue authority and its attempt to one conclusive terminal state."""
+
+    from tinyassets.background_branch_authority import BackgroundBranchAttemptFence
+    from tinyassets.background_branch_authority_service import (
+        BackgroundBranchAuthorityOwnerFence,
+        BackgroundBranchAuthorityOwnerKind,
+        BackgroundBranchAuthorityOwnerState,
+    )
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+
+    owner_states = {
+        "succeeded": BackgroundBranchAuthorityOwnerState.SUCCEEDED,
+        "failed": BackgroundBranchAuthorityOwnerState.FAILED,
+        "cancelled": BackgroundBranchAuthorityOwnerState.CANCELLED,
+    }
+    attempt_states = {
+        "succeeded": BackgroundBranchAttemptLifecycle.SUCCEEDED,
+        "failed": BackgroundBranchAttemptLifecycle.FAILED,
+        "cancelled": BackgroundBranchAttemptLifecycle.CANCELLED,
+    }
+    if status not in owner_states or not reason.strip():
+        raise ValueError("background terminal status and reason are required")
+    store = SQLiteBackgroundBranchAuthorityStore(base_path)
+    with store.transaction() as transaction:
+        owner = transaction.get_owner(
+            owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+            owner_id=task.branch_task_id,
+        )
+        if owner is None:
+            raise BackgroundExecutorIdentityError("background_queue_owner_missing")
+        if owner.state not in {
+            BackgroundBranchAuthorityOwnerState.PENDING,
+            BackgroundBranchAuthorityOwnerState.RUNNING,
+        } or owner.attempt is None:
+            raise BackgroundExecutorIdentityError("background_queue_owner_inactive")
+        attempt = transaction.get_attempt_by_logical_key(
+            owner.attempt.expected_record.logical_attempt_key
+        )
+        if attempt != owner.attempt.expected_record:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        transitioned_at = _background_timestamp(
+            datetime.now(timezone.utc), owner.updated_at, attempt.updated_at
+        )
+        attempt_state = attempt_states[status]
+        if attempt.lifecycle is BackgroundBranchAttemptLifecycle.CLAIMED:
+            attempt_state = BackgroundBranchAttemptLifecycle.CANCELLED
+        terminal_attempt = replace(
+            attempt,
+            lease_generation=attempt.lease_generation + 1,
+            lease_expires_at=None,
+            lifecycle=attempt_state,
+            hold_reason=None,
+            terminal_reason=reason,
+            updated_at=transitioned_at,
+        )
+        attempt_result = transaction.compare_and_swap_attempt(
+            attempt_id=attempt.attempt_id,
+            expected=BackgroundBranchAttemptFence(attempt),
+            replacement=terminal_attempt,
+        )
+        if attempt_result.record != terminal_attempt:
+            raise BackgroundExecutorIdentityError("background_attempt_stale")
+        terminal_owner = replace(
+            owner,
+            transition_generation=owner.transition_generation + 1,
+            state=owner_states[status],
+            attempt=BackgroundBranchAttemptFence(terminal_attempt),
+            hold_reason=None,
+            updated_at=transitioned_at,
+        )
+        owner_result = transaction.compare_and_swap_owner(
+            expected=BackgroundBranchAuthorityOwnerFence(owner),
+            replacement=terminal_owner,
+        )
+        if owner_result.record != terminal_owner:
+            raise BackgroundExecutorIdentityError("background_queue_owner_changed")
 
 
 def _normalize_content_digest(value: str) -> str:
@@ -617,9 +848,18 @@ class _BackgroundAssignedProviderSession:
                         if background_authority is None:
                             raise PermissionError("background Branch attempt is unavailable")
                         binding, attempt = background_authority
+                        if binding.status is BackgroundBranchBindingStatus.ACTIVE and (
+                            binding.expires_at is None or _utc(binding.expires_at) <= now
+                        ):
+                            raise BackgroundExecutorIdentityError(
+                                "background_binding_expired"
+                            )
                         if not all(
                             (
                                 binding.status is BackgroundBranchBindingStatus.ACTIVE,
+                                binding.expires_at is not None,
+                                binding.expires_at is not None
+                                and _utc(binding.expires_at) > now,
                                 binding.authorizing_principal_id
                                 == assignment.owner_user_id,
                                 binding.universe_id == self._task.universe_id,
@@ -639,18 +879,14 @@ class _BackgroundAssignedProviderSession:
                                 attempt.branch_version_id == self._task.automation_branch_version,
                                 attempt.branch_content_digest
                                 == self._task.automation_subject_digest,
-                                attempt.lifecycle.value
-                                not in {
-                                    "authority_held",
-                                    "target_authority_held",
-                                    "revoked",
-                                    "expired",
-                                    "succeeded",
-                                    "failed",
-                                    "cancelled",
+                                attempt.lifecycle
+                                in {
+                                    BackgroundBranchAttemptLifecycle.CLAIMED,
+                                    BackgroundBranchAttemptLifecycle.RUNNING,
                                 },
-                                attempt.lease_expires_at is None
-                                or _utc(attempt.lease_expires_at) > now,
+                                attempt.lease_expires_at is not None,
+                                attempt.lease_expires_at is not None
+                                and _utc(attempt.lease_expires_at) > now,
                                 attempt.remaining_count > 0,
                                 attempt.remaining_cost_microunits > 0,
                             )
@@ -781,17 +1017,6 @@ class _BackgroundAssignedProviderSession:
                             raise PermissionError(
                                 "background provider claim lease is expired"
                             )
-                        intent = (
-                            authority,
-                            str(binding.daemon_id),
-                            str(binding.runtime_id),
-                            claim_nonce_digest,
-                            lease_seconds,
-                            invocation_key,
-                            role,
-                            token_share,
-                            cost_share,
-                        )
                         carrier = (
                             provider_store
                             ._reserve_and_arm_background_branch_carrier_in_transaction(
@@ -805,9 +1030,6 @@ class _BackgroundAssignedProviderSession:
                                 role=role,
                                 max_tokens=token_share,
                                 max_cost_microunits=cost_share,
-                                authority_fence=_mint_background_invocation_fence(
-                                    intent
-                                ),
                             )
                         )
                         conn.commit()
@@ -821,10 +1043,21 @@ class _BackgroundAssignedProviderSession:
         except Exception as exc:
             if carrier is not None:
                 raise
-            try:
-                _hold_background_authority(self._base_path, self._task)
-            except Exception:  # noqa: BLE001 - preserve the primary hold reason
-                logger.exception("background authority hold projection failed")
+            if isinstance(exc, BackgroundExecutorIdentityError):
+                try:
+                    terminalize_background_queue_authority(
+                        self._base_path,
+                        self._task,
+                        status="failed",
+                        reason=exc.reason,
+                    )
+                except Exception:  # noqa: BLE001 - preserve the primary failure reason
+                    logger.exception("background authority terminal projection failed")
+            else:
+                try:
+                    _hold_background_authority(self._base_path, self._task)
+                except Exception:  # noqa: BLE001 - preserve the primary hold reason
+                    logger.exception("background authority hold projection failed")
             raise ProviderAuthorityHeldError(held) from exc
         finally:
             from tinyassets.credential_vault import cleanup_llm_credential_snapshot

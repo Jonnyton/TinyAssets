@@ -10,6 +10,7 @@ provider binding/receipt/claim/reservation, and routing all use their real store
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,6 +19,10 @@ import pytest
 from tinyassets.background_branch_authority import (
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
+)
+from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAuthorityOwnerKind,
+    BackgroundBranchAuthorityOwnerState,
 )
 from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 from tinyassets.branches import (
@@ -28,16 +33,22 @@ from tinyassets.branches import (
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.router import ProviderRouter
+from tinyassets.storage.background_branch_authority import (
+    SQLiteBackgroundBranchAuthorityStore,
+)
 from tinyassets.storage.provider_work_authority import db_path as authority_db_path
 
 
 class _CountingProvider(BaseProvider):
-    def __init__(self) -> None:
+    def __init__(self, on_call=None) -> None:
         self.name = "codex"
         self.family = "codex"
         self.calls: list[ModelConfig] = []
+        self.on_call = on_call
 
     async def complete(self, prompt, system, config: ModelConfig, *, universe_dir=None):
+        if self.on_call is not None:
+            self.on_call()
         self.calls.append(config)
         return ProviderResponse(
             text="routed-ok",
@@ -219,36 +230,84 @@ def _run_consumer_once(tmp_path: Path, monkeypatch):
     from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
 
     branch_task_id, audience = _seed_claimable_background_path(tmp_path)
-    fake = _CountingProvider()
+    observed_owner_states: list[BackgroundBranchAuthorityOwnerState] = []
+
+    def observe_running_owner() -> None:
+        owner = SQLiteBackgroundBranchAuthorityStore(tmp_path).get_owner(
+            owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+            owner_id=branch_task_id,
+        )
+        assert owner is not None
+        observed_owner_states.append(owner.state)
+
+    fake = _CountingProvider(observe_running_owner)
     previous_router = provider_call_module.get_provider_router()
     previous_force_mock = provider_call_module.is_force_mock()
     provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
     provider_call_module.set_force_mock(False)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+
+    class _DeferredExecutor:
+        def __init__(self) -> None:
+            self.future: Future[None] | None = None
+            self.job = None
+
+        def submit(self, fn, *args):
+            self.future = Future()
+            self.job = (fn, args)
+            return self.future
+
+        def run(self) -> None:
+            assert self.future is not None and self.job is not None
+            fn, args = self.job
+            try:
+                fn(*args)
+            except BaseException as exc:
+                self.future.set_exception(exc)
+                raise
+            else:
+                self.future.set_result(None)
+
+        def shutdown(self, **_kwargs) -> None:
+            pass
+
+    deferred = _DeferredExecutor()
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = deferred
     try:
         assert not hasattr(consumer, "worker_id_for")
         assert consumer.poll_once() == 1
+        pending_owner = SQLiteBackgroundBranchAuthorityStore(tmp_path).get_owner(
+            owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+            owner_id=branch_task_id,
+        )
+        assert pending_owner is not None
+        assert pending_owner.state is BackgroundBranchAuthorityOwnerState.PENDING
+        deferred.run()
         for future in list(consumer._active.values()):
             future.result(timeout=10)
     finally:
         consumer.stop()
         provider_call_module.set_provider_router(previous_router)
         provider_call_module.set_force_mock(previous_force_mock)
-    return branch_task_id, audience, consumer, fake
+    return branch_task_id, audience, consumer, fake, observed_owner_states
 
 
 def test_consumer_poll_once_claims_with_process_lease_and_launches_carrier(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    branch_task_id, audience, consumer, fake = _run_consumer_once(tmp_path, monkeypatch)
+    branch_task_id, audience, consumer, fake, owner_states = _run_consumer_once(
+        tmp_path, monkeypatch
+    )
 
     task = Epoch2BranchTaskAdapter(tmp_path).get(branch_task_id)
     assert task is not None
     assert task.status == "succeeded", task.error
     assert task.claimed_by == consumer.consumer_id
     assert len(fake.calls) == 1
+    assert owner_states == [BackgroundBranchAuthorityOwnerState.RUNNING]
     launched_config = fake.calls[0]
     assert launched_config.max_tokens is not None and launched_config.max_tokens >= 1
     assert launched_config.credential_snapshot_dir is not None
@@ -262,6 +321,13 @@ def test_consumer_poll_once_claims_with_process_lease_and_launches_carrier(
     assert run["runtime_instance_id"] == audience.runtime_id
     assert run["worker_id"] == consumer.consumer_id
 
+    terminal_owner = SQLiteBackgroundBranchAuthorityStore(tmp_path).get_owner(
+        owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+        owner_id=branch_task_id,
+    )
+    assert terminal_owner is not None
+    assert terminal_owner.state is BackgroundBranchAuthorityOwnerState.SUCCEEDED
+
     conn = sqlite3.connect(authority_db_path(tmp_path))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
@@ -270,6 +336,21 @@ def test_consumer_poll_once_claims_with_process_lease_and_launches_carrier(
     assert len(rows) == 1, [dict(row) for row in rows]
     assert rows[0]["state"] == "launch_started"
     assert rows[0]["ordinal"] == 1
+
+    receipt = conn.execute(
+        "SELECT json_extract(record_json, '$.principal_id') AS principal_id, "
+        "json_extract(record_json, '$.actor_id') AS actor_id "
+        "FROM provider_work_receipts"
+    ).fetchone()
+    claim = conn.execute(
+        "SELECT json_extract(record_json, '$.worker_id') AS worker_id, "
+        "json_extract(record_json, '$.runtime_id') AS runtime_id "
+        "FROM provider_work_execution_claims"
+    ).fetchone()
+    assert receipt["principal_id"] == "acct_alice"
+    assert receipt["actor_id"] == audience.daemon_id
+    assert claim["worker_id"] == audience.daemon_id
+    assert claim["runtime_id"] == audience.runtime_id
 
 
 @pytest.mark.xfail(

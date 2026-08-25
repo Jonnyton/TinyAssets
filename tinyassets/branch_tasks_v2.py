@@ -465,6 +465,7 @@ class Epoch2BranchTaskAdapter:
         *,
         consumer_lease: AssignedConsumerLease,
         lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
+        authority_claim: Callable[..., bool] | None = None,
     ) -> Epoch2BranchTask | None:
         """CAS one exact automation task to a boot-scoped daemon consumer."""
 
@@ -478,12 +479,26 @@ class Epoch2BranchTaskAdapter:
             task: Mapping[str, Any],
             transaction_at: str,
         ) -> bool:
-            return _transaction_allows_assigned_consumer(
+            allowed = _transaction_allows_assigned_consumer(
                 conn,
                 task,
                 transaction_at=transaction_at,
                 candidate=candidate,
                 consumer_lease=consumer_lease,
+            )
+            if not allowed or authority_claim is None:
+                return allowed
+            claimed_at = _parse_timestamp(transaction_at)
+            if claimed_at is None:
+                return False
+            return authority_claim(
+                conn,
+                candidate,
+                consumer_lease,
+                claimed_at=transaction_at,
+                lease_expires_at=(
+                    claimed_at + timedelta(seconds=lease_seconds)
+                ).isoformat(),
             )
 
         row = self._store.claim_v2_task(

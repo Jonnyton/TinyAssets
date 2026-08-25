@@ -215,7 +215,8 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
             assert limit == 20
             return [tasks[universe_id]]
 
-        def claim_assigned(self, candidate, *, consumer_lease):
+        def claim_assigned(self, candidate, *, consumer_lease, authority_claim=None):
+            assert authority_claim is not None
             claims.append(consumer_lease.consumer_id)
             return candidate
 
@@ -259,6 +260,14 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
             finishes.append((branch_task_id, status))
 
     monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.start_background_queue_authority",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.terminalize_background_queue_authority",
+        lambda *_a, **_k: None,
+    )
     from tinyassets.runtime.claimed_branch_execution import ClaimedBranchExecutorIdentity
 
     monkeypatch.setattr(
@@ -297,7 +306,10 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
     [
         "background_binding_absent",
         "background_binding_inactive",
+        "background_binding_expired",
         "background_binding_executor_identity_missing",
+        "background_attempt_inactive",
+        "background_attempt_lease_expired",
     ],
 )
 def test_background_binding_identity_failure_terminalizes_with_named_reason(
@@ -317,6 +329,14 @@ def test_background_binding_identity_failure_terminalizes_with_named_reason(
     from tinyassets.background_served_provider import BackgroundExecutorIdentityError
 
     monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.start_background_queue_authority",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.terminalize_background_queue_authority",
+        lambda *_a, **_k: None,
+    )
     monkeypatch.setattr(
         "tinyassets.background_served_provider.load_background_executor_identity",
         lambda *_a, **_k: (_ for _ in ()).throw(

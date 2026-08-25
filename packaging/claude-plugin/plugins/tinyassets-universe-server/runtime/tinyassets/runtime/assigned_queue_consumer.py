@@ -113,6 +113,9 @@ class AssignedQueueConsumer:
 
         if not assigned_queue_consumer_enabled():
             return 0
+        from tinyassets.background_served_provider import (
+            claim_background_queue_authority_in_transaction,
+        )
         from tinyassets.provider_serving_binding import list_serving_universes
 
         adapter = Epoch2BranchTaskAdapter(self.base_path)
@@ -154,12 +157,14 @@ class AssignedQueueConsumer:
                 consumer_id=self.consumer_id,
                 lease_id=self.lease_id,
                 expires_at=(
-                    datetime.now(timezone.utc) + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS)
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS + 1)
                 ).isoformat(),
             )
             claimed = adapter.claim_assigned(
                 candidate,
                 consumer_lease=lease,
+                authority_claim=claim_background_queue_authority_in_transaction,
             )
             if claimed is None:
                 continue
@@ -200,9 +205,16 @@ class AssignedQueueConsumer:
                 BackgroundExecutorIdentityError,
                 authorize_background_served_provider_call,
                 load_background_executor_identity,
+                start_background_queue_authority,
+                terminalize_background_queue_authority,
             )
 
             try:
+                start_background_queue_authority(
+                    self.base_path,
+                    claimed_task,
+                    lease,
+                )
                 executor_identity = load_background_executor_identity(
                     self.base_path,
                     claimed_task,
@@ -210,6 +222,18 @@ class AssignedQueueConsumer:
                     heartbeat=heartbeat,
                 )
             except BackgroundExecutorIdentityError as exc:
+                try:
+                    terminalize_background_queue_authority(
+                        self.base_path,
+                        claimed_task,
+                        status="failed",
+                        reason=exc.reason,
+                    )
+                except BackgroundExecutorIdentityError:
+                    logger.exception(
+                        "assigned queue authority failure terminalization failed task=%s",
+                        claimed_task.branch_task_id,
+                    )
                 adapter.finish(
                     claimed_task.branch_task_id,
                     worker_id=lease.consumer_id,
@@ -235,6 +259,12 @@ class AssignedQueueConsumer:
             )
             if error:
                 detail = {**detail, "error": error}
+            terminalize_background_queue_authority(
+                self.base_path,
+                claimed_task,
+                status=terminal,
+                reason=error or f"background_task_{terminal}",
+            )
             adapter.finish(
                 claimed_task.branch_task_id,
                 worker_id=lease.consumer_id,
@@ -258,6 +288,23 @@ class AssignedQueueConsumer:
                 return
             logger.exception("assigned queue task failed task=%s", claimed_task.branch_task_id)
             try:
+                from tinyassets.background_served_provider import (
+                    BackgroundExecutorIdentityError,
+                    terminalize_background_queue_authority,
+                )
+
+                try:
+                    terminalize_background_queue_authority(
+                        self.base_path,
+                        claimed_task,
+                        status="failed",
+                        reason=f"assigned_consumer_exception:{type(exc).__name__}",
+                    )
+                except BackgroundExecutorIdentityError:
+                    logger.exception(
+                        "assigned queue authority exception terminalization failed task=%s",
+                        claimed_task.branch_task_id,
+                    )
                 adapter.finish(
                     claimed_task.branch_task_id,
                     worker_id=lease.consumer_id,

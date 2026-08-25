@@ -43,8 +43,10 @@ from tinyassets.cloud_automation_continuation import (
     PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
-    prepare_claimed_cloud_provider_call,
     prepare_inactive_cloud_continuation,
+)
+from tinyassets.cloud_automation_continuation import (
+    prepare_claimed_cloud_provider_call as _prepare_claimed_cloud_provider_call,
 )
 from tinyassets.cloud_automation_control import (
     CloudAutomationTriggerFence,
@@ -96,6 +98,16 @@ from tinyassets.user_owned_cloud_automation import (
     acceptance_scenario_digest,
     repository_spec_baseline_scenario,
 )
+
+
+def prepare_claimed_cloud_provider_call(*args, **kwargs):
+    """Exercise the legacy fixture-installed binding path only in this test module."""
+
+    return _prepare_claimed_cloud_provider_call(
+        *args,
+        **kwargs,
+        allow_test_fixtures=True,
+    )
 
 NOW = datetime(2026, 8, 1, 5, 0, tzinfo=timezone.utc)
 BODY_DIGEST = f"sha256:{'e' * 64}"

@@ -9,8 +9,18 @@ import pytest
 
 import tinyassets.background_served_provider as background_provider
 from tinyassets.background_branch_authority import (
-    BackgroundBranchBindingStatus,
-    BackgroundBranchExecutorClass,
+    BackgroundBranchAttempt,
+    BackgroundBranchAttemptFence,
+    BackgroundBranchAttemptLifecycle,
+    BackgroundBranchBinding,
+    BackgroundBranchBindingFence,
+    BackgroundBranchHoldReason,
+    build_request_task_attempt_key,
+)
+from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAuthorityOwnerKind,
+    BackgroundBranchAuthorityOwnerRecord,
+    BackgroundBranchAuthorityOwnerState,
 )
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -41,15 +51,15 @@ def _task() -> Epoch2BranchTask:
         branch_task_id="bt2_" + "a" * 32,
         admission_id="adm_" + "b" * 32,
         request_id="req_" + "c" * 32,
-        branch_def_id="branch-a",
-        universe_id="universe-a",
+        branch_def_id="branch_a",
+        universe_id="universe_a",
         actor_id="acct_owner_a",
         automation_id="automation-a",
         automation_activation_epoch=7,
         automation_executor_class="cloud",
-        automation_subject_ref="branch-version-a",
+        automation_subject_ref="branch_version_a",
         automation_subject_digest="sha256:" + "d" * 64,
-        automation_branch_version="branch-version-a",
+        automation_branch_version="branch_version_a",
         automation_lease_id="activation-lease-a",
         status="running",
         claimed_by="assigned-consumer:boot-a",
@@ -66,8 +76,20 @@ def _lease() -> AssignedConsumerLease:
     )
 
 
-def _authority_fixture(tmp_path: Path, monkeypatch):
-    universe_dir = tmp_path / "universe-a"
+def _authority_fixture(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    binding_expires_at: str = "2099-01-01T02:00:00+00:00",
+    attempt_lifecycle: str = "claimed",
+    attempt_lease_expires_at: str | None = "2099-01-01T02:00:00+00:00",
+    fabricated: bool = False,
+    missing_owner: bool = False,
+):
+    binding_expires_at = binding_expires_at.replace("+00:00", "Z")
+    if attempt_lease_expires_at is not None:
+        attempt_lease_expires_at = attempt_lease_expires_at.replace("+00:00", "Z")
+    universe_dir = tmp_path / "universe_a"
     universe_dir.mkdir()
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -77,6 +99,7 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
             branch_task_id TEXT PRIMARY KEY, admission_id TEXT, request_id TEXT,
             status TEXT, claimed_by TEXT, claimed_at TEXT, lease_expires_at TEXT,
             universe_id TEXT, automation_id TEXT,
+            branch_def_id TEXT,
             automation_activation_epoch INTEGER, automation_subject_ref TEXT,
             automation_subject_digest TEXT, automation_branch_version TEXT,
             automation_lease_id TEXT
@@ -92,12 +115,19 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         );
         """
     )
+    from tinyassets.storage.background_branch_authority import (
+        _SCHEMA as _BACKGROUND_SCHEMA,
+    )
+    from tinyassets.storage.background_branch_authority import (
+        _SQLiteBackgroundBranchAuthorityTransaction,
+    )
     from tinyassets.storage.provider_work_authority import _SCHEMA
 
     conn.executescript(_SCHEMA)
+    conn.executescript(_BACKGROUND_SCHEMA)
     task = _task()
     conn.execute(
-        "INSERT INTO branch_tasks_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO branch_tasks_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             task.branch_task_id,
             task.admission_id,
@@ -108,6 +138,7 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
             task.lease_expires_at,
             task.universe_id,
             task.automation_id,
+            task.branch_def_id,
             task.automation_activation_epoch,
             task.automation_subject_ref,
             task.automation_subject_digest,
@@ -154,34 +185,133 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         reference_digest="sha256:" + "1" * 64,
         generation=2,
     )
-    attempt = SimpleNamespace(
-        attempt_id="attempt-a",
-        binding_id="background-binding-a",
-        binding_generation=5,
-        binding_digest="sha256:" + "2" * 64,
-        authorizing_principal_id="acct_owner_a",
-        universe_id="universe-a",
-        branch_def_id="branch-a",
-        branch_version_id="branch-version-a",
-        branch_content_digest=task.automation_subject_digest,
-        lifecycle=SimpleNamespace(value="claimed"),
-        lease_expires_at="2099-01-01T02:00:00+00:00",
-        remaining_count=2,
-        remaining_cost_microunits=10_000,
+    background_binding = BackgroundBranchBinding.from_dict(
+        {
+            "schema_version": 1,
+            "binding_id": "bnd_background_a",
+            "status": "active",
+            "generation": 5,
+            "binding_digest": "sha256:" + "2" * 64,
+            "authorizing_principal_id": task.actor_id,
+            "universe_id": task.universe_id,
+            "branch_def_id": task.branch_def_id,
+            "operation": "invoke_branch_version",
+            "source_kind": "request_admission",
+            "source_id": task.request_id,
+            "source_revision": "3",
+            "source_digest": "sha256:" + "e" * 64,
+            "revocation_generation": 0,
+            "target_mode": "pinned_version",
+            "pinned_branch_version_id": task.automation_branch_version,
+            "permitted_executor_classes": ["cloud"],
+            "daemon_id": "daemon_background_a",
+            "runtime_id": "runtime_background_a",
+            "expires_at": binding_expires_at,
+            "max_attempts": 2,
+            "remaining_depth": 1,
+            "remaining_count": 2,
+            "remaining_cost_microunits": 10_000,
+            "child_delegation": {
+                "allowed_branch_def_ids": [],
+                "allowed_operations": [],
+                "max_depth": 0,
+                "max_count": 0,
+                "max_cost_microunits": 0,
+            },
+        }
     )
-    background_binding = SimpleNamespace(
-        binding_id=attempt.binding_id,
-        generation=attempt.binding_generation,
-        binding_digest=attempt.binding_digest,
-        status=BackgroundBranchBindingStatus.ACTIVE,
-        authorizing_principal_id=attempt.authorizing_principal_id,
-        universe_id=attempt.universe_id,
-        branch_def_id=attempt.branch_def_id,
-        pinned_branch_version_id=attempt.branch_version_id,
-        permitted_executor_classes=(BackgroundBranchExecutorClass.CLOUD,),
-        daemon_id="daemon_background_a",
-        runtime_id="runtime_background_a",
+    lifecycle = BackgroundBranchAttemptLifecycle(attempt_lifecycle)
+    held = lifecycle is BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD
+    terminal = lifecycle in {
+        BackgroundBranchAttemptLifecycle.SUCCEEDED,
+        BackgroundBranchAttemptLifecycle.FAILED,
+        BackgroundBranchAttemptLifecycle.CANCELLED,
+    }
+    attempt = BackgroundBranchAttempt.from_dict(
+        {
+            "schema_version": 1,
+            "attempt_id": "att_background_a",
+            "logical_attempt_key": build_request_task_attempt_key(
+                tenant_id=task.actor_id,
+                request_id=task.request_id,
+                admission_id=task.admission_id,
+                task_id=task.branch_task_id,
+                body_digest="sha256:" + "e" * 64,
+                admission_generation=3,
+            ),
+            "binding_id": background_binding.binding_id,
+            "binding_digest": background_binding.binding_digest,
+            "binding_generation": background_binding.generation,
+            "authorizing_principal_id": task.actor_id,
+            "universe_id": task.universe_id,
+            "branch_def_id": task.branch_def_id,
+            "branch_version_id": task.automation_branch_version,
+            "branch_content_digest": task.automation_subject_digest,
+            "operation": "invoke_branch_version",
+            "source_kind": "request_admission",
+            "source_id": task.request_id,
+            "source_generation": 3,
+            "executor_audience": {
+                "executor_class": "cloud",
+                "daemon_id": background_binding.daemon_id,
+                "runtime_id": background_binding.runtime_id,
+                "worker_id": "worker_background_a",
+            },
+            "claim_generation": 1,
+            "lease_generation": 1,
+            "lease_expires_at": attempt_lease_expires_at,
+            "remaining_depth": 1,
+            "remaining_count": 2,
+            "remaining_cost_microunits": 10_000,
+            "lifecycle": lifecycle.value,
+            "hold_reason": (
+                BackgroundBranchHoldReason.TARGET_UNAUTHORIZED.value if held else None
+            ),
+            "terminal_reason": "test_terminal" if terminal else None,
+            "created_at": "2026-08-22T00:00:00Z",
+            "updated_at": "2026-08-22T00:01:00Z",
+            "provenance": {
+                "authorizing_principal_id": task.actor_id,
+                "source_kind": "request_admission",
+                "source_id": task.request_id,
+                "executor_class": "cloud",
+                "daemon_id": background_binding.daemon_id,
+                "runtime_id": background_binding.runtime_id,
+                "worker_id": "worker_background_a",
+                "parent_attempt_id": None,
+                "origin_attempt_id": "att_background_a",
+                "audit_correlation_ids": [task.request_id],
+                "receipt_refs": {
+                    "b2_execution_grant_id": None,
+                    "provider_work_receipt_id": None,
+                    "provider_attempt_receipt_id": None,
+                    "payment_receipt_id": None,
+                    "effect_receipt_id": None,
+                },
+            },
+        }
     )
+    if not fabricated:
+        background_txn = _SQLiteBackgroundBranchAuthorityTransaction(conn)
+        background_txn.insert_binding(background_binding)
+        background_txn.insert_attempt(attempt)
+        if not missing_owner:
+            background_txn.insert_owner(
+                BackgroundBranchAuthorityOwnerRecord(
+                    owner_kind=BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+                    owner_id=task.branch_task_id,
+                    universe_id=task.universe_id,
+                    authorizing_principal_id=task.actor_id,
+                    source_generation=attempt.source_generation,
+                    transition_generation=1,
+                    state=BackgroundBranchAuthorityOwnerState.RUNNING,
+                    binding=BackgroundBranchBindingFence(background_binding),
+                    attempt=BackgroundBranchAttemptFence(attempt),
+                    hold_reason=None,
+                    updated_at="2026-08-22T00:02:00Z",
+                )
+            )
+    conn.commit()
 
     class _BackgroundStore:
         def __init__(self, _base_path):
@@ -191,6 +321,10 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         def read_authority_in_transaction(_conn, *, logical_attempt_key):
             assert logical_attempt_key
             return background_binding, attempt
+
+        @staticmethod
+        def read_queue_owner_in_transaction(_conn, *, owner_id):
+            return SimpleNamespace(owner_id=owner_id, state=SimpleNamespace(value="running"))
 
     monkeypatch.setattr(background_provider, "_branch_roles", lambda *_a: ("writer",))
     monkeypatch.setattr(
@@ -219,11 +353,12 @@ def _authority_fixture(tmp_path: Path, monkeypatch):
         "RequestAdmissionStore",
         lambda _base_path: _AdmissionStore(conn),
     )
-    monkeypatch.setattr(
-        background_store_module,
-        "SQLiteBackgroundBranchAuthorityStore",
-        _BackgroundStore,
-    )
+    if fabricated:
+        monkeypatch.setattr(
+            background_store_module,
+            "SQLiteBackgroundBranchAuthorityStore",
+            _BackgroundStore,
+        )
     monkeypatch.setattr(
         serving_module,
         "resolve_serving_agent_binding",
@@ -271,6 +406,126 @@ def _reservation_count(conn: sqlite3.Connection) -> int:
     return int(
         conn.execute("SELECT COUNT(*) FROM provider_invocation_reservations").fetchone()[0]
     )
+
+
+def test_fabricated_background_objects_cannot_mint_a_carrier(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task, conn, _assignment, _current, events = _authority_fixture(
+        tmp_path,
+        monkeypatch,
+        fabricated=True,
+    )
+    raw_calls: list[str] = []
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path,
+        task,
+        _lease(),
+        lambda *_a, **_k: raw_calls.append("raw") or "unexpected",
+    )
+
+    with pytest.raises(ProviderAuthorityHeldError):
+        session("prompt")
+
+    assert raw_calls == []
+    assert _reservation_count(conn) == 0
+    assert events == ["snapshot", "hold", "cleanup"]
+
+
+def test_missing_queue_owner_is_refused_before_provider_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task, conn, _assignment, _current, events = _authority_fixture(
+        tmp_path,
+        monkeypatch,
+        missing_owner=True,
+    )
+    raw_calls: list[str] = []
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path,
+        task,
+        _lease(),
+        lambda *_a, **_k: raw_calls.append("raw") or "unexpected",
+    )
+
+    with pytest.raises(ProviderAuthorityHeldError):
+        session("prompt")
+
+    assert raw_calls == []
+    assert _reservation_count(conn) == 0
+    assert events == ["snapshot", "hold", "cleanup"]
+
+
+def test_expired_background_binding_is_refused_before_provider_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task, conn, _assignment, _current, events = _authority_fixture(
+        tmp_path,
+        monkeypatch,
+        binding_expires_at="2026-08-23T00:00:00+00:00",
+    )
+    terminalized: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        background_provider,
+        "terminalize_background_queue_authority",
+        lambda _base_path, _task, *, status, reason: terminalized.append(
+            (status, reason)
+        ),
+    )
+    raw_calls: list[str] = []
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path,
+        task,
+        _lease(),
+        lambda *_a, **_k: raw_calls.append("raw") or "unexpected",
+    )
+
+    with pytest.raises(ProviderAuthorityHeldError):
+        session("prompt")
+
+    assert raw_calls == []
+    assert _reservation_count(conn) == 0
+    assert events == []
+    assert terminalized == [("failed", "background_binding_expired")]
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "lease_expires_at"),
+    [
+        ("claimed", "2026-08-23T00:00:00+00:00"),
+        ("target_authority_held", None),
+        ("succeeded", None),
+    ],
+)
+def test_stale_held_or_terminal_background_attempt_is_refused_before_provider_call(
+    tmp_path: Path,
+    monkeypatch,
+    lifecycle: str,
+    lease_expires_at: str | None,
+) -> None:
+    task, conn, _assignment, _current, events = _authority_fixture(
+        tmp_path,
+        monkeypatch,
+        attempt_lifecycle=lifecycle,
+        attempt_lease_expires_at=lease_expires_at,
+    )
+    raw_calls: list[str] = []
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path,
+        task,
+        _lease(),
+        lambda *_a, **_k: raw_calls.append("raw") or "unexpected",
+    )
+
+    with pytest.raises(ProviderAuthorityHeldError):
+        session("prompt")
+
+    assert raw_calls == []
+    assert _reservation_count(conn) == 0
+    assert events == ["hold"]
 
 
 def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(
