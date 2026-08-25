@@ -748,7 +748,12 @@ def write_graph(
 
     ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
     connect_http; ``verb`` is the HTTP method (it is matched against the connection's
-    granted scope). The source_code node stays UNAPPROVED until the founder approves
+    granted scope). The node's ``source_code`` MUST define a function named exactly
+    ``run(state)`` — that is the ONLY entry point the runtime calls (a ``handler`` /
+    ``main`` / any other name is never invoked, so the node silently emits nothing
+    and no call fires). Return a dict keyed by the output_key holding the packet
+    string, e.g. ``return {"delivery_receipt": json.dumps(packet)}``.
+    The source_code node stays UNAPPROVED until the founder approves
     it in the browser, and the call only fires when the daemon's outbound-HTTP flag
     is on — so a build here is always safe.
 

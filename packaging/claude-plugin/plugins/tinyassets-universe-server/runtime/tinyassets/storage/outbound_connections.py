@@ -2313,6 +2313,25 @@ class _SsrfHardenedHttpDriver:
         return result
 
 
+_OAUTH1A_BUNDLE_KEYS = frozenset(
+    {"api_key", "api_secret", "access_token", "access_token_secret"}
+)
+
+
+def _looks_like_oauth1a_bundle(credential: str) -> bool:
+    """True iff ``credential`` is the deposited oauth1a encoding: a JSON object
+    carrying the four OAuth 1.0a keys. Used to refuse re-interpreting that bundle
+    under any OTHER scheme (the row-mutation leak). Never logs or returns values."""
+    text = (credential or "").lstrip()
+    if not text.startswith("{"):
+        return False
+    try:
+        values = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(values, dict) and _OAUTH1A_BUNDLE_KEYS.issubset(values.keys())
+
+
 def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSecretBundle:
     """Build the typed bundle for an ``http`` connection INSIDE the child (D2/D5).
 
@@ -2328,12 +2347,30 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
     the response.
     """
     scheme = (auth_scheme or "none").strip().lower()
+    # SCHEME <-> ENCODING BINDING (Codex ADAPT, PR #2525). The vault stores ONE
+    # opaque string whose ENCODING is fixed by the scheme it was deposited under
+    # (oauth1a = JSON object of the four OAuth values). This builder is the single
+    # choke point every dispatch passes through, and it is handed the row's
+    # CURRENT scheme — so a connection row mutated from oauth1a to bearer would
+    # otherwise re-interpret the whole four-value bundle as a single token and
+    # emit it verbatim as `Authorization: Bearer {json…}` to an allowlisted
+    # endpoint, leaking all four secrets. Refuse, fail closed, any credential
+    # whose encoding is recognisably that of a DIFFERENT scheme before a header
+    # is ever built. (A mismatch can only arise from row mutation or a corrupted
+    # deposit — never from a legitimate connect_http, which validates shape at
+    # the door with the same rules.)
+    if scheme != "oauth1a" and _looks_like_oauth1a_bundle(credential):
+        raise SsrfValidationError(
+            "credential encoding does not match the connection's auth scheme"
+        )
     if scheme in ("bearer", "header"):
         return ConnectionSecretBundle(token=credential)
     if scheme == "basic":
         if ":" not in credential:
             raise SsrfValidationError("basic credential must be username:password")
         username, password = credential.split(":", 1)
+        if not username or not password:
+            raise SsrfValidationError("basic credential must be username:password")
         return ConnectionSecretBundle(username=username, password=password)
     if scheme == "oauth1a":
         try:
