@@ -404,7 +404,26 @@ class Epoch2BranchTaskAdapter:
         hydrated["linked_admission_actor_id"] = (
             self._store.get_v2_task_actor_id(str(row["branch_task_id"]))
         )
-        return _as_epoch2_task(hydrated)
+        task = _as_epoch2_task(hydrated)
+        # Executor identity (worker + runtime) is what the cloud provider path
+        # (prepare_claimed_cloud_provider_call -> runtime_matches_worker_provider)
+        # authorizes against. It is NOT a persisted task column: derive it on every
+        # execution-task read from the claimant's persisted worker queue descriptor,
+        # so claim(), claim_assigned() AND a later get() all carry it. Before this
+        # only a test set these two fields by hand, and every production claim
+        # produced a task the cloud path rejected ("executor_worker_id must be a
+        # non-empty string") — the concrete reason background execution never ran.
+        claimed_by = str(row.get("claimed_by") or "").strip()
+        if claimed_by and not task.executor_worker_id:
+            task.executor_worker_id = claimed_by
+            try:
+                with self._store.connection() as conn:
+                    context = read_worker_claim_context(conn, claimed_by)
+            except Exception:  # noqa: BLE001 - identity hydration must never break a read
+                context = None
+            if context is not None:
+                task.executor_runtime_id = context.descriptor.runtime_instance_id
+        return task
 
     def claim(
         self,

@@ -870,8 +870,6 @@ def test_claimed_cloud_task_mints_one_carrier_per_bounded_provider_call(
     assert renewed is not None
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     calls: list[dict[str, object]] = []
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
@@ -930,8 +928,6 @@ def test_claimed_cloud_task_renews_background_authority_after_queue_heartbeat(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     current = [NOW + timedelta(seconds=2)]
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -995,8 +991,6 @@ def test_claimed_cloud_task_explicitly_renews_expired_provider_claim(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     current = [NOW + timedelta(seconds=2)]
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1066,8 +1060,6 @@ def test_claimed_cloud_task_distributes_complete_positive_provider_budgets(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     budgets: list[tuple[int, int]] = []
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1103,8 +1095,6 @@ def test_restarted_cloud_session_preserves_durable_budget_ordinal(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     budgets: list[tuple[int, int]] = []
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1216,8 +1206,6 @@ def test_cloud_claim_revalidates_roots_after_grant_mint(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     original = SQLiteProviderWorkAuthorityStore._claim_or_renew_cloud_branch
 
     def stop_after_grant(self, request, grant):
@@ -1255,8 +1243,6 @@ def test_cloud_launch_rejects_task_lease_newer_than_attempt_lease(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     current = [NOW + timedelta(seconds=2)]
     session = prepare_claimed_cloud_provider_call(
         tmp_path,
@@ -1308,8 +1294,6 @@ def test_claimed_cloud_task_governs_policy_provider_call(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     received: list[dict[str, object]] = []
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
@@ -1371,8 +1355,6 @@ def test_claimed_cloud_task_accepts_only_binding_declared_roles(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     received: list[str] = []
 
     def provider_call(_prompt, _system="", *, role="writer", **kwargs):
@@ -1406,8 +1388,6 @@ def test_claimed_cloud_task_rejects_policy_outside_bound_provider(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     provider_called = False
 
     def provider_call(*_args, **_kwargs):
@@ -1460,8 +1440,6 @@ def test_compiled_policy_branch_uses_claimed_cloud_provider_session(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     invoked: list[str] = []
 
     def provider_call(prompt, system="", *, role="writer", **kwargs):
@@ -1524,8 +1502,6 @@ def test_provider_family_drift_blocks_claim_and_launch(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     with RequestAdmissionStore(tmp_path).connection() as conn:
         conn.execute(
             """
@@ -1573,8 +1549,6 @@ def test_cloud_provider_session_revalidates_authority_before_each_call(
     )
     task = Epoch2BranchTaskAdapter(tmp_path).get(BRANCH_TASK_ID)
     assert task is not None
-    task.executor_worker_id = audience.worker_id
-    task.executor_runtime_id = audience.runtime_id
     provider_called = False
 
     def provider_call(*_args, **_kwargs):
