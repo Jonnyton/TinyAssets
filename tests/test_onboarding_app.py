@@ -194,3 +194,32 @@ def test_app_embeds_build_and_serves_matching_header(monkeypatch):
     body = resp.body.decode("utf-8")
     assert '"build": "deadbeefcafe"' in body
     assert "checkForNewBuild" in body
+
+
+
+def test_deposit_form_makes_the_x_path_discoverable():
+    """Founder 2026-08-25 looking at the live form: "its still very confusing where
+    goes what" - the four labelled X fields are hidden behind the auth-type select,
+    so a user who does not know X needs OAuth 1.0a never sees them. The form must
+    offer to fill it in and must switch itself when an X host is typed."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    # A one-tap preset that targets the real X posting endpoint.
+    assert 'id="preset-x"' in html
+    assert '"http-host":"api.x.com"' in html
+    assert '"http-path":"/2/tweets"' in html
+    assert '"http-auth-scheme":"oauth1a"' in html
+    # Typing an X host switches to the four-key form on its own.
+    assert 'x\\.com|twitter\\.com' in html or "x\\.com" in html
+    assert "switched to the four-key form below" in html
+    # The select itself says which one X needs.
+    assert 'X/Twitter needs "OAuth 1.0a - 4 keys"' in html
+    # The four labelled boxes still exist, one value per box.
+    for field in (
+        "http-oauth1a-api-key",
+        "http-oauth1a-api-secret",
+        "http-oauth1a-access-token",
+        "http-oauth1a-access-token-secret",
+    ):
+        assert field in html
