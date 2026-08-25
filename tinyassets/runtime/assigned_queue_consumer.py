@@ -79,8 +79,17 @@ class AssignedQueueConsumer:
         # (prepare_claimed_cloud_provider_call -> runtime_matches_worker_provider):
         # one registered daemon for this consumer process, plus one provisioned
         # runtime + queue descriptor PER serving universe (a runtime is universe-bound).
-        self._worker_prefix = f"assigned-worker:{boot}"
-        self._daemon_id: str = ""
+        # A NOMINAL reference: the authority layer (BackgroundBranchExecutorAudience,
+        # built by the cloud path from the claimed task's executor ids) accepts only
+        # recognised prefixes — "worker_" is one; "assigned-worker:" was refused as a
+        # non-nominal reference (caught by the real-claim e2e, not by any stub).
+        self._worker_prefix = f"worker_assigned_{boot}"
+        # One daemon PER UNIVERSE, authored by that universe's principal: the
+        # operator-admission linkage keys on the directed daemon's created_by being
+        # the background-binding principal, so a shared daemon authored by the
+        # consumer itself can never claim any principal's task (found by the
+        # real-claim e2e, not by any stub). Execution stays attached to the universe.
+        self._daemons: dict[str, str] = {}  # universe_id -> daemon_id
         self._runtimes: dict[str, str] = {}  # universe_id -> runtime_instance_id
         # The exact persisted descriptor per universe. The claim's trusted reader
         # re-reads it from the store, so the value presented at claim time must be
@@ -104,28 +113,30 @@ class AssignedQueueConsumer:
         )
         self._thread.start()
 
-    def _ensure_daemon(self) -> str:
-        """Register (or reuse) this consumer's daemon identity. Idempotent by name."""
-        if self._daemon_id:
-            return self._daemon_id
+    def _ensure_daemon(self, universe_id: str) -> str:
+        """Register (or reuse) this universe's consumer daemon, authored by its principal."""
+        cached = self._daemons.get(universe_id)
+        if cached:
+            return cached
         from tinyassets.daemon_registry import create_daemon
 
+        assignment = self._assignment(universe_id)
         daemon = create_daemon(
             self.base_path,
-            display_name="TinyAssets assigned-queue consumer",
-            created_by="assigned-queue-consumer",
+            display_name=f"TinyAssets assigned-queue consumer for {universe_id}",
+            created_by=str(assignment.owner_user_id),
             soul_mode="soul",
             soul_text=(
-                "Run queued automation tasks on each universe's own assigned provider, "
-                "one bounded provider call at a time, never on host credentials."
+                "Run this universe's queued automation tasks on its own assigned "
+                "provider, one bounded provider call at a time, never on host credentials."
             ),
         )
-        self._daemon_id = str(daemon["daemon_id"])
-        return self._daemon_id
+        self._daemons[universe_id] = str(daemon["daemon_id"])
+        return self._daemons[universe_id]
 
     def worker_id_for(self, universe_id: str) -> str:
         """Boot-unique worker identity PER universe (the claim lookup key)."""
-        return f"{self._worker_prefix}:{universe_id}"
+        return f"{self._worker_prefix}_{universe_id}"
 
     def _ensure_runtime(self, universe_id: str, provider_name: str) -> str:
         """Provision (once per universe) the runtime a claim needs; returns its id."""
@@ -136,7 +147,7 @@ class AssignedQueueConsumer:
 
         runtime = ensure_daemon_runtime(
             self.base_path,
-            daemon_id=self._ensure_daemon(),
+            daemon_id=self._ensure_daemon(universe_id),
             universe_id=universe_id,
             provider_name=provider_name,
             model_name=provider_name,
@@ -208,14 +219,14 @@ class AssignedQueueConsumer:
             executor_class=AutomationActivationExecutor.CLOUD,
         )
 
-    def _assigned_provider(self, universe_id: str) -> str:
-        """The provider the universe's founder assigned for serving (codex/claude-code)."""
+    def _assignment(self, universe_id: str):
+        """The universe's READY provider assignment (its provider + owning principal)."""
         from tinyassets.provider_assignment import load_provider_assignment
 
         assignment = load_provider_assignment(self.base_path, universe_id=universe_id)
         if assignment is None or assignment.state != "ready":
             raise PermissionError("assigned provider is unavailable")
-        return str(assignment.provider)
+        return assignment
 
     def _scavenge_orphaned_credentials(self) -> None:
         """Startup reclamation of orphaned provider-launch-credential dirs a crash left
@@ -253,7 +264,7 @@ class AssignedQueueConsumer:
         adapter = Epoch2BranchTaskAdapter(self.base_path)
         adapter.recover_expired(
             target_recovery_guard=lambda task: task.claimed_by.startswith(
-                ("assigned-consumer:", "assigned-worker:")
+                ("assigned-consumer:", "worker_assigned_")
             )
         )
         with self._lock:
@@ -298,7 +309,7 @@ class AssignedQueueConsumer:
             # onto the task (executor_worker_id / executor_runtime_id).
             try:
                 runtime_id = self._ensure_runtime(
-                    universe_id, self._assigned_provider(universe_id)
+                    universe_id, str(self._assignment(universe_id).provider)
                 )
             except Exception:  # noqa: BLE001 - one universe's registration cannot stall the poll
                 logger.exception(
@@ -373,7 +384,7 @@ class AssignedQueueConsumer:
             provider_call = prepare_claimed_cloud_provider_call(
                 self.base_path,
                 claimed_task=claimed_task,
-                daemon_id=self._ensure_daemon(),
+                daemon_id=self._ensure_daemon(claimed_task.universe_id),
                 provider_call=call_provider,
             )
             if provider_call is None:
@@ -390,7 +401,7 @@ class AssignedQueueConsumer:
                 self.base_path,
                 claimed_task,
                 ClaimedBranchExecutorIdentity(
-                    daemon_id=self._ensure_daemon(),
+                    daemon_id=self._ensure_daemon(claimed_task.universe_id),
                     worker_id=claimed_task.executor_worker_id,
                     runtime_instance_id=claimed_task.executor_runtime_id,
                     heartbeat=heartbeat,

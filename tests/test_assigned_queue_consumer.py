@@ -240,7 +240,10 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
     # real worker runtime per universe first — stub that seam (it is exercised by
     # the cloud-continuation suite), keep the concurrency-cap logic under test.
     monkeypatch.setattr(AssignedQueueConsumer, "_ensure_runtime", lambda self, u, p: f"rt-{u}")
-    monkeypatch.setattr(AssignedQueueConsumer, "_assigned_provider", lambda self, u: "codex")
+    monkeypatch.setattr(
+        AssignedQueueConsumer, "_assignment",
+        lambda self, u: type("A", (), {"provider": "codex", "owner_user_id": "acct_alice", "state": "ready"})(),
+    )
     monkeypatch.setattr(
         AssignedQueueConsumer, "_current_descriptor",
         lambda self, u, r: self._descriptor(u, r),
@@ -270,7 +273,7 @@ def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
     monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
     import tinyassets.cloud_automation_continuation as continuation_module
 
-    monkeypatch.setattr(AssignedQueueConsumer, "_ensure_daemon", lambda self: "daemon-a")
+    monkeypatch.setattr(AssignedQueueConsumer, "_ensure_daemon", lambda self, u: "daemon-a")
     monkeypatch.setattr(
         continuation_module,
         "prepare_claimed_cloud_provider_call",
