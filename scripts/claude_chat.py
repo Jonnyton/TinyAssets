@@ -50,7 +50,7 @@ try:
 except ImportError:
     sync_playwright = None
 
-CDP = "http://localhost:9222"
+CDP = "http://127.0.0.1:9222"  # Chrome binds IPv4 only; localhost->::1 is refused
 CLAUDE_HOST = "claude.ai"
 NEW_CHAT_URL = "https://claude.ai/new"
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,7 +61,7 @@ NOTEPAD = ROOT / "output" / "user_sim_session.md"
 CHROME_BIN = Path(
     os.environ.get(
         "TINYASSETS_CHROME_BIN",
-        r"C:\Users\Jonathan\AppData\Local\ms-playwright\chromium-1208\chrome-win64\chrome.exe",
+        r"C:\Users\Jonathan\AppData\Local\ms-playwright\chromium-1228\chrome-win64\chrome.exe",  # 1208 self-exits (code 3) at startup on this host
     )
 )
 CHROME_PROFILE = Path(
