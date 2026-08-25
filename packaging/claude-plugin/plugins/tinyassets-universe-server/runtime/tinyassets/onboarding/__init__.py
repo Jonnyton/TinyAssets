@@ -162,6 +162,10 @@ def app_config() -> dict[str, Any]:
     issuer = (str(servers[0]) if servers else "").rstrip("/")
     client_id = os.environ.get("TINYASSETS_ONBOARDING_APP_CLIENT_ID", "").strip()
     return {
+        # The deployed build, so the page can notice a newer deploy and reload
+        # itself (the desktop app loads this page once at startup and otherwise
+        # keeps showing the form it started with).
+        "build": build_sha(),
         "issuer": issuer,
         "authorization_endpoint": f"{issuer}/oauth2/authorize" if issuer else "",
         "token_endpoint": f"{issuer}/oauth2/token" if issuer else "",
@@ -224,6 +228,16 @@ def render_app_html() -> tuple[str, str]:
     return html, _csp(nonce, cfg["issuer"])
 
 
+def build_sha() -> str:
+    """The git sha production is serving (release-state.json), or '' when unknown."""
+    try:
+        from tinyassets.api.status import _load_release_state
+
+        return str(_load_release_state().get("git_sha") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing receipt must never break the page
+        return ""
+
+
 async def _handle_app(request: Any) -> Any:
     """Serve the onboarding SPA (GET/HEAD), or 404 when the dark flag is off."""
     from starlette.responses import HTMLResponse, PlainTextResponse
@@ -238,6 +252,8 @@ async def _handle_app(request: Any) -> Any:
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "no-store",
+            # Same value the page embeds; a HEAD probe compares the two.
+            "X-TinyAssets-Build": build_sha(),
         },
     )
 
