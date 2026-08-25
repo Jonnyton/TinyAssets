@@ -1143,7 +1143,24 @@
     setInterval(()=>{ if(token()) ensureFreshToken().catch(()=>{}); }, 60*1000);
     document.addEventListener("visibilitychange", ()=>{
       if(document.visibilityState==="visible" && token()) ensureFreshToken().catch(()=>{});
+      if(document.visibilityState==="visible") checkForNewBuild();
     });
+    setInterval(checkForNewBuild, 10*60*1000);
+  }
+
+  // The desktop app loads this page once at startup; without this a user could keep
+  // looking at a form from before the latest deploy (it happened). Compare the
+  // build we were served with the build the server serves NOW; reload on change.
+  // Never reloads mid-typing: only when nothing is being entered in a field.
+  async function checkForNewBuild(){
+    if(!CFG.build) return;
+    const active=document.activeElement;
+    if(active && (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return;
+    try{
+      const r=await fetch("/mcp/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
+      const live=r.headers.get("X-TinyAssets-Build");
+      if(live && live!==CFG.build) location.reload();
+    }catch(_e){ /* offline or blocked: try again next time */ }
   }
 
   async function boot(){
