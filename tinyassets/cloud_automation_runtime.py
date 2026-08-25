@@ -9,10 +9,17 @@ from pathlib import Path
 from typing import Callable
 
 from tinyassets.background_branch_authority import (
+    BackgroundBranchBindingFence,
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
 )
+from tinyassets.background_branch_authority_service import (
+    BackgroundBranchBindingRoot,
+    BackgroundBranchBindingSeed,
+    BackgroundBranchBindingTransitionService,
+)
 from tinyassets.cloud_automation_continuation import (
+    CloudContinuationActivationError,
     CloudContinuationActivationRequest,
     CloudContinuationWriteOutcome,
     PreparedCloudContinuationActivationService,
@@ -234,6 +241,72 @@ class _ExactAudienceResolver:
             return None
         return self._audience
 
+
+def _bind_prepared_background_runtime(
+    continuation,
+    audience: BackgroundBranchExecutorAudience,
+    *,
+    background_store: SQLiteBackgroundBranchAuthorityStore,
+    continuation_store: SQLiteCloudAutomationContinuationStore,
+):
+    """Bind a setup-time daemon authority to the consumer runtime before issue."""
+
+    binding = background_store.get_binding(continuation.background_binding_id)
+    if binding is None or binding.daemon_id != audience.daemon_id:
+        return None
+    if binding.runtime_id not in {None, audience.runtime_id}:
+        return None
+    if binding.runtime_id is None:
+
+        class _RuntimeBindingResolver:
+            def resolve(self, root: BackgroundBranchBindingRoot):
+                if (
+                    root.source_kind is not binding.source_kind
+                    or root.source_id != binding.source_id
+                ):
+                    return None
+                return BackgroundBranchBindingSeed(
+                    authorizing_principal_id=binding.authorizing_principal_id,
+                    universe_id=binding.universe_id,
+                    branch_def_id=binding.branch_def_id,
+                    operation=binding.operation,
+                    source_kind=binding.source_kind,
+                    source_id=binding.source_id,
+                    source_revision=binding.source_revision,
+                    source_digest=binding.source_digest,
+                    target_mode=binding.target_mode,
+                    pinned_branch_version_id=binding.pinned_branch_version_id,
+                    permitted_executor_classes=binding.permitted_executor_classes,
+                    daemon_id=binding.daemon_id,
+                    runtime_id=audience.runtime_id,
+                    expires_at=binding.expires_at,
+                    max_attempts=binding.max_attempts,
+                    remaining_depth=binding.remaining_depth,
+                    remaining_count=binding.remaining_count,
+                    remaining_cost_microunits=binding.remaining_cost_microunits,
+                    child_delegation=binding.child_delegation,
+                )
+
+        rotated = BackgroundBranchBindingTransitionService(
+            background_store,
+            _RuntimeBindingResolver(),
+        ).rotate(BackgroundBranchBindingFence(binding)).record
+        if rotated is None:
+            return None
+        binding = rotated
+    if (
+        continuation.background_binding_generation != binding.generation
+        or continuation.background_binding_digest != binding.binding_digest
+    ):
+        rebound = continuation_store.bind_background_runtime(
+            expected_current=continuation,
+            expected_background=binding,
+        ).record
+        if rebound is None:
+            return None
+        continuation = rebound
+    return continuation
+
 def produce_one_due_cloud_automation_slice(
     base_path: str | Path,
     *,
@@ -422,6 +495,30 @@ def activate_one_requested_cloud_automation(
             continue
         binding = background_store.get_binding(continuation.background_binding_id)
         if binding is None or binding.daemon_id != audience.daemon_id:
+            continue
+        if (
+            _ExactAudienceResolver(
+                audience,
+                base_path=root,
+                provider_store=provider_store,
+                universe_id=universe_id,
+            ).resolve(
+                continuation=continuation,
+                branch_task_id="pre_activation_provider_fence",
+            )
+            is None
+        ):
+            raise CloudContinuationActivationError(
+                "executor_audience_unavailable",
+                "trusted cloud worker assignment is absent or mismatched",
+            )
+        continuation = _bind_prepared_background_runtime(
+            continuation,
+            audience,
+            background_store=background_store,
+            continuation_store=continuation_store,
+        )
+        if continuation is None:
             continue
         triggers = controls.list_triggers(
             automation_id=control.automation_id,

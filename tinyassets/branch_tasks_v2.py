@@ -511,6 +511,59 @@ class Epoch2BranchTaskAdapter:
         )
         return self._as_execution_task(row) if row is not None else None
 
+    def explain_assigned_refusal(
+        self,
+        candidate: Epoch2BranchTask,
+        *,
+        consumer_lease: AssignedConsumerLease,
+        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
+    ) -> str | None:
+        """Explain one still-pending refusal through a query-only snapshot."""
+
+        database = self.base_path / DB_FILENAME
+        if not database.is_file():
+            return None
+        uri = f"{database.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("BEGIN")
+            transaction_at = self._clock().astimezone(timezone.utc).isoformat()
+            row = self._store._v2_integrity_cursor(
+                conn,
+                pending_only=True,
+                branch_task_id=candidate.branch_task_id,
+                limit=1,
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return None
+            reason = _assigned_consumer_refusal_reason(
+                conn,
+                dict(row),
+                transaction_at=transaction_at,
+                candidate=candidate,
+                consumer_lease=consumer_lease,
+            )
+            if reason is None:
+                from tinyassets.background_served_provider import (
+                    explain_background_queue_authority_in_transaction,
+                )
+
+                claimed_at = _parse_timestamp(transaction_at)
+                assert claimed_at is not None
+                reason = explain_background_queue_authority_in_transaction(
+                    conn,
+                    candidate,
+                    consumer_lease,
+                    claimed_at=transaction_at,
+                    lease_expires_at=(
+                        claimed_at + timedelta(seconds=lease_seconds)
+                    ).isoformat(),
+                )
+            conn.rollback()
+        return reason
+
     def release_assigned(
         self,
         claimed_task: Epoch2BranchTask,
@@ -687,6 +740,7 @@ class Epoch2BranchTaskAdapter:
         universe_id: str,
         capacity_matcher: Callable[[Epoch2BranchTask], bool],
         policy_matcher: Callable[[Epoch2BranchTask], bool] | None = None,
+        authority_refusal_matcher: Callable[[Epoch2BranchTask], str] | None = None,
         include_unscoped_invalid: bool = False,
         snapshot_hook: Callable[[], None] | None = None,
     ) -> Epoch2OperationalRead:
@@ -748,6 +802,11 @@ class Epoch2BranchTaskAdapter:
                 row.get("linked_quarantine_receipt_exists")
                 and row.get("linked_quarantine_row_digest")
             )
+            authority_refusal = (
+                authority_refusal_matcher(task)
+                if task is not None and authority_refusal_matcher is not None
+                else ""
+            )
             if row.get("disabled") and has_receipt:
                 operational_state = "quarantined"
                 reason = str(
@@ -774,6 +833,13 @@ class Epoch2BranchTaskAdapter:
             elif (
                 row.get("status") == "pending"
                 and task is not None
+                and authority_refusal
+            ):
+                operational_state = "awaiting_background_authority"
+                reason = authority_refusal
+            elif (
+                row.get("status") == "pending"
+                and task is not None
                 and not capacity_matcher(task)
             ):
                 operational_state = "awaiting_compatible_capacity"
@@ -789,16 +855,18 @@ class Epoch2BranchTaskAdapter:
             ):
                 candidates.append(task)
                 valid_pending_count += 1
-                if capacity_matcher(task):
+                if not authority_refusal and capacity_matcher(task):
                     eligible_pending_count += 1
 
             if not operational_state:
                 continue
-            state_counts[operational_state] += 1
-            state_reasons = reason_counts[operational_state]
+            state_counts[operational_state] = (
+                state_counts.get(operational_state, 0) + 1
+            )
+            state_reasons = reason_counts.setdefault(operational_state, {})
             state_reasons[reason] = state_reasons.get(reason, 0) + 1
             oldest_age_s[operational_state] = max(
-                oldest_age_s[operational_state],
+                oldest_age_s.get(operational_state, 0),
                 age_s,
             )
             if len(diagnostics) >= _OPERATIONAL_DIAGNOSTIC_LIMIT:
@@ -1109,12 +1177,31 @@ def _transaction_allows_assigned_consumer(
 ) -> bool:
     """Validate immutable task + activation facts inside the claim transaction."""
 
+    return _assigned_consumer_refusal_reason(
+        conn,
+        task,
+        transaction_at=transaction_at,
+        candidate=candidate,
+        consumer_lease=consumer_lease,
+    ) is None
+
+
+def _assigned_consumer_refusal_reason(
+    conn: sqlite3.Connection,
+    task: Mapping[str, Any],
+    *,
+    transaction_at: str,
+    candidate: Epoch2BranchTask,
+    consumer_lease: AssignedConsumerLease,
+) -> str | None:
+    """Return the first assigned-claim predicate that fails."""
+
     now = _parse_timestamp(transaction_at)
     consumer_expiry = _parse_timestamp(consumer_lease.expires_at)
     if now is None or consumer_expiry is None or consumer_expiry <= now:
-        return False
+        return "consumer_lease_invalid"
     if _classify_epoch2_row(task) is not None:
-        return False
+        return "task_not_claimable"
     exact_fields = {
         "branch_task_id": candidate.branch_task_id,
         "admission_id": candidate.admission_id,
@@ -1131,9 +1218,9 @@ def _transaction_allows_assigned_consumer(
         "automation_lease_id": candidate.automation_lease_id,
     }
     if any(task.get(field) != value for field, value in exact_fields.items()):
-        return False
+        return "candidate_mismatch"
     if not candidate.automation_id or candidate.automation_executor_class != "cloud":
-        return False
+        return "not_cloud_automation"
     active = conn.execute(
         """
         SELECT 1 FROM branch_tasks_v2
@@ -1145,8 +1232,8 @@ def _transaction_allows_assigned_consumer(
         (candidate.universe_id, candidate.automation_id, candidate.branch_task_id),
     ).fetchone()
     if active is not None:
-        return False
-    return AutomationActivationStore.validate_claim_in_transaction(
+        return "automation_already_active"
+    if not AutomationActivationStore.validate_claim_in_transaction(
         conn,
         universe_id=candidate.universe_id,
         automation_id=candidate.automation_id,
@@ -1160,7 +1247,9 @@ def _transaction_allows_assigned_consumer(
             }
         ),
         lease_id=candidate.automation_lease_id,
-    )
+    ):
+        return "activation_claim_invalid"
+    return None
 
 
 def _descriptor_is_live(
