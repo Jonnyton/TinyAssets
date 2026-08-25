@@ -13,8 +13,14 @@ reserved-before-launch and FINALIZED the call's actual usage for the
 ``budget_owner="background_attempt"`` attempt.
 
 No SimpleNamespace stubs, no in-memory hand-DDL: the whole schema comes up through
-the real boot bring-up (``initialize_author_server``). The ONE monkeypatch is
-``_branch_roles`` (a roles lookup on ``branch_versions``, unrelated to budget).
+the real boot bring-up (``initialize_author_server``). Three monkeypatches, all
+named honestly: ``_branch_roles`` (a roles lookup on ``branch_versions``, unrelated
+to budget) and the ``datetime`` of both ``background_served_provider`` and
+``storage.provider_work_authority`` frozen to the harness ``NOW`` (the rows are
+anchored at 2026-08-01; this aligns the clocks, it does not bypass a budget gate).
+It proves the reserve->finalize persistence of ``ProviderResponse`` usage for a
+background attempt - NOT that a production adapter obeys ``max_tokens`` (Codex #6,
+tracked separately).
 
 This PASSES against the real stores: it is the finalization proof for Codex REJECT #2
 (and re-proves #1). The seams it walked to get here — each a real store the production
@@ -218,3 +224,101 @@ def test_background_call_reserves_and_finalizes_actual_usage_end_to_end(
         "SELECT state FROM assigned_queue_provider_reservations"
     )]
     assert own == ["settled"]
+
+
+def test_forged_served_provider_on_a_context_is_refused_before_launch(tmp_path: Path) -> None:
+    """Codex REJECT on #2531, reproduced and closed.
+
+    ``ServedProviderAuthority`` is a plain frozen dataclass: anyone can build one of
+    the right SHAPE and hand it to the router on a ``UniverseContext``. Before the
+    fix, the router honoured such a pre-set ``served_provider`` and launched the
+    provider with no authenticated request and no background issuance proof (Codex
+    reproduced an actual launch). Authority is now established by PROVENANCE: the
+    router honours a pre-set authority only if it IS the very object a genuine mint
+    site currently holds open (identity, not equality). A forged lookalike must be
+    refused BEFORE any provider is called; the same object, once registered by a
+    mint site, is honoured — proving the check keys on issuance, not shape.
+    """
+    import asyncio
+
+    import pytest
+
+    from tinyassets.config import UniverseConfig
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_assignment import (
+        ServedProviderAuthority,
+        register_issued_authority,
+        unregister_issued_authority,
+    )
+    from tinyassets.providers.base import (
+        BaseProvider,
+        ModelConfig,
+        ProviderResponse,
+        UniverseContext,
+    )
+    from tinyassets.providers.router import ProviderRouter
+
+    class _CountingProvider(BaseProvider):
+        def __init__(self) -> None:
+            self.name = "codex"
+            self.family = "codex"
+            self.calls = 0
+
+        async def complete(self, prompt, system, config: ModelConfig, *, universe_dir=None):
+            self.calls += 1
+            return ProviderResponse(
+                text="should-not-run", provider="codex", model="fake", family="codex",
+                latency_ms=0.0,
+            )
+
+    fake = _CountingProvider()
+    router = ProviderRouter({"codex": fake})
+    universe_dir = tmp_path / "u-forge"
+    universe_dir.mkdir()
+    forged = ServedProviderAuthority(
+        authority_kind="subscription_snapshot", provider="codex",
+        max_invocations=10, request_max_invocations=0, max_tokens=100_000,
+        max_cost_microunits=1_000_000, owner_user_id="attacker",
+        universe_id="u-forge", agent_binding_id="b", binding_revision=1,
+        binding_id="bid", binding_generation=1, binding_digest="d",
+        credential_reference_id="c", credential_reference_generation=1,
+        credential_reference_digest="cd", credential_service="codex",
+        credential_snapshot_dir=universe_dir, request_capability=None,
+        operation="background_branch_run", allowed_roles=("writer",),
+        budget_owner="background_attempt",
+    )
+    context = UniverseContext(
+        universe_dir=universe_dir,
+        config=UniverseConfig(allowed_providers=["codex"]),
+        served_provider=forged,  # looks exactly like a real one
+    )
+
+    # THE ATTACK: refused before any provider launch.
+    with pytest.raises(ProviderAuthorityHeldError):
+        asyncio.run(router.call(
+            "writer", "p", "s", operation="background_branch_run", universe_context=context,
+        ))
+    assert fake.calls == 0
+
+    # CONTROL: the SAME object, once a mint site registers it, passes the provenance
+    # check (it then proceeds to the real reservation gates, which refuse this
+    # unbacked authority for OTHER reasons — the point is the router no longer
+    # rejects on provenance). Provenance keys on issuance, not on shape.
+    register_issued_authority(forged)
+    try:
+        with pytest.raises(Exception) as excinfo:
+            asyncio.run(router.call(
+                "writer", "p", "s", operation="background_branch_run",
+                universe_context=context,
+            ))
+        # It got PAST the provenance gate into the reservation machinery.
+        assert "Connect your provider" not in str(excinfo.value)
+    finally:
+        unregister_issued_authority(forged)
+    assert fake.calls == 0
+    # And after unregistering, the identical object is a forgery again.
+    with pytest.raises(ProviderAuthorityHeldError):
+        asyncio.run(router.call(
+            "writer", "p", "s", operation="background_branch_run", universe_context=context,
+        ))
+    assert fake.calls == 0

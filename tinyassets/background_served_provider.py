@@ -20,6 +20,8 @@ from tinyassets.provider_assignment import (
     _ensure_served_budget_schema,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
+    register_issued_authority,
+    unregister_issued_authority,
 )
 from tinyassets.provider_work_authority import (
     ProviderWorkAuthorityWriteOutcome,
@@ -940,7 +942,13 @@ class _BackgroundAssignedProviderSession:
                     except Exception:
                         conn.rollback()
                         raise
-                yield authority
+                # Register the exact object for the fenced call so the router can tell
+                # this genuine, issued authority from a caller-constructed lookalike.
+                register_issued_authority(authority)
+                try:
+                    yield authority
+                finally:
+                    unregister_issued_authority(authority)
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:

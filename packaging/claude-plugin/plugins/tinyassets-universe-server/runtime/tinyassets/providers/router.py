@@ -453,6 +453,16 @@ class ProviderRouter:
         # ProviderAuthorityHeldError and the real background path could never
         # launch (Codex REJECT #1, PR #2528). Only an UN-authorized context is
         # fenced here.
+        if universe_context is not None and universe_context.served_provider is not None:
+            from tinyassets.provider_assignment import is_issued_authority
+
+            # A pre-set served_provider is honoured ONLY if it is the very object a
+            # genuine mint site (served authorize_served_provider_call, or the
+            # background _authorize_launch) currently holds open. A caller-built
+            # ServedProviderAuthority of identical shape is NOT authority (Codex
+            # REJECT on #2531 reproduced a launch with a forged one). Fail closed.
+            if not is_issued_authority(universe_context.served_provider):
+                raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
         if (
             universe_context is not None
             and universe_context.provider_invocation is None
@@ -834,6 +844,7 @@ class ProviderRouter:
                         universe_dir.parent,
                         universe_dir=universe_dir,
                         authority=served_authority,
+                        role=role,
                         requested_output_tokens=cfg.max_tokens,
                         estimated_input_tokens=estimated_input_tokens,
                         call_timeout_s=getattr(cfg, "timeout", None),

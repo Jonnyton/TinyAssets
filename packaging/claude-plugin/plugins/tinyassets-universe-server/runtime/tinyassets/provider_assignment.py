@@ -326,6 +326,37 @@ def reconcile_served_budget_leases(base_path: str | Path) -> int:
         return 0
 
 
+
+# --------------------------------------------------------------------------- #
+# Issued-authority registry (Codex REJECT on #2531): a ServedProviderAuthority is a
+# plain frozen dataclass, so ANY caller can construct one and hand it to the router
+# on a UniverseContext. Authority must therefore be established by PROVENANCE, not
+# by shape: the two genuine mint sites (the founder-facing served path below and
+# the daemon-owned background path in background_served_provider._authorize_launch)
+# register the exact object they yield for the duration of the fenced call and
+# unregister it on exit. The router honours a pre-set ``served_provider`` ONLY if
+# it is the very object (identity, not equality) currently registered here. Keyed
+# by id() because the dataclass is slots=True (no __weakref__); bounded to live
+# calls by the unregister-on-exit contract, so a stale id can never be replayed.
+_ISSUED_AUTHORITY_LOCK = threading.Lock()
+_ISSUED_AUTHORITIES: dict[int, "ServedProviderAuthority"] = {}
+
+
+def register_issued_authority(authority: "ServedProviderAuthority") -> None:
+    with _ISSUED_AUTHORITY_LOCK:
+        _ISSUED_AUTHORITIES[id(authority)] = authority
+
+
+def unregister_issued_authority(authority: "ServedProviderAuthority") -> None:
+    with _ISSUED_AUTHORITY_LOCK:
+        _ISSUED_AUTHORITIES.pop(id(authority), None)
+
+
+def is_issued_authority(authority: object) -> bool:
+    """True iff ``authority`` IS an object a genuine mint site currently holds open."""
+    with _ISSUED_AUTHORITY_LOCK:
+        return _ISSUED_AUTHORITIES.get(id(authority)) is authority
+
 # The daemon-owned background operation (mirrors
 # background_served_provider.BACKGROUND_BRANCH_RUN_OPERATION; kept as a literal here
 # because that module imports this one — importing back would be circular).
@@ -337,6 +368,7 @@ def reserve_served_provider_budget(
     *,
     universe_dir: str | Path,
     authority: ServedProviderAuthority,
+    role: str = "writer",
     requested_output_tokens: int,
     estimated_input_tokens: int,
     call_timeout_s: float | None = None,
@@ -456,6 +488,9 @@ def reserve_served_provider_budget(
                 and assignment.binding_generation == authority.binding_generation
                 and assignment.binding_digest == authority.binding_digest
             )
+        if role not in authority.allowed_roles:
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
         if (
             assignment is None
             or assignment.state != "ready"
@@ -476,7 +511,10 @@ def reserve_served_provider_budget(
                 # own roles. Hard-coding "converse"/"writer" made every background
                 # reservation fail closed (the design floor under Codex REJECT #2).
                 operation=authority.operation,
-                role=(authority.allowed_roles[0] if authority.allowed_roles else "writer"),
+                # The ACTUAL routed role (Codex: allowed_roles[0] is caller-controlled
+                # and need not be the role this call runs as). Refused above when it
+                # is outside the authority's allowed set.
+                role=role,
             )
             or custody is None
             or custody.reference_id != authority.credential_reference_id
@@ -1350,7 +1388,11 @@ def authorize_served_provider_call(
                         request_capability=capability,
                     )
                 conn.rollback()
-            yield authority
+            register_issued_authority(authority)
+            try:
+                yield authority
+            finally:
+                unregister_issued_authority(authority)
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
