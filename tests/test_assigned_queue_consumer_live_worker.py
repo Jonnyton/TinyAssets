@@ -271,7 +271,9 @@ def test_claim_exception_is_recorded_as_a_named_refusal(
         assert consumer.poll_once() == 0
     finally:
         consumer.stop()
-    assert _refusal_reason(tmp_path, branch_task_id) == "claim_error:RuntimeError"
+    assert _refusal_reason(tmp_path, branch_task_id) == (
+        "claim_error:RuntimeError:simulated prod-only claim failure"
+    )
     task = Epoch2BranchTaskAdapter(tmp_path).get(branch_task_id)
     assert task is not None and task.status == "pending"
     summary = _epoch2_operational_snapshot(tmp_path / "universe_alice")
@@ -280,7 +282,7 @@ def test_claim_exception_is_recorded_as_a_named_refusal(
         if item["branch_task_id"] == branch_task_id
     )
     assert diagnostic["operational_state"] == "consumer_error"
-    assert diagnostic["reason"] == "claim_error:RuntimeError"
+    assert diagnostic["reason"].startswith("claim_error:RuntimeError:")
     assert summary["eligible_pending_count"] == 0
 
 
@@ -367,7 +369,9 @@ def test_unclaimable_candidate_does_not_starve_the_next(
         assert consumer.poll_once() == 1
     finally:
         consumer.stop()
-    assert _refusal_reason(tmp_path, ghost.branch_task_id) == "claim_error:RuntimeError"
+    assert _refusal_reason(tmp_path, ghost.branch_task_id) == (
+        "claim_error:RuntimeError:ghost cannot be claimed"
+    )
     claimed = adapter.get(branch_task_id)
     assert claimed is not None and claimed.status == "running"
 
@@ -521,7 +525,9 @@ def test_pump_exception_is_recorded_per_principal(
     reasons = {item["key"]: item["reason"] for item in summary["consumer_pump"]}
     principal_keys = [k for k in reasons if k.startswith(f"universe:{definition.universe_id}:")]
     assert principal_keys, reasons
-    assert all(reasons[k] == "activate_error:RuntimeError" for k in principal_keys)
+    assert all(
+        reasons[k].startswith("activate_error:RuntimeError:") for k in principal_keys
+    )
 
 
 def test_active_automation_that_produces_nothing_still_gets_a_reason(
@@ -558,3 +564,22 @@ def test_active_automation_that_produces_nothing_still_gets_a_reason(
     assert reason in {"no_due_trigger", "production_declined"}, reason
     summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
     assert [item for item in summary["consumer_pump"] if item["reason"] == reason]
+
+
+def test_error_reason_sanitises_paths_and_long_tokens():
+    """The ledger row is the only place prod can show a cause, so it carries the
+    message - with filesystem paths and secret-shaped tokens stripped."""
+    from tinyassets.runtime.assigned_queue_consumer import _error_reason
+
+    reason = _error_reason(
+        "prepare_error",
+        PermissionError("denied for C:/Users/someone/data/vault.json"),
+    )
+    assert reason.startswith("prepare_error:PermissionError:")
+    assert "C:/Users" not in reason and "<path>" in reason
+    token = _error_reason("produce_error", RuntimeError("token sk-" + "a" * 40))
+    assert "<redacted>" in token and "a" * 40 not in token
+    assert len(_error_reason("x", RuntimeError("y" * 500))) < 200
+    assert _error_reason("prepare_error", PermissionError()) == (
+        "prepare_error:PermissionError"
+    )

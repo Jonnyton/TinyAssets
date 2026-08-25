@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -63,6 +64,23 @@ def _consumer_skip_reason(task: Epoch2BranchTask) -> str | None:
     if not task.automation_branch_version:
         return "consumer_not_applicable:automation_branch_version_missing"
     return None
+
+
+def _error_reason(prefix: str, exc: BaseException) -> str:
+    """`prefix:ExcType:message` with the message sanitised and bounded.
+
+    Live 2026-08-25: prod reported only `prepare_error:PermissionError`, which
+    named no cause — and prod has no Python-level log route, so the ledger row is
+    the only place a cause can appear. These messages are developer-authored
+    strings; filesystem paths and anything that looks like a secret are stripped
+    before the row is written.
+    """
+    text = " ".join(str(exc).split())
+    text = re.sub(r"[A-Za-z]:[\\/][^\s]*", "<path>", text)
+    text = re.sub(r"(?<![\w-])/[^\s]{2,}", "<path>", text)
+    text = re.sub(r"[A-Za-z0-9_-]{24,}", "<redacted>", text)
+    text = text[:120].strip()
+    return f"{prefix}:{type(exc).__name__}" + (f":{text}" if text else "")
 
 
 def _runtime_provider_name(base_path: Path, universe_id: str) -> str:
@@ -209,7 +227,7 @@ class AssignedQueueConsumer:
                 )
                 self._record_reason(
                     prep_store, f"universe:{universe_id}:-", universe_id,
-                    f"prepare_error:{type(exc).__name__}",
+                    _error_reason("prepare_error", exc),
                 )
         adapter.recover_expired(
             target_recovery_guard=lambda task: task.claimed_by.startswith(
@@ -286,7 +304,7 @@ class AssignedQueueConsumer:
                 "assigned queue claim raised task=%s", candidate.branch_task_id
             )
             self._record_refusal(
-                refusal_store, candidate, f"claim_error:{type(exc).__name__}"
+                refusal_store, candidate, _error_reason("claim_error", exc)
             )
             return None
         if claimed is not None:
@@ -298,7 +316,7 @@ class AssignedQueueConsumer:
                 "assigned queue refusal explain raised task=%s",
                 candidate.branch_task_id,
             )
-            reason = f"explain_error:{type(exc).__name__}"
+            reason = _error_reason("explain_error", exc)
         self._record_refusal(refusal_store, candidate, reason or "refusal_unexplained")
         return None
 
@@ -485,10 +503,19 @@ class AssignedQueueConsumer:
             CloudAutomationControlStore,
         )
 
-        reconcile_one_terminal_cloud_automation(
-            self.base_path,
-            universe_id=universe_id,
-        )
+        try:
+            reconcile_one_terminal_cloud_automation(
+                self.base_path,
+                universe_id=universe_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - a stale receipt cannot stop the pump
+            logger.exception("assigned queue reconcile raised universe=%s", universe_id)
+            self._record_reason(
+                AssignedQueueRefusalStore(self.base_path),
+                f"universe:{universe_id}:-",
+                universe_id,
+                _error_reason("reconcile_error", exc),
+            )
         controls = CloudAutomationControlStore(self.base_path).list_controls(
             universe_id=universe_id,
             limit=100,
@@ -543,10 +570,8 @@ class AssignedQueueConsumer:
             except Exception as exc:  # noqa: BLE001 - visible, never silent
                 logger.exception("assigned queue activation raised %s", pump_key)
                 self._record_reason(
-                    refusal_store,
-                    pump_key,
-                    universe_id,
-                    f"activate_error:{type(exc).__name__}",
+                    refusal_store, pump_key, universe_id,
+                    _error_reason("activate_error", exc),
                 )
                 continue
             if activated is not None:
@@ -565,10 +590,8 @@ class AssignedQueueConsumer:
             except Exception as exc:  # noqa: BLE001 - visible, never silent
                 logger.exception("assigned queue production raised %s", pump_key)
                 self._record_reason(
-                    refusal_store,
-                    pump_key,
-                    universe_id,
-                    f"produce_error:{type(exc).__name__}",
+                    refusal_store, pump_key, universe_id,
+                    _error_reason("produce_error", exc),
                 )
                 continue
             if produced is not None:
