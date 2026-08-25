@@ -16,32 +16,15 @@ No SimpleNamespace stubs, no in-memory hand-DDL: the whole schema comes up throu
 the real boot bring-up (``initialize_author_server``). The ONE monkeypatch is
 ``_branch_roles`` (a roles lookup on ``branch_versions``, unrelated to budget).
 
-Kept as a strict xfail until every seam is wired; ``strict=True`` so it can never pass
-vacuously. Each seam it fails at is a real store the production path touches - the
-ordered list lives in the draft PR body.
+This PASSES against the real stores: it is the finalization proof for Codex REJECT #2
+(and re-proves #1). The seams it walked to get here — each a real store the production
+path touches — are listed in the draft PR body, along with the two real bugs it found
+(the ``agent_binding_id`` key mismatch; the hard-coded ``converse`` reserve gate).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DESIGN FLOOR REACHED (not a fixture gap): every store now seeds through the "
-        "real chain and the consumer's own gates all pass; the call dies INSIDE "
-        "reserve_served_provider_budget (provider_assignment.py:451). That gate "
-        "hard-codes validate_in_transaction(operation='converse', role='writer') and "
-        "requires the authority's binding to BE the served assignment's binding, while "
-        "the consumer issues a separate background_branch_run binding under the same "
-        "ProviderWorkBindingRoot (owner, universe, provider). Served and background "
-        "cannot both hold a binding under one root in the current model. Closing "
-        "REJECT #2 needs a design decision (one shared binding allowing both operations, "
-        "or an operation-parameterized reserve gate), not more seeding. strict=True."
-    ),
-)
 
 OWNER = "acct_alice"
 UNIVERSE = "universe_alice"
@@ -183,6 +166,13 @@ def test_background_call_reserves_and_finalizes_actual_usage_end_to_end(
             return NOW if tz is None else NOW.astimezone(tz)
 
     monkeypatch.setattr(background_provider, "datetime", _FrozenDatetime)
+    # The reserve gate constructs its OWN SQLiteProviderWorkAuthorityStore with the
+    # default wall clock and checks the background binding's expires_at (NOW+30m in
+    # harness time) against it — freeze that module's clock to NOW as well. Pure
+    # test-clock artifact: real bindings carry real future expiries.
+    import tinyassets.storage.provider_work_authority as _pwa_module
+
+    monkeypatch.setattr(_pwa_module, "datetime", _FrozenDatetime)
 
     # --- the real router with a counting fake provider --------------------------
     class _CountingProvider(BaseProvider):

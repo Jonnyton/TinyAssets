@@ -326,6 +326,12 @@ def reconcile_served_budget_leases(base_path: str | Path) -> int:
         return 0
 
 
+# The daemon-owned background operation (mirrors
+# background_served_provider.BACKGROUND_BRANCH_RUN_OPERATION; kept as a literal here
+# because that module imports this one — importing back would be circular).
+_BACKGROUND_BRANCH_RUN_OPERATION = "background_branch_run"
+
+
 def reserve_served_provider_budget(
     base_path: str | Path,
     *,
@@ -424,12 +430,36 @@ def reserve_served_provider_budget(
                 universe_id=authority.universe_id,
                 service=authority.credential_service,
             )
+        # Which provider-work binding may reserve against this assignment?
+        #  - a founder-facing SERVED turn must carry the assignment's OWN binding
+        #    (exact id + generation + digest equality — the original gate);
+        #  - a daemon-owned BACKGROUND attempt carries a DISTINCT binding
+        #    (binding_class = the background operation, so a different id under the
+        #    same root) that was ISSUED FROM this assignment — proven by the binding
+        #    recording the assignment's current generation + digest. Demanding id
+        #    equality for it made every background reservation fail closed (the
+        #    design floor under Codex REJECT #2, PR #2528/#2531).
+        if authority.operation == _BACKGROUND_BRANCH_RUN_OPERATION:
+            binding_matches_assignment = (
+                assignment is not None
+                and binding is not None
+                and binding.assignment_generation == assignment.generation
+                and binding.assignment_digest == assignment.assignment_digest
+                and binding.binding_id == authority.binding_id
+                and binding.generation == authority.binding_generation
+                and binding.binding_digest == authority.binding_digest
+            )
+        else:
+            binding_matches_assignment = (
+                assignment is not None
+                and assignment.binding_id == authority.binding_id
+                and assignment.binding_generation == authority.binding_generation
+                and assignment.binding_digest == authority.binding_digest
+            )
         if (
             assignment is None
             or assignment.state != "ready"
-            or assignment.binding_id != authority.binding_id
-            or assignment.binding_generation != authority.binding_generation
-            or assignment.binding_digest != authority.binding_digest
+            or not binding_matches_assignment
             or binding is None
             or not store.validate_in_transaction(
                 conn,
@@ -439,8 +469,14 @@ def reserve_served_provider_budget(
                 owner_user_id=authority.owner_user_id,
                 universe_id=authority.universe_id,
                 provider=authority.provider,
-                operation="converse",
-                role="writer",
+                # Validate the binding for the operation/role THIS authority actually
+                # carries, not a hard-coded served literal. A founder-facing served
+                # turn carries operation="converse"; a daemon-owned background
+                # attempt carries operation="background_branch_run" with the Branch's
+                # own roles. Hard-coding "converse"/"writer" made every background
+                # reservation fail closed (the design floor under Codex REJECT #2).
+                operation=authority.operation,
+                role=(authority.allowed_roles[0] if authority.allowed_roles else "writer"),
             )
             or custody is None
             or custody.reference_id != authority.credential_reference_id
