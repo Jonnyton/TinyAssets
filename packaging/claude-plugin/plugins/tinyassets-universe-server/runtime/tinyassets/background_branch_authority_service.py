@@ -378,6 +378,9 @@ class BackgroundBranchAuthorityOwnerKind(str, Enum):
 class BackgroundBranchAuthorityOwnerState(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
     ACTIVE = "active"
     TARGET_AUTHORITY_HELD = "target_authority_held"
 
@@ -462,6 +465,9 @@ class BackgroundBranchAuthorityOwnerRecord:
             allowed_states = {
                 BackgroundBranchAuthorityOwnerState.PENDING,
                 BackgroundBranchAuthorityOwnerState.RUNNING,
+                BackgroundBranchAuthorityOwnerState.SUCCEEDED,
+                BackgroundBranchAuthorityOwnerState.FAILED,
+                BackgroundBranchAuthorityOwnerState.CANCELLED,
                 BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
             }
         else:

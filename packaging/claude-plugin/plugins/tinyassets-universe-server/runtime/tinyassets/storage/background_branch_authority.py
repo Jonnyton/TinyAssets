@@ -386,6 +386,33 @@ def _owner_transition_is_monotonic(
     current: BackgroundBranchAuthorityOwnerRecord,
     replacement: BackgroundBranchAuthorityOwnerRecord,
 ) -> bool:
+    if current.owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK:
+        allowed_states = {
+            BackgroundBranchAuthorityOwnerState.PENDING: {
+                BackgroundBranchAuthorityOwnerState.RUNNING,
+                BackgroundBranchAuthorityOwnerState.FAILED,
+                BackgroundBranchAuthorityOwnerState.CANCELLED,
+                BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
+            },
+            BackgroundBranchAuthorityOwnerState.RUNNING: {
+                BackgroundBranchAuthorityOwnerState.SUCCEEDED,
+                BackgroundBranchAuthorityOwnerState.FAILED,
+                BackgroundBranchAuthorityOwnerState.CANCELLED,
+                BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
+            },
+            BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD: {
+                BackgroundBranchAuthorityOwnerState.PENDING,
+            },
+        }
+    else:
+        allowed_states = {
+            BackgroundBranchAuthorityOwnerState.ACTIVE: {
+                BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
+            },
+            BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD: {
+                BackgroundBranchAuthorityOwnerState.ACTIVE,
+            },
+        }
     return (
         current.owner_kind is replacement.owner_kind
         and current.owner_id == replacement.owner_id
@@ -398,14 +425,7 @@ def _owner_transition_is_monotonic(
             replacement.updated_at.replace("Z", "+00:00")
         )
         > datetime.fromisoformat(current.updated_at.replace("Z", "+00:00"))
-        and (
-            current.state
-            is BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
-        )
-        != (
-            replacement.state
-            is BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
-        )
+        and replacement.state in allowed_states.get(current.state, set())
     )
 
 
@@ -550,6 +570,11 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
             owner.state
             is BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
         )
+        runnable = owner.state in {
+            BackgroundBranchAuthorityOwnerState.PENDING,
+            BackgroundBranchAuthorityOwnerState.RUNNING,
+            BackgroundBranchAuthorityOwnerState.ACTIVE,
+        }
         if owner.binding is None:
             if not held:
                 raise ValueError("runnable owner requires a canonical binding")
@@ -573,7 +598,7 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
                 != owner.authorizing_principal_id
             ):
                 raise ValueError("owner identity does not match binding")
-        if binding is not None and not held:
+        if binding is not None and runnable:
             if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
                 raise ValueError("runnable owner binding is not active")
             if (
@@ -616,7 +641,7 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
             and not held
         ):
             raise ValueError("runnable queue owner requires a canonical attempt")
-        if binding is not None and not held and owner.source_generation != int(
+        if binding is not None and runnable and owner.source_generation != int(
             binding.source_revision
         ):
             raise ValueError("runnable owner source generation is stale")
@@ -806,6 +831,33 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
             return self._owner_conflict(current, expected.expected_record)
         if not _owner_transition_is_monotonic(current, replacement):
             raise ValueError("owner replacement must be monotonic")
+        queue_lifecycle = (
+            replacement.owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK
+            and replacement.state
+            in {
+                BackgroundBranchAuthorityOwnerState.RUNNING,
+                BackgroundBranchAuthorityOwnerState.SUCCEEDED,
+                BackgroundBranchAuthorityOwnerState.FAILED,
+                BackgroundBranchAuthorityOwnerState.CANCELLED,
+            }
+        )
+        if queue_lifecycle:
+            if (
+                current.binding != replacement.binding
+                or current.attempt is None
+                or replacement.attempt is None
+                or current.attempt.expected_record.attempt_id
+                != replacement.attempt.expected_record.attempt_id
+                or current.source_generation != replacement.source_generation
+                or replacement.hold_reason is not None
+            ):
+                raise ValueError("queue owner lifecycle cannot rotate authority")
+            self._validate_owner_references(replacement)
+            self._update_owner(replacement)
+            return BackgroundBranchAuthorityOwnerWriteResult(
+                BackgroundBranchAuthorityWriteOutcome.APPLIED,
+                replacement,
+            )
         held = (
             replacement.state
             is BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
