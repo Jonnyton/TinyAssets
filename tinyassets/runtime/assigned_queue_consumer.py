@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -55,11 +56,12 @@ def _release_build_sha() -> str:
 def _consumer_skip_reason(task: Epoch2BranchTask) -> str | None:
     """Why this consumer will not even attempt a pending task (None = eligible)."""
     if not task.automation_id:
-        return "not_an_automation_task"
+        return "consumer_not_applicable:assigned_cloud_automation"
     if task.automation_executor_class != "cloud":
-        return f"executor_class_{task.automation_executor_class or 'missing'}"
+        executor = task.automation_executor_class or "missing"
+        return f"requires_executor_class:{executor}"
     if not task.automation_branch_version:
-        return "automation_branch_version_missing"
+        return "consumer_not_applicable:automation_branch_version_missing"
     return None
 
 
@@ -112,6 +114,7 @@ class AssignedQueueConsumer:
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
         self._runtimes: dict[tuple[str, str], dict[str, Any]] = {}
+        self._recorded: dict[str, tuple[str, float]] = {}
 
     def start(self) -> None:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
@@ -160,9 +163,6 @@ class AssignedQueueConsumer:
 
         if not assigned_queue_consumer_enabled():
             return 0
-        from tinyassets.background_served_provider import (
-            claim_background_queue_authority_in_transaction,
-        )
         from tinyassets.provider_serving_binding import list_serving_universes
         from tinyassets.storage.assigned_queue_refusals import (
             AssignedQueueRefusalStore,
@@ -213,47 +213,19 @@ class AssignedQueueConsumer:
             ):
                 continue
             candidates = adapter.list_candidates(universe_id=universe_id, limit=20)
-            candidate = None
-            for task in candidates:
-                skip = _consumer_skip_reason(task)
-                if skip is None:
-                    candidate = task
-                    break
-                # A pending task this consumer will never attempt is still a
-                # pending task its owner is waiting on: say why, per task.
-                self._record_refusal(refusal_store, task, skip)
-            if candidate is None:
-                continue
+            claimed = None
             lease = self._consumer_lease()
-            try:
-                claimed = adapter.claim_assigned(
-                    candidate,
-                    consumer_lease=lease,
-                    authority_claim=claim_background_queue_authority_in_transaction,
-                )
-            except Exception as exc:  # noqa: BLE001 - visible, never silent
-                logger.exception(
-                    "assigned queue claim raised task=%s", candidate.branch_task_id
-                )
-                self._record_refusal(
-                    refusal_store, candidate, f"claim_error:{type(exc).__name__}"
-                )
-                continue
+            for candidate in candidates:
+                # Every pending task this consumer passes over gets a reason, and
+                # an unclaimable task must not starve a claimable one behind it.
+                skip = _consumer_skip_reason(candidate)
+                if skip is not None:
+                    self._record_refusal(refusal_store, candidate, skip)
+                    continue
+                claimed = self._try_claim(adapter, refusal_store, candidate, lease)
+                if claimed is not None:
+                    break
             if claimed is None:
-                try:
-                    reason = adapter.explain_assigned_refusal(
-                        candidate,
-                        consumer_lease=lease,
-                    )
-                except Exception as exc:  # noqa: BLE001 - the failure IS the reason
-                    logger.exception(
-                        "assigned queue refusal explain raised task=%s",
-                        candidate.branch_task_id,
-                    )
-                    reason = f"explain_error:{type(exc).__name__}"
-                self._record_refusal(
-                    refusal_store, candidate, reason or "refusal_unexplained"
-                )
                 continue
             future = self._executor.submit(self._execute, claimed, lease)
             with self._lock:
@@ -267,12 +239,64 @@ class AssignedQueueConsumer:
             submitted += 1
         return submitted
 
+    def _try_claim(
+        self,
+        adapter: Epoch2BranchTaskAdapter,
+        refusal_store: Any,
+        candidate: Epoch2BranchTask,
+        lease: AssignedConsumerLease,
+    ) -> Epoch2BranchTask | None:
+        from tinyassets.background_served_provider import (
+            claim_background_queue_authority_in_transaction,
+        )
+
+        try:
+            claimed = adapter.claim_assigned(
+                candidate,
+                consumer_lease=lease,
+                authority_claim=claim_background_queue_authority_in_transaction,
+            )
+        except Exception as exc:  # noqa: BLE001 - visible, never silent
+            logger.exception(
+                "assigned queue claim raised task=%s", candidate.branch_task_id
+            )
+            self._record_refusal(
+                refusal_store, candidate, f"claim_error:{type(exc).__name__}"
+            )
+            return None
+        if claimed is not None:
+            return claimed
+        try:
+            reason = adapter.explain_assigned_refusal(candidate, consumer_lease=lease)
+        except Exception as exc:  # noqa: BLE001 - the failure IS the reason
+            logger.exception(
+                "assigned queue refusal explain raised task=%s",
+                candidate.branch_task_id,
+            )
+            reason = f"explain_error:{type(exc).__name__}"
+        self._record_refusal(refusal_store, candidate, reason or "refusal_unexplained")
+        return None
+
     def _record_refusal(
         self,
         refusal_store: Any,
         task: Epoch2BranchTask,
         reason: str,
     ) -> None:
+        # Re-record an unchanged reason only every half freshness window: the
+        # status read still always sees a fresh row, without one upsert per task
+        # per poll (Codex ADAPT on #2543: write amplification).
+        now = time.monotonic()
+        previous = self._recorded.get(task.branch_task_id)
+        window = min(
+            assigned_queue_refusal_freshness_seconds(), 5 * self.poll_seconds
+        )
+        if (
+            previous is not None
+            and previous[0] == reason
+            and now - previous[1] < window / 2
+        ):
+            return
         try:
             refusal_store.record(
                 branch_task_id=task.branch_task_id,
@@ -281,6 +305,7 @@ class AssignedQueueConsumer:
                 observed_at=datetime.now(timezone.utc).isoformat(),
                 consumer_id=self.consumer_id,
             )
+            self._recorded[task.branch_task_id] = (reason, now)
         except Exception:  # noqa: BLE001 - the ledger must never take the loop down
             logger.exception(
                 "assigned queue refusal record failed task=%s", task.branch_task_id

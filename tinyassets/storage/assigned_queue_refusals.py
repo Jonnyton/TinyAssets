@@ -83,11 +83,11 @@ class AssignedQueueRefusalStore:
                     """
                     SELECT branch_task_id, reason, observed_at
                     FROM assigned_queue_refusals
-                    WHERE universe_id = ?
+                    WHERE universe_id = ? AND observed_at >= ?
                     ORDER BY observed_at DESC, branch_task_id ASC
-                    LIMIT 100
+                    LIMIT 1000
                     """,
-                    (universe_id,),
+                    (universe_id, cutoff.isoformat()),
                 ).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc).lower():
