@@ -159,6 +159,23 @@ Companion deletions: `CLAUDE_LEAD_OPS.md` (156 lines / 13 KB), `scripts/fleet_st
 **Do not delete before confirming no importer.** Verified this pass: no file under `tinyassets/`
 imports any `fleet_*` or `fuse_safe_*` module. Re-verify at deletion time.
 
+### Dependency sweep for the doomed scripts (verified this pass)
+
+| Script | Non-doc referents | Verdict |
+|---|---|---|
+| `scripts/fleet_status.py` | `.claude/hooks/fleet_floor_guard.py`, `scripts/fleet_supervisor.py` | Safe — both die in the same phase |
+| `scripts/fleet_supervisor.py` | `.claude/hooks/fleet_floor_guard.py` | Safe — same |
+| `scripts/fuse_safe_write.py` | `.claude/hooks/fuse_pre_write_reject.py` | Safe — hook dies in the same phase |
+| `scripts/fuse_safe_commit.py` | `tests/test_fuse_safe_commit.py` | Delete the test with it |
+| `scripts/concerns_resolve.py` | `scripts/invariants/concerns_staleness.py`, `tests/test_concerns_resolve.py` | Both die with the board |
+| `scripts/claim_check.py` | `scripts/check_primitive_exists.py`, `scripts/openspec_drain_supervisor.py`, `scripts/worktree_status.py`, `tests/test_claim_check.py`, `tests/test_openspec_drain_supervisor.py` | **Sweep required** — three live scripts import it |
+
+**False positive checked and cleared:** `git grep claim_check` matches
+`tinyassets/branch_tasks_v2.py:458,510` and `tinyassets/storage/request_admissions.py:1427,1460`.
+These are a **callback parameter named `claim_check`** in the admissions store, unrelated to
+`scripts/claim_check.py`. No production dependency. (Recorded because the grep looks alarming and
+a future reader will re-run it.)
+
 ## 7. STATUS.md deletion safety
 
 **Production is unaffected.** All five `tinyassets/` matches for `STATUS.md` are *comments*
