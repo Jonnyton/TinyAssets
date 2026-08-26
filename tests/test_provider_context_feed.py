@@ -12,13 +12,6 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = provider_context_feed
 SPEC.loader.exec_module(provider_context_feed)
 
-HOOK = Path(__file__).resolve().parents[1] / ".claude" / "hooks" / "provider_context_feed_hook.py"
-HOOK_SPEC = importlib.util.spec_from_file_location("provider_context_feed_hook", HOOK)
-assert HOOK_SPEC is not None
-provider_context_feed_hook = importlib.util.module_from_spec(HOOK_SPEC)
-assert HOOK_SPEC.loader is not None
-sys.modules[HOOK_SPEC.name] = provider_context_feed_hook
-HOOK_SPEC.loader.exec_module(provider_context_feed_hook)
 
 
 def test_collects_claude_memory_and_shared_ideas(tmp_path: Path) -> None:
@@ -304,44 +297,8 @@ def test_render_text_names_lifecycle_checkpoints() -> None:
     )
 
     assert "claim, plan, build, review" in rendered
-    assert "STATUS.md/worktree/PR" in rendered
+    assert "worktree/PR" in rendered
     assert "ideas/INBOX.md" in rendered
-
-
-def test_hook_maps_only_explicit_coordination_prompts() -> None:
-    # Narrowed 2026-08-02 (process de-bloat): only explicit
-    # coordination-lifecycle moments fire; generic software verbs do not.
-    assert provider_context_feed_hook.phase_for_prompt("claim the row and start") == "claim"
-    assert provider_context_feed_hook.phase_for_prompt("fold back the lane") == "foldback"
-    assert provider_context_feed_hook.phase_for_prompt("open a PR for this") == "foldback"
-    assert provider_context_feed_hook.phase_for_prompt("update your agent-memory") == "memory-write"
-    assert provider_context_feed_hook.phase_for_prompt("please review this PR") is None
-    assert provider_context_feed_hook.phase_for_prompt("write a design plan") is None
-    assert provider_context_feed_hook.phase_for_prompt("fix the bug and add a test") is None
-    assert provider_context_feed_hook.phase_for_prompt("hello") is None
-
-
-def test_hook_render_context_is_compact_and_actionable() -> None:
-    rendered = provider_context_feed_hook.render_context(
-        [
-            {
-                "path": ".claude/agent-memory/dev/MEMORY.md",
-                "line": 4,
-                "signal": "memory",
-                "text": "Remember to fold provider memories into worktree lanes.",
-            }
-        ],
-        "build",
-    )
-
-    assert "Provider-context feed checkpoint: build" in rendered
-    assert "STATUS/worktree/PR" in rendered
-
-
-# ---------------------------------------------------------------------------
-# Dead-lane pruning (kills the SessionStart-feed staleness problem where
-# every candidate worktree pointed to already-merged work).
-# ---------------------------------------------------------------------------
 
 
 def test_parse_worktree_branches_extracts_branch_per_worktree() -> None:

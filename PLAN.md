@@ -2,7 +2,7 @@
 
 How the system should work and why. Architecture, principles, and the working theory of every module. PLAN.md is the reference everyone — humans, AI provider sessions, user chatbots, and user-authored automations — consults before building, so that the applicable module's shape is known before code is written.
 
-For live state, see STATUS.md. For how to work on the project, see AGENTS.md. **Changes here require user approval.**
+For how to work on the project, and where live state lives, see AGENTS.md. **Changes here require user approval.**
 
 ---
 
@@ -226,6 +226,40 @@ These principles apply to every module. They do not own a module each; they cons
 
 **Module shape is part of the architecture.** A flat namespace of 35 modules at `tinyassets/` root signals "no opinion about boundaries." A god-module of 10k lines signals "boundaries deferred indefinitely." Both are forms of architectural debt. The Module Map below codifies the target shape; the per-module sections that follow codify what each owns.
 
+**Foundation builds to the end state; features may iterate** (host, refined 2026-04-19).
+*Foundation* is infrastructure everything else depends on — multi-user support, storage schema,
+auth, daemon dispatch core, naming commitments, module layout, MCP server core, basic paid-market
+routing. Foundation always builds to the long-term best-known design **in the present**: no phased
+rollouts, no compat-shim bandages, no "ship part 1 and iterate later." *Features* are the surfaces
+the chatbot and user interact with — trust verbs, discovery polish, autoresearch refinements,
+bid-UX, shared-account primitives — and they legitimately roll out in phases, because how the
+chatbot wants to use a feature is not knowable in advance. The test before choosing a shape: **is
+this load-bearing for other work?** Yes -> foundation -> end-state. No -> feature -> iterate; when
+ambiguous, ask whether the next thing you want to build depends on this being its final shape.
+Refactor foundation as better implementations are discovered — update PLAN.md first, then refactor
+to match; each foundation ship is itself end-state-shaped. **Foundation does not carry debt;
+features do, temporarily.** Carve-out: atomic-commit discipline stands — "end-state" means each
+commit is atomic *and* takes the code to its final shape, not that related work is squashed
+together. Cited from `tinyassets/storage/__init__.py` and `tinyassets/bid/__init__.py`.
+
+**The daemon economy is foundation; chatbot experience is always-on** (host, 2026-04-19). Both are
+needed, but the daemon economy is foundationally important rather than a side feature. Chatbot
+experience work is standing high-priority throughout — yet the daemon-economy first draft is the
+thing to have shipped before big chatbot-UX investment. When choosing among available work, tracks
+shipping daemon-economy primitives (paid-market bids, settlements, node capability resolution,
+fulfillment routing, moderation-for-the-market) rank above chatbot-experience polish.
+
+**Code before agents: if an invariant can be enforced mechanically, build the check** (host,
+2026-04-19). Every scheduled agent check-in for "is X still true?" is a place a script-that-never-
+forgets does better — zero tokens, no memory decay, silent unless it had to act. The framework is
+`scripts/invariants/`, run by `scripts/invariants_run.py` and gated by `scripts/git-hooks/pre-commit`.
+When you notice an agent repeating a "recheck X, heal if drifted" pattern across sessions, promote
+it to an invariant. Two corollaries earned the hard way: **an invariant that never blocks is
+decoration** — `context-budget` sat registered, VIOLATED, and `pre_commit_scope=False` while the
+always-loaded set grew from 17.6 KB to 62 KB — and **a check-adding commit must have that check's
+own tests as its gate**, since the `#46 c880f94` regression shipped when the mojibake hook protected
+downstream commits but not itself, stacking 4 commits on red main.
+
 **Cleanup operations against scene-attributed data must scope across all DBs that hold scene-attributed rows.** Generalizes the Fix E lesson (task #49): a cleanup path that prunes one DB but not its sibling leaves orphan derivatives that masquerade as canon on the next retrieval cycle. When a new DELETE or mutation operates on rows keyed to scene_id (or any cross-store attribution), scope it against both `knowledge.db` and `story.db` from the start, or explicitly document the opt-out with reason. Per the migration-audit follow-up at `docs/audits/2026-04-19-schema-migration-followups.md`.
 
 ---
@@ -275,7 +309,7 @@ The codebase target shape, with each PLAN.md module mapped to its primary code p
 | Providers | `tinyassets/providers/` |
 | API & MCP Interface | `tinyassets/api/` (mounted submodules per cluster), `tinyassets/servers/` |
 | Distribution & Discoverability | `packaging/`, `packaging/registry/`, `packaging/claude-plugin/`, maintained connector submission artifacts |
-| Harness & Coordination | `AGENTS.md`, `STATUS.md`, `scripts/claim_check.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `.agents/`, `.claude/agents/` |
+| Harness & Coordination | `AGENTS.md`, `openspec/`, `docs/concerns/`, `scripts/invariants/`, `scripts/supervisor.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `.agents/`, `.claude/hooks/` |
 | Uptime & Alarms | `deploy/`, `.github/workflows/uptime-canary.yml`, `.github/workflows/p0-outage-triage.yml`, `scripts/uptime_canary.py` |
 | Constraints | `tinyassets/constraints/`, `data/world_rules.lp` |
 
@@ -555,27 +589,75 @@ _Last audited: 2026-07-24_
 
 **Purpose:** Make the system operable, testable, replayable, and improvable across both product runtime and AI-to-AI development. Harness is first-class architecture.
 
-**In scope:** Three Living Files (AGENTS.md / PLAN.md / STATUS.md); the GitHub-shaped lane spine (STATUS row → branch → worktree → PR/draft PR); provider-context feed; agent roles (verifier, navigator, dev, user-sim, lead); claim discipline; cross-provider drift detection.
+**In scope:** Two Living Files (AGENTS.md / PLAN.md) plus the typed homes for live
+state; the GitHub-shaped lane spine (branch → worktree → PR/draft PR); executable
+gates and the invariant framework; the trajectory supervisor; provider-context
+feed; cross-provider drift detection.
 
-**Out of scope:** What individual roles produce (other modules); skill content (`.agents/skills/`, `.claude/skills/` — content is per-skill, the harness orchestrates invocation).
+**Out of scope:** What individual agents produce (other modules); skill content
+(`.agents/skills/`, mirrored to `.claude/skills/` — content is per-skill, the
+harness orchestrates invocation).
 
 **Principles:**
-- *Harness design is part of the cognition stack.* Browser harnesses, builder automation, traces, regression tests, dashboards, role-based agent coordination materially improve system intelligence by making behavior legible and correctable.
-- *Three Living Files separate process truth, design truth, and live state.* AGENTS.md = how to work. PLAN.md = how the system works. STATUS.md = what's happening now. Each is updated immediately when its slice of truth changes.
-- *GitHub/worktree coordination spine.* Buildable work flows through: STATUS Work row + purpose-named branch + sibling `../wf-<slug>` worktree + PR / draft PR. Relevant PLAN.md modules are the project understanding each lane reviews at planning, build, review, and fold-back. `ideas/INBOX.md` is a loose idea feed; entries park at the bottom of a lane as "Idea feed refs" — not design truth or build authority.
-- *Provider-context feed.* Provider-specific memory and automation are INPUTS to the GitHub/worktree spine, not separate planning authorities. `scripts/provider_context_feed.py` scans Claude/Codex/Cursor/shared memory + ideas + research + automation + worktree handoff surfaces at claim/plan/build/review/foldback/memory-write checkpoints. Hidden provider context cannot bypass community-visible project state.
-- *Work production is part of unattended drain orchestration.* Zero immediately
-  claimable STATUS rows is not global exhaustion while exact-current-main
-  OpenSpec flow or blocked-row evidence contains a bounded coordination target.
-  A refinery attempt may only reconcile one existing change into a reviewed
-  pending/blocked row; product edits still require ordinary current-main claim
-  admission. Idle is truthful only after owned, claimable, stale, and refinable
-  pressure are all zero.
-- *Roles are architectural capabilities.* Each provider implements them through its available harness rather than one universal team mechanism. Verifier/navigator/dev/user-sim are not Claude-Code-specific.
+- *Harness design is part of the cognition stack.* Browser harnesses, builder
+  automation, traces, regression tests, and dashboards materially improve system
+  intelligence by making behavior legible and correctable. NVIDIA's AVO reports
+  100 RHAE across all 25 public ARC-AGI-3 environments using 12.17% fewer actions
+  than VISTA (6,624 vs 7,542) — but NVIDIA states this is **not a controlled
+  ablation**, so "the harness alone caused 30% → 100%" is not a claim the
+  evidence supports. What AVO does establish is that one architecture — inspect/
+  plan/edit/evaluate over a scored git lineage, persistent history, and a
+  supervisor responding to stalled *evaluated* search — transferred across
+  unrelated domains without redesign.
+- *Two living files, and live state is typed.* AGENTS.md = how to work.
+  PLAN.md = how the system works. Live state has homes by KIND rather than one
+  always-loaded board: `openspec/changes/` (queue), `docs/concerns/` (unresolved
+  findings), `docs/host-actions.md` (founder-only), git branches and PRs
+  (ownership), `.agents/activity.log` (narrative), the git log (landings).
+  `STATUS.md` held all of these at once and reached 5.2× its own declared
+  ceiling; it was retired 2026-08-25.
+- *Every gate is executable or honestly labelled judgement.* A rule that reads
+  like a gate but enforces nothing is worse than no rule — it buys confidence it
+  has not earned. Gates live as invariants in `scripts/invariants/`, run by
+  `invariants_run.py` from both the tracked pre-commit hook and CI. Catalogue:
+  `docs/reference/executable-gates.md`.
+- *A check that cannot go red is decoration.* Mutation-test every gate: break
+  what it guards, confirm it fails, restore, confirm it passes. Three checks in
+  this repo could not go red until 2026-08-25 — the invariant framework
+  downgraded crashed checks to SKIPPED, two skill tests had been failing on main
+  while testing nothing, and no invariant ran in CI at all.
+- *Scaffolds are dated hypotheses about model weakness.* Before adding one, name
+  the weakness it encodes and whether a current model still has it; re-test that
+  each model generation and delete what no longer earns its place. Applied
+  2026-08-25: 24 of 34 skills, 10 of 15 hooks, and every agent-team role were
+  deleted on exactly this test.
+- *Watch the trajectory, not the step.* `scripts/supervisor.py` observes
+  repetition without progress — the same command failing identically, the same
+  file rewritten with nothing landed — and injects one redirect. It warns and
+  never blocks: a supervisor that could stop a session would be a new ratchet.
+- *GitHub/worktree spine.* Buildable work flows through a purpose-named branch,
+  a sibling `../wf-<slug>` worktree, and a PR or draft PR. `ideas/INBOX.md` is a
+  loose idea feed — not design truth or build authority.
+- *Provider-context feed.* Provider-specific memory and automation are INPUTS to
+  the spine, not separate planning authorities. Queried on demand rather than
+  injected every turn (the per-turn injection hook was itself a large part of
+  the endless-process surface).
+- *Capabilities, not a standing team.* Verification, adversarial review, and
+  fresh-context work are capabilities each provider implements through its own
+  harness. In practice that is a Codex subprocess on Codex's budget
+  (`peer-agents`), not a same-family teammate reviewing its own family's work.
 
-**Substrate:** `AGENTS.md`, `STATUS.md`, `PLAN.md`, `scripts/claim_check.py`, `scripts/openspec_flow.py`, `scripts/openspec_drain_supervisor.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `scripts/check_cross_provider_drift.py`, `.agents/`, `.claude/agents/`, `.claude/hooks/`.
+**Substrate:** `AGENTS.md`, `PLAN.md`, `openspec/`, `docs/concerns/`,
+`docs/host-actions.md`, `scripts/invariants_run.py`, `scripts/invariants/`,
+`scripts/check_context_budget.py`, `scripts/deployed_sha.py`,
+`scripts/supervisor.py`, `scripts/openspec_flow.py`, `scripts/worktree_status.py`,
+`scripts/provider_context_feed.py`, `scripts/check_cross_provider_drift.py`,
+`.agents/skills/`, `.claude/hooks/`.
 
-**Open evolution:** Continued auto-iteration of the harness itself — see `improve-codebase-architecture` + `auto-iterate` skills.
+**Open evolution:** The harness is re-tested against each model generation, not
+maintained forever. Baseline and outcome of the last pass:
+`docs/audits/2026-08-25-harness-reset-baseline.md` and
+`docs/audits/2026-08-26-harness-reset-outcome.md`.
 
 _Last audited: 2026-05-19_
 

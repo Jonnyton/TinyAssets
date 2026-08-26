@@ -77,13 +77,56 @@ def _active_owners(matching_rows: list[dict[str, str]]) -> list[str]:
     return sorted(owners)
 
 
+def _branch_names(repo: Path) -> list[str]:
+    """Every local and remote branch name, lowercased.
+
+    Ownership signal after STATUS.md was retired (2026-08-25). `AGENTS.md`
+    § *Two Living Files* names git branches and open PRs as the home for
+    who-is-working-on-what, so the queue reads that instead of a prose board.
+    A branch is also harder to lie to than a table someone has to remember to
+    update -- it exists because work started.
+    """
+    proc = subprocess.run(
+        ["git", "branch", "-a", "--format=%(refname:short)"],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    return [b.strip().lower() for b in proc.stdout.splitlines() if b.strip()]
+
+
+def _branch_owners(branches: list[str], change_name: str) -> list[str]:
+    """Branches whose name references this change.
+
+    Matched on the slug with separators normalized, so `codex/reconcile-stale`
+    and `claude/reconcile_stale` both count for `reconcile-stale`. The owner is
+    the branch prefix when there is one (`codex`, `claude`), else the branch.
+    """
+    slug = change_name.lower()
+    loose = re.sub(r"[-_]+", "[-_]+", re.escape(slug).replace(r"\-", "-"))
+    pattern = re.compile(rf"(?<![a-z0-9]){loose}(?![a-z0-9])")
+    owners: set[str] = set()
+    for branch in branches:
+        stem = branch.split("/", 1)[-1] if "/" in branch else branch
+        if pattern.search(stem) or pattern.search(branch):
+            prefix = branch.split("/", 1)[0] if "/" in branch else branch
+            if prefix in {"origin", "remotes"}:
+                rest = branch.split("/", 2)
+                prefix = rest[1] if len(rest) > 2 else branch
+            owners.add(prefix)
+    return sorted(owners)
+
+
 def _classify(
     *,
     remaining: int,
     matching_rows: list[dict[str, str]],
     tasks_exist: bool,
     owners: list[str],
+    board_present: bool = True,
+    branch_owners: list[str] | None = None,
 ) -> str:
+    branch_owners = branch_owners or []
     if not tasks_exist:
         return "invalid-artifacts"
     if remaining == 0:
@@ -91,6 +134,8 @@ def _classify(
     if owners or any(
         row["status"].lower().startswith(ACTIVE_STATUSES) for row in matching_rows
     ):
+        return "in-flight"
+    if branch_owners:
         return "in-flight"
     if any(
         row["status"].lower() in HOST_STATUSES
@@ -101,6 +146,12 @@ def _classify(
         return "host-owned"
     if any(row["status"].lower().startswith(QUEUED_STATUSES) for row in matching_rows):
         return "queued"
+    # "untracked" is a claim about a board. With STATUS.md retired
+    # (2026-08-25) there is no board to be untracked *by*: ownership lives in
+    # git branches and open PRs, which this offline audit deliberately does
+    # not query. Say "unclassified" rather than assert the change is unowned.
+    if not board_present and not branch_owners:
+        return "unclassified"
     return "untracked"
 
 
@@ -189,7 +240,7 @@ def _git_ref_snapshot(
     repo: Path,
     git_ref: str,
 ) -> tuple[list[str], dict[str, str]]:
-    """Read active change metadata and STATUS from one immutable Git tree."""
+    """Read active change metadata from one immutable Git tree."""
     if not git_ref or git_ref.startswith("-"):
         raise RuntimeError(f"cannot inspect Git ref {git_ref}: invalid ref")
     verify = subprocess.run(
@@ -212,7 +263,6 @@ def _git_ref_snapshot(
             "--name-only",
             commit,
             "--",
-            "STATUS.md",
             "openspec/changes",
         ],
         cwd=repo,
@@ -229,9 +279,6 @@ def _git_ref_snapshot(
     wanted: list[str] = []
     for raw_path in listing.stdout.splitlines():
         path = raw_path.strip().replace("\\", "/")
-        if path == "STATUS.md":
-            wanted.append(path)
-            continue
         parts = path.split("/")
         if len(parts) < 4 or parts[:2] != ["openspec", "changes"]:
             continue
@@ -280,6 +327,7 @@ def build_report(
     root = Path(repo).resolve()
     changes: list[dict[str, Any]] = []
     provider_wip: defaultdict[str, list[str]] = defaultdict(list)
+    branches = _branch_names(root)
 
     if git_ref is not None:
         candidate_names, snapshot = _git_ref_snapshot(root, git_ref)
@@ -316,7 +364,10 @@ def build_report(
             row["status"].lower().startswith(ACTIVE_STATUSES)
             for row in matching_rows
         )
+        change_branch_owners = _branch_owners(branches, change_name)
         classification = _classify(
+            board_present=bool(rows),
+            branch_owners=change_branch_owners,
             remaining=remaining,
             matching_rows=matching_rows,
             tasks_exist=tasks_exist,
@@ -329,8 +380,9 @@ def build_report(
             "remaining_tasks": remaining,
             "total_tasks": total,
             "classification": classification,
-            "owner": owners[0] if owners else None,
-            "owners": owners,
+            "owner": (owners or change_branch_owners or [None])[0],
+            "owners": owners or change_branch_owners,
+            "branch_owners": change_branch_owners,
             "active_status": active_status,
             "oversized": total > TASK_CEILING,
             "umbrella_warning": bool(

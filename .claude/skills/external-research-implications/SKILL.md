@@ -61,13 +61,13 @@ When importing outside ideas:
 
 ### 1. Orient And Claim
 
-1. Read `STATUS.md` first.
-2. Run `python scripts/claim_check.py --provider <provider>`.
-3. Run `python scripts/provider_context_feed.py --provider <provider> --phase claim`
+1. Run `python scripts/openspec_flow.py audit` for the live work queue, and
+   skim `docs/concerns/README.md` if the area has known-unresolved findings.
+2. Run `python scripts/provider_context_feed.py --provider <provider> --phase claim`
    so prior-provider memories, idea-feed items, pending implications, and
    automation notes are visible before scoping.
-4. If you will write a durable artifact, run `claim_check.py --check-files`.
-5. Claim a narrow write-set in `STATUS.md` before editing.
+4. If you will write a durable artifact, check no open PR or active branch
+   already owns those files (`python scripts/worktree_status.py`).
 6. Load `PLAN.md` sections relevant to the study. Full-load only when the
    outside work could affect platform architecture or product direction.
 
@@ -132,7 +132,7 @@ Use this mode when the user asks which outside project, paper, repo, or
 movement matters most, rather than naming a single source.
 
 When the user asks for another, next, or second project/repo, first scan
-existing `docs/audits/`, `ideas/PIPELINE.md`, and active `STATUS.md` rows so
+existing `docs/audits/`, `ideas/PIPELINE.md`, and open `openspec/changes/` so
 the result does not simply rediscover an already-promoted concept. A repeated
 concept is acceptable only when the new source materially changes the
 implementation path; otherwise choose a distinct frontier axis and state how it
@@ -180,7 +180,7 @@ For each material implication, include:
 - smallest credible integration slice;
 - risks and failure modes;
 - verification needed;
-- whether PLAN.md or STATUS.md must change.
+- whether `PLAN.md` or an OpenSpec spec must change.
 
 When the outside work is a trace, data-flywheel, observability, or training-data
 project, also evaluate:
@@ -205,7 +205,7 @@ Use a design note instead when the user accepts a direction:
 
 `docs/design-notes/YYYY-MM-DD-<topic>.md`
 
-If implementation should follow, create a narrow `STATUS.md` work row with
+If implementation should follow, create a narrow OpenSpec change with
 specific files and dependencies. Do not bury active work only in the report.
 
 When the concept is approved or likely to become implementation, land the
@@ -214,7 +214,7 @@ The Claude Code team may continue improving the automation around worktrees,
 but this skill must leave enough structure for any provider to pick it up.
 
 Add a `Worktree Landing Packet` to the report and mirror its essentials into
-`STATUS.md` or `ideas/PIPELINE.md`. Include:
+`openspec/changes/` or `ideas/PIPELINE.md`. Include:
 
 - proposed branch name, using the provider convention when known
   (`codex/<slug>`, `claude/<slug>`, or the eventual team convention);
@@ -231,7 +231,7 @@ Add a `Worktree Landing Packet` to the report and mirror its essentials into
   build, and review;
 - base branch or dependency, including any review artifact that must land
   first;
-- exact write-set for the `STATUS.md` Files cell;
+- exact write-set for the change's task list;
 - read dependencies that should be rechecked after upstream work lands;
 - first implementation slice small enough to commit independently;
 - expected verification gates before commit, before push, and before live
@@ -252,7 +252,7 @@ Required shape for an unreviewed but implementation-bound concept:
   verdict is `approve` or `adapt`;
 - if worktree tooling exists and the repo is in a safe state, materialize the
   branch/worktree immediately with only the research artifact, queue metadata,
-  and blocked handoff; otherwise reserve it in `STATUS.md` and the report so
+  and blocked handoff; otherwise record it in the change and the report so
   the worktree manager can materialize it later;
 - make the reviewer responsible for unblocking, adapting, deferring, or
   rejecting the implementation lane in their review artifact and shared queue
@@ -273,7 +273,7 @@ before build work starts.
 - If Codex made the initial finding, Claude must research and review it.
 - If Claude made the initial finding, Codex must research and review it.
 - If another provider made the initial finding, name a different reviewer
-  provider explicitly in `STATUS.md`; prefer the Codex/Claude pair when
+  provider explicitly in the change; prefer the Codex/Claude pair when
   available.
 - The reviewer must re-check primary sources, inspect the relevant TinyAssets
   context, and leave a durable review artifact with a verdict:
@@ -299,7 +299,7 @@ being missed.
 For every `Adopt` or `Adapt` concept, create a pickup packet in the report and
 mirror it into the right shared queue:
 
-- `STATUS.md` Work row when there is an actionable next step now;
+- an OpenSpec change when there is an actionable next step now;
 - `ideas/PIPELINE.md` Active Promotions row when the concept should not be
   forgotten but still needs review, design, or sizing;
 - `docs/exec-plans/active/` when delivery needs multiple checkpoints;
@@ -311,7 +311,7 @@ The pickup packet records:
 - source artifact and source URLs;
 - initial provider and required reviewer provider;
 - affected domains and "applies when touching" cues;
-- next home (`STATUS.md`, `ideas/PIPELINE.md`, design note, or exec plan);
+- next home (`openspec/changes/`, `ideas/PIPELINE.md`, design note, or exec plan);
 - exact next action;
 - file write boundary;
 - blockers and dependencies;
@@ -326,7 +326,7 @@ Do not leave a concept only in a report or final chat. If no pickup entry is
 created, say why in the report.
 
 For cross-cutting concepts, put the "applies when touching" cues in the
-`STATUS.md` or `ideas/PIPELINE.md` row text. A future builder working on a
+OpenSpec change or `ideas/PIPELINE.md` text. A future builder working on a
 different task should be able to notice the implication during the
 provider-session cross-implication scan before coding.
 
@@ -367,7 +367,8 @@ and link to the durable artifact.
 
 ## Verification
 
-- `STATUS.md` reflects any live work or new host decision.
+- live work has an OpenSpec change, and any new host decision is in
+  `docs/host-actions.md`.
 - External source URL, commit/version/date, and license are recorded.
 - Claims that depend on current outside facts are web-verified.
 - Large local docs were read with `scripts/docview.py`.
@@ -375,6 +376,6 @@ and link to the durable artifact.
 - Suggested integration slices preserve MCP-chatbot-first users.
 - Suggested integration slices preserve community evolvability.
 - Findings that could lead to build work have an opposite-provider review gate.
-- Adopt/adapt concepts have a pickup packet in `STATUS.md` or `ideas/PIPELINE.md`.
+- Adopt/adapt concepts have a pickup packet in `openspec/changes/` or `ideas/PIPELINE.md`.
 - Cross-cutting findings include "applies when touching" cues for future builders.
 - Skill changes, if any, were synced to provider mirrors and validated.

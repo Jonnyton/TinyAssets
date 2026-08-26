@@ -299,7 +299,13 @@ def test_exact_ref_audit_ignores_newer_working_tree_content(tmp_path: Path) -> N
         "committed-change"
     ]
     assert report["summary"]["remaining_tasks"] == 2
-    assert report["recommendations"] == ["committed-change"]
+    # The exact-ref snapshot no longer carries STATUS.md (the board was retired
+    # 2026-08-25), so a ref audit has no Work-table rows to classify against and
+    # reports "unclassified" rather than asserting the change is unowned.
+    # Ref-pinning itself -- the subject of this test -- is proven by the two
+    # assertions above: working-tree-only is absent and its 7 tasks are not counted.
+    assert [c["classification"] for c in report["changes"]] == ["unclassified"]
+    assert report["recommendations"] == []
 
 
 def test_exact_ref_audit_fails_closed_for_invalid_ref(tmp_path: Path) -> None:

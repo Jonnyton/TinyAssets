@@ -53,7 +53,8 @@ Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|
 
 ## Notes
 
-- API keys are stripped from the peer's environment (subscription auth only), matching the daemon's provider policy in `workflow/providers/`.
+- API keys are stripped from the peer's environment (subscription auth only),
+  matching the daemon's provider policy in `tinyassets/providers/`.
 - `scripts/codex_review.py` is the older review-specialized wrapper (adversarial preamble + VERDICT line). Prefer `peer_agent.py` for new work; it generalizes both CLIs and arbitrary prompts.
 - Peers do not see your chat context. Put everything they need in the prompt/brief: file paths, line numbers, what "done" means, and any constraints (e.g. "do not commit").
 - Windows: the wrapper resolves `.cmd` shims and converts Git-Bash paths; run it with plain `python` from Git Bash.

@@ -2,7 +2,8 @@
 
 ## Files
 
-- Keep `AGENTS.md`, `PLAN.md`, and `STATUS.md` short enough to scan quickly.
+- Keep `AGENTS.md` and `PLAN.md` short enough to scan quickly; `AGENTS.md` has a
+  HARD budget enforced by the `context-budget` invariant.
 - Push durable reasoning into `docs/design-notes/`.
 - Push formal accepted decisions into `docs/decisions/`.
 - Use `INDEX.md` files to keep note graphs connected.
@@ -56,7 +57,7 @@ Reverse-engineered from the in-tree convention (Task #18 audit, 2026-04-28). Doc
 
 | Value | Meaning |
 |---|---|
-| `active` | Work is in flight or upcoming. No newer doc supersedes. STATUS.md may cite it. |
+| `active` | Work is in flight or upcoming. No newer doc supersedes it. |
 | `shipped` | Work landed. Body or git history references the landing commit. |
 | `superseded` | Newer doc replaces this one. **Pair with `superseded_by:` field** holding the relative path to the successor. |
 | `research` | Exploratory thinking; no implementation intent and no STATUS row claims it. |
@@ -65,7 +66,7 @@ Reverse-engineered from the in-tree convention (Task #18 audit, 2026-04-28). Doc
 **Format:** bare value, body details optional (e.g. `status: shipped` plus a `**Status:**` line in the body referencing the landing commit). Compound forms like `status: shipped: <date>` are NOT the convention — date detail goes in the body.
 
 **Tie-breakers** (applied during the 2026-04-28 audit pass):
-- If STATUS.md cites the doc as host-decision-pending → `active`. (Consumption pattern trumps internal status.)
+- If `docs/host-actions.md` cites the doc as pending → `active`. (Consumption pattern trumps internal status.)
 - If git log is silent and no STATUS row references it → `research`.
 - "Almost shipped" with one open item → `active` with a body note explaining what's open.
 - False-shipped is worse than false-active. When uncertain, classify `active`.

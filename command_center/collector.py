@@ -2,7 +2,6 @@
 
 Data sources (all read-only, all best-effort):
 
-- ``STATUS.md`` Work table          → claimed lanes (who said they're working)
 - ``scripts/worktree_status.py``    → worktree islands (dirty = someone's hands in it)
 - ``~/.claude/projects/**.jsonl``   → Claude Code sessions (main + subagent)
 - ``~/.codex/sessions/**.jsonl``    → Codex CLI sessions
@@ -555,45 +554,6 @@ def detect_agents(cfg: Config, worktrees: list[dict], zones: list[dict], now: fl
                             serial=f"{sid}·{sub_id}",
                         )
 
-    # -- STATUS.md claims ------------------------------------------------
-    status_path = cfg.root / "STATUS.md"
-    claims: list[dict] = []
-    if status_path.is_file():
-        try:
-            claims = parsers.parse_status_claims(status_path.read_text(encoding="utf-8"))
-        except OSError:
-            claims = []
-    live_providers = {a["provider"] for a in agents}
-    for claim in claims:
-        provider = (claim.get("provider") or "").lower()
-        base = provider.split("-")[0]
-        if base in live_providers and claim.get("active"):
-            for agent in agents:  # enrich the live agent with its claim
-                if agent["provider"] == base and not agent.get("claim"):
-                    agent["claim"] = claim["task"]
-            continue
-        first_file = next(
-            (
-                f
-                for f in claim.get("files", [])
-                if (not f.endswith("/") and "/" in f) or f.endswith(".py")
-            ),
-            claim.get("files", [""])[0] if claim.get("files") else "",
-        )
-        label = parsers.make_label(claim["task"], max_len=40)
-        add_agent(
-            id=f"claim-{parsers.slugify(provider or 'unknown')}",
-            name=label or (provider or "unknown").replace("-", "·"),
-            label=label,
-            provider=base if base in PROVIDERS else "unknown",
-            kind="main",
-            action=f"claimed: {claim['task']}",
-            file=first_file or None,
-            zone=parsers.zone_for_relpath(first_file, zone_dirs) if first_file else "square",
-            ts=None,
-            claim=claim["task"],
-        )
-
     # -- finalize --------------------------------------------------------
     for agent in agents:
         agent["status"] = _liveness(agent.get("ts"), now)
@@ -997,20 +957,6 @@ class History:
         for aid in self._agent_ids - set(current):
             self._add(now, aid, "leave", f"{aid} left the village")
         self._agent_ids = set(current)
-
-        # claims diff
-        claims = set()
-        status_path = cfg.root / "STATUS.md"
-        if status_path.is_file():
-            try:
-                for claim in parsers.parse_status_claims(status_path.read_text(encoding="utf-8")):
-                    claims.add((claim["provider"], claim["task"][:60]))
-            except OSError:
-                pass
-        for provider, task in claims - self._claim_keys:
-            if self._claim_keys:  # skip the initial seed burst
-                self._add(now, provider or "someone", "claim", f"{provider} claimed: {task}")
-        self._claim_keys = claims
 
         # fresh commits per lane (compare HEADs between polls)
         for lane in [{"path": str(cfg.root), "slug": "village", "branch": "main"}, *worktrees]:

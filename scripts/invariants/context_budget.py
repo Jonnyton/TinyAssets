@@ -2,13 +2,18 @@
 
 Wraps `scripts/check_context_budget.py` under the Invariant contract.
 
-Propose-only and NOT pre-commit-scoped: the always-loaded set includes
-host-managed files (STATUS.md, and the cross-provider canonical AGENTS.md),
-so a budget bust surfaces drift for a human to curate — it must not block
-commits. This mirrors the `concerns-staleness` stance exactly. The HARD
-budget is a file's own declared ceiling (STATUS.md says "4 KB / 60 lines");
-soft targets for AGENTS.md / CLAUDE.md are advisory. Basis:
-`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`.
+**This one blocks.** It was propose-only until 2026-08-25 on the reasoning that
+the always-loaded set is host-managed, so a bust should surface drift for a
+human to curate rather than stop a commit. The result: the invariant sat
+registered and VIOLATED while the set grew from ~17.6 KB (2026-04-28) to
+62,082 B, and nothing noticed, because nothing ran it and nothing failed when
+it did. Measurement without a pawl is not a ratchet.
+
+Ceilings are HARD and set just above the achieved values (see
+`scripts/check_context_budget.py`). No auto-heal: deciding WHICH content moves
+to `docs/reference/` is editorial, so a human does it. Basis:
+`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md` and
+`docs/audits/2026-08-25-harness-reset-baseline.md`.
 """
 
 from __future__ import annotations
@@ -37,9 +42,9 @@ def _load_budget_module():
 class ContextBudgetInvariant(Invariant):
     name = "context-budget"
     description = "Always-loaded instruction files stay within their budgets."
-    pre_commit_scope = False  # host-managed content; surface, don't block (cf. concerns-staleness)
+    pre_commit_scope = True  # blocks: a budget that only warns is what let 17.6 KB become 62 KB
     poll_interval_s = None  # on-demand
-    auto_heal = False  # propose-only; splitting content is editorial
+    auto_heal = False  # no auto-heal: which content to move is editorial, so a human decides
 
     def _check(self) -> CheckResult:
         if not BUDGET_SCRIPT.exists():
@@ -48,22 +53,27 @@ class ContextBudgetInvariant(Invariant):
                 message=f"check_context_budget.py not found at {BUDGET_SCRIPT}",
             )
         mod = _load_budget_module()
-        results, combined, hard_busted = mod.run(REPO_ROOT)
+        results, combined, hard_busted, imported, missing = mod.run(REPO_ROOT)
         hard_over = [r.path for r in results if r.kind == "hard" and r.over]
         soft_over = [r.path for r in results if r.kind == "soft" and r.over]
         evidence = {
             "combined_bytes": combined,
-            "combined_soft_bytes": mod.COMBINED_SOFT_BYTES,
+            "combined_hard_bytes": mod.COMBINED_HARD_BYTES,
             "hard_over": hard_over,
             "soft_over": soft_over,
+            "imported": imported,   # @-imports counted toward COMBINED
+            "missing": missing,     # configured always-loaded files that vanished
         }
         if hard_busted:
+            reason = ", ".join(hard_over) or (
+                f"missing: {', '.join(missing)}" if missing else "combined over ceiling"
+            )
             return CheckResult(
                 status=Status.VIOLATED,
                 message=(
-                    f"{', '.join(hard_over)} over declared HARD budget; "
+                    f"{reason} over declared HARD budget; "
                     f"always-loaded total {combined} bytes "
-                    f"(soft over: {', '.join(soft_over) or 'none'}). "
+                    f"(combined ceiling {mod.COMBINED_HARD_BYTES}). "
                     f"Run: python scripts/check_context_budget.py"
                 ),
                 evidence=evidence,

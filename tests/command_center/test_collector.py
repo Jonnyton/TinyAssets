@@ -156,18 +156,6 @@ def test_detect_agents_from_claude_transcript(tmp_path: Path):
     assert claude[0]["status"] == "active"
 
 
-def test_detect_agents_from_status_claim(tmp_path: Path):
-    cfg = make_cfg(tmp_path)
-    now = time.time()
-    zones = collector.discover_zones(cfg, [], [], now)
-    agents = collector.detect_agents(cfg, [], zones, now)
-    claimed = [a for a in agents if a["id"].startswith("claim-")]
-    assert claimed
-    assert claimed[0]["provider"] == "kimi"
-    assert "Fix the compiler" in claimed[0]["action"]
-    assert claimed[0]["zone"] == "keep"
-
-
 def test_snapshot_shape_offline(tmp_path: Path):
     cfg = make_cfg(tmp_path)
     make_universe(cfg.data_dirs[0])

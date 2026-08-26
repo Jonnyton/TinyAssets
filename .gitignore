@@ -96,3 +96,5 @@ Community_Branches_Plan.docx
 junit.xml
 .codex-*.txt
 .review/
+.tmp/
+.agents/supervisor/

@@ -93,7 +93,7 @@ On any universe sheet: pick an engine, a task, and a count.
 | Claude Code sessions | `~/.claude/projects/*/*.jsonl` tails (tool actions, subagent sidechains) |
 | Codex sessions | `~/.codex/sessions/**/rollout-*.jsonl` |
 | Kimi sessions | `~/.kimi-code/session_index.jsonl` + session `agents/` dirs |
-| Claimed work | `STATUS.md` Work table |
+| Claimed work | git branches + open PRs (`STATUS.md` retired 2026-08-25) |
 | Worktree islands | `scripts/worktree_status.py --json` |
 | Event feed | `.agents/activity.log`, git logs, file mtimes |
 | Local universes | `data_dir()` + sibling snapshots (`u-*` OKF bundles) |

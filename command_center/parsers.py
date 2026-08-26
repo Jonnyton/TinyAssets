@@ -118,47 +118,6 @@ def iso_to_epoch(ts: object) -> float | None:
 
 
 # ---------------------------------------------------------------------------
-# STATUS.md Work table
-
-_STATUS_RE = re.compile(r"^(claimed:[\w.-]+|in-flight)\b")
-
-
-def parse_status_claims(status_md: str) -> list[dict]:
-    """Extract active (claimed/in-flight) rows from the STATUS.md Work table."""
-    rows: list[dict] = []
-    in_table = False
-    for line in status_md.splitlines():
-        if line.startswith("| Task "):
-            in_table = True
-            continue
-        if in_table:
-            if not line.startswith("|"):
-                in_table = False
-                continue
-            if line.startswith("|--") or line.startswith("|-"):
-                continue
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if len(cells) < 4:
-                continue
-            task, files, depends, status = cells[0], cells[1], cells[2], cells[3]
-            m = _STATUS_RE.match(status)
-            if not m:
-                continue
-            provider = status.split(":", 1)[1].split()[0] if ":" in status else ""
-            rows.append(
-                {
-                    "task": re.sub(r"\*\*", "", task),
-                    "files": [f.strip() for f in re.split(r"[,;]", files) if f.strip()],
-                    "depends": depends,
-                    "status": status,
-                    "provider": provider,
-                    "active": "ACTIVE" in status,
-                }
-            )
-    return rows
-
-
-# ---------------------------------------------------------------------------
 # Claude Code transcripts
 
 _VERB_BY_TOOL = {
