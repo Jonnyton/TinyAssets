@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -149,15 +150,43 @@ def report(url: str, timeout: float) -> dict[str, Any]:
     # written together, so agreement does not prove the running binary -- but
     # DISagreement proves the receipt is untrustworthy, and an untrustworthy
     # receipt must be exit 2, never a pass.
-    image_tag = (release_state.get("image_tag") or "").strip()
-    if image_tag:
-        tag_sha = image_tag.rsplit(":", 1)[-1].strip()
-        if tag_sha and not (deployed.startswith(tag_sha) or tag_sha.startswith(deployed)):
-            raise DeployedShaError(
-                f"release_state is inconsistent: git_sha {deployed[:12]} does not match "
-                f"image_tag {image_tag!r} - refusing to report a deploy state from a "
-                "receipt that disagrees with itself"
-            )
+    # Cross-check the receipt against itself. Written together, so agreement
+    # does not prove the running binary -- but DISagreement proves the receipt
+    # is untrustworthy, and an untrustworthy receipt must be exit 2, never a
+    # pass. Hardened after a cross-family review found four holes: a missing
+    # tag passed while the docstring claimed it would not; a one-character tag
+    # sharing the sha's first character passed; valid OCI forms like
+    # `release-<sha>` and uppercase hex were rejected; and a non-string tag
+    # raised an uncaught AttributeError.
+    raw_tag = release_state.get("image_tag")
+    if raw_tag is not None and not isinstance(raw_tag, str):
+        raise DeployedShaError(
+            f"release_state.image_tag is {type(raw_tag).__name__}, not a string - "
+            "refusing to interpret a malformed receipt"
+        )
+    image_tag = (raw_tag or "").strip()
+    if not image_tag:
+        raise DeployedShaError(
+            "release_state carries git_sha but no image_tag - cannot corroborate "
+            "the receipt, so the deploy state is unknown"
+        )
+
+    # Take the tag's reference part and pull the longest hex run out of it, so
+    # `release-<sha>`, `v<sha>`, and bare `<sha>` all work. Case-insensitive.
+    reference = image_tag.rsplit(":", 1)[-1].strip()
+    hex_runs = re.findall(r"[0-9a-fA-F]{7,40}", reference)
+    if not hex_runs:
+        raise DeployedShaError(
+            f"release_state.image_tag {image_tag!r} carries no sha-shaped reference - "
+            "cannot corroborate git_sha"
+        )
+    tag_sha = max(hex_runs, key=len).lower()
+    if not deployed.lower().startswith(tag_sha):
+        raise DeployedShaError(
+            f"release_state is inconsistent: git_sha {deployed[:12]} does not match "
+            f"image_tag {image_tag!r} - refusing to report a deploy state from a "
+            "receipt that disagrees with itself"
+        )
 
     info: dict[str, Any] = {
         "deployed_sha": deployed,

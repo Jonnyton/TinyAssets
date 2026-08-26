@@ -84,15 +84,43 @@ reset came from that review, and the other half from mutation-testing.
 - **The end-to-end proof is unrun.** The real test is landing one live product
   task through the reset harness and confirming the session-start context is
   under budget while the work still lands. That needs the branch merged.
-- **The full local suite is not a valid oracle on this machine.** It aborts with
-  `PermissionError` on sandbox-created temp ACLs — the exact case `AGENTS.md`
-  § *Testing* documents. CI is the authority. Every harness-touched suite is
-  green (134 tests) and 13,925 collect repo-wide with no import breakage.
+- **The full local suite is not a valid oracle on its own.** It aborts with
+  `PermissionError` on sandbox-created temp ACLs — the case `AGENTS.md`
+  § *Testing* documents. Pinned against the same tree it is usable; alone it is
+  not. CI is the authority.
+
+## Regression evidence, decomposed honestly
+
+Both trees, same suite, pinned. An earlier version of this section reported
+"185 vs 147, 38 fewer failures" — raw set subtraction, which a cross-family
+review correctly called unsound because it counts a **deleted** test as an
+improvement. Decomposed:
+
+| | Count |
+|---|---|
+| `origin/main` @ `8cbf9769` failures | 185 |
+| branch failures | 147 |
+| base failures whose test file was **deleted** here | **2** (`test_cowork_bootstrap.py`, deleted with its script) |
+| still-existing base failures | 183 |
+| — still failing (common) | 144 |
+| — "now passing" | 39 |
+| — **newly failing (regressions)** | **1** |
+
+The single regression is `test_status_md_exists`, which was **renamed** to
+`test_status_md_stays_retired` and asserts the inverse. Not a regression: a
+deliberate inversion, and it passes.
+
+**The 39 "now passing" are not claimed as fixes.** A harness-only change cannot
+plausibly repair 39 product tests. Two full Windows runs with different temp
+roots produce different flake sets, and that is the likeliest explanation. The
+defensible conclusion is narrower and is the one that matters for merging:
+**no systematic regression** — one renamed test, two deletions accounted for,
+and 144 pre-existing failures unchanged.
 
 ## The claim, stated so it can be disproved
 
-The harness is 59% smaller in always-loaded context, has 71% fewer hook lines,
-and — for the first time — has a context ceiling that fails a build instead of
+The harness is smaller in always-loaded context, has far fewer hooks and skills,
+and for the first time has a context ceiling that fails a build instead of
 printing a warning nobody reads. Whether that makes the *work* better is not yet
-measured, and this document should not be read as if it were. That evidence
-comes from the next product task, not from these numbers.
+measured, and this document is not evidence that it does. That evidence comes
+from the next product task, not from these numbers.

@@ -15,6 +15,13 @@ Prevention lives in tests/conftest.py, which now refuses to run when pytest's
 temp root resolves inside the repo. This script is the cleanup for husks that
 already exist.
 
+FAIL CLOSED: emptiness is proven only AFTER access is acquired, and a
+directory whose contents cannot be enumerated is treated as non-empty.
+Get-ChildItem -ErrorAction SilentlyContinue reports Access Denied as an
+empty result, so checking emptiness BEFORE takeown passed on exactly the
+locked directories this script targets (found by cross-family review
+2026-08-26, before the script was ever run with -Apply).
+
 .NOTES
 MUST run ELEVATED. BUILTIN\Administrators holds inherited Full control on the
 PARENT directories, which is what lets takeown reach the locked children.
@@ -77,7 +84,8 @@ fail with Access Denied. Re-run from an elevated PowerShell.
 # hand-typed keep-list.
 $registered = @()
 try {
-    $registered = git worktree list --porcelain 2>$null |
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $registered = git -C $repoRoot worktree list --porcelain 2>$null |
         Where-Object { $_ -like 'worktree *' } |
         ForEach-Object { Split-Path -Leaf ($_ -replace '^worktree ', '') }
 } catch { }
@@ -92,18 +100,39 @@ if (-not $targets) { Write-Host 'Nothing to clear.'; exit 0 }
 
 $cleared = 0; $failed = 0; $skipped = 0
 
-foreach ($dir in $targets) {
-    # Refuse to delete anything holding real files. These husks are empty;
-    # a directory with content is someone's work, not sandbox residue.
-    $files = @(Get-ChildItem $dir.FullName -Recurse -File -Force -ErrorAction SilentlyContinue)
-    if ($files.Count -gt 0) {
-        Write-Host ("SKIP  {0} - holds {1} file(s), not empty residue" -f $dir.Name, $files.Count)
-        $skipped++
-        continue
-    }
+function Test-DirectoryEmpty {
+    <#
+      Returns "empty", "has-files:<n>", or "unreadable".
 
+      Only "empty" permits deletion. The three states are distinct on purpose:
+      a dry run must be able to tell an operator that a directory holding real
+      work will be SKIPPED, rather than lumping it in with the locked ones.
+
+      FAIL CLOSED. Get-ChildItem -ErrorAction SilentlyContinue turns Access
+      Denied into an EMPTY RESULT, which is indistinguishable from "no files".
+      That is precisely the state these locked directories are in, so the
+      original guard passed on every target it was meant to protect and the
+      script went on to take ownership and recursively delete. An enumeration
+      that errors means UNKNOWN, and unknown is never empty.
+    #>
+    param([string] $Path)
+
+    $enumErrors = $null
+    $items = @(Get-ChildItem -LiteralPath $Path -Recurse -Force `
+        -ErrorAction SilentlyContinue -ErrorVariable enumErrors)
+    if ($enumErrors) { return "unreadable" }     # cannot see inside -> never "empty"
+    $files = @($items | Where-Object { -not $_.PSIsContainer })
+    if ($files.Count -gt 0) { return "has-files:$($files.Count)" }
+    return "empty"
+}
+
+foreach ($dir in $targets) {
     if (-not $Apply) {
-        Write-Host ("WOULD CLEAR  {0}" -f $dir.Name)
+        switch -Wildcard (Test-DirectoryEmpty -Path $dir.FullName) {
+            "empty"      { Write-Host ("WOULD CLEAR  {0} (provably empty)" -f $dir.Name) }
+            "has-files*" { Write-Host ("WOULD SKIP   {0} - {1}; holds real content" -f $dir.Name, $_) -ForegroundColor Yellow }
+            default      { Write-Host ("WOULD CLEAR  {0} (unreadable now; re-checked after takeown, skipped if not empty)" -f $dir.Name) }
+        }
         continue
     }
 
@@ -111,9 +140,21 @@ foreach ($dir in $targets) {
     # more reliable when the existing owner is a sandbox group.
     & takeown /F $dir.FullName /A /R /D Y > $null 2>&1
     # /reset restores inheritance from the parent, which already grants
-    # Administrators Full. Simpler and less error-prone than granting a named
-    # principal, and it is what the malformed /grant above was reaching for.
+    # Administrators Full.
     & icacls $dir.FullName /reset /T /C /Q > $null 2>&1
+
+    # THE GATE. Now that access should exist, prove emptiness. If it is still
+    # unreadable, or it holds files, do not delete -- report and move on.
+    $verdict = Test-DirectoryEmpty -Path $dir.FullName
+    if ($verdict -ne "empty") {
+        if ($verdict -like "has-files*") {
+            Write-Host ("SKIP  {0} - {1}; this is not sandbox residue" -f $dir.Name, $verdict) -ForegroundColor Yellow
+        } else {
+            Write-Host ("SKIP  {0} - still unreadable after takeown; refusing to delete blind" -f $dir.Name) -ForegroundColor Yellow
+        }
+        $skipped++
+        continue
+    }
 
     Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path $dir.FullName) {

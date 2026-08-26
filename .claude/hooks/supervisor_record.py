@@ -80,6 +80,10 @@ def main() -> int:
         return 0
 
     project = _project_dir(payload)
+    # Claude supplies the stable session id in every hook payload. Using it
+    # is what makes session scoping real -- the previous PPID fallback gave a
+    # different id per hook shell, fragmenting one session into many.
+    sid = str(payload.get("session_id") or "") or None
     sup = _load_supervisor(project)
     if sup is None:
         return 0
@@ -94,7 +98,7 @@ def main() -> int:
         if tool in {"Write", "Edit", "NotebookEdit"}:
             target = _rel(project, str(tool_input.get("file_path") or ""))
             if target:
-                sup.record("edit", target)
+                sup.record("edit", target, sid=sid)
             return 0
 
         if tool in {"Bash", "PowerShell"}:
@@ -104,7 +108,7 @@ def main() -> int:
             code = _exit_code(response)
             # A successful commit is the landing signal that resets predicates.
             if code == 0 and "git commit" in command and "--dry-run" not in command:
-                sup.record("commit", "", {"command": sup.normalize_command(command)})
+                sup.record("commit", "", {"command": sup.normalize_command(command)}, sid=sid)
                 return 0
             if not sup.is_interesting(command):
                 return 0
@@ -112,7 +116,7 @@ def main() -> int:
                 "normalized": sup.normalize_command(command),
                 "signature": sup.command_signature(command),
                 "exit_code": code if isinstance(code, int) else 0,
-            })
+            }, sid=sid)
             return 0
     except Exception:
         return 0

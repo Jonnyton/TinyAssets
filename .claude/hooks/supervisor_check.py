@@ -63,12 +63,16 @@ def main() -> int:
         return 0
 
     project = _project_dir(payload)
+    # Claude supplies the stable session id in every hook payload. Using it
+    # is what makes session scoping real -- the previous PPID fallback gave a
+    # different id per hook shell, fragmenting one session into many.
+    sid = str(payload.get("session_id") or "") or None
     sup = _load_supervisor(project)
     if sup is None:
         return 0
 
     try:
-        findings = sup.check()
+        findings = sup.check(sid=sid)
     except Exception:
         return 0
     if not findings:

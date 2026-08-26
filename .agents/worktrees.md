@@ -602,7 +602,7 @@ Notes:
 
 - `AGENTS.md` -> "GitHub-Aligned Worktree Discipline".
 - `scripts/worktree_status.py` -> current-state scanner.
-- `scripts/claim_check.py` -> STATUS.md file-collision scanner.
+- `scripts/worktree_status.py` -> lane diagnostics (claim_check.py and STATUS.md were retired 2026-08-25).
 - `scripts/provider_context_feed.py` -> lifecycle feed for provider memories,
   loose ideas, research artifacts, automation notes, and worktree handoffs at
   claim/plan/build/review/foldback/memory-write checkpoints.

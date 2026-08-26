@@ -106,40 +106,78 @@ def measure(budget: Budget, root: Path) -> Result:
     )
 
 
-IMPORT_RE = re.compile(r"^@([A-Za-z0-9_./-]+\.md)\s*$", re.MULTILINE)
+# Claude resolves `@path` imports INLINE (not only on their own line), for any
+# file type, relative to the IMPORTING file, skipping code spans and fences,
+# bounded to four hops. Ref: https://code.claude.com/docs/en/memory#import-additional-files
+#
+# The first version of this parser matched `^@(...)\.md$` only, which a
+# cross-family probe broke six ways: inline imports missed, non-.md missed,
+# uppercase extension missed, fenced imports falsely counted, nested imports
+# resolved from the repo root, and `@../outside.md` accepted.
+IMPORT_RE = re.compile(r"(?<![\w`])@([A-Za-z0-9_./\\~-]+\.[A-Za-z0-9]{1,8})")
+MAX_IMPORT_DEPTH = 4
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)", re.MULTILINE)
+_SPAN_RE = re.compile(r"`[^`\n]*`")
+
+
+def strip_code(text: str) -> str:
+    """Blank out fenced blocks and inline code spans.
+
+    An `@file.md` shown as an EXAMPLE inside a fence is documentation, not an
+    import, and counting it inflates the budget against a file that is never
+    loaded. Fences are removed first so a span regex cannot straddle one.
+    """
+    out, fenced = [], False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+            continue
+        out.append("" if fenced else line)
+    return _SPAN_RE.sub("", "\n".join(out))
 
 
 def imported_files(root: Path, seeds: list[str]) -> list[str]:
-    """Every `@file.md` reachable from the seeds, transitively.
+    """Every file reachable by `@import` from the seeds, breadth-first.
 
-    Claude Code loads `@import` targets into the same always-loaded context as
-    the file importing them, so a budget that measures only the seeds is
-    trivially evaded: move the bulk into `@HUGE.md` and the ceiling never
-    notices. Codex proved exactly that against this script on 2026-08-26 --
-    a 1 MB import reported combined=14 and passed --strict.
-
-    Cycles are handled by the seen-set; a missing target is simply not walked
-    (its absence is reported by `measure`, which is where absence belongs).
+    Resolution is relative to the IMPORTING file, matching Claude. Targets that
+    escape the repo are ignored rather than counted: they are outside what this
+    budget governs, and following them would let an import walk the filesystem.
     """
+    from collections import deque
+
+    root = root.resolve()
     seen: set[str] = set()
     order: list[str] = []
-    queue = list(seeds)
+    queue: deque[tuple[str, int]] = deque((s, 0) for s in seeds)
+    seeds_set = set(seeds)
+
     while queue:
-        rel = queue.pop(0)
-        if rel in seen:
+        rel, depth = queue.popleft()   # deque: pop(0) on a list is superlinear
+        if rel in seen or depth > MAX_IMPORT_DEPTH:
             continue
         seen.add(rel)
-        if rel not in seeds:
+        if rel not in seeds_set:
             order.append(rel)
-        path = root / rel
+
+        path = (root / rel)
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in IMPORT_RE.finditer(text):
-            target = match.group(1).strip()
-            if target and target not in seen:
-                queue.append(target)
+
+        base = path.parent
+        for match in IMPORT_RE.finditer(strip_code(text)):
+            raw = match.group(1).replace("\\", "/").strip()
+            if not raw or raw.startswith("~"):
+                continue
+            try:
+                target = (base / raw).resolve()
+                target_rel = target.relative_to(root).as_posix()
+            except (ValueError, OSError):
+                continue          # outside the repo -> not our budget
+            if target_rel not in seen:
+                queue.append((target_rel, depth + 1))
     return order
 
 

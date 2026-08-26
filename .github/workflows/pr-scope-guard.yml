@@ -95,7 +95,11 @@ jobs:
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
-          if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files"                             --jq '.[].filename' 2>/dev/null)"; then
+          # Project BOTH the new path and, for renames, the previous one. Reading
+          # only `.filename` let a PR move tinyassets/auth/provider.py to an
+          # unprotected path and escape the authority receipt entirely -- the
+          # gate saw only the destination (cross-family review 2026-08-26).
+          if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files"                             --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)"; then
             echo "::error::could not read the PR file list — failing closed"
             exit 1
           fi
@@ -154,8 +158,16 @@ jobs:
           # Deliberately narrow: ~7% of recent commits touch these paths. A
           # blanket receipt requirement across tinyassets/ would be the process
           # bloat this repo just removed.
-          AUTHORITY_RE='^tinyassets/(auth/|credential_vault\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
-          AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$AUTHORITY_RE" || true)"
+          # Matched case-INSENSITIVELY (-i) and anchored at either the repo root
+          # or the packaging runtime mirror. Three bypasses this closes, all
+          # confirmed by regex probe before the fix:
+          #   - `TinyAssets/Auth/...` differing only in case
+          #   - the shipped mirror at packaging/claude-plugin/plugins/
+          #     tinyassets-universe-server/runtime/tinyassets/auth/, which
+          #     contains the same authority code and was unprotected
+          #   - renames, handled by the previous_filename projection above
+          AUTHORITY_RE='(^|/)tinyassets/(auth/|credential_vault\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -Ei "$AUTHORITY_RE" || true)"
           if [ -n "$AUTHORITY_HITS" ]; then
             GATE_HITS="$(printf '%s\n%s\n' "$GATE_HITS" "$AUTHORITY_HITS" | sed '/^$/d')"
           fi

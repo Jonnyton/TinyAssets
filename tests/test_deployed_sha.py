@@ -48,10 +48,23 @@ def stub(mod, monkeypatch, release_state):
     monkeypatch.setattr(mod, "live_release_state", lambda url, timeout: release_state)
 
 
+def receipt(sha, **extra):
+    """A complete, self-consistent receipt.
+
+    image_tag is REQUIRED since 2026-08-26: a receipt carrying git_sha with no
+    corroborating tag cannot be cross-checked, so the deploy state is unknown
+    (exit 2) rather than a pass. Tests that need the unknown path stub a
+    partial receipt deliberately.
+    """
+    state = {"git_sha": sha, "image_tag": f"ghcr.io/jonnyton/tinyassets-daemon:{sha[:12]}"}
+    state.update(extra)
+    return state
+
+
 def test_deployed_head_contains_its_own_parent(monkeypatch):
     """The ordinary pass: production is ahead of the commit being claimed."""
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _head()})
+    stub(mod, monkeypatch, receipt(_head()))
 
     assert mod.main(["--assert-contains", _parent()]) == 0
 
@@ -59,7 +72,7 @@ def test_deployed_head_contains_its_own_parent(monkeypatch):
 def test_deployed_parent_does_not_contain_head(monkeypatch):
     """The 2026-07-21 case: merged, but production is serving something older."""
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _parent()})
+    stub(mod, monkeypatch, receipt(_parent()))
 
     assert mod.main(["--assert-contains", _head()]) == 1
 
@@ -67,7 +80,7 @@ def test_deployed_parent_does_not_contain_head(monkeypatch):
 def test_commit_equal_to_deployed_counts_as_shipped(monkeypatch):
     mod = load()
     head = _head()
-    stub(mod, monkeypatch, {"git_sha": head})
+    stub(mod, monkeypatch, receipt(head))
 
     assert mod.main(["--assert-contains", head]) == 0
 
@@ -105,14 +118,14 @@ def test_unfetched_deployed_sha_is_unknown_not_shipped(monkeypatch):
 
 def test_plain_report_succeeds_without_assertion(monkeypatch):
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _head()})
+    stub(mod, monkeypatch, receipt(_head()))
 
     assert mod.main([]) == 0
 
 
 def test_report_counts_commits_not_yet_deployed(monkeypatch):
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _parent()})
+    stub(mod, monkeypatch, receipt(_parent()))
 
     info = mod.report("https://example.invalid/mcp", 1.0)
 
@@ -161,6 +174,53 @@ def test_agreeing_receipt_still_passes(monkeypatch):
 def test_report_labels_what_it_actually_proves(monkeypatch):
     """The tool must not let a caller mistake a receipt for the running binary."""
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _head()})
+    stub(mod, monkeypatch, receipt(_head()))
 
     assert mod.report("https://example.invalid/mcp", 1.0)["proves"] == "receipt"
+
+
+# --- receipt schema hardening (cross-family review 2026-08-26) --------------
+
+
+@pytest.mark.parametrize("tag,should_pass", [
+    ("ghcr.io/x/y:{sha12}", True),          # bare sha
+    ("ghcr.io/x/y:release-{sha12}", True),  # valid OCI form, previously rejected
+    ("ghcr.io/x/y:v{sha12}", True),
+    ("ghcr.io/x/y:{SHA12}", True),          # uppercase hex, previously rejected
+    ("ghcr.io/x/y:deadbeefcafe", False),    # real sha, wrong one
+])
+def test_image_tag_forms(monkeypatch, tag, should_pass):
+    mod = load()
+    head = _head()
+    stub(mod, monkeypatch, {
+        "git_sha": head,
+        "image_tag": tag.format(sha12=head[:12], SHA12=head[:12].upper()),
+    })
+
+    assert mod.main(["--assert-contains", head]) == (0 if should_pass else 2)
+
+
+def test_one_char_tag_does_not_pass(monkeypatch):
+    """A tag sharing only the sha's first character used to satisfy the check."""
+    mod = load()
+    head = _head()
+    stub(mod, monkeypatch, {"git_sha": head, "image_tag": f"ghcr.io/x/y:{head[0]}"})
+
+    assert mod.main(["--assert-contains", head]) == 2
+
+
+def test_missing_image_tag_is_unknown_not_pass(monkeypatch):
+    """The docstring always claimed this; the code did not do it."""
+    mod = load()
+    stub(mod, monkeypatch, {"git_sha": _head()})
+
+    assert mod.main(["--assert-contains", _head()]) == 2
+
+
+@pytest.mark.parametrize("bad", [123, {"a": 1}, [], True])
+def test_non_string_image_tag_does_not_crash(monkeypatch, bad):
+    """A dict/list/int tag raised an uncaught AttributeError."""
+    mod = load()
+    stub(mod, monkeypatch, {"git_sha": _head(), "image_tag": bad})
+
+    assert mod.main(["--assert-contains", _head()]) == 2

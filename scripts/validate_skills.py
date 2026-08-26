@@ -151,40 +151,62 @@ def validate_router_coverage(root: Path) -> list[SkillIssue]:
 # Paths a skill cites that must actually exist. Deliberately narrow: repo-rooted
 # script/doc paths in backticks. Prose like `tests/` or a glob is not a claim
 # that one exact file exists, so those are skipped.
-_REF_RE = re.compile(
-    r"`((?:scripts|docs|packaging|deploy|tinyassets|\.agents|\.claude|\.github)"
-    r"/[A-Za-z0-9_./-]+\.(?:py|md|ps1|sh|yml|yaml|json|txt))`"
+# Two shapes of reference a skill can make:
+#   repo-rooted   `scripts/foo.py`, `docs/bar.md`
+#   skill-relative `references/checklist.md`, `workflow/providers/`
+# The first version matched only the first shape under a narrow extension
+# allowlist, so `references/security-checklist.md` and `workflow/providers/`
+# both dangled while the validator reported green (cross-family review
+# 2026-08-26). Directory references count: a skill pointing at a directory that
+# does not exist is just as broken as one pointing at a missing file.
+_ROOT_REF_RE = re.compile(
+    r"`((?:scripts|docs|packaging|deploy|tinyassets|tests|openspec|\.agents|\.claude|\.github)"
+    r"/[A-Za-z0-9_./-]+)`"
 )
+_REL_REF_RE = re.compile(r"`([A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)+/?)`")
 _SKILL_REF_RE = re.compile(r"`([a-z][a-z0-9-]{3,})`")
 
 
 def validate_referenced_paths(root: Path) -> list[SkillIssue]:
-    """A skill citing a deleted script or doc is a broken instruction.
+    """A skill citing a deleted script, doc, or sibling skill is a broken instruction.
 
-    Added 2026-08-26. The harness reset deleted 24 skills and a dozen scripts,
-    and `validate_all` still reported green while `external-research-implications`
-    told the reader to run `scripts/claim_check.py` -- deleted -- and
-    `shipping-and-launch` linked `performance-optimization` -- deleted. The
-    validator checked metadata, mirrors, and router coverage, i.e. the SHAPE of
-    the skill tree, never whether what a skill says is still true.
+    Checks EVERY markdown file under a skill directory, not just the top-level
+    `SKILL.md` -- a dangling pointer in a bundled reference misleads exactly as
+    much. Resolves skill-relative paths against the skill's own directory, which
+    is how a reader would.
     """
     issues: list[SkillIssue] = []
     source_root = root / CANONICAL_ROOT
     known_skills = {path.parent.name for path in _skill_files(source_root)}
-    for path in _skill_files(source_root):
-        text = path.read_text(encoding="utf-8")
-        for match in _REF_RE.finditer(text):
-            rel = match.group(1)
-            if not (root / rel).exists():
-                issues.append(SkillIssue(path, f"references missing path {rel!r}"))
-        for match in _SKILL_REF_RE.finditer(text):
-            name = match.group(1)
-            if name in known_skills or "-" not in name:
-                continue
-            # Only flag names that LOOK like a skill reference: hyphenated and
-            # previously present. A generic hyphenated word is not a claim.
-            if name in _DELETED_SKILLS:
-                issues.append(SkillIssue(path, f"references deleted skill {name!r}"))
+
+    for skill_dir in sorted(p for p in source_root.iterdir() if p.is_dir()):
+        for md in sorted(skill_dir.rglob("*.md")):
+            text = md.read_text(encoding="utf-8")
+            for match in _ROOT_REF_RE.finditer(text):
+                rel = match.group(1).rstrip("/")
+                if not (root / rel).exists():
+                    issues.append(SkillIssue(md, f"references missing path {rel!r}"))
+            for match in _REL_REF_RE.finditer(text):
+                rel = match.group(1)
+                if _ROOT_REF_RE.fullmatch("`" + rel + "`"):
+                    continue                       # already checked repo-rooted
+                if rel.startswith(("http", "www.")) or " " in rel:
+                    continue
+                target = skill_dir / rel.rstrip("/")
+                # Only flag a relative path that LOOKS like a bundled resource:
+                # its first segment must be a real subdirectory of the skill, or
+                # the whole path must be absent while its parent exists.
+                first = rel.split("/", 1)[0]
+                if (skill_dir / first).exists() and not target.exists():
+                    issues.append(
+                        SkillIssue(md, f"references missing skill resource {rel!r}")
+                    )
+            for match in _SKILL_REF_RE.finditer(text):
+                name = match.group(1)
+                if name in known_skills or "-" not in name:
+                    continue
+                if name in _DELETED_SKILLS:
+                    issues.append(SkillIssue(md, f"references deleted skill {name!r}"))
     return issues
 
 

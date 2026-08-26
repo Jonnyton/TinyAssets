@@ -105,7 +105,7 @@ def _now() -> float:
     return time.time()
 
 
-def session_id() -> str:
+def session_id(explicit: str | None = None) -> str:
     """Stable per-session id.
 
     Events carried no session identity until 2026-08-26, so two concurrent
@@ -113,23 +113,32 @@ def session_id() -> str:
     other's predicates -- one session's three failures could trip a redirect in
     another. Predicates now only see their own session's events.
 
-    Claude Code exports a session id; fall back to the parent process id, which
-    is stable for the life of one CLI invocation.
+    **The hook payload is the authority.** Claude Code supplies `session_id` in
+    every hook's JSON; the hooks pass it here. The parent-process id is NOT a
+    session identity -- each hook runs in its own shell, so separate PIDs churn
+    within a single session (observed: 27300 and 19564 in one session), and PID
+    reuse can collide across sessions. That bug made records fragment while
+    looking like isolation. Env vars are a fallback for direct CLI use; the
+    "unknown" sentinel is deliberately stable rather than random, so manual runs
+    group together instead of each becoming its own island.
     """
+    if explicit:
+        return str(explicit)[:64]
     for var in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
         value = os.environ.get(var, "").strip()
         if value:
-            return value[:32]
-    return f"pid-{os.getppid()}"
+            return value[:64]
+    return "cli-unknown"
 
 
 def record(kind: str, target: str = "", detail: dict[str, Any] | None = None,
-           *, store: Path | None = None, now: float | None = None) -> None:
+           *, store: Path | None = None, now: float | None = None,
+           sid: str | None = None) -> None:
     """Append one event. Never raises — a broken recorder must not break a turn."""
     path = store or EVENTS
     event = {
         "ts": now if now is not None else _now(),
-        "sid": session_id(),
+        "sid": session_id(sid),
         "kind": kind,
         "target": target,
         "detail": detail or {},
@@ -249,7 +258,7 @@ def check(store: Path | None = None, sid: str | None = None) -> list[Finding]:
     Events with no ``sid`` predate the 2026-08-26 partitioning and are ignored
     rather than attributed to whoever happens to be running now.
     """
-    current = sid if sid is not None else session_id()
+    current = session_id(sid)
     events = [e for e in load(store) if e.get("sid") == current]
     findings = [f for f in (p(events) for p in PREDICATES) if f is not None]
     return findings
