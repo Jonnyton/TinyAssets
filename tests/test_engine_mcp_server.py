@@ -35,7 +35,11 @@ def test_read_graph_refuses_unpinned_targets(monkeypatch):
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
-    for bad in ("runs", "run", "branch", "goals", "goal", "agents", "agent_binding"):
+    # "branch" left this list deliberately (2026-08-26): the universe had the X
+    # credential deposited and still could not post, because it could list its
+    # branches but not read one's node wiring. Reading a branch is strictly
+    # weaker than running one, which this surface already allows.
+    for bad in ("runs", "run", "goals", "goal", "agents", "agent_binding"):
         out = json.loads(s.read_graph(target=bad))
         assert "not available" in out.get("error", ""), bad
 
@@ -1658,3 +1662,28 @@ def test_served_write_graph_admission_fails_closed(monkeypatch):
     assert seen.get("fail_closed") is True
     assert "rate limit" in out.get("error", "").lower()
     assert calls["n"] == 0
+
+
+def test_read_graph_reads_one_branch_by_id(monkeypatch):
+    """Live 2026-08-26: with the X connection deposited, the universe still refused to
+    post - it could enumerate branches but not inspect one, so it could not know the
+    input contract and (correctly) would not guess against a real post."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    captured: dict = {}
+    monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+
+    s.read_graph(target="branch", branch_id="  8157e928f42c  ")
+    assert captured == {
+        "target": "branch",
+        "graph_id": "u-pinned",
+        "branch_id": "8157e928f42c",
+    }
+
+    # branch_id is meaningless for every other target and must not leak through.
+    captured.clear()
+    s.read_graph(target="branches", branch_id="8157e928f42c")
+    assert captured == {"target": "branches", "graph_id": "u-pinned"}

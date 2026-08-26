@@ -182,7 +182,9 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
-_PINNED_READ_TARGETS = frozenset({"status", "graph", "branches", "compute", "connections"})
+_PINNED_READ_TARGETS = frozenset({
+    "status", "graph", "branches", "branch", "compute", "connections",
+})
 
 
 def _binding_error() -> str | None:
@@ -205,17 +207,25 @@ mcp = FastMCP("tinyassets")
 
 
 @mcp.tool
-def read_graph(target: str = "status") -> str:
+def read_graph(target: str = "status", branch_id: str = "") -> str:
     """Read your OWN universe's status or graph, without changing anything.
 
     Scoped to YOUR universe — you cannot read another one.
 
     Args:
+        branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
+            workflow to read (get it from ``target="branches"``). Ignored for every
+            other target. You can read your own branches and public ones; a private
+            branch belonging to someone else reads as not found.
         target: What to read: ``status`` (a factual daemon + serving snapshot),
             ``graph`` (inspect your universe's graph), ``branches`` (list YOUR OWN
             workflows by name + ``branch_def_id`` + tags — use it to find the id of a
             workflow the user names before you read/patch/run it; never ask the user
-            for an internal id), ``compute`` (list the
+            for an internal id), ``branch`` (read ONE workflow's full graph - its
+            nodes, their inputs/prompt templates, edges and state schema - by
+            passing ``branch_id``; READ THIS BEFORE ``run_graph`` whenever you are
+            unsure what a branch expects, instead of guessing its input contract or
+            telling the user you cannot inspect it), ``compute`` (list the
             compute providers registered for your universe — the read sibling of
             registering one with ``connect_compute``), or ``connections`` (list the
             outbound channel connections your universe has — every http channel the
@@ -245,8 +255,16 @@ def read_graph(target: str = "status") -> str:
     token = _bind_founder_identity()
     try:
         # graph_id is PINNED, never caller-supplied: the agent cannot address
-        # another universe, and the restricted target set means graph_id is the
-        # ONLY selector in play.
+        # another universe. ``branch`` is the one target that also needs a
+        # selector, and the underlying get_branch is author-gated (a private
+        # branch of another universe reads as not found), so passing the caller's
+        # branch_id widens nothing this agent could not already run.
+        if normalized == "branch":
+            return _impl(
+                target=normalized,
+                graph_id=_GRAPH_ID,
+                branch_id=(branch_id or "").strip(),
+            )
         return _impl(target=normalized, graph_id=_GRAPH_ID)
     finally:
         _current_identity.reset(token)
