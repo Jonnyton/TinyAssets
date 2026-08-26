@@ -97,6 +97,33 @@ Everything else. Whether a *design* is right, whether a finding is real, whether
 a shape should ship — no path regex reaches those. Cross-family review of
 judgement-class decisions stays a norm, dispatched via `peer-agents`.
 
+## A check that gave false assurance, twice
+
+Both times the check looked right and was too narrow. Both were caught by
+something else, never by the check.
+
+**Orphan-script detection.** `for f in scripts/*.py; grep -l "$(basename $f)"`
+matches `timestamp_lint_run.py` but **not** `from scripts.timestamp_lint_run
+import ...` — the module form has no extension. A script with a dedicated test
+suite was deleted as unreferenced, and CI caught it as a collection error two
+pushes later. When checking whether a module is used, search **both** the
+filename and the dotted/slashed module path:
+
+```bash
+git grep -l "scripts\.$m\|scripts/$m\|import $m"
+```
+
+**Orphan-hook detection.** The same shape: grepping only
+`.claude/settings.json` reported three hooks as wired nowhere. They were wired
+through `.claude/settings.shared.json` and agent frontmatter.
+
+The generalisation, and the reason both are recorded here: **a "nothing
+references this" check is a claim about every reference form that exists.**
+Enumerate the forms before trusting the absence. An emptiness result from a
+narrow search is not evidence of emptiness — the same mistake as
+`Get-ChildItem -ErrorAction SilentlyContinue` returning empty on a directory it
+could not read.
+
 ## Not gates, and should not become gates
 
 - **Evidence-before-completion.** A script can confirm a command and its output
