@@ -6,49 +6,42 @@ trackers, novels, news summaries, any substantive long-running work.
 
 ---
 
-## Forever Rule (2026-04-18): Complete-System 24/7 Uptime Is Top Priority
+## Forever Rule: 24/7 uptime, zero hosts online
 
-One unified priority, not a ranked list. **Every surface works 24/7 with zero
-hosts online** — Tier-1 chatbot users through the live connector, Tier-2 daemon
-hosts installing the tray in under 5 minutes, Tier-3 contributors cloning and
-running cleanly, plus discovery, remix, converge, live collaboration, the
-paid-market inbox, and moderation.
+One unified priority, not a ranked list. **Every surface works with no host
+online** -- chatbot users through the live connector, daemon hosts installing
+the tray in under 5 minutes, contributors cloning and running cleanly, plus
+discovery, remix, converge, the paid-market inbox, and moderation.
 
-**Work ordering:** pick the task that unblocks the largest currently-broken
-uptime surface, and treat every surface outage as equal severity — tiering is
-what starves the quiet surfaces. Break ties by shared dependency impact, then
-shortest path to verified recovery. Uptime features ship with the Hard Rule 14
-proof or they are not done. Everything else continues but never blocks uptime.
+**Work ordering:** take the task unblocking the largest currently-broken uptime
+surface, and treat every outage as equal severity -- tiering is what starves the
+quiet surfaces. Break ties by shared dependency impact, then shortest path to
+verified recovery. Everything else continues but never blocks uptime.
 
-Target architecture: `docs/design-notes/2026-04-18-full-platform-architecture.md`.
+Architecture: `docs/design-notes/2026-04-18-full-platform-architecture.md`.
 
 ---
 
 ## Two Living Files
 
-Updated immediately when durable state changes.
+**AGENTS.md** (here) is how to work: behaviour, norms, hard rules.
+**PLAN.md** is how the system works and why: architecture, principles, design.
+Architecture never goes here; norms never go there. Both update immediately when
+durable state changes.
 
-| File | What belongs here | What does NOT belong here |
-|------|-------------------|--------------------------|
-| **AGENTS.md** | How to work on this project. Behavior, norms, hard rules. | Architecture, design decisions, principles (-> PLAN.md) |
-| **PLAN.md** | How the system works and why. Architecture, principles, design decisions, module specs. | Behavioral norms (-> AGENTS.md). Live state (-> the homes below) |
+**Live state has no living file.** It has homes by kind:
 
-Live state has no living file. It has typed homes:
-
-| Kind of state | Home |
+| Kind | Home |
 |---|---|
-| Queued and in-flight work | `openspec/changes/` — `python scripts/openspec_flow.py audit` |
-| Unresolved findings | `docs/concerns/` — one file each, deleted when resolved |
-| Work only the founder can do | `docs/host-actions.md` |
+| Queued / in-flight work | `openspec/changes/` -- `python scripts/openspec_flow.py audit` |
+| Unresolved findings | `docs/concerns/` -- one file each, deleted when resolved |
+| Founder-only work | `docs/host-actions.md` |
 | Who is working on what | git branches and open PRs |
-| Session narrative | `.agents/activity.log` |
-| Landing records | the git log |
+| Narrative / landings | `.agents/activity.log` / the git log |
 
-> **`STATUS.md` was retired 2026-08-25.** It was a prose blob 5.2x over the
-> ceiling it declared for itself, touched by 46% of commits in its last 90 days
-> and by 17% that changed nothing else. Its contents went to the homes above.
-> Do not recreate it: a single always-loaded file that absorbs every kind of
-> live state is the failure mode, not the format.
+> **Do not recreate `STATUS.md`** (retired 2026-08-25: 5.2x over its own declared
+> ceiling, touched by 46% of its last 90 days of commits). One always-loaded file
+> absorbing every kind of live state is the failure mode, not the format.
 
 ---
 
@@ -56,120 +49,102 @@ Live state has no living file. It has typed homes:
 
 ### Orient
 
-1. `PLAN.md` is the design reference (~50 KB). Full load for feature planning /
-   design decisions / cross-cutting work; section load
-   (`python scripts/docview.py headings PLAN.md`, then the section) for scoped
-   module fixes; minimal check for routine test/doc/skill edits.
+1. `PLAN.md` is the design reference. Full load for feature planning or design
+   decisions; `python scripts/docview.py headings PLAN.md` then one section for
+   scoped work; skip for routine test/doc edits.
 2. `python scripts/openspec_flow.py audit` is the work queue. Skim
-   `docs/concerns/README.md` when the task touches a known-unresolved area.
-3. If the idea inbox is non-empty, scan `ideas/PIPELINE.md` and `ideas/INBOX.md`.
-4. If your approach conflicts with a PLAN.md principle, do NOT implement it.
-   File it in `docs/concerns/`. PLAN.md changes require user approval.
-5. Before drafting a design note that proposes a new MCP action, cites an
-   unfixed `BUG-NNN`, or pins a sha, run
-   `python scripts/check_primitive_exists.py {action <verb>|bug <BUG-NNN>|sha <sha>}`
-   from origin/main (exit 2 = collision, investigate first).
+   `docs/concerns/README.md` when the area has known-unresolved findings.
+3. An approach conflicting with a `PLAN.md` principle does not get implemented --
+   file it in `docs/concerns/`. PLAN.md changes need user approval.
+4. Before a design note proposing a new MCP action, citing an unfixed `BUG-NNN`,
+   or pinning a sha: `python scripts/check_primitive_exists.py` (exit 2 =
+   collision).
 
 ### Keeping state current
 
-If the user closes the window after your next message, durable state must
-already reflect anything they said. Match effort to the message:
+If the user closed the window after your next message, durable state must
+already reflect anything they said. Decisions, priority changes, and new
+findings get written to their home (above) before you respond; design-relevant
+ones also update `PLAN.md`. Ideas that will not be executed now go to
+`ideas/INBOX.md`. Greetings and questions change nothing — do not write.
 
-| Message type | Do this |
-|---|---|
-| Decision, priority change, new finding, reframing | Write it to its home (above) before responding; update `PLAN.md` if design-relevant |
-| New idea that will not be executed now | `ideas/INBOX.md` or `ideas/PIPELINE.md` |
-| Code change, bug fix, question | Check mentally; write only if state actually changed |
-| Greeting, clarification, small talk | Nothing |
+**Deletion matters as much as addition.** Resolve a concern by deleting its
+file; archive a landed change rather than annotating it. The commit is the record.
 
-**Deletion is as important as addition.** A resolved concern gets its file
-deleted, not marked DONE. A landed change gets archived, not annotated. The
-commit is the record.
+### Where new conventions live
 
-### Where new conventions live (provider-agnostic by default)
-
-**`AGENTS.md` is the cross-provider standard** — every major coding agent
-reads it. Project-level conventions go here first; provider-specific files
-(`CLAUDE.md`, `.cursor/rules/*`, `.codex/*`) hold only genuine harness quirks
-and should reduce to pointers at `AGENTS.md`. Self-check: *"Would a Codex or
-Cursor session need this?"* If yes → here. When in doubt → here.
-
-Drift guard: `python scripts/check_cross_provider_drift.py` (auto-fires as a
-Claude Code PostToolUse hook; other providers run it manually after editing a
-provider-specific file). Exit 2 = move the content here or tag the heading
-`[<provider> only]`.
+A convention any provider would need goes in `AGENTS.md`. Provider-specific
+files (`CLAUDE.md`, `CODEX.md`) hold only harness quirks. In doubt, `AGENTS.md` —
+broader visibility is the safer error. Enforced by `cross-provider-drift`.
 
 ### Truth And Freshness
 
-- Truth is typed: `AGENTS.md` owns process truth, `PLAN.md` design truth,
-  `openspec/specs/` behavioural truth. Audits are diagnostic, never a source.
-- Verification claims carry a freshness stamp: date, environment, command.
-- Concern files carry `**Filed:**` / `**Verified:**` / `**Re-verified:**` and a
-  severity. Re-verify a premise before acting on it and correct the citation in
-  place — paths and line numbers rot faster than findings do. Server-bug
-  concerns cross-reference
-  their wiki `BUG-NNN`.
-- Contradictions are downgraded immediately — rewrite the stale claim or file
-  a Concern before responding; labels `current:`/`historical:`/`contradicted:`.
-- Audit docs decay: freshness-check before dispatching prescriptions from an
-  audit older than ~24h.
+- Truth is typed: `AGENTS.md` owns process, `PLAN.md` design, `openspec/specs/`
+  behaviour. Audits are diagnostic, never a source.
+- Verification claims carry date, environment, and the command that produced them.
+- **Re-verify a premise before acting on it, and correct the citation in place.**
+  Paths and line numbers rot faster than findings do. A stale pointer misleads
+  worse than no pointer.
+- Contradicted claim → fix it or file `docs/concerns/` before responding.
 
 ### Client Conversations Are Bug Reports
 
-When the user pastes a chat conversation from any MCP client, extract the
-issues and fix them immediately.
+A pasted chat from any client is a bug report. Extract the issues and fix them.
 
 ### Large Docs And Artifacts
 
-Use `python scripts/docview.py` (stat → headings/section/lines/search/json)
-instead of raw whole-file reads for `PLAN.md`, `output/*/notes.json`, large
-review artifacts, and any text/JSON file over ~10 KiB or 200 lines. Codex
-truncates large raw reads.
+Use `python scripts/docview.py` (`stat`, `headings`, `section`, `lines`,
+`search`, `json`) instead of whole-file reads for anything large -- `PLAN.md`,
+`output/*/notes.json`, big review artifacts. Narrow the query rather than
+falling back to a raw read.
 
 ### Project Skills
 
-- Canonical skills live in `.agents/skills/`, mirrored to `.claude/skills/`
-  for Claude Code (`powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1`
-  after editing). Ten skills, named for their task — read the matching one.
-  There is no router: it earned its keep at 34 skills and stopped earning it
-  at 10.
-- **Each remaining skill carries project knowledge you cannot infer from the
-  repo.** The 24 deleted on 2026-08-25 encoded generic software practice a
-  current model already has. Before adding one back, answer the question that
-  removed them: *which model weakness does this encode, and does a current
-  model still have it?*
-- Outside project/paper/repo to learn from → `external-research-implications`.
-- **Research-derived concepts need opposite-provider review before
-  implementation** (Codex finding → Claude reviews; Claude finding → Codex
-  reviews; other provider → name the reviewer in the change). The review
-  re-checks sources + TinyAssets context, leaves a durable artifact, and gates
-  build/push/rollout/acceptance. Hard provider limits activate the
-  review-provider fallback under Quality Gates.
+Canonical in `.agents/skills/`, mirrored to `.claude/skills/`
+(`powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` after
+editing). Ten skills named for their task -- read the matching one; there is no
+router. Each carries project knowledge you cannot infer from the repo. The 24
+deleted on 2026-08-25 encoded generic practice a current model already has;
+before adding one back, answer the question that removed them: **which model
+weakness does this encode, and does a current model still have it?**
 
-### Spec-driven development — OpenSpec is the standard [all providers]
+Research-derived concepts need opposite-provider review before implementation
+(Codex finding -> Claude reviews, and vice versa), leaving a durable artifact
+that gates build/push/rollout.
 
-Host directive 2026-07-19; process-budget calibration 2026-08-02.
+### Spec-driven development -- OpenSpec is the standard
+
+Host directive 2026-07-19.
 
 - `openspec/specs/<capability>/spec.md` is as-built requirement truth;
-  `openspec/changes/<name>/` holds in-flight change proposals. Lifecycle:
-  explore → propose → apply → sync-specs → archive (`openspec` skill /
-  `opsx:*`).
-- **Every substantive change starts as an OpenSpec change** (behavior, MCP/API
-  surface, storage shapes, capabilities, security posture), with its
-  `applyRequires` artifacts done before implementation. **Skip-threshold:**
-  trivial mechanical work — typos, formatting, comment/doc edits, test-only
-  fixes changing no behavior, coordination-file edits — needs NO change. Do
-  not spec the act of coordinating; specs describe product behavior.
-- **Touch it → spec it:** still-unspecced capabilities get their spec written
-  before or alongside their next substantive change
-  (`spec-out-existing-platform` baseline).
-- **Sync and archive on land, in the same lane.** A landed change with
-  unsynced deltas is spec drift — a failing gate. Target-only/aspirational
-  changes must never sync to `openspec/specs/` (as-built truth).
-- Truth split: `PLAN.md` owns why (architecture/principles); `openspec/specs/`
-  owns what (behavioral requirements).
+  `openspec/changes/<name>/` holds in-flight proposals. Lifecycle: explore ->
+  propose -> apply -> sync -> archive (`openspec` skill).
+- **Spec what is hard to reverse, build the rest.** A change directory is
+  required for the things a wrong guess makes expensive: **public MCP/API
+  surface, storage shape, authority/permissions, migrations, money**. Those get
+  proposal + design before code.
+- **Everything else: build it, prove it live, then write the spec from what
+  shipped.** Bug fixes, internal refactors, UI, docs, tests, and single-surface
+  behaviour changes do not wait on a proposal. Writing the spec after the fact
+  is not a shortcut -- it is more accurate, because it describes what actually
+  works rather than what was predicted.
+- **Rationale (measured 2026-08-26).** 67 active changes, median 23 days idle,
+  50 of 67 untouched in a fortnight. A mandatory pre-build proposal is the step
+  a fresh project folder does not have, and it is where idea-to-deployed stalls.
+  The founder's comparison was explicit: an empty folder iterated dramatically
+  faster than this repo.
+- **Sync and archive on land, same lane.** A landed change with unsynced deltas
+  is spec drift -- treat it as a failing gate.
+- Truth split: `PLAN.md` owns *why*; `openspec/specs/` owns *what*.
 
 #### Delivery flow
+
+**A WIP limit you cannot satisfy is a wall, not a limit.** With 67 changes open
+and three quarters idle, "finish before starting" blocked new work without
+draining old. Prefer: finish or **archive**. A change idle 14 days is not
+in flight -- archive it and re-propose when it is real. Archiving is free and
+reversible; git holds it.
+
 
 Full procedure: **[`docs/reference/delivery-flow.md`](docs/reference/delivery-flow.md)**.
 Headline: one intent, one owner, one branch, one PR, ≤12 task checkboxes;
@@ -187,54 +162,36 @@ capture conventions, and the build/ship pipeline.
 
 ## Working Norms
 
-Two providers work this repo — Claude Code and Codex CLI — and they call each
-other as peers via the `peer-agents` skill. Neither runs a standing team.
+Two providers work this repo -- Claude Code and Codex CLI -- calling each other
+as peers via `peer-agents`. Neither runs a standing team.
 
-- **Verification is proactive and cross-family.** Every substantive change gets
-  independent verification before landing. The independent path is a subprocess
-  peer of the *other* family, on that subscription's budget — not a same-family
+- **Verification is cross-family**, on the peer's own budget: not a same-family
   teammate reviewing its own family's work.
-- **Stuck 3+ iterations on the same error** → stop. Say what failed, what
+- **Stuck 3+ iterations on the same error -> stop.** Say what failed, what
   specific change would fix it, and whether you are repeating yourself; then
-  hand it to the other family for fresh eyes. Don't loop.
-- **Record what the next session needs**, in the home that fits (see § *Two
-  Living Files*): a finding in `docs/concerns/`, a durable lesson in memory or a
-  skill, narrative in `.agents/activity.log`. A learning left only in chat is
-  lost work.
+  hand it to the other family. `scripts/supervisor.py` watches for this.
+- **Record what the next session needs** in the home that fits. A learning left
+  only in chat is lost work.
 
 ### Quality Gates
 
-Invariants. Full procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
-Which rules are executable, where they run, and which are deliberately still
-judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-gates.md)**.
+Procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
+Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-gates.md)**.
 
 - **Shape before hardening** (founder, 2026-08-20). One pre-build review for
-  SHAPE + APPROACH and single-user safety holes → ship the MVP live and test as
-  a real user → *then* the deep hardening rounds. Do not gate a first draft
-  behind a hardening gauntlet; only live users prove the shape. Split: a hole
-  that leaks/exfils/bypasses for ONE founder is pre-live; an edge that only
-  bites multi-tenant/concurrent/crash defers to post-live.
-- **Verification is structural, and independent.** Substantive changes need
-  test evidence plus a review path that is not the author. Self-review is never
-  enough for public-surface, storage, auth, migration, concurrency, or
-  data-loss-risk changes. Prefer the opposite model family, dispatched as a
-  subprocess on its own budget (`peer-agents`).
-- **A dispatched review gates landing, not your forward progress.** It runs in
-  the background and re-invokes you. Pick up the next lane; fold the verdict in
-  when it returns. Never idle waiting on one.
-- **`main` enforces a behavioural test gate.** Required contexts: `policy`,
-  `Diff scope declared`, `required-tests`, `strict` on. `required-tests` fails
-  on any failure not in `.github/known-failing-tests.txt` — a one-way ratchet
-  on a scope-guarded path.
-- **High-risk PRs stay draft until exact-head approval**, and for auth,
-  credential, and permission paths this is enforced — `pr-scope-guard`
-  demands an exact-head receipt in the PR body. Any head-changing update
-  invalidates it.
-- **Final chatbot-surface proof is a rendered chatbot conversation** through
-  the live connector at `https://tinyassets.io/mcp` (`ui-test`). Direct MCP
-  calls, scripts, and canaries are supporting evidence, never final proof.
-- **Then look for real-user clean use since the fix**, freshness-stamped. If
-  none is visible yet, say so rather than implying it.
+  shape, approach, and single-user safety holes -> ship the MVP live and test as
+  a real user -> *then* deep hardening. Gating a first draft behind a hardening
+  gauntlet hardens a shape live users may change.
+- **Verification is independent and cross-family.** Test evidence plus a
+  reviewer who is not the author: a subprocess peer of the *other* model family
+  (`peer-agents`), on its own budget. Self-review never suffices for
+  public-surface, storage, auth, migration, concurrency, or data-loss changes.
+- **A dispatched review gates landing, not your progress.** It re-invokes you;
+  take the next lane and fold the verdict in. Never idle on one.
+- **Final chatbot-surface proof is a rendered conversation** through the live
+  connector (`ui-test`). Scripts and canaries are supporting evidence, never
+  proof. Then look for real-user clean use since the fix, freshness-stamped; if
+  none is visible, say so.
 
 ## Hard Rules
 
@@ -257,70 +214,42 @@ judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-ga
 
 ## Testing
 
-- `pytest` for the full suite; `ruff check` before committing. Every module
-  has tests; nodes must never crash.
-- After canonical `tinyassets/*` edits affecting the Claude plugin runtime:
-  `python packaging/claude-plugin/build_plugin.py` (pre-commit mirror parity
-  is the guardrail; see `packaging/INDEX.md`).
-- `actionlint` on GH Actions edits (pre-commit runs it on staged workflow
-  files; CI is the authoritative gate).
-- **Hot-path rewrites use differential testing:** keep the original verbatim
-  in the suite as executable spec; differential-test the rewrite (randomized
-  tie-heavy trials + scale gate). Reference: `tests/test_match_scale.py`.
-- **Never point a temp root inside the repo.** `tests/conftest.py` enforces
-  this: pytest refuses to start if `--basetemp`, `TMPDIR`, `TEMP`, `TMP`, or
-  `PYTEST_DEBUG_TEMPROOT` resolves under the repo root. A sandboxed agent
-  (Codex, Cursor) creates those dirs under a **restricted token**, and on
-  Windows the ACL that results is owned by a sandbox group
-  (`DESKTOP-<host>\CodexSandboxUsers`) with inheritance disabled and no entry
-  for you. You cannot delete them, cannot list them, and cannot even read the
-  ACL — `Get-Acl` returns *"Attempted to perform an unauthorized operation"*.
-  They survive `git worktree remove`, and a reboot does not help because it is
-  an ACL, not a held handle. Cleanup needs an **elevated**
-  `powershell -File scripts/clear_sandbox_temp_dirs.ps1 -Apply`; that script
-  auto-protects every registered worktree and refuses to touch a directory
-  holding files. 17 such husks were left behind on 2026-08-25.
+- `pytest` for the suite, `ruff check` before committing. Every module has
+  tests; nodes never crash.
+- **Never point a temp root inside the repo.** `tests/conftest.py` refuses to
+  start if `--basetemp`/`TMPDIR`/`TEMP`/`TMP` resolves under it. Sandbox agents
+  create those dirs under a restricted token, and the resulting Windows ACL
+  locks you out entirely -- you cannot delete, list, or even read it, and a
+  reboot does not help. Cleanup needs an elevated
+  `scripts/clear_sandbox_temp_dirs.ps1 -Apply`.
+- After canonical `tinyassets/*` edits affecting the plugin runtime:
+  `python packaging/claude-plugin/build_plugin.py` (`mirror-parity` gates it).
+- `actionlint` on workflow edits; CI is authoritative.
+- **Hot-path rewrites use differential testing:** keep the original in the suite
+  as executable spec and differential-test the rewrite
+  (`tests/test_match_scale.py`).
+- **A local Windows run is not an oracle on its own.** Pin the tree and
+  set-compare against the same suite at base before calling anything a
+  regression.
 
----
+## Configuration -- environment variables
 
-## Configuration — environment variables
+All configuration is env vars. Catalog:
+**[`docs/reference/environment-variables.md`](docs/reference/environment-variables.md)**.
+Load-bearing invariants:
 
-All configuration is env vars. Full catalog:
-**[`docs/reference/environment-variables.md`](docs/reference/environment-variables.md)**
-(pointer-loaded per [ADR-002](docs/decisions/ADR-002-static-vs-dynamic-context-budget.md)).
-Load-bearing invariants stay here:
-
-- **CWD-independent resolvers only:** `tinyassets.storage.data_dir()` for
-  `TINYASSETS_DATA_DIR`, `wiki_path()` for the wiki root — never `Path.cwd()`
-  logic or re-implemented precedence.
-- **Container deploys:** `TINYASSETS_DATA_DIR=/data` + bind-mount
-  (`deploy/README.md`).
-- **Subscription-only by default:** API-key provider env vars are ignored
-  unless `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy.
-- **Local secrets are vault-first:** `set -a; source scripts/load_secrets.sh;
-  set +a` (`TINYASSETS_SECRETS_VENDOR`), never a committed plaintext file.
-  Canonical keys: `scripts/secrets_keys.txt`.
-
----
+- **CWD-independent resolvers only** -- `tinyassets.storage.data_dir()`,
+  `wiki_path()`. Never `Path.cwd()` logic or a re-implemented precedence.
+- **Containers:** `TINYASSETS_DATA_DIR=/data` + bind-mount (`deploy/README.md`).
+- **Subscription-only by default:** API-key provider vars are ignored unless
+  `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy.
+- **Secrets are vault-first:** `set -a; source scripts/load_secrets.sh; set +a`.
+  Never a committed plaintext file.
 
 ## Project Files
 
-| File | Audience | Purpose |
-|------|----------|---------|
-| `AGENTS.md` | Any AI, any tool | How to work, team norms, hard rules. |
-| `docs/concerns/` | Any AI, any tool | Unresolved findings, one file each. |
-| `docs/host-actions.md` | Any AI, any tool | Work only the founder can do. |
-| `PLAN.md` | Any AI, any tool | Architecture, principles, design decisions. |
-| `README.md` / `INDEX.md` | Any human or AI | Orientation / repo map. |
-| `CLAUDE.md` / `CODEX.md` | One harness | Thin routing layers over AGENTS.md. |
-| `scripts/docview.py` | Any AI | Scoped reader for large artifacts. |
-| `scripts/worktree_status.py` | Any AI | Worktree lane diagnostics. |
-| `scripts/openspec_flow.py` | Any AI | OpenSpec WIP check + finish-first audit. |
-| `.agents/skills/*/SKILL.md` | Canonical | Skill definitions (edit here first; mirror via `scripts/sync-skills.ps1`). |
-| `.claude/agent-memory/<name>/` | `<name>` writes; all read | Per-agent memory. Non-owners never write here. |
-| `.agents/activity.log` | Any AI | Short cross-session activity feed. |
-| `ideas/*.md` | Any AI | Idea capture, triage, traceability. |
-| `docs/reference/*.md` | Any AI | Pointer-loaded canonical procedure docs. |
-| `docs/exec-plans/*.md`, `docs/audits/*.md` | Any AI | Execution plans; dated diagnostic audits. |
-
-When you delete or rename a tracked file, update its row in the same change.
+`README.md` orients. `AGENTS.md` (here) is how to work; `PLAN.md` is how the
+system works; live state lives in the typed homes above. Canonical skills in
+`.agents/skills/`, per-agent memory in `.claude/agent-memory/<name>/` (owner
+writes, everyone reads). **Delete or rename a tracked file -> update every
+reference to it in the same change.**
