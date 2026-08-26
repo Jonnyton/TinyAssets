@@ -83,6 +83,7 @@ def _classify(
     matching_rows: list[dict[str, str]],
     tasks_exist: bool,
     owners: list[str],
+    board_present: bool = True,
 ) -> str:
     if not tasks_exist:
         return "invalid-artifacts"
@@ -101,6 +102,12 @@ def _classify(
         return "host-owned"
     if any(row["status"].lower().startswith(QUEUED_STATUSES) for row in matching_rows):
         return "queued"
+    # "untracked" is a claim about a board. With STATUS.md retired
+    # (2026-08-25) there is no board to be untracked *by*: ownership lives in
+    # git branches and open PRs, which this offline audit deliberately does
+    # not query. Say "unclassified" rather than assert the change is unowned.
+    if not board_present:
+        return "unclassified"
     return "untracked"
 
 
@@ -189,7 +196,7 @@ def _git_ref_snapshot(
     repo: Path,
     git_ref: str,
 ) -> tuple[list[str], dict[str, str]]:
-    """Read active change metadata and STATUS from one immutable Git tree."""
+    """Read active change metadata from one immutable Git tree."""
     if not git_ref or git_ref.startswith("-"):
         raise RuntimeError(f"cannot inspect Git ref {git_ref}: invalid ref")
     verify = subprocess.run(
@@ -212,7 +219,6 @@ def _git_ref_snapshot(
             "--name-only",
             commit,
             "--",
-            "STATUS.md",
             "openspec/changes",
         ],
         cwd=repo,
@@ -229,9 +235,6 @@ def _git_ref_snapshot(
     wanted: list[str] = []
     for raw_path in listing.stdout.splitlines():
         path = raw_path.strip().replace("\\", "/")
-        if path == "STATUS.md":
-            wanted.append(path)
-            continue
         parts = path.split("/")
         if len(parts) < 4 or parts[:2] != ["openspec", "changes"]:
             continue
@@ -317,6 +320,7 @@ def build_report(
             for row in matching_rows
         )
         classification = _classify(
+            board_present=bool(rows),
             remaining=remaining,
             matching_rows=matching_rows,
             tasks_exist=tasks_exist,

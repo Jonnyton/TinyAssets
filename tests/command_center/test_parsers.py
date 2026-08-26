@@ -29,25 +29,6 @@ def test_iso_to_epoch():
     assert parsers.iso_to_epoch(123) is None
 
 
-def test_parse_status_claims():
-    status = """## Work
-
-| Task | Files | Depends | Status |
-|------|-------|---------|--------|
-| Build the thing | workflow/a.py, docs/b.md | - | claimed:codex-gpt5-desktop ACTIVE 2026-06-27 |
-| Waiting row | x.py | - | dev-ready |
-| Another | y.py | #1 | in-flight |
-
-## Next
-"""
-    claims = parsers.parse_status_claims(status)
-    assert len(claims) == 2
-    assert claims[0]["provider"] == "codex-gpt5-desktop"
-    assert claims[0]["active"] is True
-    assert claims[0]["files"] == ["workflow/a.py", "docs/b.md"]
-    assert claims[1]["status"] == "in-flight"
-
-
 def test_parse_claude_transcript():
     entries = [
         {
