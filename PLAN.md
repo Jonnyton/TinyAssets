@@ -226,6 +226,40 @@ These principles apply to every module. They do not own a module each; they cons
 
 **Module shape is part of the architecture.** A flat namespace of 35 modules at `tinyassets/` root signals "no opinion about boundaries." A god-module of 10k lines signals "boundaries deferred indefinitely." Both are forms of architectural debt. The Module Map below codifies the target shape; the per-module sections that follow codify what each owns.
 
+**Foundation builds to the end state; features may iterate** (host, refined 2026-04-19).
+*Foundation* is infrastructure everything else depends on — multi-user support, storage schema,
+auth, daemon dispatch core, naming commitments, module layout, MCP server core, basic paid-market
+routing. Foundation always builds to the long-term best-known design **in the present**: no phased
+rollouts, no compat-shim bandages, no "ship part 1 and iterate later." *Features* are the surfaces
+the chatbot and user interact with — trust verbs, discovery polish, autoresearch refinements,
+bid-UX, shared-account primitives — and they legitimately roll out in phases, because how the
+chatbot wants to use a feature is not knowable in advance. The test before choosing a shape: **is
+this load-bearing for other work?** Yes -> foundation -> end-state. No -> feature -> iterate; when
+ambiguous, ask whether the next thing you want to build depends on this being its final shape.
+Refactor foundation as better implementations are discovered — update PLAN.md first, then refactor
+to match; each foundation ship is itself end-state-shaped. **Foundation does not carry debt;
+features do, temporarily.** Carve-out: atomic-commit discipline stands — "end-state" means each
+commit is atomic *and* takes the code to its final shape, not that related work is squashed
+together. Cited from `tinyassets/storage/__init__.py` and `tinyassets/bid/__init__.py`.
+
+**The daemon economy is foundation; chatbot experience is always-on** (host, 2026-04-19). Both are
+needed, but the daemon economy is foundationally important rather than a side feature. Chatbot
+experience work is standing high-priority throughout — yet the daemon-economy first draft is the
+thing to have shipped before big chatbot-UX investment. When choosing among available work, tracks
+shipping daemon-economy primitives (paid-market bids, settlements, node capability resolution,
+fulfillment routing, moderation-for-the-market) rank above chatbot-experience polish.
+
+**Code before agents: if an invariant can be enforced mechanically, build the check** (host,
+2026-04-19). Every scheduled agent check-in for "is X still true?" is a place a script-that-never-
+forgets does better — zero tokens, no memory decay, silent unless it had to act. The framework is
+`scripts/invariants/`, run by `scripts/invariants_run.py` and gated by `scripts/git-hooks/pre-commit`.
+When you notice an agent repeating a "recheck X, heal if drifted" pattern across sessions, promote
+it to an invariant. Two corollaries earned the hard way: **an invariant that never blocks is
+decoration** — `context-budget` sat registered, VIOLATED, and `pre_commit_scope=False` while the
+always-loaded set grew from 17.6 KB to 62 KB — and **a check-adding commit must have that check's
+own tests as its gate**, since the `#46 c880f94` regression shipped when the mojibake hook protected
+downstream commits but not itself, stacking 4 commits on red main.
+
 **Cleanup operations against scene-attributed data must scope across all DBs that hold scene-attributed rows.** Generalizes the Fix E lesson (task #49): a cleanup path that prunes one DB but not its sibling leaves orphan derivatives that masquerade as canon on the next retrieval cycle. When a new DELETE or mutation operates on rows keyed to scene_id (or any cross-store attribution), scope it against both `knowledge.db` and `story.db` from the start, or explicitly document the opt-out with reason. Per the migration-audit follow-up at `docs/audits/2026-04-19-schema-migration-followups.md`.
 
 ---

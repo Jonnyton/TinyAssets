@@ -1,9 +1,5 @@
 {
-  "_comment": "Shared Claude Code config baseline for this repo. .claude/settings.json is gitignored (machine-local + OS-specific hook commands), so deny-lists and standard env can't propagate to fresh clones. This committed template carries the OS-agnostic, clearly-shareable parts; `python scripts/setup_claude_settings.py --apply` merges them into your local .claude/settings.json without clobbering local keys (allow-list, defaultMode, OS-specific hooks). Basis: docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md (R5/R6/R7). Two opt-in hooks ARE included below (ruff_autofix_on_write [PostToolUse], session_reflection_nudge [SessionEnd]); their commands are PowerShell-shaped, so a non-Windows operator should adjust shell/command. The pre-existing FUSE/team/feed hooks remain wired only in local settings.json -- their cross-platform propagation is still a host/DRI call.",
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_TEAMMATE_MODE": "in-process"
-  },
+  "_comment": "Shared Claude Code config baseline for this repo. .claude/settings.json is gitignored (machine-local + OS-specific hook commands), so deny-lists and standard env can't propagate to fresh clones. This committed template carries the OS-agnostic, clearly-shareable parts; `python scripts/setup_claude_settings.py --apply` merges them into your local .claude/settings.json without clobbering local keys. It carried two opt-in hooks (ruff_autofix_on_write, session_reflection_nudge) until the 2026-08-25 harness reset deleted them -- that wiring is also why they looked orphaned when only settings.json was grepped. Any hook added here must also be findable from settings.json, or the orphan check in docs/audits/2026-08-25-harness-reset-baseline.md lies.",
   "permissions": {
     "deny": [
       "Read(**/__pycache__/**)",
@@ -15,33 +11,6 @@
       "Read(**/.svelte-kit/**)",
       "Read(**/.wrangler/**)",
       "Read(**/lancedb/**)"
-    ]
-  },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/ruff_autofix_on_write.py\"",
-            "shell": "powershell",
-            "timeout": 35
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/session_reflection_nudge.py\"",
-            "shell": "powershell",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }

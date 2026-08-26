@@ -211,27 +211,26 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
 
 The site lives in `WebSite/site/`. For any non-trivial site edit read
 `.agents/skills/website-editing/SKILL.md` first — it owns the preview loop,
-capture conventions, build/ship pipeline, and FUSE quirks.
+capture conventions, and the build/ship pipeline.
 
 ---
 
-## Team Norms
+## Working Norms
 
-- **Claim before working.** Claiming communicates intent; file locking only
-  handles races.
-- **Verification is proactive.** Every substantive change gets independent
-  verification before landing (persistent verifier teammate in Claude Code;
-  focused tests + independent diff/subagent review elsewhere).
-- **Scope-message before implementing self-found tasks** — one line to the
-  lead, wait for approval; the step catches silent divergence.
-- **Stuck 3+ iterations on the same error** → pause, reflect ("what failed,
-  what specific change would fix it, am I repeating myself?"), then hand off
-  for fresh perspective. Don't loop forever.
-- **REFLECTION.md:** after a significant task, write what surprised you, one
-  pattern worth capturing, one thing you'd do differently; the lead folds
-  approved learnings into AGENTS.md or agent memory.
-- Harness-specific team mechanics (SendMessage, despawn protocol, floater
-  roster) live in `CLAUDE.md` / `LAUNCH_PROMPT.md` [Claude Code only].
+Two providers work this repo — Claude Code and Codex CLI — and they call each
+other as peers via the `peer-agents` skill. Neither runs a standing team.
+
+- **Verification is proactive and cross-family.** Every substantive change gets
+  independent verification before landing. The independent path is a subprocess
+  peer of the *other* family, on that subscription's budget — not a same-family
+  teammate reviewing its own family's work.
+- **Stuck 3+ iterations on the same error** → stop. Say what failed, what
+  specific change would fix it, and whether you are repeating yourself; then
+  hand it to the other family for fresh eyes. Don't loop.
+- **Record what the next session needs**, in the home that fits (see § *Two
+  Living Files*): a finding in `docs/concerns/`, a durable lesson in memory or a
+  skill, narrative in `.agents/activity.log`. A learning left only in chat is
+  lost work.
 
 ### Quality Gates
 
@@ -379,7 +378,7 @@ Inline invariants:
 | `scripts/provider_context_feed.py` | Any AI | Lifecycle context-feed checkpoints. |
 | `scripts/openspec_flow.py` | Any AI | OpenSpec WIP check + finish-first audit. |
 | `.agents/skills/*/SKILL.md` | Canonical | Skill definitions (edit here first; mirror via `scripts/sync-skills.ps1`). |
-| `.claude/agent-memory/<name>/` | Teammate `<name>` writes; all read | Per-teammate memory. Non-owners never write here. |
+| `.claude/agent-memory/<name>/` | `<name>` writes; all read | Per-agent memory. Non-owners never write here. |
 | `.agents/activity.log` | Any AI | Short cross-session activity feed. |
 | `ideas/*.md` | Any AI | Idea capture, triage, traceability. |
 | `docs/reference/*.md` | Any AI | Pointer-loaded canonical procedure docs. |
