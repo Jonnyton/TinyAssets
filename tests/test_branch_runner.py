@@ -54,6 +54,7 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
     from tinyassets.daemon_server import (
         ensure_universe_registered,
         grant_universe_access,
+        set_founder_home,
     )
 
     udir = base / RUNNER_UNIVERSE
@@ -68,16 +69,50 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
         permission="write",
         granted_by="runner_env",
     )
+    set_founder_home(
+        base,
+        founder_sub="tester",
+        universe_id=RUNNER_UNIVERSE,
+        platform_generated=True,
+    )
 
     from tinyassets import universe_server as us
     provider_calls = importlib.import_module("tinyassets.providers.call")
+    from tests.test_run_provider_session import (
+        _CountingProvider,
+        _seed_serving_assignment,
+    )
+    from tinyassets.providers.router import ProviderRouter
 
     importlib.reload(us)
-    monkeypatch.setattr(
-        provider_calls,
-        "call_provider",
-        lambda prompt, _system="", **_kwargs: f"fixture:{prompt}",
+    _seed_serving_assignment(
+        base,
+        owner_user_id="tester",
+        universe_id=RUNNER_UNIVERSE,
     )
+    provider = _CountingProvider()
+    provider_router = ProviderRouter({provider.name: provider})
+
+    def governed_provider_call(
+        prompt,
+        system="",
+        *,
+        role="writer",
+        config=None,
+        universe_context=None,
+        operation=None,
+        **_kwargs,
+    ):
+        return provider_router.call_sync(
+            role,
+            prompt,
+            system,
+            config,
+            universe_context=universe_context,
+            operation=operation,
+        ).text
+
+    monkeypatch.setattr(provider_calls, "call_provider", governed_provider_call)
     yield us, base
     importlib.reload(us)
 

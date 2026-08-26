@@ -63,6 +63,9 @@ class _ProcessRecordingProvider(BaseProvider):
             model="gpt-load-test",
             family=self.family,
             latency_ms=10.0,
+            input_tokens=70,
+            output_tokens=30,
+            cost_microunits=5,
         )
 
 

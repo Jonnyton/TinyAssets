@@ -20,6 +20,7 @@ from tinyassets.provider_work_authority import (
     ProviderInvocationLaunchRequest,
     ProviderInvocationReservationRequest,
     ProviderInvocationReservationState,
+    ProviderInvocationSettlementOwner,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
@@ -967,6 +968,21 @@ def _armed_carrier_records(tmp_path):
     return receipt, claim, result.record
 
 
+def test_router_settled_carrier_requires_durable_settler(tmp_path) -> None:
+    receipt, claim, result = _armed_carrier_result(tmp_path)
+    assert result.record is not None
+    assert result.mint_proof is not None
+
+    with pytest.raises(PermissionError, match="requires a durable settler"):
+        provider_authority._mint_provider_invocation_carrier(
+            receipt,
+            claim,
+            result.record,
+            result.mint_proof,
+            settlement_owner=ProviderInvocationSettlementOwner.ROUTER,
+        )
+
+
 def _armed_carrier(tmp_path):
     store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
     receipt = service.issue(root).record
@@ -1009,6 +1025,7 @@ def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> 
     carrier = _armed_carrier(tmp_path / "minted")
 
     assert carrier.provider == "codex"
+    assert carrier.settlement_owner is ProviderInvocationSettlementOwner.ROUTER
     assert carrier.role == "writer"
     assert carrier.max_tokens == 20_000
     assert carrier.max_cost_microunits == 1_000_000
@@ -1094,6 +1111,7 @@ def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> N
         claim,
         armed,
         mint_proof,
+        settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
     )
     with pytest.raises(PermissionError, match="proof"):
         provider_authority._mint_provider_invocation_carrier(
@@ -1101,7 +1119,35 @@ def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> N
             claim,
             armed,
             mint_proof,
+            settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
         )
+
+
+def test_conflicting_second_reservation_settlement_raises(tmp_path) -> None:
+    _receipt, _claim, result = _armed_carrier_result(tmp_path)
+    launched = result.record
+    assert launched is not None
+    store = SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW)
+
+    store._settle_carrier(
+        launched,
+        ProviderInvocationReservationState.SUCCEEDED,
+        70,
+        30,
+        5,
+    )
+    settled = store.get_reservation(launched.reservation_id)
+
+    with pytest.raises(PermissionError, match="settlement conflicted"):
+        store._settle_carrier(
+            launched,
+            ProviderInvocationReservationState.SUCCEEDED,
+            71,
+            30,
+            5,
+        )
+
+    assert store.get_reservation(launched.reservation_id) == settled
 
 
 def test_store_mint_proof_rejects_recomputed_reservation_identity(tmp_path) -> None:
@@ -1124,6 +1170,7 @@ def test_store_mint_proof_rejects_recomputed_reservation_identity(tmp_path) -> N
             claim,
             forged,
             result.mint_proof,
+            settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
         )
 
 
@@ -1149,6 +1196,7 @@ def test_self_consistent_forged_reservation_cannot_mint_or_validate(tmp_path) ->
                 claim,
                 forged,
                 mint_proof,
+                settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
             ).validate_for_call(
                 role="writer",
                 operation="repository_spec_delivery",
@@ -1159,6 +1207,7 @@ def test_self_consistent_forged_reservation_cannot_mint_or_validate(tmp_path) ->
         claim,
         armed,
         result.mint_proof,
+        settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
     )
     assert (
         carrier.validate_for_call(
@@ -1217,6 +1266,7 @@ def test_abandoned_mint_proof_and_carrier_release_process_registry(tmp_path) -> 
         claim,
         armed,
         mint_proof,
+        settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
     )
     carrier_id = carrier._carrier_id
     assert proof_id not in provider_store._ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS
@@ -1244,6 +1294,7 @@ def test_mint_proof_and_carrier_reject_cross_process_copy(
             claim,
             result.record,
             result.mint_proof,
+            settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
         )
 
     monkeypatch.undo()
@@ -1252,6 +1303,7 @@ def test_mint_proof_and_carrier_reject_cross_process_copy(
         claim,
         result.record,
         result.mint_proof,
+        settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
     )
     monkeypatch.setattr(provider_authority.os, "getpid", lambda: issuer_pid + 1)
     with pytest.raises(PermissionError, match="another process"):

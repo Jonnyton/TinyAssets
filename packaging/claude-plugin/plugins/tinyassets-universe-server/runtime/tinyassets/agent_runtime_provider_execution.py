@@ -42,6 +42,7 @@ from tinyassets.provider_work_authority import (
     ProviderInvocationReservation,
     ProviderInvocationReservationState,
     ProviderInvocationReservationWriteResult,
+    ProviderInvocationSettlementOwner,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
     ProviderWorkBindingRoot,
@@ -658,6 +659,28 @@ class AgentRuntimeProviderExecutionService:
                 blocker_detail="provider call did not return a confirmed result",
             )
 
+        usage = (
+            response.input_tokens,
+            response.output_tokens,
+            response.cost_microunits,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in usage
+        ):
+            return self._finalize_provider_outcome(
+                prepared,
+                launched,
+                state=AgentProviderOutcomeState.INDETERMINATE,
+                provider=carrier.provider,
+                model="",
+                family="",
+                latency_ms=None,
+                typed_output=None,
+                blocker_code="provider_usage_unavailable",
+                blocker_detail="provider response did not include complete usage",
+            )
+
         typed_output: dict[str, object] = {
             "kind": "provider_text",
             "text": response.text,
@@ -680,6 +703,9 @@ class AgentRuntimeProviderExecutionService:
                 typed_output=None,
                 blocker_code="provider_identity_mismatch",
                 blocker_detail="provider response did not match the armed provider",
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cost_microunits=response.cost_microunits,
             )
         if len(encoded_output) > MAX_AGENT_PROVIDER_OUTPUT_BYTES:
             return self._finalize_provider_outcome(
@@ -693,6 +719,9 @@ class AgentRuntimeProviderExecutionService:
                 typed_output=None,
                 blocker_code="provider_output_too_large",
                 blocker_detail="provider output exceeded the bounded result size",
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cost_microunits=response.cost_microunits,
             )
         return self._finalize_provider_outcome(
             prepared,
@@ -705,6 +734,9 @@ class AgentRuntimeProviderExecutionService:
             typed_output=typed_output,
             blocker_code=None,
             blocker_detail=None,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cost_microunits=response.cost_microunits,
         )
 
     def _current_provider_outcome_after_transition(
@@ -832,6 +864,9 @@ class AgentRuntimeProviderExecutionService:
         typed_output: dict[str, object] | None,
         blocker_code: str | None,
         blocker_detail: str | None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_microunits: int | None = None,
     ) -> AgentInvocationProviderOutcome:
         with self.invocation_store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -877,6 +912,9 @@ class AgentRuntimeProviderExecutionService:
                     blocker_code=blocker_code,
                     blocker_detail=blocker_detail,
                     created_at=self._clock(),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_microunits=cost_microunits,
                 )
                 conn.commit()
                 return outcome
@@ -1008,6 +1046,7 @@ class AgentRuntimeProviderExecutionService:
             result.claim,
             result.record,
             result.mint_proof,
+            settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
         )
 
     def _transition(

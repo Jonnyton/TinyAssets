@@ -18,7 +18,7 @@ import weakref
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
-from typing import Any, ContextManager, Protocol, runtime_checkable
+from typing import Any, Callable, ContextManager, Protocol, runtime_checkable
 
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 
@@ -337,6 +337,13 @@ class ProviderInvocationReservationState(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
+class ProviderInvocationSettlementOwner(str, Enum):
+    """Component responsible for durably settling a consumed carrier."""
+
+    ROUTER = "router"
+    CONSUMER = "consumer"
+
+
 _WORK_ITEM_KINDS = frozenset({"agent_invocation", "background_attempt", "branch_task", "run"})
 
 
@@ -407,6 +414,10 @@ class ProviderUniverseWorkAuthority:
     agent_invocation_command_id: str | None = None
     agent_invocation_command_digest: str | None = None
     agent_invocation_generation: int | None = None
+    parent_binding_id: str | None = None
+    parent_binding_generation: int | None = None
+    parent_binding_digest: str | None = None
+    parent_binding_revocation_generation: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.root, ProviderUniverseWorkRoot):
@@ -444,6 +455,23 @@ class ProviderUniverseWorkAuthority:
             minimum=0,
         )
         _timestamp(self.expires_at, "expires_at")
+        parent = (
+            self.parent_binding_id,
+            self.parent_binding_generation,
+            self.parent_binding_digest,
+            self.parent_binding_revocation_generation,
+        )
+        if any(value is not None for value in parent):
+            if any(value is None for value in parent):
+                raise ValueError("parent binding identity must be complete")
+            _reference(self.parent_binding_id, "parent_binding_id")
+            _integer(self.parent_binding_generation, "parent_binding_generation", minimum=1)
+            _digest(self.parent_binding_digest, "parent_binding_digest")
+            _integer(
+                self.parent_binding_revocation_generation,
+                "parent_binding_revocation_generation",
+                minimum=0,
+            )
 
 
 @runtime_checkable
@@ -488,6 +516,10 @@ class ProviderUniverseWorkReceipt:
     agent_invocation_command_id: str | None = None
     agent_invocation_command_digest: str | None = None
     agent_invocation_generation: int | None = None
+    parent_binding_id: str | None = None
+    parent_binding_generation: int | None = None
+    parent_binding_digest: str | None = None
+    parent_binding_revocation_generation: int | None = None
 
     _FIELDS_V1 = frozenset(
         {
@@ -529,9 +561,17 @@ class ProviderUniverseWorkReceipt:
             "agent_invocation_generation",
         }
     )
+    _FIELDS_V3 = _FIELDS_V2 | frozenset(
+        {
+            "parent_binding_id",
+            "parent_binding_generation",
+            "parent_binding_digest",
+            "parent_binding_revocation_generation",
+        }
+    )
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, 2}:
+        if self.schema_version not in {1, 2, 3}:
             raise ValueError("unsupported schema_version")
         if not isinstance(self.state, ProviderWorkReceiptState):
             raise ValueError("state must be typed")
@@ -573,6 +613,26 @@ class ProviderUniverseWorkReceipt:
                 agent_invocation_command_id=self.agent_invocation_command_id,
                 agent_invocation_command_digest=self.agent_invocation_command_digest,
                 agent_invocation_generation=self.agent_invocation_generation,
+            )
+        parent = (
+            self.parent_binding_id,
+            self.parent_binding_generation,
+            self.parent_binding_digest,
+            self.parent_binding_revocation_generation,
+        )
+        if self.schema_version < 3:
+            if any(value is not None for value in parent):
+                raise ValueError("legacy receipts cannot carry a parent binding")
+        else:
+            if any(value is None for value in parent):
+                raise ValueError("run receipt parent binding identity is incomplete")
+            _reference(self.parent_binding_id, "parent_binding_id")
+            _integer(self.parent_binding_generation, "parent_binding_generation", minimum=1)
+            _digest(self.parent_binding_digest, "parent_binding_digest")
+            _integer(
+                self.parent_binding_revocation_generation,
+                "parent_binding_revocation_generation",
+                minimum=0,
             )
         _digest(self.receipt_digest, "receipt_digest")
         _integer(self.generation, "generation", minimum=1)
@@ -642,7 +702,7 @@ class ProviderUniverseWorkReceipt:
             "expires_at": self.expires_at,
             "created_at": self.created_at,
         }
-        if self.schema_version == 2:
+        if self.schema_version >= 2:
             assert self.execution_subject is not None
             payload.update(
                 {
@@ -652,6 +712,17 @@ class ProviderUniverseWorkReceipt:
                     "agent_invocation_generation": self.agent_invocation_generation,
                 }
             )
+        if self.schema_version == 3:
+            payload.update(
+                {
+                    "parent_binding_id": self.parent_binding_id,
+                    "parent_binding_generation": self.parent_binding_generation,
+                    "parent_binding_digest": self.parent_binding_digest,
+                    "parent_binding_revocation_generation": (
+                        self.parent_binding_revocation_generation
+                    ),
+                }
+            )
         return payload
 
     @classmethod
@@ -659,7 +730,11 @@ class ProviderUniverseWorkReceipt:
         if not isinstance(data, dict):
             raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
         schema_version = data.get("schema_version")
-        expected = cls._FIELDS_V1 if schema_version == 1 else cls._FIELDS_V2
+        expected = {
+            1: cls._FIELDS_V1,
+            2: cls._FIELDS_V2,
+            3: cls._FIELDS_V3,
+        }.get(schema_version, cls._FIELDS_V3)
         if set(data) != expected:
             raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
         values = dict(data)
@@ -672,9 +747,20 @@ class ProviderUniverseWorkReceipt:
                 agent_invocation_command_id=None,
                 agent_invocation_command_digest=None,
                 agent_invocation_generation=None,
+                parent_binding_id=None,
+                parent_binding_generation=None,
+                parent_binding_digest=None,
+                parent_binding_revocation_generation=None,
             )
         else:
             values["execution_subject"] = ExecutionSubject.from_dict(values["execution_subject"])
+            if schema_version == 2:
+                values.update(
+                    parent_binding_id=None,
+                    parent_binding_generation=None,
+                    parent_binding_digest=None,
+                    parent_binding_revocation_generation=None,
+                )
         return cls(**values)
 
     def expected_digest(self) -> str:
@@ -841,8 +927,13 @@ class ProviderInvocationReservation:
     max_tokens: int
     max_cost_microunits: int
     created_at: str
+    actual_input_tokens: int | None = None
+    actual_output_tokens: int | None = None
+    actual_total_tokens: int | None = None
+    actual_cost_microunits: int | None = None
+    settled_at: str | None = None
 
-    _FIELDS = frozenset(
+    _FIELDS_V1 = frozenset(
         {
             "schema_version",
             "reservation_id",
@@ -862,9 +953,18 @@ class ProviderInvocationReservation:
             "created_at",
         }
     )
+    _FIELDS_V2 = _FIELDS_V1 | frozenset(
+        {
+            "actual_input_tokens",
+            "actual_output_tokens",
+            "actual_total_tokens",
+            "actual_cost_microunits",
+            "settled_at",
+        }
+    )
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version not in {1, 2}:
             raise ValueError("unsupported schema_version")
         if not isinstance(self.state, ProviderInvocationReservationState):
             raise ValueError("state must be typed")
@@ -889,9 +989,59 @@ class ProviderInvocationReservation:
             minimum=0,
         )
         _timestamp(self.created_at, "created_at")
+        actuals = (
+            self.actual_input_tokens,
+            self.actual_output_tokens,
+            self.actual_total_tokens,
+            self.actual_cost_microunits,
+        )
+        if self.schema_version == 1:
+            if any(value is not None for value in actuals) or self.settled_at is not None:
+                raise ValueError("schema_version 1 cannot carry settlement")
+            return
+        for name, value in zip(
+            (
+                "actual_input_tokens",
+                "actual_output_tokens",
+                "actual_total_tokens",
+                "actual_cost_microunits",
+            ),
+            actuals,
+            strict=True,
+        ):
+            if value is not None:
+                _integer(value, name, minimum=0)
+        terminal = self.state in {
+            ProviderInvocationReservationState.SUCCEEDED,
+            ProviderInvocationReservationState.FAILED,
+            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+            ProviderInvocationReservationState.INDETERMINATE,
+        }
+        if terminal != (self.settled_at is not None):
+            raise ValueError("terminal reservations require exactly one settlement timestamp")
+        if self.settled_at is not None:
+            _timestamp(self.settled_at, "settled_at")
+        known = self.state in {
+            ProviderInvocationReservationState.SUCCEEDED,
+            ProviderInvocationReservationState.FAILED,
+            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+        }
+        if known and any(value is None for value in actuals):
+            raise ValueError("known settlement requires complete actual usage")
+        if self.state is ProviderInvocationReservationState.INDETERMINATE and any(
+            value is not None for value in actuals
+        ):
+            raise ValueError("indeterminate settlement cannot claim actual usage")
+        if (
+            self.actual_input_tokens is not None
+            and self.actual_output_tokens is not None
+            and self.actual_total_tokens
+            != self.actual_input_tokens + self.actual_output_tokens
+        ):
+            raise ValueError("actual_total_tokens must equal input plus output")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "reservation_id": self.reservation_id,
             "reservation_digest": self.reservation_digest,
@@ -909,13 +1059,35 @@ class ProviderInvocationReservation:
             "max_cost_microunits": self.max_cost_microunits,
             "created_at": self.created_at,
         }
+        if self.schema_version == 2:
+            payload.update(
+                {
+                    "actual_input_tokens": self.actual_input_tokens,
+                    "actual_output_tokens": self.actual_output_tokens,
+                    "actual_total_tokens": self.actual_total_tokens,
+                    "actual_cost_microunits": self.actual_cost_microunits,
+                    "settled_at": self.settled_at,
+                }
+            )
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProviderInvocationReservation:
-        if not isinstance(data, dict) or set(data) != cls._FIELDS:
+        if not isinstance(data, dict):
+            raise ValueError("ProviderInvocationReservation fields do not match schema")
+        expected = cls._FIELDS_V1 if data.get("schema_version") == 1 else cls._FIELDS_V2
+        if set(data) != expected:
             raise ValueError("ProviderInvocationReservation fields do not match schema")
         values = dict(data)
         values["state"] = ProviderInvocationReservationState(values["state"])
+        if values["schema_version"] == 1:
+            values.update(
+                actual_input_tokens=None,
+                actual_output_tokens=None,
+                actual_total_tokens=None,
+                actual_cost_microunits=None,
+                settled_at=None,
+            )
         return cls(**values)
 
     def expected_digest(self) -> str:
@@ -988,6 +1160,8 @@ class ProviderInvocationCarrier:
         "_receipt",
         "_reservation",
         "_seal",
+        "_settler",
+        "_settlement_owner",
         "__weakref__",
     )
 
@@ -1035,6 +1209,37 @@ class ProviderInvocationCarrier:
     @property
     def binding_revocation_generation(self) -> int:
         return self._receipt.binding_revocation_generation
+
+    @property
+    def settlement_owner(self) -> ProviderInvocationSettlementOwner:
+        return self._settlement_owner
+
+    def settle(
+        self,
+        state: ProviderInvocationReservationState,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_microunits: int | None = None,
+    ) -> None:
+        """Durably settle this consumed carrier's exact reservation once."""
+
+        if type(self) is not ProviderInvocationCarrier:
+            raise PermissionError("provider invocation carrier is not server-owned")
+        with _PROVIDER_INVOCATION_CARRIER_LOCK:
+            if self._carrier_id in _ACTIVE_PROVIDER_INVOCATION_CARRIERS:
+                raise PermissionError("provider invocation carrier has not launched")
+        if self._settlement_owner is not ProviderInvocationSettlementOwner.ROUTER:
+            raise PermissionError("provider invocation settlement is consumer-owned")
+        if self._settler is None:
+            raise PermissionError("provider invocation carrier has no durable settler")
+        self._settler(
+            self._reservation,
+            state,
+            input_tokens,
+            output_tokens,
+            cost_microunits,
+        )
 
     def validate_for_call(self, *, role: str, operation: str) -> str:
         if type(self) is not ProviderInvocationCarrier:
@@ -1093,6 +1298,7 @@ def _provider_invocation_carrier_payload(
             "issuer_pid": carrier._issuer_pid,
             "receipt": carrier._receipt.to_dict(),
             "reservation": carrier._reservation.to_dict(),
+            "settlement_owner": carrier._settlement_owner.value,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -1114,6 +1320,19 @@ def _mint_provider_invocation_carrier(
     claim: ProviderWorkExecutionClaim,
     reservation: ProviderInvocationReservation,
     mint_proof: object,
+    *,
+    settlement_owner: ProviderInvocationSettlementOwner,
+    settler: Callable[
+        [
+            ProviderInvocationReservation,
+            ProviderInvocationReservationState,
+            int | None,
+            int | None,
+            int | None,
+        ],
+        None,
+    ]
+    | None = None,
 ) -> ProviderInvocationCarrier:
     """Mint after the authority store atomically wins ``launch_started``."""
 
@@ -1123,6 +1342,14 @@ def _mint_provider_invocation_carrier(
         raise TypeError("claim must be an exact ProviderWorkExecutionClaim")
     if type(reservation) is not ProviderInvocationReservation:
         raise TypeError("reservation must be an exact ProviderInvocationReservation")
+    if not isinstance(settlement_owner, ProviderInvocationSettlementOwner):
+        raise TypeError("provider invocation settlement owner must be typed")
+    if settler is not None and not callable(settler):
+        raise TypeError("provider invocation settler must be callable")
+    if settlement_owner is ProviderInvocationSettlementOwner.ROUTER and settler is None:
+        raise PermissionError("router-settled carrier requires a durable settler")
+    if settlement_owner is ProviderInvocationSettlementOwner.CONSUMER and settler is not None:
+        raise PermissionError("consumer-settled carrier cannot carry a router settler")
     from tinyassets.storage.provider_work_authority import (
         _ProviderInvocationStoreMintProof,
     )
@@ -1158,6 +1385,8 @@ def _mint_provider_invocation_carrier(
     object.__setattr__(carrier, "_receipt", receipt)
     object.__setattr__(carrier, "_claim", claim)
     object.__setattr__(carrier, "_reservation", reservation)
+    object.__setattr__(carrier, "_settler", settler)
+    object.__setattr__(carrier, "_settlement_owner", settlement_owner)
     object.__setattr__(
         carrier,
         "_seal",
@@ -1228,7 +1457,7 @@ def _receipt_from_authority(
 ) -> ProviderUniverseWorkReceipt:
     binding = authority.binding
     provisional = ProviderUniverseWorkReceipt(
-        schema_version=2,
+        schema_version=3 if authority.parent_binding_id is not None else 2,
         receipt_id=provider_work_receipt_id(
             universe_id=binding.universe_id,
             root=authority.root,
@@ -1263,6 +1492,12 @@ def _receipt_from_authority(
         agent_invocation_command_id=authority.agent_invocation_command_id,
         agent_invocation_command_digest=authority.agent_invocation_command_digest,
         agent_invocation_generation=authority.agent_invocation_generation,
+        parent_binding_id=authority.parent_binding_id,
+        parent_binding_generation=authority.parent_binding_generation,
+        parent_binding_digest=authority.parent_binding_digest,
+        parent_binding_revocation_generation=(
+            authority.parent_binding_revocation_generation
+        ),
     )
     return replace(
         provisional,
@@ -1300,7 +1535,7 @@ def _reservation_from_request(
     created_at: str,
 ) -> ProviderInvocationReservation:
     provisional = ProviderInvocationReservation(
-        schema_version=1,
+        schema_version=2,
         reservation_id=provider_invocation_reservation_id(
             receipt_id=request.receipt_id,
             invocation_key=request.invocation_key,
@@ -1383,6 +1618,8 @@ def provider_work_binding_class(
         return "serving"
     if allowed_operations == ("background_branch_run",):
         return "background_branch_run"
+    if allowed_operations == ("run_graph",):
+        return "run_graph"
     return "default"
 
 
@@ -1696,6 +1933,7 @@ __all__ = [
     "ProviderInvocationLaunchRequest",
     "ProviderInvocationReservationRequest",
     "ProviderInvocationReservationState",
+    "ProviderInvocationSettlementOwner",
     "ProviderInvocationReservationWriteResult",
     "ProviderWorkAuthorityStore",
     "ProviderWorkAuthorityWriteOutcome",
