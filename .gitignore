@@ -97,3 +97,4 @@ junit.xml
 .codex-*.txt
 .review/
 .tmp/
+.agents/supervisor/
