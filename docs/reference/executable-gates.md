@@ -3,7 +3,7 @@
 Which of this project's rules are enforced by something that can fail, where
 that enforcement runs, and which rules are deliberately still judgement.
 
-Written 2026-08-25 during the harness reset. The reset's rule was **every gate
+Written 2026-08-25 during the harness reset; authority paths added 2026-08-26. The reset's rule was **every gate
 is either executable or honestly labelled as judgement** — a rule that reads
 like a gate but enforces nothing is worse than no rule, because it buys
 confidence it has not earned.
@@ -18,7 +18,7 @@ confidence it has not earned.
 | No CP-1252 mojibake in tracked text | `mojibake` invariant | same |
 | Behavioural test gate on `main` | `required-tests` + `.github/known-failing-tests.txt` | required check |
 | Diff scope declared | `pr-scope-guard.yml` | required check |
-| Exact-head review receipt on gate-defining files | `scripts/drain_review_gate.py` | `pr-scope-guard.yml`, `auto-enroll-merge.yml` |
+| Exact-head review receipt on gate-defining **and authority-critical** files | `scripts/drain_review_gate.py` | `pr-scope-guard.yml`, `auto-enroll-merge.yml` |
 | Public MCP surface + canonical handles | `scripts/mcp_public_canary.py --assert-handles` | `deploy-prod.yml`, and by hand after DNS/tunnel/connector edits |
 | **Merged is not deployed** (Hard Rule 14) | `scripts/deployed_sha.py --assert-contains <sha>` | post-deploy, by hand or from a deploy job — **never** a merge-required check |
 
@@ -37,21 +37,24 @@ as fine), and `tests/test_validate_skills.py` had two tests failing with
 `FileNotFoundError` on `origin/main`, testing nothing. Neither was visible
 without trying to make them fail.
 
-## Deliberately still judgement
+## Cross-family review — partly enforced, and why only partly
 
-**Cross-family review** (`AGENTS.md` § *Project Skills* / § *Quality Gates*).
-Opposite-provider review gates build, push, and rollout for research-derived
-findings and high-risk changes. It is **not** mechanically enforced for product
-code, and the harness reset deliberately did not build a `crossfamily` gate.
+`AGENTS.md` requires opposite-provider review before build, push, and rollout for
+research-derived findings and high-risk changes. Two pieces of that are now
+executable; the rest is deliberately judgement.
 
-The plan proposed one that read a committed `.agents/verdicts/<sha>.json`.
-Codex refuted it, correctly: **committing the verdict changes the SHA it claims
-to approve**, and anything the author can write from their own checkout is
-self-attestation, not review.
+### What the reset did NOT build
 
-The sound mechanism already exists and is already wired —
-`scripts/drain_review_gate.py` requires an exact-head receipt in the **PR body**
-(GitHub-hosted, outside the commit, invalidated by any head change):
+The plan proposed a `crossfamily` gate reading a committed
+`.agents/verdicts/<sha>.json`. Codex refuted it, correctly: **committing the
+verdict changes the SHA it claims to approve**, and anything the author can write
+from their own checkout is self-attestation, not review. That gate was not built
+and should not be.
+
+### The sound mechanism, and where it fires
+
+`scripts/drain_review_gate.py` requires an exact-head receipt in the **PR body** —
+GitHub-hosted, outside the commit, invalidated by any head change:
 
 ```
 Drain-Review-Verdict: APPROVE
@@ -59,21 +62,40 @@ Drain-Review-Head: <40-char sha>
 Drain-Review-Artifact: docs/... | https://github.com/...
 ```
 
-Today it fires for `drain/` branches and, via `force=true`, for PRs touching the
-files that *define* the required-tests gate — `.github/workflows/`,
-`known-failing-tests.txt`, `ci_required_tests.py`, `drain_review_gate.py`,
-`deploy/`, `Dockerfile`. That is the "a PR can neuter its own judge" class.
+It fires on three classes, all from the trusted base checkout so a PR cannot
+weaken the rule judging it:
 
-It does **not** fire for the high-risk *product* paths `AGENTS.md` names — auth,
-storage, migration, concurrency, public-surface, data-loss. Closing that gap
-means adding those paths to `SENSITIVE_RE` in `pr-scope-guard.yml`, which reuses
-the proven mechanism and needs no new code.
+1. **`drain/` branches.**
+2. **Gate-defining files** — `.github/workflows/tests.yml`,
+   `known-failing-tests.txt`, `heavy-test-files.txt`, `ci_required_tests.py`,
+   `drain_review_gate.py`. The "a PR can neuter its own judge" class.
+3. **Authority-critical files** (added 2026-08-26) — `tinyassets/auth/`,
+   `credential_vault.py`, and `api/{permissions,interlocutor,visibility,engine_helpers}.py`.
 
-**That was left undone on purpose.** Widening a required check's scope changes
-what merges, which is a founder policy decision, not a harness cleanup — and a
-reset whose premise is "this project over-built process" should not quietly add
-review requirements on its way out. Recorded here so the choice is visible
-rather than forgotten. See `docs/host-actions.md` if you decide to take it.
+Class 3 exists because `AGENTS.md` *already* required exact-head approval for
+auth and public-surface changes and nothing enforced it. Making a stated rule
+executable is not new process; inventing a requirement because it feels safer
+would be.
+
+**Scoped to where the repeat actually happened.** Every file in class 3 is named
+in an open finding in `docs/concerns/` — the write-ACL tier grant
+(`interlocutor.py`), the ambient identity fallback (`engine_helpers.py`), founder
+canon defaulting public (`visibility.py`), the credential-vault fail-open. All of
+them **landed** and were found later by cross-family review. The gap was never
+"no review" — it was review not bound to the merge, which is exactly what an
+exact-head receipt binds.
+
+**Deliberately narrow: ~7% of recent commits touch these paths.** A blanket
+receipt requirement across `tinyassets/` would be the process bloat this reset
+removed. The regex is mutation-tested: it matches all seven authority files and
+rejects ordinary product work, the generated `packaging/` mirror, and lookalike
+filenames such as `visibility_helpers.py`.
+
+### Still judgement
+
+Everything else. Whether a *design* is right, whether a finding is real, whether
+a shape should ship — no path regex reaches those. Cross-family review of
+judgement-class decisions stays a norm, dispatched via `peer-agents`.
 
 ## Not gates, and should not become gates
 

@@ -135,6 +135,31 @@ jobs:
           GATE_RE='^(\.github/workflows/tests\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
           GATE_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$GATE_RE" || true)"
 
+          # AUTHORITY paths carry the same receipt requirement, for a different
+          # reason: a bug here is privilege escalation or credential disclosure,
+          # not a broken build. AGENTS.md already REQUIRES exact-head approval
+          # for auth/storage/public-surface changes -- this makes that stated
+          # rule executable rather than adding a new one.
+          #
+          # Scoped to where the repeat actually happened. Every file below is
+          # named in an open finding in docs/concerns/: the write-ACL tier grant
+          # (api/interlocutor.py), the ambient identity fallback
+          # (api/engine_helpers.py), founder canon defaulting public
+          # (api/visibility.py), and the credential-vault fail-open. The shared
+          # shape is that all of them LANDED and were found later by
+          # cross-family review -- the gap is not "no review", it is review not
+          # bound to the merge, which is exactly what an exact-head receipt
+          # binds.
+          #
+          # Deliberately narrow: ~7% of recent commits touch these paths. A
+          # blanket receipt requirement across tinyassets/ would be the process
+          # bloat this repo just removed.
+          AUTHORITY_RE='^tinyassets/(auth/|credential_vault\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$AUTHORITY_RE" || true)"
+          if [ -n "$AUTHORITY_HITS" ]; then
+            GATE_HITS="$(printf '%s\n%s\n' "$GATE_HITS" "$AUTHORITY_HITS" | sed '/^$/d')"
+          fi
+
           # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
           # itself forces (stale quarantine entries fail the run) and only
           # tightens the ratchet. ADDING a quarantine line is the bypass
@@ -198,11 +223,11 @@ jobs:
               {
                 echo "### PR scope guard"
                 echo ""
-                echo "**Blocked — this PR edits the required-tests gate itself:**"
+                echo "**Blocked — this PR edits gate-defining or authority-critical files:**"
                 # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
                 printf '%s\n' "$GATE_HITS" | sed 's/^/- `/; s/$/`/'
                 echo ""
-                echo "Gate-defining files need an exact-head review receipt in the PR body"
+                echo "These files need an exact-head review receipt in the PR body"
                 echo "(Drain-Review-Verdict: APPROVE / Drain-Review-Head: <head sha> /"
                 echo "Drain-Review-Artifact: <path-or-url>). Re-stamp after every push."
               } >> "$GITHUB_STEP_SUMMARY"

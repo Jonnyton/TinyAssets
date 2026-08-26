@@ -226,8 +226,10 @@ judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-ga
   `Diff scope declared`, `required-tests`, `strict` on. `required-tests` fails
   on any failure not in `.github/known-failing-tests.txt` — a one-way ratchet
   on a scope-guarded path.
-- **High-risk PRs stay draft until exact-head approval.** Any head-changing
-  update reverts them to draft.
+- **High-risk PRs stay draft until exact-head approval**, and for auth,
+  credential, and permission paths this is enforced — `pr-scope-guard`
+  demands an exact-head receipt in the PR body. Any head-changing update
+  invalidates it.
 - **Final chatbot-surface proof is a rendered chatbot conversation** through
   the live connector at `https://tinyassets.io/mcp` (`ui-test`). Direct MCP
   calls, scripts, and canaries are supporting evidence, never final proof.
