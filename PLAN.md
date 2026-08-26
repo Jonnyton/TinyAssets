@@ -601,10 +601,14 @@ harness orchestrates invocation).
 **Principles:**
 - *Harness design is part of the cognition stack.* Browser harnesses, builder
   automation, traces, regression tests, and dashboards materially improve system
-  intelligence by making behavior legible and correctable. NVIDIA's AVO result —
-  the same model going from ~30% to 100% on ARC-AGI-3 on harness changes alone —
-  is the external evidence; this repo's own 62 KB → 25 KB always-loaded
-  reduction is the internal one.
+  intelligence by making behavior legible and correctable. NVIDIA's AVO reports
+  100 RHAE across all 25 public ARC-AGI-3 environments using 12.17% fewer actions
+  than VISTA (6,624 vs 7,542) — but NVIDIA states this is **not a controlled
+  ablation**, so "the harness alone caused 30% → 100%" is not a claim the
+  evidence supports. What AVO does establish is that one architecture — inspect/
+  plan/edit/evaluate over a scored git lineage, persistent history, and a
+  supervisor responding to stalled *evaluated* search — transferred across
+  unrelated domains without redesign.
 - *Two living files, and live state is typed.* AGENTS.md = how to work.
   PLAN.md = how the system works. Live state has homes by KIND rather than one
   always-loaded board: `openspec/changes/` (queue), `docs/concerns/` (unresolved

@@ -1,42 +1,43 @@
 #!/usr/bin/env python3
-"""Trajectory supervisor — watch the shape of a session, not the step.
+"""Trajectory supervisor — watch evaluated progress, not activity.
 
-AVO's harness has a supervisor layer that "monitors the broader trajectory for
-stagnation or repeated unproductive cycles and can redirect the main agent
-toward alternative strategies." This project had that only as prose in
-`AGENTS.md` ("stuck 3+ iterations → hand off"), enforced by nothing. Its absence
-is the direct mechanism of "endless process": nothing in the harness could
-observe that a session had been busy for an hour and landed nothing.
+AVO's supervisor "monitors the broader trajectory for stagnation or repeated
+unproductive cycles and can redirect the main agent toward alternative
+strategies". The word doing the work is **evaluated**: AVO's loop is
+inspect/plan/edit/**evaluate** over a scored git lineage, and its supervisor
+responds to a stalled *evaluated* search — not to a busy one.
 
-Three predicates, deliberately narrow:
+**One predicate: `repeat_failure`.** The same normalized command failing
+identically N times since the last commit. That is outcome-centred — a test or
+gate result is an evaluation, and repeating an evaluation that keeps returning
+the same failure is the stall AVO's supervisor exists to break. It matches the
+number `AGENTS.md` already uses (stuck 3+ iterations) rather than inventing one.
 
-* ``repeat_failure`` — the same normalized command failed identically N times.
-  The clearest stuck-loop signal there is, and the one the prose rule named.
-* ``edit_thrash``    — the same file edited N times with no commit in between.
-* ``no_landing``     — many tool calls since the last commit.
+**Two predicates were deleted 2026-08-26 after a cross-family review.**
+`edit_thrash` (same file edited 5x) and `no_landing` (40 tool calls without a
+commit) measured *activity*, not progress: five edits and forty commands say
+nothing about whether the work is converging, and their thresholds were
+arbitrary where 3 at least had a precedent. Supervising activity is how a
+supervisor becomes noise, and a noisy supervisor gets ignored — which is worse
+than none, because it costs tokens and trains the reader to skip its output.
 
-**On false positives.** The reset plan originally proposed a fourth predicate:
-N consecutive commits with zero product-line churn. Codex refuted it — that
-fires on legitimate spec, docs, and security work, *including the harness reset
-that introduced this file*. It was right, and the refutation is kept as a test
-(`test_reset_shaped_session_does_not_trip`). What replaced it is `no_landing`,
-which measures *repetition without progress* rather than which directories a
-commit happened to touch. A long docs lane that keeps committing is working; a
-session that has made 60 tool calls and committed nothing is not, whatever
-directory it is in.
+An earlier design also proposed a zero-product-churn predicate. Codex refuted
+it — it fires on legitimate spec, docs, and security work, *including the
+harness reset that introduced this file*. That refutation is kept as an
+executable test (`test_reset_shaped_session_does_not_trip`).
 
-Every predicate is a **warning with evidence**, never a block. A supervisor that
-stops the session would be a new ratchet, which is the thing this reset removed.
+Warnings only, never blocking. A supervisor that can stop a session is a new
+ratchet, and ratchets are what this reset removed.
 
 CLI:
 
     python scripts/supervisor.py record --kind edit --target tinyassets/x.py
     python scripts/supervisor.py check          # human-readable
     python scripts/supervisor.py check --json
-    python scripts/supervisor.py reset          # clear the log
+    python scripts/supervisor.py reset          # clear the event log
 
-The store is `.agents/supervisor/events.jsonl`, gitignored, capped, and pruned
-by age on every write.
+The store is `.agents/supervisor/events.jsonl`, gitignored, capped by count and
+age, session-scoped, and reset by a commit.
 """
 
 from __future__ import annotations
@@ -64,8 +65,6 @@ MAX_AGE_SECONDS = 24 * 3600
 # Thresholds. AGENTS.md's prose rule says "stuck 3+ iterations", so
 # repeat_failure matches it exactly rather than inventing a new number.
 REPEAT_FAILURE_N = 3
-EDIT_THRASH_N = 5
-NO_LANDING_CALLS = 40
 
 # Commands whose repetition is meaningful. A failing `ls` is not a stuck loop.
 _INTERESTING = re.compile(
@@ -241,58 +240,7 @@ def repeat_failure(events: list[dict[str, Any]]) -> Finding | None:
     return None
 
 
-def edit_thrash(events: list[dict[str, Any]]) -> Finding | None:
-    """Same file edited N times with nothing landed in between."""
-    counts: dict[str, int] = {}
-    for e in _since_last_commit(events):
-        if e.get("kind") != "edit":
-            continue
-        target = e.get("target") or ""
-        if target:
-            counts[target] = counts.get(target, 0) + 1
-    for target, n in counts.items():
-        if n >= EDIT_THRASH_N:
-            return Finding(
-                predicate="edit_thrash",
-                summary=f"{target} has been edited {n} times with no commit in between",
-                evidence={"file": target, "count": n},
-                redirect=(
-                    f"You have rewritten {target} {n} times without landing "
-                    "anything. That usually means the problem is understood "
-                    "differently than the code assumes. Re-read the failing "
-                    "output before the next edit, or commit what works and "
-                    "isolate what does not."
-                ),
-            )
-    return None
-
-
-def no_landing(events: list[dict[str, Any]]) -> Finding | None:
-    """Many tool calls, nothing committed.
-
-    This replaces the plan's zero-product-churn predicate. It measures
-    repetition without progress instead of which directories a commit touched,
-    so a legitimate docs, spec, or security lane that keeps committing never
-    trips it.
-    """
-    pending = _since_last_commit(events)
-    calls = [e for e in pending if e.get("kind") in {"edit", "command"}]
-    if len(calls) >= NO_LANDING_CALLS:
-        return Finding(
-            predicate="no_landing",
-            summary=f"{len(calls)} tool calls since the last commit",
-            evidence={"calls": len(calls), "threshold": NO_LANDING_CALLS},
-            redirect=(
-                "Nothing has landed in a long stretch of work. Commit what is "
-                "already correct so it is not at risk, then name the single "
-                "next thing that would make progress. If you cannot name it, "
-                "that is the signal to change approach or ask."
-            ),
-        )
-    return None
-
-
-PREDICATES = (repeat_failure, edit_thrash, no_landing)
+PREDICATES = (repeat_failure,)
 
 
 def check(store: Path | None = None, sid: str | None = None) -> list[Finding]:
@@ -305,79 +253,6 @@ def check(store: Path | None = None, sid: str | None = None) -> list[Finding]:
     events = [e for e in load(store) if e.get("sid") == current]
     findings = [f for f in (p(events) for p in PREDICATES) if f is not None]
     return findings
-
-
-def resume(store: Path | None = None, sid: str | None = None) -> dict[str, Any]:
-    """What has already been tried in this lane, and what happened.
-
-    AVO's persistent memory exists so the agent can "resume from the current
-    state rather than repeatedly reconstructing the search". Every other memory
-    surface in this repo records CONCLUSIONS -- durable lessons
-    (`.claude/agent-memory/`), known-bad findings (`docs/concerns/`), what
-    landed (the git log). None answers the question a resuming session actually
-    has: *what did the last session already attempt here, and did it work?*
-
-    Without that, a session re-derives context and can re-attempt an approach
-    that was already disproved. The cost is paid before a PR exists, which is
-    why no per-PR metric shows it.
-
-    Scoped to the current session and reset by a commit, for the same reason the
-    predicates are: a commit is the unit of landed work, and what came before it
-    is history rather than live state.
-    """
-    events = [e for e in load(store) if e.get("sid") == (sid if sid is not None else session_id())]
-    pending = _since_last_commit(events)
-
-    failed: dict[str, dict[str, Any]] = {}
-    passed: set[str] = set()
-    for e in pending:
-        if e.get("kind") != "command":
-            continue
-        detail = e.get("detail") or {}
-        cmd = detail.get("normalized") or ""
-        code = detail.get("exit_code")
-        if not cmd:
-            continue
-        if isinstance(code, int) and code != 0:
-            row = failed.setdefault(cmd, {"command": cmd, "exit_code": code, "count": 0})
-            row["count"] += 1
-            row["exit_code"] = code
-        else:
-            passed.add(cmd)
-
-    # A command that later succeeded is no longer a dead end -- do not warn a
-    # resuming session away from something that now works.
-    tried = [v for k, v in failed.items() if k not in passed]
-    tried.sort(key=lambda r: -r["count"])
-
-    touched: dict[str, int] = {}
-    for e in pending:
-        if e.get("kind") == "edit" and e.get("target"):
-            touched[e["target"]] = touched.get(e["target"], 0) + 1
-
-    return {
-        "failed_attempts": tried,
-        "succeeded": sorted(passed),
-        "files_touched": sorted(touched.items(), key=lambda kv: -kv[1]),
-        "events_since_commit": len(pending),
-    }
-
-
-def render_resume(state: dict[str, Any]) -> str:
-    """One compact block, or empty when there is nothing worth saying."""
-    if not state["failed_attempts"] and not state["files_touched"]:
-        return ""
-    lines = ["Resume state (this lane, since the last commit):"]
-    for row in state["failed_attempts"][:5]:
-        lines.append(
-            f"  tried and FAILED x{row['count']} (exit {row['exit_code']}): {row['command'][:110]}"
-        )
-    if state["files_touched"]:
-        top = ", ".join(f"{f} x{n}" for f, n in state["files_touched"][:5])
-        lines.append(f"  files already edited: {top}")
-    if state["failed_attempts"]:
-        lines.append("  Change the approach or hand it to the other family.")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------- CLI
@@ -406,9 +281,6 @@ def main(argv: list[str] | None = None) -> int:
     chk = sub.add_parser("check", help="evaluate the predicates")
     chk.add_argument("--json", action="store_true")
 
-    res = sub.add_parser("resume", help="what was already tried in this lane")
-    res.add_argument("--json", action="store_true")
-
     sub.add_parser("reset", help="clear the event log")
 
     args = ap.parse_args(argv)
@@ -421,14 +293,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.exit_code is not None:
             detail["exit_code"] = args.exit_code
         record(args.kind, args.target, detail)
-        return 0
-
-    if args.cmd == "resume":
-        state = resume()
-        if args.json:
-            print(json.dumps(state, indent=2))
-        else:
-            print(render_resume(state) or "supervisor: nothing tried yet in this lane")
         return 0
 
     if args.cmd == "reset":

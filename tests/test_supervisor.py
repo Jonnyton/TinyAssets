@@ -147,46 +147,6 @@ def test_a_commit_resets_repeat_failure(sup):
     assert sup.check(sid="test-session") == []
 
 
-def test_edit_thrash_trips_on_repeated_edits_without_a_commit(sup):
-    write(sup, [
-        {"ts": i, "kind": "edit", "target": "tinyassets/api/universe.py", "detail": {}}
-        for i in range(5)
-    ])
-
-    findings = sup.check(sid="test-session")
-
-    assert [f.predicate for f in findings] == ["edit_thrash"]
-    assert findings[0].evidence["file"] == "tinyassets/api/universe.py"
-
-
-def test_edits_spread_across_files_do_not_trip(sup):
-    """Broad work is not thrash. Only the SAME file repeating counts."""
-    write(sup, [
-        {"ts": i, "kind": "edit", "target": f"tinyassets/mod_{i}.py", "detail": {}}
-        for i in range(12)
-    ])
-
-    assert [f.predicate for f in sup.check(sid="test-session")] == []
-
-
-def test_no_landing_trips_after_many_calls_without_a_commit(sup):
-    write(sup, [
-        {"ts": i, "kind": "edit", "target": f"f{i}.py", "detail": {}}
-        for i in range(sup.NO_LANDING_CALLS)
-    ])
-
-    assert "no_landing" in [f.predicate for f in sup.check(sid="test-session")]
-
-
-def test_no_landing_resets_on_commit(sup):
-    events = [{"ts": i, "kind": "edit", "target": f"f{i}.py", "detail": {}}
-              for i in range(sup.NO_LANDING_CALLS)]
-    events.append({"ts": 999, "kind": "commit", "target": "", "detail": {}})
-    write(sup, events)
-
-    assert "no_landing" not in [f.predicate for f in sup.check(sid="test-session")]
-
-
 # ----------------------------------------------------- Codex's refutation
 
 
@@ -309,65 +269,13 @@ def test_stale_events_are_pruned_even_in_a_small_log(sup):
     assert sup.check(sid="test-session") == [], "stale events tripped a predicate"
 
 
-# ------------------------------------------------------- resume (AVO memory)
+def test_only_outcome_based_predicates_remain(sup):
+    """Guard the 2026-08-26 decision: supervise evaluated progress, not activity.
 
-
-def test_resume_reports_a_dead_end(sup):
-    """The whole point: a resuming session learns what was already disproved."""
-    write(sup, [cmd_event(sup, "pytest tests/test_auth.py -k rotation", 1, ts=i)
-                for i in range(3)])
-
-    state = sup.resume(sid=SID)
-
-    assert len(state["failed_attempts"]) == 1
-    assert state["failed_attempts"][0]["count"] == 3
-    assert state["failed_attempts"][0]["exit_code"] == 1
-    assert "FAILED x3" in sup.render_resume(state)
-
-
-def test_resume_does_not_report_a_command_that_later_succeeded(sup):
-    """A dead end that stopped being one must not warn the next session off it."""
-    write(sup, [
-        cmd_event(sup, "pytest tests/test_auth.py", 1, ts=0),
-        cmd_event(sup, "pytest tests/test_auth.py", 1, ts=1),
-        cmd_event(sup, "pytest tests/test_auth.py", 1, ts=2),
-        cmd_event(sup, "pytest tests/test_auth.py", 0, ts=3),
-    ])
-
-    assert sup.resume(sid=SID)["failed_attempts"] == []
-
-
-def test_resume_resets_on_commit(sup):
-    """Memory is scoped to the live lane; a commit makes it history."""
-    write(sup, [
-        cmd_event(sup, "pytest x", 1, ts=0),
-        cmd_event(sup, "pytest x", 1, ts=1),
-        {"ts": 2, "kind": "commit", "target": "", "detail": {}},
-    ])
-
-    assert sup.resume(sid=SID)["failed_attempts"] == []
-
-
-def test_resume_is_silent_when_there_is_nothing_to_say(sup):
-    """Silence is the common case; a noisy resume banner trains people to skip it."""
-    write(sup, [cmd_event(sup, "pytest x", 0, ts=0)])
-
-    assert sup.render_resume(sup.resume(sid=SID)) == ""
-
-
-def test_resume_is_session_scoped(sup):
-    """Another session's dead ends are not this session's."""
-    write(sup, [cmd_event(sup, "pytest y", 1, ts=i, sid="other") for i in range(3)],
-          sid="other")
-
-    assert sup.resume(sid=SID)["failed_attempts"] == []
-
-
-def test_resume_surfaces_repeatedly_edited_files(sup):
-    write(sup, [{"ts": i, "kind": "edit", "target": "tinyassets/auth/middleware.py",
-                 "detail": {}} for i in range(4)])
-
-    state = sup.resume(sid=SID)
-
-    assert state["files_touched"][0] == ("tinyassets/auth/middleware.py", 4)
-    assert "already edited" in sup.render_resume(state)
+    edit_thrash (5 edits) and no_landing (40 calls) were deleted after a
+    cross-family review pointed out they measure busyness. Re-adding an
+    activity predicate should have to break this test and argue for it.
+    """
+    assert [p.__name__ for p in sup.PREDICATES] == ["repeat_failure"]
+    assert not hasattr(sup, "EDIT_THRASH_N")
+    assert not hasattr(sup, "NO_LANDING_CALLS")
