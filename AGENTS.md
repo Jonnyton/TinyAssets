@@ -267,9 +267,19 @@ judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-ga
 - **Hot-path rewrites use differential testing:** keep the original verbatim
   in the suite as executable spec; differential-test the rewrite (randomized
   tie-heavy trials + scale gate). Reference: `tests/test_match_scale.py`.
-- **Sandbox test-temp hygiene:** point sandbox `--basetemp`/`TMPDIR` OUTSIDE
-  the repo. Sandbox-created in-repo temp dirs on Windows carry ACLs that
-  survive teardown and need elevated `takeown`+`icacls` to clear.
+- **Never point a temp root inside the repo.** `tests/conftest.py` enforces
+  this: pytest refuses to start if `--basetemp`, `TMPDIR`, `TEMP`, `TMP`, or
+  `PYTEST_DEBUG_TEMPROOT` resolves under the repo root. A sandboxed agent
+  (Codex, Cursor) creates those dirs under a **restricted token**, and on
+  Windows the ACL that results is owned by a sandbox group
+  (`DESKTOP-<host>\CodexSandboxUsers`) with inheritance disabled and no entry
+  for you. You cannot delete them, cannot list them, and cannot even read the
+  ACL — `Get-Acl` returns *"Attempted to perform an unauthorized operation"*.
+  They survive `git worktree remove`, and a reboot does not help because it is
+  an ACL, not a held handle. Cleanup needs an **elevated**
+  `powershell -File scripts/clear_sandbox_temp_dirs.ps1 -Apply`; that script
+  auto-protects every registered worktree and refuses to touch a directory
+  holding files. 17 such husks were left behind on 2026-08-25.
 
 ---
 

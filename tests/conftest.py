@@ -7,6 +7,7 @@ that all test modules can reuse.
 from __future__ import annotations
 
 import os
+import pathlib
 import tempfile
 from collections.abc import Sequence
 from typing import Any, Callable
@@ -16,6 +17,47 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Refuse to run if pytest's temp root is inside the repo.
+
+    A sandboxed agent (Codex, Cursor) that redirects ``--basetemp``/``TMPDIR``
+    into the checkout creates those directories under a RESTRICTED TOKEN. On
+    Windows the resulting ACL is owned by e.g. ``CodexSandboxUsers`` and denies
+    the interactive user everything -- not just delete, but even reading the
+    ACL. They then survive ``git worktree remove`` and need an elevated
+    ``takeown`` to clear. Seventeen such husks were left behind on 2026-08-25
+    and could not be removed from an ordinary shell.
+
+    Failing here costs one clear error; the alternative costs an elevated
+    cleanup and a directory nobody can delete. See ``AGENTS.md`` § *Testing*
+    and ``scripts/clear_sandbox_temp_dirs.ps1``.
+    """
+    roots: list[tuple[str, str]] = []
+    basetemp = config.getoption("basetemp", default=None)
+    if basetemp:
+        roots.append(("--basetemp", str(basetemp)))
+    for var in ("PYTEST_DEBUG_TEMPROOT", "TMPDIR", "TEMP", "TMP"):
+        value = os.environ.get(var)
+        if value:
+            roots.append((var, value))
+
+    for label, raw in roots:
+        try:
+            resolved = pathlib.Path(raw).resolve()
+        except (OSError, ValueError):
+            continue
+        if resolved == _REPO_ROOT or _REPO_ROOT in resolved.parents:
+            raise pytest.UsageError(
+                f"{label}={raw!r} points INSIDE the repo ({_REPO_ROOT}). "
+                "Sandbox-created temp dirs here get an ACL the interactive user "
+                "cannot delete and that survives worktree teardown. Point it at "
+                "the system temp dir instead."
+            )
+
 
 # Force mock provider responses in all tests to avoid real API calls
 from tinyassets.providers import call as _provider_call
