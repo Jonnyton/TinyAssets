@@ -88,3 +88,16 @@ git -C ../<worktree> apply docs/audits/harness-reset-preserved/<worktree>--<bran
 
 Nothing here is on any branch's history. This directory **is** the only copy — do not delete it
 without confirming each file is either superseded on `main` or genuinely unwanted.
+## CI run artifacts (also unknown to git)
+
+`wf-p0-30495376702-artifact` and `wf-p0-30504334373-artifact` each hold 5 small JSON diagnostics
+(`cleanup-observation`, `fence-status`, `preflight`, `receipt_snapshot_before`, `unsafe-fence`) from
+two P0 workflow runs. Preserved because Actions artifacts expire and these are the only local copy.
+
+## Checked and NOT preserved
+
+- `wf-drain-preserved-20260802-132145-5c093f-a003` — a **prior** rescue of 7 flattened files. All 7
+  hash to objects already in git; that rescue was folded back successfully. Its flattened names
+  (`packaging__claude-plugin__…`) dodged the path-based scan, so it was hash-checked individually.
+- ~590 files under `WebSite/site-react/out/` across 5 directories — build output.
+- `wf-codex-pr-scope-audit-method-20260504`, `wf-docs`, `wf-fence-fix`, `wf-pr1489-verify` — empty.
