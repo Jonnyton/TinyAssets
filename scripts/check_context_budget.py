@@ -13,10 +13,9 @@ Two budget classes:
   * HARD  — a ceiling the project has committed to. Enforcing a stated
             contract is not a judgement call, so `--strict` exits 2 when a
             HARD budget is exceeded.
-  * SOFT  — an advisory target (AGENTS.md / CLAUDE.md). The exact ceiling is a
-            host call, so SOFT overages only WARN, never fail — even under
-            --strict. Tune the numbers in CONFIG below; the point is that drift
-            becomes visible in a PR/hook instead of silent.
+  * SOFT  — advisory; WARNs but never fails, even under --strict. No entry is
+            SOFT today; the class is kept for content whose ceiling is a
+            genuine judgement call rather than a committed limit.
 
 Usage:
   python scripts/check_context_budget.py            # report table, exit 0
@@ -42,23 +41,27 @@ class Budget:
     max_lines: int
     note: str
 
-
 # Always-loaded set: CLAUDE.md imports @AGENTS.md, so both load every session.
 # PLAN.md is intentionally NOT imported (pointer-loaded), so it is not budgeted.
 # STATUS.md was retired 2026-08-25 and left this set entirely.
 #
-# Both entries are SOFT while the harness reset is mid-flight. They flip to HARD
-# with retuned ceilings once AGENTS.md and CLAUDE.md are cut down -- setting a
-# hard ceiling before the cut would just wire a red gate to a known-red file.
+# These are HARD, and set just above what the 2026-08-25 harness reset actually
+# achieved (AGENTS 18,487 B / 312 lines; CLAUDE 6,429 B / 115 lines; combined
+# 24,916 B). That is the point: a ceiling set at the achieved value is a
+# ratchet; one set at a comfortable round number is a wish. This set grew from
+# ~17.6 KB (2026-04-28) to 62,082 B under SOFT budgets that only warned, with
+# the invariant registered and VIOLATED the whole time. Loosening a number here
+# is now a deliberate, reviewable edit -- that mechanism was what was missing,
+# not the measurement.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "soft", 30000, 450,
-           "Cross-provider canonical; soft target -- was ~17.6 KB on 2026-04-28."),
-    Budget("CLAUDE.md", "soft", 12000, 200,
-           "Claude Code router; should stay a thin pointer layer."),
+    Budget("AGENTS.md", "hard", 20000, 340,
+           "Cross-provider canonical. Move procedure to docs/reference/, not into here."),
+    Budget("CLAUDE.md", "hard", 8000, 140,
+           "Claude Code router; harness quirks only, a thin layer over AGENTS.md."),
 )
 
-# Soft ceiling for the combined always-loaded payload (~10K tokens ≈ 40 KB).
-COMBINED_SOFT_BYTES = 40000
+# HARD ceiling for the combined always-loaded payload (~7K tokens).
+COMBINED_HARD_BYTES = 28000
 
 
 @dataclass
@@ -105,7 +108,10 @@ def measure(budget: Budget, root: Path) -> Result:
 def run(root: Path) -> tuple[list[Result], int, bool]:
     results = [measure(b, root) for b in CONFIG]
     combined = sum(r.bytes for r in results if r.exists)
-    hard_busted = any(r.kind == "hard" and r.over for r in results)
+    hard_busted = (
+        any(r.kind == "hard" and r.over for r in results)
+        or combined > COMBINED_HARD_BYTES
+    )
     return results, combined, hard_busted
 
 
@@ -120,10 +126,10 @@ def _fmt_table(results: list[Result], combined: int) -> str:
             f"{r.bytes:>7}/{r.max_bytes:<6} {r.status}"
         )
     rows.append("-" * 62)
-    combined_flag = "  (!) over soft" if combined > COMBINED_SOFT_BYTES else ""
+    combined_flag = "  (!) OVER-HARD" if combined > COMBINED_HARD_BYTES else ""
     rows.append(
-        f"{'COMBINED':<12} {'soft':<5} {'':>6} {'':<5} "
-        f"{combined:>7}/{COMBINED_SOFT_BYTES:<6} always-loaded{combined_flag}"
+        f"{'COMBINED':<12} {'hard':<5} {'':>6} {'':<5} "
+        f"{combined:>7}/{COMBINED_HARD_BYTES:<6} always-loaded{combined_flag}"
     )
     for r in results:
         if r.over:
@@ -145,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({
             "results": [asdict(r) | {"status": r.status} for r in results],
             "combined_bytes": combined,
-            "combined_soft_bytes": COMBINED_SOFT_BYTES,
+            "combined_hard_bytes": COMBINED_HARD_BYTES,
             "hard_busted": hard_busted,
         }, indent=2))
     else:

@@ -37,9 +37,9 @@ def _load_budget_module():
 class ContextBudgetInvariant(Invariant):
     name = "context-budget"
     description = "Always-loaded instruction files stay within their budgets."
-    pre_commit_scope = False  # host-managed content; surface, don't block (cf. concerns-staleness)
+    pre_commit_scope = True  # blocks: a budget that only warns is what let 17.6 KB become 62 KB
     poll_interval_s = None  # on-demand
-    auto_heal = False  # propose-only; splitting content is editorial
+    auto_heal = False  # no auto-heal: which content to move is editorial, so a human decides
 
     def _check(self) -> CheckResult:
         if not BUDGET_SCRIPT.exists():
@@ -53,7 +53,7 @@ class ContextBudgetInvariant(Invariant):
         soft_over = [r.path for r in results if r.kind == "soft" and r.over]
         evidence = {
             "combined_bytes": combined,
-            "combined_soft_bytes": mod.COMBINED_SOFT_BYTES,
+            "combined_hard_bytes": mod.COMBINED_HARD_BYTES,
             "hard_over": hard_over,
             "soft_over": soft_over,
         }
@@ -63,7 +63,7 @@ class ContextBudgetInvariant(Invariant):
                 message=(
                     f"{', '.join(hard_over)} over declared HARD budget; "
                     f"always-loaded total {combined} bytes "
-                    f"(soft over: {', '.join(soft_over) or 'none'}). "
+                    f"(combined ceiling {mod.COMBINED_HARD_BYTES}). "
                     f"Run: python scripts/check_context_budget.py"
                 ),
                 evidence=evidence,

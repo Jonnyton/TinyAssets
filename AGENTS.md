@@ -8,25 +8,19 @@ trackers, novels, news summaries, any substantive long-running work.
 
 ## Forever Rule (2026-04-18): Complete-System 24/7 Uptime Is Top Priority
 
-One unified priority, not a ranked list. Every surface works 24/7 with zero
-hosts online:
+One unified priority, not a ranked list. **Every surface works 24/7 with zero
+hosts online** — Tier-1 chatbot users through the live connector, Tier-2 daemon
+hosts installing the tray in under 5 minutes, Tier-3 contributors cloning and
+running cleanly, plus discovery, remix, converge, live collaboration, the
+paid-market inbox, and moderation.
 
-- Tier-1 chatbot users create / browse / collaborate on nodes via a real
-  chatbot UI with the TinyAssets connector (Claude.ai, ChatGPT Developer Mode,
-  or equivalent).
-- Tier-3 OSS contributors `git clone` and run cleanly.
-- Tier-2 daemon hosts one-click install the tray (<5min friction).
-- Node discovery, remix, converge, live collaboration, paid-market inbox +
-  bid matching, moderation + abuse response.
+**Work ordering:** pick the task that unblocks the largest currently-broken
+uptime surface, and treat every surface outage as equal severity — tiering is
+what starves the quiet surfaces. Break ties by shared dependency impact, then
+shortest path to verified recovery. Uptime features ship with the Hard Rule 14
+proof or they are not done. Everything else continues but never blocks uptime.
 
 Target architecture: `docs/design-notes/2026-04-18-full-platform-architecture.md`.
-
-Work ordering: pick the task that unblocks the largest currently-broken uptime
-surface; treat any surface outage as equal severity. Break ties by largest
-shared dependency impact, then shortest path to verified recovery. Uptime-track
-features ship with the §14 concurrency/load-test proof or they are not done.
-Everything else (bug sprints, renames, unrelated design notes) continues but
-never blocks uptime work.
 
 ---
 
@@ -140,15 +134,10 @@ truncates large raw reads.
   There is no router: it earned its keep at 34 skills and stopped earning it
   at 10.
 - **Each remaining skill carries project knowledge you cannot infer from the
-  repo** — the live connector proof path (`ui-test`), DNS/Cloudflare/GoDaddy
-  (`infra-ops`), the Claude↔Codex dispatch route (`peer-agents`), the site's
-  preview and ship loop (`website-editing`), plus `security-and-hardening`,
-  `shipping-and-launch`, `browser-testing-with-devtools`, `openspec`,
-  `external-research-implications`, `implementation-precedent-scout`.
-  The 24 deleted on 2026-08-25 encoded generic software practice a current
-  model already has. Before adding one back, answer the question that removed
-  them: *which model weakness does this encode, and does a current model still
-  have it?*
+  repo.** The 24 deleted on 2026-08-25 encoded generic software practice a
+  current model already has. Before adding one back, answer the question that
+  removed them: *which model weakness does this encode, and does a current
+  model still have it?*
 - Outside project/paper/repo to learn from → `external-research-implications`.
 - **Research-derived concepts need opposite-provider review before
   implementation** (Codex finding → Claude reviews; Claude finding → Codex
@@ -180,39 +169,13 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
 - Truth split: `PLAN.md` owns why (architecture/principles); `openspec/specs/`
   owns what (behavioral requirements).
 
-#### Delivery flow (WIP discipline, review 2026-08-11)
+#### Delivery flow
 
-- **Delta-first, never vision conversion.** One intent, one owner, one branch,
-  one PR, explicit acceptance, ≤12 task checkboxes. Vision belongs in
-  PLAN/design docs; park incidental findings in the idea feed.
-- **One delivery change per exact session identity.** Before claiming/building
-  a scaffolded change: `python scripts/openspec_flow.py check-change <name>
-  --provider <session-specific-provider>`. Minting a new provider suffix to
-  evade the limit is a review violation. A P0/security exception must name
-  the exception and the WIP it displaces.
-- **Finish before starting.** At dispatch/triage: `python
-  scripts/openspec_flow.py audit` — prefer complete-but-unarchived, then
-  smallest unblocked in-flight, then smallest P0/uptime dependency-removal
-  slice, before admitting new work.
-- **Backlog is bounded.** The live `openspec/changes/` inventory is a WIP
-  queue, not an archive of ambitions: when it exceeds what active sessions are
-  actually building, triage it (premise-verify → archive dead/landed changes)
-  before proposing new ones. Legacy oversized changes are grandfathered for
-  visibility, not blessed — pick concrete slices, don't fan out child changes.
-- **Reviews pipeline; never idle on one [all sessions, host 2026-08-24].** A
-  dispatched cross-family/peer review (or any background agent) runs on the
-  peer's budget and re-invokes you when it returns, so it gates LANDING
-  (merge/deploy/flip-on), NOT your forward progress. The standard build pipeline
-  for every session: build slice A → dispatch its review in the **background**
-  (`peer_agent.py` / `codex_review.py`, `run_in_background`) → **immediately pick
-  up the next lane** → fold each verdict in when it lands (fix findings →
-  re-review → land). A pending review is a wait state, not a stopping point: do
-  NOT stop, sit idle, or ask the host "should I wait?" while one runs. This
-  complements *Finish before starting* — the review IS part of finishing the
-  slice, so you advance the pipeline while it runs rather than blocking on it.
-  (Only genuine external blockers — a host-only secret/decision, a broken
-  harness, an unresolved review verdict on THE lane you'd advance into — stop a
-  lane; pick a different lane instead of idling.)
+Full procedure: **[`docs/reference/delivery-flow.md`](docs/reference/delivery-flow.md)**.
+Headline: one intent, one owner, one branch, one PR, ≤12 task checkboxes;
+**finish before starting** (`python scripts/openspec_flow.py audit` prefers
+complete-but-unarchived, then smallest unblocked in-flight); the change
+inventory is a WIP queue, not an archive of ambitions.
 
 ### Site preview / ship loop
 
@@ -241,74 +204,33 @@ other as peers via the `peer-agents` skill. Neither runs a standing team.
 
 ### Quality Gates
 
-**Review sequencing — shape before hardening (founder directive 2026-08-20).**
-Reviews run in a fixed order, and the order is load-bearing:
-1. **Pre-first-build / first-draft review = SHAPE + APPROACH.** One pass, not a
-   gauntlet. It catches architecture/approach problems (fail-closed vs fail-open,
-   one general primitive vs per-channel spaghetti, the right authority/ownership
-   model) and basic-safety holes that leak/exfil/bypass even for a single user.
-   Architectural reviews and rebuilds belong here.
-2. **Ship LIVE as MVP** — flip the dark flags on, deploy — and **test as a real
-   user** through Slack / the app / the chatbot connector. The live user path is
-   the shape oracle: it is the only thing that proves the shape + UX flow are
-   right.
-3. **THEN the deep security-hardening rounds** — concurrency, TOCTOU,
-   durability/crash, timing side-channels, migrations of hypothetical prior
-   state, abuse-at-scale. These run AFTER live-MVP user testing.
-Do NOT gate a first-draft MVP behind multiple hardening rounds — that is
-"endless hardening of the wrong shape," and only live users reveal whether the
-shape is right. The split: a hole that leaks/exfils/bypasses for ONE founder =
-fix pre-live (basic-safety); an edge that only bites multi-tenant / concurrent /
-crash = defer to post-live hardening, tracked in the change's `REVIEW.md`.
+Invariants. Full procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
 
-**Verification is structural.** Substantive changes need test/check evidence
-plus an independent review path before they count as landed. The PRE-live review
-is the shape/approach pass above (one round); the multi-round adversarial
-hardening is post-live-MVP. Self-review alone is never enough for public-surface,
-storage, auth, migration, concurrency, or data-loss-risk changes — but for a
-first-draft MVP the pre-live bar is shape + basic-safety, and deep hardening
-follows live user testing.
-
-**`main` enforces a behavioural test gate (live 2026-08-03).** Required contexts
-are `policy`, `Diff scope declared`, and `required-tests`, with `strict` on. So:
-a PR merges only if `required-tests` is green, and only while up to date with
-`main`. `required-tests` fails on any test failure not already listed in
-`.github/known-failing-tests.txt` — that ledger is a one-way ratchet, so adding
-a line to excuse a test you broke is a visible, reviewable edit on a
-scope-guarded path. It runs a ~5-minute subset; the excluded heavy files run in
-the non-required `full-tests` job on a best-effort schedule. Two consequences
-worth knowing before you plan work: falling behind `main` costs a re-run, and
-updating a drain PR's branch invalidates any exact-head review receipt.
-Details and rollback: `docs/decisions/ADR-003-required-test-aggregator.md`.
-
-**Review-provider limit fallback.** Opposite-provider review is first choice.
-If that provider hits a hard account/subscription/usage limit, record dated
-evidence, then dispatch a fresh-context independent reviewer from the
-available provider against the exact commit. The reviewer is never the
-author; blocking findings must be resolved before landing/rollout.
-Inconvenience or disagreement does not activate this fallback.
-
-**High-risk PRs stay draft until exact-head approval.** Auth, storage,
-migration, concurrency, public-surface, and data-loss-risk PRs open as drafts
-so auto-enrollment cannot merge them ahead of review. Ready only after an
-approval artifact names the unchanged head SHA; any head-changing update
-converts back to draft until fresh exact-head approval. For a first-draft MVP
-that approval is the SHAPE + basic-safety pass (§ Review sequencing) — not a
-completed hardening gauntlet; the deep hardening rounds re-run post-live.
-
-**Final chatbot-surface verification is a rendered chatbot conversation**
-through the live connector at `https://tinyassets.io/mcp` (`ui-test` skill)
-for any change affecting public MCP behavior, chatbot UX, connector tool
-descriptions, user-visible node/workflow state, or `tinyassets.io`.
-Host-visible rendered chatbot use is the
-invariant; the automation transport is provider-specific. Direct MCP calls,
-scripts, and canaries are supporting evidence, not final proof. Log rendered
-prompt/result in `output/user_sim_session.md`.
-
-**Post-fix clean-use evidence.** After fix + `ui-test`, look for real-user
-clean use since the fix (production traces, logs, user-visible history),
-freshness-stamped. None visible yet? Say so and leave a STATUS watch item
-for public-surface/high-risk changes.
+- **Shape before hardening** (founder, 2026-08-20). One pre-build review for
+  SHAPE + APPROACH and single-user safety holes → ship the MVP live and test as
+  a real user → *then* the deep hardening rounds. Do not gate a first draft
+  behind a hardening gauntlet; only live users prove the shape. Split: a hole
+  that leaks/exfils/bypasses for ONE founder is pre-live; an edge that only
+  bites multi-tenant/concurrent/crash defers to post-live.
+- **Verification is structural, and independent.** Substantive changes need
+  test evidence plus a review path that is not the author. Self-review is never
+  enough for public-surface, storage, auth, migration, concurrency, or
+  data-loss-risk changes. Prefer the opposite model family, dispatched as a
+  subprocess on its own budget (`peer-agents`).
+- **A dispatched review gates landing, not your forward progress.** It runs in
+  the background and re-invokes you. Pick up the next lane; fold the verdict in
+  when it returns. Never idle waiting on one.
+- **`main` enforces a behavioural test gate.** Required contexts: `policy`,
+  `Diff scope declared`, `required-tests`, `strict` on. `required-tests` fails
+  on any failure not in `.github/known-failing-tests.txt` — a one-way ratchet
+  on a scope-guarded path.
+- **High-risk PRs stay draft until exact-head approval.** Any head-changing
+  update reverts them to draft.
+- **Final chatbot-surface proof is a rendered chatbot conversation** through
+  the live connector at `https://tinyassets.io/mcp` (`ui-test`). Direct MCP
+  calls, scripts, and canaries are supporting evidence, never final proof.
+- **Then look for real-user clean use since the fix**, freshness-stamped. If
+  none is visible yet, say so rather than implying it.
 
 ## Hard Rules
 
@@ -349,12 +271,10 @@ for public-surface/high-risk changes.
 
 ## Configuration — environment variables
 
-All configuration is env vars. Full catalog (pointer-loaded per
-[ADR-002](docs/decisions/ADR-002-static-vs-dynamic-context-budget.md)):
-
-> **Canonical reference → `docs/reference/environment-variables.md`.**
-
-Inline invariants:
+All configuration is env vars. Full catalog:
+**[`docs/reference/environment-variables.md`](docs/reference/environment-variables.md)**
+(pointer-loaded per [ADR-002](docs/decisions/ADR-002-static-vs-dynamic-context-budget.md)).
+Load-bearing invariants stay here:
 
 - **CWD-independent resolvers only:** `tinyassets.storage.data_dir()` for
   `TINYASSETS_DATA_DIR`, `wiki_path()` for the wiki root — never `Path.cwd()`
@@ -380,9 +300,7 @@ Inline invariants:
 | `README.md` / `INDEX.md` | Any human or AI | Orientation / repo map. |
 | `CLAUDE.md` / `CODEX.md` | One harness | Thin routing layers over AGENTS.md. |
 | `scripts/docview.py` | Any AI | Scoped reader for large artifacts. |
-| `scripts/claim_check.py` | Any AI | Work-row classifier + collision guard. |
 | `scripts/worktree_status.py` | Any AI | Worktree lane diagnostics. |
-| `scripts/provider_context_feed.py` | Any AI | Lifecycle context-feed checkpoints. |
 | `scripts/openspec_flow.py` | Any AI | OpenSpec WIP check + finish-first audit. |
 | `.agents/skills/*/SKILL.md` | Canonical | Skill definitions (edit here first; mirror via `scripts/sync-skills.ps1`). |
 | `.claude/agent-memory/<name>/` | `<name>` writes; all read | Per-agent memory. Non-owners never write here. |
@@ -390,3 +308,5 @@ Inline invariants:
 | `ideas/*.md` | Any AI | Idea capture, triage, traceability. |
 | `docs/reference/*.md` | Any AI | Pointer-loaded canonical procedure docs. |
 | `docs/exec-plans/*.md`, `docs/audits/*.md` | Any AI | Execution plans; dated diagnostic audits. |
+
+When you delete or rename a tracked file, update its row in the same change.

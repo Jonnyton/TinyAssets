@@ -96,8 +96,14 @@ class Invariant:
         try:
             result = self._check()
         except Exception as exc:
+            # VIOLATED, not SKIPPED. A check that raises is a broken check, and
+            # a broken check that reports "skipped" keeps --check-all green --
+            # which is how a constant rename silently disarmed the
+            # context-budget gate on 2026-08-25. SKIPPED is for a deliberate,
+            # explicit skip (target absent, Chrome not running), never for a
+            # crash. Fail loudly; see AGENTS.md Hard Rule 8.
             result = CheckResult(
-                status=Status.SKIPPED,
+                status=Status.VIOLATED,
                 message=f"check raised {type(exc).__name__}: {exc}",
             )
         result.duration_seconds = time.monotonic() - start
