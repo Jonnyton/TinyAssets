@@ -1474,9 +1474,15 @@ def connect_compute(
 
     The self-serve way to add a compute channel — the SAME primitive the founder's
     browser chatbot has. Registration creates a CANDIDATE descriptor only; it does
-    not deposit a credential, enroll, select, or make the provider routable. To make
-    an automation actually run on it, select it afterward via the branch's
-    ``llm_policy`` (preferred_provider = the returned definition_id).
+    not deposit a credential, enroll, select, or make the provider routable -
+    registration is NOT selection.
+
+    Do NOT try to select it by writing ``llm_policy`` on a node: the runtime reads
+    only ``{"preferred": {"provider": "<name>"}}`` — a provider NAME such as
+    ``codex`` or ``claude-code``, never a ``provdef_...`` id — and a wrong key is
+    ignored, so the run fails later with ``permission_denied:provider_not_bound``.
+    A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
+    uses whatever provider the universe serves.
 
     NO SECRET crosses this surface. For an ``api_key_http`` provider the owner must
     FIRST deposit the credential in the app's "Deposit API connection" form (tap

@@ -799,6 +799,21 @@ def _validate_llm_policy_shape(
     if not isinstance(policy, dict):
         return [f"{context}: llm_policy must be a dict, got {type(policy).__name__}."]
 
+    # `preferred_provider` is NOT forward-compat slack: the runtime reads only
+    # policy["preferred"]["provider"], so this key is silently ignored and the run
+    # dies later with provider_not_bound. It reached branches because two of our own
+    # tool descriptions told agents to write it (live 2026-08-26: the founder's X
+    # post failed twice this way). Catch it here, where the fix is obvious.
+    if "preferred_provider" in policy:
+        errors.append(
+            f"{context}: 'preferred_provider' is not a policy key and is ignored at "
+            "run time (the run then fails with provider_not_bound). Either omit the "
+            "policy entirely so the run uses whatever provider your universe serves "
+            "- the usual choice - or pin one by NAME as "
+            "{'preferred': {'provider': 'codex'}} (a provdef_... definition id is "
+            "not a provider name)."
+        )
+
     preferred = policy.get("preferred")
     if preferred is not None:
         if not isinstance(preferred, dict):
