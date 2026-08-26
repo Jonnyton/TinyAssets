@@ -212,7 +212,8 @@ def test_reset_shaped_session_does_not_trip(sup):
         ts += 1
     write(sup, events)
 
-    assert sup.check(sid="test-session") == [], "a committing docs lane must never read as stagnation"
+    msg = "a committing docs lane must never read as stagnation"
+    assert sup.check(sid="test-session") == [], msg
 
 
 def test_empty_log_is_quiet(sup):
@@ -306,3 +307,67 @@ def test_stale_events_are_pruned_even_in_a_small_log(sup):
 
     assert len(sup.load()) == 1, "stale events survived the prune"
     assert sup.check(sid="test-session") == [], "stale events tripped a predicate"
+
+
+# ------------------------------------------------------- resume (AVO memory)
+
+
+def test_resume_reports_a_dead_end(sup):
+    """The whole point: a resuming session learns what was already disproved."""
+    write(sup, [cmd_event(sup, "pytest tests/test_auth.py -k rotation", 1, ts=i)
+                for i in range(3)])
+
+    state = sup.resume(sid=SID)
+
+    assert len(state["failed_attempts"]) == 1
+    assert state["failed_attempts"][0]["count"] == 3
+    assert state["failed_attempts"][0]["exit_code"] == 1
+    assert "FAILED x3" in sup.render_resume(state)
+
+
+def test_resume_does_not_report_a_command_that_later_succeeded(sup):
+    """A dead end that stopped being one must not warn the next session off it."""
+    write(sup, [
+        cmd_event(sup, "pytest tests/test_auth.py", 1, ts=0),
+        cmd_event(sup, "pytest tests/test_auth.py", 1, ts=1),
+        cmd_event(sup, "pytest tests/test_auth.py", 1, ts=2),
+        cmd_event(sup, "pytest tests/test_auth.py", 0, ts=3),
+    ])
+
+    assert sup.resume(sid=SID)["failed_attempts"] == []
+
+
+def test_resume_resets_on_commit(sup):
+    """Memory is scoped to the live lane; a commit makes it history."""
+    write(sup, [
+        cmd_event(sup, "pytest x", 1, ts=0),
+        cmd_event(sup, "pytest x", 1, ts=1),
+        {"ts": 2, "kind": "commit", "target": "", "detail": {}},
+    ])
+
+    assert sup.resume(sid=SID)["failed_attempts"] == []
+
+
+def test_resume_is_silent_when_there_is_nothing_to_say(sup):
+    """Silence is the common case; a noisy resume banner trains people to skip it."""
+    write(sup, [cmd_event(sup, "pytest x", 0, ts=0)])
+
+    assert sup.render_resume(sup.resume(sid=SID)) == ""
+
+
+def test_resume_is_session_scoped(sup):
+    """Another session's dead ends are not this session's."""
+    write(sup, [cmd_event(sup, "pytest y", 1, ts=i, sid="other") for i in range(3)],
+          sid="other")
+
+    assert sup.resume(sid=SID)["failed_attempts"] == []
+
+
+def test_resume_surfaces_repeatedly_edited_files(sup):
+    write(sup, [{"ts": i, "kind": "edit", "target": "tinyassets/auth/middleware.py",
+                 "detail": {}} for i in range(4)])
+
+    state = sup.resume(sid=SID)
+
+    assert state["files_touched"][0] == ("tinyassets/auth/middleware.py", 4)
+    assert "already edited" in sup.render_resume(state)

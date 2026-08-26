@@ -307,6 +307,79 @@ def check(store: Path | None = None, sid: str | None = None) -> list[Finding]:
     return findings
 
 
+def resume(store: Path | None = None, sid: str | None = None) -> dict[str, Any]:
+    """What has already been tried in this lane, and what happened.
+
+    AVO's persistent memory exists so the agent can "resume from the current
+    state rather than repeatedly reconstructing the search". Every other memory
+    surface in this repo records CONCLUSIONS -- durable lessons
+    (`.claude/agent-memory/`), known-bad findings (`docs/concerns/`), what
+    landed (the git log). None answers the question a resuming session actually
+    has: *what did the last session already attempt here, and did it work?*
+
+    Without that, a session re-derives context and can re-attempt an approach
+    that was already disproved. The cost is paid before a PR exists, which is
+    why no per-PR metric shows it.
+
+    Scoped to the current session and reset by a commit, for the same reason the
+    predicates are: a commit is the unit of landed work, and what came before it
+    is history rather than live state.
+    """
+    events = [e for e in load(store) if e.get("sid") == (sid if sid is not None else session_id())]
+    pending = _since_last_commit(events)
+
+    failed: dict[str, dict[str, Any]] = {}
+    passed: set[str] = set()
+    for e in pending:
+        if e.get("kind") != "command":
+            continue
+        detail = e.get("detail") or {}
+        cmd = detail.get("normalized") or ""
+        code = detail.get("exit_code")
+        if not cmd:
+            continue
+        if isinstance(code, int) and code != 0:
+            row = failed.setdefault(cmd, {"command": cmd, "exit_code": code, "count": 0})
+            row["count"] += 1
+            row["exit_code"] = code
+        else:
+            passed.add(cmd)
+
+    # A command that later succeeded is no longer a dead end -- do not warn a
+    # resuming session away from something that now works.
+    tried = [v for k, v in failed.items() if k not in passed]
+    tried.sort(key=lambda r: -r["count"])
+
+    touched: dict[str, int] = {}
+    for e in pending:
+        if e.get("kind") == "edit" and e.get("target"):
+            touched[e["target"]] = touched.get(e["target"], 0) + 1
+
+    return {
+        "failed_attempts": tried,
+        "succeeded": sorted(passed),
+        "files_touched": sorted(touched.items(), key=lambda kv: -kv[1]),
+        "events_since_commit": len(pending),
+    }
+
+
+def render_resume(state: dict[str, Any]) -> str:
+    """One compact block, or empty when there is nothing worth saying."""
+    if not state["failed_attempts"] and not state["files_touched"]:
+        return ""
+    lines = ["Resume state (this lane, since the last commit):"]
+    for row in state["failed_attempts"][:5]:
+        lines.append(
+            f"  tried and FAILED x{row['count']} (exit {row['exit_code']}): {row['command'][:110]}"
+        )
+    if state["files_touched"]:
+        top = ", ".join(f"{f} x{n}" for f, n in state["files_touched"][:5])
+        lines.append(f"  files already edited: {top}")
+    if state["failed_attempts"]:
+        lines.append("  Change the approach or hand it to the other family.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------- CLI
 
 
@@ -333,6 +406,9 @@ def main(argv: list[str] | None = None) -> int:
     chk = sub.add_parser("check", help="evaluate the predicates")
     chk.add_argument("--json", action="store_true")
 
+    res = sub.add_parser("resume", help="what was already tried in this lane")
+    res.add_argument("--json", action="store_true")
+
     sub.add_parser("reset", help="clear the event log")
 
     args = ap.parse_args(argv)
@@ -345,6 +421,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.exit_code is not None:
             detail["exit_code"] = args.exit_code
         record(args.kind, args.target, detail)
+        return 0
+
+    if args.cmd == "resume":
+        state = resume()
+        if args.json:
+            print(json.dumps(state, indent=2))
+        else:
+            print(render_resume(state) or "supervisor: nothing tried yet in this lane")
         return 0
 
     if args.cmd == "reset":
