@@ -39,7 +39,11 @@ def test_read_graph_refuses_unpinned_targets(monkeypatch):
     # credential deposited and still could not post, because it could list its
     # branches but not read one's node wiring. Reading a branch is strictly
     # weaker than running one, which this surface already allows.
-    for bad in ("runs", "run", "goals", "goal", "agents", "agent_binding"):
+    # "runs"/"run" left this list deliberately (2026-08-26): the universe queued
+    # the founder's real X post and then could not say whether it posted - the run
+    # had already failed on an unapproved source_code node. "I queued it" is not
+    # an outcome, and reading your own run is not a write.
+    for bad in ("goals", "goal", "agents", "agent_binding"):
         out = json.loads(s.read_graph(target=bad))
         assert "not available" in out.get("error", ""), bad
 
@@ -1687,3 +1691,42 @@ def test_read_graph_reads_one_branch_by_id(monkeypatch):
     captured.clear()
     s.read_graph(target="branches", branch_id="8157e928f42c")
     assert captured == {"target": "branches", "graph_id": "u-pinned"}
+
+
+def test_read_graph_reads_one_run_by_id(monkeypatch):
+    """Live 2026-08-26: after run_graph the universe told the founder "the run was
+    accepted and queued... I cannot confirm whether the post actually went out". The
+    run had already failed (node_not_approved). Reading your own run must be possible
+    from the surface that started it."""
+    import tinyassets.universe_server as us
+    from tinyassets import engine_mcp_server as s
+
+    captured: dict = {}
+    monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+
+    s.read_graph(target="run", run_id="  08a17f75653b4fe3  ")
+    assert captured == {
+        "target": "run",
+        "graph_id": "u-pinned",
+        "run_id": "08a17f75653b4fe3",
+    }
+
+    captured.clear()
+    s.read_graph(target="runs")
+    assert captured == {"target": "runs", "graph_id": "u-pinned"}
+
+    # A selector for one target must never leak into another.
+    captured.clear()
+    s.read_graph(target="graph", run_id="08a17f75653b4fe3", branch_id="x")
+    assert captured == {"target": "graph", "graph_id": "u-pinned"}
+
+
+def test_read_graph_docstring_tells_the_agent_to_read_the_outcome():
+    """The docstring is the only instruction the served agent gets."""
+    from tinyassets import engine_mcp_server as s
+
+    doc = (s.read_graph.fn if hasattr(s.read_graph, "fn") else s.read_graph).__doc__ or ""
+    assert "ALWAYS read this after" in doc
+    assert "queued" in doc
