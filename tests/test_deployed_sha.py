@@ -30,18 +30,37 @@ def load():
     return mod
 
 
-def _head() -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.strip()
+@pytest.fixture(scope="module")
+def repo(tmp_path_factory):
+    """A throwaway two-commit repo the ancestry checks run against.
+
+    These tests used to read the AMBIENT repo's HEAD and HEAD~1, which passed
+    locally and failed in CI: actions/checkout is shallow, so `git rev-parse
+    HEAD~1` exits 128 and there is no parent. Depending on the surrounding
+    checkout also meant the tests could not say what history they needed.
+    A purpose-built repo is hermetic and states its own preconditions.
+    """
+    root = tmp_path_factory.mktemp("deployed-sha-repo")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "T")
+    (root / "a.txt").write_text("one", encoding="utf-8")
+    git("add", "."); git("commit", "-q", "-m", "first")
+    parent = git("rev-parse", "HEAD")
+    (root / "a.txt").write_text("two", encoding="utf-8")
+    git("add", "."); git("commit", "-q", "-m", "second")
+    head = git("rev-parse", "HEAD")
+    return {"root": root, "head": head, "parent": parent}
 
 
-def _parent() -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD~1"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.strip()
+def point_at(mod, monkeypatch, repo):
+    monkeypatch.setattr(mod, "REPO_ROOT", repo["root"])
 
 
 def stub(mod, monkeypatch, release_state):
@@ -61,89 +80,98 @@ def receipt(sha, **extra):
     return state
 
 
-def test_deployed_head_contains_its_own_parent(monkeypatch):
+def test_deployed_head_contains_its_own_parent(monkeypatch, repo):
     """The ordinary pass: production is ahead of the commit being claimed."""
     mod = load()
-    stub(mod, monkeypatch, receipt(_head()))
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, receipt(repo["head"]))
 
-    assert mod.main(["--assert-contains", _parent()]) == 0
+    assert mod.main(["--assert-contains", repo["parent"]]) == 0
 
 
-def test_deployed_parent_does_not_contain_head(monkeypatch):
+def test_deployed_parent_does_not_contain_head(monkeypatch, repo):
     """The 2026-07-21 case: merged, but production is serving something older."""
     mod = load()
-    stub(mod, monkeypatch, receipt(_parent()))
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, receipt(repo["parent"]))
 
-    assert mod.main(["--assert-contains", _head()]) == 1
+    assert mod.main(["--assert-contains", repo["head"]]) == 1
 
 
-def test_commit_equal_to_deployed_counts_as_shipped(monkeypatch):
+def test_commit_equal_to_deployed_counts_as_shipped(monkeypatch, repo):
     mod = load()
-    head = _head()
+    point_at(mod, monkeypatch, repo)
+    head = repo["head"]
     stub(mod, monkeypatch, receipt(head))
 
     assert mod.main(["--assert-contains", head]) == 0
 
 
-def test_missing_release_state_is_unknown_not_shipped(monkeypatch):
+def test_missing_release_state_is_unknown_not_shipped(monkeypatch, repo):
     """Exit 2, never 0. A probe that cannot answer must not read as a pass."""
     mod = load()
+    point_at(mod, monkeypatch, repo)
 
     def boom(url, timeout):
         raise mod.DeployedShaError("get_status carries no release_state object")
 
     monkeypatch.setattr(mod, "live_release_state", boom)
 
-    assert mod.main(["--assert-contains", _head()]) == 2
+    assert mod.main(["--assert-contains", repo["head"]]) == 2
 
 
-def test_empty_git_sha_is_unknown_not_shipped(monkeypatch):
+def test_empty_git_sha_is_unknown_not_shipped(monkeypatch, repo):
     mod = load()
+    point_at(mod, monkeypatch, repo)
     stub(mod, monkeypatch, {"git_sha": "   "})
 
-    assert mod.main(["--assert-contains", _head()]) == 2
+    assert mod.main(["--assert-contains", repo["head"]]) == 2
 
 
-def test_unfetched_deployed_sha_is_unknown_not_shipped(monkeypatch):
+def test_unfetched_deployed_sha_is_unknown_not_shipped(monkeypatch, repo):
     """Production serving a commit this checkout lacks is UNKNOWN, not a fail.
 
     Reporting 1 here would say "not shipped" about a build that may well
     contain the commit; the honest answer is "fetch it, then re-run".
     """
     mod = load()
+    point_at(mod, monkeypatch, repo)
     stub(mod, monkeypatch, {"git_sha": "0" * 40})
 
-    assert mod.main(["--assert-contains", _head()]) == 2
+    assert mod.main(["--assert-contains", repo["head"]]) == 2
 
 
-def test_plain_report_succeeds_without_assertion(monkeypatch):
+def test_plain_report_succeeds_without_assertion(monkeypatch, repo):
     mod = load()
-    stub(mod, monkeypatch, receipt(_head()))
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, receipt(repo["head"]))
 
     assert mod.main([]) == 0
 
 
-def test_report_counts_commits_not_yet_deployed(monkeypatch):
+def test_report_counts_commits_not_yet_deployed(monkeypatch, repo):
     mod = load()
-    stub(mod, monkeypatch, receipt(_parent()))
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, receipt(repo["parent"]))
 
     info = mod.report("https://example.invalid/mcp", 1.0)
 
-    assert info["deployed_sha"] == _parent()
+    assert info["deployed_sha"] == repo["parent"]
     assert info["known_to_git"] is True
     assert info["deployed_subject"]
 
 
 @pytest.mark.parametrize("bad", [{}, {"git_sha": None}, {"git_sha": ""}])
-def test_unusable_release_state_shapes_all_raise(monkeypatch, bad):
+def test_unusable_release_state_shapes_all_raise(monkeypatch, repo, bad):
     mod = load()
+    point_at(mod, monkeypatch, repo)
     stub(mod, monkeypatch, bad)
 
     with pytest.raises(mod.DeployedShaError):
         mod.report("https://example.invalid/mcp", 1.0)
 
 
-def test_receipt_disagreeing_with_itself_is_unknown(monkeypatch):
+def test_receipt_disagreeing_with_itself_is_unknown(monkeypatch, repo):
     """git_sha vs image_tag mismatch is exit 2, never a pass.
 
     Agreement does not prove the running binary (see the module docstring and
@@ -152,17 +180,19 @@ def test_receipt_disagreeing_with_itself_is_unknown(monkeypatch):
     never read as shipped.
     """
     mod = load()
+    point_at(mod, monkeypatch, repo)
     stub(mod, monkeypatch, {
-        "git_sha": _head(),
+        "git_sha": repo["head"],
         "image_tag": "ghcr.io/jonnyton/tinyassets-daemon:deadbeefcafe",
     })
 
-    assert mod.main(["--assert-contains", _head()]) == 2
+    assert mod.main(["--assert-contains", repo["head"]]) == 2
 
 
-def test_agreeing_receipt_still_passes(monkeypatch):
+def test_agreeing_receipt_still_passes(monkeypatch, repo):
     mod = load()
-    head = _head()
+    point_at(mod, monkeypatch, repo)
+    head = repo["head"]
     stub(mod, monkeypatch, {
         "git_sha": head,
         "image_tag": f"ghcr.io/jonnyton/tinyassets-daemon:{head[:12]}",
@@ -171,10 +201,11 @@ def test_agreeing_receipt_still_passes(monkeypatch):
     assert mod.main(["--assert-contains", head]) == 0
 
 
-def test_report_labels_what_it_actually_proves(monkeypatch):
+def test_report_labels_what_it_actually_proves(monkeypatch, repo):
     """The tool must not let a caller mistake a receipt for the running binary."""
     mod = load()
-    stub(mod, monkeypatch, receipt(_head()))
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, receipt(repo["head"]))
 
     assert mod.report("https://example.invalid/mcp", 1.0)["proves"] == "receipt"
 
@@ -189,9 +220,10 @@ def test_report_labels_what_it_actually_proves(monkeypatch):
     ("ghcr.io/x/y:{SHA12}", True),          # uppercase hex, previously rejected
     ("ghcr.io/x/y:deadbeefcafe", False),    # real sha, wrong one
 ])
-def test_image_tag_forms(monkeypatch, tag, should_pass):
+def test_image_tag_forms(monkeypatch, repo, tag, should_pass):
     mod = load()
-    head = _head()
+    point_at(mod, monkeypatch, repo)
+    head = repo["head"]
     stub(mod, monkeypatch, {
         "git_sha": head,
         "image_tag": tag.format(sha12=head[:12], SHA12=head[:12].upper()),
@@ -200,27 +232,30 @@ def test_image_tag_forms(monkeypatch, tag, should_pass):
     assert mod.main(["--assert-contains", head]) == (0 if should_pass else 2)
 
 
-def test_one_char_tag_does_not_pass(monkeypatch):
+def test_one_char_tag_does_not_pass(monkeypatch, repo):
     """A tag sharing only the sha's first character used to satisfy the check."""
     mod = load()
-    head = _head()
+    point_at(mod, monkeypatch, repo)
+    head = repo["head"]
     stub(mod, monkeypatch, {"git_sha": head, "image_tag": f"ghcr.io/x/y:{head[0]}"})
 
     assert mod.main(["--assert-contains", head]) == 2
 
 
-def test_missing_image_tag_is_unknown_not_pass(monkeypatch):
+def test_missing_image_tag_is_unknown_not_pass(monkeypatch, repo):
     """The docstring always claimed this; the code did not do it."""
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _head()})
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, {"git_sha": repo["head"]})
 
-    assert mod.main(["--assert-contains", _head()]) == 2
+    assert mod.main(["--assert-contains", repo["head"]]) == 2
 
 
 @pytest.mark.parametrize("bad", [123, {"a": 1}, [], True])
-def test_non_string_image_tag_does_not_crash(monkeypatch, bad):
+def test_non_string_image_tag_does_not_crash(monkeypatch, repo, bad):
     """A dict/list/int tag raised an uncaught AttributeError."""
     mod = load()
-    stub(mod, monkeypatch, {"git_sha": _head(), "image_tag": bad})
+    point_at(mod, monkeypatch, repo)
+    stub(mod, monkeypatch, {"git_sha": repo["head"], "image_tag": bad})
 
-    assert mod.main(["--assert-contains", _head()]) == 2
+    assert mod.main(["--assert-contains", repo["head"]]) == 2
