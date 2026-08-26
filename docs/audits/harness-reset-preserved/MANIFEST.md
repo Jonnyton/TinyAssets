@@ -101,3 +101,28 @@ two P0 workflow runs. Preserved because Actions artifacts expire and these are t
   (`packaging__claude-plugin__…`) dodged the path-based scan, so it was hash-checked individually.
 - ~590 files under `WebSite/site-react/out/` across 5 directories — build output.
 - `wf-codex-pr-scope-audit-method-20260504`, `wf-docs`, `wf-fence-fix`, `wf-pr1489-verify` — empty.
+
+## Reap result (2026-08-25)
+
+61 sibling `wf-*` directories → **3 kept** (`wf-harness-reset`, plus the two dirty lanes
+`wf-consumer-activation` and `wf-fleet-slice1`, left intact so their owners can land the work).
+19 clean registered worktrees removed via `git worktree remove`; registered count 26 → 8.
+23 directories fully deleted.
+
+**17 residual empty shells.** Every real file in them deleted; what remains is a single
+`.pytest_cache` per directory carrying an ACL the interactive user cannot read or delete. This is
+the exact case AGENTS.md § *Testing* documents — a sandbox (Codex/Cursor) pointed pytest's
+`--basetemp`/`TMPDIR` inside the checkout and created the dir under a restricted token. Non-elevated
+`icacls /grant` does not clear it and a reboot does not help.
+
+Host one-liner to finish, from an **elevated** shell:
+
+```powershell
+Get-ChildItem C:\Users\Jonathan\Projects\wf-* -Directory |
+  Where-Object { $_.Name -notin 'wf-harness-reset','wf-consumer-activation','wf-fleet-slice1' } |
+  ForEach-Object { takeown /F $_.FullName /R /D Y | Out-Null
+                   icacls $_.FullName /grant "$env:USERNAME:(OI)(CI)F" /T /C | Out-Null
+                   Remove-Item $_.FullName -Recurse -Force }
+```
+
+Harmless until then — they hold no content.
