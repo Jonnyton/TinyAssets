@@ -31,7 +31,8 @@ cache deps, parallelize, path-filter unchanged areas, shard tests — don't skip
 
 **Feed failures back to the agent:** paste the specific CI error and have the
 agent fix and verify locally before pushing (lint → `--fix`; type error → fix at
-the cited location; test → `debugging-and-error-recovery`; build → check
+the cited location; test → find the root cause, don't patch the symptom;
+build → check
 config/deps). A **Build Cop** keeps CI green: when it breaks, fix or revert
 rather than letting breakage accumulate.
 

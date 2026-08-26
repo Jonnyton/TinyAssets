@@ -7,8 +7,10 @@ description: Drives the OpenSpec CLI lifecycle — explore, propose, apply, sync
 
 > Requires the `openspec` CLI (MIT, Fission-AI/OpenSpec; `npm i -g
 > @fission-ai/openspec`). Specs live in the repo and persist across sessions.
-> This is the CLI-managed, multi-session spec system; for the native
-> dependency-free flow use `spec-driven-development` / `idea-refine`.
+> This is the CLI-managed, multi-session spec system. Where the CLI is
+> unavailable, hand-write a change directory matching the OpenSpec layout
+> (`proposal.md`, `design.md`, delta specs, `tasks.md`) so it can be adopted
+> once the CLI is back — see `AGENTS.md` § *Spec-driven development*.
 
 ## Lifecycle
 

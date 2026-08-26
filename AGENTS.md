@@ -136,12 +136,19 @@ truncates large raw reads.
 
 - Canonical skills live in `.agents/skills/`, mirrored to `.claude/skills/`
   for Claude Code (`powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1`
-  after editing). Unsure which skill? Start with `using-agent-skills`; if
-  there is even a ~1% chance a skill applies, invoke it before acting.
-  Core dev loop: `idea-refine` → `planning-and-task-breakdown` →
-  `test-driven-development` / `debugging-and-error-recovery` →
-  `code-review-and-quality` → `git-workflow-and-versioning` →
-  `shipping-and-launch`.
+  after editing). Ten skills, named for their task — read the matching one.
+  There is no router: it earned its keep at 34 skills and stopped earning it
+  at 10.
+- **Each remaining skill carries project knowledge you cannot infer from the
+  repo** — the live connector proof path (`ui-test`), DNS/Cloudflare/GoDaddy
+  (`infra-ops`), the Claude↔Codex dispatch route (`peer-agents`), the site's
+  preview and ship loop (`website-editing`), plus `security-and-hardening`,
+  `shipping-and-launch`, `browser-testing-with-devtools`, `openspec`,
+  `external-research-implications`, `implementation-precedent-scout`.
+  The 24 deleted on 2026-08-25 encoded generic software practice a current
+  model already has. Before adding one back, answer the question that removed
+  them: *which model weakness does this encode, and does a current model still
+  have it?*
 - Outside project/paper/repo to learn from → `external-research-implications`.
 - **Research-derived concepts need opposite-provider review before
   implementation** (Codex finding → Claude reviews; Claude finding → Codex

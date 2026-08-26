@@ -116,7 +116,7 @@ Before declaring a website edit "done":
 
 ## Auto-iterate on recurring website failures
 
-This skill is itself subject to the [`auto-iterate`](../auto-iterate/SKILL.md) ratchet pattern. If a website-related failure recurs:
+When a website-related failure recurs, ratchet the prevention rather than fixing it again:
 
 | Recurrence | Ratchet |
 |---|---|

@@ -124,11 +124,19 @@ def validate_mirror(root: Path) -> list[SkillIssue]:
 
 
 def validate_router_coverage(root: Path) -> list[SkillIssue]:
+    """Check the router lists every skill -- only if a router exists.
+
+    The router was mandatory when this repo carried 34 skills and finding the
+    right one was a real problem. The 2026-08-25 harness reset cut that to 10
+    task-named skills, where a map costs more to maintain than it saves, so
+    `using-agent-skills` was deleted. This check stays as coverage enforcement
+    for a router that exists; it no longer demands one into being.
+    """
     issues: list[SkillIssue] = []
     source_root = root / CANONICAL_ROOT
     router = source_root / ROUTER_SKILL / "SKILL.md"
     if not router.exists():
-        return [SkillIssue(router, "router skill is missing")]
+        return []
     router_text = router.read_text(encoding="utf-8")
     for path in _skill_files(source_root):
         skill_name = path.parent.name

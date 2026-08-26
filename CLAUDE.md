@@ -95,8 +95,8 @@ never bypasses — host gates, user-sim proof, or AGENTS.md verification rules.
 
 ### Skills [Claude Code only]
 
-Project skills live in `.claude/skills/`; start with `using-agent-skills` when
-unsure. Start from `.claude/skills/` and read the one that matches the task.
+Project skills live in `.claude/skills/` (mirror of the canonical
+`.agents/skills/`). Ten of them, named for their task — read the matching one.
 
 ### Agent Memory [Claude Code only]
 
