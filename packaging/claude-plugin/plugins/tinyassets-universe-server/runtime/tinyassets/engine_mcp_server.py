@@ -183,7 +183,8 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
 _PINNED_READ_TARGETS = frozenset({
-    "status", "graph", "branches", "branch", "compute", "connections",
+    "status", "graph", "branches", "branch", "runs", "run",
+    "compute", "connections",
 })
 
 
@@ -207,12 +208,18 @@ mcp = FastMCP("tinyassets")
 
 
 @mcp.tool
-def read_graph(target: str = "status", branch_id: str = "") -> str:
+def read_graph(
+    target: str = "status",
+    branch_id: str = "",
+    run_id: str = "",
+) -> str:
     """Read your OWN universe's status or graph, without changing anything.
 
     Scoped to YOUR universe — you cannot read another one.
 
     Args:
+        run_id: For ``target="run"`` only - the id ``run_graph`` returned. Ignored
+            for every other target.
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
             workflow to read (get it from ``target="branches"``). Ignored for every
             other target. You can read your own branches and public ones; a private
@@ -225,7 +232,13 @@ def read_graph(target: str = "status", branch_id: str = "") -> str:
             nodes, their inputs/prompt templates, edges and state schema - by
             passing ``branch_id``; READ THIS BEFORE ``run_graph`` whenever you are
             unsure what a branch expects, instead of guessing its input contract or
-            telling the user you cannot inspect it), ``compute`` (list the
+            telling the user you cannot inspect it), ``runs`` (your recent runs and
+            their statuses), ``run`` (ONE run's outcome by ``run_id``: final status,
+            per-node status, ``error``, and a structured ``failure_class`` /
+            ``suggested_action`` / ``actionable_by`` - ALWAYS read this after
+            ``run_graph`` before telling the user what happened, because a run can
+            fail in milliseconds, e.g. a source_code node that is not approved, and
+            "I queued it" is not an outcome), ``compute`` (list the
             compute providers registered for your universe — the read sibling of
             registering one with ``connect_compute``), or ``connections`` (list the
             outbound channel connections your universe has — every http channel the
@@ -264,6 +277,14 @@ def read_graph(target: str = "status", branch_id: str = "") -> str:
                 target=normalized,
                 graph_id=_GRAPH_ID,
                 branch_id=(branch_id or "").strip(),
+            )
+        if normalized == "run":
+            # get_run is scoped to the caller's own runs; the pinned graph_id keeps
+            # the universe scope, run_id only selects within it.
+            return _impl(
+                target=normalized,
+                graph_id=_GRAPH_ID,
+                run_id=(run_id or "").strip(),
             )
         return _impl(target=normalized, graph_id=_GRAPH_ID)
     finally:
