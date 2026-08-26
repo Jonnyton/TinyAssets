@@ -173,23 +173,58 @@ written alarms into STATUS.md, routing to `.agents/uptime_alarms.log` instead.
 **Readers to sweep:** `worktree_status.py`, `wt.py`, `capture_idea.py`, `provider_context_feed.py`,
 `openspec_flow.py`, `openspec_drain_supervisor.py`, plus 296 tracked files' prose references.
 
-### The six live security concerns — must survive migration
+### Live concerns — the real list, and a correction to the plan
 
-These exist **only** in STATUS.md. Migrating them is the single highest-risk step in the reset;
-they move first, in their own commit, before any deletion commit.
+**Correction.** The plan named six concerns drawn from the local checkout, which was 825 commits
+behind. Three of them (`#1489` unauth LAN, the BYO-LLM refresh-token store, "no OS engine sandbox")
+are **no longer on the board** — superseded or folded into newer rows. The list below is what
+`origin/main` @ `8cbf9769` actually carries. This is the set that must survive.
 
-| # | Concern | Location / evidence | Issue |
+| # | Concern | Filed / verified | Evidence |
 |---|---|---|---|
-| 1 | BYO-LLM refresh-token store: raw WorkOS refresh tokens in worker-readable `/data/app_refresh_sessions/*.json`; token endpoint adopts caller-supplied `session_ref` (session fixation) | P1, filed 2026-08-23, from #2474 on `715067ce` | _pending_ |
-| 2 | Unauthenticated LAN surface leaks sessions and permits CSRF writes / paid hires | **P0**, #1489, filed 2026-07-21, Codex verdict ADAPT | _pending_ |
-| 3 | No OS engine sandbox — live `converse` is in-process-confined only | P1, filed 2026-07-02; #1485 is the fail-closed seam | _pending_ |
-| 4 | `resolve_interlocutor_tier` grants T2/FOUNDER to any `write` ACL holder | `tinyassets/api/interlocutor.py:130`, Codex-found 2026-08-05 | _pending_ |
-| 5 | `_current_actor` env fallback bypasses `permissions.py` | `tinyassets/engine_helpers.py:192`, P2 | _pending_ |
-| 6 | Provider fallback-chain privacy — gemini/groq/grok remain in the chains | `tinyassets/providers/router.py:89`, filed 2026-04-17 | _pending_ |
+| 1 | **P1** `write_brain` persistent prompt-injection: attacker-authored content reaches `write_brain` via `read_commons_shape`/WebFetch, `commit_learning` mislabels it "founder conversation", next turn it is concatenated verbatim into the system prompt — persistently steering an agent that holds `write_graph`/`run_graph`/`connect_compute` authority | 2026-08-24 | `openspec/changes/served-agent-build-run/design-hardening.md` |
+| 2 | **P1** Founder-taught canon inherits `DEFAULT_CREATE_VISIBILITY="public"` with no narrowing step — confidential `converse` input is committed by `commit_learning` and returned by anonymous `read_page`/search. **Codex REPRODUCED** | 2026-08-06 | `docs/audits/2026-08-06-cloudflare-os-architecture-implications.md` |
+| 3 | **P0** Public-site privacy/deps/CI: private/operator reads; React 1C/1H, Svelte 7H, design 2H; same-repo PRs can request 19 secrets | 2026-07-27 | — |
+| 4 | **P0** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals | 2026-07-02 / 07-25 | #1573 |
+| 5 | **P1** No live failure proof — #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only | 2026-07-23 / 07-26 | — |
+| 6 | **P1** Surface parity (served-agent BUILD verbs) PARTIAL: `write_graph` PATCH, `connect_http`, `grant_effector_consent`, `set_engine`/`bind_serving_provider`, remix still missing on the served surface | 2026-08-23 / 08-24 | `openspec/changes/served-agent-build-run/design-hardening.md` |
+| 7 | **P1** `EPOCH2_QUEUE_CONSUMER_READY=True` — 3 tests still assert the closed gate; the only blockers of main's `full-tests` tripwire (run 30875123887). Not quarantined | 2026-08-03 / 08-04 | — |
+| 8 | **P2** `_current_actor` env fallback bypasses `permissions.py` | 2026-06-30 / 07-22 | `tinyassets/engine_helpers.py:192` |
+| 9 | Cloud automation ROLLBACK refused >24h after setup — binding id derives from the definition, so it re-selects the expired original. Covered by test, not fixed | 2026-08-05 | — |
+| 10 | Privacy Q6.3 — legacy `set_engine` writes no ceiling; gemini/groq/grok remain fallbacks; ambient no-universe env can reach maintainer auth until V2 | 2026-04-17 / 07-25 | `tinyassets/providers/router.py:89-92` |
+| 11 | *Watch* — browser-found plug-and-play fixes live on prod (#2532-#2537, #2550); founder X deposit pending, first organic X post is the proof | 2026-08-25 | — |
+| 12 | *Watch* — prod disk 78.6%, ~4.8 GB from 74 min of deploys; guarded by `disk_watch` (80%) + hourly `disk_autoprune` (85%) | 2026-08-25 | — |
 
-Also load-bearing and not yet landed: the `deploy-prod` chain health note, the reshape residuals
-(WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors), and the open work
-rows for PR #2413 / #2434 / surface-parity.
+Rows 1-10 are durable findings and need a home that outlives STATUS.md. Rows 11-12 are watches with
+their own automated guards and expire on their own.
+
+### The Work table is already a pointer, not a backlog
+
+STATUS.md's own Work header says it: *"Queue lives in OpenSpec, not here (2026-08-02): 40 active
+changes are the backlog."* Of ~40 Work rows, most cite `openspec/changes/<name>/` as their content
+and exist only to say "someone is on this." **Migrating those to GitHub issues would create a third
+copy of the same queue.** The correct disposition per row class:
+
+| Row class | Count (approx) | Destination |
+|---|---|---|
+| Cites an `openspec/changes/*` dir | ~22 | **Delete the row.** OpenSpec already holds it; `python scripts/openspec_flow.py audit` lists them |
+| `host-action` / `host-decision` (needs the founder, not an agent) | ~10 | GitHub issue, `concern` label — an agent cannot act on these and they must not vanish |
+| `monitoring` / *Watch* | ~5 | Delete. Each names its own automated guard or expiry condition |
+| Live security concern | 10 | GitHub issue, `security` label |
+| Stale / premise-inverted | TBD at migration | Drop with a one-line reason recorded here |
+
+Per memory `stale-backlog-rows-misdirect`, each row's premise is verified against code before it
+moves — several rows already carry self-corrections ("UNCLEAR (triage 2026-08-02)", "re-verify vs
+merged #1784", "the change dir does NOT exist yet").
+
+Labels created for the destination this session: `concern`, `security`, `harness`.
+
+**The destination needs pruning first.** 358 open issues: 106 `Deploy failed`, 4 `deploy-failed`,
+3 `DR drill FAILED` (113 bot build notifications, all for shas superseded by the 2026-08-23
+deploy-chain verification on `ce8f8197`), and 180 `[WIKI-*]` from the auto-change loop that was
+**retired 2026-06-25** (`AUTO_FIX_DISABLED=true`). That leaves ~65 human-authored issues. The label
+set tells the same story: 70+ labels, of which ~20 are `auto-fix-*` / `writer:*` / `checker:*`
+residue from the retired loop.
 
 ## 8. What is genuinely under-engineered
 
