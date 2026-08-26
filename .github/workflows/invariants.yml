@@ -1,0 +1,61 @@
+name: invariants
+
+# The server-side half of the invariant framework.
+#
+# Until 2026-08-25 these ran ONLY from scripts/git-hooks/pre-commit, which has
+# to be installed by hand (scripts/install-git-hooks.ps1). A fresh clone, a CI
+# runner, or an agent sandbox that skipped the installer got zero enforcement —
+# which is how the always-loaded context budget drifted from ~17.6 KB to 62 KB
+# with its invariant registered and VIOLATED the whole time.
+#
+# The local hook stays as fast feedback; this is the authoritative gate.
+#
+# Scope: pre-commit-scoped invariants only (cross-provider-drift, skills-valid,
+# context-budget, mirror-parity, mojibake). Network- and browser-dependent ones
+# (tab-single needs Chrome; deployed_sha needs the live surface) are excluded by
+# design — a gate that depends on an external service fails for reasons the PR
+# author cannot fix.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run pre-commit-scoped invariants
+        run: python scripts/invariants_run.py --pre-commit
+
+      - name: Context budget (explicit, so the number is in the log)
+        if: always()
+        run: python scripts/check_context_budget.py --strict
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### invariants"
+            echo ""
+            echo '```'
+            python scripts/check_context_budget.py || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -205,6 +205,8 @@ other as peers via the `peer-agents` skill. Neither runs a standing team.
 ### Quality Gates
 
 Invariants. Full procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
+Which rules are executable, where they run, and which are deliberately still
+judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-gates.md)**.
 
 - **Shape before hardening** (founder, 2026-08-20). One pre-build review for
   SHAPE + APPROACH and single-user safety holes → ship the MVP live and test as
