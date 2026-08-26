@@ -128,3 +128,39 @@ def test_unusable_release_state_shapes_all_raise(monkeypatch, bad):
 
     with pytest.raises(mod.DeployedShaError):
         mod.report("https://example.invalid/mcp", 1.0)
+
+
+def test_receipt_disagreeing_with_itself_is_unknown(monkeypatch):
+    """git_sha vs image_tag mismatch is exit 2, never a pass.
+
+    Agreement does not prove the running binary (see the module docstring and
+    docs/concerns/2026-08-26-deployed-sha-proves-receipt-only.md). DISagreement
+    does prove the receipt is untrustworthy, and an untrustworthy receipt must
+    never read as shipped.
+    """
+    mod = load()
+    stub(mod, monkeypatch, {
+        "git_sha": _head(),
+        "image_tag": "ghcr.io/jonnyton/tinyassets-daemon:deadbeefcafe",
+    })
+
+    assert mod.main(["--assert-contains", _head()]) == 2
+
+
+def test_agreeing_receipt_still_passes(monkeypatch):
+    mod = load()
+    head = _head()
+    stub(mod, monkeypatch, {
+        "git_sha": head,
+        "image_tag": f"ghcr.io/jonnyton/tinyassets-daemon:{head[:12]}",
+    })
+
+    assert mod.main(["--assert-contains", head]) == 0
+
+
+def test_report_labels_what_it_actually_proves(monkeypatch):
+    """The tool must not let a caller mistake a receipt for the running binary."""
+    mod = load()
+    stub(mod, monkeypatch, {"git_sha": _head()})
+
+    assert mod.report("https://example.invalid/mcp", 1.0)["proves"] == "receipt"

@@ -65,7 +65,7 @@ If both probes can't be run (e.g., Codex driver is the only one available), STOP
 
 Before the first prompt, run your route's preflight checklist and log the result — full checklists in `references/preflight-and-setup.md` (Codex host-visible browser · ChatGPT live · Claude Code CDP). If one browser driver is unavailable, try another harness-supported host-visible route. **Stop only when no available route can keep the real chatbot tab visible to the host or the connector itself is unavailable.** Never test through a fresh profile or a direct MCP call.
 
-After `ui-test` passes, also look for post-fix clean-use evidence from actual users when the affected feature is public or high-risk. Check available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Record the timestamp, environment, and evidence source. If no real-user use is visible yet, say so plainly and leave a short watch item in `STATUS.md` rather than implying the feature has been proven clean for users.
+After `ui-test` passes, also look for post-fix clean-use evidence from actual users when the affected feature is public or high-risk. Check available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Record the timestamp, environment, and evidence source. If no real-user use is visible yet, say so plainly and leave a short watch item as a `docs/concerns/` file rather than implying the feature has been proven clean for users.
 
 ## Persona authenticity
 
@@ -223,7 +223,7 @@ If a mission stalls (no progress for >30s after an `ask` that should have trigge
 
 ## When no Mission brief exists yet
 
-If the lead pings you to start but no `LEAD DIRECTION` entry exists in the session log tail and `output/mcp_test_plan.md` doesn't have a current Mission, **self-initiate.** Pick a small probe in line with the broader project frame (latest `STATUS.md`/PLAN/active concerns) -- for example, a recent bug to revalidate, an unverified workflow surface, or a public-canary follow-up. Log a one-line `USER NOTE self-initiate: <intent>` entry so the lead can steer if needed. Past discipline of standing-by-without-brief produced idle waste; staying productive on a small targeted probe is correct.
+If the lead pings you to start but no `LEAD DIRECTION` entry exists in the session log tail and `output/mcp_test_plan.md` doesn't have a current Mission, **self-initiate.** Pick a small probe in line with the broader project frame (`PLAN.md`, open `docs/concerns/`, `python scripts/openspec_flow.py audit`) -- for example, a recent bug to revalidate, an unverified workflow surface, or a public-canary follow-up. Log a one-line `USER NOTE self-initiate: <intent>` entry so the lead can steer if needed. Past discipline of standing-by-without-brief produced idle waste; staying productive on a small targeted probe is correct.
 
 ## Claude Code driver
 
@@ -495,7 +495,7 @@ These are the only triggers that stop the mission outright. Everything else gets
 
 ## Never
 
-- Never call `scripts/mcp_call.py` — that's the old invisible path; kept only for the lead's own debugging. You always go through the browser.
+- Never drive the MCP surface directly with a script — that is the old invisible path and proves nothing about the user experience. You always go through the browser.
 - Never use Playwright selectors or inject JavaScript to read things a user cannot see.
 - Never treat hidden DOM state, direct MCP output, or an isolated browser profile as final proof.
 - Never reference the Custom GPT — legacy, retired.

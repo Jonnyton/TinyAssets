@@ -53,7 +53,7 @@ class ContextBudgetInvariant(Invariant):
                 message=f"check_context_budget.py not found at {BUDGET_SCRIPT}",
             )
         mod = _load_budget_module()
-        results, combined, hard_busted = mod.run(REPO_ROOT)
+        results, combined, hard_busted, imported, missing = mod.run(REPO_ROOT)
         hard_over = [r.path for r in results if r.kind == "hard" and r.over]
         soft_over = [r.path for r in results if r.kind == "soft" and r.over]
         evidence = {
@@ -61,12 +61,17 @@ class ContextBudgetInvariant(Invariant):
             "combined_hard_bytes": mod.COMBINED_HARD_BYTES,
             "hard_over": hard_over,
             "soft_over": soft_over,
+            "imported": imported,   # @-imports counted toward COMBINED
+            "missing": missing,     # configured always-loaded files that vanished
         }
         if hard_busted:
+            reason = ", ".join(hard_over) or (
+                f"missing: {', '.join(missing)}" if missing else "combined over ceiling"
+            )
             return CheckResult(
                 status=Status.VIOLATED,
                 message=(
-                    f"{', '.join(hard_over)} over declared HARD budget; "
+                    f"{reason} over declared HARD budget; "
                     f"always-loaded total {combined} bytes "
                     f"(combined ceiling {mod.COMBINED_HARD_BYTES}). "
                     f"Run: python scripts/check_context_budget.py"

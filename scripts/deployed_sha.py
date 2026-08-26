@@ -20,6 +20,21 @@ This reads the sha production is *serving* from the live public MCP surface
 
     python scripts/deployed_sha.py --json
 
+**Known limit — it proves the RECEIPT, not the running binary.**
+``release_state`` is a JSON file the deploy job writes to the host volume;
+``tinyassets/api/status.py`` reads it back without comparing it to the revision
+actually running. A manual rollback or an older-image restart that leaves the
+receipt intact would make an older server report a newer sha, and
+``--assert-contains`` would return 0 for code that is not running. Codex found
+this reviewing the 2026-08-25 harness reset; closing it needs the public surface
+to expose a runtime-derived revision, which is a product change, not a harness
+one. Tracked at ``docs/concerns/2026-08-26-deployed-sha-proves-receipt-only.md``.
+
+What this DOES check, so the gap is as small as it can be here: ``git_sha`` and
+``image_tag`` must agree, and a receipt missing either is exit 2 rather than a
+pass. That catches a partial or tampered receipt; it cannot catch a coherent
+receipt describing a build that is no longer running.
+
 **This is a post-deploy check, never a merge-required one.** A PR-required
 check cannot demand that production already contain an unmerged head; wiring it
 that way is circular and can never pass. Codex flagged exactly that in the
@@ -130,7 +145,28 @@ def report(url: str, timeout: float) -> dict[str, Any]:
     if not deployed:
         raise DeployedShaError("release_state.git_sha is empty — cannot tell what is deployed")
 
-    info: dict[str, Any] = {"deployed_sha": deployed, "url": url}
+    # Cross-check the two independent fields the receipt carries. They are
+    # written together, so agreement does not prove the running binary -- but
+    # DISagreement proves the receipt is untrustworthy, and an untrustworthy
+    # receipt must be exit 2, never a pass.
+    image_tag = (release_state.get("image_tag") or "").strip()
+    if image_tag:
+        tag_sha = image_tag.rsplit(":", 1)[-1].strip()
+        if tag_sha and not (deployed.startswith(tag_sha) or tag_sha.startswith(deployed)):
+            raise DeployedShaError(
+                f"release_state is inconsistent: git_sha {deployed[:12]} does not match "
+                f"image_tag {image_tag!r} - refusing to report a deploy state from a "
+                "receipt that disagrees with itself"
+            )
+
+    info: dict[str, Any] = {
+        "deployed_sha": deployed,
+        "url": url,
+        "image_tag": image_tag or None,
+        "image_digest": (release_state.get("image_digest") or "").strip() or None,
+        "deployed_at": (release_state.get("deployed_at") or "").strip() or None,
+        "proves": "receipt",  # not the running binary; see module docstring
+    }
     try:
         _git("cat-file", "-e", f"{deployed}^{{commit}}")
         info["known_to_git"] = True
@@ -208,8 +244,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": ok, **info}, indent=2))
         elif ok:
             print(
-                f"SHIPPED: production serves {info['deployed_sha'][:12]}, which contains "
-                f"{args.assert_contains}"
+                f"SHIPPED (per receipt): production reports {info['deployed_sha'][:12]}, "
+                f"which contains {args.assert_contains}"
             )
         else:
             print(

@@ -106,12 +106,31 @@ def _now() -> float:
     return time.time()
 
 
+def session_id() -> str:
+    """Stable per-session id.
+
+    Events carried no session identity until 2026-08-26, so two concurrent
+    sessions (or a new one reading a previous one's log) contaminated each
+    other's predicates -- one session's three failures could trip a redirect in
+    another. Predicates now only see their own session's events.
+
+    Claude Code exports a session id; fall back to the parent process id, which
+    is stable for the life of one CLI invocation.
+    """
+    for var in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value[:32]
+    return f"pid-{os.getppid()}"
+
+
 def record(kind: str, target: str = "", detail: dict[str, Any] | None = None,
            *, store: Path | None = None, now: float | None = None) -> None:
     """Append one event. Never raises — a broken recorder must not break a turn."""
     path = store or EVENTS
     event = {
         "ts": now if now is not None else _now(),
+        "sid": session_id(),
         "kind": kind,
         "target": target,
         "detail": detail or {},
@@ -130,10 +149,11 @@ def _prune(path: Path, *, now: float | None = None) -> None:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return
-    if len(lines) <= MAX_EVENTS:
-        # Still drop anything past the age bound, cheaply, only when large.
-        if len(lines) < 200:
-            return
+    # Age-prune UNCONDITIONALLY. An earlier version returned early below 200
+    # records "cheaply", which meant a small log kept events older than the age
+    # bound -- and three stale failures were enough to trip repeat_failure on a
+    # fresh session. The count test passed the whole time because it used 300
+    # events, above the early-return threshold. Codex found it 2026-08-26.
     cutoff = (now if now is not None else _now()) - MAX_AGE_SECONDS
     kept: list[str] = []
     for line in lines[-MAX_EVENTS:]:
@@ -275,8 +295,14 @@ def no_landing(events: list[dict[str, Any]]) -> Finding | None:
 PREDICATES = (repeat_failure, edit_thrash, no_landing)
 
 
-def check(store: Path | None = None) -> list[Finding]:
-    events = load(store)
+def check(store: Path | None = None, sid: str | None = None) -> list[Finding]:
+    """Evaluate predicates against THIS session's events only.
+
+    Events with no ``sid`` predate the 2026-08-26 partitioning and are ignored
+    rather than attributed to whoever happens to be running now.
+    """
+    current = sid if sid is not None else session_id()
+    events = [e for e in load(store) if e.get("sid") == current]
     findings = [f for f in (p(events) for p in PREDICATES) if f is not None]
     return findings
 

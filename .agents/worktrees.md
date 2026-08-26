@@ -371,9 +371,9 @@ GitHub alignment:
 - A worktree is the local checkout for one Git branch.
 - A branch folds back through a GitHub PR, normally draft while blocked or
   under review and ready only when verification gates pass.
-- `STATUS.md` owns claims and file collision boundaries; GitHub owns branch,
+- Branches and open PRs own claims and collision boundaries; GitHub owns branch,
   commit, PR, and merge history.
-- A branch is not memory. `_PURPOSE.md`, this inventory, `STATUS.md`,
+- A branch is not memory. `_PURPOSE.md`, this inventory, `openspec/changes/`,
   idea files, and draft PR bodies are the durable memory layer.
 - Lane state is one of: Active lane, Parked draft lane, Idea/reference only,
   Abandoned/swept.

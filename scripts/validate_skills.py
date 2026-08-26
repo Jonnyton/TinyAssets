@@ -147,12 +147,70 @@ def validate_router_coverage(root: Path) -> list[SkillIssue]:
     return issues
 
 
+
+# Paths a skill cites that must actually exist. Deliberately narrow: repo-rooted
+# script/doc paths in backticks. Prose like `tests/` or a glob is not a claim
+# that one exact file exists, so those are skipped.
+_REF_RE = re.compile(
+    r"`((?:scripts|docs|packaging|deploy|tinyassets|\.agents|\.claude|\.github)"
+    r"/[A-Za-z0-9_./-]+\.(?:py|md|ps1|sh|yml|yaml|json|txt))`"
+)
+_SKILL_REF_RE = re.compile(r"`([a-z][a-z0-9-]{3,})`")
+
+
+def validate_referenced_paths(root: Path) -> list[SkillIssue]:
+    """A skill citing a deleted script or doc is a broken instruction.
+
+    Added 2026-08-26. The harness reset deleted 24 skills and a dozen scripts,
+    and `validate_all` still reported green while `external-research-implications`
+    told the reader to run `scripts/claim_check.py` -- deleted -- and
+    `shipping-and-launch` linked `performance-optimization` -- deleted. The
+    validator checked metadata, mirrors, and router coverage, i.e. the SHAPE of
+    the skill tree, never whether what a skill says is still true.
+    """
+    issues: list[SkillIssue] = []
+    source_root = root / CANONICAL_ROOT
+    known_skills = {path.parent.name for path in _skill_files(source_root)}
+    for path in _skill_files(source_root):
+        text = path.read_text(encoding="utf-8")
+        for match in _REF_RE.finditer(text):
+            rel = match.group(1)
+            if not (root / rel).exists():
+                issues.append(SkillIssue(path, f"references missing path {rel!r}"))
+        for match in _SKILL_REF_RE.finditer(text):
+            name = match.group(1)
+            if name in known_skills or "-" not in name:
+                continue
+            # Only flag names that LOOK like a skill reference: hyphenated and
+            # previously present. A generic hyphenated word is not a claim.
+            if name in _DELETED_SKILLS:
+                issues.append(SkillIssue(path, f"references deleted skill {name!r}"))
+    return issues
+
+
+# Skills removed by the 2026-08-25 reset. Naming them explicitly keeps the check
+# precise -- it flags a real dangling pointer without guessing that any
+# hyphenated word is a skill name.
+_DELETED_SKILLS = {
+    "planning-and-task-breakdown", "incremental-implementation",
+    "debugging-and-error-recovery", "code-simplification",
+    "subagent-driven-development", "context-engineering",
+    "documentation-and-adrs", "domain-model", "improve-codebase-architecture",
+    "code-review-and-quality", "test-driven-development",
+    "git-workflow-and-versioning", "skill-authoring", "using-agent-skills",
+    "api-and-interface-design", "deprecation-and-migration",
+    "frontend-ui-engineering", "performance-optimization",
+    "conditional-edge-testing", "classic-game-design-test", "game-prototyping",
+    "idea-refine", "spec-driven-development", "auto-iterate",
+}
+
 def validate_all(root: Path) -> list[SkillIssue]:
     return [
         *validate_metadata(root),
         *validate_forbidden_text(root),
         *validate_mirror(root),
         *validate_router_coverage(root),
+        *validate_referenced_paths(root),
     ]
 
 

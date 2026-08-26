@@ -42,15 +42,25 @@ def sup(tmp_path, monkeypatch):
     return mod
 
 
-def write(mod, events):
+SID = "test-session"
+
+
+def write(mod, events, sid=SID):
+    """Write fixture events stamped with this session's id.
+
+    Events carry a session id since 2026-08-26 and check() evaluates only its
+    own session's, so a fixture without one is invisible -- which is the point.
+    """
+    for e in events:
+        e.setdefault("sid", sid)
     lines = [json.dumps(e) for e in events]
     mod.EVENTS.parent.mkdir(parents=True, exist_ok=True)
-    mod.EVENTS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    mod.EVENTS.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
 
 
-def cmd_event(mod, command, code, ts=0.0):
+def cmd_event(mod, command, code, ts=0.0, sid=SID):
     return {
-        "ts": ts, "kind": "command", "target": "",
+        "ts": ts, "sid": sid, "kind": "command", "target": "",
         "detail": {
             "normalized": mod.normalize_command(command),
             "signature": mod.command_signature(command),
@@ -94,7 +104,7 @@ def test_repeat_failure_trips_at_three(sup):
     """Matches AGENTS.md's own prose rule: stuck 3+ iterations."""
     write(sup, [cmd_event(sup, "pytest tests/test_x.py", 1, ts=i) for i in range(3)])
 
-    findings = sup.check()
+    findings = sup.check(sid="test-session")
 
     assert [f.predicate for f in findings] == ["repeat_failure"]
     assert findings[0].evidence["count"] == 3
@@ -104,14 +114,14 @@ def test_repeat_failure_trips_at_three(sup):
 def test_two_failures_do_not_trip(sup):
     write(sup, [cmd_event(sup, "pytest tests/test_x.py", 1, ts=i) for i in range(2)])
 
-    assert sup.check() == []
+    assert sup.check(sid="test-session") == []
 
 
 def test_repeated_success_never_trips(sup):
     """Re-running a passing command is a workflow, not a loop."""
     write(sup, [cmd_event(sup, "pytest tests/test_x.py", 0, ts=i) for i in range(10)])
 
-    assert sup.check() == []
+    assert sup.check(sid="test-session") == []
 
 
 def test_same_command_different_exit_codes_does_not_trip(sup):
@@ -122,7 +132,7 @@ def test_same_command_different_exit_codes_does_not_trip(sup):
         cmd_event(sup, "pytest tests/test_x.py", 4, ts=2),
     ])
 
-    assert sup.check() == []
+    assert sup.check(sid="test-session") == []
 
 
 def test_a_commit_resets_repeat_failure(sup):
@@ -134,7 +144,7 @@ def test_a_commit_resets_repeat_failure(sup):
         cmd_event(sup, "pytest tests/test_x.py", 1, ts=3),
     ])
 
-    assert sup.check() == []
+    assert sup.check(sid="test-session") == []
 
 
 def test_edit_thrash_trips_on_repeated_edits_without_a_commit(sup):
@@ -143,7 +153,7 @@ def test_edit_thrash_trips_on_repeated_edits_without_a_commit(sup):
         for i in range(5)
     ])
 
-    findings = sup.check()
+    findings = sup.check(sid="test-session")
 
     assert [f.predicate for f in findings] == ["edit_thrash"]
     assert findings[0].evidence["file"] == "tinyassets/api/universe.py"
@@ -156,7 +166,7 @@ def test_edits_spread_across_files_do_not_trip(sup):
         for i in range(12)
     ])
 
-    assert [f.predicate for f in sup.check()] == []
+    assert [f.predicate for f in sup.check(sid="test-session")] == []
 
 
 def test_no_landing_trips_after_many_calls_without_a_commit(sup):
@@ -165,7 +175,7 @@ def test_no_landing_trips_after_many_calls_without_a_commit(sup):
         for i in range(sup.NO_LANDING_CALLS)
     ])
 
-    assert "no_landing" in [f.predicate for f in sup.check()]
+    assert "no_landing" in [f.predicate for f in sup.check(sid="test-session")]
 
 
 def test_no_landing_resets_on_commit(sup):
@@ -174,7 +184,7 @@ def test_no_landing_resets_on_commit(sup):
     events.append({"ts": 999, "kind": "commit", "target": "", "detail": {}})
     write(sup, events)
 
-    assert "no_landing" not in [f.predicate for f in sup.check()]
+    assert "no_landing" not in [f.predicate for f in sup.check(sid="test-session")]
 
 
 # ----------------------------------------------------- Codex's refutation
@@ -202,11 +212,11 @@ def test_reset_shaped_session_does_not_trip(sup):
         ts += 1
     write(sup, events)
 
-    assert sup.check() == [], "a committing docs lane must never read as stagnation"
+    assert sup.check(sid="test-session") == [], "a committing docs lane must never read as stagnation"
 
 
 def test_empty_log_is_quiet(sup):
-    assert sup.check() == []
+    assert sup.check(sid="test-session") == []
 
 
 def test_corrupt_lines_are_skipped_not_fatal(sup):
@@ -216,7 +226,7 @@ def test_corrupt_lines_are_skipped_not_fatal(sup):
         encoding="utf-8",
     )
 
-    assert sup.check() == []
+    assert sup.check(sid="test-session") == []
 
 
 # ------------------------------------------------------------- store rules
@@ -249,3 +259,50 @@ def test_retention_caps_event_count(sup):
     sup.record("edit", "latest.py", now=now)
 
     assert len(sup.load()) <= sup.MAX_EVENTS
+
+
+# ------------------------------------------------- session isolation (Codex)
+
+
+def test_another_sessions_failures_do_not_trip_this_one(sup):
+    """Concurrent sessions must not contaminate each other.
+
+    Before 2026-08-26 events carried no session id, so three failures in one
+    session tripped a redirect in another that had done nothing wrong.
+    """
+    write(sup, [cmd_event(sup, "pytest tests/test_x.py", 1, ts=i, sid="other-session")
+                for i in range(5)], sid="other-session")
+
+    assert sup.check(sid="test-session") == []
+
+
+def test_events_without_a_session_id_are_ignored(sup):
+    """Pre-partitioning events are not attributed to whoever runs now."""
+    raw = [{"ts": i, "kind": "command", "target": "",
+            "detail": {"normalized": "pytest x", "signature": "abc123", "exit_code": 1}}
+           for i in range(5)]
+    sup.EVENTS.parent.mkdir(parents=True, exist_ok=True)
+    sup.EVENTS.write_text(chr(10).join(json.dumps(e) for e in raw) + chr(10), encoding="utf-8")
+
+    assert sup.check(sid="test-session") == []
+
+
+# --------------------------------------------- retention below the old floor
+
+
+def test_stale_events_are_pruned_even_in_a_small_log(sup):
+    """The bug the count-based test could not see.
+
+    _prune used to return early below 200 records, so a SMALL log kept events
+    past the age bound -- and three stale failures were enough to trip
+    repeat_failure on a fresh session. The old retention test used 300 events,
+    above that threshold, so it passed while the bug lived underneath it.
+    """
+    now = 1_000_000.0
+    old = now - sup.MAX_AGE_SECONDS - 60
+    write(sup, [cmd_event(sup, "pytest tests/test_x.py", 1, ts=old) for _ in range(3)])
+
+    sup.record("edit", "fresh.py", now=now)
+
+    assert len(sup.load()) == 1, "stale events survived the prune"
+    assert sup.check(sid="test-session") == [], "stale events tripped a predicate"

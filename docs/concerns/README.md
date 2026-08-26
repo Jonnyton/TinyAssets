@@ -34,6 +34,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [`_current_actor` env fallback](2026-06-30-current-actor-env-fallback.md) — bypasses `permissions.py` | 2026-06-30 |
 | — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |
 | — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
+| **P2** | [`deployed_sha` proves the receipt, not the running binary](2026-08-26-deployed-sha-proves-receipt-only.md) — a rollback with an intact receipt reads as shipped | 2026-08-26 |
 
 Predating the migration: [synthesis skip echoes](2026-04-16-synthesis-skip-echoes.md),
 [`test_record_and_get_stats` flake](2026-04-26-test_record_and_get_stats_flake.md),

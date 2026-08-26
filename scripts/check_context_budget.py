@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -105,14 +106,72 @@ def measure(budget: Budget, root: Path) -> Result:
     )
 
 
+IMPORT_RE = re.compile(r"^@([A-Za-z0-9_./-]+\.md)\s*$", re.MULTILINE)
+
+
+def imported_files(root: Path, seeds: list[str]) -> list[str]:
+    """Every `@file.md` reachable from the seeds, transitively.
+
+    Claude Code loads `@import` targets into the same always-loaded context as
+    the file importing them, so a budget that measures only the seeds is
+    trivially evaded: move the bulk into `@HUGE.md` and the ceiling never
+    notices. Codex proved exactly that against this script on 2026-08-26 --
+    a 1 MB import reported combined=14 and passed --strict.
+
+    Cycles are handled by the seen-set; a missing target is simply not walked
+    (its absence is reported by `measure`, which is where absence belongs).
+    """
+    seen: set[str] = set()
+    order: list[str] = []
+    queue = list(seeds)
+    while queue:
+        rel = queue.pop(0)
+        if rel in seen:
+            continue
+        seen.add(rel)
+        if rel not in seeds:
+            order.append(rel)
+        path = root / rel
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in IMPORT_RE.finditer(text):
+            target = match.group(1).strip()
+            if target and target not in seen:
+                queue.append(target)
+    return order
+
+
 def run(root: Path) -> tuple[list[Result], int, bool]:
     results = [measure(b, root) for b in CONFIG]
-    combined = sum(r.bytes for r in results if r.exists)
+
+    # Anything reachable by @import is always-loaded too, so it counts toward
+    # the combined ceiling even though it has no budget line of its own.
+    seeds = [b.path for b in CONFIG]
+    extra_bytes = 0
+    extra: list[str] = []
+    for rel in imported_files(root, seeds):
+        path = root / rel
+        try:
+            extra_bytes += len(path.read_bytes())
+            extra.append(rel)
+        except OSError:
+            continue
+
+    combined = sum(r.bytes for r in results if r.exists) + extra_bytes
+
+    # A configured always-loaded file that has VANISHED is a violation, not a
+    # quiet pass. Deleting AGENTS.md must never be the cheapest way to satisfy
+    # its own budget.
+    missing = [r.path for r in results if not r.exists]
+
     hard_busted = (
         any(r.kind == "hard" and r.over for r in results)
         or combined > COMBINED_HARD_BYTES
+        or bool(missing)
     )
-    return results, combined, hard_busted
+    return results, combined, hard_busted, extra, missing
 
 
 def _fmt_table(results: list[Result], combined: int) -> str:
@@ -137,6 +196,15 @@ def _fmt_table(results: list[Result], combined: int) -> str:
     return "\n".join(rows)
 
 
+def _fmt_extras(imported: list[str], missing: list[str]) -> str:
+    lines: list[str] = []
+    if imported:
+        lines.append("  @imports counted toward COMBINED: " + ", ".join(imported))
+    for path in missing:
+        lines.append(f"  - {path}: MISSING -- a configured always-loaded file is gone")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Guard the always-loaded agent-context budget.")
     ap.add_argument("--strict", action="store_true",
@@ -145,17 +213,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=str(REPO_ROOT), help="Repo root to scan.")
     args = ap.parse_args(argv)
 
-    results, combined, hard_busted = run(Path(args.root))
+    results, combined, hard_busted, imported, missing = run(Path(args.root))
 
     if args.json:
         print(json.dumps({
             "results": [asdict(r) | {"status": r.status} for r in results],
             "combined_bytes": combined,
             "combined_hard_bytes": COMBINED_HARD_BYTES,
+            "imported": imported,
+            "missing": missing,
             "hard_busted": hard_busted,
         }, indent=2))
     else:
         print(_fmt_table(results, combined))
+        extras = _fmt_extras(imported, missing)
+        if extras:
+            print(extras)
         if hard_busted:
             print("\nHARD budget exceeded -- a file is over the ceiling it declares for itself.")
         soft_over = [r.path for r in results if r.over and r.kind == "soft"]
