@@ -487,8 +487,9 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         served agent defines nodes inline).
       * submitted approval/author/fork on a node → strip at each node's top level so
         the node persists UNAPPROVED (run_graph's _validate_source_code then refuses
-        it until the founder approves the source in the browser); publish/fork at
-        the top level → strip + force visibility=private.
+        it — and no user-facing surface can approve it today, so a source_code node
+        built here can never run; prefer prompt_template); publish/fork at the top
+        level → strip + force visibility=private.
 
     Stripping is NODE-LEVEL, not recursive: a blanket recursive strip corrupted
     legitimate opaque workflow data (a user's ``state_schema.default_value`` or
@@ -785,9 +786,10 @@ def write_graph(
     ``connect_http``: it stores the connection + grant and pins the
     host/path/method allow-list. Then ``source_channel operation=approve`` grants
     the destination consent (you can do that part). The node's
-    ``source_code`` MUST return, under one of its ``output_keys``, a ``json.dumps``
-    string of a packet of EXACTLY this shape (the effector rejects anything else —
-    do NOT invent ``destination`` / ``payload`` keys)::
+    delivery node MUST use ``prompt_template`` (NOT ``source_code`` — see the
+    warning below) and MUST produce, under one of its ``output_keys``, a
+    ``json.dumps`` string of a packet of EXACTLY this shape (the effector rejects
+    anything else — do NOT invent ``destination`` / ``payload`` keys)::
 
         {"sink": "authenticated_external_call",
          "connection_id": "<the connection_id connect_http returned>",
@@ -800,14 +802,19 @@ def write_graph(
 
     ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
     connect_http; ``verb`` is the HTTP method (it is matched against the connection's
-    granted scope). The node's ``source_code`` MUST define a function named exactly
-    ``run(state)`` — that is the ONLY entry point the runtime calls (a ``handler`` /
-    ``main`` / any other name is never invoked, so the node silently emits nothing
-    and no call fires). Return a dict keyed by the output_key holding the packet
-    string, e.g. ``return {"delivery_receipt": json.dumps(packet)}``.
-    The source_code node stays UNAPPROVED until the founder approves
-    it in the browser, and the call only fires when the daemon's outbound-HTTP flag
-    is on — so a build here is always safe.
+    granted scope). Give the node ``effects: ["authenticated_external_call"]``, one
+    ``output_key`` (e.g. ``delivery_receipt``) declared in the state schema, and a
+    ``prompt_template`` that instructs the model to emit ONLY that JSON packet with
+    the literal ids and body filled in — no prose, no code fences.
+
+    DO NOT build the delivery node with ``source_code``. A ``source_code`` node is
+    refused at run time until it is approved, and today NO user-facing surface can
+    approve one — not this chat, not the app (verified 2026-08-26: a founder
+    deposited an X credential, the agent built a source_code node, and the run died
+    in 43 ms with ``node_not_approved`` / ``actionable_by: host``). Telling the user
+    "approve it in the browser" is WRONG; there is no such button. If a task truly
+    needs executable code, say plainly that running user code is not available yet
+    rather than building a node that cannot run.
 
     A branch is a stored graph SHAPE — building/editing one fires NO effects and
     issues NO provider authority. Actually RUNNING it (with side effects) is a

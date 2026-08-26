@@ -1730,3 +1730,27 @@ def test_read_graph_docstring_tells_the_agent_to_read_the_outcome():
     doc = (s.read_graph.fn if hasattr(s.read_graph, "fn") else s.read_graph).__doc__ or ""
     assert "ALWAYS read this after" in doc
     assert "queued" in doc
+
+
+def test_served_guidance_does_not_send_the_agent_into_the_unapprovable_path():
+    """Live 2026-08-26: the founder deposited an X credential, the agent followed this
+    docstring, built a source_code delivery node, and the run died in 43 ms with
+    node_not_approved / actionable_by: host. `mark_approved` has zero callers in the
+    product, so "approve it in the browser" describes a surface that does not exist."""
+    from tinyassets import engine_mcp_server as s
+
+    fn = s.write_graph.fn if hasattr(s.write_graph, "fn") else s.write_graph
+    doc = fn.__doc__ or ""
+    assert "DO NOT build the delivery node with ``source_code``" in doc
+    assert "no such button" in doc
+    assert 'MUST use ``prompt_template``' in doc
+    # The packet contract itself must survive the switch.
+    for key in ('"sink": "authenticated_external_call"', "connection_id", "grant_id"):
+        assert key in doc
+    # No docstring on this surface may promise a browser approval.
+    whole = (s.__doc__ or "") + "".join(
+        ((getattr(f, "fn", f).__doc__) or "")
+        for f in (s.read_graph, s.write_graph, s.run_graph, s.get_status)
+    )
+    assert "approves the source in the browser" not in whole
+    assert "approves it in the browser" not in whole
