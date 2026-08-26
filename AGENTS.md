@@ -30,17 +30,31 @@ never blocks uptime work.
 
 ---
 
-## Three Living Files
+## Two Living Files
 
-Updated immediately when durable state changes — they are the shared state
-across concurrent multi-provider sessions. `STATUS.md` is a live coordination
-board, not a backlog.
+Updated immediately when durable state changes.
 
 | File | What belongs here | What does NOT belong here |
 |------|-------------------|--------------------------|
-| **AGENTS.md** | How to work on this project. Behavior, norms, hard rules. | Architecture, design decisions, principles (→ PLAN.md) |
-| **PLAN.md** | How the system works and why. Architecture, principles, design decisions, module specs. | Live state, task tracking (→ STATUS.md). Behavioral norms (→ AGENTS.md) |
-| **STATUS.md** | What's happening now. Live task board, concerns, next actions. ≤60 lines canonical (~4 KB guidance). | Architecture (→ PLAN.md). How-to-work (→ AGENTS.md). Session logs (→ `activity.log`). Landing records (→ git log). Backlog parking. |
+| **AGENTS.md** | How to work on this project. Behavior, norms, hard rules. | Architecture, design decisions, principles (-> PLAN.md) |
+| **PLAN.md** | How the system works and why. Architecture, principles, design decisions, module specs. | Behavioral norms (-> AGENTS.md). Live state (-> the homes below) |
+
+Live state has no living file. It has typed homes:
+
+| Kind of state | Home |
+|---|---|
+| Queued and in-flight work | `openspec/changes/` — `python scripts/openspec_flow.py audit` |
+| Unresolved findings | `docs/concerns/` — one file each, deleted when resolved |
+| Work only the founder can do | `docs/host-actions.md` |
+| Who is working on what | git branches and open PRs |
+| Session narrative | `.agents/activity.log` |
+| Landing records | the git log |
+
+> **`STATUS.md` was retired 2026-08-25.** It was a prose blob 5.2x over the
+> ceiling it declared for itself, touched by 46% of commits in its last 90 days
+> and by 17% that changed nothing else. Its contents went to the homes above.
+> Do not recreate it: a single always-loaded file that absorbs every kind of
+> live state is the failure mode, not the format.
 
 ---
 
@@ -48,38 +62,35 @@ board, not a backlog.
 
 ### Orient
 
-1. Read `STATUS.md`. **Trim check:** when reading or writing it, delete
-   resolved concerns, landed rows, duplicated host asks, and rows no provider
-   can act on. Every reader is a janitor.
-2. `PLAN.md` is the design reference (~50 KB). Full load for feature
-   planning / design decisions / cross-cutting work; section load
+1. `PLAN.md` is the design reference (~50 KB). Full load for feature planning /
+   design decisions / cross-cutting work; section load
    (`python scripts/docview.py headings PLAN.md`, then the section) for scoped
    module fixes; minimal check for routine test/doc/skill edits.
+2. `python scripts/openspec_flow.py audit` is the work queue. Skim
+   `docs/concerns/README.md` when the task touches a known-unresolved area.
 3. If the idea inbox is non-empty, scan `ideas/PIPELINE.md` and `ideas/INBOX.md`.
 4. If your approach conflicts with a PLAN.md principle, do NOT implement it.
-   Add the conflict to STATUS.md Concerns. PLAN.md changes require user approval.
+   File it in `docs/concerns/`. PLAN.md changes require user approval.
 5. Before drafting a design note that proposes a new MCP action, cites an
    unfixed `BUG-NNN`, or pins a sha, run
    `python scripts/check_primitive_exists.py {action <verb>|bug <BUG-NNN>|sha <sha>}`
    from origin/main (exit 2 = collision, investigate first).
 
-### Updating the Three Files
+### Keeping state current
 
-| Message type | STATUS.md | PLAN.md |
-|---|---|---|
-| Decision, priority change, new concern, task state change, reframing | **Update immediately** before responding | **Update immediately** if design-relevant |
-| New idea that won't be executed now | Capture in `ideas/INBOX.md` or `ideas/PIPELINE.md` | — |
-| Code change request, bug fix, feedback, question | Update only if state actually changed | — |
-| Greeting, clarification, small talk | — | — |
+If the user closes the window after your next message, durable state must
+already reflect anything they said. Match effort to the message:
 
-The rule: if the user closes the window after your next message, the files
-already reflect any state change from what they said. Session task lists are
-ephemeral — other sessions can't see them.
+| Message type | Do this |
+|---|---|
+| Decision, priority change, new finding, reframing | Write it to its home (above) before responding; update `PLAN.md` if design-relevant |
+| New idea that will not be executed now | `ideas/INBOX.md` or `ideas/PIPELINE.md` |
+| Code change, bug fix, question | Check mentally; write only if state actually changed |
+| Greeting, clarification, small talk | Nothing |
 
-**Deletion is as important as addition.** On every STATUS.md write: resolved
-concern → delete the line; landed row → delete (the commit is the record);
-accepted design decision → move to PLAN.md; narrative → `activity.log`; detail
-→ link a commit/spec/audit, entries stay ≤150 chars.
+**Deletion is as important as addition.** A resolved concern gets its file
+deleted, not marked DONE. A landed change gets archived, not annotated. The
+commit is the record.
 
 ### Where new conventions live (provider-agnostic by default)
 
@@ -97,10 +108,12 @@ provider-specific file). Exit 2 = move the content here or tag the heading
 ### Truth And Freshness
 
 - Truth is typed: `AGENTS.md` owns process truth, `PLAN.md` design truth,
-  `STATUS.md` live-state truth. Audits are diagnostic, never a fourth source.
+  `openspec/specs/` behavioural truth. Audits are diagnostic, never a source.
 - Verification claims carry a freshness stamp: date, environment, command.
-- Concern rows: `[filed:YYYY-MM-DD]`, add `verified:YYYY-MM-DD` on re-check;
-  severity prefix outside the bracket. Server-bug concerns cross-reference
+- Concern files carry `**Filed:**` / `**Verified:**` / `**Re-verified:**` and a
+  severity. Re-verify a premise before acting on it and correct the citation in
+  place — paths and line numbers rot faster than findings do. Server-bug
+  concerns cross-reference
   their wiki `BUG-NNN`.
 - Contradictions are downgraded immediately — rewrite the stale claim or file
   a Concern before responding; labels `current:`/`historical:`/`contradicted:`.
@@ -132,7 +145,7 @@ truncates large raw reads.
 - Outside project/paper/repo to learn from → `external-research-implications`.
 - **Research-derived concepts need opposite-provider review before
   implementation** (Codex finding → Claude reviews; Claude finding → Codex
-  reviews; other provider → name the reviewer in STATUS.md). The review
+  reviews; other provider → name the reviewer in the change). The review
   re-checks sources + TinyAssets context, leaves a durable artifact, and gates
   build/push/rollout/acceptance. Hard provider limits activate the
   review-provider fallback under Quality Gates.
@@ -193,25 +206,6 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
   (Only genuine external blockers — a host-only secret/decision, a broken
   harness, an unresolved review verdict on THE lane you'd advance into — stop a
   lane; pick a different lane instead of idling.)
-
-#### OpenSpec drain [temporary bridge until cloud cutover]
-
-The host restored the local autonomous drain after the 2026-08-02 de-bloat
-test and directed on 2026-08-03 that it stay green and productive until the
-cloud drain is accepted as running 24/7. Keep exactly the canonical tray and
-guard tasks active; test-created scheduled tasks are leaks and must be removed.
-At single-active cutover, stop and disable the local drain before activating
-the cloud epoch so tray and cloud never claim concurrently. Historical rollback
-evidence remains in `docs/audits/2026-08-02-process-debloat-rollback-test.md`;
-the operational reference is
-`docs/ops/2026-07-28-openspec-drain-supervisor.md`.
-
-### Multi-Session Steering
-
-Durable coordination belongs in files (`STATUS.md`, `ideas/*.md`,
-`.agents/activity.log`), never in private chat memory. If two sessions may
-converge on one idea, narrow the file boundary and record the split. A useful
-idea left only in chat is lost work.
 
 ### Site preview / ship loop
 
@@ -310,108 +304,6 @@ clean use since the fix (production traces, logs, user-visible history),
 freshness-stamped. None visible yet? Say so and leave a STATUS watch item
 for public-surface/high-risk changes.
 
-### Two Task Systems
-
-Ephemeral in-session task lists are for sub-steps only. Anything that matters
-beyond the session goes in the STATUS.md Work table — the durable,
-cross-provider record.
-
----
-
-## Parallel Dispatch
-
-Multiple providers work concurrently; the host does not announce new sessions.
-**STATUS.md Work table is the authoritative claim surface** — no external
-locks, no runtime signaling. A fresh checkout with no chat history should be
-productive in under a minute.
-
-### Provider session-start ritual
-
-0. `python scripts/session_sync_gate.py` — warns if the primary checkout is
-   off `main` or behind origin/main. Advisory; auto-fires in Claude Code.
-1. Read `STATUS.md` (Concerns + Work + Next).
-2. `python scripts/worktree_status.py` — dirty checkouts, incomplete lanes,
-   promotion gaps. Never switch a dirty checkout to `main`.
-3. `python scripts/claim_check.py --provider <yourname>` — classifies rows
-   CLAIMABLE / BLOCKED / IN-FLIGHT / HOST-OWNED / STALE-CLAIM.
-4. `python scripts/provider_context_feed.py --provider <yourname> --phase claim`
-   — context feed of provider memories, ideas, research artifacts, handoffs.
-   Candidates must be promoted into a STATUS/worktree/PR lane before they
-   become build authority; it is a feed, not a backlog writer.
-5. **Claim by editing STATUS.md** — set the row's Status to
-   `claimed:<yourname>` (session-specific name when ambiguous, e.g.
-   `codex-gpt5-desktop`). Commit the edit; the edit IS the claim.
-6. **Scan cross-implications before building** — compare your task against
-   active rows, `ideas/PIPELINE.md`, and recent research/design artifacts; add
-   a `Depends` edge or record why not applicable. Never bypass an
-   opposite-provider review gate because your task is named differently.
-7. **Work in a worktree or branch.** Do not write outside your row's Files
-   without updating STATUS.md first.
-8. **On land**, delete the row in the same commit. The commit is the audit
-   trail.
-
-Run `provider_context_feed.py` again at later checkpoints (`--phase
-plan|build|review|foldback|memory-write`) when narrowing or advancing durable
-work; read the relevant candidates and promote or note why they don't apply.
-
-### Work-table row schema
-
-- **Files** — what this task will WRITE; the collision boundary. Concrete
-  paths, not areas. Read-only deps go in Depends. Row-lifecycle edits to
-  STATUS.md itself are implicit (`claim_check.py` ignores an exact `STATUS.md`
-  atom).
-- **Depends** — tasks that must merge first + file-read dependencies.
-- **Status** — `pending`, `claimed:<provider>`, `in-flight`, `dev-ready`,
-  `host-action`, `host-decision`, `host-review`, `monitoring`, `done`.
-  `claimed:*`/`in-flight` = Files off-limits to others.
-
-### Stale-claim reaping
-
-A claim with no commits on its Files in 24h and no `ACTIVE YYYY-MM-DD`
-heartbeat is stale. Any provider may reap: set
-`reaped:<yourname>:no-activity-24h`, then re-claim. The convention is the
-policy. A heartbeat in the row text keeps uncommitted active work alive.
-
-### Pre-claim collision guard
-
-Before adding a row or broadening Files:
-`python scripts/claim_check.py --provider <yourname> --check-files "<paths>"`.
-On overlap: add a Depends edge, or narrow your Files.
-
-### GitHub-Aligned Worktree Discipline
-
-A worktree is the local checkout for one branch; the branch folds back through
-a PR. **A branch is not durable memory** — the durable layer is `_PURPOSE.md`,
-`.agents/worktrees.md`, STATUS.md, idea files, and draft-PR bodies.
-
-**Full procedure → [`docs/reference/worktree-discipline.md`](docs/reference/worktree-discipline.md).**
-Invariants:
-
-- Four lane states, exactly one per branch: Active (STATUS row + worktree +
-  `_PURPOSE.md`), Parked draft (pushed branch + draft PR with ship/abandon
-  conditions), Idea/reference only (no build authority), Abandoned/swept
-  (removed or logged in `.agents/worktrees.md`; extract ideas first).
-- Lifecycle via tooling: `python scripts/wt.py new|done|list` (creates off
-  `origin/main`, scaffolds `_PURPOSE.md`; `done` refuses unmerged branches).
-- Never switch a dirty checkout to `main`; merging to `main` is
-  production-impacting.
-- Inherited work requires memory refs: read the prior provider's
-  memory/artifact paths (from `_PURPOSE.md` / STATUS row / PR body) before
-  coding; if none listed, search `.claude/agent-memory/`,
-  `.agents/activity.log`, recent audits by slug first.
-- Review-blocked work gets a visible lane but stays at planning/scaffolding
-  until the required review returns approve/adapt.
-- Legacy docs/ideas/memories are context, not build queues — promote into a
-  current STATUS/PLAN lane before building from them.
-
-### Staying unblocked
-
-Zero CLAIMABLE rows? Pick cross-cutting work (docs hygiene, skill audits,
-test surface, audit follow-ups) and ADD a Work row for it — keep the next
-provider's `claim_check.py` accurate.
-
----
-
 ## Hard Rules
 
 1. **SqliteSaver only** -- not AsyncSqliteSaver (not production-safe).
@@ -476,7 +368,8 @@ Inline invariants:
 | File | Audience | Purpose |
 |------|----------|---------|
 | `AGENTS.md` | Any AI, any tool | How to work, team norms, hard rules. |
-| `STATUS.md` | Any AI, any tool | Live state: task board, concerns, next. |
+| `docs/concerns/` | Any AI, any tool | Unresolved findings, one file each. |
+| `docs/host-actions.md` | Any AI, any tool | Work only the founder can do. |
 | `PLAN.md` | Any AI, any tool | Architecture, principles, design decisions. |
 | `README.md` / `INDEX.md` | Any human or AI | Orientation / repo map. |
 | `CLAUDE.md` / `CODEX.md` | One harness | Thin routing layers over AGENTS.md. |
