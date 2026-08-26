@@ -51,10 +51,12 @@ def repo(tmp_path_factory):
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "T")
     (root / "a.txt").write_text("one", encoding="utf-8")
-    git("add", "."); git("commit", "-q", "-m", "first")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
     parent = git("rev-parse", "HEAD")
     (root / "a.txt").write_text("two", encoding="utf-8")
-    git("add", "."); git("commit", "-q", "-m", "second")
+    git("add", ".")
+    git("commit", "-q", "-m", "second")
     head = git("rev-parse", "HEAD")
     return {"root": root, "head": head, "parent": parent}
 
