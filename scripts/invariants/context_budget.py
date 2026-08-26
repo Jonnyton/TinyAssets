@@ -2,13 +2,18 @@
 
 Wraps `scripts/check_context_budget.py` under the Invariant contract.
 
-Propose-only and NOT pre-commit-scoped: the always-loaded set includes
-host-managed files (STATUS.md, and the cross-provider canonical AGENTS.md),
-so a budget bust surfaces drift for a human to curate — it must not block
-commits. This mirrors the `concerns-staleness` stance exactly. The HARD
-budget is a file's own declared ceiling (STATUS.md says "4 KB / 60 lines");
-soft targets for AGENTS.md / CLAUDE.md are advisory. Basis:
-`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`.
+**This one blocks.** It was propose-only until 2026-08-25 on the reasoning that
+the always-loaded set is host-managed, so a bust should surface drift for a
+human to curate rather than stop a commit. The result: the invariant sat
+registered and VIOLATED while the set grew from ~17.6 KB (2026-04-28) to
+62,082 B, and nothing noticed, because nothing ran it and nothing failed when
+it did. Measurement without a pawl is not a ratchet.
+
+Ceilings are HARD and set just above the achieved values (see
+`scripts/check_context_budget.py`). No auto-heal: deciding WHICH content moves
+to `docs/reference/` is editorial, so a human does it. Basis:
+`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md` and
+`docs/audits/2026-08-25-harness-reset-baseline.md`.
 """
 
 from __future__ import annotations
