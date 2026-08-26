@@ -10,9 +10,9 @@ measures it — a 2026-04-28 cross-check put AGENTS.md at ~17.6 KB, and by
 that guardrail: it measures the always-loaded set and flags drift.
 
 Two budget classes:
-  * HARD  — the file declares its own ceiling (STATUS.md says "4 KB / 60 lines").
-            Enforcing a file's own stated contract is not a judgement call, so
-            `--strict` exits 2 when a HARD budget is exceeded.
+  * HARD  — a ceiling the project has committed to. Enforcing a stated
+            contract is not a judgement call, so `--strict` exits 2 when a
+            HARD budget is exceeded.
   * SOFT  — an advisory target (AGENTS.md / CLAUDE.md). The exact ceiling is a
             host call, so SOFT overages only WARN, never fail — even under
             --strict. Tune the numbers in CONFIG below; the point is that drift
@@ -43,12 +43,14 @@ class Budget:
     note: str
 
 
-# Always-loaded set: CLAUDE.md imports @AGENTS.md + @STATUS.md, so all three
-# load every session. PLAN.md is intentionally NOT imported (pointer-loaded),
-# so it is not budgeted here.
+# Always-loaded set: CLAUDE.md imports @AGENTS.md, so both load every session.
+# PLAN.md is intentionally NOT imported (pointer-loaded), so it is not budgeted.
+# STATUS.md was retired 2026-08-25 and left this set entirely.
+#
+# Both entries are SOFT while the harness reset is mid-flight. They flip to HARD
+# with retuned ceilings once AGENTS.md and CLAUDE.md are cut down -- setting a
+# hard ceiling before the cut would just wire a red gate to a known-red file.
 CONFIG: tuple[Budget, ...] = (
-    Budget("STATUS.md", "hard", 4096, 60,
-           "File declares its own 4 KB / 60-line budget in its header."),
     Budget("AGENTS.md", "soft", 30000, 450,
            "Cross-provider canonical; soft target -- was ~17.6 KB on 2026-04-28."),
     Budget("CLAUDE.md", "soft", 12000, 200,

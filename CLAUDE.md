@@ -1,5 +1,4 @@
 @AGENTS.md
-@STATUS.md
 
 ## Claude Code
 
