@@ -60,8 +60,11 @@ def _project(definition: Any) -> dict[str, Any]:
         "model": definition.model,
         "visibility": definition.visibility,
         "next": [
-            "select this provider for an automation via write_graph target=branch "
-            "with an llm_policy preferred_provider = this definition_id",
+            "registration is not selection: to make a universe RUN on this "
+            "provider, select it as the serving provider; a workflow node normally "
+            "needs no llm_policy at all and uses whatever the universe serves. To "
+            "pin one node to a provider, use the NAME, not this definition_id: "
+            "llm_policy={'preferred': {'provider': 'codex'}}",
             "the interactive tool-using agent currently runs on CLI-subscription "
             "providers (codex/claude); api_key_http serves workflow nodes",
         ],
