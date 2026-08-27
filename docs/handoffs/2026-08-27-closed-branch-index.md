@@ -67,6 +67,28 @@ auditing 26 stale diffs nobody has asked for.
 ## The one lane that stays open
 
 **PR #2559** · `claude/run-provider-session` — Lane 1 of the 2026-08-26 handoff,
+the only live lane.
+
+**It now conflicts with `main`, in exactly two files.** Resolve these before
+anything else; both are understood, neither is subtle:
+
+| File | Why it conflicts |
+|---|---|
+| `_PURPOSE.md` | Already known-wrong — the 2026-08-26 handoff records that this file describes the *earlier* "assigned consumer activation" lane, not provider authority. The commits are the truth. Take the branch's side or rewrite it. |
+| `scripts/check_background_authority_inventory.py` | Both sides edited the callsite manifest. Lane 1's commit `3eb798eb` **adds** the foreground-run execution callsites it introduced. `main` **restructured** the same file on 2026-08-27: callee names for `stream` are now receiver-qualified (`request.stream` vs `compiled.stream`), four unfalsifiable `openspec/changes/archive/` references were removed, and the checker now refuses any reference into an archived change. |
+
+For the second one: **keep both sides.** Lane 1's new callsites are additive and
+still needed; main's restructuring changes the *shape* of an entry, not whether
+Lane 1's entries belong. Re-run `python scripts/check_background_authority_inventory.py`
+after merging — it must print `closure: clean`, and it will name any callsite
+whose form is now wrong.
+
+Its last commit is also explicitly unreviewed WIP, committed only so a worktree
+teardown could not lose it. Read `git log -p 3eb798eb..19524770` before trusting
+it.
+
+
+**PR #2559** · `claude/run-provider-session` — Lane 1 of the 2026-08-26 handoff,
 the only live lane. Its last commit is explicitly unreviewed WIP committed so a
 worktree teardown could not lose it; read `git log -p 3eb798eb..19524770` before
 trusting it. Its `_PURPOSE.md` describes a *different* lane than its commits --
