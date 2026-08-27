@@ -1,144 +1,99 @@
-# Deploy no longer delivers subscription auth, so rotation and rebuild are both dead
+# The global subscription-auth seed is a dead path the docs still promise
 
 **Filed:** 2026-08-27
-**Severity:** P2 — downgraded from P1 during review; see *Scope, corrected*
+**Severity:** P2 — no live user impact; a false runbook and stale code gates
 **Verified:** 2026-08-27 against `814b4f06`
+**Cross-family review:** Codex, `docs/reviews/2026-08-27-codex-auth-sync-refutation.md`
+— **ADAPT**, and it inverted the fix. See *What review changed*.
 
 ## The finding
 
 No workflow in `.github/workflows/` references
-`TINYASSETS_CODEX_AUTH_JSON_B64` or `TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64`.
-Not one:
+`TINYASSETS_CODEX_AUTH_JSON_B64` or `TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64`:
 
 ```
 $ grep -rn "CODEX_AUTH_JSON_B64\|CLAUDE_CREDENTIALS_JSON_B64" .github/workflows/
 (no output)
 ```
 
-`deploy-prod.yml` passes exactly four secrets — `DO_DROPLET_HOST`,
-`DO_SSH_USER`, `DO_SSH_KEY`, `GITHUB_TOKEN` — and nothing else.
+`deploy-prod.yml` exposes only the droplet coordinates (`:68-70`), `GITHUB_TOKEN`
+for image resolution (`:85-87`) and the SSH key (`:151-154`). It stages the env
+helper but passes only `IMAGE_REF` (`:288-299`), and the fail-safe's sole setter
+writes `TINYASSETS_IMAGE` (`deploy/deploy_fail_safe.sh:116`). Before #2442,
+delivery was explicit at `5aeb64da^:.github/workflows/deploy-prod.yml:1250-1259`
+and `:1282-1288`; the rewrite removed it, along with the preferred global Claude
+token path at `:1277-1281`.
 
-**The product still consumes both.** `deploy/docker-entrypoint.sh:117` decodes
-`TINYASSETS_CODEX_AUTH_JSON_B64` into `~/.codex/auth.json` on container start,
-and `:153` does the same for `TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64`. The
-entrypoint states the consequence itself at `:169`: *"no claude credentials
-present … claude-code writer will be unauthenticated"*.
+Both are still consumed by `deploy/docker-entrypoint.sh:117-132` and `:153-171`,
+`deploy/tinyassets-env.template:121,138` still lists them, and
+`deploy/DEPLOY.md:203` still tells the operator to keep the codex secret rotated.
 
-**And the docs still instruct the operator to rely on it.**
-`deploy/DEPLOY.md:203` says to *"keep `TINYASSETS_CODEX_AUTH_JSON_B64` rotated
-so a fresh-droplet [rebuild works]"*. That instruction is now false. Following
-it produces no effect, which is worse than no instruction.
+## What review changed
 
-## Where it went
+**I filed this as a P1 deploy regression and proposed restoring delivery. That
+was wrong on three of four points**, and the correct fix is the opposite one.
 
-Dropped by PR #2442 (`5aeb64da`), the rewrite that took `deploy-prod.yml` from
-2,762 lines to 134. The pre-rewrite workflow delivered the bundle explicitly:
+**1. The variables are vestigial for the user-serving path.** User subscription
+material enters an owner-scoped per-universe vault (`tinyassets/api/llm_deposit.py:178-192`);
+Codex materialization reads and rotates that bundle independently of the global
+seed (`credential_vault.py:1827-1853`); universe-scoped subprocesses start from
+an isolated environment and overlay only that universe's credential
+(`providers/base.py:568-578`, `:626-654`). The as-built requirement is explicit
+that a universe must never borrow ambient host credentials
+(`openspec/specs/provider-routing/spec.md:22-33`). The Compose worker
+definitions that advertise shared global auth (`deploy/compose.yml:182-225`) are
+not started — the deploy runs `daemon cloudflared logs` only.
 
-```yaml
-# 5aeb64da^:.github/workflows/deploy-prod.yml
-HAS_CODEX_AUTH_BUNDLE: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 != '' }}   # :328
-...
-printf '%s' "${TINYASSETS_CODEX_AUTH_JSON_B64}" | ssh … \                     # :1252
-    "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64"
-...
-echo "::warning::TINYASSETS_CODEX_AUTH_JSON_B64 is not visible to deploy;      # :1259
-      leaving any existing droplet subscription auth untouched."
-```
+**Restoring the secrets would mask a stale gate rather than fix anything.**
+`cloud_worker.py:1801-1830` checks process-global auth *first*, contradicting its
+own documentation at `:571-578`, and only then checks the universe credential
+(`:1832-1856`). `get_status` reads global `CODEX_HOME` the same way
+(`api/status.py:1054-1077`). Feeding those a bundle hides the bug.
 
-It even warned when the secret was invisible. Now there is no delivery and no
-warning.
+**2. Rotation through this variable was never live.** The entrypoint
+deliberately preserves an existing credential file — `docker-entrypoint.sh:101-104`,
+`:129-130` for Codex and `:153-165` for Claude. The GitHub secret was only ever a
+**missing-file/recovery seed**, so "rotation is inert" was wrong: it was never
+the rotation path.
 
-## Why the obvious "it moved" answers are wrong
+**3. Disaster recovery does not depend on it either.** Full backups archive the
+whole data volume including `.codex`, `.claude` and per-universe vault material
+(`deploy/backup.sh:161-169`), and restore reinstates it (`backup-restore.sh:253-255`).
+Only a genuinely bare bootstrap gets empty template values
+(`deploy/hetzner-bootstrap.sh:212-217`).
 
-Both were checked, because the same review pattern that found this also found a
-sibling that genuinely *did* relocate:
+**So the accurate finding is a dead legacy seed path plus documentation that
+promises it works.** That is still worth fixing — a runbook instructing an
+operator to do something inert is worse than silence — but it is not a deploy
+regression, and the fix is removal, not restoration.
 
-- **`apply-daemon-env.yml` is not it.** Its own header: an *"EXPLICIT key→value
-  allowlist, not a regex. TINYASSETS_IMAGE and every secret/deploy-critical key
-  are NOT settable here — this is a feature-flag surface"*. It also passes only
-  the three `DO_*` secrets, and it is `workflow_dispatch`-only.
-- **`deploy_fail_safe.sh` is not it.** It uses `install-tinyassets-env.sh` as
-  `ENV_HELPER` (`:52`) — the same helper the old workflow used — but deploy
-  hands it no secret values to set.
-- **Contrast, and the reason this is not uniform rot:**
-  `TINYASSETS_GITHUB_PR_CAPABILITIES` **did** relocate. It is delivered by
-  `scripts/github-app-token-refresher.py:112` through the same env helper, on a
-  systemd timer installed by `install-host-services.yml:364-409`. Its
-  deploy-workflow assertion is genuinely stale. The two auth bundles have no
-  such path.
+## Resolving this
 
-## Scope, corrected
+Per the review's ADAPT verdict, and explicitly **not** by re-adding the secrets:
 
-**The first draft of this file rated it P1 and said a rebuilt droplet would
-come up unable to do user work. That is wrong**, and the code says so plainly.
-`tinyassets/cloud_worker.py:606-612`, verified empirically 2026-08-05:
+1. Remove the production entrypoint / template / runbook contract for both
+   variables (`docker-entrypoint.sh:117-132,153-171`,
+   `tinyassets-env.template:121,138`, `DEPLOY.md:203`,
+   `docs/reference/environment-variables.md`).
+2. Change the worker quarantine gate and `get_status` to evaluate the selected
+   universe's vault credential instead of process-global auth
+   (`cloud_worker.py:1801-1830`, `api/status.py:1054-1077`).
+3. Remove or separately document host-local global auth — host-local, no-universe
+   calls deliberately retain ambient authority (`providers/base.py:568-578`), so
+   generic self-host support may need its own explicit credential-mount path.
+4. Add a fresh-host test proving deposited per-universe Codex/Claude credentials
+   work with **no** ambient bundle present.
 
-> The container's own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` is **NOT** consulted
-> for a universe-scoped child: `credential_vault.resolve_claude_config_dir`
-> reads this universe's vault records […]
+Steps 2 and 4 are the ones with real value; step 1 is what stops the docs lying.
 
-Universe-scoped work resolves credentials **per universe**, from the vault —
-consistent with the standing rule that the platform never supplies an LLM.
-So the dropped bundles do not gate user-facing runs, and the fresh-droplet
-story is not "user work fails".
+## Related, found by the same review
 
-What the container-global bundle *does* still feed is real but narrower.
-`cloud_worker.py:532-542` — `_subscription_auth_available` delegates to
-`subscription_auth_health` so that **the worker self-quarantine gate, the
-registry-visibility check, and `get_status`** all read auth from one source.
-`tinyassets/api/status.py:1054` reads `CODEX_HOME` for the same reporting.
-
-So the accurate consequence of a fresh droplet with neither bundle is:
-workers self-quarantine and report `not_logged_in`, and `get_status` shows the
-container unauthenticated — **a visible stall, which is the failure mode that
-module deliberately chose over silent burning of work.** Bad, diagnosable, and
-not a user-facing outage.
-
-## Impact
-
-Latent on the running droplet: the values were written to the persistent host
-env file by a pre-#2442 deploy and survive container recreate, which is why
-nothing is visibly broken. Two paths are dead anyway, and they are the paths
-the variables exist for:
-
-1. **Rotation.** Re-authenticating the Codex or Claude subscription and
-   updating the GitHub secret changes nothing in production. The droplet keeps
-   the old bundle until it expires; after that the container reports
-   `not_logged_in` with no deploy-time route to fix it.
-2. **Fresh-droplet rebuild.** A rebuilt droplet comes up with neither bundle,
-   so container auth-health is red from the start — see *Scope, corrected* for
-   what that does and does not break.
-3. **A false instruction in the runbook**, which is the part with no upside:
-   `DEPLOY.md:203` tells the operator to do something inert.
-
-**Not verified from this session:** whether the live droplet's
-`/etc/tinyassets/env` currently holds either value. That needs the host and was
-not run. Confirming it is
-`ssh … 'sudo grep -c CODEX_AUTH_JSON_B64 /etc/tinyassets/env'`; a `0` promotes
-this from latent to live.
+`TINYASSETS_GITHUB_PR_CAPABILITIES` — which I had recorded as a clean
+relocation — **is relocated but broken**. Filed as
+[github-app-token-refresh-never-reaches-the-daemon](2026-08-27-github-app-token-refresh-never-reaches-daemon.md).
 
 ## How it was found
 
 Triaging the 81 failing assertions in `tests/test_deploy_prod_workflow.py`
-(see [full-tests-permanently-red](2026-08-27-full-tests-permanently-red.md)).
-That file's remaining failures were expected to be uniformly stale — assertions
-against a retired design. Four of them assert `TINYASSETS_CODEX_AUTH_JSON_B64`
-reaches the droplet, and they are correct. This is the **fourth** real drop
-recovered from #2442, after the codex-auth volume step and the
-`production-host-mutation` concurrency group (both fixed in #2584) and the
-compose sync ([deploy-drops-compose-sync](2026-08-27-deploy-drops-compose-sync.md)).
-
-The lesson is the one already recorded on that file: *a red test suite hides
-real findings among stale ones, and the only way to tell them apart is
-one at a time.*
-
-## Resolving this
-
-Restore delivery for both bundles in `deploy-prod.yml`, through
-`install-tinyassets-env.sh` as before, including the `::warning::` when the
-secret is not visible to deploy — the warning is what makes a missing secret
-diagnosable instead of silent. Then delete the four assertions' *step-name*
-expectations while keeping their *capability* expectations, retargeted at the
-current workflow.
-
-Do not resolve by deleting the assertions. They are the only thing that noticed.
+individually rather than assuming uniform staleness — see
+[full-tests-permanently-red](2026-08-27-full-tests-permanently-red.md).
