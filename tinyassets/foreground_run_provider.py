@@ -646,9 +646,36 @@ def new_foreground_run_provider_session(
     )
 
 
+# How far down a `.provider_call` chain to look for a session before giving up.
+# Today's only shape is depth 1 (api/runs.py builds the wrapper directly), so
+# anything deeper is an unrecognised chain, not a supported one.
+_MAX_WRAPPER_DEPTH = 8
+
+
+def _locate_session(
+    provider_call: Any,
+) -> tuple[_ForegroundRunProviderSession | None, int]:
+    """The nearest nested session and the depth it was found at.
+
+    `(None, 0)` means no session anywhere in the chain -- an ordinary provider
+    call, which must pass through untouched. A depth greater than 1 means a
+    session is present but WRAPPED by something this module does not know how
+    to rebind; the caller refuses rather than guesses.
+    """
+    node = provider_call
+    for depth in range(1, _MAX_WRAPPER_DEPTH + 1):
+        candidate = getattr(node, "provider_call", None)
+        if candidate is None:
+            return None, 0
+        if type(candidate) is _ForegroundRunProviderSession:
+            return candidate, depth
+        node = candidate
+    return None, 0
+
+
 def _session_from_provider_call(provider_call: Any) -> _ForegroundRunProviderSession | None:
-    candidate = getattr(provider_call, "provider_call", None)
-    return candidate if type(candidate) is _ForegroundRunProviderSession else None
+    session, depth = _locate_session(provider_call)
+    return session if depth == 1 else None
 
 
 def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
@@ -679,9 +706,24 @@ def prepare_foreground_run_provider(
     branch_version_id: str | None,
     allowed_statuses: set[str],
 ) -> Any:
-    session = _session_from_provider_call(provider_call)
+    session, depth = _locate_session(provider_call)
     if session is None:
+        # No session anywhere in the chain: an ordinary provider call, which
+        # this function has no business touching.
         return provider_call
+    if depth != 1:
+        # A session IS here, but behind a wrapper chain we cannot rebind. The
+        # old code returned the call unchanged, which silently handed the CHILD
+        # run the PARENT's prepared session -- exactly the authority bleed the
+        # sibling mint exists to prevent, reachable by adding one decorator.
+        # Nothing constructs this shape today (api/runs.py builds the wrapper
+        # directly); refusing keeps it that way rather than trusting it stays
+        # true. Cross-family review 2026-08-27, finding (d).
+        raise PermissionError(
+            "foreground provider session is nested "
+            f"{depth} wrappers deep in {type(provider_call).__name__}; "
+            "refusing to prepare a run through an unrecognised wrapper chain"
+        )
 
     # An async SUB-BRANCH arrives here carrying the PARENT's already-prepared
     # provider_call: `graph_compiler` passes `provider_call=provider_call`

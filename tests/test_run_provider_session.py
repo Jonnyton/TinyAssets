@@ -552,3 +552,59 @@ def test_async_sub_branch_gets_its_own_session_not_the_parents(
     assert child_session._claim is None, "child inherited the parent's claim"
     # And the parent must be left intact for its own remaining nodes.
     assert _session_from_provider_call(parent_wrapper) is parent_session
+
+
+def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:
+    """A wrapped wrapper must not silently hand the child the parent's session.
+
+    `_session_from_provider_call` looked exactly one `.provider_call` deep. Add
+    one forwarding wrapper and it found nothing, so `prepare_...` returned the
+    call UNCHANGED -- and the child run then executed on the PARENT's prepared
+    session, which is the authority bleed the sibling mint exists to prevent.
+    Reachable by adding a single decorator.
+
+    Nothing builds that shape today (api/runs.py constructs the wrapper
+    directly), which is exactly why this is a test and not a bug report:
+    refusing keeps it true. Cross-family review 2026-08-27, finding (d).
+    """
+    from tinyassets import foreground_run_provider as frp
+
+    class _Forwarding:
+        """One extra layer -- the shape the old lookup could not see past."""
+
+        def __init__(self, inner):
+            self.provider_call = inner
+
+    session = object.__new__(frp._ForegroundRunProviderSession)
+    direct = _Forwarding(session)
+    hidden = _Forwarding(direct)
+
+    # Depth 1 is the supported shape and still resolves.
+    assert frp._locate_session(direct) == (session, 1)
+    # Depth 2 is found, and reported as found -- not silently missed.
+    assert frp._locate_session(hidden) == (session, 2)
+    # A call with no session anywhere still passes through untouched.
+    assert frp._locate_session(_Forwarding(_Forwarding(object()))) == (None, 0)
+
+    with pytest.raises(PermissionError, match="unrecognised wrapper chain"):
+        frp.prepare_foreground_run_provider(
+            hidden,
+            run_id="child-run",
+            branch=None,
+            branch_version_id=None,
+            allowed_statuses={"running"},
+        )
+
+
+def test_an_ordinary_provider_call_is_still_left_alone() -> None:
+    """Fail-closed must not become fail-on-everything."""
+    from tinyassets import foreground_run_provider as frp
+
+    plain = object()
+    assert frp.prepare_foreground_run_provider(
+        plain,
+        run_id="r",
+        branch=None,
+        branch_version_id=None,
+        allowed_statuses={"running"},
+    ) is plain
