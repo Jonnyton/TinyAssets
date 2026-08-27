@@ -54,7 +54,8 @@ param(
     [string]   $Root   = '',
     [string[]] $Keep   = @(),
     [string]   $Filter = 'wf-*',
-    [switch]   $Apply
+    [switch]   $Apply,
+    [switch]   $IncludeTestResidue
 )
 
 $ErrorActionPreference = 'Continue'
@@ -129,8 +130,22 @@ function Test-DirectoryEmpty {
         -ErrorAction SilentlyContinue -ErrorVariable enumErrors)
     if ($enumErrors) { return "unreadable" }     # cannot see inside -> never "empty"
     $files = @($items | Where-Object { -not $_.PSIsContainer })
-    if ($files.Count -gt 0) { return "has-files:$($files.Count)" }
-    return "empty"
+    if ($files.Count -eq 0) { return "empty" }
+
+    # A directory holding ONLY test output is still residue. These husks are not
+    # empty -- they hold pytest caches and per-run temp trees, sometimes
+    # thousands of files -- but none of it is work. Classified separately from
+    # "has-files" so the operator opts in explicitly via -IncludeTestResidue and
+    # anything with even one non-residue file still fails closed.
+    $residueRoots = @(".pytest_cache", ".pytest_tmp", ".tmp", ".tmp-pytest",
+                      ".test-run", ".claude", "__pycache__")
+    $foreign = @($files | Where-Object {
+        $rel = $_.FullName.Substring($Path.Length).TrimStart("\")
+        $first = ($rel -split "\\")[0]
+        -not ($residueRoots | Where-Object { $first -eq $_ -or $first.StartsWith($_) })
+    })
+    if ($foreign.Count -eq 0) { return "test-residue:$($files.Count)" }
+    return "has-files:$($foreign.Count)"
 }
 
 foreach ($dir in $targets) {
@@ -138,6 +153,13 @@ foreach ($dir in $targets) {
         switch -Wildcard (Test-DirectoryEmpty -Path $dir.FullName) {
             "empty"      { Write-Host ("WOULD CLEAR  {0} (provably empty)" -f $dir.Name) }
             "has-files*" { Write-Host ("WOULD SKIP   {0} - {1}; holds real content" -f $dir.Name, $_) -ForegroundColor Yellow }
+            "test-residue*" {
+                if ($IncludeTestResidue) {
+                    Write-Host ("WOULD CLEAR  {0} - {1} (test output only)" -f $dir.Name, $_)
+                } else {
+                    Write-Host ("WOULD SKIP   {0} - {1}; re-run with -IncludeTestResidue to clear" -f $dir.Name, $_) -ForegroundColor Yellow
+                }
+            }
             default      { Write-Host ("WOULD CLEAR  {0} (unreadable now; re-checked after takeown, skipped if not empty)" -f $dir.Name) }
         }
         continue
@@ -153,8 +175,12 @@ foreach ($dir in $targets) {
     # THE GATE. Now that access should exist, prove emptiness. If it is still
     # unreadable, or it holds files, do not delete -- report and move on.
     $verdict = Test-DirectoryEmpty -Path $dir.FullName
-    if ($verdict -ne "empty") {
-        if ($verdict -like "has-files*") {
+    $clearable = ($verdict -eq "empty") -or
+                 ($IncludeTestResidue -and $verdict -like "test-residue*")
+    if (-not $clearable) {
+        if ($verdict -like "test-residue*") {
+            Write-Host ("SKIP  {0} - {1}; re-run with -IncludeTestResidue" -f $dir.Name, $verdict) -ForegroundColor Yellow
+        } elseif ($verdict -like "has-files*") {
             Write-Host ("SKIP  {0} - {1}; this is not sandbox residue" -f $dir.Name, $verdict) -ForegroundColor Yellow
         } else {
             Write-Host ("SKIP  {0} - still unreadable after takeown; refusing to delete blind" -f $dir.Name) -ForegroundColor Yellow
