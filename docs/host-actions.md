@@ -17,7 +17,15 @@ whose next step is *"the founder logs into Cloudflare."*
 ### X app is read-only — blocks the `Hello World` post (the last blocker)
 
 *2026-08-27: run `948a32670485432a` reached `POST https://api.x.com/2/tweets` and X replied
-**403 Forbidden** with header **`x-access-level: read`**.*
+**403 Forbidden**. X's own error body, pulled from the live run:*
+
+```json
+{"detail": "Your client app is not configured with the appropriate oauth1 app permissions for this endpoint.",
+ "status": 403, "title": "Forbidden", "type": "https://api.x.com/2/problems/oauth1-permissions"}
+```
+
+*Response headers included **`x-access-level: read`** (and `x-rate-limit-remaining: 39999`, so this
+is not a rate limit).*
 
 Everything on our side now works: provider binding, prompt execution, the outbound proxy, the
 destination grant, and the packet shape. The deposited `x:posting` keys are simply **read-scoped**.
