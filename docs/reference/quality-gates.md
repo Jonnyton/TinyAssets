@@ -41,7 +41,9 @@ a PR merges only if `required-tests` is green, and only while up to date with
 `.github/known-failing-tests.txt` — that ledger is a one-way ratchet, so adding
 a line to excuse a test you broke is a visible, reviewable edit on a
 scope-guarded path. It runs a ~5-minute subset; the excluded heavy files run in
-the non-required `full-tests` job on a best-effort schedule. Two consequences
+the non-required `heavy-tests` job on a best-effort schedule -- which is RED
+at baseline (107 unquarantined failures as of 2026-08-27), so a failure there
+is compared against the previous run, not read as a regression. Two consequences
 worth knowing before you plan work: falling behind `main` costs a re-run, and
 updating a drain PR's branch invalidates any exact-head review receipt.
 Details and rollback: `docs/decisions/ADR-003-required-test-aggregator.md`.

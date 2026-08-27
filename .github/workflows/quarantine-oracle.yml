@@ -97,6 +97,6 @@ jobs:
 #   SKIPPED  skipped on Linux too — this oracle cannot decide it either.
 #   NOT RUN  the node id no longer resolves (renamed or deleted test).
 #
-# For entries `required-tests` never runs at all, read the `junit-full-tests`
+# For entries `required-tests` never runs at all, read the `junit-heavy-tests`
 # artifact instead:
-#     python scripts/quarantine_oracle.py --artifact junit-full-tests
+#     python scripts/quarantine_oracle.py --artifact junit-heavy-tests

@@ -215,8 +215,9 @@ the repo to an organization and enable merge queue -- not to re-enable `strict`.
 
 They run in parallel, so the wall clock is `required-tests` alone.
 
-`full-tests` is NOT required and re-runs everything `required-tests` already did;
-its only unique content is the 50 heavy files, and it has been red for months.
+`heavy-tests` is NOT required and runs ONLY the files `required-tests` excludes
+(it replaced `full-tests`, which re-ran the required suite as well). It is still
+red, and that is tracked, not fixed.
 See `docs/concerns/2026-08-27-full-tests-permanently-red.md`.
 
 ## Not gates, and should not become gates

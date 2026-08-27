@@ -48,6 +48,16 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 # as the suite grows.
 MIN_RAN_FLOOR = 10000
 
+# A heavy-only job runs ~2,235 tests, so it cannot meet the whole-suite floor --
+# and LOWERING the global floor to fit it would disable the vacuity check for
+# the gate too. Named profiles keep the property that matters: a floor is a
+# reviewed constant here, never a number a caller can pick, and the
+# workflow-shape test pins which profile each job uses.
+MIN_RAN_FLOORS = {
+    "full": MIN_RAN_FLOOR,   # every test under tests/
+    "heavy": 2000,           # .github/heavy-test-files.txt only (~2,235 today)
+}
+
 
 def _min_ran_arg(raw: str) -> int:
     """Reject a `--min-ran` below the floor, at the point of enforcement.
@@ -193,14 +203,38 @@ def main() -> int:
         help=(
             "File listing test paths to --ignore (blank lines and # comments "
             "skipped). Used by the fast REQUIRED gate to drop the handful of "
-            "files that dominate its wall clock; `full-tests` omits this and "
-            "runs everything."
+            "files that dominate its wall clock. The inverse, --include-from, "
+            "is what `heavy-tests` uses to run exactly that excluded set."
+        ),
+    )
+    ap.add_argument(
+        "--include-from",
+        metavar="FILE",
+        help=(
+            "File listing the ONLY test paths to run (blank lines and # "
+            "comments skipped). The inverse of --exclude-from, for the "
+            "`heavy-tests` job: it runs exactly the files the required gate "
+            "excludes, so the two together cover the suite once instead of "
+            "the old `full-tests` re-running the required 10,700 a second "
+            "time. Directories are accepted, matching --exclude-from. A "
+            "listed path that no longer exists is dropped with a WARNING "
+            "rather than aborting the run."
+        ),
+    )
+    ap.add_argument(
+        "--profile",
+        choices=sorted(MIN_RAN_FLOORS),
+        default="full",
+        help=(
+            "Which vacuity floor applies. `full` is the whole suite; `heavy` "
+            "is heavy-test-files.txt only. Named here rather than passed as a "
+            "number so a job cannot quietly choose a floor it can meet."
         ),
     )
     ap.add_argument(
         "--min-ran",
         type=_min_ran_arg,
-        default=MIN_RAN_FLOOR,
+        default=None,
         help=(
             "Vacuity floor: fail if fewer than this many tests actually ran. "
             "Must be set per job — the fast gate and the full suite have "
@@ -218,6 +252,26 @@ def main() -> int:
         ),
     )
     args = ap.parse_args()
+
+    # BEFORE running anything. argparse can only check the LOWEST profile floor
+    # (the profile is not known while parsing), so `--profile full --min-ran
+    # 2000` slips past it. Checking here rather than beside the vacuity
+    # assertion matters: the late check ran the whole suite for ten minutes
+    # first and only then refused.
+    profile_floor = MIN_RAN_FLOORS[args.profile]
+    if args.min_ran is None:
+        # The profile carries the floor. A heavy job cannot pass `--min-ran
+        # 2000` explicitly, because `_min_ran_arg` still rejects anything below
+        # MIN_RAN_FLOOR at parse time -- that contract is locked by
+        # test_min_ran_below_floor_is_rejected_at_parse_time and re-broke when
+        # this change first tried to relax it.
+        args.min_ran = profile_floor
+    if args.min_ran < profile_floor:
+        raise SystemExit(
+            f"--min-ran {args.min_ran} is below the '{args.profile}' profile "
+            f"floor ({profile_floor}). Lower MIN_RAN_FLOORS['{args.profile}'] "
+            f"in the same reviewed change if the suite legitimately shrank."
+        )
 
     if args.emit_quarantine:
         failing, _ = collect_outcomes(Path(args.emit_quarantine))
@@ -329,6 +383,26 @@ def main() -> int:
             # the gate is how a "fast" job quietly becomes a 37-minute one.
             print(f"WARNING: {args.exclude_from} listed no paths", flush=True)
         cmd += [f"--ignore={path}" for path in excluded]
+    if args.include_from:
+        listed = [
+            line.strip()
+            for line in Path(args.include_from).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        present = [p for p in listed if (REPO_ROOT / p).exists()]
+        for missing in [p for p in listed if p not in present]:
+            # A stale entry must not take the whole job down, but it must not
+            # be silent either -- that is how coverage disappears unnoticed.
+            print(f"WARNING: {args.include_from} lists a missing path: {missing}", flush=True)
+        if not present:
+            # Running EVERYTHING would be the wrong safe direction here: this
+            # job exists to run a subset, and a silent full run would duplicate
+            # the required gate again. Fail instead.
+            raise SystemExit(
+                f"{args.include_from} resolved to no existing paths; refusing to "
+                f"run (an empty include list would silently run nothing)."
+            )
+        cmd += present
     cmd += [*args.pytest_arg]
     print("+ " + " ".join(cmd), flush=True)
     proc = subprocess.run(cmd, cwd=REPO_ROOT)
