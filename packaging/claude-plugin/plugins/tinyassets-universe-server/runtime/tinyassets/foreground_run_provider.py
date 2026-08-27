@@ -684,14 +684,33 @@ def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
     The wrapper is a `UniverseBoundProviderCall`, which enforces one exact
     universe context and operation. The child MUST keep both -- swapping the
     session must not become a way to swap the universe binding.
+
+    That sentence used to be a comment rather than a check. `replace()` was
+    called on whatever arrived, so ANY dataclass exposing a real session as
+    `.provider_call` was rebound -- and whatever `universe_context` and
+    `operation` semantics that type happened to have came along with it. It
+    took possession of a real session and the child still revalidated
+    owner/run/branch, so it was not a demonstrated cross-tenant mint; it was
+    simply an invariant the code asserted and did not enforce. Cross-family
+    review 2026-08-27, finding (c).
     """
     from dataclasses import replace
 
+    from tinyassets.providers.call import UniverseBoundProviderCall
+
+    if type(provider_call) is not UniverseBoundProviderCall:
+        raise PermissionError(
+            "cannot rebind a foreground provider call of type "
+            f"{type(provider_call).__name__}: only an exact "
+            "UniverseBoundProviderCall carries the universe binding this "
+            "rebind is required to preserve"
+        )
     try:
         return replace(provider_call, provider_call=session)
     except TypeError:
-        # Not a dataclass wrapper: fail closed rather than hand back something
-        # that silently drops the universe binding.
+        # Belt and braces: the exact-type check above should make this
+        # unreachable, but a non-dataclass must never fall through to a
+        # silently unbound call.
         raise PermissionError(
             "cannot rebind a foreground provider call of type "
             f"{type(provider_call).__name__}"

@@ -608,3 +608,59 @@ def test_an_ordinary_provider_call_is_still_left_alone() -> None:
         branch_version_id=None,
         allowed_statuses={"running"},
     ) is plain
+
+
+def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
+    """`_rebind` asserted a wrapper shape it never checked.
+
+    The docstring said "the wrapper is a `UniverseBoundProviderCall`, which
+    enforces one exact universe context and operation" -- but `replace()` was
+    called on whatever arrived. Any dataclass exposing a real session as
+    `.provider_call` passed depth 1 and was rebound, carrying whatever
+    universe/operation semantics that type happened to have.
+
+    It needed possession of a real session and the child still revalidated
+    owner/run/branch, so it was never a demonstrated cross-tenant mint. It was
+    an invariant the code asserted and did not enforce, which is its own bug.
+    Cross-family review 2026-08-27, finding (c).
+    """
+    from dataclasses import dataclass
+
+    from tinyassets import foreground_run_provider as frp
+
+    session = object.__new__(frp._ForegroundRunProviderSession)
+
+    @dataclass
+    class _ForgedWrapper:
+        """Right shape, wrong type -- and no universe binding to preserve."""
+
+        provider_call: object
+        universe_context: object = None
+        operation: str = "run_graph"
+
+    forged = _ForgedWrapper(provider_call=session)
+    # It still looks like the supported shape to the locator...
+    assert frp._locate_session(forged) == (session, 1)
+    # ...and is refused anyway, on type.
+    with pytest.raises(PermissionError, match="only an exact"):
+        frp._rebind(forged, session)
+
+
+def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
+    """Fail-closed must not break the one shape that is supposed to work."""
+    from tinyassets import foreground_run_provider as frp
+    from tinyassets.providers.call import UniverseBoundProviderCall
+
+    parent = object.__new__(frp._ForegroundRunProviderSession)
+    child = object.__new__(frp._ForegroundRunProviderSession)
+    sentinel = object()
+    wrapper = UniverseBoundProviderCall(
+        provider_call=parent, universe_context=sentinel, operation="run_graph"
+    )
+
+    rebound = frp._rebind(wrapper, child)
+    assert type(rebound) is UniverseBoundProviderCall
+    assert rebound.provider_call is child
+    # The whole point: swapping the session must not swap the binding.
+    assert rebound.universe_context is sentinel
+    assert rebound.operation == "run_graph"
