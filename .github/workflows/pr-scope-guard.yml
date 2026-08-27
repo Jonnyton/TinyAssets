@@ -190,8 +190,11 @@ jobs:
           # blob -- parsing never executes it.
           if [ -n "$AUTHORITY_HITS" ]; then
             git fetch --no-tags --depth=1 origin "$HEAD_OID" >/dev/null 2>&1 || true
+            # Explicit array, not bare word-splitting: each hit is its own argv
+            # entry, and a path containing a space must not become two arguments.
+            mapfile -t AUTHORITY_ARR <<< "$AUTHORITY_HITS"
             if python scripts/authority_behavior_check.py \
-                 --base "$BASE_OID" --head "$HEAD_OID" $AUTHORITY_HITS; then
+                 --base "$BASE_OID" --head "$HEAD_OID" "${AUTHORITY_ARR[@]}"; then
               echo "authority hits are comment/docstring-only -- receipt not required"
               AUTHORITY_HITS=""
             fi
