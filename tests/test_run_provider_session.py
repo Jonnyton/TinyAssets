@@ -475,7 +475,10 @@ def test_settlement_failure_names_its_cause() -> None:
     from tinyassets.providers import router as router_module
 
     source = inspect.getsource(router_module)
-    marker = 'raise ProviderAuthorityHeldError(\n                    "provider invocation usage could not be settled: "'
+    marker = (
+        'raise ProviderAuthorityHeldError(\n'
+        '                    "provider invocation usage could not be settled: "'
+    )
     assert marker in source, (
         "the settlement wrapper must append the cause to its message; a bare "
         "'could not be settled' is undiagnosable from the surface that shows it"
