@@ -63,7 +63,7 @@ route. **Check before rebuilding it.**
 
 ## Lane 3 — the cut-list PR *(open, awaiting a review receipt)*
 
-**PR #2561** · branch `harness-cut2` · head `26a3652c` · pushed
+**PR #2561** · branch `harness-cut2` · head `f2c8a0fe` · pushed
 72,000+ deletions completing the post-reset cut list.
 
 **It is blocked on one thing:** it edits `.github/heavy-test-files.txt`, which is
@@ -72,13 +72,14 @@ the PR body:
 
 ```
 Drain-Review-Verdict: APPROVE
-Drain-Review-Head: 26a3652c...      (the full 40-char sha, re-stamped after any push)
+Drain-Review-Head: f2c8a0fed4059de4b8a1d772005cd9583e2f0fcc
 Drain-Review-Artifact: <path-or-url>
 ```
 
 Two cross-family reviews already ran against earlier heads and both returned
-REJECT; all eleven findings were fixed. A third was dispatched against
-`26a3652c` and had not returned when this session ended. **Do not self-stamp the
+REJECT; all eleven findings were fixed. A third was dispatched and had not returned when this
+session ended; note the head has since moved, so any receipt must name the
+current sha. **Do not self-stamp the
 receipt** — the mechanism exists precisely so the approval is not written by the
 author. Dispatch a fresh one:
 
@@ -123,8 +124,9 @@ Read `AGENTS.md` (255 lines) and `CLAUDE.md` (49). They are current.
 
 ## Open, and not owned by any lane
 
-- **62 active OpenSpec changes**, 24 in flight. Not a backlog to drain — most
-  carry real task progress. `python scripts/openspec_flow.py audit` ranks them.
+- **16 active OpenSpec changes**, 1 in flight (PR #2561 archives 51 that were
+  idle past the 14-day rule). `python scripts/openspec_flow.py audit` ranks them.
+  If #2561 is closed rather than merged, the queue reverts to 67.
 - **9 open concerns** in `docs/concerns/`, two P0. Start at its `README.md`.
 - **Founder-only items** in `docs/host-actions.md`.
 - `deployed_sha` proves the *receipt*, not the running binary — a rollback with
