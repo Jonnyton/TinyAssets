@@ -21,20 +21,24 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
   and paths rot; the premise usually doesn't. Correct the citation, keep the finding.
 - Resolve a concern by **deleting the file**. Git holds the history.
 
-## Open concerns, migrated 2026-08-25
+## Open concerns
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P0** | [Public-site privacy, deps, and CI secret exposure](2026-07-27-public-site-privacy-deps-ci.md) — a same-repo PR can request 19 secrets | 2026-07-27 |
 | **P0** | [Graph/provider false attestation](2026-07-02-graph-provider-false-attestation.md) — router fallback neutralizes isolation refusals | 2026-07-02 |
-| **P1** | [`write_brain` persistent prompt-injection](2026-08-24-write-brain-prompt-injection.md) — attacker content re-injected into system role every turn | 2026-08-24 |
-| **P1** | [Founder-taught canon defaults public](2026-08-06-founder-canon-defaults-public.md) — Codex reproduced | 2026-08-06 |
+| **P0** | [Unauthenticated LAN session leak + CSRF writes](2026-07-21-unauth-lan-session-leak-csrf.md) — do not LAN-run | 2026-07-21 |
+| **P0** | [Public-site privacy, deps, and CI secret exposure](2026-07-27-public-site-privacy-deps-ci.md) — a same-repo PR can request 19 secrets | 2026-07-27 |
+| **P1** | [No OS engine sandbox](2026-07-02-no-os-engine-sandbox.md) — in-process confinement only; the denylist fails open | 2026-07-02 |
 | **P1** | [No live failure proof](2026-07-23-no-live-failure-proof.md) — escalation and caps are CI-only | 2026-07-23 |
+| **P1** | [Founder-taught canon defaults public](2026-08-06-founder-canon-defaults-public.md) — Codex reproduced | 2026-08-06 |
 | **P1** | [Served-agent BUILD verb parity](2026-08-23-served-surface-build-verb-parity.md) — partial; the rest is authority-sensitive | 2026-08-23 |
+| **P1** | [BYO-LLM refresh-token store](2026-08-23-byo-llm-refresh-token-store.md) — worker-readable tokens + session fixation; fix before a 2nd user | 2026-08-23 |
+| **P1** | [`write_brain` persistent prompt-injection](2026-08-24-write-brain-prompt-injection.md) — attacker content re-injected into system role every turn | 2026-08-24 |
 | **P2** | [`_current_actor` env fallback](2026-06-30-current-actor-env-fallback.md) — bypasses `permissions.py` | 2026-06-30 |
-| — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |
-| — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
 | **P2** | [`deployed_sha` proves the receipt, not the running binary](2026-08-26-deployed-sha-proves-receipt-only.md) — a rollback with an intact receipt reads as shipped | 2026-08-26 |
+| — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
+| — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |
+| — | [Write ACL grants founder tier](2026-08-05-write-acl-grants-founder-tier.md) — a collaborator resolves as founder | 2026-08-05 |
 
 Predating the migration: [synthesis skip echoes](2026-04-16-synthesis-skip-echoes.md),
 [`test_record_and_get_stats` flake](2026-04-26-test_record_and_get_stats_flake.md),
@@ -62,3 +66,18 @@ The board's row for the LAN/CSRF finding cited **`#1489`**. PR #1489 is *"feat(c
 recover the Agent Village"*, merged — unrelated. Two other concerns cited paths that no longer exist
 (`engine_helpers.py:192`, `router.py:89-92`); both premises held at their new locations. Verify a
 citation against the code before acting on it, and re-stamp it when you do.
+
+## Four concerns the migration dropped (added 2026-08-26)
+
+The rows above marked 2026-07-02 / 2026-07-21 / 2026-08-05 / 2026-08-23 were **not** migrated on
+2026-08-25. They were found the next day by diffing the retired board against this directory, and
+every premise still held when re-checked against the code.
+
+Three were security findings, one of them the **P0** LAN/CSRF exposure — for which this README
+recorded only a caution about its bad citation, never the finding itself. The
+`resolve_interlocutor_tier` item sat in the board's *Work* table rather than its Concerns list,
+which is likely how it was passed over.
+
+The lesson is the migration's own: a security finding whose only record is a caution about its
+citation is not recorded. **Diff the source against the destination before deleting the source** —
+the board was still readable in a stale checkout, which is the only reason these were recoverable.
