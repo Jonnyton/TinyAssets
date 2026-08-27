@@ -87,7 +87,7 @@ def render(label: str, instruction: str) -> str:
         (
             f"Codex judgment-class signal: {label}.",
             f"  → {instruction}",
-            "  BACKGROUND offload on Codex's quota: `python scripts/codex_review.py",
+            "  BACKGROUND offload on Codex's quota: `python scripts/peer_agent.py",
             '  --out <lane-local-file> --prompt "<ask>"` in a background Bash call',
             "  (the wrapper feeds Codex via stdin — never multi-line argv — and",
             "  fail-closes with `VERDICT: error` on timeout/no-output).",

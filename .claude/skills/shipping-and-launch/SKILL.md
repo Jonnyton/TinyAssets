@@ -49,7 +49,7 @@ secrets only in the deploy platform/vault. Automate dependency updates
 - **Security:** no secrets in code; `npm audit` clean of critical/high; input
   validation on user-facing endpoints; authn/authz in place; security headers
   (CSP/HSTS); rate limiting on auth; CORS scoped, not wildcard. (See
-  `security-and-hardening`.)
+  the security checklist in this skill.)
 - **Performance:** Core Web Vitals "Good"; no N+1 in critical paths; images
   optimized; bundle within budget; DB indexes; caching configured.
 - **Accessibility:** keyboard nav; screen-reader structure; WCAG AA contrast

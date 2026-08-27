@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Peer-agent dispatch — hand a task to the Claude Code or Codex CLI as a
 subprocess peer, on THAT subscription's budget (no API keys, no host-session
-context spent). Generalizes scripts/codex_review.py to both CLIs and to
+context spent). Handles both CLIs and
 arbitrary prompts, for use by any provider session (Kimi, Claude Code,
 Codex, Cursor, ...) from a foreground or background shell call.
 
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -44,7 +45,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from codex_review import resolve_codex, to_native_path  # noqa: E402
 
 from tinyassets.providers.base import subprocess_env_for_provider  # noqa: E402
 
@@ -58,6 +58,43 @@ _AUTH_PATTERNS = ("401", "unauthorized", "reconnecting", "auth", "login")
 # argv through cmd.exe parsing even with shell=False (BatBadBut class):
 # list2cmdline quoting does NOT protect these, so reject them loudly instead.
 _CMD_METACHARS = frozenset("&|%<>^\"")
+
+
+# --- absorbed from scripts/codex_review.py (deleted 2026-08-26) ---------------
+# Two tools for one job -- dispatching to Codex -- is the overlapping-tool
+# anti-pattern Anthropic names: if a human cannot definitively choose between
+# them, neither can an agent. peer_agent is the survivor because it handles
+# both CLIs; these helpers were the only part of codex_review it still needed.
+
+def to_native_path(path: str) -> str:
+    """Convert an MSYS / Git-Bash path (/c/foo) to a native Windows path (C:/foo).
+
+    The wrapper is usually launched from Git Bash but hands paths to the Windows
+    `codex.cmd`, which cannot parse /c/... style paths (fails with os error 3).
+    """
+    match = re.match(r"^/([A-Za-z])/(.*)$", path)
+    return f"{match.group(1).upper()}:/{match.group(2)}" if match else path
+
+
+def resolve_codex() -> str:
+    """Locate a runnable codex executable.
+
+    Background Bash jobs run with a stripped PATH that often lacks ~/.local/bin,
+    and on Windows the runnable entrypoint is `codex.cmd` — the bare `codex` there
+    is a bash shim that CreateProcess rejects (WinError 193). So: honor an explicit
+    CODEX_BIN, then PATH, then the known install dir preferring the .cmd/.exe.
+    """
+    override = os.environ.get("CODEX_BIN")
+    if override and Path(override).exists():
+        return override
+    found = shutil.which("codex")
+    if found:
+        return found
+    for name in ("codex.cmd", "codex.exe", "codex"):
+        candidate = Path.home() / ".local" / "bin" / name
+        if candidate.exists():
+            return str(candidate)
+    return "codex"  # last resort; surfaces a clear FileNotFoundError below
 
 
 def resolve_claude() -> str:
