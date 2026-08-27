@@ -193,7 +193,7 @@ def main() -> int:
         help=(
             "File listing test paths to --ignore (blank lines and # comments "
             "skipped). Used by the fast REQUIRED gate to drop the handful of "
-            "files that dominate its wall clock; `full-tests` omits this and "
+            "files that dominate its wall clock; `heavy-tests` runs exactly those and "
             "runs everything."
         ),
     )

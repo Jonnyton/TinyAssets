@@ -38,7 +38,7 @@ Statuses
     NOT RUN  never executed: excluded from this job (see
              .github/heavy-test-files.txt) or the node id no longer resolves.
              `required-tests` excludes the heavy files, so a NOT RUN here is
-             usually "look at full-tests instead", not "the entry is bogus".
+             usually "look at heavy-tests instead", not "the entry is bogus".
 """
 
 from __future__ import annotations
