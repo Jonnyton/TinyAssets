@@ -60,6 +60,42 @@ complete** and was archived on 2026-08-26 as complete-but-unarchived. So this
 branch probably just needs a PR, or dropping if it already landed by another
 route. **Check before rebuilding it.**
 
+
+## Lane 3 — the cut-list PR *(open, awaiting a review receipt)*
+
+**PR #2561** · branch `harness-cut2` · head `26a3652c` · pushed
+72,000+ deletions completing the post-reset cut list.
+
+**It is blocked on one thing:** it edits `.github/heavy-test-files.txt`, which is
+gate-defining, so `pr-scope-guard` requires an **exact-head review receipt** in
+the PR body:
+
+```
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: 26a3652c...      (the full 40-char sha, re-stamped after any push)
+Drain-Review-Artifact: <path-or-url>
+```
+
+Two cross-family reviews already ran against earlier heads and both returned
+REJECT; all eleven findings were fixed. A third was dispatched against
+`26a3652c` and had not returned when this session ended. **Do not self-stamp the
+receipt** — the mechanism exists precisely so the approval is not written by the
+author. Dispatch a fresh one:
+
+```bash
+python scripts/peer_agent.py codex --out review.txt --prompt-file brief.md --cwd .
+```
+
+Worth knowing before you trust the diff: the two prior reviews caught a
+destructive fail-open in `scripts/clear_sandbox_temp_dirs.ps1`, 115 broken path
+references that **the passing test suite did not reveal** (they were docstrings),
+and an OpenSpec spec that validated as syntactically fine while being
+semantically wrong in both directions. A green suite was not sufficient evidence
+on this branch, twice.
+
+If the PR is unwanted, closing it costs nothing — everything it deletes is
+still on `main` and recoverable.
+
 ## What changed under you
 
 The harness reset merged and deployed. If you have habits from before
