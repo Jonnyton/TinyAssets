@@ -14,6 +14,31 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Blocking a proof path
 
+### X app is read-only — blocks the `Hello World` post (the last blocker)
+
+*2026-08-27: run `948a32670485432a` reached `POST https://api.x.com/2/tweets` and X replied
+**403 Forbidden** with header **`x-access-level: read`**.*
+
+Everything on our side now works: provider binding, prompt execution, the outbound proxy, the
+destination grant, and the packet shape. The deposited `x:posting` keys are simply **read-scoped**.
+
+Two steps, and the second is the one people miss:
+
+1. developer.x.com -> your app -> **User authentication settings** -> **App permissions** ->
+   change to **Read and write** -> Save.
+2. **Regenerate the Access Token and Access Token Secret.** Changing app permissions does NOT
+   upgrade tokens that already exist — the old pair keeps its read scope, and the 403 will repeat
+   unchanged. This is exactly what `x-access-level: read` is reporting.
+
+Then re-deposit the new Access Token + Secret through **Connect / add API connection** in the
+webapp (the API Key and API Key Secret are unchanged), and say "post hello world" — the branch,
+grant, and consent are all already in place.
+
+I can't do this one: it needs your X developer account, and entering credentials is not something
+I do on your behalf.
+
+---
+
 ### Droplet deploy key absent on this machine — blocks reading the live daemon log
 
 *2026-08-27: `scripts/droplet.py` needs `~/.ssh/tinyassets_deploy_ed25519`; it is not on this

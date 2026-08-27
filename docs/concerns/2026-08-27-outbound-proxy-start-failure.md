@@ -4,6 +4,35 @@
 **Severity:** P0 — every `authenticated_external_call` in production fails; the
 founder's first real outbound action has not completed in three days
 
+## UPDATE 2026-08-27, via the webapp as the founder
+
+**The proxy-start failure is gone, and the real blocker is now outside our code.**
+
+Driven through the live SPA at `tinyassets.io/mcp/app` as the signed-in founder
+(not the MCP), one prompt: *"lets try the hello world post to twitter again"*.
+
+- Run `948a32670485432a`, terminal status `completed`, `deliver_post: ran`.
+- The request **reached X** at `POST https://api.x.com/2/tweets`.
+- X returned **403 Forbidden**: the client app lacks OAuth 1.0a write permission.
+- Response header: **`x-access-level: read`**.
+
+So the deposited `x:posting` credential is **read-scoped**. The four keys were
+minted while the X app's permission level was Read-only.
+
+Credibility check: the SSRF-hardened driver returns `status`, `reason`, a
+lowercased `headers` dict and `body` to the caller
+(`tinyassets/storage/outbound_connections.py:2168`), so `x-access-level` is a
+real response header the universe read, not a hallucination.
+
+**This means the proxy-start failure was intermittent, not permanent** — the same
+branch and grant now start the proxy fine. The diagnosability fix (PR #2596)
+still matters: the next occurrence will name its cause instead of repeating three
+days of "I cannot tell you why". But it is no longer the live blocker.
+
+Next step is a host action, filed in `docs/host-actions.md`.
+
+---
+
 ## The finding
 
 The founder has been trying to post `Hello World` to X since 2026-08-25. It has
