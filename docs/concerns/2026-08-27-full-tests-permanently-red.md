@@ -166,3 +166,5 @@ its script `scripts/retire_cheat_loop_deploy_fence.py` still exists — as does
 its test file, the other large red cluster (17 failures). Whether that feature
 was retired deliberately or dropped by accident is a question for the founder,
 not a guess.
+
+**Update:** the `recover-unsafe` founder question is answered — accident, not retirement. See `2026-08-27-unsafe-fence-recovery-path-deleted.md` (P1).

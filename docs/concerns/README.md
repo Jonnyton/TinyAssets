@@ -34,6 +34,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P1** | [Served-agent BUILD verb parity](2026-08-23-served-surface-build-verb-parity.md) — partial; the rest is authority-sensitive | 2026-08-23 |
 | **P1** | [BYO-LLM refresh-token store](2026-08-23-byo-llm-refresh-token-store.md) — worker-readable tokens + session fixation; fix before a 2nd user | 2026-08-23 |
 | **P1** | [`write_brain` persistent prompt-injection](2026-08-24-write-brain-prompt-injection.md) — attacker content re-injected into system role every turn | 2026-08-24 |
+| **P1** | [Unsafe-fence recovery path deleted](2026-08-27-unsafe-fence-recovery-path-deleted.md) — #2442 removed the only exit from `phase=unsafe_fenced` (observed live 2026-08-05, all five containers Exited) while three workflows still arm the fence | 2026-08-27 |
 | **P1** | [Deploy drops the compose sync](2026-08-27-deploy-drops-compose-sync.md) — `deploy/compose.yml` is never shipped to the droplet, so every compose-level change is inert in production | 2026-08-27 |
 | **P2** | [Foreground provider authority gaps](2026-08-27-foreground-provider-authority-gaps.md) — 4 unfixed: `max_invocations` counts node definitions, mock bypass keyed on `__module__`, receipt published before claim, denials masked as "connect your provider" | 2026-08-27 |
 | **P2** | [Sibling sessions have no subtree budget](2026-08-27-sibling-sessions-have-no-subtree-budget.md) — async fan-out mints a fresh per-run receipt each time, so breadth is unbounded | 2026-08-27 |
