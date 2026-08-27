@@ -947,12 +947,38 @@ class ProviderRouter:
                         cost_microunits=resp.cost_microunits,
                         fallback_output=resp.text,
                     )
-                settle_carrier(
-                    ProviderInvocationReservationState.SUCCEEDED,
-                    input_tokens=resp.input_tokens,
-                    output_tokens=resp.output_tokens,
-                    cost_microunits=resp.cost_microunits,
-                )
+                # A SUCCEEDED settlement must carry KNOWN usage: settle_invocation
+                # rejects anything that is not an int. But usage is optional on
+                # ProviderResponse by design -- "every existing construction site
+                # and non-streaming provider stays a valid terminal
+                # ProviderResponse" (providers/base.py) -- and codex_provider only
+                # populates it when machine accounting is on
+                # (`machine_accounting = bool(config.sandbox_workspace)`,
+                # codex_provider.py:350). A plain prompt-template node has no
+                # sandbox workspace, so a perfectly successful call arrived here
+                # with all three fields None and the settlement destroyed it:
+                # every prompt-template run in the founder's universe failed with
+                # "provider invocation usage could not be settled" on 2026-08-27
+                # while effect-only branches, which take no carrier, kept working.
+                #
+                # INDETERMINATE is the state that already means exactly this, and
+                # its budget treatment is the conservative one (consume the
+                # reservation rather than report a free call). Settling zeros
+                # instead would report the call as free and leave the budget
+                # undrainable.
+                if (
+                    resp.input_tokens is None
+                    or resp.output_tokens is None
+                    or resp.cost_microunits is None
+                ):
+                    settle_carrier(ProviderInvocationReservationState.INDETERMINATE)
+                else:
+                    settle_carrier(
+                        ProviderInvocationReservationState.SUCCEEDED,
+                        input_tokens=resp.input_tokens,
+                        output_tokens=resp.output_tokens,
+                        cost_microunits=resp.cost_microunits,
+                    )
                 self._quota.record_success(provider_name)
             except ProviderAuthorityHeldError:
                 raise

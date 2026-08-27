@@ -23,7 +23,11 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.provider_work_authority import ProviderInvocationCarrier
+from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
+    ProviderInvocationReservationState,
+    ProviderInvocationSettlementOwner,
+)
 from tinyassets.providers.base import (
     DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
@@ -1352,3 +1356,113 @@ class TestFallbackChainDefinitions:
         """Grok appears in writer and judge chains for diversity."""
         assert "grok-free" in FALLBACK_CHAINS["writer"]
         assert "grok-free" in FALLBACK_CHAINS["judge"]
+
+
+class TestCarrierSettlementWithUnknownUsage:
+    """A successful call whose usage the provider did not report must survive.
+
+    Live failure, 2026-08-27: every prompt-template run in the founder's
+    universe died with "provider invocation usage could not be settled" while
+    effect-only branches kept working. The chain:
+
+      1. `ProviderResponse.input_tokens/output_tokens/cost_microunits` all
+         default to None -- deliberately, so "every existing construction site
+         and non-streaming provider stays a valid terminal ProviderResponse"
+         (providers/base.py).
+      2. codex_provider populates them ONLY under machine accounting, which is
+         `bool(config.sandbox_workspace)` (codex_provider.py:350). A plain
+         prompt-template node has no sandbox workspace, so a completely
+         successful call returns all three as None.
+      3. The router forwarded them into a SUCCEEDED settlement, and
+         `settle_invocation` rejects anything that is not an int -- so
+         settling a successful call is what destroyed it.
+
+    Introduced by #2559, which first put a ROUTER-settled carrier on the
+    foreground run path. Every existing router test missed it because the mock
+    carrier's `settlement_owner` is a bare MagicMock attribute, so
+    `router_settles_carrier` was False and settlement never ran at all.
+    """
+
+    @staticmethod
+    def _settling_carrier():
+        carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier.provider = "codex"
+        carrier.role = "writer"
+        carrier.operation = "run_graph"
+        carrier.max_tokens = 77
+        carrier.max_cost_microunits = 1_000
+        carrier.validate_for_call.return_value = "codex"
+        # The bit that makes the router actually settle.
+        carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
+        return carrier
+
+    @staticmethod
+    def _resolver(carrier):
+        def resolve(_context, *, role, operation):
+            carrier.validate_for_call(role=role, operation=operation)
+            return carrier
+        return resolve
+
+    @pytest.mark.asyncio
+    async def test_unreported_usage_settles_indeterminate_not_fatal_succeeded(self):
+        """FakeProvider reports no usage -- exactly what real codex does here."""
+        carrier = self._settling_carrier()
+        router = ProviderRouter(providers=_make_providers(), auth_health=MagicMock())
+
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._resolver(carrier),
+        ):
+            response = await router.call(
+                "writer", "prompt", "system", ModelConfig(max_tokens=None),
+                operation="run_graph",
+                universe_context=UniverseContext(provider_invocation=carrier),
+            )
+
+        assert response.text == "codex-resp"
+        carrier.settle.assert_called_once()
+        state = carrier.settle.call_args.args[0]
+        assert state is ProviderInvocationReservationState.INDETERMINATE, (
+            "unknown usage must settle INDETERMINATE -- the state that already "
+            "means exactly this and whose budget treatment is conservative"
+        )
+        # Never zeros: reporting a free call would leave the budget undrainable.
+        assert carrier.settle.call_args.kwargs.get("input_tokens") is None
+        assert carrier.settle.call_args.kwargs.get("output_tokens") is None
+        assert carrier.settle.call_args.kwargs.get("cost_microunits") is None
+
+    @pytest.mark.asyncio
+    async def test_reported_usage_still_settles_succeeded_with_its_numbers(self):
+        """The fix must not blind the accounting path that does report usage."""
+        class _AccountingProvider(FakeProvider):
+            async def complete(self, prompt, system, config, *, universe_dir=None):
+                self.call_count += 1
+                self.last_config = config
+                return ProviderResponse(
+                    text="counted", provider=self.name, model="fake",
+                    family=self.family, latency_ms=1.0,
+                    input_tokens=70, output_tokens=30, cost_microunits=5,
+                )
+
+        carrier = self._settling_carrier()
+        providers = _make_providers(codex=_AccountingProvider("codex", "openai"))
+        router = ProviderRouter(providers=providers, auth_health=MagicMock())
+
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            side_effect=self._resolver(carrier),
+        ):
+            await router.call(
+                "writer", "prompt", "system", ModelConfig(max_tokens=None),
+                operation="run_graph",
+                universe_context=UniverseContext(provider_invocation=carrier),
+            )
+
+        carrier.settle.assert_called_once()
+        assert (
+            carrier.settle.call_args.args[0]
+            is ProviderInvocationReservationState.SUCCEEDED
+        )
+        assert carrier.settle.call_args.kwargs == {
+            "input_tokens": 70, "output_tokens": 30, "cost_microunits": 5,
+        }
