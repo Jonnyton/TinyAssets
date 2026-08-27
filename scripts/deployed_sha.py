@@ -65,6 +65,23 @@ class DeployedShaError(Exception):
     """Could not determine what production is serving."""
 
 
+# Mirrors the `paths:` filter in .github/workflows/build-image.yml. A commit
+# touching none of these cannot produce an image, so it cannot be "undeployed"
+# in any actionable sense. Keep the two lists in step -- a test asserts it.
+BUILD_PATHS = (
+    "Dockerfile",
+    ".dockerignore",
+    "pyproject.toml",
+    "PLAN.md",
+    "tinyassets/",
+    "domains/",
+    "fantasy_daemon/",
+    "data/world_rules.lp",
+    "scripts/mcp_public_canary.py",
+    "deploy/",
+)
+
+
 def _git(*args: str) -> str:
     proc = subprocess.run(
         ["git", *args],
@@ -203,8 +220,19 @@ def report(url: str, timeout: float) -> dict[str, Any]:
         try:
             behind = _git("rev-list", "--count", f"{deployed}..origin/main")
             info["commits_on_main_not_deployed"] = int(behind)
+            # A docs or CI commit CANNOT reach production: `build-image.yml`
+            # is path-filtered, so nothing is built and nothing is deployed.
+            # Counting those as drift makes the tool cry wolf permanently --
+            # on 2026-08-27 it reported 9 undeployed commits, all of which
+            # touched zero build paths. Split the count so a real gap is
+            # distinguishable from "nothing to deploy".
+            undeployed = _git(
+                "rev-list", f"{deployed}..origin/main", "--", *BUILD_PATHS
+            ).split()
+            info["build_affecting_not_deployed"] = len(undeployed)
         except DeployedShaError:
             info["commits_on_main_not_deployed"] = None
+            info["build_affecting_not_deployed"] = None
     except DeployedShaError:
         # Not an error by itself: a shallow clone or a build from another
         # remote can serve a commit this checkout has never fetched.
@@ -294,8 +322,17 @@ def main(argv: list[str] | None = None) -> int:
         if info.get("deployed_subject"):
             print(f"  {info['deployed_subject']}")
         behind = info.get("commits_on_main_not_deployed")
-        if behind:
-            print(f"  {behind} commit(s) on origin/main are NOT in production")
+        build_gap = info.get("build_affecting_not_deployed")
+        if behind and build_gap:
+            print(
+                f"  {build_gap} of {behind} undeployed commit(s) touch build "
+                f"paths -- production IS behind"
+            )
+        elif behind:
+            print(
+                f"  {behind} commit(s) on origin/main are not in production, but "
+                f"NONE touch a build path -- nothing to deploy"
+            )
         elif behind == 0:
             print("  up to date with origin/main")
     return 0
