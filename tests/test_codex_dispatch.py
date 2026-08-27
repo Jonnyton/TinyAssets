@@ -123,3 +123,42 @@ def subprocess_completed(rc: int):
     import subprocess
 
     return subprocess.CompletedProcess(args=["codex"], returncode=rc)
+
+
+# --- The nudge's rendered command must actually be runnable ------------------
+#
+# `test_nudge_render_steers_to_background_offload` was DELETED with
+# `codex_review.py` rather than retargeted, leaving only classification
+# coverage. That is how the hook shipped a command argparse rejects
+# (`peer_agent.py --out ...` with no positional provider) in the first place:
+# nothing asserted the rendered text. Restored against the current wrapper, and
+# the command is parsed rather than string-matched, so a shape error fails here
+# instead of at the moment an agent tries to run it.
+# (Cross-family review of PR #2561, round 5.)
+
+
+def test_nudge_render_names_the_wrapper_and_the_inline_gate() -> None:
+    text = nudge.render("high-risk-ship", "refute it")
+    assert "peer_agent.py" in text
+    assert "codex_review.py" not in text, "names the deleted wrapper"
+    assert "BACKGROUND offload" in text
+    assert "stdin" in text, "the argv-truncation warning must survive"
+    assert "mcp__codex__codex" in text, "still names the inline gate option"
+    assert "[peer_agent] ERROR" in text, "the fail-closed marker must be named"
+
+
+def test_nudge_rendered_command_parses() -> None:
+    import re
+    import shlex
+
+    text = nudge.render("high-risk-ship", "refute it")
+    match = re.search(r"`(python scripts/peer_agent\.py[^`]*)`", text)
+    assert match, f"no runnable peer_agent command in:\n{text}"
+
+    argv = shlex.split(match.group(1))[1:]  # drop "python"
+    assert argv[0] == "scripts/peer_agent.py"
+    argv = argv[1:]
+    # A missing positional provider is exactly the shape that shipped broken.
+    assert argv and argv[0] in {"claude", "codex"}, f"no provider positional: {argv}"
+    assert "--out" in argv, argv
+    assert "--prompt" in argv or "--prompt-file" in argv, argv

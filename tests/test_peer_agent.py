@@ -107,6 +107,18 @@ def test_read_only_codex_command_never_grants_git_metadata(monkeypatch) -> None:
 
     assert "--add-dir" not in command
     assert command[-2:] == ["-s", "read-only"]
+    # Checking only the TRAILING pair leaves an earlier grant intact: codex
+    # takes the last `-s`, but a bypass flag elsewhere in the argv still widens
+    # authority, and a reviewer pointed at the live checkout must stay read-only.
+    assert command.count("-s") == 1, command
+    for banned in (
+        "danger-full-access",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+        "--yolo",
+        "workspace-write",
+    ):
+        assert banned not in command, f"{banned!r} survives in a read-only command: {command}"
 
 
 # --- Fail-closed dispatch -------------------------------------------------
@@ -167,9 +179,19 @@ def _run_main(
     seen = {}
 
     def _popen(cmd, *a, **k):
-        seen["argv"] = list(cmd)
+        argv = list(cmd)
+        seen["argv"] = argv
         if out_file_text is not None:
-            out.write_text(out_file_text, encoding="utf-8")
+            # Write where the IMPLEMENTATION told codex to write, not where the
+            # test wishes it would. Writing to `out` directly would keep passing
+            # even if `build_codex_cmd` pointed `-o` at the wrong path -- the
+            # real CLI would then write elsewhere and peer_agent would read an
+            # empty file. (Cross-family review of PR #2561, round 5.)
+            target = out
+            if "-o" in argv:
+                target = Path(argv[argv.index("-o") + 1])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(out_file_text, encoding="utf-8")
         return proc
 
     monkeypatch.setattr(peer_agent.subprocess, "Popen", _popen)
