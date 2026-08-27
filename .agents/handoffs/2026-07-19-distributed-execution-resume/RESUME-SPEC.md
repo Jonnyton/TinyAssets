@@ -236,7 +236,7 @@ a666afca. Two viable bases: (a) rebuild on top of `a666afca` (keeps fix-1's caps
 work, adds FIX A/B); or (b) **build S2 in one clean pass from `35f56034`** (the base
 *before* the rejected fix-1) — this is what the Kimi candidate below does and it avoids
 inheriting the gamed-test lineage. Discarding the interrupted uncommitted edits is a
-**destructive git op** — under **Hard Rule 14** get explicit host approval before
+**destructive git op** — under **Hard Rule 13** get explicit host approval before
 `git restore`/`checkout --`/`reset`; otherwise just work in a fresh worktree.
 
 ### 5.5 A candidate S2 solution to evaluate: `kimi-s2-candidate.patch`
