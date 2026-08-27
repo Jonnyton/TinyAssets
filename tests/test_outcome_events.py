@@ -1,7 +1,8 @@
 """The outcome registry extension — one registry, explicit evidence levels,
 multi-source attribution without double-counting, and gate-event separation.
 
-Requirement source: ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/real-world-handoffs-and-outcomes/spec.md`` (tasks 5.1, 5.2).
 
 Covered requirements:

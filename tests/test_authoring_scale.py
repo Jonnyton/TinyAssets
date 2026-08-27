@@ -1,7 +1,8 @@
 """§14 authoring proof — concurrent author sessions, sequential cross-account
 isolation, and lost-event / cross-bleed bounds.
 
-Requirement source: ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/node-authoring-and-autoresearch/spec.md`` — "Authoring completion includes
 adversarial isolation and concurrent optimization proof" (task 4.6, authoring
 half). The optimization half (candidate leases, duplicate-candidate suppression,

@@ -1,7 +1,8 @@
 """Typed authoring file I/O — declared manifests, execution-scoped handles,
 bounded deliverables.
 
-Requirement source: ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/node-authoring-and-autoresearch/spec.md`` — "Files are typed
 execution-scoped inputs and deliverables" (tasks 4.2, 4.5).
 """

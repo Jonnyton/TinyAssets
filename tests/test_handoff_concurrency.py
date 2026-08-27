@@ -1,7 +1,8 @@
 """Handoff concurrency — duplicate concurrent submissions, compare-and-swap
 lifecycle advance, and bounded fan-out across distinct identities.
 
-Requirement source: ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/real-world-handoffs-and-outcomes/spec.md`` (tasks 5.1, 5.4).
 
 Covered scenarios:

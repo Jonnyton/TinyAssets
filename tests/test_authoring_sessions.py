@@ -1,7 +1,8 @@
 """Authoring session lifecycle — owner-scoped drafts, inspection, atomic edits,
 explicit publication, and the ``extensions`` router half.
 
-Requirement source: ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/node-authoring-and-autoresearch/spec.md`` (tasks 4.1-4.3, 4.5).
 
 Covered requirements:

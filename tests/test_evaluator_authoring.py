@@ -1,7 +1,8 @@
 """Evaluator authoring — same session lifecycle as nodes, canonical evaluator
 contract, ordered chains with explicit termination.
 
-Requirement source: ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/node-authoring-and-autoresearch/spec.md`` — "Node and evaluator authoring
 share one structural lifecycle" (tasks 4.2, 4.5).
 
