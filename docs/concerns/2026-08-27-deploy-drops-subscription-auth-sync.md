@@ -1,7 +1,7 @@
 # Deploy no longer delivers subscription auth, so rotation and rebuild are both dead
 
 **Filed:** 2026-08-27
-**Severity:** P1 — latent on the current droplet, fatal on the path it exists for
+**Severity:** P2 — downgraded from P1 during review; see *Scope, corrected*
 **Verified:** 2026-08-27 against `814b4f06`
 
 ## The finding
@@ -67,6 +67,33 @@ sibling that genuinely *did* relocate:
   deploy-workflow assertion is genuinely stale. The two auth bundles have no
   such path.
 
+## Scope, corrected
+
+**The first draft of this file rated it P1 and said a rebuilt droplet would
+come up unable to do user work. That is wrong**, and the code says so plainly.
+`tinyassets/cloud_worker.py:606-612`, verified empirically 2026-08-05:
+
+> The container's own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` is **NOT** consulted
+> for a universe-scoped child: `credential_vault.resolve_claude_config_dir`
+> reads this universe's vault records […]
+
+Universe-scoped work resolves credentials **per universe**, from the vault —
+consistent with the standing rule that the platform never supplies an LLM.
+So the dropped bundles do not gate user-facing runs, and the fresh-droplet
+story is not "user work fails".
+
+What the container-global bundle *does* still feed is real but narrower.
+`cloud_worker.py:532-542` — `_subscription_auth_available` delegates to
+`subscription_auth_health` so that **the worker self-quarantine gate, the
+registry-visibility check, and `get_status`** all read auth from one source.
+`tinyassets/api/status.py:1054` reads `CODEX_HOME` for the same reporting.
+
+So the accurate consequence of a fresh droplet with neither bundle is:
+workers self-quarantine and report `not_logged_in`, and `get_status` shows the
+container unauthenticated — **a visible stall, which is the failure mode that
+module deliberately chose over silent burning of work.** Bad, diagnosable, and
+not a user-facing outage.
+
 ## Impact
 
 Latent on the running droplet: the values were written to the persistent host
@@ -76,11 +103,13 @@ the variables exist for:
 
 1. **Rotation.** Re-authenticating the Codex or Claude subscription and
    updating the GitHub secret changes nothing in production. The droplet keeps
-   the old bundle until it expires, and then the writer is unauthenticated with
-   no deploy-time route to fix it.
-2. **Fresh-droplet rebuild.** A rebuilt droplet — the zero-hosts-online disaster
-   recovery path the Forever Rule promises — comes up with neither bundle. Per
-   the entrypoint's own warning, the claude writer is unauthenticated.
+   the old bundle until it expires; after that the container reports
+   `not_logged_in` with no deploy-time route to fix it.
+2. **Fresh-droplet rebuild.** A rebuilt droplet comes up with neither bundle,
+   so container auth-health is red from the start — see *Scope, corrected* for
+   what that does and does not break.
+3. **A false instruction in the runbook**, which is the part with no upside:
+   `DEPLOY.md:203` tells the operator to do something inert.
 
 **Not verified from this session:** whether the live droplet's
 `/etc/tinyassets/env` currently holds either value. That needs the host and was

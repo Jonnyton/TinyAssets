@@ -181,7 +181,7 @@ individually, and one of them is right:
 `TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64` any more**, while
 `deploy/docker-entrypoint.sh:117,153` still decodes both on container start and
 `deploy/DEPLOY.md:203` still tells the operator to keep the secret rotated.
-Filed as `docs/concerns/2026-08-27-deploy-drops-subscription-auth-sync.md` (P1).
+Filed as `docs/concerns/2026-08-27-deploy-drops-subscription-auth-sync.md` (P2 — first drafted P1, corrected during the same pass: `cloud_worker.py:606-612` says the container's own CODEX_HOME is NOT consulted for universe-scoped work, so this degrades auth-health reporting and rotation, not user runs).
 That is the fourth real drop recovered from #2442.
 
 The same pass cleared a near-identical-looking assertion:
