@@ -137,7 +137,11 @@ jobs:
           # the same exact-head review receipt drain PRs carry (Codex gate
           # review 2026-08-02, finding 2). This runs from the TRUSTED base
           # checkout, so a PR cannot weaken the rule that judges it.
-          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
+          # This workflow protects ITSELF. Without it, a later PR could narrow or
+          # delete AUTHORITY_RE with only an `infra-change` label -- permanently
+          # weakening exact-head enforcement for every PR after it. A gate that
+          # anyone can quietly disable is not a gate.
+          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/workflows/pr-scope-guard\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
           GATE_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$GATE_RE" || true)"
 
           # AUTHORITY paths carry the same receipt requirement, for a different
@@ -186,7 +190,12 @@ jobs:
           # Still deliberately NOT a blanket `tinyassets/` rule -- that was
           # rejected as process bloat and the reasoning holds. These are the
           # modules that mint, bind, or validate provider authority.
-          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          # `providers/router.py` and `storage/provider_work_authority.py` were
+          # MISSED in the first widening -- the comment above named router.py as
+          # part of what escaped and the regex still omitted it. router.py validates
+          # carriers and classifies receipt settlement; storage/ persists and mints
+          # receipts, claims and invocation reservations. Both now covered.
+          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
           AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -Ei "$AUTHORITY_RE" || true)"
 
           # GROUNDED, not regex-only. A path match says WHERE an edit landed,
