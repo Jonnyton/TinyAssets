@@ -25,6 +25,7 @@ from tinyassets.provider_work_authority import (
     ProviderInvocationLaunchRequest,
     ProviderInvocationReservationRequest,
     ProviderInvocationReservationState,
+    ProviderInvocationSettlementOwner,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
@@ -312,6 +313,7 @@ def test_agent_claim_reserve_and_launch_are_replay_safe_across_restart(
     carrier = restarted_service().arm_launch(invocation_id)
     assert isinstance(carrier, ProviderInvocationCarrier)
     assert carrier.provider == admitted.binding.provider
+    assert carrier.settlement_owner is ProviderInvocationSettlementOwner.CONSUMER
     assert carrier.operation == "agent_invocation"
     assert carrier.role == "agent_runtime"
     assert carrier.max_tokens == admitted.command.budget.max_tokens

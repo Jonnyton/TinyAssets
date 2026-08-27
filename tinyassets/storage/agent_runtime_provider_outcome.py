@@ -14,12 +14,12 @@ from tinyassets.cloud_automation_continuation import AgentInvocationCloudContinu
 from tinyassets.provider_work_authority import (
     ProviderInvocationReservation,
     ProviderInvocationReservationState,
-    _reservation_with_state,
+    ProviderWorkAuthorityWriteOutcome,
 )
 from tinyassets.storage.provider_work_authority import (
-    _json_record,
     _receipt_record,
     _reservation_record,
+    _Transaction,
 )
 
 _SCHEMA = """
@@ -98,6 +98,9 @@ class SQLiteAgentRuntimeProviderOutcomeStore:
         blocker_code: str | None,
         blocker_detail: str | None,
         created_at: datetime,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_microunits: int | None = None,
     ) -> AgentInvocationProviderOutcome:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("provider outcome requires an active transaction")
@@ -162,10 +165,23 @@ class SQLiteAgentRuntimeProviderOutcomeStore:
                 ProviderInvocationReservationState.INDETERMINATE
             ),
         }[state]
-        terminal = _reservation_with_state(launched_reservation, terminal_state)
         timestamp = created_at.astimezone(timezone.utc).isoformat(
             timespec="microseconds"
         ).replace("+00:00", "Z")
+        settlement = _Transaction(conn).settle_invocation(
+            launched_reservation,
+            terminal_state,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_microunits=cost_microunits,
+            settled_at=timestamp,
+        )
+        if (
+            settlement.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or settlement.record is None
+        ):
+            raise PermissionError("provider reservation finalization lost its fence")
+        terminal = settlement.record
         outcome = AgentInvocationProviderOutcome.build(
             schema_version=1,
             outcome_id=f"agent_provider_outcome_{continuation.invocation_id}",
@@ -186,23 +202,6 @@ class SQLiteAgentRuntimeProviderOutcomeStore:
             blocker_detail=blocker_detail,
             created_at=timestamp,
         )
-        cursor = conn.execute(
-            """
-            UPDATE provider_invocation_reservations
-            SET reservation_digest = ?, state = ?, record_json = ?
-            WHERE reservation_id = ? AND reservation_digest = ?
-              AND state = 'launch_started'
-            """,
-            (
-                terminal.reservation_digest,
-                terminal.state.value,
-                _json_record(terminal),
-                launched_reservation.reservation_id,
-                launched_reservation.reservation_digest,
-            ),
-        )
-        if cursor.rowcount != 1:
-            raise PermissionError("provider reservation finalization lost its fence")
         conn.execute(
             """
             INSERT INTO agent_invocation_provider_outcomes (

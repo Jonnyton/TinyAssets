@@ -14,8 +14,6 @@ from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
-
 from tinyassets.background_branch_authority import (
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
@@ -331,11 +329,14 @@ def test_consumer_poll_once_claims_with_process_lease_and_launches_carrier(
     conn = sqlite3.connect(authority_db_path(tmp_path))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT state, ordinal, claim_id FROM provider_invocation_reservations"
+        "SELECT state, ordinal, claim_id, actual_total_tokens, "
+        "actual_cost_microunits FROM provider_invocation_reservations"
     ).fetchall()
     assert len(rows) == 1, [dict(row) for row in rows]
-    assert rows[0]["state"] == "launch_started"
+    assert rows[0]["state"] == "succeeded"
     assert rows[0]["ordinal"] == 1
+    assert rows[0]["actual_total_tokens"] == 1000
+    assert rows[0]["actual_cost_microunits"] == 50
 
     receipt = conn.execute(
         "SELECT json_extract(record_json, '$.principal_id') AS principal_id, "
@@ -353,14 +354,6 @@ def test_consumer_poll_once_claims_with_process_lease_and_launches_carrier(
     assert claim["runtime_id"] == audience.runtime_id
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "carrier usage accounting gap: the one-use carrier path consumes its "
-        "reservation but records no actuals. Pre-activation blocker for the rolling "
-        "cap; lane tracked in draft #2531."
-    ),
-)
 def test_carrier_launch_records_actual_usage(tmp_path: Path, monkeypatch) -> None:
     _run_consumer_once(tmp_path, monkeypatch)
     conn = sqlite3.connect(authority_db_path(tmp_path))

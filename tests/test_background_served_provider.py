@@ -663,18 +663,10 @@ def test_carrier_reservations_are_unique_ordered_and_armed_before_launch(
     assert [row["state"] for row in rows] == ["launch_started", "launch_started"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "HONEST GAP: the real router consumes the one-use invocation carrier and "
-        "launches, but provider_invocation_reservations do not yet persist actual "
-        "token/cost finalization. strict=True flags completion of that accounting."
-    ),
-)
 def test_background_carrier_actuals_are_finalized_by_the_real_router(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The carrier launches through the router; actual accounting remains explicit."""
+    """The carrier launch settles actual token and cost accounting."""
     import asyncio
 
     from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse

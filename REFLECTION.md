@@ -1570,3 +1570,15 @@ fresh-host rollback edges found later.
   identity, revalidate names, and search only a validated immediate parent.
 - **What I would do differently:** start snapshot work with root-alias and
   renamed-decoy mutation tests before describing any copy as sealed.
+
+## 2026-08-25 - Foreground run provider authority
+
+- **What surprised me:** the dormant run receipt lane already had sound
+  carrier provenance, while the shared reservation record stopped at launch
+  and therefore could not safely release unused budget.
+- **Pattern worth capturing:** asynchronous entry points should mint durable
+  work authority at admission, then mint and settle one process-bound carrier
+  for each actual provider attempt.
+- **What I would do differently:** run the generic authority regression suite
+  immediately after changing the carrier constructor so private mint-proof
+  compatibility is caught before the focused foreground tests are green.

@@ -53,7 +53,7 @@ ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
 def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
-    """Bind branch execution to the selected universe's provider config."""
+    """Bind branch execution to a server-owned foreground run session."""
     uid = (universe_id or "").strip()
     from tinyassets.config import load_universe_config
     from tinyassets.providers.base import UniverseContext
@@ -69,8 +69,17 @@ def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
             operation="run_graph",
         )
     universe_dir = _universe_dir(uid)
+    from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.foreground_run_provider import new_foreground_run_provider_session
+
+    session = new_foreground_run_provider_session(
+        _base_path(),
+        universe_id=uid,
+        principal_id=current_request_actor_id(),
+        provider_call=provider_call,
+    )
     return bind_universe_provider_call(
-        provider_call,
+        session,
         UniverseContext(
             universe_dir=universe_dir,
             config=load_universe_config(universe_dir),

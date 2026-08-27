@@ -28,7 +28,11 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.provider_work_authority import ProviderInvocationCarrier
+from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
+    ProviderInvocationReservationState,
+    ProviderInvocationSettlementOwner,
+)
 from tinyassets.providers.base import (
     DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
@@ -525,6 +529,35 @@ class ProviderRouter:
             role=role,
             operation=operation,
         )
+        carrier_settled = False
+        router_settles_carrier = (
+            invocation_carrier is not None
+            and invocation_carrier.settlement_owner
+            is ProviderInvocationSettlementOwner.ROUTER
+        )
+
+        def settle_carrier(
+            state: ProviderInvocationReservationState,
+            *,
+            input_tokens: int | None = None,
+            output_tokens: int | None = None,
+            cost_microunits: int | None = None,
+        ) -> None:
+            nonlocal carrier_settled
+            if not router_settles_carrier or carrier_settled:
+                return
+            try:
+                invocation_carrier.settle(
+                    state,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_microunits=cost_microunits,
+                )
+            except Exception as exc:
+                raise ProviderAuthorityHeldError(
+                    "provider invocation usage could not be settled"
+                ) from exc
+            carrier_settled = True
         served_authority = universe_context.served_provider if universe_context else None
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
@@ -884,6 +917,25 @@ class ProviderRouter:
                                 universe_dir.parent,
                                 budget_reservation,
                             )
+                    if invocation_carrier is not None:
+                        if isinstance(
+                            exc,
+                            (
+                                ProviderRateLimitedError,
+                                ProviderOverloadedError,
+                                ProviderUnavailableError,
+                            ),
+                        ):
+                            settle_carrier(
+                                ProviderInvocationReservationState.FAILED,
+                                input_tokens=0,
+                                output_tokens=0,
+                                cost_microunits=0,
+                            )
+                        else:
+                            settle_carrier(
+                                ProviderInvocationReservationState.INDETERMINATE
+                            )
                     raise
                 if budget_reservation is not None:
                     finalize_served_provider_budget(
@@ -895,6 +947,12 @@ class ProviderRouter:
                         cost_microunits=resp.cost_microunits,
                         fallback_output=resp.text,
                     )
+                settle_carrier(
+                    ProviderInvocationReservationState.SUCCEEDED,
+                    input_tokens=resp.input_tokens,
+                    output_tokens=resp.output_tokens,
+                    cost_microunits=resp.cost_microunits,
+                )
                 self._quota.record_success(provider_name)
             except ProviderAuthorityHeldError:
                 raise
@@ -1028,6 +1086,12 @@ class ProviderRouter:
                 retry_after=dominant_retry_after_s(attempts),
             )
         if invocation_carrier is not None:
+            settle_carrier(
+                ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                input_tokens=0,
+                output_tokens=0,
+                cost_microunits=0,
+            )
             raise AllProvidersExhaustedError(
                 f"Armed provider {invocation_carrier.provider!r} exhausted; "
                 "provider authority forbids fallback widening.",

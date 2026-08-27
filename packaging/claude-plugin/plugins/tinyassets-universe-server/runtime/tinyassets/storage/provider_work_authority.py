@@ -22,6 +22,7 @@ from tinyassets.provider_work_authority import (
     ProviderInvocationReservationRequest,
     ProviderInvocationReservationState,
     ProviderInvocationReservationWriteResult,
+    ProviderInvocationSettlementOwner,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
@@ -191,6 +192,11 @@ CREATE TABLE IF NOT EXISTS provider_invocation_reservations (
     )),
     max_tokens INTEGER NOT NULL CHECK (max_tokens >= 0),
     max_cost_microunits INTEGER NOT NULL CHECK (max_cost_microunits >= 0),
+    actual_input_tokens INTEGER,
+    actual_output_tokens INTEGER,
+    actual_total_tokens INTEGER,
+    actual_cost_microunits INTEGER,
+    settled_at TEXT,
     record_json TEXT NOT NULL,
     UNIQUE (receipt_id, invocation_key),
     UNIQUE (receipt_id, ordinal),
@@ -198,6 +204,25 @@ CREATE TABLE IF NOT EXISTS provider_invocation_reservations (
     FOREIGN KEY(claim_id) REFERENCES provider_work_execution_claims(claim_id)
 );
 """
+
+
+def _ensure_invocation_settlement_columns(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
+        for row in conn.execute("PRAGMA table_info(provider_invocation_reservations)")
+    }
+    for name, column_type in (
+        ("actual_input_tokens", "INTEGER"),
+        ("actual_output_tokens", "INTEGER"),
+        ("actual_total_tokens", "INTEGER"),
+        ("actual_cost_microunits", "INTEGER"),
+        ("settled_at", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE provider_invocation_reservations "
+                f"ADD COLUMN {name} {column_type}"
+            )
 
 
 def _record(row: sqlite3.Row) -> ProviderWorkBinding:
@@ -1108,10 +1133,32 @@ class _Transaction:
             (receipt.receipt_id,),
         ).fetchall()
         reservations = tuple(_reservation_record(row) for row in rows)
+        charged = tuple(
+            (
+                0,
+                0,
+                0,
+            )
+            if item.state is ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH
+            else (
+                1,
+                int(item.actual_total_tokens),
+                int(item.actual_cost_microunits),
+            )
+            if item.state
+            in {
+                ProviderInvocationReservationState.SUCCEEDED,
+                ProviderInvocationReservationState.FAILED,
+            }
+            and item.actual_total_tokens is not None
+            and item.actual_cost_microunits is not None
+            else (1, item.max_tokens, item.max_cost_microunits)
+            for item in reservations
+        )
         exhausted = (
-            len(reservations) >= receipt.max_invocations,
-            sum(item.max_tokens for item in reservations) + request.max_tokens > receipt.max_tokens,
-            sum(item.max_cost_microunits for item in reservations) + request.max_cost_microunits
+            sum(item[0] for item in charged) >= receipt.max_invocations,
+            sum(item[1] for item in charged) + request.max_tokens > receipt.max_tokens,
+            sum(item[2] for item in charged) + request.max_cost_microunits
             > receipt.max_cost_microunits,
         )
         if any(exhausted):
@@ -1292,6 +1339,102 @@ class _Transaction:
             claim,
         )
 
+    def settle_invocation(
+        self,
+        reservation: ProviderInvocationReservation,
+        state: ProviderInvocationReservationState,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost_microunits: int | None,
+        settled_at: str,
+    ) -> ProviderInvocationReservationWriteResult:
+        if state not in {
+            ProviderInvocationReservationState.SUCCEEDED,
+            ProviderInvocationReservationState.FAILED,
+            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+            ProviderInvocationReservationState.INDETERMINATE,
+        }:
+            raise ValueError("provider invocation settlement state is not terminal")
+        row = self._conn.execute(
+            "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
+            (reservation.reservation_id,),
+        ).fetchone()
+        if row is None:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.MISSING,
+                None,
+            )
+        current = _reservation_record(row)
+        if (
+            current.reservation_digest != reservation.reservation_digest
+            or current.state is not ProviderInvocationReservationState.LAUNCH_STARTED
+        ):
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                current,
+            )
+        if state is ProviderInvocationReservationState.INDETERMINATE:
+            actual_input = actual_output = actual_total = actual_cost = None
+        else:
+            values = (input_tokens, output_tokens, cost_microunits)
+            if any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in values
+            ):
+                raise ValueError("known provider invocation usage must be non-negative integers")
+            actual_input = int(input_tokens)
+            actual_output = int(output_tokens)
+            actual_total = actual_input + actual_output
+            actual_cost = int(cost_microunits)
+        provisional = replace(
+            current,
+            schema_version=2,
+            reservation_digest=_PLACEHOLDER_DIGEST,
+            state=state,
+            actual_input_tokens=actual_input,
+            actual_output_tokens=actual_output,
+            actual_total_tokens=actual_total,
+            actual_cost_microunits=actual_cost,
+            settled_at=settled_at,
+        )
+        settled = replace(
+            provisional,
+            reservation_digest=provisional.expected_digest(),
+        )
+        cursor = self._conn.execute(
+            """
+            UPDATE provider_invocation_reservations
+               SET reservation_digest = ?, state = ?,
+                   actual_input_tokens = ?, actual_output_tokens = ?,
+                   actual_total_tokens = ?, actual_cost_microunits = ?,
+                   settled_at = ?, record_json = ?
+             WHERE reservation_id = ? AND reservation_digest = ?
+               AND state = 'launch_started'
+            """,
+            (
+                settled.reservation_digest,
+                settled.state.value,
+                settled.actual_input_tokens,
+                settled.actual_output_tokens,
+                settled.actual_total_tokens,
+                settled.actual_cost_microunits,
+                settled.settled_at,
+                _json_record(settled),
+                settled.reservation_id,
+                current.reservation_digest,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.CONFLICT,
+                current,
+            )
+        return ProviderInvocationReservationWriteResult(
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            settled,
+        )
+
 
 class _BindingTransaction:
     """Expose only the binding CAS surface to production service callers."""
@@ -1357,6 +1500,7 @@ class SQLiteProviderWorkAuthorityStore:
                 if "locked" not in str(exc).lower():
                     raise
             conn.executescript(_SCHEMA)
+            _ensure_invocation_settlement_columns(conn)
             yield conn
         finally:
             conn.close()
@@ -1699,11 +1843,13 @@ class SQLiteProviderWorkAuthorityStore:
                     None,
                 )
             reservation = _reservation_record(reservation_row)
-            request = ProviderInvocationLaunchRequest.from_reservation(
-                _reservation_with_state(
+            if reservation.state is not ProviderInvocationReservationState.RESERVED:
+                return ProviderInvocationReservationWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.REPLAYED,
                     reservation,
-                    ProviderInvocationReservationState.RESERVED,
                 )
+            request = ProviderInvocationLaunchRequest.from_reservation(
+                reservation
             )
             result = _Transaction(conn).arm_launch(
                 request,
@@ -1920,6 +2066,8 @@ class SQLiteProviderWorkAuthorityStore:
             result.claim,
             result.record,
             result.mint_proof,
+            settlement_owner=ProviderInvocationSettlementOwner.ROUTER,
+            settler=self._settle_carrier,
         )
 
     def _reserve_and_arm_cloud_branch_carrier_in_transaction(
@@ -1974,6 +2122,8 @@ class SQLiteProviderWorkAuthorityStore:
             armed.claim,
             armed.record,
             _provider_invocation_store_mint_proof(armed.record),
+            settlement_owner=ProviderInvocationSettlementOwner.ROUTER,
+            settler=self._settler_for_transaction(conn),
         )
 
     def _reserve_and_arm_background_branch_carrier_in_transaction(
@@ -2101,7 +2251,292 @@ class SQLiteProviderWorkAuthorityStore:
             armed.claim,
             armed.record,
             _provider_invocation_store_mint_proof(armed.record),
+            settlement_owner=ProviderInvocationSettlementOwner.ROUTER,
+            settler=self._settler_for_transaction(conn),
         )
+
+    def _admit_run_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        authority: ProviderUniverseWorkAuthority,
+        worker_id: str,
+        runtime_id: str,
+        claim_nonce_digest: str,
+        lease_seconds: int,
+    ) -> tuple[ProviderUniverseWorkReceipt, ProviderWorkExecutionClaim]:
+        """Issue one inert run receipt and claim inside the admission fence."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("run provider admission requires an active transaction")
+        if authority.root.work_item_kind != "run":
+            raise PermissionError("run provider admission requires run authority")
+        now = self._now()
+        transaction = _Transaction(conn)
+        candidate = _receipt_from_authority(
+            authority,
+            created_at=self._timestamp(now),
+        )
+        issued = transaction._issue_universe_receipt(
+            authority,
+            candidate,
+            now=now,
+        )
+        if (
+            issued.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or issued.record is None
+        ):
+            raise PermissionError("run provider receipt is unavailable")
+        receipt = issued.record
+        receipt_expiry = datetime.fromisoformat(
+            receipt.expires_at.removesuffix("Z") + "+00:00"
+        )
+        bounded_lease = min(lease_seconds, int((receipt_expiry - now).total_seconds()))
+        if bounded_lease < 1:
+            raise PermissionError("run provider claim lease is expired")
+        request = ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id=worker_id,
+            runtime_id=runtime_id,
+            claim_nonce_digest=claim_nonce_digest,
+            lease_seconds=bounded_lease,
+        )
+        claim_candidate = _claim_from_request(
+            request,
+            created_at=self._timestamp(now),
+            lease_expires_at=self._timestamp(now + timedelta(seconds=bounded_lease)),
+        )
+        claimed = transaction.claim_receipt(
+            request,
+            claim_candidate,
+            now=now,
+            allow_test_fixtures=self._allow_test_fixtures,
+        )
+        if (
+            claimed.outcome
+            not in {
+                ProviderWorkAuthorityWriteOutcome.APPLIED,
+                ProviderWorkAuthorityWriteOutcome.REPLAYED,
+            }
+            or claimed.record is None
+        ):
+            raise PermissionError("run provider execution claim is unavailable")
+        return receipt, claimed.record
+
+    def _reserve_and_arm_run_carrier_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        receipt: ProviderUniverseWorkReceipt,
+        claim: ProviderWorkExecutionClaim,
+        invocation_key: str,
+        role: str,
+        max_tokens: int,
+        max_cost_microunits: int,
+    ) -> ProviderInvocationCarrier:
+        """Reserve and arm one run attempt after caller-owned revalidation."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("run provider launch requires an active transaction")
+        if receipt.work_item_kind != "run":
+            raise PermissionError("provider receipt is not run authority")
+        request = ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key=invocation_key,
+            operation="run_graph",
+            role=role,
+            max_tokens=max_tokens,
+            max_cost_microunits=max_cost_microunits,
+        )
+        now = self._now()
+        transaction = _Transaction(conn)
+        reserved = transaction.reserve_invocation(
+            request,
+            now=now,
+            created_at=self._timestamp(now),
+            allow_test_fixtures=self._allow_test_fixtures,
+        )
+        if (
+            reserved.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or reserved.record is None
+        ):
+            raise PermissionError("run provider invocation budget is unavailable")
+        armed = transaction.arm_launch(
+            ProviderInvocationLaunchRequest.from_reservation(reserved.record),
+            now=now,
+            allow_test_fixtures=self._allow_test_fixtures,
+        )
+        if (
+            armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or armed.record is None
+            or armed.receipt is None
+            or armed.claim is None
+        ):
+            raise PermissionError("run provider invocation could not be armed")
+        return _mint_provider_invocation_carrier(
+            armed.receipt,
+            armed.claim,
+            armed.record,
+            _provider_invocation_store_mint_proof(armed.record),
+            settlement_owner=ProviderInvocationSettlementOwner.ROUTER,
+            settler=self._settler_for_transaction(conn),
+        )
+
+    def release_run_claim(self, receipt_id: str) -> None:
+        """Fence a terminal run and cancel reservations never armed."""
+
+        with self._ledger_transaction() as transaction:
+            conn = transaction._conn
+            receipt_row = conn.execute(
+                "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+            if receipt_row is None:
+                return
+            receipt = _receipt_record(receipt_row)
+            if receipt.work_item_kind != "run":
+                raise PermissionError("only run claims can be released here")
+            now = self.timestamp()
+            rows = conn.execute(
+                "SELECT * FROM provider_invocation_reservations "
+                "WHERE receipt_id = ? AND state = 'reserved'",
+                (receipt_id,),
+            ).fetchall()
+            for row in rows:
+                current = _reservation_record(row)
+                provisional = replace(
+                    current,
+                    schema_version=2,
+                    reservation_digest=_PLACEHOLDER_DIGEST,
+                    state=ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                    actual_input_tokens=0,
+                    actual_output_tokens=0,
+                    actual_total_tokens=0,
+                    actual_cost_microunits=0,
+                    settled_at=now,
+                )
+                cancelled = replace(
+                    provisional,
+                    reservation_digest=provisional.expected_digest(),
+                )
+                conn.execute(
+                    """
+                    UPDATE provider_invocation_reservations
+                       SET reservation_digest = ?, state = ?,
+                           actual_input_tokens = 0, actual_output_tokens = 0,
+                           actual_total_tokens = 0, actual_cost_microunits = 0,
+                           settled_at = ?, record_json = ?
+                     WHERE reservation_id = ? AND reservation_digest = ?
+                       AND state = 'reserved'
+                    """,
+                    (
+                        cancelled.reservation_digest,
+                        cancelled.state.value,
+                        cancelled.settled_at,
+                        _json_record(cancelled),
+                        cancelled.reservation_id,
+                        current.reservation_digest,
+                    ),
+                )
+            claim_row = conn.execute(
+                "SELECT * FROM provider_work_execution_claims WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+            if claim_row is None:
+                return
+            claim = _claim_record(claim_row)
+            if claim.state is not ProviderWorkExecutionClaimState.ACTIVE:
+                return
+            provisional_claim = replace(
+                claim,
+                claim_digest=_PLACEHOLDER_DIGEST,
+                generation=claim.generation + 1,
+                state=ProviderWorkExecutionClaimState.RELEASED,
+            )
+            released = replace(
+                provisional_claim,
+                claim_digest=provisional_claim.expected_digest(),
+            )
+            conn.execute(
+                """
+                UPDATE provider_work_execution_claims
+                   SET claim_digest = ?, generation = ?, state = ?, record_json = ?
+                 WHERE claim_id = ? AND claim_digest = ? AND state = 'active'
+                """,
+                (
+                    released.claim_digest,
+                    released.generation,
+                    released.state.value,
+                    _json_record(released),
+                    released.claim_id,
+                    claim.claim_digest,
+                ),
+            )
+
+    def _settler_for_transaction(self, conn: sqlite3.Connection):
+        database = conn.execute("PRAGMA database_list").fetchone()
+        database_path = str(database[2] or "") if database is not None else ""
+        if database_path:
+            return self._settle_carrier
+
+        def settle_in_memory(
+            reservation: ProviderInvocationReservation,
+            state: ProviderInvocationReservationState,
+            input_tokens: int | None,
+            output_tokens: int | None,
+            cost_microunits: int | None,
+        ) -> None:
+            started = not conn.in_transaction
+            if started:
+                conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = _Transaction(conn).settle_invocation(
+                    reservation,
+                    state,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_microunits=cost_microunits,
+                    settled_at=self.timestamp(),
+                )
+                if result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED:
+                    raise PermissionError("provider invocation settlement conflicted")
+                if started:
+                    conn.commit()
+            except Exception:
+                if started:
+                    conn.rollback()
+                raise
+
+        return settle_in_memory
+
+    def _settle_carrier(
+        self,
+        reservation: ProviderInvocationReservation,
+        state: ProviderInvocationReservationState,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost_microunits: int | None,
+    ) -> None:
+        with self._ledger_transaction() as transaction:
+            result = transaction.settle_invocation(
+                reservation,
+                state,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_microunits=cost_microunits,
+                settled_at=self.timestamp(),
+            )
+        if result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED:
+            raise PermissionError("provider invocation settlement conflicted")
 
     def list_reservations(
         self,

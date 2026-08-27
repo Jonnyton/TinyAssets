@@ -360,21 +360,11 @@ def _patch_run_branch_dependencies(monkeypatch, branch: Any) -> None:
     )
 
 
-def test_run_branch_binds_requested_universe_context(tmp_path, monkeypatch):
-    """MUTATION: pass raw call_provider from run_branch -> no bound context.
-
-    Observe the binding by inspecting the ``UniverseContext`` bound onto the
-    ``provider_call`` handed to branch execution, rather than invoking the
-    wrapped inner call. The inner-call observation is unreliable under the
-    suite-wide ``force_mock=True`` (a wrapped real ``call_provider`` returns a
-    mock string without recording), and a sibling suite that reloads
-    ``tinyassets.providers.call`` in-place leaves the parent-package attribute
-    pointing at a stale module object, so monkeypatching ``call_provider`` on
-    the module handle no longer reaches ``_action_run_branch``'s local import.
-    Inspecting the bound context proves the requester-owned binding directly and
-    is immune to both. Mutation: drop the binding and ``provider_call`` is a raw
-    context-free callable with no ``universe_context`` -> this fails.
-    """
+def test_run_branch_hands_execution_a_server_owned_provider_session(
+    tmp_path,
+    monkeypatch,
+):
+    """The author supplies no carrier or authority field to foreground execution."""
     from tinyassets.api import runs as api_runs
 
     universe = tmp_path / "user-u"
@@ -403,31 +393,22 @@ def test_run_branch_binds_requested_universe_context(tmp_path, monkeypatch):
 
     assert payload["status"] == "queued"
     bound = captured["provider_call"]
-    assert hasattr(bound, "universe_context"), (
-        "run_branch must bind the run's UniverseContext to provider_call, "
-        "not hand execution a raw context-free call"
-    )
+    assert type(bound.provider_call).__name__ == "_ForegroundRunProviderSession"
     assert bound.universe_context.universe_dir == universe
     assert bound.universe_context.config.preferred_writer == "codex"
+    assert bound.universe_context.provider_request is None
+    assert bound.universe_context.provider_invocation is None
+    with pytest.raises(ProviderAuthorityHeldError):
+        bound("cannot launch before run admission")
 
 
 @pytest.mark.parametrize("action", ["version", "resume"])
-def test_branch_version_and_resume_bind_run_universe_context(
+def test_branch_version_and_resume_use_the_same_server_owned_run_session(
     action,
     tmp_path,
     monkeypatch,
 ):
-    """MUTATION: either legacy raw-call handoff hands execution no bound context.
-
-    Same observation strategy as
-    :func:`test_run_branch_binds_requested_universe_context`: inspect the
-    ``UniverseContext`` bound onto the ``provider_call`` passed to execution
-    rather than invoking the wrapped inner (unreliable under suite-wide
-    ``force_mock`` + a sibling suite's in-place reload of
-    ``tinyassets.providers.call``). Mutation: drop the binding on either the
-    version or resume path and ``provider_call`` is a raw context-free callable
-    with no ``universe_context`` -> this fails.
-    """
+    """Version and resume entry points cannot restore the old static context lane."""
     from tinyassets.api import runs as api_runs
 
     universe = tmp_path / "user-u"
@@ -464,9 +445,8 @@ def test_branch_version_and_resume_bind_run_universe_context(
 
     assert payload["status"] == "queued"
     bound = captured["provider_call"]
-    assert hasattr(bound, "universe_context"), (
-        "run must bind the run's UniverseContext to provider_call, "
-        "not hand execution a raw context-free call"
-    )
+    assert type(bound.provider_call).__name__ == "_ForegroundRunProviderSession"
     assert bound.universe_context.universe_dir == universe
     assert bound.universe_context.config.preferred_writer == "codex"
+    assert bound.universe_context.provider_request is None
+    assert bound.universe_context.provider_invocation is None
