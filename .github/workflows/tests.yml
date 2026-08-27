@@ -144,7 +144,64 @@ jobs:
     timeout-minutes: 50
 
     steps:
+      # fetch-depth 0: the docs-only gate below needs both sides of the diff.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # DOCS-ONLY FAST PATH.
+      #
+      # 9 of the last 25 merged PRs changed ZERO executable files and still ran
+      # all ~13,000 tests. That is the "evaluate the candidate, not the
+      # universe" waste AVO's scoring loop avoids.
+      #
+      # EARLY EXIT INSIDE THE JOB, deliberately not a `paths:` filter: a
+      # path-filtered required check never reports and the PR then hangs on
+      # "Expected -- waiting for status" forever (see the header). The job runs
+      # and succeeds; only the install and pytest steps are conditional.
+      #
+      # The inert set is deliberately TINY. Cross-family review rejected a
+      # broader one and named three escapes, all closed here:
+      #
+      #   * `--no-renames`. Plain `git diff --name-only` reports only a
+      #     rename's DESTINATION, so `scripts/foo.py` -> `docs/foo.md` looked
+      #     docs-only while executable code vanished.
+      #   * `.txt` is NOT inert. `.github/known-failing-tests.txt` and
+      #     `.github/heavy-test-files.txt` DEFINE the gate; a ledger-only PR
+      #     would have skipped the very job that ratchets the ledger.
+      #   * Only `docs/**/*.md` counts, never a root or `.github/` markdown
+      #     file. `tests/smoke/test_plan_md_exists.py` asserts `AGENTS.md` and
+      #     `PLAN.md` EXIST, so deleting one is a .md-only change that must
+      #     still run the test written to catch it.
+      #
+      # Fails OPEN toward running: non-PR events, a failed diff, an empty diff,
+      # and anything not matching the inert pattern all fall through.
+      - name: Decide whether any executable file changed
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; echo "not a PR - running everything"; exit 0
+          fi
+          if ! git diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/changed.txt 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; echo "diff failed - running everything"; exit 0
+          fi
+          if [ ! -s /tmp/changed.txt ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; echo "empty diff - running everything"; exit 0
+          fi
+          # INERT = documentation prose and images under docs/ only.
+          INERT='^(docs/.*\.(md|rst)|docs/.*\.(png|jpg|jpeg|gif|svg|webp|ico))$'
+          if grep -qvE "$INERT" /tmp/changed.txt; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "executable or gate-defining files changed - running the suite:"
+            grep -vE "$INERT" /tmp/changed.txt | head -20
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "docs-only PR - skipping the suite:"; cat /tmp/changed.txt
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -153,11 +210,13 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
+        if: steps.scope.outputs.code == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
       - name: Run the required test surface
+        if: steps.scope.outputs.code == 'true'
         env:
           # Keep the suite off the real repo tree and off any host state. The
           # conftest already forces mock providers and sqlite_only storage; this
