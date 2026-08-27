@@ -120,3 +120,47 @@ Implementation landed; the dark deploy/canary, single-active cutover, and 24/7 P
 > reset (it was an autonomous background worker, which the host's two-provider decision put out of
 > scope). There is no longer a second claimer to conflict with — but that also means **there is no
 > local fallback** if cloud activation stalls. Decide with that in mind.
+
+---
+
+### X app is Read-only — flip it to Read and Write
+
+**The smallest ask:** in the X developer portal, open the app behind connection
+`http_7f4a2d48423c003f5bb31b127468606c` → *User authentication settings* → set
+**App permissions** to **Read and write** → then **regenerate the access token
+and secret** and re-deposit them. The permission is baked into the token at
+issue time, so an existing token keeps `read` access even after the app setting
+changes; without the regenerate step this looks unfixed.
+
+**Why it is a host action:** it is a setting in your X account. Nothing in this
+repo can change it.
+
+**Evidence, 2026-08-27** — run `c2b486ff315045c6`, branch `8ab6516d50c5`
+("X Hello World via Codex v2"), production `44c4e205`:
+
+```
+status: completed          deliver_post: ran
+POST https://api.x.com/2/tweets  ->  403 Forbidden
+"Your client app is not configured with the appropriate oauth1 app
+ permissions for this endpoint."
+x-access-level: read
+```
+
+**What this unblocks, and what it proves.** The platform half is done. That run
+authenticated, resolved the grant, built the packet, and made a real outbound
+POST — the 403 is X refusing the *token's* scope, not TinyAssets failing. The
+same branch failed three different ways earlier the same day, all ours and all
+now fixed and deployed:
+
+| When | Failure | Fixed by |
+|---|---|---|
+| 08-25/26 | `permission_denied:provider_not_bound` | #2559 |
+| 08-27 am | `provider invocation usage could not be settled` | #2582 |
+| 08-27 am | async sub-branch refused, run FAILED before any node | #2586 |
+
+So this row is the last thing between the founder and a posted tweet, and it is
+the only one that was never a code problem.
+
+**How to verify after changing it:** re-run branch `8ab6516d50c5`. Expect
+`external_write_results.deliver_post.authenticated_external_call.response.status`
+to be 201, and `x-access-level` to read `read-write`.
