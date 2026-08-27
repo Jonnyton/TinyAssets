@@ -76,6 +76,7 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `TINYASSETS_MCP_CANARY_URL` | Public MCP URL the uptime canary probes. | `https://tinyassets.io/mcp` (canonical apex; `mcp.tinyassets.io` is an Access-gated internal tunnel origin, not user-facing — host directive 2026-04-20). |
 | `TAB_WATCHDOG_INTERVAL_S` | Interval (seconds) for the tray tab-watchdog's polling. `scripts/tab_watchdog.py`. | `60`. |
 | `TINYASSETS_CLAUDE_CHAT_SCREENSHOTS` | User-sim skill flag — capture a screenshot on every `claude_chat.py` response settle. Cost: ~200 KB per response. | Unset (off). |
+| `TINYASSETS_OUTBOUND_PROXY_STARTUP_TIMEOUT_S` | Seconds the outbound credential broker waits for its spawned child's ready handshake before failing the call. Raise it only if a loaded host is genuinely slow to spawn — a startup failure now names its cause, so check that first. | `30`. Values that are unparseable, non-finite, or ≤0 fall back to the default rather than failing instantly. |
 
 **Canonical resolver:** `workflow.storage.data_dir()` is the single
 source of truth for `TINYASSETS_DATA_DIR` resolution. Do not re-implement
