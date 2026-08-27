@@ -11,13 +11,14 @@ files`** step that `scp`'d `deploy/compose.yml`, `deploy/vector.yaml`,
 unit to the droplet and installed them at `/opt/tinyassets/`.
 
 PR #2442 (`5aeb64da`) rewrote the workflow from 2,762 lines to 134 and dropped
-it. The current workflow `scp`s exactly three things:
+it. The current workflow `scp`s four files:
 
 | Line | Shipped |
 |---|---|
 | 169 | `deploy/tinyassets-daemon.service` |
 | 277 | the fail-safe deploy script |
 | 334 | `release-state.json` |
+| 277 | `deploy/install-tinyassets-env.sh` |
 
 `deploy/compose.yml` is not among them, and neither are the vector configs.
 
@@ -49,8 +50,8 @@ the pre-#2442 workflow. Most are stale — renamed steps (`Rollback on failure`
 ## Why it is not fixed here
 
 Restoring the sync is not a straight revert. The droplet's live
-`/opt/tinyassets/compose.yml` has been the source of truth for months while the
-repo copy drifted freely, unvalidated. Installing the repo copy over it on the
+`/opt/tinyassets/compose.yml` has been the sole source of truth since
+`5aeb64da` landed on 2026-08-20, while the repo copy drifted unvalidated. Installing the repo copy over it on the
 next deploy would converge production onto an unverified file — and this repo
 has already taken a 502 from exactly that class of mistake (a partial `-f`
 under an existing `-p` destroying omitted services).

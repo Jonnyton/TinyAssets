@@ -26,7 +26,7 @@ name: Apply daemon env flag
 #   took effect — compose `environment:` / a later env_file could override it).
 # - The mutation runs under the shared host flock
 #   (/var/lock/tinyassets-host-mutation.lock, flock -w 120) that
-#   deploy_fail_safe.sh takes, and GH group `deploy-prod`, so it cannot race a
+#   deploy_fail_safe.sh takes, and GH group `production-host-mutation`, so it cannot race a
 #   live deploy. The staged helper is checksum-verified inside the lock.
 #
 # Known systemic follow-ups (NOT unique to this workflow, tracked separately):
@@ -48,7 +48,12 @@ on:
 
 concurrency:
   # Serialize with Deploy prod at the workflow layer; the host flock is layer 2.
-  group: deploy-prod
+  # Deploy prod moved back to `production-host-mutation` on 2026-08-27, so that
+  # is where this has to be for the claim above to stay true -- and it shares
+  # the mutex with restart-daemon / install-host-services / p0-outage-triage,
+  # which mutate the same host. The flock covers only the remote apply, not the
+  # surrounding workflow or canary.
+  group: production-host-mutation
   cancel-in-progress: false
 
 permissions:
