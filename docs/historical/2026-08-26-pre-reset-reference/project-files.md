@@ -1,5 +1,7 @@
 # Project files — what lives where
 
+**HISTORICAL — superseded.** Describes machinery deleted by the 2026-08-25/26 harness reset. Do not cite as live; see [README.md](README.md).
+
 Repo map for agents. Pointer-loaded per
 [ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md): `AGENTS.md`
 keeps the three living files plus the ownership rule that isn't derivable, and

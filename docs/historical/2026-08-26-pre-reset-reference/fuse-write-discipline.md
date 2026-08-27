@@ -1,5 +1,7 @@
 # FUSE write & commit discipline (Cowork sessions)
 
+**HISTORICAL — superseded.** Describes machinery deleted by the 2026-08-25/26 harness reset. Do not cite as live; see [README.md](README.md).
+
 Canonical reference for the two Cowork/FUSE stop-the-line rules. Pointer-loaded per
 [ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md): `CLAUDE.md` keeps the
 prohibitions themselves resident and points here for the recipes, hook coverage, and

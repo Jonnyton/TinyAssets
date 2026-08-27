@@ -1,5 +1,7 @@
 # Parallel dispatch — multi-provider coordination
 
+**HISTORICAL — superseded.** Describes machinery deleted by the 2026-08-25/26 harness reset. Do not cite as live; see [README.md](README.md).
+
 Canonical procedure for working alongside other providers on this repo.
 Pointer-loaded per [ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md):
 `AGENTS.md` § *Parallel Dispatch* keeps the contract and the session-start

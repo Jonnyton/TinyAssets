@@ -1,5 +1,7 @@
 # Where a new convention lives
 
+**HISTORICAL — superseded.** Describes machinery deleted by the 2026-08-25/26 harness reset. Do not cite as live; see [README.md](README.md).
+
 Pointer-loaded per [ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md).
 `AGENTS.md` § *Where new conventions live* keeps the rule and the self-check;
 this file holds the placement table, the self-correcting property, and the
