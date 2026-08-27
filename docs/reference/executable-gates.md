@@ -124,6 +124,31 @@ narrow search is not evidence of emptiness — the same mistake as
 `Get-ChildItem -ErrorAction SilentlyContinue` returning empty on a directory it
 could not read.
 
+## Why 925 local branch refs are not being bulk-deleted
+
+Measured 2026-08-26. The primary checkout carries ~975 local branches; 50 were
+provably redundant (on the remote, or merged into `main`) and were deleted. The
+remaining **925 cannot be safely classified**, and the reason is worth writing
+down because the obvious checks all lie:
+
+| Check | Why it lies here |
+|---|---|
+| `git branch --merged main` | This repo **squash-merges**. A squash-merged branch's commits are not ancestors of `main`, so it reports "unmerged" for work that fully landed. `harness-reset` proved this: reported unmerged, content byte-identical to `main`. |
+| `git diff main..branch` | Sampled 40: all differed by ~2,400 files. That is `main`'s forward progress since they branched, not their content. |
+| `git cherry main branch` | Sampled 14: 5 had zero unique commits, 9 had 1–50. But squash-merging changes patch-ids, so a landed branch's commits still show as `+`. Over-reports. |
+
+With squash-merge, no cheap check answers "does this branch hold unlanded
+work?" — it needs per-branch comparison against `main` as it stood when that
+branch diverged.
+
+**So the branches stay.** They are inert: a ref is a 41-byte file, they are not
+worktrees, and they cost nothing but noisy `git branch` output. Deleting 925 of
+them to tidy a listing risks unlanded work that nobody has inventoried, and
+Hard Rule 13 exists for exactly that trade.
+
+**Prevention beats cleanup.** Merge with `gh pr merge --delete-branch` and the
+ref goes with the PR. The accumulation is the bug; the pile is only its symptom.
+
 ## Not gates, and should not become gates
 
 - **Evidence-before-completion.** A script can confirm a command and its output
