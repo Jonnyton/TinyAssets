@@ -189,3 +189,87 @@ def test_location_points_at_the_failing_line(oracle):
     assert oracle.failure_location(body) == (
         "tests/test_host_uptime_installers.py:516: AssertionError"
     )
+
+
+# --- NOT RUN direction: which artifact to look at next -----------------------
+
+
+def _drive_main(oracle, monkeypatch, capsys, tmp_path, *, argv, ledger, heavy, xml):
+    """Run main() over a synthetic ledger + junit and return the printed report."""
+    import sys
+
+    junit = tmp_path / "j.xml"
+    junit.write_text(xml, encoding="utf-8")
+    monkeypatch.setattr(oracle, "read_ledger", lambda: list(ledger))
+    monkeypatch.setattr(oracle, "read_heavy", lambda: set(heavy))
+    monkeypatch.setattr(oracle, "latest_run_id", lambda _artifact: "1")
+    monkeypatch.setattr(oracle, "download", lambda _r, _d, _a: junit)
+    monkeypatch.setattr(sys, "argv", ["quarantine_oracle.py", *argv])
+    assert oracle.main() == 0
+    return capsys.readouterr().out
+
+
+_VACUOUS = "<testsuites><testsuite></testsuite></testsuites>"
+_HEAVY_ENTRY = "tests/test_dispatcher_queue.py::t_x"
+
+
+def test_a_vacuous_heavy_artifact_does_not_point_at_itself(
+    oracle, monkeypatch, capsys, tmp_path
+):
+    """The direction must come from the artifact ASKED for, not from results.
+
+    Inferring it from the parsed results looked fine until the heavy artifact
+    came back empty -- a collection error, or every heavy file failing to
+    collect. With no heavy path among the results the inference flipped to
+    "required", and a heavy-listed entry was told to "look at
+    junit-heavy-tests" while junit-heavy-tests was the artifact being read.
+    Circular advice, and it reads as though the entry is fine somewhere else.
+    Found by cross-family review 2026-08-27.
+    """
+    report = _drive_main(
+        oracle, monkeypatch, capsys, tmp_path,
+        argv=["--artifact", oracle.HEAVY_ARTIFACT],
+        ledger=[_HEAVY_ENTRY],
+        heavy={"tests/test_dispatcher_queue.py"},
+        xml=_VACUOUS,
+    )
+    assert "NOT RUN" in report
+    assert oracle.HEAVY_ARTIFACT not in report, (
+        "a heavy artifact must never send the reader back to the heavy artifact"
+    )
+    assert "no matching testcase" in report
+
+
+def test_a_required_artifact_still_points_at_the_heavy_one(
+    oracle, monkeypatch, capsys, tmp_path
+):
+    """The useful direction still works -- this is the common case."""
+    report = _drive_main(
+        oracle, monkeypatch, capsys, tmp_path,
+        argv=["--artifact", oracle.ARTIFACT],
+        ledger=[_HEAVY_ENTRY],
+        heavy={"tests/test_dispatcher_queue.py"},
+        xml=_VACUOUS,
+    )
+    assert f"look at {oracle.HEAVY_ARTIFACT}" in report
+
+
+def test_an_arbitrary_junit_reports_the_lane_as_unknown(
+    oracle, monkeypatch, capsys, tmp_path
+):
+    """--junit could be either lane. Say so instead of asserting one.
+
+    This is the case that most invites a wrong deletion: the reader sees a
+    definitive-sounding reason and prunes a valid quarantine line.
+    """
+    junit = tmp_path / "given.xml"
+    junit.write_text(_VACUOUS, encoding="utf-8")
+    report = _drive_main(
+        oracle, monkeypatch, capsys, tmp_path,
+        argv=["--junit", str(junit)],
+        ledger=[_HEAVY_ENTRY],
+        heavy={"tests/test_dispatcher_queue.py"},
+        xml=_VACUOUS,
+    )
+    assert "unknown under --run/--junit" in report
+    assert "NOT evidence" in report
