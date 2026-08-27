@@ -1,5 +1,14 @@
 # Preserved worktree content — harness reset P1
 
+> **The files themselves were removed from the working tree on 2026-08-26**, once
+> the reset merged to `main` as `e4180697`. They are permanently in git history
+> and this manifest is the index. Recover any one with:
+> `git show e4180697:docs/audits/harness-reset-preserved/<worktree>/<path>`
+>
+> Keeping 47,000 lines of recovered duplicates checked out served no purpose the
+> history does not already serve. The manifest stays because *knowing what was
+> rescued* is the part a reader needs; the bytes are one command away.
+
 Captured 2026-08-25 before any worktree reap. Base `origin/main` @ `8cbf9769`.
 
 ## Why this exists
