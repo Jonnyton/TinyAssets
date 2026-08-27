@@ -148,4 +148,4 @@ Fresh docs checked on 2026-05-01:
 - LibreChat MCP docs: `https://www.librechat.ai/docs/features/mcp`
 - TinyAssets proof registry: `docs/ops/mcp-host-proof-registry.md`
 - Current connector reconciliation:
-  `openspec/changes/reconcile-external-connector-manifests/`
+  `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`

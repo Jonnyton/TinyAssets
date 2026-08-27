@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-30
 - **Reviewer:** Claude Code (`claude/founder-identity-allslices`)
-- **Initial finding provider:** Codex (recorded in `openspec/changes/universe-creation/design.md` D4: verified the OKF SPEC on 2026-06-26; latest-main `okf/SPEC.md` commit `ee67a5ca…` dated 2026-06-12).
+- **Initial finding provider:** Codex (recorded in `openspec/changes/archive/2026-08-26-universe-creation/design.md` D4: verified the OKF SPEC on 2026-06-26; latest-main `okf/SPEC.md` commit `ee67a5ca…` dated 2026-06-12).
 - **Gate satisfied:** task 1.0 / STATUS "OKF soul baseline source review" (external-source review before `universe-creation` implementation uses the standard). This is the Codex→Claude opposite-provider pairing required by AGENTS.md "Project Skills".
 - **Verdict:** `approve` — the blank `soul.md` baseline as designed conforms to the current OKF concept-document spec.
 

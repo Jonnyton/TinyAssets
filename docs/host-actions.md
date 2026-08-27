@@ -66,7 +66,7 @@ Provider-free, no maintainer quota, test identities with cleanup, canary-coordin
 ### Authorize the reciprocal public-read / manifest Worker delta edge
 
 One merged front-door body before public-read sync.
-*Owner artifact:* `openspec/changes/reconcile-external-connector-manifests/tasks.md`.
+*Owner artifact:* `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/tasks.md`.
 *Depends on:* current owner handoff; public-read task 0.5.
 
 ### Review BYO-LLM connect flow slice 1
@@ -74,7 +74,7 @@ One merged front-door body before public-read sync.
 Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** without this review.
 *Depends on:* exact-head dual-family review; POSIX/production Codex integration.
 *Owner artifacts:* `openspec/changes/byo-llm-connect-flow/`,
-`openspec/changes/constrain-set-engine-provider-authority/`.
+`openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
 
 ### Activate hosted-preview publication
 
@@ -91,13 +91,13 @@ alias/version; Access anon-deny and reviewer-load proof; then a restricted GitHu
 Instrument landed in #1776; **no agent-buildable task remains** (triaged 2026-08-02). The host
 records the claude.ai baseline (task 3.1) and the permitted-regression decision (task 3.2).
 *Depends on:* ChatGPT connector registration, before its baseline.
-*Owner artifact:* `openspec/changes/connector-tool-selection-accuracy/`.
+*Owner artifact:* `openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy/`.
 
 ### Cloud drain activation — dark deploy, cutover, and 24/7 proof
 
 Implementation landed; the dark deploy/canary, single-active cutover, and 24/7 PC-off proof remain.
 *Owner artifacts:* `docs/audits/2026-08-03-cloud-drain-epoch2-consumer.md`,
-`openspec/changes/activate-main-universe-spec-drain/tasks.md`.
+`openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/tasks.md`.
 
 > **Changed 2026-08-25.** This row carried the dependency *"keep local drain until reviewed cloud
 > health; never activate both claimers."* The local drain supervisor was deleted in the harness

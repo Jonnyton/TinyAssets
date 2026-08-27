@@ -1,7 +1,8 @@
 """Handoff receipts — exactly-once effects, uncertain replies, dry-run purity,
 and the lifecycle mapping from receipt status to handoff state.
 
-Requirement source: ``openspec/changes/complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/real-world-handoffs-and-outcomes/spec.md`` (tasks 5.1, 5.4).
 
 Covered requirements:

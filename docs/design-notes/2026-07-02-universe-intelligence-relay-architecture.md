@@ -12,7 +12,7 @@
     (the app already got the relay model right; this generalizes it to the chatbot).
 - **Reads (contract, do not restate):**
   `docs/design-notes/2026-06-26-founder-and-universe-identity.md`,
-  `openspec/changes/universe-creation/`,
+  `openspec/changes/archive/2026-08-26-universe-creation/`,
   `docs/design-notes/2026-07-01-mcp-personification-prior-art.md`.
 - **PLAN.md impact:** touches Modules *API & MCP Interface*, *Daemon Platform*,
   *Providers*, *Brain*. PLAN changes require host/navigator approval — flagged, not applied.

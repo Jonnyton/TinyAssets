@@ -1,7 +1,7 @@
 -- 012 — Authoring sessions, events, artifact versions, file handles, and
 -- per-run effect confirmations (target `node-authoring-and-autoresearch`,
 -- tasks 4.1/4.2 of
--- openspec/changes/complete-independent-full-platform-targets).
+-- openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets).
 --
 -- Numbering note: 010 and 011 are held by parallel in-flight lanes at the time
 -- this landed, so this file takes 012 and a numbering gap is expected and

@@ -19,7 +19,7 @@ reusable plan or artifact that future sessions can act on.
 
 Use this skill when a named outside source or a research finding may change
 TinyAssets strategy, PLAN/OpenSpec design truth, capability direction, or
-cross-task architecture. Use `implementation-precedent-scout` instead for a
+cross-task architecture. Use a repo search for precedent instead for a
 bounded search for external code examples that informs one implementation
 decision inside an already-authorized lane.
 

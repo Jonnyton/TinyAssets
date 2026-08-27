@@ -17,8 +17,8 @@ The repository now has the immutable definition/interchange substrate, private b
 | Area | Evidence | Truth |
 |---|---|---|
 | Public custom-agent definitions, private bindings, remix lineage | `openspec/specs/universe-custom-agents/spec.md`, `tinyassets/custom_agents.py` | Landed and locally tested; no finite starter catalog |
-| Foreign import/export and cross-user blending | `openspec/changes/agent-interchange-pipeline/tasks.md`, `tests/load/test_agent_interchange_load.py` | Implementation and local load evidence landed; live cross-user proof remains open |
-| Immutable runtime manifest/compiler/principal | `openspec/changes/activate-custom-agent-runtime-core/` | Dark runtime foundations landed; deployment/live proof remains open |
+| Foreign import/export and cross-user blending | `openspec/changes/archive/2026-08-26-agent-interchange-pipeline/tasks.md`, `tests/load/test_agent_interchange_load.py` | Implementation and local load evidence landed; live cross-user proof remains open |
+| Immutable runtime manifest/compiler/principal | `openspec/changes/archive/2026-08-26-activate-custom-agent-runtime-core/` | Dark runtime foundations landed; deployment/live proof remains open |
 | Cloud continuation/epoch-2 consumer | `docs/audits/2026-08-03-cloud-drain-epoch2-consumer.md` | Local shaped-load evidence landed; production activation/cutover remains open |
 | App ingress, custody, mapping, reply authority, outbound receipt | PRs #2246, #2260, #2268, #2274 and corresponding OpenSpec changes | Server-owned dark seams landed; real app effect/rendered conversation remains open |
 | Provider enrollment shape hardening | PR #2281, merged commit [`c5358941`](https://github.com/Jonnyton/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40) | Landed on `main`; hosted gates green. The exact-head Claude security review recorded as **APPROVE** has **no durable artifact** — see note below |
@@ -31,7 +31,7 @@ The #2281 repair specifically rejects malformed enrollment shapes instead of coe
 
 ### 1. Cloud binding and cutover
 
-OpenSpec: `openspec/changes/activate-requester-owned-cloud-compute-binding/`, tasks 3.2–3.3.
+OpenSpec: `openspec/changes/archive/2026-08-26-activate-requester-owned-cloud-compute-binding/`, tasks 3.2–3.3.
 
 Required evidence:
 

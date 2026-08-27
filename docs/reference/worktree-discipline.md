@@ -1,5 +1,13 @@
 # GitHub-Aligned Worktree Discipline (full procedure)
 
+> **Partly historical (2026-08-26).** `STATUS.md` and `scripts/claim_check.py`
+> were retired in the harness reset. Sections below that require a STATUS row or
+> a claim_check run describe machinery that no longer exists. What still holds:
+> one work item = one branch = one worktree = one PR; `_PURPOSE.md` at each lane
+> root; never switch a dirty worktree to `main`; ownership is a branch or an open
+> PR, not a table.
+
+
 > **Canonical full procedure.** Moved out of `AGENTS.md` on 2026-06-25 under
 > [ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md): the
 > detailed step-by-step procedure is pointer-loaded *reference*, not every-turn

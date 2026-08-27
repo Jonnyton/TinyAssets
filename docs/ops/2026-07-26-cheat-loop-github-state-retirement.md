@@ -1,5 +1,10 @@
 # Retired GitHub-state migration
 
+> **Historical (2026-08-26):** `scripts/retire_cheat_loop_github_state.py` and its
+> test companion were deleted; this campaign is finished. Commands below are kept
+> as the record of what was run, not as instructions. Recover from git if needed.
+
+
 This runbook covers the final removal of GitHub state created by the retired
 privileged cheat/community patch loop. The state is migration data, not a
 current product surface. Equivalent automations are ordinary user-authored,

@@ -108,13 +108,13 @@ Codex** (`workspace-write`) and keep Fable/Codex as the review pair.
 
 ## 4. How to dispatch each family (repo scripts — read-only reviews)
 
-Both live at repo root and write a `VERDICT:`-terminated file; run them **backgrounded**
-(both models are slow) and read the out-file when done.
+Both live at repo root and write the peer's final message to `--out`; run them **backgrounded**
+(both models are slow) and read the out-file when done. `peer_agent.py` sends your prompt verbatim, so **ask for the `VERDICT:` line in the prompt** -- nothing appends it for you (the retired `codex_review` wrapper, which did, was deleted 2026-08-26).
 
 **Codex review (read-only, adversarial):**
 ```
-python scripts/codex_review.py --out <file>.md --diff-base <base-ref> --cwd <worktree> \
-    --prompt "<attack the named invariant; re-run the evidence>"
+python scripts/peer_agent.py codex --out <file>.md --cwd <worktree> \
+    --prompt "<attack the named invariant; re-run the evidence>; end with exactly one line: VERDICT: APPROVE|ADAPT|REJECT"
 ```
 Under the hood: `codex.cmd exec -s read-only -c approval_policy=never -C <cwd> -o <out> -`.
 
@@ -125,15 +125,11 @@ cat prompt.txt | codex.cmd exec -s workspace-write -c approval_policy=never \
 ```
 Keep it to ONE worktree; never `main`; never force-push.
 
-**Kimi review (third-family signal, read-only, SLOW — always background):**
-```
-python scripts/kimi_review.py --out <file>.md --diff-base <base-ref> --cwd <worktree> \
-    --prompt "<review focus>"
-```
-**Kimi `-p` is READ-ONLY** — it cannot write files or run commands non-interactively
-(`--yolo`/`--auto` are rejected with `-p`). Kimi can *emit* a diff you apply yourself,
-but for a substrate slice this size it tends to burn its budget exploring and not emit
-(see §10). Prefer Codex for builds.
+**Kimi review — RETIRED 2026-08-26.** `scripts/kimi_review.py` is deleted and
+`peer_agent.py` accepts only `claude` and `codex`, so there is no third-family
+dispatch route any more; the harness reset scoped this repo to two providers.
+The Kimi history below (§5.5, §10) is kept as a record of the S2 A/B, not as an
+instruction. Running Kimi again means adding a provider to `peer_agent.py` first.
 
 **Fable-5 review:** the opposite-family reviewer in the pair. Dispatch it through
 whatever mechanism the driver harness provides (Claude Code used its `Agent` tool with
@@ -453,7 +449,7 @@ you need to keep).
 - **Exec plan (canonical slice program):**
   `git show feat/patch-loop-runner:docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
   (also copied to `execplan-runner.md` in the job tmp)
-- **Review-dispatch scripts:** `scripts/codex_review.py`, `scripts/kimi_review.py`
+- **Review-dispatch script:** `scripts/peer_agent.py` (the retired `codex_review` and `kimi_review` wrappers were consolidated into it 2026-08-26)
 
 Relevant memories (`C:/Users/Jonathan/.claude/projects/C--Users-Jonathan-Projects-TinyAssets/memory/`):
 `dual-family-latest-model-approval`, `codex-as-builder-on-nonconvergence`,

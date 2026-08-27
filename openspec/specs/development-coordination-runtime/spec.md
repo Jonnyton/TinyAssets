@@ -18,23 +18,9 @@ The session sync gate SHALL fetch the configured remote with pruning unless invo
 - **WHEN** `--strict` is supplied and the primary checkout is off `main` or behind the configured base
 - **THEN** the gate exits non-zero after reporting the condition
 
-### Requirement: STATUS Claims Define Cross-Provider Write Boundaries
-
-The claim checker SHALL parse the `STATUS.md` Work table and classify rows as claimable, blocked, in-flight, host-owned, or stale-claim candidates from their Status, Depends, Files, and active-date information. A pending row SHALL be claimable only when its dependencies are satisfied and its Files do not overlap another provider's claimed or in-flight write set. The prospective `--check-files` path SHALL report a blocking overlap by substring match in either direction. A claimed row with no qualifying file commit for 24 hours and no current active-date heartbeat SHALL be surfaced as a stale-claim candidate; the checker SHALL only report policy state and MUST NOT edit `STATUS.md` itself.
-
-#### Scenario: Prospective files overlap an active claim
-
-- **WHEN** `--check-files` names a path that contains, or is contained by, a Files atom on another provider's claimed row
-- **THEN** the checker reports the prospective claim as blocked and identifies the conflicting row
-
-#### Scenario: Fresh heartbeat preserves an uncommitted claim
-
-- **WHEN** a claimed row has no recent file commit but includes an `ACTIVE` date for the current day
-- **THEN** the checker keeps it in-flight rather than classifying it as a stale-claim candidate
-
 ### Requirement: Worktree Inspection Preserves Lane Intent
 
-The worktree status tool SHALL combine Git worktree state, branch/upstream state, `STATUS.md` references, pull-request/merge evidence, and local `_PURPOSE.md` metadata into a per-worktree classification. Dirty worktrees MUST take precedence over cleanup classifications. A clean lane whose branch is fully merged or whose upstream is gone MAY be marked ready to remove, while an unmerged clean local branch with purpose metadata but no STATUS or pull-request route SHALL be reported as needing promotion. The tool SHALL expose both a human table and machine-readable JSON, and any printed cleanup commands MUST remain suggestions rather than executing removal.
+The worktree status tool SHALL combine Git worktree state, branch/upstream state, pull-request/merge evidence, and local `_PURPOSE.md` metadata into a per-worktree classification. Dirty worktrees MUST take precedence over cleanup classifications. A clean lane whose branch is fully merged or whose upstream is gone MAY be marked ready to remove, while an unmerged clean local branch with purpose metadata but no pull-request route SHALL be reported as needing promotion. The tool SHALL expose both a human table and machine-readable JSON, and any printed cleanup commands MUST remain suggestions rather than executing removal.
 
 #### Scenario: Dirty merged worktree is not declared removable
 
@@ -43,8 +29,8 @@ The worktree status tool SHALL combine Git worktree state, branch/upstream state
 
 #### Scenario: Purpose exists but integration route is missing
 
-- **WHEN** a clean local branch has `_PURPOSE.md` but no upstream, pull request, or STATUS reference
-- **THEN** the tool reports that the lane needs PR or STATUS promotion
+- **WHEN** a clean local branch has `_PURPOSE.md` but no upstream or pull request
+- **THEN** the tool reports that the lane needs PR promotion
 
 ### Requirement: Provider Context Is Recovered At Lifecycle Checkpoints
 
@@ -74,78 +60,6 @@ The cross-provider drift checker SHALL inspect substantive rules in provider-spe
 - **WHEN** a provider-specific section is labeled as applying only to that harness
 - **THEN** the checker does not treat that section alone as cross-provider drift
 
-### Requirement: Agent Village Observes Durable Coordination State
-
-The `command_center` runtime SHALL serve a zero-build browser interface and a JSON state endpoint that aggregate detected provider sessions, `STATUS.md` claims, worktree status, recent file/git/activity signals, local universes, and reachable public MCP state. Missing transcripts, provider homes, worktree probes, or remote platform data MUST degrade to absent or explicitly unavailable state rather than fabricated agents, universes, or health. The CLI SHALL default to loopback. Every server process SHALL use either a minimum-strength operator-supplied printable ASCII token or a newly generated high-entropy token. Static bootstrap assets and the liveness probe MAY be unauthenticated, but every private state, chat, or provider API request SHALL require the matching token in `X-Village-Token`, compared in constant time. Malformed, control-character, or non-ASCII bearer headers SHALL fail closed with an unauthorized response. Query-string tokens SHALL NOT authenticate any API request. The browser SHALL accept a share token from the URL fragment, remove that fragment from visible history, retain the token for no longer than the browser session, and send it only in the request header. When the browser lacks a valid token, it SHALL display a persistent access-required message that directs the operator to the printed share URL.
-
-#### Scenario: Remote world data is unreachable
-
-- **WHEN** the configured public MCP endpoint cannot be read
-- **THEN** the snapshot keeps local coordination and universe evidence available
-- **AND** it identifies the remote world as unavailable without synthesizing remote entities
-
-#### Scenario: Zero-config startup is authenticated
-
-- **WHEN** the command center starts without an operator-supplied token
-- **THEN** it generates a high-entropy token before serving requests
-- **AND** a private API request without that token is rejected
-
-#### Scenario: Static bootstrap does not disclose private state
-
-- **WHEN** a browser requests the app shell or liveness probe without a token
-- **THEN** the server may return that static or health response
-- **AND** requests for state, chat, or provider data remain unauthorized
-
-#### Scenario: Fragment bootstrap uses header-only API authentication
-
-- **WHEN** the operator opens the printed share URL
-- **THEN** the browser obtains the token from the fragment and removes it from visible history
-- **AND** subsequent private API requests carry `X-Village-Token` without a token query parameter
-
-#### Scenario: Query bearer is rejected
-
-- **WHEN** a private API request supplies the correct token only as `?token=`
-- **THEN** the server returns unauthorized
-
-#### Scenario: Malformed bearer fails closed
-
-- **WHEN** a private API request supplies a non-ASCII bearer header
-- **THEN** the server returns unauthorized without raising an unhandled exception
-
-#### Scenario: Browser starts without a bearer
-
-- **WHEN** the app shell loads without a fragment or session token
-- **THEN** the browser persistently explains that access is required
-- **AND** it directs the operator to reopen the share URL printed by the server
-
-### Requirement: Agent Village Writes Only Through Explicit Talk And Hire Actions
-
-The command center SHALL remain read-only except for explicit authenticated talk and hire requests. It SHALL reject missing, malformed, negative, or greater-than-64-KiB request lengths and non-object JSON before invoking collector code. Talking to an agent SHALL append a durable inbox/chat record and SHALL dispatch a provider CLI only when dispatch mode is enabled. Talking to a running local universe SHALL write an engine-compatible note; talking to a dormant universe SHALL pin an inbox note. Hiring SHALL validate the universe and advertised provider capability, MAY update the universe's preferred-writer preset, and SHALL spawn peer CLI work only for a provider marked available and dispatchable. Hosted or market capacity MUST remain disabled and honestly labeled while that execution stack is absent.
-
-#### Scenario: Cross-site-shaped write has no bearer
-
-- **WHEN** a talk or hire request arrives without the matching `X-Village-Token`
-- **THEN** the server returns unauthorized before reading or invoking the requested action
-- **AND** no inbox, universe, preset, or provider process is mutated
-
-#### Scenario: Oversized write is rejected before collector invocation
-
-- **WHEN** an authenticated talk or hire request declares a body greater than 64 KiB
-- **THEN** the server rejects the request without reading a truncated prefix
-- **AND** no collector action runs
-
-#### Scenario: Agent talk without dispatch mode
-
-- **WHEN** an authenticated user sends a valid message to an agent while dispatch mode is disabled
-- **THEN** the command center appends the message to that agent's durable village inbox and chat history
-- **AND** it starts no provider CLI process
-
-#### Scenario: Unsupported market hire is refused
-
-- **WHEN** an authenticated hire request selects hosted or market capacity advertised as unavailable
-- **THEN** the command center returns a validation failure and spawns no worker
-- **AND** the response preserves the current coming-later limitation
-
 ### Requirement: Cross-provider drift checks cover required artifacts and skill mirrors
 The cross-provider drift checker SHALL report a `missing-artifact` issue when a watched provider file references a configured guard artifact that does not exist, and SHALL report `skill-mirror-missing-source`, `skill-mirror-missing`, or `skill-mirror-drift` when `.agents/skills/<name>/SKILL.md` and its `.claude/skills/<name>/SKILL.md` mirror are absent or differ. Each issue SHALL carry a path, message, and concrete prescription; detected drift SHALL exit 2, while a clean tree SHALL exit 0.
 
@@ -162,11 +76,8 @@ The cross-provider drift checker SHALL report a `missing-artifact` issue when a 
 - **THEN** it emits a JSON array whose issue objects preserve `code`, `path`, `message`, and `prescription`
 
 ### Requirement: Coordination inspectors expose automation-facing JSON modes
-`claim_check.py --json` SHALL emit the same claimable, blocked, in-flight, host-owned, stale, and prospective-file classifications used by its text report as a JSON object. `worktree_status.py --json` SHALL emit its worktree records as a JSON array, and `provider_context_feed.py --json` SHALL emit its ranked context candidates as a JSON array. JSON mode SHALL inspect and report state without claiming work or mutating a worktree.
+`worktree_status.py --json` SHALL emit its worktree records as a JSON array, and `provider_context_feed.py --json` SHALL emit its ranked context candidates as a JSON array. JSON mode SHALL inspect and report state without claiming work or mutating a worktree.
 
-#### Scenario: Claim classifications are machine-readable
-- **WHEN** `claim_check.py` is invoked with a provider and `--json`
-- **THEN** the result is a parseable JSON object containing the current classified STATUS rows and any prospective-file result
 
 #### Scenario: Worktree inventory is machine-readable
 - **WHEN** `worktree_status.py --json` completes
@@ -214,8 +125,8 @@ The authority-resolution contract SHALL use schema version `resolver-decision-v1
 
 The development coordination runtime SHALL provide a read-only OpenSpec flow
 inspector that enumerates active change directories, counts completed and
-unchecked task checkboxes, maps exact active change names to `STATUS.md` Work
-rows and owners, reports global and exact-session provider WIP, and reports
+unchecked task checkboxes, derives ownership from git branches that name a change,
+reports global and exact-session provider WIP, and reports
 recent active-change admission and archive counts when a git comparison window
 is requested. It MUST expose equivalent human-readable and JSON results and
 MUST NOT create, edit, claim, split, sync, archive, or delete any change.
@@ -229,9 +140,9 @@ session-start step.
 - **THEN** the result includes aggregate task totals and one record per change
 - **AND** the tracked working tree is byte-identical before and after inspection
 
-#### Scenario: Incomplete active change is absent from live coordination
+#### Scenario: Incomplete active change has no owning branch
 
-- **WHEN** an active change with unchecked tasks appears in no `STATUS.md` Work
+- **WHEN** an active change with unchecked tasks is named by no git branch
   row
 - **THEN** the inspector classifies that change as `untracked`
 - **AND** it does not infer implementation authority from the change artifacts
@@ -295,1005 +206,89 @@ untracked changes for triage without recommending that they be built.
 - **AND** one has fewer unchecked tasks than the other
 - **THEN** the smaller claimed change is recommended first
 
-#### Scenario: Only untracked changes remain
+#### Scenario: No change has an owning branch
 
-- **WHEN** every active change is absent from the STATUS Work table
+- **WHEN** no active change is named by any git branch
 - **THEN** the inspector reports no build recommendation
-- **AND** it directs the provider to triage coordination state first
-
-### Requirement: OpenSpec Drain Runs Through Sequential Fresh Workers
-
-The development coordination runtime SHALL provide a bounded OpenSpec drain
-supervisor that invokes one fresh subscription-authenticated provider worker at
-a time, gives that worker at most one delivery slice and one PR, and starts
-another worker only after interpreting the prior worker's terminal result. A
-stable, valid terminal result artifact SHALL complete the worker handoff even
-when the provider launcher remains alive. The supervisor MUST NOT maintain a
-provider utilization floor or run drain workers in parallel in v1. One run
-SHALL use one fixed provider/model and one exact claim identity across every
-replacement worker. An admitted worker's brief SHALL identify the exact
-canonical target token required in its result, and the supervisor SHALL
-canonicalize an otherwise literal human-label target through the same bounded
-slug rule used for admission.
-
-#### Scenario: A slice merges successfully
-
-- **WHEN** a worker returns a valid `MERGED` result with its target and PR
-- **AND** the controller independently verifies with GitHub that the PR state
-  is `MERGED`
-- **THEN** the supervisor increments the completed-slice count
-- **AND** it may dispatch the next fresh worker immediately
-
-#### Scenario: Stable terminal artifact precedes process exit
-
-- **WHEN** the assigned result file contains the same valid terminal result on
-  two observations separated by the stability interval
-- **AND** the provider launcher remains alive
-- **THEN** the supervisor terminates the launcher process tree
-- **AND** applies the ordinary admission and result validation without waiting
-  for the outer worker timeout
-
-#### Scenario: Worker cites a stale or foreign merged PR
-
-- **WHEN** a terminal result cites a PR outside the controller repository or
-  one whose merge predates the drain run
-- **THEN** the supervisor rejects merge verification
-- **AND** it does not count a completed slice
-
-#### Scenario: Merge succeeded but foldback remains
-
-- **WHEN** a worker returns `PARTIAL` with a controller-verified merged PR
-- **THEN** the supervisor records that target for one immediate resume
-- **AND** it does not increment completed slices
-
-#### Scenario: Foldback remains partial repeatedly
-
-- **WHEN** another worker returns `PARTIAL` for the same resume target
-- **THEN** the supervisor consumes a consecutive-failure strike
-- **AND** it waits the configured idle interval before another attempt
-
-#### Scenario: A target is blocked and another candidate exists
-
-- **WHEN** a worker returns `BLOCKED` for its admitted target
-- **AND** the recent-block-filtered snapshot contains a different eligible
-  owned, claimable, policy-qualified stale, or refinery candidate
-- **THEN** the supervisor considers that candidate without the configured idle
-  delay
-- **AND** it does not create or claim work itself
-
-#### Scenario: Work is globally blocked
-
-- **WHEN** a worker returns `BLOCKED` and no different eligible owned,
-  claimable, policy-qualified stale, or refinery candidate remains, or returns
-  `NO_CANDIDATE`
-- **THEN** the supervisor persists that outcome and waits the configured idle
-  interval before another selection attempt
-- **AND** it does not create or claim work itself
-
-#### Scenario: Human task label is returned
-
-- **WHEN** an admitted worker returns exactly one otherwise valid literal
-  marker using `main-red round 2` for target `main-red-round-2`
-- **THEN** the supervisor canonicalizes the reported target to
-  `main-red-round-2`
-- **AND** admission validation accepts the matching identity
-
-#### Scenario: Worker result is malformed
-
-- **WHEN** a worker exits without exactly one literal terminal result marker as
-  the final non-empty line
-- **THEN** the supervisor records a failure
-- **AND** it stops when the configured consecutive-failure limit is reached
-
-#### Scenario: Result echoes the contract template
-
-- **WHEN** output contains a placeholder marker, a marker containing `|`,
-  multiple markers, or a `[peer_agent] ERROR` block
-- **THEN** the supervisor rejects it as a terminal success
-
-#### Scenario: Run identity already owns a claim
-
-- **WHEN** a replacement worker starts and STATUS contains a claim held by the
-  run's exact identity
-- **THEN** its brief requires that target to be resumed before selecting
-  different work
-
-### Requirement: OpenSpec Drain Is Bounded And Recoverable
-
-The drain supervisor SHALL require finite runtime, merged-slice, worker-timeout,
-and consecutive-failure budgets; SHALL persist compact atomic state and worker
-artifacts in an untracked run directory; SHALL reject a concurrent live
-controller lock; and SHALL honor a stop request between workers. It MUST expose
-run, single-pass, status, and stop operations. On resume, it SHALL consume a
-valid unrecorded result for the persisted current attempt before enforcing the
-failure budget or dispatching a replacement. It SHALL replay the recorded
-attempt artifact when a parser improvement makes the immediately preceding
-`INVALID_RESULT` valid, undoing only that parser failure strike and applying
-ordinary result and admission validation.
-
-#### Scenario: Workday budget expires
-
-- **WHEN** the runtime deadline or merged-slice limit is reached
-- **THEN** the supervisor records the terminal budget reason
-- **AND** it dispatches no additional worker
-
-#### Scenario: Host requests a stop
-
-- **WHEN** the stop operation creates the run's stop marker
-- **THEN** the active worker may reach its finite timeout or terminal result
-- **AND** the supervisor exits before dispatching another worker
-
-#### Scenario: Host stops during idle
-
-- **WHEN** a stop request arrives during a blocked/no-candidate idle interval
-- **THEN** the supervisor observes it within five seconds
-- **AND** it exits without waiting for the full idle interval
-
-#### Scenario: Another controller owns the run
-
-- **WHEN** a live lock already exists for the run directory
-- **THEN** a second run invocation exits non-zero without dispatching a worker
-- **AND** explicit stale-lock recovery refuses to replace the live PID's lock
-- **AND** Windows liveness uses a process handle rather than a console-control
-  signal probe
-
-#### Scenario: Provider reports repeated transient failures
-
-- **WHEN** authentication or rate-limit failures recur beyond three consecutive
-  free retries
-- **THEN** each additional transient consumes a consecutive-failure strike
-- **AND** an error containing only a broader word such as `authority` is not
-  classified as an authentication transient
-
-#### Scenario: Worker exceeds the outer timeout
-
-- **WHEN** the peer launcher remains live beyond its worker timeout and grace
-  interval
-- **AND** no stable valid terminal artifact is available
-- **THEN** the supervisor terminates the launcher process tree
-- **AND** it records the attempt as a budgeted worker failure
-
-#### Scenario: Resume finds an unconsumed terminal result
-
-- **WHEN** the persisted current attempt has a valid terminal artifact absent
-  from `last_result`
-- **AND** its target matches the preserved admission
-- **THEN** the supervisor applies the ordinary result transition before
-  failure-budget enforcement or replacement dispatch
-
-#### Scenario: Resume result is ambiguous
-
-- **WHEN** the artifact is invalid, names a different admission target, or its
-  attempt cannot be determined safely
-- **THEN** the supervisor fails closed without applying it
-- **AND** does not erase a failure strike
-
-#### Scenario: Parser improvement recovers the last result
-
-- **WHEN** a resumed run ended with `INVALID_RESULT` and its recorded attempt
-  artifact now parses and matches the preserved admission
-- **THEN** the supervisor removes exactly the parser failure strike
-- **AND** it applies the recovered result before considering another dispatch
-
-#### Scenario: Last result remains invalid
-
-- **WHEN** the recorded artifact remains invalid or fails preserved admission
-  validation
-- **THEN** the supervisor retains the failure budget and terminal state
-- **AND** it dispatches no replacement under that recovery path
-
-### Requirement: Drain Workers Preserve Delivery Governance
-
-Every generated drain-worker brief SHALL require current-main orientation, a
-clean purpose-named worktree, exact STATUS collision/admission checks, one
-concrete acceptance contract, tests and required independent review, at most one
-PR, verified merge, spec sync/archive when complete, and STATUS foldback. It
-MUST forbid umbrella conversion, silent claim theft, primary-checkout edits, and
-mechanical legacy-change fan-out. A legacy oversized change MAY be attempted
-only as one concrete recovery slice containing at most 12 unchecked tasks and
-SHOULD prefer materially fewer tasks within the finite worker timeout. The brief
-MUST state that local peer workers are write-capable without a reliable OS
-sandbox on the supported Windows host, so worktree/claim/review/CI/budget
-controls are the safety boundary.
-
-For every controller-admitted `drain/*` branch, the brief MUST require a draft
-pull request, independent approval of the exact current head, and a durable
-machine-readable approval receipt before the pull request becomes ready. The
-trusted repository auto-enrollment workflow SHALL keep a drain pull request out
-of auto-merge unless exactly one approval verdict, reviewed head, and review
-artifact marker are present and the reviewed head equals the current pull
-request head. It MUST disable an existing drain auto-merge request when the
-receipt is missing, malformed, ambiguous, or stale. Non-drain pull requests
-MUST retain their existing enrollment behavior.
-
-The repository's already-required `policy` check SHALL evaluate the same receipt
-against every current drain head from trusted base-branch code and MUST fail
-closed when the receipt is missing, malformed, ambiguous, or stale. The policy
-check MUST remain pending or red for an unapproved current head so branch
-protection prevents merge while enrollment cancellation is still running.
-
-#### Scenario: No safe candidate exists
-
-- **WHEN** every candidate is live-claimed, host-owned, blocked, or lacks a
-  concrete bounded acceptance contract
-- **THEN** the worker returns `NO_CANDIDATE` or `BLOCKED`
-- **AND** it does not invent a new change merely to stay busy
-
-#### Scenario: Global worktree inspection exceeds its drain-worker cap
-
-- **WHEN** `worktree_status.py` does not complete within 90 seconds for a
-  controller-launched worker
-- **THEN** the worker records the timeout and may continue only after creating a
-  clean current-main worktree with `_PURPOSE.md`
-- **AND** it still runs exact claim/collision and provider-context checks before
-  editing
-
-#### Scenario: Legacy change is selected
-
-- **WHEN** the worker selects a grandfathered oversized active change
-- **THEN** it limits the delivery attempt to at most 12 unchecked tasks and one
-  PR
-- **AND** it does not mechanically create child changes for the remaining work
-
-#### Scenario: Drain pull request lacks exact-head approval
-
-- **WHEN** a pull request from a `drain/*` branch is non-draft or already
-  enrolled for auto-merge
-- **AND** its durable review receipt is missing, malformed, ambiguous, or names
-  a head other than the current pull-request head
-- **THEN** the trusted repository workflow does not enable auto-merge and
-  disables any existing auto-merge request
-- **AND** the required current-head scope check fails so branch protection
-  prevents merge before or during cancellation
-
-#### Scenario: Drain pull request has exact-head approval
-
-- **WHEN** a pull request from a `drain/*` branch contains exactly one durable
-  `APPROVE` verdict, current 40-character lowercase head SHA, and review artifact
-  marker
-- **THEN** the trusted repository workflow may idempotently enable auto-merge
-  under the ordinary required CI and branch-protection gates
-- **AND** the required scope check may pass that head through to the existing
-  diff-scope policy
-
-#### Scenario: Reviewed drain head changes
-
-- **WHEN** a drain pull request was eligible for auto-merge
-- **AND** a subsequent commit changes its current head without a new matching
-  independent-review receipt
-- **THEN** the trusted repository workflow disables the stale auto-merge request
-- **AND** a fresh exact-head review is required before re-enrollment
-
-#### Scenario: Ordinary pull request is evaluated
-
-- **WHEN** a same-repository non-draft pull request targets `main` from a branch
-  outside the `drain/*` namespace
-- **THEN** the trusted workflow preserves its existing idempotent auto-enrollment
-  behavior without requiring a drain review receipt
-
-### Requirement: OpenSpec Drain Starts With The Interactive Windows Session
-
-The development coordination runtime SHALL provide an idempotent current-user
-Windows sign-in task that launches exactly one drain watchdog and one tray
-indicator without requiring a daily prompt or terminal. It MUST use the
-interactive user boundary rather than SYSTEM startup because provider
-subscription credentials and the notification area belong to that session.
-
-#### Scenario: User signs in after boot
-
-- **WHEN** the configured Windows user signs in
-- **THEN** Task Scheduler launches the drain tray/watchdog automatically
-- **AND** duplicate task invocations do not start another watchdog
-
-#### Scenario: Installer runs more than once
-
-- **WHEN** the host installs the autostart integration again
-- **THEN** the existing task is replaced with the current controller path
-- **AND** no duplicate scheduled task remains
-
-### Requirement: Drain Watchdog Preserves Identity Across Abrupt Shutdown
-
-The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an
-unfinished drain whose recorded controller is dead using the same run directory
-and exact identity, and SHALL start a fresh bounded run only when no unfinished
-run exists or an explicit restart targets an already-terminal fatal or
-failure-budget run. An explicit restart of a live supervisor that exits through
-orderly `stop-requested` SHALL resume that same run directory and identity with
-stale-lock and stop-marker recovery. A durably `stop-requested` run SHALL remain
-resumable across a watchdog-process interruption before relaunch.
-
-#### Scenario: Existing manual drain is alive
-
-- **WHEN** the watchdog starts while an unfinished drain lock belongs to a live
-  controller
-- **THEN** it attaches to that run for health monitoring
-- **AND** it does not dispatch another worker
-
-#### Scenario: Computer was shut down abruptly
-
-- **WHEN** the newest drain has no `ended_at` and its recorded controller PID is
-  dead
-- **THEN** the watchdog resumes that run with stale-lock recovery
-- **AND** replacement workers retain the original drain identity
-
-#### Scenario: Previous run failed terminally
-
-- **WHEN** the latest completed run ended at its failure budget or a fatal peer
-  error
-- **THEN** the watchdog reports down
-- **AND** it waits for an explicit restart request instead of spending more
-  subscription calls
-
-#### Scenario: Explicit restart gracefully stops a live supervisor
-
-- **WHEN** an explicit restart is requested while a supervisor is live
-- **AND** that supervisor exits through orderly `stop-requested`
-- **THEN** the watchdog resumes the same run directory and exact drain identity
-- **AND** the preserved admission and resume target remain available to the next worker
-
-#### Scenario: Explicit restart follows an already-terminal failure
-
-- **WHEN** an explicit restart targets a supervisor already ended at a fatal or
-  failure-budget terminal outcome
-- **THEN** the watchdog preserves the authorized fresh-run decision
-- **AND** it starts exactly one fresh bounded supervisor run
-
-#### Scenario: Resumed supervisor is interrupted again
-
-- **WHEN** an orderly stopped supervisor resumes the same run directory and identity
-- **AND** that resumed controller is later interrupted before another orderly exit
-- **THEN** its running state has no stale terminal timestamp
-- **AND** the next watchdog discovery classifies the same run as unfinished and resumable
-
-#### Scenario: Resume is interrupted during result recovery
-
-- **WHEN** a resumed controller clears its prior terminal timestamp
-- **AND** it is interrupted while recovering an earlier result or verifying a merge receipt
-- **THEN** the cleared timestamp is already durable on disk
-- **AND** the next watchdog discovery resumes the same run identity
-
-#### Scenario: Explicit restart overlaps an abrupt controller exit
-
-- **WHEN** an explicit restart is pending for an unfinished run
-- **AND** the controller exits before recording orderly `stop-requested`
-- **THEN** the watchdog resumes the discovered unfinished run directory and identity
-- **AND** it does not mint a fresh identity
-
-#### Scenario: Restart launch fails
-
-- **WHEN** the watchdog has selected the preserved restart decision
-- **AND** launching the supervisor fails before a process is created
-- **THEN** the restart request remains durable for the next watchdog attempt
-
-#### Scenario: Watchdog exits after orderly stop but before relaunch
-
-- **WHEN** a drain is durably `stop-requested` with its terminal timestamp
-- **AND** the watchdog process exits before it can relaunch the supervisor
-- **THEN** the next watchdog discovery resumes that same run directory and identity
-- **AND** an observational dry-run does not consume pending restart intent
-
-#### Scenario: Clean budget ends during the signed-in session
-
-- **WHEN** a supervisor ends at its runtime or slice budget while the watchdog
-  remains active
-- **THEN** the watchdog may start a new finite supervisor run
-- **AND** it still runs only one worker at a time
-
-### Requirement: Drain Health Is Continuously Visible And Actionable
-
-The Windows integration SHALL maintain atomic health state and a system-tray
-indicator that distinguishes running, waiting/recovering, and down/failure
-states. A completed current-attempt result that is not represented by
-`last_result` MUST be reported as waiting rather than active progress. The tray
-MUST provide actions to open status/logs, request a restart, stop until the
-next sign-in, and exit only the indicator.
-
-#### Scenario: Worker is active
-
-- **WHEN** the watchdog observes a live controller with running state
-- **AND** no settled current-attempt result awaits consumption
-- **THEN** the tray displays healthy/running status
-- **AND** its tooltip identifies the active drain
-
-#### Scenario: Terminal result awaits controller consumption
-
-- **WHEN** the current attempt's non-empty result artifact is older than the
-  write-settle threshold
-- **AND** `last_result` does not represent that attempt
-- **THEN** the tray displays a waiting/warning state
-- **AND** its diagnostic identifies the unconsumed result handoff
-
-#### Scenario: Drain is blocked or recovering
-
-- **WHEN** the controller is idle, blocked, stopping, or being resumed
-- **THEN** the tray displays a waiting/warning state rather than false healthy
-  progress
-
-#### Scenario: Drain is down
-
-- **WHEN** health is stale, the watchdog exits unexpectedly, or the supervisor
-  reaches a terminal failure
-- **THEN** the tray displays an error/down state
-- **AND** the diagnostic message and status folder remain accessible
-
-#### Scenario: Host closes the tray icon
-
-- **WHEN** the host selects exit indicator
-- **THEN** the tray process exits
-- **AND** it does not stop the watchdog or active drain
-
-### Requirement: OpenSpec Drain Proves Work Exhaustion Before Idling
-
-The OpenSpec drain supervisor SHALL accept `NO_CANDIDATE` only when the
-canonical claim checker reports zero claimable rows, zero policy-qualified
-stale-claim candidates, and zero in-flight rows owned by the drain's exact
-identity on freshly fetched `origin/main`. Pre-dispatch admission and
-post-result revalidation MUST classify that same explicit current-main ref and
-MUST NOT read coordination state from a stale local or detached checkout. Every
-drain-worker brief MUST require the worker to resume its own claim, select
-claimable finish-first work, reap policy-qualified stale claims, freshness-check
-blocker labels, and consider safe cross-cutting promotion in that order before
-reporting no candidate. Live foreign claims, host-owned actions, unresolved
-decisions, and overlapping write sets MUST remain excluded.
-Immediately before dispatch, the supervisor SHALL provide a bounded ordered
-snapshot of exact-identity-owned, claimable, and policy-qualified stale rows.
-The controller MUST revalidate that snapshot on current main and durably claim
-the first still-valid row before dispatch; the worker MUST verify and reuse the
-prepared claim before beginning a broad backlog audit.
-Codex drain dispatches SHALL use a balanced reasoning effort suitable for the
-preselected single-slice contract rather than inherit a higher interactive
-session effort setting.
-When the first ordered candidate is claimable or policy-qualified stale, the
-supervisor SHALL create a clean current-main worktree, write its purpose
-metadata, commit the exact STATUS claim, persist the admission record, and
-launch the worker from that prepared worktree. The worker MUST reuse that lane
-and MUST NOT repeat selection or create a second worktree.
-
-#### Scenario: Detached controller state disagrees with current main
-
-- **WHEN** a worker returns `NO_CANDIDATE`
-- **AND** the controller checkout contains a stale local claim that is absent
-  from freshly fetched `origin/main`
-- **THEN** post-result validation classifies `origin/main`
-- **AND** the stale local-only row does not consume a failure strike
-
-#### Scenario: Current main still contains work
-
-- **WHEN** freshly fetched `origin/main` contains claimable, policy-qualified
-  stale, or exact-identity-owned work
-- **THEN** `NO_CANDIDATE` remains rejected
-
-#### Scenario: Claimable work exists
-
-- **WHEN** the pre-dispatch claim check reports one or more claimable rows
-- **THEN** the supervisor injects their ordered labels and bounded file scope
-- **AND** the worker revalidates and durably claims the first still-admissible
-  row before a broad audit
-- **AND** a later `NO_CANDIDATE` is rejected while any claimable row remains
-
-#### Scenario: Codex worker is dispatched
-
-- **WHEN** the supervisor launches a disposable Codex drain worker
-- **THEN** the peer command carries balanced `medium` reasoning effort
-- **AND** tests, independent review, CI, and finite worker budgets remain the
-  quality boundary
-
-#### Scenario: First claimable candidate is admitted
-
-- **WHEN** the canonical pre-dispatch snapshot has a claimable first row
-- **THEN** the controller runs the bounded claim-phase context feed
-- **AND** creates a clean branch/worktree from current `origin/main`
-- **AND** commits `claimed:<exact-drain-identity> ACTIVE <date>` before dispatch
-- **AND** launches the worker with that worktree as its cwd
-
-#### Scenario: First stale candidate is admitted
-
-- **WHEN** no claimable row precedes a policy-qualified stale first row
-- **THEN** the controller commits the policy reaping status before the claim
-- **AND** commits the exact drain claim in the same prepared worktree
-
-#### Scenario: Admission target collides
-
-- **WHEN** the deterministic worktree path or branch already exists
-- **THEN** the controller refuses to overwrite or delete it
-- **AND** records a bounded visible admission failure
-
-#### Scenario: Admitted target is blocked
-
-- **WHEN** the worker returns `BLOCKED` for its exact assigned target
-- **THEN** the controller preserves the worktree and records the recent blocker
-- **AND** releases active admission so the next snapshot can select a different
-  non-blocked candidate
-
-#### Scenario: Admission operation fails
-
-- **WHEN** fetch, context feed, claim check, worktree I/O, or git admission
-  times out or errors
-- **THEN** the controller records a bounded `admission-failed` result
-- **AND** it does not remain falsely `running` or dispatch an unclaimed worker
-
-#### Scenario: Worker reports a different target
-
-- **WHEN** an admitted worker's terminal marker names a target other than its
-  assigned target
-- **THEN** the controller rejects the result and retains admission for recovery
-
-#### Scenario: Admitted target needs foldback
-
-- **WHEN** a verified merged implementation returns `PARTIAL`
-- **THEN** replacement-worker instructions require current-main restacking
-  before any foldback PR is published
-
-#### Scenario: Policy-qualified stale claim exists
-
-- **WHEN** a worker returns `NO_CANDIDATE`
-- **AND** `claim_check.py --json` reports one or more stale-claim candidates
-- **THEN** the supervisor rejects the result
-- **AND** the next worker brief requires policy-compliant reaping before idle
-
-#### Scenario: Drain identity already owns work
-
-- **WHEN** a worker returns `NO_CANDIDATE`
-- **AND** an in-flight row is claimed by the drain's exact identity
-- **THEN** the supervisor rejects the result
-- **AND** the next worker must resume that owned row before selecting new work
-
-#### Scenario: Coordination state is genuinely exhausted
-
-- **WHEN** claimable and stale counts are both zero
-- **AND** the worker has revalidated blockers and found no safe cross-cutting
-  recovery task to promote
-- **THEN** the supervisor may accept `NO_CANDIDATE`
-- **AND** it waits the configured idle interval without consuming a failure
-  strike
-
-#### Scenario: A foreign claim is live
-
-- **WHEN** a row has a current heartbeat or otherwise fails the stale-claim
-  policy
-- **THEN** the drain MUST NOT reap or overwrite that claim
-- **AND** it selects non-overlapping work or remains idle
-
-### Requirement: OpenSpec Drain Hosts Are Consoleless On Windows
-
-The development coordination runtime SHALL start the sign-in tray host and all
-provider subprocesses without creating a visible Windows console, so closing an
-unrelated terminal cannot terminate the tray or active drain.
-
-#### Scenario: Scheduled tray starts after sign-in
-
-- **WHEN** the current-user scheduled task starts the drain tray
-- **THEN** no command or PowerShell console is displayed
-- **AND** the scheduled host remains alive while the tray process is alive
-
-#### Scenario: Provider CLI resolves through a command shim
-
-- **WHEN** a Windows worker launches a provider CLI whose executable is a
-  `.CMD` shim
-- **THEN** the launcher creates the subprocess with no console window
-- **AND** stdout and stderr remain captured for the attempt artifact
-
-### Requirement: Drain Workers Can Deliver From Linked Worktrees
-
-The development coordination runtime SHALL resolve and grant a write-capable
-Codex worker access to its assigned linked worktree's Git common directory,
-SHALL use an explicit Git-metadata-capable write mode, SHALL direct the worker
-to publish with repository-local `git` and `gh` commands, and MUST preserve the
-existing worktree, branch, claim, review, CI, and finite-budget safety
-boundaries. Read-only peers MUST remain read-only.
-
-#### Scenario: Codex worker receives a linked worktree
-
-- **WHEN** write mode launches Codex from a linked worktree
-- **THEN** the launcher resolves that worktree's absolute Git common directory
-- **AND** passes it as an additional writable directory
-- **AND** selects the explicit write sandbox mode required to stage and commit
-
-#### Scenario: Read-only worker is launched
-
-- **WHEN** the peer launcher runs in read-only mode
-- **THEN** it does not add Git metadata as a writable directory
-
-#### Scenario: Verified work is ready to publish
-
-- **WHEN** a drain worker has completed its acceptance, tests, and required
-  review
-- **THEN** it uses shell `git` and `gh` from the assigned worktree for
-  commit, push, and pull-request delivery
-
-### Requirement: Delivery Failure Is Distinct From Durable Work Blocking
-
-The OpenSpec drain supervisor SHALL reserve `BLOCKED` for durable task, host,
-dependency, review, or policy gates and SHALL treat failure to stage, commit,
-push, or create a pull request as a retryable `FAILED` delivery result. A
-delivery failure MUST preserve the admitted target and worktree so the next
-fresh worker resumes it under the existing finite failure budget.
-
-#### Scenario: Git metadata cannot be written
-
-- **WHEN** a worker has verified local work but staging or committing fails
-- **THEN** it returns `FAILED` for the admitted target
-- **AND** the supervisor preserves the admission for the next worker
-- **AND** it does not add the target to the recent-blocked set
-
-#### Scenario: Pull-request publication is unavailable
-
-- **WHEN** commit or push succeeds but the supported pull-request publication
-  route fails
-- **THEN** the worker returns `FAILED` for the admitted target
-- **AND** a fresh worker resumes delivery immediately within the finite budget
-
-#### Scenario: Work requires a host-only test subject
-
-- **WHEN** the remaining acceptance contract requires an unavailable host
-  action or external test identity
-- **THEN** the worker returns `BLOCKED` with the durable reason
-- **AND** the supervisor may select different work after its blocked interval
-
-### Requirement: Repeated Drain Admissions Use Distinct Lanes
-
-The OpenSpec drain supervisor SHALL derive each mechanical admission branch and
-worktree path from the exact drain identity, canonical target, and persisted
-attempt number so one run can deliver multiple sequential slices for the same
-still-open target without colliding with a preserved prior lane. It MUST
-continue to refuse an exact path or branch collision and MUST NOT delete or
-overwrite the pre-existing lane.
-
-#### Scenario: Same target needs another verified slice
-
-- **WHEN** a later attempt in one drain run admits the same canonical target
-  after an earlier slice completed
-- **THEN** the later attempt receives a different deterministic branch and
-  worktree path
-- **AND** both lanes remain attributable to their attempt numbers
-
-#### Scenario: Exact attempt lane already exists
-
-- **WHEN** the branch or worktree path derived for the exact current attempt
-  already exists
-- **THEN** admission fails closed
-- **AND** the controller does not delete, overwrite, or reuse that lane
-
-### Requirement: Drain Candidate Selection Uses Fresh Current-Main State
-
-A long-lived OpenSpec drain controller SHALL refresh `origin` before each
-controller-side candidate selection and SHALL classify candidates from the
-exact fetched `origin/main:STATUS.md` state without moving or rewriting its
-live checkout. The canonical claim helper SHALL support explicit read-only
-classification from a caller-selected Git ref while preserving working-tree
-classification as its default. Fetch failure, unreadable ref state, or invalid
-claim JSON MUST fail the snapshot closed and MUST NOT fall back to a stale
-working-tree candidate or dispatch a worker without a current snapshot. A live
-controller retrying that bounded failure SHALL report waiting health until it
-recovers or reaches its visible terminal failure budget. Admission SHALL still
-create a fresh current-main
-worktree and revalidate the candidate there after writing its local claim, so a
-merge race or changed row cannot dispatch invalid work.
-
-#### Scenario: A merged slice retires the formerly selected row
-
-- **WHEN** a worker merge removes or changes a STATUS row while the detached
-  controller checkout still contains the old row
-- **THEN** the next selection fetches origin and classifies
-  `origin/main:STATUS.md`
-- **AND** the retired working-tree row is not offered again
-
-#### Scenario: Current-main refresh fails
-
-- **WHEN** origin fetch or `origin/main:STATUS.md` inspection fails
-- **THEN** candidate snapshot inspection fails with an observable diagnostic
-- **AND** the controller dispatches no worker from its stale checkout
-- **AND** watchdog health reports waiting until recovery or terminal failure
-
-#### Scenario: Admission writes a local claim after current-main selection
-
-- **WHEN** the controller selects a current-main candidate and admission writes
-  its claim into the newly created worktree
-- **THEN** admission revalidation classifies that worktree state
-- **AND** it can observe the local owned claim before dispatch
-
-#### Scenario: A provider checks an uncommitted coordination edit
-
-- **WHEN** `claim_check.py` is invoked without an explicit status ref
-- **THEN** it retains working-tree STATUS classification
-- **AND** no fetch or ref mutation occurs
-
-### Requirement: OpenSpec drain blockers become suppressible only after durable current-main classification
-The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid only when a fresh exact `origin/main` claim-check snapshot classifies the same canonical target as blocked. Claim-check snapshots MUST preserve the complete normalized task label, and the supervisor's bounded target identity MUST remain distinct for labels that share a long prefix. The worker MUST first land a sanitized STATUS dependency or blocker through normal repository review. A target that remains claimable or stale, disappears without explicit blocked classification, or cannot be checked because current-main refresh fails SHALL NOT enter the recent-blocked set. The supervisor MUST retain any prepared admission, record a bounded invalid-blocked failure, and send a fresh worker back to the same lane within the existing failure budget.
-
-#### Scenario: Worker reports a blocker that exists only in its result file
-- **WHEN** an admitted worker returns `BLOCKED` but current main still classifies the target claimable
-- **THEN** the supervisor rejects the result as `INVALID_BLOCKED_RESULT`
-- **AND** retains the admission without adding the target to recent blockers
-
-#### Scenario: Worker lands sanitized blocker truth
-- **WHEN** an admitted worker returns `BLOCKED` and fresh current main classifies the same canonical target blocked
-- **THEN** the supervisor accepts the blocked result, releases active admission, and may select different work
-
-#### Scenario: Blocker verification cannot refresh current main
-- **WHEN** origin refresh or current-main claim classification fails after a `BLOCKED` marker
-- **THEN** the supervisor rejects the marker and preserves the admission rather than trusting stale or private evidence
-
-#### Scenario: Worker deletes the target instead of recording a blocker
-- **WHEN** a `BLOCKED` marker names a target absent from the fresh current-main blocked collection
-- **THEN** the supervisor rejects the result and does not treat disappearance as blocker proof
-
-#### Scenario: Distinct labels share a long prefix
-- **WHEN** a blocked row and a claimable row have task labels that differ only after a long common prefix
-- **THEN** claim-check preserves both complete labels and the supervisor derives distinct bounded target identities
-- **AND** the blocked row cannot authorize or cool down the claimable row
-
-#### Scenario: Pre-hash run resumes with a long-label admission
-- **WHEN** persisted state predates collision-resistant target identity
-- **THEN** the supervisor rekeys the admission and resume target from its complete task label
-- **AND** releases legacy recent-blocked slugs that cannot be translated safely
-
-#### Scenario: Recent blockers consume every concrete candidate hint
-- **WHEN** current-main pressure still reports claimable or stale rows, no owned or prepared admission exists, and filtering this run's recent blockers leaves no concrete hint
-- **THEN** the supervisor records a bounded blocked cooldown and waits before refreshing
-- **AND** it does not launch a full write-capable no-hint worker
-
-#### Scenario: A different candidate remains after filtering
-- **WHEN** recent blockers are filtered and another concrete claimable or stale candidate remains
-- **THEN** the controller admits and dispatches that candidate under the existing current-main contract
-
-#### Scenario: A durable blocker clears
-- **WHEN** a target in the run's recent-blocked set is no longer classified blocked by fresh current main
-- **THEN** the controller removes its run-local suppression before candidate filtering
-- **AND** may admit that target again under the ordinary candidate contract
-
-#### Scenario: Blocker retry and cooldown remain observable
-- **WHEN** a live controller is cooling down or retrying an invalid private blocker
-- **THEN** watchdog health reports waiting rather than ordinary running
-- **AND** an ended invalid-blocker diagnostic reports failure
-
-### Requirement: Verified merge receipts are idempotent per run
-
-The OpenSpec drain supervisor SHALL advance completed-slice progress at most
-once for a canonical verified merged pull-request identity. Owner and
-repository casing plus numeric formatting of the pull-request number MUST NOT
-create a distinct identity. It MUST persist every successful receipt for the
-bounded run and reconstruct canonical verified receipts only for legacy result
-artifacts whose supervisor audit records successful merge consumption. Result
-text or current merge state alone MUST NOT turn a previously failed
-verification into a consumed receipt. `PARTIAL` SHALL NOT consume the merge
-receipt because later foldback may legitimately return `MERGED` for the same
-pull request.
-
-When a valid worker result reports a canonical `MERGED` receipt already
-consumed by the same bounded run, the supervisor MUST NOT advance progress,
-retry the same admission, or charge the worker failure budget. It SHALL retain
-the duplicate audit result, clear the stale admission and resume target,
-suppress that target for the remainder of the bounded run across `OWNED`,
-`CLAIMABLE`, and `STALE` classifications, and continue candidate discovery.
-Malformed, unverifiable, or not-yet-consumed merge results MUST remain on their
-existing fail-closed paths.
-
-#### Scenario: Worker replays an already consumed merged PR
-
-- **WHEN** a worker returns `MERGED` with a canonical PR identity already
-  present in the run's verified merge receipts
-- **THEN** the controller records `INVALID_DUPLICATE_MERGE`
-- **AND** does not advance completed slices or merge-receipt counts
-- **AND** clears the stale admission and resume target
-- **AND** excludes the target from later discovery for this bounded run
-- **AND** does not charge the consecutive failure budget
-
-#### Scenario: Legacy run resumes after merged work
-
-- **WHEN** run state predates the merge-receipt field
-- **THEN** the controller reconstructs the complete run-bounded unique
-  canonical receipt set from successfully consumed result artifacts and their
-  supervisor audit records
-- **AND** trusts only PRs that still pass controller merge verification
-
-#### Scenario: Legacy merge succeeded through restart recovery
-
-- **WHEN** a pre-receipt run audit records recovered or replayed `MERGED`
-  results and the completed-slice ledger unambiguously accounts for every
-  recovery candidate
-- **THEN** the controller reconstructs and verifies its canonical receipt
-- **AND** if the ledger proves how many recoveries succeeded but not which PRs
-  succeeded, the controller reconstructs none of the ambiguous receipts and
-  permits a retry
-
-#### Scenario: Previously failed merge verification later becomes merged
-
-- **WHEN** a consumed legacy result reported `MERGED` but its supervisor audit
-  records `merge-verification-failed`
-- **THEN** receipt reconstruction does not consume that PR
-- **AND** a later verified `MERGED` retry may advance one slice
-
-#### Scenario: Partial foldback later completes
-
-- **WHEN** a verified `PARTIAL` result is followed by `MERGED` for the same PR
-  after foldback
-- **THEN** the `MERGED` result may advance one slice because `PARTIAL` did not
-  consume its receipt
-
-#### Scenario: Unverified merge does not use replay suppression
-
-- **WHEN** a merge result is malformed, unverifiable, or is not already in the
-  run's consumed receipt set
-- **THEN** the supervisor follows the existing validation and failure policy
-- **AND** does not suppress it as an already-consumed replay
-
-### Requirement: Drain workers use bounded lane-local worktree inspection
-
-`worktree_status.py --provider <needle>` SHALL apply its existing
-case-insensitive slug, branch, or path match before constructing per-worktree
-status. Nonmatching worktrees MUST NOT incur per-entry git probes. The filtered
-records and ordering MUST equal the matching subset that the full inventory
-would produce from the same snapshot.
-
-A controller-launched worker SHALL run the diagnostic with its exact drain
-identity and a 15-second cap. A timeout MUST NOT bypass exact claim, collision,
-OpenSpec, or provider-context checks and MUST NOT grant authority to create,
-switch, or edit another lane. The unfiltered command remains available as the
-global session/operator diagnostic. An empty scoped result MUST be treated only
-as diagnostic output; it MUST NOT prove that a lane is clean, grant edit
-authority, or replace independent verification of the exact prepared worktree
-and STATUS claim.
-
-#### Scenario: Provider filter excludes historical lanes before probing
-
-- **WHEN** the git inventory contains one worktree matching the provider needle
-  and many nonmatching historical worktrees
-- **THEN** only the matching entry is passed to per-worktree status construction
-- **AND** the rendered or JSON result equals that entry's row from a full
-  inventory snapshot
-
-#### Scenario: Scoped diagnostic times out
-
-- **WHEN** the exact-identity-scoped diagnostic exceeds 15 seconds
-- **THEN** the worker records the timeout and continues only in its clean exact
-  lane
-- **AND** all exact claim, collision, OpenSpec, and provider-context gates still
-  apply
-
-#### Scenario: Provider filter matches no worktree
-
-- **WHEN** the exact-identity-scoped diagnostic returns no rows
-- **THEN** the worker treats the result only as an inventory observation
-- **AND** it does not edit until the exact prepared worktree and STATUS claim
-  are independently established and verified
-
-### Requirement: Foldback continuation owns one fresh delivery PR
-
-The drain's one-PR limit SHALL apply per disposable worker attempt. When a
-worker resumes a `PARTIAL` result whose implementation PR is already merged,
-that earlier PR MUST NOT consume the new worker's PR budget. The worker SHALL
-restack onto current main, exclude merged implementation content, create at
-most one fresh foldback PR for remaining coordination changes, and cite the
-fresh foldback PR in `PARTIAL` or `MERGED`. It MUST NOT repeat the prior
-implementation PR as its new terminal receipt.
-
-#### Scenario: Merged implementation needs foldback
-
-- **WHEN** the persisted prior result is `PARTIAL` for a verified merged
-  implementation PR and current main retains the exact claim
-- **THEN** the replacement worker is instructed to create one new foldback PR
-- **AND** its terminal result cites that foldback PR rather than the
-  implementation PR
-
-### Requirement: Local OpenSpec Drain Observability Self-Heals During The Interactive Session
-The development coordination runtime SHALL recover a failed local drain watchdog or tray during the configured interactive Windows session without starting a second watchdog, supervisor, or worker. Recovery attempts MUST preserve atomic health publication and MUST NOT report stale, idle, blocked, or recovering state as healthy running progress.
-
-#### Scenario: Health publication is transiently contended
-- **WHEN** Windows prevents the watchdog from atomically replacing the health document after its bounded replace retries
-- **THEN** the watchdog records the publication failure and continues monitoring the same supervisor
-- **AND** the last complete health document remains intact and becomes stale until a later atomic publication succeeds
-
-#### Scenario: Watchdog dies while tray remains alive
-- **WHEN** tray health is missing or stale beyond the health freshness threshold
-- **THEN** the tray makes a bounded-cadence watchdog relaunch attempt
-- **AND** watchdog and supervisor locks prevent a duplicate monitor, supervisor, or worker
-- **AND** the tray remains down until fresh health proves recovery
-
-#### Scenario: Host intentionally stops the drain for the session
-- **WHEN** `stop.request` records the tray's explicit stop-until-next-sign-in action
-- **THEN** neither stale-health recovery nor the periodic guard clears the marker or relaunches the watchdog during that session
-- **AND** the next sign-in startup may clear the prior-session marker and resume the drain
-
-#### Scenario: Tray host dies after sign-in
-- **WHEN** the current-user scheduled tray action is no longer running during the configured interactive session
-- **THEN** a separate periodic hidden current-user guard task relaunches the tray without waiting for another sign-in
-- **AND** the named tray mutex and task single-instance policies prevent a second tray while the original remains alive
-
-#### Scenario: Live observer integration is reinstalled
-- **WHEN** the installer replaces an older running tray/watchdog integration
-- **THEN** it recycles only processes matching the exact observer executable-and-argument grammar while preserving the live supervisor and unrelated diagnostics
-- **AND** it returns success only after fresh versioned health and exactly one tray, watchdog, and supervisor prove the new runtime is active
-
-#### Scenario: Integration is reinstalled while session stop is active
-- **WHEN** `stop.request` exists during reinstall
-- **THEN** the installer updates both task definitions without recycling or starting observers
-- **AND** it reports that version activation is deferred until the next real sign-in
-
-#### Scenario: Stop action races live reinstall
-- **WHEN** a tray stop action and live reinstall overlap
-- **THEN** a shared current-session control lock serializes the stop marker mutation and the installer's sample-through-verification transaction
-- **AND** the stop is either observed before activation and causes deferral or is applied after activation without being cleared
-
-#### Scenario: Control-lock owner exits unexpectedly
-- **WHEN** a tray or installer process exits while owning the control mutex
-- **THEN** the next waiter accepts the abandoned ownership transfer, continues exclusively, and releases the mutex on exit
-
-#### Scenario: Supervisor is healthy but idle
-- **WHEN** self-healing restores fresh watchdog health for a live idle supervisor
-- **THEN** the tray reports waiting rather than false running progress
-
-### Requirement: STATUS row lifecycle edits are row-scoped coordination
-The claim checker SHALL treat adding, claiming, heartbeating, and retiring a lane's own `STATUS.md` Work row as an implicit coordination operation rather than a whole-file write collision. An exact `STATUS.md` Files atom MUST NOT overlap another lane, while every other product or artifact atom MUST retain the existing symmetric substring collision rule.
-
-#### Scenario: Active row lists STATUS as a legacy file atom
-- **WHEN** one live claim lists `STATUS.md` and a disjoint pending row also lists `STATUS.md`
-- **THEN** the pending row is not blocked solely by that shared coordination atom
-- **AND** any overlapping non-STATUS atom still blocks it
-
-#### Scenario: Prospective row lifecycle edit
-- **WHEN** a provider checks a prospective Files set containing only its product paths plus `STATUS.md`
-- **THEN** the result ignores the exact STATUS atom and reports collisions from the product paths only
 
 ### Requirement: OpenSpec delivery flow supports exact-ref inspection
-The OpenSpec flow inspector SHALL support a caller-selected validated Git ref and SHALL classify `STATUS.md`, active change artifacts, task counts, ownership, and recommendations from one immutable snapshot of that ref. Ref inspection MUST remain read-only, MUST NOT move the working tree, and MUST fail closed rather than mixing working-tree and ref content.
+The OpenSpec flow inspector SHALL support a caller-selected validated Git ref and SHALL classify active change artifacts, task counts, ownership, and recommendations from one immutable snapshot of that ref. Ref inspection MUST remain read-only, MUST NOT move the working tree, and MUST fail closed rather than mixing working-tree and ref content.
 
 #### Scenario: Detached controller is behind current main
-- **WHEN** the working tree contains older OpenSpec or STATUS content and the caller selects `origin/main`
-- **THEN** the inspector reports only the active changes, tasks, rows, and classifications stored at `origin/main`
+- **WHEN** the working tree contains older OpenSpec content and the caller selects `origin/main`
+- **THEN** the inspector reports only the active changes, tasks, and classifications stored at `origin/main`
 
 #### Scenario: Ref snapshot is unavailable
 - **WHEN** the selected ref cannot be validated or its coordination snapshot cannot be read
 - **THEN** inspection exits non-zero with a bounded diagnostic
 - **AND** it emits no fallback report from the working tree
 
-### Requirement: OpenSpec drain refines visible backlog before idle
-When owned, claimable, and policy-qualified stale STATUS candidates are absent, the drain supervisor SHALL inspect exact-current-main OpenSpec flow and SHALL provide one bounded existing-change refinery target before accepting candidate exhaustion. Refinery admission MUST exclude live-owned, host-owned, and invalid-artifact changes, MUST authorize coordination reconciliation only, and MUST NOT authorize product implementation before a normal current-main claim exists. The refinery SHALL model the exact next delivery slice rather than whole-change completion: its `Depends` cell MUST contain only unresolved prerequisites that must land before that slice can begin, while later testing, review, deployment, rendered acceptance, and organic-use gates remain in the slice acceptance text or OpenSpec tasks. Before returning `BLOCKED`, the refinery MUST inspect unchecked tasks for a bounded executable slice and then the shortest concrete autonomous prerequisite-removal slice. A verified `PARTIAL` refinery result SHALL be accepted as a continuation only when fresh current main exposes a claimable row overlapping the assigned change boundary.
+### Requirement: Gate-defining and authority-critical changes need an exact-head review receipt
 
-#### Scenario: STATUS is blocked while untracked changes remain
-- **WHEN** claim pressure is zero and exact current main contains an incomplete untracked OpenSpec change
-- **THEN** the next worker brief names that change as a refinery target
-- **AND** `NO_CANDIDATE` is rejected while that target remains refinable
+A pull request touching gate-defining or authority-critical paths SHALL carry an
+exact-head review receipt in the pull-request BODY naming an APPROVE verdict, the
+unchanged head SHA, and a durable artifact. Gate-defining paths are
+`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
+`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`, and
+`scripts/drain_review_gate.py`; authority-critical paths are `tinyassets/auth/`,
+`tinyassets/credential_vault.py`, and
+`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`. The check SHALL run
+from the trusted base checkout so a pull request cannot weaken the rule judging
+it. Matching SHALL cover renames (via the previous path) and SHALL be
+case-insensitive, and SHALL include the packaging runtime mirror of those paths.
+A deletion-only edit to the quarantine ledger SHALL be exempt, because it only
+tightens the ratchet; any addition SHALL keep the receipt requirement.
 
-#### Scenario: Active status omits a provider identity
-- **WHEN** an otherwise refinery-eligible change has a matching bare `in-flight` STATUS row
-- **THEN** the supervisor excludes that change from refinery admission even though no named owner can be extracted
+#### Scenario: Renaming a protected file does not evade the receipt
+- **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
+- **THEN** the guard reports the authority hit and requires the receipt
 
-#### Scenario: Refinery promotes bounded implementation work
-- **WHEN** the refinery worker proves one existing change has a safe bounded acceptance contract
-- **THEN** it lands one exact pending STATUS row whose `Depends` names only prerequisites required before that slice can start
-- **AND** downstream verification and release gates do not make that earlier slice non-claimable
-- **AND** a fresh worker performs ordinary collision checking and claim admission before product edits
+### Requirement: Worktree inspection supports narrowed provider scope
 
-#### Scenario: Direct slice is blocked but an autonomous prerequisite is available
-- **WHEN** the selected implementation slice cannot start yet
-- **AND** a bounded non-overlapping prerequisite-removal slice can run without host-only authority or a live foreign claim
-- **THEN** the refinery promotes that prerequisite-removal slice as the next claimable row
-- **AND** it does not record the whole legacy change as globally blocked
+The worktree status tool SHALL accept a provider filter and MUST apply it before
+running per-worktree probes, so a narrowed inspection does not pay the cost of
+lanes it will discard.
 
-#### Scenario: Refinery proves a durable blocker
-- **WHEN** no bounded unchecked-task slice and no concrete autonomous prerequisite-removal slice can begin because of a current host, dependency, policy, review, or live-claim gate
-- **THEN** the worker lands that blocker on the exact STATUS row before returning `BLOCKED`
-- **AND** recent-block suppression prevents immediate repetitive triage of the same target
+#### Scenario: Filtered inspection probes only matching lanes
+- **WHEN** the tool is invoked with a provider filter
+- **THEN** only lanes matching that provider are probed and reported
 
-#### Scenario: Refinery continuation does not expose delivery
-- **WHEN** a refinery reports `PARTIAL` and its coordination PR is verified merged
-- **AND** fresh current main contains no claimable row overlapping the assigned change boundary
-- **THEN** the supervisor rejects the continuation as non-delivery coordination churn
-- **AND** it does not treat the refinery pseudo-target as implementation admission
+### Requirement: Peer dispatch runs from a lane-local worktree with bounded autonomy
 
-#### Scenario: Refinery handoff and implementation both make bounded progress
-- **WHEN** an accepted refinery `PARTIAL` exposes a claimable target
-- **AND** the next ordinary worker merges a bounded `PARTIAL` slice for that same target
-- **THEN** the refinery handoff does not count as the first repeated implementation partial
-- **AND** the supervisor immediately resumes the preserved target without consuming a failure strike or entering the idle wait
+Cross-family dispatch SHALL run the peer CLI as a subprocess against an explicit
+working directory so a write-enabled run is confined to a lane worktree rather
+than the live checkout. Read-only SHALL be the default; write autonomy SHALL be
+explicit. The peer's result SHALL always land in the declared output file, and a
+provider failure, timeout, or non-launchable CLI SHALL produce a non-zero exit
+and an explicit error marker rather than a silent empty result.
 
-#### Scenario: Refinery continuation receipt is replayed
-- **WHEN** a verified merge-backed `PARTIAL` receipt was already accepted by the bounded run
-- **AND** a later worker reports that same receipt again
-- **THEN** the supervisor suppresses the replay before continuation validation
-- **AND** the replay does not reset the run's existing failure budget
+#### Scenario: A failed dispatch is distinguishable from an empty answer
+- **WHEN** the peer CLI cannot launch
+- **THEN** the output carries an explicit error marker and the exit code is non-zero
 
-#### Scenario: Coordination is genuinely exhausted
-- **WHEN** claimable, stale, owned, and refinable counts are all zero after exact-current-main inspection
-- **THEN** the supervisor may accept `NO_CANDIDATE` and wait without consuming a failure strike
+### Requirement: Provider launches are consoleless on Windows
+
+Subprocess provider launches on Windows SHALL suppress console-window creation
+so an unattended session does not spawn visible windows.
+
+#### Scenario: A dispatched provider opens no console window
+- **WHEN** a peer provider subprocess starts on Windows
+- **THEN** it is created with no new console
+
+---
+
+## Retired capabilities (2026-08-26)
+
+The requirements below were removed because the machinery they describe was
+deleted by the harness reset, and `openspec/specs/` is **as-built** truth rather
+than intent. Keeping them would assert behaviour the system no longer has, which
+is worse than silence -- a reader cannot tell a stale requirement from a live one.
+
+| Retired | Why |
+|---|---|
+| STATUS claims / STATUS row lifecycle | `STATUS.md` retired 2026-08-25; live state moved to typed homes (`openspec/changes/`, `docs/concerns/`, `docs/host-actions.md`, git branches) |
+| Agent Village (2 requirements) | `command_center/` deleted -- it visualised a concurrent-agent fleet that no longer runs, and read the retired board |
+| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision. **Three behaviours in that block survived their machinery and were re-specified above** rather than retired with it: the exact-head review receipt (still enforced by `pr-scope-guard.yml`, `auto-enroll-merge.yml`, `scripts/drain_review_gate.py`), lane-local worktree dispatch (`scripts/peer_agent.py`), and consoleless provider launch. A blanket retirement of the block would have deleted live contracts -- caught by cross-family review 2026-08-26. |
+
+Recover any of it from git: the reset merged as `e4180697`, and this file's
+history holds the full text.

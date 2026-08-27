@@ -217,7 +217,7 @@ The reviewer should re-read the primary sources and specifically:
 | Fold-back | PR into `main`, retire the STATUS review row, promote A-2/A-3/W-1 to `ideas/PIPELINE.md` |
 | PLAN modules | review the storage/provenance and visibility modules before building A-1 |
 | Memory refs | `.claude/agent-memory/` — none specific to this source yet |
-| Related implications | the `app_ingress` lane in `openspec/changes/recognize-verified-founder-on-chat-surfaces/tasks.md` §10 |
+| Related implications | the `app_ingress` lane in `openspec/changes/archive/2026-08-26-recognize-verified-founder-on-chat-surfaces/tasks.md` §10 |
 
 ## Open questions
 

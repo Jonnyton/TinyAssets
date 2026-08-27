@@ -1,7 +1,8 @@
 """Authoring sandbox policy primitives — budgets, network denial, simulated
 effects, and per-run confirmation for real effects.
 
-Requirement source: ``openspec/changes/complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/node-authoring-and-autoresearch/spec.md`` — "Test execution is isolated,
 budgeted, and side-effect-free by default" and "Real test effects require
 explicit per-run authority" (tasks 4.2, 4.5).

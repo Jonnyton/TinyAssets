@@ -11,7 +11,7 @@
     Clients.
   - `openspec/changes/universe-personification/` — first-person embody,
     OAuth→persona binding, authorization-before-voice, anti-collision.
-  - `openspec/changes/universe-creation/` — single creation route, generated
+  - `openspec/changes/archive/2026-08-26-universe-creation/` — single creation route, generated
     serial id, OKF brain shape.
   - `docs/reference/workos-authkit-integration.md` — WorkOS resource-server
     recipe.

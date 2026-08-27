@@ -1,6 +1,6 @@
 ---
 name: peer-agents
-description: Use when dispatching a bounded task or independent cross-family review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use implementation-precedent-scout to define the research role and return contract.
+description: Use when dispatching a bounded task or independent cross-family review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use a repo search for precedent to define the research role and return contract.
 ---
 
 # peer-agents
@@ -18,7 +18,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
 
 # Have Codex fix something in a worktree (write mode):
 python scripts/peer_agent.py codex --out output/codex-fix.md \
-    --prompt "Fix the failing test in tests/test_universe.py and run it" \
+    --prompt "Fix the failing test in tests/test_universe_nodes.py and run it" \
     --cwd ../wf-bug126 --write
 
 # Quick foreground question (prints to stdout, no file):
@@ -48,13 +48,17 @@ Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree. `--effort low` for small tasks.
 
-- **External implementation examples:** `implementation-precedent-scout` owns the focused brief, enforced read-only role, source map, and direct-to-coder return. `peer-agents` may run that role but does not replace its research contract.
+- **External implementation examples:** a repo search for precedent owns the focused brief, enforced read-only role, source map, and direct-to-coder return. `peer-agents` may run that role but does not replace its research contract.
 - **Internal repository localization:** use the harness's read-only codebase explorer or a focused read task; do not invoke the external precedent workflow.
 
 ## Notes
 
 - API keys are stripped from the peer's environment (subscription auth only),
   matching the daemon's provider policy in `tinyassets/providers/`.
-- `scripts/codex_review.py` is the older review-specialized wrapper (adversarial preamble + VERDICT line). Prefer `peer_agent.py` for new work; it generalizes both CLIs and arbitrary prompts.
+- **You write the review contract; the wrapper does not.** The retired `codex_review` wrapper used to
+  inject an adversarial preamble and demand a trailing `VERDICT:` line. It was deleted
+  2026-08-26 and `peer_agent.py` does neither — it sends your prompt verbatim. When you need a
+  verdict, ask for one **in the prompt** ("end with exactly one line: `VERDICT: APPROVE|ADAPT|REJECT`")
+  and check that it arrived. Do not assume enforcement that no longer exists.
 - Peers do not see your chat context. Put everything they need in the prompt/brief: file paths, line numbers, what "done" means, and any constraints (e.g. "do not commit").
 - Windows: the wrapper resolves `.cmd` shims and converts Git-Bash paths; run it with plain `python` from Git Bash.
