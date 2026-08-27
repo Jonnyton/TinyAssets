@@ -115,7 +115,8 @@ git grep -l "scripts\.$m\|scripts/$m\|import $m"
 
 **Orphan-hook detection.** The same shape: grepping only
 `.claude/settings.json` reported three hooks as wired nowhere. They were wired
-through `.claude/settings.shared.json` and agent frontmatter.
+through agent frontmatter. (`.claude/settings.shared.json` was deleted 2026-08-27: it
+existed to work around `.claude/settings.json` being gitignored, which it never was.)
 
 The generalisation, and the reason both are recorded here: **a "nothing
 references this" check is a claim about every reference form that exists.**

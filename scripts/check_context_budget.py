@@ -9,6 +9,15 @@ measures it — a 2026-04-28 cross-check put AGENTS.md at ~17.6 KB, and by
 2026-06-24 it had tripled to ~54 KB with no guardrail noticing. This script is
 that guardrail: it measures the always-loaded set and flags drift.
 
+These numbers are OURS, not a vendor limit. Anthropic publishes no line or
+token ceiling for CLAUDE.md; its stated test is behavioral -- "for each line,
+ask: would removing this cause Claude to make mistakes?" -- and it warns that
+"minimal does not necessarily mean short". So do not cite this budget as best
+practice. It exists because an unmeasured file grew 17.6 KB -> 54 KB with
+nothing noticing, and a ratchet is the cheapest thing that catches that. If a
+rule inside the budget is still being skipped, the file is too long FOR THAT
+RULE regardless of what this script says.
+
 Two budget classes:
   * HARD  — a ceiling the project has committed to. Enforcing a stated
             contract is not a judgement call, so `--strict` exits 2 when a

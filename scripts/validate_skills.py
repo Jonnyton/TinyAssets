@@ -94,6 +94,32 @@ def validate_metadata(root: Path) -> list[SkillIssue]:
     return issues
 
 
+# Anthropic's skill-authoring guidance says keep a SKILL.md body under 500
+# lines. That figure is published guidance with no measurement behind it, so
+# enforcing it exactly would police noise -- `ui-test` sits at 502. The ratchet
+# here is OURS and deliberately looser: 600 catches real drift (the same class
+# that let always-loaded context go 17.6 KB -> 54 KB unnoticed) without
+# arguing about two lines. Do not cite 600 as best practice; cite 500 as
+# guidance and this as a repo guardrail.
+SKILL_BODY_LINE_RATCHET = 600
+
+
+def validate_body_length(root: Path) -> list[SkillIssue]:
+    issues: list[SkillIssue] = []
+    for path in sorted((root / ".agents" / "skills").glob("*/SKILL.md")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = len(text.splitlines())
+        if lines > SKILL_BODY_LINE_RATCHET:
+            issues.append(
+                SkillIssue(
+                    path,
+                    f"{lines} lines exceeds the {SKILL_BODY_LINE_RATCHET}-line ratchet "
+                    "(Anthropic guidance is 500) -- move detail into a reference file",
+                )
+            )
+    return issues
+
+
 def validate_forbidden_text(root: Path) -> list[SkillIssue]:
     issues: list[SkillIssue] = []
     for path in _skill_files(root / CANONICAL_ROOT):
@@ -228,6 +254,7 @@ _DELETED_SKILLS = {
 
 def validate_all(root: Path) -> list[SkillIssue]:
     return [
+        *validate_body_length(root),
         *validate_metadata(root),
         *validate_forbidden_text(root),
         *validate_mirror(root),

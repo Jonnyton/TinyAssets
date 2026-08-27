@@ -1,10 +1,15 @@
 """Unified framework for zero-token mechanical invariants.
 
 An invariant is a property of the repository / running system that
-should always hold — canonical↔mirror byte-parity, exactly one Chrome
-tab, STATUS.md Concerns kept fresh, no CP-1252 mojibake in tracked text.
-Each is cheaper to enforce mechanically than to re-derive by hand each
-session. See `CLAUDE_LEAD_OPS.md §Code Before Agents`.
+should always hold — canonical↔mirror byte-parity, skill metadata and
+body length, the always-loaded context budget, cross-provider rule
+placement, no CP-1252 mojibake in tracked text. Each is cheaper to
+enforce mechanically than to re-derive by hand each session.
+
+`invariants_run.py --pre-commit` is the entry point. Anything listed here
+must be able to FAIL — a check that cannot go red is decor, and this
+suite has shipped one of those before (`cross-provider-drift` returned
+clean unconditionally until 2026-08-26).
 
 ## Contract
 

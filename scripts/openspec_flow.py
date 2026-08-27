@@ -442,7 +442,14 @@ def build_report(
         "provider_wip": {
             provider: sorted(names) for provider, names in sorted(provider_wip.items())
         },
-        "collision_atoms": _collision_atoms(rows),
+        # A board-less repo has no claim rows, so this would emit [] -- which
+        # reads as "no collisions found" when it means "no data source". Say
+        # unavailable instead; `rows` is non-empty only when a STATUS-style board
+        # actually exists (it was retired 2026-08-25).
+        "collision_atoms": _collision_atoms(rows) if rows else None,
+        "collision_atoms_unavailable": (
+            None if rows else "no claim board; ownership is branch-derived"
+        ),
         "recommendations": [
             change["name"] for change in completed_first + claimed_next + queued_last
         ],

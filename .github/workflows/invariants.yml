@@ -45,10 +45,6 @@ jobs:
       - name: Run pre-commit-scoped invariants
         run: python scripts/invariants_run.py --pre-commit
 
-      - name: Context budget (explicit, so the number is in the log)
-        if: always()
-        run: python scripts/check_context_budget.py --strict
-
       - name: Summary
         if: always()
         run: |

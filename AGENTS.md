@@ -188,6 +188,20 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   public-surface, storage, auth, migration, concurrency, or data-loss changes.
 - **A dispatched review gates landing, not your progress.** It re-invokes you;
   take the next lane and fold the verdict in. Never idle on one.
+- **Three rounds, then escalate.** A review round that returns findings is not a
+  reason to run another one. Published evidence: defect counts across repeated
+  audit rounds are *non-monotonic* (15, 8, 12, 2, 8, 1, 4, 1, 0 over nine
+  rounds), a second independent reviewer adds ~nothing over the first, and three
+  well-structured agents beat five. There is no published convergence rule, so
+  the cap is the rule. After the third round, take the remaining findings to the
+  founder with what you fixed and what you did not -- do not open a fourth.
+  Fixing round N's findings often *creates* round N+1's, which is a loop, not
+  progress. (PR #2561 ran six rounds; rounds 4 and 5 each found weaknesses in
+  tests written one round earlier.)
+- **Ask the reviewer to disagree in a structured way** -- `AGREE` /
+  `DISAGREE_EVIDENCE` with a code citation / `DISAGREE_CONCERN`. Structured
+  disagreement measurably beat adding more reviewers, and it makes a finding you
+  should act on separable from one you should note.
 - **Final chatbot-surface proof is a rendered conversation** through the live
   connector (`ui-test`). Scripts and canaries are supporting evidence, never
   proof. Then look for real-user clean use since the fix, freshness-stamped; if
