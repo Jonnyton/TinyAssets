@@ -1,7 +1,7 @@
 # Async sub-branches are refused by the foreground provider session
 
 **Filed:** 2026-08-27
-**Severity:** P1 — live, user-facing, on code deployed today
+**Severity:** P1 — **FIXED 2026-08-27**, see below. Was live and user-facing.
 **Shipped in:** PR #2559 (`41df0cf1`), deployed and serving
 
 ## The finding
@@ -88,3 +88,37 @@ Worth recording, because these were the questions worth asking:
 - All eight canonical/plugin mirror pairs are byte-identical.
 - Inventory closure is genuine: 49 expected, 49 observed, no duplicates and no
   bare `stream` entries.
+
+---
+
+## FIXED 2026-08-27
+
+`prepare_foreground_run_provider` now mints a SIBLING session when the wrapper's
+session is already bound to a different run, instead of refusing. The guard is
+untouched: one session still never serves two runs.
+
+The child is built from `constructor_inputs()` only — base path, universe,
+principal, and the underlying provider callable — and deliberately inherits
+none of `_receipt`, `_claim`, `_branch_snapshot` or `_branch_digest`, so it
+admits on its own authority and validates against its own run row. The wrapper
+is rebuilt with `dataclasses.replace`, which preserves the exact
+`universe_context` and `operation`: swapping the session must not become a way
+to swap the universe binding, and a non-dataclass wrapper raises rather than
+silently dropping it.
+
+**The test came first**, as this file said it must:
+`test_async_sub_branch_gets_its_own_session_not_the_parents` drives a real run
+through the existing fixture, takes the real prepared wrapper, creates a real
+child run row, and asserts the child gets its own session carrying no inherited
+receipt or claim — and that the parent is left intact for its remaining nodes.
+
+Proven both ways. Before the fix it failed with the exact production error,
+`ProviderAuthorityHeldError`. Disabling only the new branch (`if False:`)
+restores that same failure; restoring it passes all 11 tests in the file.
+
+Plugin mirror rebuilt and byte-identical. Inventory closure clean.
+
+**The other four findings from that review remain open** — `max_invocations`
+counting node definitions rather than attempts, the mock bypass keyed on a
+mutable `__module__`, `_receipt` published before `_claim`, and broad wrapping
+masking actionable denials. None is a refusal-to-run; they stay recorded above.
