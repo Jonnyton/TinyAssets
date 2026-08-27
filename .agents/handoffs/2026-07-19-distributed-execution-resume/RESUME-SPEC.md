@@ -125,15 +125,11 @@ cat prompt.txt | codex.cmd exec -s workspace-write -c approval_policy=never \
 ```
 Keep it to ONE worktree; never `main`; never force-push.
 
-**Kimi review (third-family signal, read-only, SLOW — always background):**
-```
-python scripts/kimi_review.py --out <file>.md --diff-base <base-ref> --cwd <worktree> \
-    --prompt "<review focus>"
-```
-**Kimi `-p` is READ-ONLY** — it cannot write files or run commands non-interactively
-(`--yolo`/`--auto` are rejected with `-p`). Kimi can *emit* a diff you apply yourself,
-but for a substrate slice this size it tends to burn its budget exploring and not emit
-(see §10). Prefer Codex for builds.
+**Kimi review — RETIRED 2026-08-26.** `scripts/kimi_review.py` is deleted and
+`peer_agent.py` accepts only `claude` and `codex`, so there is no third-family
+dispatch route any more; the harness reset scoped this repo to two providers.
+The Kimi history below (§5.5, §10) is kept as a record of the S2 A/B, not as an
+instruction. Running Kimi again means adding a provider to `peer_agent.py` first.
 
 **Fable-5 review:** the opposite-family reviewer in the pair. Dispatch it through
 whatever mechanism the driver harness provides (Claude Code used its `Agent` tool with

@@ -153,10 +153,26 @@ class _FakeProc:
         return 4242
 
 
-def _run_main(monkeypatch, tmp_path, proc, *, provider="claude", extra=()):
-    """Invoke peer_agent.main() with a scripted subprocess; return (rc, out)."""
+def _run_main(
+    monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_file_text=None
+):
+    """Invoke peer_agent.main() with a scripted subprocess.
+
+    Returns (rc, out_text, argv). `out_file_text` simulates the codex CLI's
+    `-o` behaviour: codex writes its answer to the out FILE and peer_agent reads
+    it back, where claude's answer arrives on stdout. The two branches are
+    genuinely different code and both need covering.
+    """
     out = tmp_path / "verdict.txt"
-    monkeypatch.setattr(peer_agent.subprocess, "Popen", lambda *a, **k: proc)
+    seen = {}
+
+    def _popen(cmd, *a, **k):
+        seen["argv"] = list(cmd)
+        if out_file_text is not None:
+            out.write_text(out_file_text, encoding="utf-8")
+        return proc
+
+    monkeypatch.setattr(peer_agent.subprocess, "Popen", _popen)
     monkeypatch.setattr(peer_agent, "kill_tree", lambda p: p.kill())
     monkeypatch.setattr(
         peer_agent.sys,
@@ -174,12 +190,16 @@ def _run_main(monkeypatch, tmp_path, proc, *, provider="claude", extra=()):
         ],
     )
     rc = peer_agent.main()
-    return rc, (out.read_text(encoding="utf-8") if out.exists() else "")
+    return (
+        rc,
+        (out.read_text(encoding="utf-8") if out.exists() else ""),
+        seen.get("argv", []),
+    )
 
 
 def test_timeout_kills_the_tree_and_writes_an_error_marker(monkeypatch, tmp_path):
     proc = _FakeProc(timeout=True)
-    rc, out = _run_main(monkeypatch, tmp_path, proc, extra=("--timeout", "5"))
+    rc, out, _ = _run_main(monkeypatch, tmp_path, proc, extra=("--timeout", "5"))
     assert rc == 124
     assert "[peer_agent] ERROR" in out
     assert "timeout" in out.lower()
@@ -210,14 +230,14 @@ def test_zero_exit_with_empty_output_is_a_failure_not_a_silent_pass(
     monkeypatch, tmp_path
 ):
     # The whole point: exit 0 + nothing produced must NOT read as a clean review.
-    rc, out = _run_main(monkeypatch, tmp_path, _FakeProc(returncode=0, stdout=b"  \n"))
+    rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(returncode=0, stdout=b"  \n"))
     assert rc == 2
     assert "[peer_agent] ERROR" in out
     assert "empty output" in out
 
 
 def test_nonzero_exit_writes_an_error_marker_carrying_stderr(monkeypatch, tmp_path):
-    rc, out = _run_main(
+    rc, out, _ = _run_main(
         monkeypatch,
         tmp_path,
         _FakeProc(returncode=3, stdout=b"partial", stderr=b"upstream exploded"),
@@ -231,15 +251,66 @@ def test_prompt_reaches_the_provider_on_stdin_not_argv(monkeypatch, tmp_path):
     # Windows cmd.exe truncates argv at a newline, which silently shortened
     # multi-line review prompts -- stdin is the contract.
     proc = _FakeProc(returncode=0, stdout=b"VERDICT: APPROVE")
-    rc, _ = _run_main(monkeypatch, tmp_path, proc)
+    rc, _, argv = _run_main(monkeypatch, tmp_path, proc)
     assert rc == 0
     assert proc.communicate_input == b"review this"
+    # Asserting stdin alone would still pass if the prompt were ALSO on argv,
+    # which is the exact regression: cmd.exe would truncate it there.
+    assert not any("review this" in str(part) for part in argv), argv
 
 
 def test_success_leaves_the_provider_output_intact(monkeypatch, tmp_path):
-    rc, out = _run_main(
+    rc, out, _ = _run_main(
         monkeypatch, tmp_path, _FakeProc(returncode=0, stdout=b"VERDICT: REJECT\n")
     )
     assert rc == 0
     assert "VERDICT: REJECT" in out
     assert "[peer_agent] ERROR" not in out
+
+
+# --- The codex branch is different code -------------------------------------
+#
+# claude's answer arrives on stdout; codex writes it to the `-o` FILE and
+# peer_agent reads it back (`scripts/peer_agent.py:401`). Every test above runs
+# the claude branch, so a regression that accepted codex stdout, or accepted a
+# missing/stale out-file as success, would stay green. Found by cross-family
+# review of PR #2561, round 4.
+
+
+def test_codex_answer_is_read_from_the_out_file(monkeypatch, tmp_path):
+    rc, out, _ = _run_main(
+        monkeypatch,
+        tmp_path,
+        _FakeProc(returncode=0, stdout=b""),
+        provider="codex",
+        out_file_text="VERDICT: ADAPT\n",
+    )
+    assert rc == 0
+    assert "VERDICT: ADAPT" in out
+
+
+def test_codex_stdout_is_not_accepted_in_place_of_the_out_file(monkeypatch, tmp_path):
+    # Exit 0 with chatty stdout but nothing written to `-o` is a FAILED review,
+    # not a passing one. Accepting stdout here would let a silent codex run read
+    # as an approval.
+    rc, out, _ = _run_main(
+        monkeypatch,
+        tmp_path,
+        _FakeProc(returncode=0, stdout=b"thinking...\nall done\n"),
+        provider="codex",
+    )
+    assert rc == 2
+    assert "[peer_agent] ERROR" in out
+    assert "empty output" in out
+
+
+def test_codex_empty_out_file_is_a_failure(monkeypatch, tmp_path):
+    rc, out, _ = _run_main(
+        monkeypatch,
+        tmp_path,
+        _FakeProc(returncode=0, stdout=b""),
+        provider="codex",
+        out_file_text="   \n",
+    )
+    assert rc == 2
+    assert "[peer_agent] ERROR" in out
