@@ -33,35 +33,29 @@ if hasattr(sys.stdout, "reconfigure"):
     except (AttributeError, ValueError, OSError):
         pass
 
-REQUIRED_ARTIFACTS = (
-    "scripts/check_cross_provider_drift.py",
-    ".claude/hooks/cross_provider_drift_guard.py",
-)
+REQUIRED_ARTIFACTS = ("scripts/check_cross_provider_drift.py",)
 
+# Provider-SPECIFIC surfaces only. A broad rule found here belongs in AGENTS.md
+# instead -- which is the whole point of the check, so AGENTS.md is never itself
+# watched. Trimmed 2026-08-26: `CLAUDE_LEAD_OPS.md`, `LAUNCH_PROMPT.md`,
+# `.cursorrules`, `.claude/agents/*.md`, `.codex/**`, and `.cursor/rules/*.mdc`
+# are all deleted or retired, and the drift-guard hook in REQUIRED_ARTIFACTS
+# went with them. `CODEX.md` -- half the live provider set -- was never watched
+# at all, so no Codex-side drift could ever be reported.
 WATCHED_FILES = (
     "CLAUDE.md",
-    "CLAUDE_LEAD_OPS.md",
-    "LAUNCH_PROMPT.md",
-    ".cursorrules",
+    "CODEX.md",
 )
 
 WATCHED_GLOBS = (
     ".agents/skills/*/SKILL.md",
-    ".claude/agents/*.md",
     ".claude/skills/*/SKILL.md",
-    ".codex/**/*.md",
-    ".codex/**/*.toml",
-    ".codex/**/*.json",
-    ".cursor/rules/*.mdc",
 )
 
 HARNESS_TAGS = (
     "[harness-specific]",
     "[claude code only]",
-    "[cursor only]",
     "[codex only]",
-    "[cowork only]",
-    "[aider only]",
 )
 
 BROAD_RULE_PATTERNS = (
@@ -115,11 +109,23 @@ def is_watched_path(path: str) -> bool:
     if normalized in WATCHED_FILES:
         return True
     watched_prefixes = (
-        ".claude/agents/",
-        ".codex/",
-        ".cursor/rules/",
+        ".agents/skills/",
+        ".claude/skills/",
     )
     return any(normalized.startswith(prefix) for prefix in watched_prefixes)
+
+
+def provider_harness_paths(root: Path) -> list[Path]:
+    """The provider-SPECIFIC harness files, without the skill mirrors.
+
+    Skills are deliberately identical across providers (AGENTS.md
+    § *Project Skills*), so a SKILL.md holding a project-level convention is
+    correct by construction -- flagging it is guaranteed noise, and running the
+    section scan across the globs produced 19 such reports on a clean tree.
+    Skills are covered by `check_skill_mirrors` instead, which is the check
+    that actually applies to them.
+    """
+    return [root / raw for raw in WATCHED_FILES if (root / raw).exists()]
 
 
 def iter_watched_paths(root: Path) -> list[Path]:
@@ -299,15 +305,21 @@ def compact_section(heading: str, body: str) -> str:
 
 
 def check_provider_sections(root: Path, changed_paths: list[Path] | None) -> list[Issue]:
-    if changed_paths is None:
-        return []
+    # `None` means "no staged-file list" -- the invariant runner and a bare CLI
+    # run both arrive that way. Returning [] there made this the ONLY half of
+    # the guard that could never fire outside a pre-commit hook, so the
+    # `cross-provider-drift` invariant reported "clean" unconditionally while
+    # gating every PR. Proven 2026-08-26 by appending a broad rule to CODEX.md
+    # and watching the check pass. Fall back to the full watched set instead;
+    # `check_skill_mirrors` already resolves `None` the same way.
+    scan = provider_harness_paths(root) if changed_paths is None else changed_paths
 
     agents_text = read_text(root / "AGENTS.md").lower()
     issues: list[Issue] = []
 
-    for path in changed_paths:
+    for path in scan:
         rel = relpath(root, path)
-        if rel == "AGENTS.md" or not is_watched_path(rel):
+        if rel not in WATCHED_FILES:
             continue
 
         for heading, body in markdown_sections(read_text(path)):
@@ -334,8 +346,7 @@ def check_provider_sections(root: Path, changed_paths: list[Path] | None) -> lis
                     ),
                     prescription=(
                         "Move the convention to AGENTS.md, or tag the heading/body "
-                        "with [harness-specific], [Claude Code only], [Cursor only], "
-                        "[Codex only], [Cowork only], or [Aider only]."
+                        "with one of: " + ", ".join(HARNESS_TAGS) + "."
                     ),
                 )
             )
@@ -403,13 +414,30 @@ def run_self_test() -> int:
         assert {issue.code for issue in drift} == {"skill-mirror-drift"}
 
         mirror.write_text(skill_text, encoding="utf-8")
-        claude_rule = root / ".claude" / "agents" / "developer.md"
-        claude_rule.write_text(
-            "## Queue\n\nEvery provider must add project-level rules here.\n",
-            encoding="utf-8",
-        )
-        broad = run_checks(root, [claude_rule])
-        assert {issue.code for issue in broad} == {"provider-rule-candidate"}
+
+        # Both live provider harness files must be able to trip the section
+        # scan -- CODEX.md went unwatched entirely until 2026-08-26.
+        broad_rule = "## Queue\n\nEvery provider must add project-level rules here.\n"
+        for name in WATCHED_FILES:
+            harness = root / name
+            harness.write_text(broad_rule, encoding="utf-8")
+            staged = run_checks(root, [harness])
+            assert {issue.code for issue in staged} == {"provider-rule-candidate"}, name
+            # ...and with NO staged list, which is how the invariant runner and
+            # a bare CLI run both call it. Returning [] there made the
+            # `cross-provider-drift` invariant permanently green.
+            unstaged = run_checks(root)
+            assert {issue.code for issue in unstaged} == {"provider-rule-candidate"}, name
+            harness.unlink()
+
+        assert not run_checks(root)
+
+        # A SKILL.md carrying a project-level convention is CORRECT -- skills are
+        # identical across providers by design -- so it must not be reported.
+        canonical.write_text(skill_text + "\n" + broad_rule, encoding="utf-8")
+        mirror.write_text(skill_text + "\n" + broad_rule, encoding="utf-8")
+        assert not run_checks(root)
+        assert not run_checks(root, [canonical])
 
     print("cross-provider drift check self-test: clean")
     return 0
