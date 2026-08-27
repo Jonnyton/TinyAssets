@@ -455,3 +455,32 @@ def test_foreground_run_rejects_unsupported_provider_role_before_launch(
     assert response["terminal_status"] == "failed"
     assert provider.calls == []
     assert captured["effects"] == []
+
+
+def test_settlement_failure_names_its_cause() -> None:
+    """A settlement failure must say WHY, not just that it happened.
+
+    On 2026-08-27 every prompt-template run failed with the bare
+    "provider invocation usage could not be settled". `settle()` alone has four
+    distinct `PermissionError` exits -- carrier not server-owned, carrier has
+    not launched, settlement is consumer-owned, no durable settler -- plus
+    whatever the durable settler itself raises. The founder and the universe
+    both spent two days unable to tell those apart.
+
+    `__cause__` was always attached; the user-visible message is built from the
+    string, so nothing surfaced it.
+    """
+    import inspect
+
+    from tinyassets.providers import router as router_module
+
+    source = inspect.getsource(router_module)
+    marker = 'raise ProviderAuthorityHeldError(\n                    "provider invocation usage could not be settled: "'
+    assert marker in source, (
+        "the settlement wrapper must append the cause to its message; a bare "
+        "'could not be settled' is undiagnosable from the surface that shows it"
+    )
+    assert "f\"{type(exc).__name__}: {exc}\"" in source, (
+        "the cause must include the exception TYPE -- four different "
+        "PermissionErrors reach this path and only the message tells them apart"
+    )
