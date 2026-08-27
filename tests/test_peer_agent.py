@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -348,3 +350,34 @@ def test_codex_empty_out_file_is_a_failure(monkeypatch, tmp_path):
     )
     assert rc == 2
     assert "[peer_agent] ERROR" in out
+
+
+def test_the_dispatch_ledger_stays_silent_under_pytest(tmp_path, monkeypatch):
+    """The suite must not file rows in the shared dispatch ledger.
+
+    peer_agent's tests drive `main()` directly. Without this guard every run
+    wrote real `started`/`finished` rows to the ledger beside the git common
+    dir, and the Stop hook then reported them as outstanding reviews to act on
+    -- pointing at `verdict.txt` files under a pytest `--basetemp`. Observed
+    2026-08-27: 18 rows, every one a test, surfaced as nine dispatches.
+
+    A ledger whose job is "what is genuinely outstanding" must not be writable
+    by the thing that exercises it.
+    """
+    pa = peer_agent  # loaded at module import above
+
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setattr(pa, "_ledger_path", lambda: ledger)
+
+    # pytest always sets this while a test is running.
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+    pa._ledger_note("started", "out.md")
+    pa._ledger_note("finished", "out.md", code=0)
+    assert not ledger.exists(), "the suite wrote to the real dispatch ledger"
+
+    # And it DOES write when not under pytest -- otherwise the guard is a
+    # permanent off switch and the hook has nothing to read.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    pa._ledger_note("started", "out.md")
+    assert ledger.exists()
+    assert json.loads(ledger.read_text(encoding="utf-8").strip())["out"] == "out.md"

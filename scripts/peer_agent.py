@@ -497,7 +497,19 @@ def _ledger_path() -> "Path | None":
 
 
 def _ledger_note(event: str, out: str | None, code: int | None = None) -> None:
-    """Append one line. Never raises: a ledger failure must not fail a dispatch."""
+    """Append one line. Never raises: a ledger failure must not fail a dispatch.
+
+    Silent under pytest. The suite drives `main()` directly, so without this
+    every run of tests/test_peer_agent.py files real rows in the shared ledger
+    and the Stop hook reports a fistful of `verdict.txt` files under a
+    `--basetemp` directory as outstanding reviews. Observed 2026-08-27: 18 rows,
+    all of them tests, surfaced as nine dispatches to act on.
+
+    A ledger whose job is "what is genuinely outstanding" must not be writable
+    by the thing that exercises it.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
     path = _ledger_path()
     if path is None:
         return
