@@ -154,6 +154,7 @@ def _run_branch(
     branch: BranchDefinition,
     *,
     authority_case: str = "active",
+    mock_provider: bool = False,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -240,13 +241,18 @@ def _run_branch(
             operation=operation,
         ).text
 
-    monkeypatch.setattr(call_module, "call_provider", governed_provider_call)
+    injected_provider_call = (
+        (lambda prompt, _system="", **_kwargs: f"fixture:{prompt}")
+        if mock_provider
+        else governed_provider_call
+    )
+    monkeypatch.setattr(call_module, "call_provider", injected_provider_call)
     bind_run_provider = api_runs._bind_run_provider_call
     monkeypatch.setattr(
         api_runs,
         "_bind_run_provider_call",
         lambda _ambient_provider_call, universe_id: bind_run_provider(
-            governed_provider_call,
+            injected_provider_call,
             universe_id,
         ),
     )
@@ -265,6 +271,35 @@ def _run_branch(
     response["terminal_status"] = record["status"]
     response["terminal_error"] = record["error"]
     return response, provider, captured
+
+
+def test_mock_foreground_run_needs_no_serving_binding_or_run_receipt(
+    tmp_path: Path,
+    monkeypatch,
+    authenticate_request,
+) -> None:
+    response, provider, captured = _run_branch(
+        tmp_path,
+        monkeypatch,
+        authenticate_request,
+        _branch(node_count=1),
+        authority_case="missing",
+        mock_provider=True,
+    )
+
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert provider.calls == []
+    assert len(captured["effects"]) == 1
+    db = authority_db_path(tmp_path)
+    if db.exists():
+        with sqlite3.connect(db) as conn:
+            receipt_table = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'provider_work_receipts'"
+            ).fetchone()[0]
+            assert receipt_table == 0 or conn.execute(
+                "SELECT COUNT(*) FROM provider_work_receipts"
+            ).fetchone()[0] == 0
 
 
 def test_foreground_run_launches_active_serving_provider_and_settles_once(
@@ -358,7 +393,9 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     )
 
     assert response["terminal_status"] == "failed"
-    assert "Provider authority admission failed" in response["terminal_error"]
+    assert "Connect your provider before running this universe" in response[
+        "terminal_error"
+    ]
     assert provider.calls == []
     assert captured["effects"] == []
 

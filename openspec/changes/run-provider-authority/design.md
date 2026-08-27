@@ -9,8 +9,10 @@ asynchronously, it is bound to a serving-agent binding authorizing only `convers
 carries a two-invocation limit incompatible with an N-call graph, and forwarding it would let the
 authoring agent convert conversational authority into recursive execution authority.
 
-Instead: **admission mints a durable, server-owned run authority; the executor mints one pid-bound,
-one-use `ProviderInvocationCarrier` per provider attempt.**
+Instead: **admission freezes the run subject without requiring provider authority. On the first
+actual provider attempt, the executor mints the durable, server-owned run authority, then one
+pid-bound, one-use `ProviderInvocationCarrier` per provider attempt.** A run that never attempts a
+provider call creates no run receipt and retains its previous provider-free behavior.
 
 ## Binding (all exact; any mismatch fails closed)
 Authenticated principal + actor; exact universe; exact `run_id`; exact branch definition plus
@@ -59,3 +61,5 @@ durable actual-usage settlement is still unfinished (the strict xfail in
 
 ## First slice admission
 Own-universe branch authored by the authenticated principal only.
+This restriction is evaluated lazily when the run first attempts provider execution; it is not a
+precondition for provider-free execution.

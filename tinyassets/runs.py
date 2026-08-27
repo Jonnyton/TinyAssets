@@ -3167,9 +3167,9 @@ def _execute_branch_core(
     )
 
     try:
-        from tinyassets.foreground_run_provider import admit_foreground_run_provider
+        from tinyassets.foreground_run_provider import prepare_foreground_run_provider
 
-        provider_call = admit_foreground_run_provider(
+        provider_call = prepare_foreground_run_provider(
             provider_call,
             run_id=run_id,
             branch=branch,
@@ -3596,9 +3596,9 @@ def resume_run(
 
     branch = BranchDefinition.from_dict(branch.to_dict())
     try:
-        from tinyassets.foreground_run_provider import admit_foreground_run_provider
+        from tinyassets.foreground_run_provider import prepare_foreground_run_provider
 
-        provider_call = admit_foreground_run_provider(
+        provider_call = prepare_foreground_run_provider(
             provider_call,
             run_id=run_id,
             branch=branch,

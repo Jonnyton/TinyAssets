@@ -144,7 +144,7 @@ class _ForegroundRunProviderSession:
         if not all(exact):
             raise PermissionError("foreground run state or immutable subject changed")
 
-    def admit(
+    def prepare(
         self,
         *,
         run_id: str,
@@ -152,6 +152,27 @@ class _ForegroundRunProviderSession:
         branch_version_id: str | None,
         allowed_statuses: set[str],
     ) -> None:
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+        if self._run_id:
+            raise ProviderAuthorityHeldError(_HELD)
+        try:
+            snapshot = branch.to_dict()
+            branch_def_id = str(snapshot.get("branch_def_id") or "").strip()
+            if not branch_def_id:
+                raise PermissionError("foreground Branch identity is missing")
+            self._run_id = run_id.strip()
+            self._branch_def_id = branch_def_id
+            self._branch_version_id = str(branch_version_id or "").strip()
+            self._branch_snapshot = snapshot
+            self._branch_digest = _content_digest(snapshot)
+            self._validate_run(allowed_statuses=allowed_statuses)
+        except ProviderAuthorityHeldError:
+            raise
+        except Exception as exc:
+            raise ProviderAuthorityHeldError(_HELD) from exc
+
+    def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
         from tinyassets.provider_assignment import provider_assignment_admission
         from tinyassets.provider_serving_binding import (
@@ -163,17 +184,14 @@ class _ForegroundRunProviderSession:
             SQLiteProviderWorkAuthorityStore,
         )
 
-        if self._run_id:
+        if not self._run_id or self._branch_snapshot is None:
             raise ProviderAuthorityHeldError(_HELD)
         try:
             self._validate_founder_home()
-            snapshot = branch.to_dict()
+            snapshot = self._branch_snapshot
             branch_author = str(snapshot.get("author") or "").strip()
             if branch_author != self._principal_id:
                 raise PermissionError("foreground Branch author is not the principal")
-            branch_def_id = str(snapshot.get("branch_def_id") or "").strip()
-            if not branch_def_id:
-                raise PermissionError("foreground Branch identity is missing")
             nodes = _prompt_nodes(snapshot)
             roles = tuple(
                 sorted(
@@ -185,15 +203,9 @@ class _ForegroundRunProviderSession:
             )
             if not set(roles).issubset(_SUPPORTED_ROLES):
                 raise PermissionError("foreground Branch requests an unsupported role")
-
-            self._run_id = run_id.strip()
-            self._branch_def_id = branch_def_id
-            self._branch_version_id = str(branch_version_id or "").strip()
-            self._branch_snapshot = snapshot
-            self._branch_digest = _content_digest(snapshot)
-            self._validate_run(allowed_statuses=allowed_statuses)
             if not nodes:
-                return
+                raise PermissionError("foreground provider attempt has no prompt node")
+            self._validate_run(allowed_statuses={"running"})
 
             agent = resolve_serving_agent_binding(
                 self._base_path,
@@ -322,7 +334,7 @@ class _ForegroundRunProviderSession:
                             claim_nonce_digest=nonce,
                             lease_seconds=3600,
                         )
-                        self._validate_run(allowed_statuses=allowed_statuses)
+                        self._validate_run(allowed_statuses={"running"})
                         conn.commit()
                     except Exception:
                         conn.rollback()
@@ -334,6 +346,13 @@ class _ForegroundRunProviderSession:
             raise
         except Exception as exc:
             raise ProviderAuthorityHeldError(_HELD) from exc
+
+    def _ensure_admitted(self) -> None:
+        if self._receipt is not None:
+            return
+        with self._lock:
+            if self._receipt is None:
+                self._admit()
 
     def _validate_receipt_parent(self, parent_binding: Any, assignment: Any) -> None:
         receipt = self._receipt
@@ -486,6 +505,38 @@ class _ForegroundRunProviderSession:
             Path(supplied_context.universe_dir) != self._universe_dir
         ):
             raise PermissionError("foreground provider universe cannot be substituted")
+        if self._closed:
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+
+            raise ProviderAuthorityHeldError(_HELD)
+
+        # Server-owned in-process callers may inject a provider stub instead of
+        # the production call primitive. Give that stub one fail-closed,
+        # unarmed invocation: a real ProviderRouter refuses before launch, while a
+        # mock returns without creating provider authority or a run receipt.
+        if getattr(self._provider_call, "__module__", "") != "tinyassets.providers.call":
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+            from tinyassets.providers.base import UniverseContext
+
+            try:
+                response = self._provider_call(
+                    prompt,
+                    system,
+                    role=role,
+                    config=config,
+                    operation=RUN_GRAPH_OPERATION,
+                    universe_context=UniverseContext(
+                        universe_dir=self._universe_dir,
+                        config=None,
+                    ),
+                    **kwargs,
+                )
+            except ProviderAuthorityHeldError:
+                pass
+            else:
+                return response, "mock"
+
+        self._ensure_admitted()
         with self._authorize_attempt(
             role=role,
             prompt=prompt,
@@ -581,7 +632,7 @@ def _session_from_provider_call(provider_call: Any) -> _ForegroundRunProviderSes
     return candidate if type(candidate) is _ForegroundRunProviderSession else None
 
 
-def admit_foreground_run_provider(
+def prepare_foreground_run_provider(
     provider_call: Any,
     *,
     run_id: str,
@@ -591,7 +642,7 @@ def admit_foreground_run_provider(
 ) -> Any:
     session = _session_from_provider_call(provider_call)
     if session is not None:
-        session.admit(
+        session.prepare(
             run_id=run_id,
             branch=branch,
             branch_version_id=branch_version_id,
@@ -608,7 +659,7 @@ def close_foreground_run_provider(provider_call: Any) -> None:
 
 __all__ = [
     "RUN_GRAPH_OPERATION",
-    "admit_foreground_run_provider",
     "close_foreground_run_provider",
     "new_foreground_run_provider_session",
+    "prepare_foreground_run_provider",
 ]

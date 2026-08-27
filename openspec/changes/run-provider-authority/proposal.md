@@ -23,10 +23,11 @@ authority was intended and correct; **not replacing it with a foreground-run aut
 unintended reachability regression.**
 
 ## What changes
-A founder-initiated run gets a durable, server-owned run authority — never a served request
-capability — from which the executor mints ONE pid-bound, one-use `ProviderInvocationCarrier` per
-provider attempt. `work_item_kind="run"` already exists in `storage/provider_work_authority.py`; this
-change completes that dormant lane.
+A founder-initiated run that actually calls a provider gets a durable, server-owned run authority —
+never a served request capability — from which the executor mints ONE pid-bound, one-use
+`ProviderInvocationCarrier` per provider attempt. Provider-free and explicitly mocked runs retain
+their previous behavior and create no run receipt. `work_item_kind="run"` already exists in
+`storage/provider_work_authority.py`; this change completes that dormant lane.
 
 ## Non-goals
 Branch schema, the X connection/grant, outbound consent, effect dispatch and the public MCP handles
