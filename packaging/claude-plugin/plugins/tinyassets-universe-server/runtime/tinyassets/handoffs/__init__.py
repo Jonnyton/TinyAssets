@@ -1,7 +1,7 @@
 """Real-world handoffs — declared external-effect outputs and their outcomes.
 
 Capability ``real-world-handoffs-and-outcomes`` of
-``openspec/changes/complete-independent-full-platform-targets`` (tasks 5.1, 5.2,
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets`` (tasks 5.1, 5.2,
 5.4).
 
 Module map:

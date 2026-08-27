@@ -9,7 +9,7 @@ Owner: lead + codex-gpt5-desktop
 > must be an ordinary 404 without redirect, alias, or compatibility behavior.
 > Current work uses the exact public name `TinyAssets`, the sole remote endpoint
 > `https://tinyassets.io/mcp`, and
-> `openspec/changes/reconcile-external-connector-manifests/`.
+> `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`.
 >
 > Do not execute the phases or implementation cards below. Reframe any
 > still-relevant host-discovery work through the OpenSpec change and current

@@ -1,5 +1,5 @@
 """Connector tool-selection accuracy harness — change
-``openspec/changes/connector-tool-selection-accuracy``.
+``openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy``.
 
 Proves the harness enforces the delta spec's four requirements as *code*, not as
 prose: dataset integrity, separate top-1 / opening-turn rates with no partial

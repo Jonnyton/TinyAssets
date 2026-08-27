@@ -50,7 +50,7 @@ VERDICT: reject
    - GitHub `#1489` is an unrelated merged Agent Village recovery [PR](https://github.com/Jonnyton/TinyAssets/pull/1489), not the cited LAN/CSRF vulnerability.
    - Cross-origin session fixation is already regression-tested at [tests/test_onboarding_session_refresh.py](C:/Users/Jonathan/Projects/wf-harness-reset/tests/test_onboarding_session_refresh.py:298).
    - The raw refresh-token JSON concern is real at [tinyassets/onboarding/__init__.py](C:/Users/Jonathan/Projects/wf-harness-reset/tinyassets/onboarding/__init__.py:72), but it must be split from the already-fixed CSRF claim.
-   - OS sandbox work already has an owning [OpenSpec change](C:/Users/Jonathan/Projects/wf-harness-reset/openspec/changes/engine-os-sandbox/tasks.md:1).
+   - OS sandbox work already has an owning [OpenSpec change](C:/Users/Jonathan/Projects/wf-harness-reset/openspec/changes/archive/2026-08-26-engine-os-sandbox/tasks.md:1).
    - The T2/write-ACL flaw is already recorded in [byo-llm-deposit-surface/design.md](C:/Users/Jonathan/Projects/wf-harness-reset/openspec/changes/byo-llm-deposit-surface/design.md:100).
    - `_current_actor` is already an as-built limitation in [paid-market-economy/spec.md](C:/Users/Jonathan/Projects/wf-harness-reset/openspec/specs/paid-market-economy/spec.md:29).
 

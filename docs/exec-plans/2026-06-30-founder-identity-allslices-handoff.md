@@ -17,7 +17,7 @@ The North Star for every decision here. **You're building a personal AI universe
 - **Stable bones (immutable `u-` + ULID id), fluid face (learned name).** Ownership ≠ visibility (`public_read` is the explicit, confirmation-gated rule).
 - Failure mode to avoid on the app: "a login screen → a generic ChatGPT-with-a-skin chatbox."
 
-Canonical design: `docs/design-notes/2026-06-26-founder-and-universe-identity.md`, `openspec/changes/universe-creation/`, `openspec/changes/universe-personification/`, `docs/reference/workos-authkit-integration.md`, and the app-experience note `docs/design-notes/2026-06-30-tinyassets-universe-app-experience.md` (landed on main via #1433).
+Canonical design: `docs/design-notes/2026-06-26-founder-and-universe-identity.md`, `openspec/changes/archive/2026-08-26-universe-creation/`, `openspec/changes/universe-personification/`, `docs/reference/workos-authkit-integration.md`, and the app-experience note `docs/design-notes/2026-06-30-tinyassets-universe-app-experience.md` (landed on main via #1433).
 
 ---
 

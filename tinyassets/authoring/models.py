@@ -1,6 +1,6 @@
 """Authoring domain model — sessions, events, versions, and pure validation.
 
-Task 4.1 of ``openspec/changes/complete-independent-full-platform-targets``
+Task 4.1 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``
 (capability ``node-authoring-and-autoresearch``). No I/O lives here: this module
 is dataclasses plus pure functions so validation is testable without a store and
 reusable by the store, the service, and the router half.

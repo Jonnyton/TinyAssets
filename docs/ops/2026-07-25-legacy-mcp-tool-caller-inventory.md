@@ -4,7 +4,7 @@
 > inventory below records what was true when written; it is not a live runbook.
 
 
-**Change:** `openspec/changes/retire-legacy-live-mcp-tools` — evidence for tasks 2.1, 2.2, 2.3.
+**Change:** `openspec/changes/archive/2026-08-26-retire-legacy-live-mcp-tools` — evidence for tasks 2.1, 2.2, 2.3.
 **Date:** 2026-07-25. **Provider:** claude-code (Opus 5), branch `claude/o5-retire-inventory`.
 **Revision:** **v4** — v2 (`9bd88a07`) reworked v1 (`18379010`) after an opposite-provider review
 returned **reject**; v3 folded a second review's **adapt** corrections; and v4 folds the third
@@ -69,7 +69,7 @@ not as advisory notes.
 
 **Collision check** (`scripts/claim_check.py --check-files`) for this artifact's write-set
 (`docs/ops/2026-07-25-legacy-mcp-tool-caller-inventory.md`,
-`openspec/changes/retire-legacy-live-mcp-tools/tasks.md`): **CLEAR — no overlap with any
+`openspec/changes/archive/2026-08-26-retire-legacy-live-mcp-tools/tasks.md`): **CLEAR — no overlap with any
 claimed/in-flight row.** This inventory lane claims no runtime files, so the four open-PR
 collisions above cannot be resolved here; they transfer to the implementation lane.
 

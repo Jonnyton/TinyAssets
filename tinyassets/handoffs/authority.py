@@ -1,6 +1,6 @@
 """Handoff authority — resolved from persisted, authenticated records only.
 
-Task 5.2 of ``openspec/changes/complete-independent-full-platform-targets``
+Task 5.2 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``
 (capability ``real-world-handoffs-and-outcomes``).
 
 Every fact this module returns is read from something durable:

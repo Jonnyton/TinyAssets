@@ -2,7 +2,7 @@
 ``extensions`` dispatch table that the canonical router half consumes.
 
 Tasks 4.2 and 4.3 of
-``openspec/changes/complete-independent-full-platform-targets``.
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``.
 
 Public behavior composes under the canonical handle surface (design.md): these
 are ``extensions`` *actions*, never new advertised MCP handles, and the

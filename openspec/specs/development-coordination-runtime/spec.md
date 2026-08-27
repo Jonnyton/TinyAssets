@@ -29,8 +29,8 @@ The worktree status tool SHALL combine Git worktree state, branch/upstream state
 
 #### Scenario: Purpose exists but integration route is missing
 
-- **WHEN** a clean local branch has `_PURPOSE.md` but no upstream, pull request, or STATUS reference
-- **THEN** the tool reports that the lane needs PR or STATUS promotion
+- **WHEN** a clean local branch has `_PURPOSE.md` but no upstream or pull request
+- **THEN** the tool reports that the lane needs PR promotion
 
 ### Requirement: Provider Context Is Recovered At Lifecycle Checkpoints
 
@@ -206,18 +206,17 @@ untracked changes for triage without recommending that they be built.
 - **AND** one has fewer unchecked tasks than the other
 - **THEN** the smaller claimed change is recommended first
 
-#### Scenario: Only untracked changes remain
+#### Scenario: No change has an owning branch
 
-- **WHEN** every active change is absent from the STATUS Work table
+- **WHEN** no active change is named by any git branch
 - **THEN** the inspector reports no build recommendation
-- **AND** it directs the provider to triage coordination state first
 
 ### Requirement: OpenSpec delivery flow supports exact-ref inspection
 The OpenSpec flow inspector SHALL support a caller-selected validated Git ref and SHALL classify active change artifacts, task counts, ownership, and recommendations from one immutable snapshot of that ref. Ref inspection MUST remain read-only, MUST NOT move the working tree, and MUST fail closed rather than mixing working-tree and ref content.
 
 #### Scenario: Detached controller is behind current main
-- **WHEN** the working tree contains older OpenSpec or STATUS content and the caller selects `origin/main`
-- **THEN** the inspector reports only the active changes, tasks, rows, and classifications stored at `origin/main`
+- **WHEN** the working tree contains older OpenSpec content and the caller selects `origin/main`
+- **THEN** the inspector reports only the active changes, tasks, and classifications stored at `origin/main`
 
 #### Scenario: Ref snapshot is unavailable
 - **WHEN** the selected ref cannot be validated or its coordination snapshot cannot be read
@@ -226,14 +225,14 @@ The OpenSpec flow inspector SHALL support a caller-selected validated Git ref an
 
 ### Requirement: Gate-defining and authority-critical changes need an exact-head review receipt
 
-A pull request that edits the files DEFINING the required-test gate
-(`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
-`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`,
-`scripts/drain_review_gate.py`) or the authority-critical product paths
-(`tinyassets/auth/`, `tinyassets/credential_vault.py`,
-`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`) SHALL
-carry an exact-head review receipt in the pull-request BODY naming an APPROVE
-verdict, the unchanged head SHA, and a durable artifact. The check SHALL run
+A pull request touching gate-defining or authority-critical paths SHALL carry an
+exact-head review receipt in the pull-request BODY naming an APPROVE verdict, the
+unchanged head SHA, and a durable artifact. Gate-defining paths are
+`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
+`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`, and
+`scripts/drain_review_gate.py`; authority-critical paths are `tinyassets/auth/`,
+`tinyassets/credential_vault.py`, and
+`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`. The check SHALL run
 from the trusted base checkout so a pull request cannot weaken the rule judging
 it. Matching SHALL cover renames (via the previous path) and SHALL be
 case-insensitive, and SHALL include the packaging runtime mirror of those paths.
@@ -243,6 +242,16 @@ tightens the ratchet; any addition SHALL keep the receipt requirement.
 #### Scenario: Renaming a protected file does not evade the receipt
 - **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
 - **THEN** the guard reports the authority hit and requires the receipt
+
+### Requirement: Worktree inspection supports narrowed provider scope
+
+The worktree status tool SHALL accept a provider filter and MUST apply it before
+running per-worktree probes, so a narrowed inspection does not pay the cost of
+lanes it will discard.
+
+#### Scenario: Filtered inspection probes only matching lanes
+- **WHEN** the tool is invoked with a provider filter
+- **THEN** only lanes matching that provider are probed and reported
 
 ### Requirement: Peer dispatch runs from a lane-local worktree with bounded autonomy
 

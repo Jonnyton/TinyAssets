@@ -6,7 +6,7 @@
 `origin/main` `46cbb08c4227a20f313269f7f89b08c2c37a626b`
 **Finding:** current shipped source contradicts the host-approved architecture;
 the cheat loop is disabled in some places but is not deleted from the build.
-**Target:** `openspec/changes/retire-cheat-loop/`
+**Target:** `openspec/changes/archive/2026-08-26-retire-cheat-loop/`
 
 ## Decision
 

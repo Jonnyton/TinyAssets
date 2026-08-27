@@ -1,5 +1,5 @@
 """Interlocutor identity tiers — task 6.6 of
-``openspec/changes/reconcile-universe-personification-relay``.
+``openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay``.
 
 Discharges the delta requirement *"Interlocutor identity binds to a tier before
 the universe answers"* against the **landed** ``universe-visibility`` machinery

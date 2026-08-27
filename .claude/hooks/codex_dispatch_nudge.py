@@ -87,8 +87,9 @@ def render(label: str, instruction: str) -> str:
         (
             f"Codex judgment-class signal: {label}.",
             f"  → {instruction}",
-            "  BACKGROUND offload on Codex's quota: `python scripts/peer_agent.py codex",
-            '  --out <lane-local-file> --prompt-file <brief.md>` in a background Bash call',
+            "  BACKGROUND offload on Codex's quota, one line:",
+            "  `python scripts/peer_agent.py codex --out <file> --prompt-file <brief.md>`",
+            "  run via a background Bash call",
             "  (the wrapper feeds Codex via stdin — never multi-line argv — and",
             "  fail-closes with `[peer_agent] ERROR` and a non-zero exit).",
             "  Inline `mcp__codex__codex` only for a quick blocking gate.",
