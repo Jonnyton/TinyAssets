@@ -333,7 +333,7 @@
 - Purpose: add a closed, read-only destination reconciler for one immutable automation effect identity without creating target-local authority
 - Review gate: approved Ringer implications; TDD; independent exact-head review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-20260730/_PURPOSE.md`
-- Related implications: `docs/audits/2026-07-30-ringer-production-orchestration-implications.md`; `openspec/changes/activate-main-universe-spec-drain/`
+- Related implications: `docs/audits/2026-07-30-ringer-production-orchestration-implications.md`; `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/`
 - Ship/abandon: PR #1951/#1953/#1954 landed; keep dark until task 2.1 consumes the adapter through the outbound owner
 
 ## 2026-07-30 14:00 - create Ringer production orchestration
@@ -347,7 +347,7 @@
 - Purpose: task 1.1 established the dark generic hostless-production contract; task 1.2 waits on its named authority, reconciliation, and safe-execution prerequisites
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-production-orchestration-20260730/_PURPOSE.md`
 - Memory refs: `docs/audits/2026-07-28-openspec-agent-throughput-implications.md`; `ideas/INBOX.md` 2026-07-29 backlog-refinery capture
-- Related implications: `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`; `openspec/changes/activate-main-universe-spec-drain/`
+- Related implications: `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`; `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/`
 - Idea feed refs: separate backlog refinery from delivery executor; measure claimable-pressure gain
 - Ship/abandon: PR #1949 landed task 1.1; keep the lane parked until epoch-2/background-provider/outbound-reconciliation prerequisites are available.
 
@@ -371,9 +371,9 @@ GitHub alignment:
 - A worktree is the local checkout for one Git branch.
 - A branch folds back through a GitHub PR, normally draft while blocked or
   under review and ready only when verification gates pass.
-- `STATUS.md` owns claims and file collision boundaries; GitHub owns branch,
+- Branches and open PRs own claims and collision boundaries; GitHub owns branch,
   commit, PR, and merge history.
-- A branch is not memory. `_PURPOSE.md`, this inventory, `STATUS.md`,
+- A branch is not memory. `_PURPOSE.md`, this inventory, `openspec/changes/`,
   idea files, and draft PR bodies are the durable memory layer.
 - Lane state is one of: Active lane, Parked draft lane, Idea/reference only,
   Abandoned/swept.
@@ -602,7 +602,7 @@ Notes:
 
 - `AGENTS.md` -> "GitHub-Aligned Worktree Discipline".
 - `scripts/worktree_status.py` -> current-state scanner.
-- `scripts/claim_check.py` -> STATUS.md file-collision scanner.
+- `scripts/worktree_status.py` -> lane diagnostics (claim_check.py and STATUS.md were retired 2026-08-25).
 - `scripts/provider_context_feed.py` -> lifecycle feed for provider memories,
   loose ideas, research artifacts, automation notes, and worktree handoffs at
   claim/plan/build/review/foldback/memory-write checkpoints.

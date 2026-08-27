@@ -128,7 +128,7 @@ pins the closed direction and lets the open direction drift to zero.
    `write_graph target=automation operation=create`:
    - `definition.repository` = `jonnyton/tinyassets`
    - `definition.accepted_spec_ref` =
-     `openspec/changes/activate-main-universe-spec-drain`
+     `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain`
    - `definition.branch_version_id` = `745e637dd8fb@99cb5a8f`
    - `accepted_spec_content` = the accepted spec text (required, non-empty)
    - `cadence_seconds` = 300

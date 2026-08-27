@@ -63,7 +63,7 @@ fact, the desired onboarding beat.
 
 ## Where it lives
 
-- Spec: `openspec/changes/universe-creation/specs/universe-creation/spec.md`
+- Spec: `openspec/changes/archive/2026-08-26-universe-creation/specs/universe-creation/spec.md`
   ("First MCP contact" requirement + scenarios).
 - Code: `tinyassets/api/status.py` (`get_status` `allow_first_contact_birth` +
   `ensure_founder_home`), `tinyassets/daemon_server.py`

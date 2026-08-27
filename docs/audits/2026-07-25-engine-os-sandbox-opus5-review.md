@@ -6,7 +6,7 @@
 supersession; not an implementation approval
 
 **Scope:** PR #1573 and the smallest spec-only in-place supersession of
-`openspec/changes/engine-os-sandbox/`
+`openspec/changes/archive/2026-08-26-engine-os-sandbox/`
 
 **Runtime/build authority:** **none**
 
@@ -52,10 +52,10 @@ Evidence was re-read on Windows in
 |---|---|
 | Current main | `git fetch --prune origin`; `origin/main=d454a5c5108ad2a4eda70201811640849e25e15b`, committed `2026-07-25T22:53:50-07:00` (`spec: bind authenticated host principal to account (#1753)`). |
 | Audit worktree | Local `HEAD=0d32638bc8b10f2621d14992af0bca1e6f2f2652`, a coordination-only claim commit above current main. Existing `.claude/.fleet_*` edits were present and were not touched. |
-| PR #1573 | GitHub metadata read `2026-07-25`: open draft, head `3de45c576ac27bc2c011fe410bacbea4bf732b0e`, historical base OID `2b9639a30d55222bca9ac78c0057d6c08c50cb6e`, updated `2026-07-26T02:46:37Z`. Diff is 164 additions across the five files under `openspec/changes/engine-os-sandbox/`; no runtime or tests. |
-| Provider-authority owner | PR #1784 merged as `620fed5acf17d23717ccebd3811cb4c741e16b1a` at `2026-07-25T21:39:47-07:00`; `git merge-base --is-ancestor` confirms it is in current `origin/main`. Its active, unarchived change is `openspec/changes/constrain-set-engine-provider-authority/`. |
+| PR #1573 | GitHub metadata read `2026-07-25`: open draft, head `3de45c576ac27bc2c011fe410bacbea4bf732b0e`, historical base OID `2b9639a30d55222bca9ac78c0057d6c08c50cb6e`, updated `2026-07-26T02:46:37Z`. Diff is 164 additions across the five files under `openspec/changes/archive/2026-08-26-engine-os-sandbox/`; no runtime or tests. |
+| Provider-authority owner | PR #1784 merged as `620fed5acf17d23717ccebd3811cb4c741e16b1a` at `2026-07-25T21:39:47-07:00`; `git merge-base --is-ancestor` confirms it is in current `origin/main`. Its active, unarchived change is `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`. |
 | Supplied Opus artifact | `C:\Users\Jonathan\AppData\Local\Temp\tinyassets-opus5\sandbox-successor-result.md`, 111 lines, says it reviewed `origin/main@b759682f`. Current main is 14 commits ahead. A path-limited `git diff b759682f..origin/main` over every runtime/spec file reviewed here was empty. |
-| C5 contradiction | `git show b759682f:openspec/changes/constrain-set-engine-provider-authority/specs/provider-routing/spec.md` already contains `Requirement: Bubblewrap readiness...` and calls the probe a CLI-readiness heuristic. This is not later drift; it is an error in the supplied C5 owner conclusion. |
+| C5 contradiction | `git show b759682f:openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/specs/provider-routing/spec.md` already contains `Requirement: Bubblewrap readiness...` and calls the probe a CLI-readiness heuristic. This is not later drift; it is an error in the supplied C5 owner conclusion. |
 
 Commands used as evidence included `gh pr view 1573/1784 --json ...`,
 `gh pr diff 1573 --patch`, exact `git show`/ancestry/diff checks, scoped
@@ -226,7 +226,7 @@ requirements; it cannot layer aspirational prose beside them:
 
 ## Smallest in-place supersession
 
-Retain `openspec/changes/engine-os-sandbox/` and its historical
+Retain `openspec/changes/archive/2026-08-26-engine-os-sandbox/` and its historical
 `created: 2026-07-22`. Replace the remaining artifacts as follows:
 
 | Artifact | Smallest current-main action |

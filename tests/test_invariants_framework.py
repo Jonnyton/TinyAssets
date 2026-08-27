@@ -16,8 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNNER = REPO_ROOT / "scripts" / "invariants_run.py"
 sys.path.insert(0, str(REPO_ROOT))
@@ -80,12 +78,23 @@ def test_check_duration_is_populated():
     assert result.duration_seconds >= 0
 
 
-def test_check_exception_downgrades_to_skipped():
-    """A crashing check() must become SKIPPED rather than propagate."""
+def test_check_exception_becomes_violated_not_skipped():
+    """A crashing check() must VIOLATE, not skip.
+
+    Changed 2026-08-25 (harness reset). This used to downgrade to SKIPPED so a
+    broken invariant could not wedge every commit -- but SKIPPED keeps
+    --check-all green, so a broken check reports as "fine". That is exactly how
+    renaming COMBINED_SOFT_BYTES silently disarmed the context-budget gate: the
+    invariant raised AttributeError, printed SKIPPED, and exited 0.
+
+    SKIPPED is now reserved for a deliberate, explicit skip (target file absent,
+    Chrome not running). A crash is a broken gate and must be loud -- AGENTS.md
+    Hard Rule 8.
+    """
     inv = _CheckCrashes()
     result = inv.check()
 
-    assert result.status == Status.SKIPPED
+    assert result.status == Status.VIOLATED
     assert "RuntimeError" in result.message
     assert "boom" in result.message
 
@@ -214,32 +223,38 @@ def test_mirror_parity_ignores_canonical_only_files(tmp_path, monkeypatch):
 # -------------------------------------------------------------------
 
 
-def test_concerns_staleness_never_writes_to_status():
-    """Critical contract: check() must not mutate STATUS.md."""
-    from scripts.invariants import concerns_staleness as cs
-    status_path = cs.REPO_ROOT / "STATUS.md"
-    if not status_path.exists():
-        pytest.skip("STATUS.md not present in this checkout")
+def test_context_budget_check_never_mutates_the_files_it_measures():
+    """Critical contract: check() reads, never writes.
 
-    before_bytes = status_path.read_bytes()
-    before_mtime = status_path.stat().st_mtime_ns
+    Replaces the identical contract test for concerns-staleness, which was
+    deleted with STATUS.md on 2026-08-25. The contract outlived the invariant.
+    """
+    from scripts.invariants import context_budget as cb
 
-    # Run the invariant against the live STATUS.md.
-    cs.ConcernsStalenessInvariant().check()
+    targets = [cb.REPO_ROOT / "AGENTS.md", cb.REPO_ROOT / "CLAUDE.md"]
+    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in targets if p.exists()]
+    assert before, "expected at least one always-loaded file to measure"
 
-    after_bytes = status_path.read_bytes()
-    after_mtime = status_path.stat().st_mtime_ns
-    assert before_bytes == after_bytes
-    assert before_mtime == after_mtime
+    cb.ContextBudgetInvariant().check()
+
+    after = [(p.read_bytes(), p.stat().st_mtime_ns) for p in targets if p.exists()]
+    assert before == after
 
 
-def test_concerns_staleness_auto_heal_is_disabled():
-    from scripts.invariants import concerns_staleness as cs
+def test_context_budget_auto_heal_is_disabled():
+    """Deciding WHICH content to move is editorial, so a human does it."""
+    from scripts.invariants import context_budget as cb
 
-    inv = cs.ConcernsStalenessInvariant()
+    inv = cb.ContextBudgetInvariant()
     assert inv.auto_heal is False
-    heal = inv.heal()
-    assert heal.healed is False
+    assert inv.heal().healed is False
+
+
+def test_context_budget_blocks_at_pre_commit():
+    """The pawl. A budget that only warns is what let 17.6 KB become 62 KB."""
+    from scripts.invariants import context_budget as cb
+
+    assert cb.ContextBudgetInvariant().pre_commit_scope is True
 
 
 # -------------------------------------------------------------------
@@ -258,7 +273,8 @@ def test_cli_list_includes_every_invariant():
     result = _run_cli("--list")
 
     assert result.returncode == 0, result.stderr
-    for name in ("mirror-parity", "mojibake", "tab-single", "concerns-staleness"):
+    for name in ("mirror-parity", "mojibake", "tab-single", "context-budget",
+                 "cross-provider-drift", "skills-valid"):
         assert name in result.stdout
 
 

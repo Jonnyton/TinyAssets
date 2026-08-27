@@ -11,8 +11,8 @@ Promoted end-state 2026-04-19 from the four flat top-level modules
 ``tinyassets/bid_ledger.py`` deprecation shim + ``tinyassets/settlements.py``)
 into this single package.
 
-Per the host's foundation-end-state rule (``CLAUDE_LEAD_OPS.md``
-§Foundation End-State): no compat shims at the old top-level paths.
+Per the host's foundation-end-state rule (``PLAN.md``
+§Cross-Cutting Principles): no compat shims at the old top-level paths.
 Any remaining external callers must migrate to ``tinyassets.bid.*``.
 """
 

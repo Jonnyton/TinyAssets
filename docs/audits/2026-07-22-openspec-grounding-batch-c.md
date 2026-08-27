@@ -156,10 +156,10 @@ single-terminal receipts, with the named adversarial/concurrency tests.
 
 ## Active-change overlap
 
-- `openspec/changes/build-forward-platform-capabilities/specs/paid-market-economy/spec.md:3-19` adds two FUTURE transaction-transport/differential-test requirements.
-- `openspec/changes/test-identity-and-reset/specs/universe-lifecycle-and-soul/spec.md:49-83` adds five FUTURE scoped-test-reset scenarios.
-- `openspec/changes/universe-creation/specs/universe-lifecycle-and-soul/spec.md:3-45` adds four FUTURE lifecycle requirements and eight scenarios.
-- `openspec/changes/reconcile-universe-personification-relay/specs/universe-personification-and-relay/spec.md:13-176` adds seven FUTURE personification requirements and seventeen scenarios.
+- `openspec/changes/archive/2026-08-26-build-forward-platform-capabilities/specs/paid-market-economy/spec.md:3-19` adds two FUTURE transaction-transport/differential-test requirements.
+- `openspec/changes/archive/2026-08-26-test-identity-and-reset/specs/universe-lifecycle-and-soul/spec.md:49-83` adds five FUTURE scoped-test-reset scenarios.
+- `openspec/changes/archive/2026-08-26-universe-creation/specs/universe-lifecycle-and-soul/spec.md:3-45` adds four FUTURE lifecycle requirements and eight scenarios.
+- `openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/specs/universe-personification-and-relay/spec.md:13-176` adds seven FUTURE personification requirements and seventeen scenarios.
 - No active delta targets `provider-routing`, `public-website-surface`, `shared-goals-and-convergence`, `uptime-and-alarms`, or `wiki-commons`.
 
 ## Material shipped behavior still lacking canonical behavioral coverage

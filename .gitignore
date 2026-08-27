@@ -96,3 +96,14 @@ Community_Branches_Plan.docx
 junit.xml
 .codex-*.txt
 .review/
+.tmp/
+.agents/supervisor/
+
+# Business / fundraising material — NEVER committed. This repo is PUBLIC.
+# These live untracked in the primary checkout and were unignored until
+# 2026-08-26, which meant a single `git add -A` would have published a cap
+# table, financials, and legal documents. Ignored here so the mistake is not
+# available to make.
+data-room/
+pitch-deck/
+investor-list/

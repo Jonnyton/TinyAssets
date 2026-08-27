@@ -3,7 +3,7 @@
 Status: maintained distribution planning artifact; not a support-claim source.
 Date: 2026-05-01
 Current TinyAssets contract checked: 2026-07-24 against
-`openspec/changes/reconcile-external-connector-manifests/`.
+`openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`.
 Vendor-specific claims retain their dated proof and require fresh revalidation.
 
 This matrix keeps TinyAssets customer planning broader than Claude and OpenAI.
@@ -120,4 +120,4 @@ or another provider alone grants TinyAssets account authority.
 - LM Studio MCP: <https://lmstudio.ai/docs/app/mcp>
 - VS Code/GitHub Copilot MCP: <https://code.visualstudio.com/docs/copilot/customization/mcp-servers>
 - Current TinyAssets connector contract:
-  `openspec/changes/reconcile-external-connector-manifests/`
+  `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`

@@ -36,9 +36,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.invariants import Invariant, Status  # noqa: E402
-from scripts.invariants.concerns_staleness import (  # noqa: E402
-    ConcernsStalenessInvariant,
-)
 from scripts.invariants.context_budget import (  # noqa: E402
     ContextBudgetInvariant,
 )
@@ -58,7 +55,6 @@ def _all_invariants() -> list[Invariant]:
         MojibakeInvariant(),
         SkillsValidInvariant(),
         TabSingleInvariant(),
-        ConcernsStalenessInvariant(),
         ContextBudgetInvariant(),
     ]
 

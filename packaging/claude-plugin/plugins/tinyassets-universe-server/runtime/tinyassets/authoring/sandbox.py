@@ -1,7 +1,7 @@
 """Authoring sandbox policy primitives — budgets, network decisions, effect
 simulation, and per-run confirmation for real effects.
 
-Task 4.2 of ``openspec/changes/complete-independent-full-platform-targets``.
+Task 4.2 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``.
 
 **Composable primitives, not a prebuilt sandbox.** Per the host's 2026-07-25
 primitives principle, this module ships the smallest irreducible decisions an

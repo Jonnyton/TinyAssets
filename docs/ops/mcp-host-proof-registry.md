@@ -39,7 +39,7 @@ spec" or "planned", not "works".
 
 | Gate | Status | Evidence | Notes |
 |---|---|---|---|
-| Canonical remote product | reconciliation/apply in progress | `openspec/changes/reconcile-external-connector-manifests/` defines exact name, `/mcp`, exact seven, and auth boundary | Require fresh live protocol and rendered-chatbot proof after apply |
+| Canonical remote product | reconciliation/apply in progress | `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/` defines exact name, `/mcp`, exact seven, and auth boundary | Require fresh live protocol and rendered-chatbot proof after apply |
 | Retired route family | retirement proof pending | Required result is ordinary 404 for every `/mcp-directory*` request | No redirect, alias, compatibility, or preservation gate |
 | Official MCP Registry metadata | stale historical registration requires replacement or withdrawal | 2026-05-01 publication evidence is preserved below | Current registration must use exact name `TinyAssets`, `/mcp`, exact seven, and truthful OAuth |
 | OpenAI/Claude submission metadata | rebuild and resubmit required | Current work is tracked by the OpenSpec change | Do not reuse the historical 11-tool/no-auth packet |
@@ -187,7 +187,7 @@ Use host-specific wording, but keep the invoked canonical action explicit:
 ## Open Follow-Ups
 
 Current execution source:
-`openspec/changes/reconcile-external-connector-manifests/`.
+`openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`.
 
 - Retire `/mcp-directory*` to ordinary 404 behavior and record exact absence
   proof.

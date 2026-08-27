@@ -88,7 +88,7 @@ SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "coordination",
         re.compile(
-            r"\b(worktree|STATUS\.md|PLAN\.md|PR|pull request|branch|Depends|"
+            r"\b(worktree|PLAN\.md|PR|pull request|branch|Depends|"
             r"claim|review gate|fold-back|active lane|parked draft|orphaned|"
             r"abandoned|swept|live-safe|live deploy|dirty checkout)\b",
             re.IGNORECASE,
@@ -563,7 +563,7 @@ def render_text(candidates: list[FeedCandidate], *, phase: str, provider: str) -
         "",
         "Use this feed at lifecycle checkpoints: claim, plan, build, review,",
         "foldback, and after writing provider memories or idea artifacts.",
-        "Promote relevant candidates into STATUS.md/worktree/PR state before",
+        "Promote relevant candidates into worktree/PR state before",
         "building. ideas/INBOX.md remains idea-feed context, not build authority.",
         "",
     ]

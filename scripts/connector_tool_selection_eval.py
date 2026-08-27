@@ -1,6 +1,6 @@
 """Connector tool-selection accuracy — dataset loader, scorer, and baseline gate.
 
-Instrument for the change ``openspec/changes/connector-tool-selection-accuracy``,
+Instrument for the change ``openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy``,
 which carries task 6.3 of ``reconcile-universe-personification-relay`` (itself the
 residual of retired task 2.9).
 

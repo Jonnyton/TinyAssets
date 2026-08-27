@@ -1,7 +1,7 @@
 """Handoff-effect lifecycle models — declarations, records, transitions, and the
 pure validation/identity helpers the store and service share.
 
-Task 5.1 of ``openspec/changes/complete-independent-full-platform-targets``
+Task 5.1 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``
 (capability ``real-world-handoffs-and-outcomes``).
 
 This module is **pure**: no I/O, no clock reads beyond what a caller passes in,

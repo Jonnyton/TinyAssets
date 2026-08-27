@@ -1,6 +1,6 @@
 ---
 name: website-editing
-description: "Conventions for editing the TinyAssets production React/Next site and retained Svelte rollback site. Use for website copy, components, routes, content, styling, captures of real chatbot conversations, preview, or deploy. Covers production-first parity, preview loops, transparent-capture conventions, build/ship pipeline, FUSE quirks for Cowork, and auto-iteration on recurring failures."
+description: "Conventions for editing the TinyAssets production React/Next site and retained Svelte rollback site. Use for website copy, components, routes, content, styling, captures of real chatbot conversations, preview, or deploy. Covers production-first parity, preview loops, transparent-capture conventions, build/ship pipeline, and auto-iteration on recurring failures."
 ---
 
 # Website editing
@@ -10,7 +10,7 @@ description: "Conventions for editing the TinyAssets production React/Next site 
 `WebSite/site/` is the retained Svelte rollback source and deploys only through
 an explicit dispatch of `deploy-site.yml`. These are project-level website
 rules — they apply equally to every provider (Codex, Cursor, Aider, Claude Code,
-Cowork), but the detailed rules live here so `AGENTS.md` can stay lean. When in
+), but the detailed rules live here so `AGENTS.md` can stay lean. When in
 doubt, add website conventions to this skill and keep provider-specific files
 as pointers or harness notes.
 
@@ -20,13 +20,6 @@ as pointers or harness notes.
 2. **Edit and build React first.** Preview `WebSite/site-react/` at `http://localhost:3000/`; use `WebSite/site-react/PREVIEW.md` for the production-exact and hosted paths.
 3. **Preserve Svelte rollback parity.** Mirror the intended user-visible behavior into `WebSite/site/` and preview it at the hard-pinned `http://localhost:5173/` through `WebSite/preview.bat`.
 4. **Read `WebSite/DEPLOY.md`** if you might ship — it covers the normal review/merge path, manual React deployment, dispatch-only Svelte rollback, and live verification.
-5. **Read `WebSite/HOOKS_FUSE_QUIRKS.md`** if you're in Cowork — Edit/Write silently truncate on the FUSE mount; **for any existing file, use bash heredoc**:
-   ```bash
-   cat > "/full/path/to/file" << 'FILE_EOF'
-   ... full file content ...
-   FILE_EOF
-   ```
-   Verify with `wc -l` + `tail`. Other providers (Codex, Cursor, Claude Code on Windows) don't have this issue.
 
 ## The iteration loop
 
@@ -61,7 +54,7 @@ Required when capturing a real conversation for the site:
 1. **Every word verbatim.** Use the Claude in Chrome browser tools to drive the actual chat in claude.ai. Use `get_page_text` to extract the rendered conversation. Don't reword. Don't shorten. Don't "tighten the prose."
 2. **Mirror the source's disclosure layers exactly.** Claude.ai uses summary chips that toggle to reveal thought traces, and inside long traces it has secondary "Show more / Show less" buttons. The website should mirror **both layers** with the same defaults — chips closed by default, long thoughts truncated by default with the same Show more cut.
 3. **Click every disclosure before claiming you have the full text.** Each chip has its own Show more. Re-extract via `get_page_text` after every expansion to make sure you've got it all.
-4. **Render the full diagram(s).** Real diagrams have specific node counts, edge labels, color groups. Hand-rolled SVGs are fine (mermaid.js npm install can be slow on Cowork) — but the SVG must be faithful to the source: same node count, same labels, same back-edges, same color groups (blue branch, warm gate, green live/done, dashed planned/terminal).
+4. **Render the full diagram(s).** Real diagrams have specific node counts, edge labels, color groups. Hand-rolled SVGs are fine — but the SVG must be faithful to the source: same node count, same labels, same back-edges, same color groups (blue branch, warm gate, green live/done, dashed planned/terminal).
 5. **Anchor section verbatim.** When the chatbot lists "Anchors used: Goal X — …", reproduce the prose as a single block, not a bullet summary. The "honest caveat" line gets its own visually distinct callout.
 6. **Footer line names the source.** *"Captured 2026-MM-DD from claude.ai with the TinyAssets MCP connector attached. Every word above appears verbatim in the original chat."*
 
@@ -123,19 +116,18 @@ Before declaring a website edit "done":
 
 ## Auto-iterate on recurring website failures
 
-This skill is itself subject to the [`auto-iterate`](../auto-iterate/SKILL.md) ratchet pattern. If a website-related failure recurs:
+When a website-related failure recurs, ratchet the prevention rather than fixing it again:
 
 | Recurrence | Ratchet |
 |---|---|
 | 1st  | Fix in place. Note it in the relevant doc. |
-| 2nd  | Add the rule to **this** SKILL.md and the relevant subsystem doc (PREVIEW.md / DEPLOY.md / HOOKS_FUSE_QUIRKS.md). |
+| 2nd  | Add the rule to **this** SKILL.md and the relevant subsystem doc (PREVIEW.md / DEPLOY.md). |
 | 3rd  | Build a runnable check in `scripts/` that catches the failure pattern. |
 | 4th  | Wire as a PostToolUse hook in `.claude/hooks/` for Claude Code; runnable from any provider. |
 | Next | Pre-commit / CI gate. |
 
 Concrete examples that have already ratcheted:
-- **FUSE truncation** → atomic temp+rename in snapshot script → PostToolUse hook on Write+Edit → standing rule in CLAUDE.md/AGENTS.md/memory. Ladder: `WebSite/HOOKS_FUSE_QUIRKS.md`.
-- **Cross-provider drift** → AGENTS.md rule → `scripts/check_cross_provider_drift.py` → `.claude/hooks/cross_provider_drift_guard.py` PostToolUse. Ladder: `AGENTS.md` § *Where new conventions live*.
+- **Cross-provider drift** → AGENTS.md rule → `scripts/check_cross_provider_drift.py` → the `cross-provider-drift` invariant, gated by `scripts/git-hooks/pre-commit`. Ladder: `AGENTS.md` § *Where new conventions live*.
 - **Build outputs no HTML** → noticed when `build/` had only static assets; root cause was missing `prerender = true` in `+layout.ts`. The "verification before shipping" rule above (assert `build/<route>.html` exists) prevents recurrence.
 - **Live-data false positive** → a workflow-activity refresh passed on button/source/no console errors while the event stream rendered `{}` details and raw epoch timestamps. The live-data control rule above prevents declaring success until the populated records are readable.
 - **Stretched workflow rail** → a 1-6 stage rail stretched to the full event-stream height, creating tall vertical strips where sparse text sat far from the visible top. The workflow-rail verification above requires bounding-box checks on desktop and mobile.
@@ -155,7 +147,6 @@ Concrete examples that have already ratcheted:
 | `WebSite/DEPLOY.md`                           | React deploy and Svelte rollback playbook      |
 | `.github/workflows/deploy-site-react.yml`     | Manual current-production deployment           |
 | `.github/workflows/deploy-site.yml`           | Dispatch-only Svelte rollback                  |
-| `WebSite/HOOKS_FUSE_QUIRKS.md`                | Why heredoc, not Edit/Write, on Cowork's FUSE  |
 | `WebSite/site/src/routes/+layout.ts`          | Svelte prerender invariant — do not delete     |
 | `WebSite/site/svelte.config.js`               | Svelte adapter-static prerender entries        |
 | `WebSite/site/vite.config.js`                 | Svelte dev proxy and HMR overlay               |

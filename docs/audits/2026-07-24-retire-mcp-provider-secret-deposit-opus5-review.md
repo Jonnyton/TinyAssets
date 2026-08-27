@@ -414,7 +414,7 @@ The same correction pass also records later independent ADAPT findings:
   execution waits for owner-accepted production B2 authority; current D0 is
   fake-only/production-denied and is not ordinary provider authority;
 - `runner/v1` remains an opaque nine-field carrier;
-- `openspec/changes/test-identity-and-reset/` cannot bypass the legacy saga,
+- `openspec/changes/archive/2026-08-26-test-identity-and-reset/` cannot bypass the legacy saga,
   and malformed or unclassifiable existing state blocks every ordinary write,
   replacement, and reset;
 - two stores use a commit token plus local acknowledgement, not a fictional

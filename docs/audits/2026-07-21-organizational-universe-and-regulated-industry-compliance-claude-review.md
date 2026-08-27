@@ -205,7 +205,7 @@ sequencing.
    evidence). `universe-creation` (R2-3) is more work-in-progress than either "done" or "not started" — several
    contract-test boxes are checked but most implementation boxes remain open, held for host live-proof gates.
    Separately: `origin/main`'s `STATUS.md` shows R2-3's first-contact side-effect fix has landed (`519fb2ea`,
-   #1552) and the row removed from the Work table, but `openspec/changes/universe-creation/tasks.md` itself
+   #1552) and the row removed from the Work table, but `openspec/changes/archive/2026-08-26-universe-creation/tasks.md` itself
    doesn't yet show those tasks checked — a small instance of the exact spec-drift pattern
    `AGENTS.md`'s OpenSpec section warns about ("A landed change with unsynced deltas is spec drift, treat it
    like a failing gate"). Not urgent to fix as part of this review, but worth a one-line flag so it doesn't

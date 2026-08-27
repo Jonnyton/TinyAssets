@@ -58,9 +58,12 @@ Cross-platform notes:
 
 ## Start Here
 
-1. Read [STATUS.md](STATUS.md) for live state.
+1. Read [AGENTS.md](AGENTS.md) for process rules and where live state lives.
 2. Read [PLAN.md](PLAN.md) for architecture and design intent.
-3. Read [AGENTS.md](AGENTS.md) for process rules.
+3. Live state has typed homes, not one board: `openspec/changes/` for the
+   work queue (`python scripts/openspec_flow.py audit`),
+   [docs/concerns/](docs/concerns/) for unresolved findings, and
+   [docs/host-actions.md](docs/host-actions.md) for founder-only work.
 4. Read [docs/project-lineage.md](docs/project-lineage.md) for how TinyAssets grew out of the earlier Hex, Echoes, Fantasy Writer, and Fantasy Author work.
 5. Use `python scripts/docview.py` for large Markdown, text, and JSON files
    before any raw whole-file read.
@@ -71,7 +74,8 @@ Cross-platform notes:
 
 - [AGENTS.md](AGENTS.md): process truth.
 - [PLAN.md](PLAN.md): design truth.
-- [STATUS.md](STATUS.md): live-state truth.
+- Live state by kind: `openspec/changes/` (queue), [docs/concerns/](docs/concerns/)
+  (findings), [docs/host-actions.md](docs/host-actions.md) (founder-only).
 - [docs/portfolio/README.md](docs/portfolio/README.md): public project graph, lineage, and auto-maintenance standard.
 - [ideas/INDEX.md](ideas/INDEX.md): idea capture, triage, and shipped ledger.
 - [knowledge/INDEX.md](knowledge/INDEX.md): human-readable knowledge map.

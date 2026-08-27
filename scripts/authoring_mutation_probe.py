@@ -7,7 +7,7 @@ vacuous, or the invariant is enforced somewhere else (defence in depth) — deci
 which, and record it, rather than trusting the green run.
 
 Committed because the lane's evidence claim cites it
-(``openspec/changes/complete-independent-full-platform-targets`` task 4.2): an
+(``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets`` task 4.2): an
 un-runnable probe is an unverifiable claim. Cross-family review 2026-07-25 raised
 exactly that.
 

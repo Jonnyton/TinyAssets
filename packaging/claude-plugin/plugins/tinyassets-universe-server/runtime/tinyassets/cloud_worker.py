@@ -1367,7 +1367,7 @@ class SupervisorState:
         # TINYASSETS_RUNTIME_INSTANCE_ID. Three patches to "identity smuggled
         # through os.environ" means the shape is wrong, not that a fourth is
         # due. Do NOT grow this into a general execution-context primitive:
-        # `openspec/changes/harden-background-branch-execution-authority`
+        # `openspec/changes/archive/2026-08-26-harden-background-branch-execution-authority`
         # already owns that (its Why names "process environment" explicitly,
         # and task 5.1 specifies the injected delegation context). This map
         # exists only to keep capacity advertisement honest until that lands.

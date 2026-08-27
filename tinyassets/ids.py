@@ -4,7 +4,7 @@ A universe id is ``u-`` followed by a 26-character lowercase ULID
 (48-bit millisecond timestamp + 80 bits of randomness, Crockford base32).
 The serial is opaque, immutable, and time-sortable. It is generated exactly
 once at creation and is used as the universe directory name and operation key
-(``openspec/changes/universe-creation`` D2).
+(``openspec/changes/archive/2026-08-26-universe-creation`` D2).
 
 Kept in its own module so the serial format has a single source of truth and
 never gets re-derived from a display name or learned identity.

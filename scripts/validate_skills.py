@@ -94,6 +94,32 @@ def validate_metadata(root: Path) -> list[SkillIssue]:
     return issues
 
 
+# Anthropic's skill-authoring guidance says keep a SKILL.md body under 500
+# lines. That figure is published guidance with no measurement behind it, so
+# enforcing it exactly would police noise -- `ui-test` sits at 502. The ratchet
+# here is OURS and deliberately looser: 600 catches real drift (the same class
+# that let always-loaded context go 17.6 KB -> 54 KB unnoticed) without
+# arguing about two lines. Do not cite 600 as best practice; cite 500 as
+# guidance and this as a repo guardrail.
+SKILL_BODY_LINE_RATCHET = 600
+
+
+def validate_body_length(root: Path) -> list[SkillIssue]:
+    issues: list[SkillIssue] = []
+    for path in sorted((root / ".agents" / "skills").glob("*/SKILL.md")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = len(text.splitlines())
+        if lines > SKILL_BODY_LINE_RATCHET:
+            issues.append(
+                SkillIssue(
+                    path,
+                    f"{lines} lines exceeds the {SKILL_BODY_LINE_RATCHET}-line ratchet "
+                    "(Anthropic guidance is 500) -- move detail into a reference file",
+                )
+            )
+    return issues
+
+
 def validate_forbidden_text(root: Path) -> list[SkillIssue]:
     issues: list[SkillIssue] = []
     for path in _skill_files(root / CANONICAL_ROOT):
@@ -124,11 +150,19 @@ def validate_mirror(root: Path) -> list[SkillIssue]:
 
 
 def validate_router_coverage(root: Path) -> list[SkillIssue]:
+    """Check the router lists every skill -- only if a router exists.
+
+    The router was mandatory when this repo carried 34 skills and finding the
+    right one was a real problem. The 2026-08-25 harness reset cut that to 10
+    task-named skills, where a map costs more to maintain than it saves, so
+    `using-agent-skills` was deleted. This check stays as coverage enforcement
+    for a router that exists; it no longer demands one into being.
+    """
     issues: list[SkillIssue] = []
     source_root = root / CANONICAL_ROOT
     router = source_root / ROUTER_SKILL / "SKILL.md"
     if not router.exists():
-        return [SkillIssue(router, "router skill is missing")]
+        return []
     router_text = router.read_text(encoding="utf-8")
     for path in _skill_files(source_root):
         skill_name = path.parent.name
@@ -139,12 +173,93 @@ def validate_router_coverage(root: Path) -> list[SkillIssue]:
     return issues
 
 
+
+# Paths a skill cites that must actually exist. Deliberately narrow: repo-rooted
+# script/doc paths in backticks. Prose like `tests/` or a glob is not a claim
+# that one exact file exists, so those are skipped.
+# Two shapes of reference a skill can make:
+#   repo-rooted   `scripts/foo.py`, `docs/bar.md`
+#   skill-relative `references/checklist.md`, `workflow/providers/`
+# The first version matched only the first shape under a narrow extension
+# allowlist, so `references/security-checklist.md` and `workflow/providers/`
+# both dangled while the validator reported green (cross-family review
+# 2026-08-26). Directory references count: a skill pointing at a directory that
+# does not exist is just as broken as one pointing at a missing file.
+_ROOT_REF_RE = re.compile(
+    r"`((?:scripts|docs|packaging|deploy|tinyassets|tests|openspec|\.agents|\.claude|\.github)"
+    r"/[A-Za-z0-9_./-]+)`"
+)
+_REL_REF_RE = re.compile(r"`([A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)+/?)`")
+_SKILL_REF_RE = re.compile(r"`([a-z][a-z0-9-]{3,})`")
+
+
+def validate_referenced_paths(root: Path) -> list[SkillIssue]:
+    """A skill citing a deleted script, doc, or sibling skill is a broken instruction.
+
+    Checks EVERY markdown file under a skill directory, not just the top-level
+    `SKILL.md` -- a dangling pointer in a bundled reference misleads exactly as
+    much. Resolves skill-relative paths against the skill's own directory, which
+    is how a reader would.
+    """
+    issues: list[SkillIssue] = []
+    source_root = root / CANONICAL_ROOT
+    known_skills = {path.parent.name for path in _skill_files(source_root)}
+
+    for skill_dir in sorted(p for p in source_root.iterdir() if p.is_dir()):
+        for md in sorted(skill_dir.rglob("*.md")):
+            text = md.read_text(encoding="utf-8")
+            for match in _ROOT_REF_RE.finditer(text):
+                rel = match.group(1).rstrip("/")
+                if not (root / rel).exists():
+                    issues.append(SkillIssue(md, f"references missing path {rel!r}"))
+            for match in _REL_REF_RE.finditer(text):
+                rel = match.group(1)
+                if _ROOT_REF_RE.fullmatch("`" + rel + "`"):
+                    continue                       # already checked repo-rooted
+                if rel.startswith(("http", "www.")) or " " in rel:
+                    continue
+                target = skill_dir / rel.rstrip("/")
+                # Only flag a relative path that LOOKS like a bundled resource:
+                # its first segment must be a real subdirectory of the skill, or
+                # the whole path must be absent while its parent exists.
+                first = rel.split("/", 1)[0]
+                if (skill_dir / first).exists() and not target.exists():
+                    issues.append(
+                        SkillIssue(md, f"references missing skill resource {rel!r}")
+                    )
+            for match in _SKILL_REF_RE.finditer(text):
+                name = match.group(1)
+                if name in known_skills or "-" not in name:
+                    continue
+                if name in _DELETED_SKILLS:
+                    issues.append(SkillIssue(md, f"references deleted skill {name!r}"))
+    return issues
+
+
+# Skills removed by the 2026-08-25 reset. Naming them explicitly keeps the check
+# precise -- it flags a real dangling pointer without guessing that any
+# hyphenated word is a skill name.
+_DELETED_SKILLS = {
+    "planning-and-task-breakdown", "incremental-implementation",
+    "debugging-and-error-recovery", "code-simplification",
+    "subagent-driven-development", "context-engineering",
+    "documentation-and-adrs", "domain-model", "improve-codebase-architecture",
+    "code-review-and-quality", "test-driven-development",
+    "git-workflow-and-versioning", "skill-authoring", "using-agent-skills",
+    "api-and-interface-design", "deprecation-and-migration",
+    "frontend-ui-engineering", "performance-optimization",
+    "conditional-edge-testing", "classic-game-design-test", "game-prototyping",
+    "idea-refine", "spec-driven-development", "auto-iterate",
+}
+
 def validate_all(root: Path) -> list[SkillIssue]:
     return [
+        *validate_body_length(root),
         *validate_metadata(root),
         *validate_forbidden_text(root),
         *validate_mirror(root),
         *validate_router_coverage(root),
+        *validate_referenced_paths(root),
     ]
 
 

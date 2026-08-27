@@ -1,7 +1,7 @@
 """Typed authoring file I/O — declared manifests, execution-scoped handles, and
 bounded deliverables.
 
-Task 4.2 of ``openspec/changes/complete-independent-full-platform-targets``.
+Task 4.2 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``.
 
 The primitive is the *declaration*: a draft declares what it accepts and emits
 (name, type, media types, cardinality, size bound), and this module is the only

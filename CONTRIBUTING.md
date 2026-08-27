@@ -107,7 +107,7 @@ You don't have to be an admin-pool member to review. Drive-by reviews are welcom
 - Connectors that log payload content.
 - Catalog content with a non-CC0 license.
 - PRs that add backwards-compatibility shims for removed code (delete the dead code — we're not supporting legacy).
-- Anything that breaks the "main is always downloadable" standing principle (see `STATUS.md`).
+- Anything that breaks the "main is always downloadable" standing principle.
 - PRs that change `AGENTS.md` hard rules without a corresponding design note + admin-pool sign-off.
 
 ---

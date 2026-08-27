@@ -23,8 +23,8 @@ R7 ship sequence (see
   imports the helpers back from here rather than duplicating them.
 - Commits 2-6: per-bounded-context split.
 
-Per the foundation-end-state rule (``CLAUDE_LEAD_OPS.md
-§Foundation End-State``): each commit is itself end-state-shaped —
+Per the foundation-end-state rule (``PLAN.md`` §Cross-Cutting
+Principles): each commit is itself end-state-shaped —
 the helpers move to their final path in commit 1, not to a temporary
 intermediate file.
 """

@@ -47,7 +47,6 @@ CANARY_MODULES = (
 # with a `DEFAULT_URL` symbol; if a new MCP-client script is added with
 # a `DEFAULT_URL` default, append it here so the same drift guard applies.
 NON_CANARY_URL_SCRIPTS = (
-    "navigator_wiki_sweep",
     "mcp_probe",
     "verify_llm_binding",
 )

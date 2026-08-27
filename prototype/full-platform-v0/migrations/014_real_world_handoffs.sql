@@ -1,7 +1,7 @@
 -- 014 — Real-world handoffs, their append-only lifecycle, and the additive
 -- extension of the existing outcome registry (target
 -- `real-world-handoffs-and-outcomes`, tasks 5.1/5.2/5.4 of
--- openspec/changes/complete-independent-full-platform-targets).
+-- openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets).
 --
 -- Numbering note: the highest migration on origin/main when this landed was
 -- 013_paid_market_workflow.sql, so this file takes 014. Do NOT renumber it

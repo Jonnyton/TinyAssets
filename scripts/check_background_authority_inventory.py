@@ -55,6 +55,49 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Populated from the reviewed current-main scan.  Any addition/removal is a
 # review event: update the audit and this exact set together.
 EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
+    # Reviewed 2026-08-26 while restoring this checker (PR #2561 deleted it as a
+    # "dead script" -- it was not dead, it is the CI closure assertion for
+    # `harden-background-branch-execution-authority`). All six were ALREADY
+    # present and unregistered on main, so this test was red and non-gating:
+    # `.github/heavy-test-files.txt` routes it to the `slow-tests` job, and only
+    # `required-tests` is a required check. A guard that is red where nothing
+    # reads it is the same failure as a green one that cannot go red. It is now
+    # GREEN in that lane; promoting it to the required lane is a separate
+    # two-line change, because editing `heavy-test-files.txt` triggers the
+    # exact-head receipt gate and must not ride along with a 526-file cut.
+    #
+    # `enqueue_universe_branch_run` is a genuine background execution root and
+    # documents itself as "the single audited path used by trigger sources that
+    # carry their OWN authority (the inbound webhook token, an event-bus
+    # subscription) rather than an MCP request identity" -- reviewed design that
+    # was simply never registered here.
+    CallSite("tinyassets/api/runs.py", "enqueue_universe_branch_run", "execute_branch_async"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
+        "enqueue_universe_branch_run",
+        "execute_branch_async",
+    ),
+    # The two `stream` hits are NAME COLLISIONS, not execution boundaries: the
+    # checker matches by callee name, and these are Starlette `request.stream()`
+    # body reads -- both added by earlier Codex reviews specifically to bound an
+    # HTTP body instead of buffering it whole. Neither touches a compiled graph
+    # stream. Registered so the real graph-stream boundary stays detectable.
+    CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/__init__.py",
+        "_read_bounded_body",
+        "request.stream",
+    ),
+    CallSite(
+        "tinyassets/universe_server.py",
+        "create_streamable_http_app._hooks_endpoint",
+        "request.stream",
+    ),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py",
+        "create_streamable_http_app._hooks_endpoint",
+        "request.stream",
+    ),
     CallSite(
         "fantasy_daemon/__main__.py",
         "DaemonController._try_execute_soul_loop",
@@ -92,10 +135,13 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "_try_execute_claimed_branch_task",
         "execute_branch",
     ),
+    # The REAL compiled-graph stream boundary. Distinguishable from the two
+    # `request.stream()` HTTP body reads only since receiver-sensitive matching
+    # landed; before that all three were the bare name "stream".
     CallSite(
         "fantasy_daemon/__main__.py",
         "DaemonController._run_graph",
-        "stream",
+        "compiled.stream",
     ),
     CallSite(
         "packaging/claude-plugin/plugins/tinyassets-universe-server/"
@@ -426,22 +472,10 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
     ),
     "filing_only_wiki_negative": (
         SourceReference("tinyassets/api/wiki.py", "def _wiki_file_bug("),
-        SourceReference(
-            "openspec/changes/retire-cheat-loop/specs/wiki-commons/spec.md",
-            "no trigger receipt, branch task, run, or investigation section",
-        ),
     ),
     "goal_subscription": (
         SourceReference("tinyassets/subscriptions.py", "def list_subscriptions("),
         SourceReference("tinyassets/scheduler.py", "def list_scheduler_subscriptions("),
-    ),
-    "paid_market_acceptance": (
-        SourceReference(
-            "openspec/changes/paid-market-track-e-wave-2-transport/specs/"
-            "paid-market-economy/spec.md",
-            "Acceptance SHALL revalidate",
-            state="contract-only",
-        ),
     ),
     "queue": (
         SourceReference("tinyassets/branch_tasks.py", "def read_queue("),
@@ -452,21 +486,6 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
         SourceReference(
             "tinyassets/execution_authority/records.py",
             "class RecordVerifier:",
-            state="contract-only",
-        ),
-    ),
-    "provider_work": (
-        SourceReference(
-            "openspec/changes/constrain-set-engine-provider-authority/specs/"
-            "provider-routing/spec.md",
-            "provider work holds",
-            state="contract-only",
-        ),
-    ),
-    "provider_attempt": (
-        SourceReference(
-            "openspec/changes/provider-attempt-receipts/specs/provider-routing/spec.md",
-            "provider-attempt receipt",
             state="contract-only",
         ),
     ),
@@ -494,12 +513,46 @@ _WIKI_FORBIDDEN_CALLS = frozenset(
 )
 
 
+# Names generic enough that the RECEIVER decides whether the call is an
+# execution boundary. `request.stream()` reads an HTTP body; `compiled.stream()`
+# runs a graph. Recording only the attribute made them identical, so registering
+# the two body reads as reviewed would have blinded the checker to a real
+# compiled-graph stream added inside either function (cross-family review of
+# PR #2561, round 6, mutation-proven).
+RECEIVER_SENSITIVE = frozenset({"stream"})
+
+
 def _callee_name(node: ast.Call) -> str | None:
+    """The name to MATCH against the sensitive set (receiver discarded)."""
     if isinstance(node.func, ast.Name):
         return node.func.id
     if isinstance(node.func, ast.Attribute):
         return node.func.attr
     return None
+
+
+def _receiver_name(node: ast.Call) -> str:
+    """The receiver expression's leading name, e.g. `request` in `request.stream()`."""
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return ""
+    value = func.value
+    while isinstance(value, ast.Attribute):
+        value = value.value
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Call):
+        inner = _callee_name(value)
+        return f"{inner}()" if inner else "<expr>"
+    return "<expr>"
+
+
+def _recorded_callee(node: ast.Call, callee: str) -> str:
+    """What goes in the manifest: qualified for receiver-sensitive names."""
+    if callee not in RECEIVER_SENSITIVE:
+        return callee
+    receiver = _receiver_name(node)
+    return f"{receiver}.{callee}" if receiver else callee
 
 
 class _CallVisitor(ast.NodeVisitor):
@@ -552,7 +605,8 @@ class _CallVisitor(ast.NodeVisitor):
         if isinstance(node.func, ast.Name):
             callee = self._aliases.get(node.func.id, callee)
         if callee in self._names:
-            self.calls[(".".join(self._scope) or "<module>", callee)] += 1
+            recorded = _recorded_callee(node, callee)
+            self.calls[(".".join(self._scope) or "<module>", recorded)] += 1
         self.generic_visit(node)
 
 
@@ -623,6 +677,21 @@ def validate_inventory(repo_root: Path) -> list[str]:
     errors = compare_call_sites(observed, EXPECTED_SENSITIVE_CALL_SITES)
 
     for owner, ref in _all_references():
+        # An assertion against an ARCHIVED change is unfalsifiable: archives are
+        # frozen, so the marker can never stop matching, while the canonical
+        # requirement it stands in for is free to change or disappear. Four such
+        # references existed after this PR archived their changes -- pointing at
+        # text that could never fail while `openspec/specs/` carried no
+        # equivalent. Removed, and refused here so none can return: if a
+        # contract matters, it belongs in the canonical spec.
+        # (Cross-family review of PR #2561, round 6.)
+        if "openspec/changes/archive/" in ref.path:
+            errors.append(
+                f"{owner} references an ARCHIVED change, which can never fail: "
+                f"{ref.path}. Point at openspec/specs/<capability>/spec.md, or "
+                "drop the reference."
+            )
+            continue
         path = repo_root / ref.path
         if not path.is_file():
             errors.append(f"{owner} missing source: {ref.path}")

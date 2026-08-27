@@ -56,7 +56,7 @@ Packet freshness (lines 6–11) pins `origin/main` = `0a82dbec`. Actual `origin/
 - `__init__.py:11–32` — one-shot bootstrap; **no raw mint callable survives import**
 - 6 test modules, ~3,200 test lines
 
-`openspec/changes/distributed-execution/tasks.md`: **17 checked / 91 unchecked**; tasks 1.1–1.16 (the whole D0 spine) are `[x]`.
+`openspec/changes/archive/2026-08-26-distributed-execution/tasks.md`: **17 checked / 91 unchecked**; tasks 1.1–1.16 (the whole D0 spine) are `[x]`.
 
 **Replacement wording for §2.11 final sentence:**
 > ~~"B2 signed owner/daemon/job/capsule/lease/fence authority is not landed; the usable remote-execution slice remains blocked on it."~~

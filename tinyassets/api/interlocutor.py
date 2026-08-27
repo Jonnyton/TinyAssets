@@ -5,7 +5,7 @@ question *what may this reader read*. Neither substitutes for the other, and
 neither is inferred from the other.
 
 Contract source of truth:
-``openspec/changes/reconcile-universe-personification-relay/implementation-notes.md``
+``openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/implementation-notes.md``
 §6.2 (the tier<->visibility reconciliation, discharged as task 6.2), discharging
 the delta requirement *"Interlocutor identity binds to a tier before the universe
 answers"*:

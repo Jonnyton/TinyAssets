@@ -9,7 +9,7 @@ Owner: lead + available providers
 > an ordinary 404 without redirect, alias, or compatibility behavior. Current
 > work uses the exact public name `TinyAssets`, the sole remote endpoint
 > `https://tinyassets.io/mcp`, and
-> `openspec/changes/reconcile-external-connector-manifests/`.
+> `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`.
 >
 > Do not execute or reopen any task below. Promote any still-relevant external
 > host work through the OpenSpec change and current `STATUS.md` coordination.

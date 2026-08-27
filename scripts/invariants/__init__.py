@@ -1,10 +1,15 @@
 """Unified framework for zero-token mechanical invariants.
 
 An invariant is a property of the repository / running system that
-should always hold — canonical↔mirror byte-parity, exactly one Chrome
-tab, STATUS.md Concerns kept fresh, no CP-1252 mojibake in tracked text.
-Each is cheaper to enforce mechanically than to re-derive by hand each
-session. See `CLAUDE_LEAD_OPS.md §Code Before Agents`.
+should always hold — canonical↔mirror byte-parity, skill metadata and
+body length, the always-loaded context budget, cross-provider rule
+placement, no CP-1252 mojibake in tracked text. Each is cheaper to
+enforce mechanically than to re-derive by hand each session.
+
+`invariants_run.py --pre-commit` is the entry point. Anything listed here
+must be able to FAIL — a check that cannot go red is decor, and this
+suite has shipped one of those before (`cross-provider-drift` returned
+clean unconditionally until 2026-08-26).
 
 ## Contract
 
@@ -96,8 +101,14 @@ class Invariant:
         try:
             result = self._check()
         except Exception as exc:
+            # VIOLATED, not SKIPPED. A check that raises is a broken check, and
+            # a broken check that reports "skipped" keeps --check-all green --
+            # which is how a constant rename silently disarmed the
+            # context-budget gate on 2026-08-25. SKIPPED is for a deliberate,
+            # explicit skip (target absent, Chrome not running), never for a
+            # crash. Fail loudly; see AGENTS.md Hard Rule 8.
             result = CheckResult(
-                status=Status.SKIPPED,
+                status=Status.VIOLATED,
                 message=f"check raised {type(exc).__name__}: {exc}",
             )
         result.duration_seconds = time.monotonic() - start

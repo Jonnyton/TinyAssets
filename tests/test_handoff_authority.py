@@ -1,7 +1,8 @@
 """Handoff authority — authenticated subject, source ownership, declaration
 binding, destination consent, and irreversible-effect confirmation.
 
-Requirement source: ``openspec/changes/complete-independent-full-platform-targets/
+Requirement source:
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets/
 specs/real-world-handoffs-and-outcomes/spec.md`` (tasks 5.2, 5.4).
 
 Covered requirements:
