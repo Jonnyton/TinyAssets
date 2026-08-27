@@ -109,3 +109,60 @@ may be a real drop from that 2,628-line deletion rather than a stale assertion.
 
 Until then `heavy-tests` is a red tripwire, and the 10 stale quarantine entries
 should be drained via `scripts/quarantine_oracle.py` as a cheap first step.
+
+---
+
+## Update 2026-08-27 (later): the deploy-workflow half is measured
+
+`tests/test_deploy_prod_workflow.py` is the largest single contributor to the
+red — 88 of the 105 two-file concentration above. It has now been triaged
+rather than assumed, and the result changes what should be done with it.
+
+**Two of the 88 were real drops, not stale tests**, and are fixed in #2584:
+
+| Dropped by #2442 | Consequence |
+|---|---|
+| `Prepare codex auth persistent volume` | Nothing created `/data/.codex` at `uid 1001:1001`, or repaired `/data/.auth.db` ownership. `DEPLOY.md:168` still documented the step as running "on every deploy". Latent, not live — the volume survived from before. |
+| `concurrency: production-host-mutation` | Deploy could run concurrently with `restart-daemon`, `install-host-services`, or `p0-outage-triage` on the same droplet. |
+
+A third real drop was found and filed rather than fixed:
+`docs/concerns/2026-08-27-deploy-drops-compose-sync.md` (P1).
+
+Those took the file from 88 failures to 81.
+
+**The remaining 81 are not stale NAMES.** That was the obvious hypothesis —
+`Rollback on failure` → `Roll back if the public canary is red`, `Capture
+previous image tag` → `Capture current image`, `Resolve image tag` → `Resolve
+image tag -> immutable digest`, `Post-deploy canary — canonical URL only` →
+`Public MCP canary (--assert-handles)`. It was tested directly, by adding a
+rename map to `_step_named` and running the file:
+
+```
+81 failed, 40 passed   (before)
+79 failed, 42 passed   (with every rename mapped)
+```
+
+**Two.** The other 79 fail on the steps' *contents*, because #2442 did not
+rename those steps, it replaced what they do. `Rollback on failure` rolled back
+on any deploy failure; the current step rolls back specifically on a red public
+canary, with unhealthy-container rollback moved into `deploy_fail_safe.sh`. The
+capability was redistributed, not renamed.
+
+**So the remaining 81 assert a retired design and should be deleted, not
+retargeted.** That is a real deletion of 81 tests and deserves its own change
+and its own review — it is not a tidy-up to fold into a fix. Two things must be
+true before it lands:
+
+1. Every assertion is checked against the current workflow individually. The
+   two real drops above were found *inside* what looked like a uniformly stale
+   file; assuming uniformity is exactly the mistake that would have missed
+   them.
+2. Whatever survives is rewritten against the current 265-line workflow, so the
+   file still gates something. Deleting it outright would leave `deploy-prod.yml`
+   with no test at all.
+
+Not attempted here: the `recover-unsafe` job was also dropped by #2442 while
+its script `scripts/retire_cheat_loop_deploy_fence.py` still exists — as does
+its test file, the other large red cluster (17 failures). Whether that feature
+was retired deliberately or dropped by accident is a question for the founder,
+not a guess.
