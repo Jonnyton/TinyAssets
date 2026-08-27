@@ -174,7 +174,19 @@ jobs:
           # and DELETING four such copies is what blocked PR #2561 for six review
           # rounds. Naming both roots keeps the mirror covered and stops the
           # guard policing docs.
-          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|credential_vault\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          # WIDENED 2026-08-27, because the narrow list let an authority change
+          # ship unreviewed. PR #2559 changed WHEN foreground runs mint provider
+          # authority -- splitting admission into prepare()/lazy _admit() -- and
+          # touched foreground_run_provider.py, provider_work_authority.py and
+          # providers/router.py. None were listed, so no receipt was demanded and
+          # auto-merge took it. The post-merge review then found three Medium
+          # findings on code that was already live, including async sub-branches
+          # failing outright.
+          #
+          # Still deliberately NOT a blanket `tinyassets/` rule -- that was
+          # rejected as process bloat and the reasoning holds. These are the
+          # modules that mint, bind, or validate provider authority.
+          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
           AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -Ei "$AUTHORITY_RE" || true)"
 
           # GROUNDED, not regex-only. A path match says WHERE an edit landed,
