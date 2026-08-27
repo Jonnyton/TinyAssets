@@ -71,3 +71,47 @@ the only live lane. Its last commit is explicitly unreviewed WIP committed so a
 worktree teardown could not lose it; read `git log -p 3eb798eb..19524770` before
 trusting it. Its `_PURPOSE.md` describes a *different* lane than its commits --
 the commits are the truth.
+
+---
+
+## All 218 local branches archived and cleared (2026-08-27)
+
+The local checkout carried 218 branches beyond `main`. **Only 8 had their tip
+reachable from any remote** — the other 210 existed on exactly one machine. That
+is the class that held `99529969`, a droplet-diagnostics commit found on no
+remote during the 2026-08-26 audit.
+
+Two classification attempts both failed to answer "does this hold unlanded
+work?":
+
+| Attempt | Why it failed |
+|---|---|
+| Tip reachable from a remote or `main` | Squash-merge guarantees a merged branch's tip is unreachable even when its content landed in full — 210 of 218 flagged |
+| Changed files still differing from `main` | `main` moves forward, so an old branch differs even when its work landed — 213 of 218 flagged |
+
+So classification was abandoned in favour of **preserving everything**, which
+makes the question unnecessary:
+
+```bash
+# every local branch pushed to a namespace that does not appear in the branch UI
+git push origin 'refs/heads/<name>:refs/archive/2026-08-27/<name>'
+```
+
+**218 archived, verified sha-by-sha against the local tips — zero mismatches —
+then 218 local refs deleted.** Local branches: **931 → 3** (`main` plus two
+worktree lanes).
+
+`pr1435` needed a stale `refs/heads/pr1435.lock` from 2026-07-01 cleared first;
+it was archived before that, and no git process held it.
+
+### Recovering an archived branch
+
+```bash
+git fetch origin 'refs/archive/2026-08-27/*:refs/archive/2026-08-27/*'
+git ls-remote origin 'refs/archive/2026-08-27/*'          # list everything
+git branch <name> refs/archive/2026-08-27/<name>          # restore one
+```
+
+`refs/archive/*` is a custom namespace: GitHub stores it, `git ls-remote` finds
+it, and it does not clutter the branch list or the PR surface. Nothing here was
+deleted — it was moved off the one machine that was holding it.
