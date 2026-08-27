@@ -14,9 +14,11 @@ it would be precisely the self-attestation the mechanism exists to prevent.
 | 1 | `ceee8139` | **REJECT** | 7 | `7eaaeaf0` |
 | 2 | `7eaaeaf0` | **REJECT** | 4 | `fd765b90` |
 | 3 | `91ecc713` | **REJECT** | 4 | `925928ac` |
+| 4 | `63893832` | **REJECT** | 3 | `5ead1edb` |
+| 5 | `5ead1edb` | **REJECT** | 4 | `97af956a` |
 
-Three independent REJECTs on a change I had already convinced myself was finished. Every round
-found something a self-review had not.
+Five independent REJECTs on a change I had already convinced myself was finished, three separate
+times. Every round found something a self-review had not.
 
 ## Round 1 (7 findings)
 
@@ -60,6 +62,33 @@ this PR, and removal would otherwise move a surviving test into the fast lane, n
    `peer_agent.py` with an adversarial preamble and VERDICT enforcement it does not have.
 4. **A resumed lane's mandated review command could not run** — `RESUME-SPEC.md:116` still executed
    the deleted `codex_review.py`.
+
+## Round 4 (3 findings)
+
+1. **The ported tests only exercised half the dispatcher.** All six defaulted to `provider="claude"`,
+   whose answer arrives on stdout; codex writes to the `-o` file and peer_agent reads it back. A
+   regression accepting codex stdout would have stayed green -- and "codex exited 0, said some
+   things, wrote nothing" reading as an approval is the failure that matters for a review gate.
+2. **The stdin test could not see the regression it named** -- it asserted the prompt reaches stdin
+   but never that it is absent from argv, and both at once is exactly the Windows truncation shape.
+3. **A retired third family left a runnable instruction** -- `RESUME-SPEC.md:130` still ran the
+   deleted `kimi_review.py`. Round 3 fixed the script-list mention and missed the command itself.
+
+## Round 5 (4 findings)
+
+1. **I deleted a security guard and called it a dead script.**
+   `scripts/check_background_authority_inventory.py` went out in "cut: dead scripts". It is the
+   executable closure assertion for `harden-background-branch-execution-authority`, named as such in
+   its own audit, and it scans every background execution, callback, compiled-stream, and queue
+   boundary against a reviewed manifest. Nothing replaced it. It was **red on main and non-gating**
+   -- six callsites already unregistered, and the test routed to `slow-tests` while only
+   `required-tests` is required -- which is why nobody noticed. Restored, all six reviewed and
+   registered, and it now reports `closure: clean` for the first time.
+2. **The codex out-file test passed for the wrong reason** -- the fake wrote to its own path instead
+   of the one the implementation chose, so a wrong `-o` stayed green.
+3. **The read-only assertion checked only the trailing pair**, so a smuggled earlier
+   `danger-full-access` survived.
+4. Stale statistics in the PR body.
 
 ## What this says about the reset
 
