@@ -171,6 +171,54 @@ merging), and a merged PR alone is not proof the *local* ref is redundant.
 new merges self-clean; the pile was historical. Run the intersection above when
 it grows again — it is cheap, and it is the only check here that does not lie.
 
+## Branch protection: `strict` is off, deliberately
+
+Changed 2026-08-27 after the setting deadlocked four queued PRs.
+
+`strict` ("require branches to be up to date before merging") makes every merge
+mark every other open PR `BEHIND`. **GitHub's auto-merge does not update a
+behind branch** -- that is the entire selling point of merge queue, which says
+it "does not require a pull request author to update their pull request branch."
+So `strict` + auto-merge deadlocks at any concurrency above one: the PRs sit
+enrolled, mergeable, and never merge.
+
+**Merge queue -- the supported fix -- is unavailable here.** It requires an
+ORGANIZATION-owned repository; `Jonnyton/TinyAssets` is user-owned, so no plan
+unlocks it.
+
+Two things `strict` was assumed to give, that it does not:
+
+- *"It keeps `main` green."* It guarantees only that the PR was tested against
+  `main` **as of its last update**. A merge landing between that check and the
+  button reopens the window. Only a merge queue closes it.
+- *"The post-merge run depends on it."* Backwards. `tests.yml` runs on
+  `push: main` and that is the **substitute** for strict, not something it
+  protects. Verified firing on every recent merge.
+
+GitHub's own docs present the two modes as a tradeoff, not a recommendation --
+loose means "status checks may fail after you merge," which is detectable.
+
+**The compensator, which is the part that must not rot:** a red `main` is the
+signal now. `tests.yml` on `push: main` must stay wired, and the standing
+response to a red main is **revert first, diagnose after**. If PR concurrency
+ever rises enough for semantic conflicts to bite, the correct move is to move
+the repo to an organization and enable merge queue -- not to re-enable `strict`.
+
+### Required checks, and why each earns it
+
+| Check | Time | Unique value |
+|---|---|---|
+| `required-tests` | ~7 min | The behavioural gate. All tests minus 50 heavy files, `-m "not slow"`. |
+| `slow-tests` | ~1 min | The ONLY place `-m slow` race/stress tests run -- `required-tests` explicitly deselects them. Made required 2026-08-27: it was 10/10 green and nobody read it. |
+| `invariants` | ~15 s | Mechanical checks. Best signal per second here. |
+| `Diff scope declared` | ~10 s | Blast-radius guard. Caught PR #1491's seven-file diff behind a "two-file auth fix". |
+
+They run in parallel, so the wall clock is `required-tests` alone.
+
+`full-tests` is NOT required and re-runs everything `required-tests` already did;
+its only unique content is the 50 heavy files, and it has been red for months.
+See `docs/concerns/2026-08-27-full-tests-permanently-red.md`.
+
 ## Not gates, and should not become gates
 
 - **Evidence-before-completion.** A script can confirm a command and its output
