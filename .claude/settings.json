@@ -29,19 +29,6 @@
     ]
   },
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/latest_model_guard.py\"",
-            "shell": "powershell",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "hooks": [
@@ -67,24 +54,6 @@
       }
     ],
     "PostToolUse": [
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/supervisor_record.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/supervisor_record.py\""
-          }
-        ]
-      },
       {
         "matcher": "Bash",
         "hooks": [
