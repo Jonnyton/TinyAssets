@@ -29,7 +29,11 @@ branch and grant now start the proxy fine. The diagnosability fix (PR #2596)
 still matters: the next occurrence will name its cause instead of repeating three
 days of "I cannot tell you why". But it is no longer the live blocker.
 
-Next step is a host action, filed in `docs/host-actions.md`.
+Next step is a host action. It was **already filed** in `docs/host-actions.md`
+(*"X app is Read-only — flip it to Read and Write"*, run `c2b486ff315045c6`)
+before this session started; my webapp run reproduced it independently and its
+extra evidence is merged into that row. Reading only the top of that file is how
+I missed it and briefly filed a duplicate.
 
 ---
 

@@ -14,39 +14,6 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Blocking a proof path
 
-### X app is read-only — blocks the `Hello World` post (the last blocker)
-
-*2026-08-27: run `948a32670485432a` reached `POST https://api.x.com/2/tweets` and X replied
-**403 Forbidden**. X's own error body, pulled from the live run:*
-
-```json
-{"detail": "Your client app is not configured with the appropriate oauth1 app permissions for this endpoint.",
- "status": 403, "title": "Forbidden", "type": "https://api.x.com/2/problems/oauth1-permissions"}
-```
-
-*Response headers included **`x-access-level: read`** (and `x-rate-limit-remaining: 39999`, so this
-is not a rate limit).*
-
-Everything on our side now works: provider binding, prompt execution, the outbound proxy, the
-destination grant, and the packet shape. The deposited `x:posting` keys are simply **read-scoped**.
-
-Two steps, and the second is the one people miss:
-
-1. developer.x.com -> your app -> **User authentication settings** -> **App permissions** ->
-   change to **Read and write** -> Save.
-2. **Regenerate the Access Token and Access Token Secret.** Changing app permissions does NOT
-   upgrade tokens that already exist — the old pair keeps its read scope, and the 403 will repeat
-   unchanged. This is exactly what `x-access-level: read` is reporting.
-
-Then re-deposit the new Access Token + Secret through **Connect / add API connection** in the
-webapp (the API Key and API Key Secret are unchanged), and say "post hello world" — the branch,
-grant, and consent are all already in place.
-
-I can't do this one: it needs your X developer account, and entering credentials is not something
-I do on your behalf.
-
----
-
 ### Droplet deploy key absent on this machine — blocks reading the live daemon log
 
 *2026-08-27: `scripts/droplet.py` needs `~/.ssh/tinyassets_deploy_ed25519`; it is not on this
@@ -184,7 +151,24 @@ changes; without the regenerate step this looks unfixed.
 **Why it is a host action:** it is a setting in your X account. Nothing in this
 repo can change it.
 
-**Evidence, 2026-08-27** — run `c2b486ff315045c6`, branch `8ab6516d50c5`
+**Reproduced 2026-08-27 through the webapp**, driving `tinyassets.io/mcp/app`
+as the signed-in founder rather than the MCP — run `948a32670485432a`, same
+branch, same result. Two things that run additionally rules out:
+
+- **Not throttling.** `x-rate-limit-remaining: 39999` of `40000`.
+- **Not the wrong connection.** The universe enumerated every saved connection:
+  `webhook:test`, `x:posting`, and the GitHub PR writer. There is exactly one X
+  connection and it is the read-scoped one, so there is no alternative
+  credential to try.
+
+X names the fault itself in the response body:
+
+```json
+{"detail": "Your client app is not configured with the appropriate oauth1 app permissions for this endpoint.",
+ "status": 403, "title": "Forbidden", "type": "https://api.x.com/2/problems/oauth1-permissions"}
+```
+
+**Original evidence, 2026-08-27** — run `c2b486ff315045c6`, branch `8ab6516d50c5`
 ("X Hello World via Codex v2"), production `44c4e205`:
 
 ```
