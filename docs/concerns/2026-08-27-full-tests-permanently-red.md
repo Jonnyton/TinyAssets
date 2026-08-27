@@ -1,12 +1,18 @@
-# `full-tests` has been red continuously, so it carries no signal
+# The scheduled tripwire has been red continuously, so it carries no signal
 
 **Filed:** 2026-08-27
 **Severity:** P2 — no production impact, but it is a blind spot in the test surface
 
+> The job was named `full-tests` when this was filed and is `heavy-tests` as of
+> PR #2576 (2026-08-27). The finding below is stated against `full-tests`
+> because that is what was measured; the Update at the bottom carries the
+> post-rename numbers, which supersede the 135 count here. Filename kept so
+> existing links resolve.
+
 ## The finding
 
-`full-tests` is the "complete test surface" job in `.github/workflows/tests.yml`.
-It is **not** a required check; it runs on push to `main` and hourly, and exists
+`full-tests` was the "complete test surface" job in `.github/workflows/tests.yml`.
+It is **not** a required check; it ran on push to `main` and hourly, and exists
 as a post-merge tripwire.
 
 It has failed on **every** commit checked:

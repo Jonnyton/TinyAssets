@@ -200,8 +200,17 @@ jobs:
   # NOT required — this is the post-merge tripwire, not the merge gate. It
   # exists because `required-tests` deliberately trades coverage for a wall
   # clock that fits main's commit cadence; without this the excluded files
-  # would have no CI at all. Same quarantine ledger, so a failure here is a
-  # real regression rather than baseline noise.
+  # would have no CI at all. Same quarantine ledger.
+  #
+  # This job is RED at baseline and a failure here is NOT by itself a
+  # regression. Measured 2026-08-27 on the first run of the split: 2,236 run,
+  # 114 failures, 107 of them outside `known-failing-tests.txt` -- 105 of
+  # those concentrated in two files (test_deploy_prod_workflow.py 88,
+  # test_retire_cheat_loop_deploy_fence.py 17). Until that baseline is triaged
+  # to zero, compare a failure against the PREVIOUS heavy run before treating
+  # it as caused by the commit that triggered it. Reverting on a red heavy
+  # job without that comparison reverts the wrong change.
+  # Tracked: docs/concerns/2026-08-27-full-tests-permanently-red.md
   #
   # `github.event_name != 'pull_request'` therefore admits schedule, push and
   # workflow_dispatch — schedule is what actually carries it (see above).

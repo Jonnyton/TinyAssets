@@ -199,7 +199,7 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
       which an earlier version of this file got wrong; a conservative policy
       that is easy to read beats a clever one that is subtly wrong.
 
-    If `full-tests` is ever made materially faster, relax this in the same
+    If `heavy-tests` is ever made materially faster, relax this in the same
     commit that proves the new duration — do not delete it, because the
     behaviour it prevents is silent.
     """
@@ -278,7 +278,8 @@ def test_required_tests_cannot_decline_to_report() -> None:
     * A job-level `if:` does NOT do that. A skipped job reports
       `conclusion=skipped`, which branch protection accepts as satisfied — so a
       mistaken condition FAILS OPEN and silently merges untested code. Verified
-      empirically 2026-08-03: `full-tests` carries a job-level `if:` and
+      empirically 2026-08-03: the scheduled tripwire (`full-tests` then,
+      `heavy-tests` now) carries a job-level `if:` and
       reported `COMPLETED/SKIPPED` on PR #2197, not pending.
 
     Fail-open is the more dangerous of the two, which is why the required job
@@ -372,3 +373,29 @@ def test_required_and_heavy_do_not_overlap() -> None:
     heavy = "\n".join(s.get("run", "") for s in jobs["heavy-tests"]["steps"])
     assert "--exclude-from .github/heavy-test-files.txt" in req
     assert "--include-from .github/heavy-test-files.txt" in heavy
+
+
+def test_every_heavy_listed_path_still_exists() -> None:
+    """A path in the list that no longer exists is silent coverage loss.
+
+    The list does double duty: `--exclude-from` for the required gate and
+    `--include-from` for the tripwire. A stale entry is therefore invisible
+    twice over -- pytest's `--ignore` accepts a nonexistent path without
+    complaint, and `--include-from` simply collects nothing from it. Found for
+    real on 2026-08-27: `tests/command_center/test_server.py` outlived the
+    directory the harness reset deleted, and neither job said a word.
+    """
+    listing = _REPO / ".github" / "heavy-test-files.txt"
+    entries = [
+        line.strip()
+        for line in listing.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert entries, "heavy-test-files.txt has no entries -- the split is inert"
+    missing = [e for e in entries if not (_REPO / e).is_file()]
+    assert not missing, (
+        f"{len(missing)} heavy-listed path(s) no longer exist: {missing}. "
+        "Delete them from .github/heavy-test-files.txt in the same change that "
+        "deleted the tests, or the required gate keeps --ignore-ing a ghost."
+    )
+    assert len(set(entries)) == len(entries), "duplicate entries in the heavy list"

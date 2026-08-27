@@ -35,7 +35,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P1** | [BYO-LLM refresh-token store](2026-08-23-byo-llm-refresh-token-store.md) — worker-readable tokens + session fixation; fix before a 2nd user | 2026-08-23 |
 | **P1** | [`write_brain` persistent prompt-injection](2026-08-24-write-brain-prompt-injection.md) — attacker content re-injected into system role every turn | 2026-08-24 |
 | **P2** | [`_current_actor` env fallback](2026-06-30-current-actor-env-fallback.md) — bypasses `permissions.py` | 2026-06-30 |
-| **P2** | [`full-tests` has been red continuously](2026-08-27-full-tests-permanently-red.md) — 135 failures since before the reset; a permanent red carries no more signal than a permanent green | 2026-08-27 |
+| **P2** | [The scheduled tripwire has been red continuously](2026-08-27-full-tests-permanently-red.md) — `full-tests`, now `heavy-tests`: 107 unquarantined failures, since before the reset; a permanent red carries no more signal than a permanent green | 2026-08-27 |
 | **P2** | [`deployed_sha` proves the receipt, not the running binary](2026-08-26-deployed-sha-proves-receipt-only.md) — a rollback with an intact receipt reads as shipped | 2026-08-26 |
 | — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
 | — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |

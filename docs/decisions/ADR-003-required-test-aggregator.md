@@ -313,7 +313,10 @@ have hidden every future pass→fail transition on them.
 
 **Resolution: the fast subset is the required gate, and `strict` stays true.**
 `required-tests` excludes the 47 heaviest files (~4 min, 83.7% of tests
-kept); `full-tests` runs everything on every main push as the tripwire.
+kept); `heavy-tests` runs exactly that excluded set on a best-effort
+schedule as the tripwire. (Until 2026-08-27 the tripwire was `full-tests`,
+which re-ran the entire suite -- 45m09s / 13,865 tests, of which 10,700
+duplicated a job that had passed minutes earlier in the same workflow.)
 This keeps latest-main integration testing — which `strict: false` would
 have given up, permitting a stale-green PR to merge after an incompatible
 `main` change — while fitting inside main's commit cadence. PRs do not
@@ -335,8 +338,8 @@ xdist note above and these 81 failures are the same class.
   to ~9,100 tests and was wrong). Accepted trade: it was ~0 minutes of
   verification before, and merges were median-3.7-minute review-less lands.
   Follow-up if the latency bites: a curated fast-subset job becomes
-  `required-tests` and the full serial suite stays a non-required
-  post-merge/nightly tripwire — change it via the documented context-rename
+  `required-tests` and the excluded heavy files stay a non-required
+  post-merge/scheduled tripwire (`heavy-tests`, split out 2026-08-27) — change it via the documented context-rename
   procedure, never by weakening this gate in place.
 - The `known-failing-tests.txt` count is a standing cleanup backlog; each entry
   removed is a real regression the gate can newly catch.

@@ -19,7 +19,6 @@
 #
 # Measured: every file whose tests totalled >3.0s in CI run 30780762657
 # (12991 tests / 34.0 min). Regenerate after a big suite change.
-tests/command_center/test_server.py
 tests/load/test_agent_runtime_activation_load.py
 tests/load/test_agent_runtime_cloud_load.py
 tests/test_api.py
@@ -67,16 +66,3 @@ tests/test_universe_cycle_noop_guardrail.py
 tests/test_universe_server_isolation.py
 tests/test_universe_visibility.py
 tests/test_writer_tools.py
-# --- excluded for ORDER-COUPLING, not for speed ---------------------
-# These two assert that EPOCH2_QUEUE_CONSUMER_READY is False. Under the
-# subset they see it True and fail; in the full run they pass. Every
-# writer of that global uses monkeypatch (which restores), so the leak is
-# not yet located -- tracked as its own STATUS row.
-#
-# This is NOT quarantining: their assertions are untouched and they still
-# run, and gate, in `heavy-tests` on its best-effort schedule. Excluding a test that
-# only misbehaves in the artificial subset context is honest; adding it to
-# known-failing-tests.txt would NOT be, because it would also mask the
-# test failing for real reasons.
-tests/test_dispatcher_queue.py
-tests/test_distributed_execution_authority.py
