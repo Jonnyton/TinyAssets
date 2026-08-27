@@ -40,8 +40,15 @@ concurrency:
   # workflow to a private `deploy-prod` group, which silently allowed exactly
   # that overlap; restored 2026-08-27.
   #
-  # With cancel-in-progress false they queue rather than cancel, so the cost of
-  # sharing is waiting, never a half-applied mutation.
+  # `cancel-in-progress: false` stops an in-flight run being killed, but it does
+  # NOT make waiting runs queue: GitHub holds only ONE pending run per group and
+  # a newer pending run REPLACES the older one, which is cancelled. So the cost
+  # of sharing is that a run waiting behind a long deploy can be displaced by a
+  # newer one -- including an automated p0-outage-triage run. That risk already
+  # existed among the three workflows below; this adds contention to it.
+  # It is still the right trade: a displaced triage run can be re-dispatched,
+  # a half-applied host mutation cannot be un-applied. Cross-family review
+  # 2026-08-27 caught the wrong claim in the first version of this comment.
   group: production-host-mutation
   cancel-in-progress: false
 
