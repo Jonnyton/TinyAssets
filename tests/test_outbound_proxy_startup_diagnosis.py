@@ -19,9 +19,11 @@ import pytest
 
 from tinyassets.storage.outbound_connections import (
     _DEFAULT_PROXY_STARTUP_TIMEOUT_S,
+    _MAX_PROXY_STARTUP_TIMEOUT_S,
     _PROXY_STARTUP_TIMEOUT_VAR,
     ConnectionLedger,
     ProxyRequestError,
+    _describe_child_exit,
     _proxy_startup_timeout_seconds,
     _run_proxy_worker,
 )
@@ -137,3 +139,106 @@ def test_startup_timeout_falls_back_on_an_unusable_override(monkeypatch, raw):
     """A bad override must never yield a zero/negative budget that fails instantly."""
     monkeypatch.setenv(_PROXY_STARTUP_TIMEOUT_VAR, raw)
     assert _proxy_startup_timeout_seconds() == _DEFAULT_PROXY_STARTUP_TIMEOUT_S
+
+
+# --- Cross-family review round 1 (Codex, ADAPT) -----------------------------
+# Codex found the exit reporting INVERTED: `_abandon()` terminated the child
+# before reading `exitcode`, so our own SIGTERM (-15) overwrote the real status
+# and every timeout was reported as "process exited". It also found that on
+# Linux a dead child closes the pipe, so the read hits EOF and used to surface
+# as the unrelated "received an invalid message" -- the most likely production
+# shape. These pin both.
+
+
+def _ledger_for(tmp_path):
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
+    )
+    ledger.create_connection(
+        connection_id="conn-1",
+        owner_user_id="user-1",
+        connection_class="issue-writer",
+        scopes=("issues:write",),
+        provider="test-fixture.issue",
+        destination="github.com/acme/widgets",
+        credential_ref="test-fixture://nonsecret",
+    )
+    ledger.grant_connection(
+        grant_id="grant-1",
+        connection_id="conn-1",
+        owner_user_id="user-1",
+        universe_id="universe-1",
+    )
+    return ledger
+
+
+def test_a_live_but_slow_child_is_reported_as_a_timeout_not_a_process_exit(
+    tmp_path, monkeypatch
+):
+    """The regression Codex caught: our own SIGTERM must not become the verdict."""
+    # A budget far below the child's real startup cost, so poll() gives up while
+    # the child is still ALIVE. Before the fix this reported "exitcode -15".
+    monkeypatch.setenv(_PROXY_STARTUP_TIMEOUT_VAR, "0.001")
+
+    with pytest.raises(ProxyRequestError) as caught:
+        _ledger_for(tmp_path).resolve_scoped_proxy(
+            universe_id="universe-1",
+            connection_class="issue-writer",
+        )
+
+    message = str(caught.value)
+    assert "did not finish starting within" in message
+    assert "exitcode" not in message
+    assert "killed by signal" not in message
+
+
+def test_a_child_that_cannot_be_spawned_still_gets_the_diagnostic_contract(
+    tmp_path, monkeypatch
+):
+    """A `worker.start()` failure used to bypass the contract entirely."""
+
+    class _Unspawnable:
+        def __reduce__(self):
+            raise TypeError("this object refuses to pickle")
+
+    # `spawn` pickles the child's args, so an unpicklable config kills start().
+    monkeypatch.setattr(
+        "tinyassets.storage.outbound_connections._outbound_http_enabled",
+        lambda: _Unspawnable(),
+    )
+
+    with pytest.raises(ProxyRequestError) as caught:
+        _ledger_for(tmp_path).resolve_scoped_proxy(
+            universe_id="universe-1",
+            connection_class="issue-writer",
+        )
+
+    assert "could not be spawned" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("exitcode", "expected"),
+    [
+        (None, ""),
+        (0, " (exitcode 0)"),
+        (1, " (exitcode 1)"),
+        (-9, " (killed by signal 9)"),   # the OOM killer
+        (-15, " (killed by signal 15)"),  # SIGTERM
+    ],
+)
+def test_child_exit_is_described_as_a_signal_when_it_was_a_signal(exitcode, expected):
+    assert _describe_child_exit(exitcode) == expected
+
+
+def test_startup_timeout_is_capped(monkeypatch):
+    """An unbounded budget lets hung startups stall the small run-executor pool."""
+    monkeypatch.setenv(_PROXY_STARTUP_TIMEOUT_VAR, "99999")
+    assert _proxy_startup_timeout_seconds() == _MAX_PROXY_STARTUP_TIMEOUT_S
+
+
+def test_an_explicitly_invalid_budget_is_announced_not_swallowed(monkeypatch, capsys):
+    monkeypatch.setenv(_PROXY_STARTUP_TIMEOUT_VAR, "not-a-number")
+    assert _proxy_startup_timeout_seconds() == _DEFAULT_PROXY_STARTUP_TIMEOUT_S
+    assert _PROXY_STARTUP_TIMEOUT_VAR in capsys.readouterr().err
