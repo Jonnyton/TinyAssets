@@ -195,4 +195,30 @@ bulk deletion. Remaining capability clusters not yet individually checked:
 `terminal_receipt_result=` (14), `org.opencontainers.image.revision` (2),
 cloud-worker liveness (2), and the step-summary capability-map line (2).
 
+### The full cluster triage
+
+All 81 re-run against `814b4f06` (still exactly 81) and grouped by failure
+reason rather than by test name, because the name says what a test wanted and
+the reason says what the workflow no longer does. Every group was then checked
+against the current workflow individually.
+
+| Cluster | ~n | Verdict |
+|---|---|---|
+| Step-name assertions: `Rollback on failure`, `Capture previous image tag`, `Scrub stale cloud env overrides`, `Transitional task 2.1 *`, `Resolve image tag`, `Post-deploy canary` | 66 | **Stale.** Steps were replaced, not renamed — already measured: mapping every rename moved 81 to 79. |
+| `terminal_receipt_result=` | 14 | **Stale.** The capability is retained by `Publish release-state receipt` (`:336`). Its hardcoded `forward_canary_status:"passed"` is honest because the step is `if: ${{ success() }}`, so it cannot publish over a red canary. |
+| `TINYASSETS_CODEX_AUTH_JSON_B64` reaches the droplet | 4 | **REAL DROP.** Filed separately; no workflow delivers it. |
+| `TINYASSETS_GITHUB_PR_CAPABILITIES` | (same cluster) | **Stale by relocation.** Delivered by `scripts/github-app-token-refresher.py:112` on a systemd timer from `install-host-services.yml`. |
+| `org.opencontainers.image.revision` | 2 | **Not stale — keep.** The current workflow takes `revision` from `github.event.workflow_run.head_sha` (`:112`), not from the image's revision label, while the receipt still claims `"active_source_provenance":"digest_revision_label"`. These two assert the mechanism that would close [deployed-sha-proves-receipt-only](2026-08-26-deployed-sha-proves-receipt-only.md). Deleting them deletes the spec for that fix. |
+| Cloud-worker liveness | 2 | **Stale.** The deploy starts `daemon cloudflared logs` only, deliberately — `deploy/deploy_fail_safe.sh:148` names the reason ("unprofiled worker services that an unqualified `up -d` would start"), and `slack-agent` is `profiles: ["slack"]`. |
+| Runtime compose sync | 2 | **REAL DROP.** Already filed as [deploy-drops-compose-sync](2026-08-27-deploy-drops-compose-sync.md). |
+| Step-summary capability-map / codex-auth visibility lines | 2 | **Downstream of the auth drop**, not independent. Restoring delivery should restore the summary lines. |
+| `recover-unsafe` / `retire_cheat_loop_deploy_fence.py` | 6 | **Unresolved — founder question.** The job was dropped by #2442 while its script and its 17-failure test file both still exist. Deliberate retirement or accident is not something to guess. |
+
+**So the file is not uniformly stale, and "delete all 81" would have destroyed
+two real findings and one open spec.** Six assertions must survive in some form
+(4 auth-delivery, 2 revision-label); the rest can go once whatever survives is
+rewritten against the current workflow, per the two conditions this file set
+before any deletion lands.
+
+
 **Update:** the `recover-unsafe` founder question is answered — accident, not retirement. See `2026-08-27-unsafe-fence-recovery-path-deleted.md` (P1).
