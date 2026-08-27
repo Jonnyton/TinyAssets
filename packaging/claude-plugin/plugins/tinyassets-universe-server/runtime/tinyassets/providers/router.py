@@ -554,8 +554,20 @@ class ProviderRouter:
                     cost_microunits=cost_microunits,
                 )
             except Exception as exc:
+                # Name the CAUSE. The bare message sent a founder in circles for
+                # two days on 2026-08-27: every prompt-template run failed with
+                # "provider invocation usage could not be settled" and neither
+                # the universe nor its founder could tell a budget exhaustion
+                # from a carrier-lifecycle error from a storage failure. The
+                # `settle()` path alone has four distinct PermissionError exits.
+                #
+                # `__cause__` was always attached; nothing surfaced it, because
+                # the message the user sees is built from this string. Keeping
+                # the wrapper type (callers branch on it) and appending the
+                # cause costs nothing and makes the failure actionable.
                 raise ProviderAuthorityHeldError(
-                    "provider invocation usage could not be settled"
+                    "provider invocation usage could not be settled: "
+                    f"{type(exc).__name__}: {exc}"
                 ) from exc
             carrier_settled = True
         served_authority = universe_context.served_provider if universe_context else None
