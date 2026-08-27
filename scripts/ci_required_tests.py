@@ -73,16 +73,12 @@ def _min_ran_arg(raw: str) -> int:
     MIN_RAN_FLOOR in the same reviewed change — which is the point.
     """
     value = int(raw)
-    # Floor for the LOWEST profile: the exact profile is not known at
-    # argparse time, so this rejects the obviously-disabling values and
-    # `main` re-checks against the selected profile's floor.
-    lowest = min(MIN_RAN_FLOORS.values())
-    if value < lowest:
+    if value < MIN_RAN_FLOOR:
         raise argparse.ArgumentTypeError(
-            f"--min-ran {value} is below the lowest profile floor ({lowest}); a "
-            f"low floor disables the vacuity check as surely as omitting it. If "
-            f"a suite legitimately shrank, lower the profile's entry in "
-            f"MIN_RAN_FLOORS in the same PR and say why."
+            f"--min-ran {value} is below MIN_RAN_FLOOR ({MIN_RAN_FLOOR}); a low "
+            f"floor disables the vacuity check as surely as omitting it. If the "
+            f"suite legitimately shrank, lower MIN_RAN_FLOOR in the same PR and "
+            f"say why."
         )
     return value
 
@@ -238,7 +234,7 @@ def main() -> int:
     ap.add_argument(
         "--min-ran",
         type=_min_ran_arg,
-        default=MIN_RAN_FLOOR,
+        default=None,
         help=(
             "Vacuity floor: fail if fewer than this many tests actually ran. "
             "Must be set per job — the fast gate and the full suite have "
@@ -263,6 +259,13 @@ def main() -> int:
     # assertion matters: the late check ran the whole suite for ten minutes
     # first and only then refused.
     profile_floor = MIN_RAN_FLOORS[args.profile]
+    if args.min_ran is None:
+        # The profile carries the floor. A heavy job cannot pass `--min-ran
+        # 2000` explicitly, because `_min_ran_arg` still rejects anything below
+        # MIN_RAN_FLOOR at parse time -- that contract is locked by
+        # test_min_ran_below_floor_is_rejected_at_parse_time and re-broke when
+        # this change first tried to relax it.
+        args.min_ran = profile_floor
     if args.min_ran < profile_floor:
         raise SystemExit(
             f"--min-ran {args.min_ran} is below the '{args.profile}' profile "

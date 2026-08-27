@@ -1,5 +1,5 @@
 # Excluded from the REQUIRED `required-tests` gate: these files hold ~90%
-# of its wall clock. They still run in `full-tests`, against the same
+# of its wall clock. They still run in `heavy-tests`, against the same
 # quarantine ledger — on a best-effort SCHEDULE (a few times a day), NOT
 # "on every main push". Merges performed by auto-merge raise no push event,
 # so the push trigger alone left these files with no coverage at all. See the
@@ -74,7 +74,7 @@ tests/test_writer_tools.py
 # not yet located -- tracked as its own STATUS row.
 #
 # This is NOT quarantining: their assertions are untouched and they still
-# run, and gate, in `full-tests` on its best-effort schedule. Excluding a test that
+# run, and gate, in `heavy-tests` on its best-effort schedule. Excluding a test that
 # only misbehaves in the artificial subset context is honest; adding it to
 # known-failing-tests.txt would NOT be, because it would also mask the
 # test failing for real reasons.

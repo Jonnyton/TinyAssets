@@ -240,8 +240,7 @@ jobs:
           mkdir -p "$TINYASSETS_DATA_DIR"
           python scripts/ci_required_tests.py --junit junit-heavy.xml \
             --include-from .github/heavy-test-files.txt \
-            --profile heavy \
-            --min-ran 2000
+            --profile heavy
       - name: Upload junit
         if: always()
         uses: actions/upload-artifact@v4

@@ -358,7 +358,11 @@ def test_heavy_tests_uses_the_reviewed_runner_and_floor() -> None:
         "heavy-tests must run exactly the files the required gate excludes."
     )
     assert "--profile heavy" in run, "heavy-tests must select the reviewed heavy floor"
-    assert "--min-ran" in run, "heavy-tests must set a vacuity floor"
+    assert "--min-ran" not in run, (
+        "heavy-tests must NOT pass --min-ran: `_min_ran_arg` rejects anything "
+        "below MIN_RAN_FLOOR at parse time (a locked contract), so the floor "
+        "comes from --profile instead."
+    )
 
 
 def test_required_and_heavy_do_not_overlap() -> None:
