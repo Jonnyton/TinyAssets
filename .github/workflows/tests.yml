@@ -58,14 +58,14 @@ on:
   # via `pull_request`, where the trigger is deterministic.
   #
   # Accepted side effect: `required-tests` and `slow-tests` have no job-level
-  # `if:`, so they run on the schedule too. `full-tests` is a strict superset of
+  # `if:`, so they run on the schedule too. `heavy-tests` runs only what the required gate excludes; it is no longer a superset of
   # `required-tests`, so that is duplicated work. It is deliberate — runners are
   # free here, and the alternative is a job-level `if:` on the REQUIRED job.
   #
   # That would fail OPEN, not closed. A skipped job reports
   # `conclusion=skipped`, and branch protection accepts a skipped required check
   # as satisfied — so a condition that was wrong in some edge case would merge
-  # untested code silently. (Verified empirically 2026-08-03: `full-tests`
+  # untested code silently. (Verified empirically 2026-08-03, when this was `full-tests`:
   # reported COMPLETED/SKIPPED on PR #2197, not pending. An earlier draft of
   # this comment claimed a job-level `if:` would strand PRs on "Expected"; that
   # is the behaviour of a *trigger-level* `paths:` filter, not a job `if:`, and
@@ -82,7 +82,7 @@ on:
   #
   #     gh run list --workflow tests.yml --event schedule
   #
-  # WHY NOT TIGHTER. `full-tests` measured 36 and 38 minutes, and non-PR runs
+  # WHY NOT TIGHTER. The old `full-tests` measured 36-45 minutes, and non-PR runs
   # get a unique concurrency group (`github.run_id`) with cancel-in-progress
   # false. Whatever GitHub delivers, this workflow's own concurrency policy
   # will not replace one non-PR run with another; it does not follow that two
@@ -178,7 +178,7 @@ jobs:
           #
           # Excluding them was VERIFIED safe, not assumed: every failure the
           # exclusion run reported was also failing in the same-tree full run.
-          # The excluded files still run in `full-tests`, on a best-effort
+          # The excluded files still run in `heavy-tests`, on a best-effort
           # schedule of one nominal slot per hour — NOT "on every main push", which was
           # the original claim here and was wrong: app-performed merges raise no
           # push event. See the `schedule:` trigger comment.
@@ -205,8 +205,20 @@ jobs:
   #
   # `github.event_name != 'pull_request'` therefore admits schedule, push and
   # workflow_dispatch — schedule is what actually carries it (see above).
-  full-tests:
-    name: full-tests
+  # Was `full-tests`, which re-ran the ENTIRE required suite a second time.
+  # Measured on Linux CI run 33037400288: required-tests 7m26s / 10,700 tests;
+  # full-tests 45m09s / 13,865. The ~3,100-test difference IS the heavy list;
+  # the other 10,700 duplicated a job that had passed minutes earlier in the
+  # same workflow.
+  #
+  # This runs through ci_required_tests.py, NOT raw pytest, deliberately.
+  # Cross-family review found that raw pytest loses two things the old job had:
+  # the quarantine ledger (17 current entries are in heavy-listed files, so a
+  # raw run is red on an unchanged baseline) and the vacuity floor (a green
+  # run of zero tests). `--profile heavy` selects a reviewed floor rather than
+  # letting the job pick a number it can meet.
+  heavy-tests:
+    name: heavy-tests
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -221,29 +233,23 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-      - name: Run the complete test surface
+      - name: Run only the files the required gate excludes
         env:
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-full
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-heavy
         run: |
           mkdir -p "$TINYASSETS_DATA_DIR"
-          # No --exclude-from: this is everything.
-          python scripts/ci_required_tests.py --junit junit-full.xml --min-ran 12800
+          python scripts/ci_required_tests.py --junit junit-heavy.xml \
+            --include-from .github/heavy-test-files.txt \
+            --profile heavy \
+            --min-ran 2000
       - name: Upload junit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-full-tests
-          path: junit-full.xml
+          name: junit-heavy-tests
+          path: junit-heavy.xml
           if-no-files-found: warn
 
-  # NOT a required check (yet). The repo's `slow` marker guards stress/race
-  # tests, and `required-tests` deselects them to stay fast — which left the 9
-  # concurrency tests in test_activity_log_parity.py and test_node_bid_claim_stress.py
-  # with NO CI runner at all, against an AGENTS.md rule that uptime work ships
-  # with a concurrency/load proof. This job gives them one. It is reported but
-  # not required until it has a clean track record, because stress tests are the
-  # likeliest source of flake and a flaky REQUIRED check trains people to
-  # re-run until green — which is how a gate stops meaning anything.
   slow-tests:
     name: slow-tests
     runs-on: ubuntu-latest

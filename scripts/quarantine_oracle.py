@@ -262,7 +262,7 @@ def main() -> int:
     ap.add_argument("--run-id", help="GitHub Actions run id to pull the artifact from")
     ap.add_argument("--artifact", default=ARTIFACT,
                     help=f"artifact to read (default {ARTIFACT}; use "
-                         "junit-full-tests for the heavy files)")
+                         "junit-heavy-tests for the heavy files)")
     ap.add_argument("--filter", default="", help="only entries whose node id contains this")
     ap.add_argument("--quiet-failed", action="store_true",
                     help="summarize FAILED entries by count instead of listing them")
@@ -325,7 +325,7 @@ def main() -> int:
         if buckets["notrun"]:
             out += ["", "### NOT RUN", ""]
             for nid, _ in buckets["notrun"]:
-                why = ("excluded by heavy-test-files.txt — look at junit-full-tests"
+                why = ("excluded by heavy-test-files.txt — look at junit-heavy-tests"
                        if nid.split("::")[0] in heavy else "no matching testcase")
                 out.append(f"- `{nid}` — {why}")
 

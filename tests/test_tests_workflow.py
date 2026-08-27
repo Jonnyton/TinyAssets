@@ -53,7 +53,7 @@ assert _spec and _spec.loader
 _ci = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ci)
 
-# The one expression `full-tests` may use. Admits schedule, push and
+# The one expression `heavy-tests` may use. Admits schedule, push and
 # workflow_dispatch; excludes pull_request. Pinned exactly rather than by
 # substring: `github.event_name != 'pull_request' && github.event_name ==
 # 'push'` also contains "pull_request" and "!=" while excluding schedules
@@ -126,7 +126,7 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
     schedule = _triggers(_load()).get("schedule")
     assert isinstance(schedule, list) and schedule, (
         f"tests.yml needs a non-empty `schedule:` — got {schedule!r}. Without "
-        f"it the full-tests tripwire never runs: `push: branches: [main]` does "
+        f"it the heavy-tests tripwire never runs: `push: branches: [main]` does "
         f"NOT fire when auto-merge lands a PR via GITHUB_TOKEN, and "
         f"workflow_dispatch needs a human."
     )
@@ -162,7 +162,8 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
     and is deliberately accepted. The test bounds the declared rate from
     above; it does not require any particular rate.
 
-    `full-tests` takes 36-38 minutes (30858019064, 30875123887) and scheduled
+    `heavy-tests` runs only the heavy files (the old `full-tests` also re-ran
+    the whole required suite: 36-45 min) and scheduled
     runs do NOT displace each other — the sibling concurrency test pins non-PR
     runs to a unique group with cancel-in-progress false, deliberately, so
     this workflow's own concurrency policy will not replace a queued tripwire
@@ -216,17 +217,17 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
         f"declares at most one slot per hour. Some such expressions, e.g. "
         f"`59/5 * * * *`, ARE once-hourly; the policy is conservative on "
         f"purpose and refuses them rather than evaluating cron occurrences. "
-        f"`full-tests` runs 36-38 min, and this workflow will not replace one "
+        f"`heavy-tests` runs the heavy files only, and this workflow will not replace one "
         f"non-PR run with another. Use a single fixed minute, or prove a "
         f"shorter runtime first."
     )
 
 
-def test_full_tests_runs_on_every_non_pr_event() -> None:
+def test_heavy_tests_runs_on_every_non_pr_event() -> None:
     """Pinned exactly — a narrower condition would re-strand the tripwire."""
-    condition = _expr(_load()["jobs"]["full-tests"].get("if", ""))
+    condition = _expr(_load()["jobs"]["heavy-tests"].get("if", ""))
     assert condition == _FULL_TESTS_IF, (
-        f"full-tests `if:` must be exactly {_FULL_TESTS_IF!r} so that schedule, "
+        f"heavy-tests `if:` must be exactly {_FULL_TESTS_IF!r} so that schedule, "
         f"push and workflow_dispatch all run it; got {condition!r}. Narrowing "
         f"it (e.g. adding `&& github.event_name == 'push'`) silently removes "
         f"the only automatic coverage of .github/heavy-test-files.txt."
@@ -336,3 +337,34 @@ def test_required_tests_enforces_an_adequate_vacuity_floor() -> None:
         f"surely as omitting the flag. If the suite legitimately shrank, lower "
         f"MIN_RAN_FLOOR in the same PR and say why."
     )
+
+
+def test_heavy_tests_uses_the_reviewed_runner_and_floor() -> None:
+    """heavy-tests must not regress to raw pytest.
+
+    Cross-family review rejected a raw-pytest version for losing two things:
+    the quarantine ledger (17 current entries live in heavy-listed files, so a
+    raw run is red on an unchanged baseline) and the vacuity floor (a green run
+    of zero tests). Both come from `ci_required_tests.py`, so the job must go
+    through it -- and must name a PROFILE rather than pick a bare number.
+    """
+    steps = _load()["jobs"]["heavy-tests"]["steps"]
+    run = "\n".join(s.get("run", "") for s in steps)
+    assert "ci_required_tests.py" in run, (
+        "heavy-tests must run through ci_required_tests.py, not raw pytest -- "
+        "raw pytest loses quarantine handling and the vacuity floor."
+    )
+    assert "--include-from .github/heavy-test-files.txt" in run, (
+        "heavy-tests must run exactly the files the required gate excludes."
+    )
+    assert "--profile heavy" in run, "heavy-tests must select the reviewed heavy floor"
+    assert "--min-ran" in run, "heavy-tests must set a vacuity floor"
+
+
+def test_required_and_heavy_do_not_overlap() -> None:
+    """The point of the split: the suite runs once across the two jobs."""
+    jobs = _load()["jobs"]
+    req = "\n".join(s.get("run", "") for s in jobs["required-tests"]["steps"])
+    heavy = "\n".join(s.get("run", "") for s in jobs["heavy-tests"]["steps"])
+    assert "--exclude-from .github/heavy-test-files.txt" in req
+    assert "--include-from .github/heavy-test-files.txt" in heavy
