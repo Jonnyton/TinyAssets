@@ -1,5 +1,5 @@
 """Forkable first-party persona custody — task 6.8 of
-``openspec/changes/reconcile-universe-personification-relay``.
+``openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay``.
 
 Discharges the residual of the delta requirement *"Persona is a forkable default
 under first-party custody; the substrate enforces only the floor"*. The

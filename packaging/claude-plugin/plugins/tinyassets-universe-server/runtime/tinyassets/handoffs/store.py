@@ -1,7 +1,7 @@
 """Handoff lifecycle persistence, and the additive extension of the existing
 ``outcome_event`` registry.
 
-Task 5.1 of ``openspec/changes/complete-independent-full-platform-targets``
+Task 5.1 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``
 (capability ``real-world-handoffs-and-outcomes``).
 
 Where this lives, and why

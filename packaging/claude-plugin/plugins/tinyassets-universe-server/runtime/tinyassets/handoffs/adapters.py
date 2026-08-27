@@ -1,6 +1,6 @@
 """The handoff adapter seam — one registry, no second network or credential path.
 
-Task 5.4 of ``openspec/changes/complete-independent-full-platform-targets``
+Task 5.4 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``
 (capability ``real-world-handoffs-and-outcomes``).
 
 A handoff never opens a socket. It resolves a *registered adapter* by the name

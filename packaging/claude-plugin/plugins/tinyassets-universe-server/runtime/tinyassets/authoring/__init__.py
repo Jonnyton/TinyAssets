@@ -3,7 +3,7 @@
 Capability owner for ``node-authoring-and-autoresearch`` §§ sessions, inspection,
 edits, typed file I/O, sandboxed test runs, and explicit publication (tasks
 4.1-4.3 of
-``openspec/changes/complete-independent-full-platform-targets``).
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``).
 
 Module map:
 

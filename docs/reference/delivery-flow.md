@@ -28,7 +28,7 @@ Reviewed 2026-08-11; review-pipelining rule added by the host 2026-08-24.
   peer's budget and re-invokes you when it returns, so it gates LANDING
   (merge/deploy/flip-on), NOT your forward progress. The standard build pipeline
   for every session: build slice A → dispatch its review in the **background**
-  (`peer_agent.py` / `codex_review.py`, `run_in_background`) → **immediately pick
+  (`peer_agent.py`, `run_in_background`) → **immediately pick
   up the next lane** → fold each verdict in when it lands (fix findings →
   re-review → land). A pending review is a wait state, not a stopping point: do
   NOT stop, sit idle, or ask the host "should I wait?" while one runs. This

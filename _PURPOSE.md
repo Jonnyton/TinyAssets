@@ -7,7 +7,7 @@
 - Worktree: `C:/Users/Jonathan/Projects/wf-byo-llm-slice1`.
 - STATUS row: `Build BYO-LLM connect flow slice 1`.
 - OpenSpec: `openspec/changes/byo-llm-connect-flow/`, tasks 1.1-1.6 only.
-- Co-advanced contract: `openspec/changes/constrain-set-engine-provider-authority/`, request capability, requester-local admission, and sink validation only.
+- Co-advanced contract: `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`, request capability, requester-local admission, and sink validation only.
 - PLAN refs: `Module: Providers`; `Module: API & MCP Interface`.
 - Memory refs: no prior provider memory found; authored proposal/design/tasks are the durable handoff.
 - Related implications: credential custody, custom-agent binding, Slack app ingress, provider routing, cloud-drain source overlap.

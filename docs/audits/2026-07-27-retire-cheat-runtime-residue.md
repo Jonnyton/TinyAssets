@@ -6,7 +6,7 @@
 2026-07-28 at main `52475559` and PR #1835 head `1723aa86`
 **Mode:** read-only source, ownership, and live GitHub inventory; no production,
 workflow, label, issue, PR, or auto-merge mutation  
-**OpenSpec:** `openspec/changes/retire-cheat-loop/`
+**OpenSpec:** `openspec/changes/archive/2026-08-26-retire-cheat-loop/`
 
 ## Outcome
 
@@ -69,8 +69,8 @@ The merged wave used this exact write-set:
 scripts/retire_cheat_loop_github_state.py
 scripts/retire_cheat_loop_github_state_test.py
 docs/ops/2026-07-26-cheat-loop-github-state-retirement.md
-openspec/changes/retire-cheat-loop/specs/development-coordination-runtime/spec.md
-openspec/changes/retire-cheat-loop/tasks.md
+openspec/changes/archive/2026-08-26-retire-cheat-loop/specs/development-coordination-runtime/spec.md
+openspec/changes/archive/2026-08-26-retire-cheat-loop/tasks.md
 docs/audits/2026-07-27-retire-cheat-runtime-residue.md
 STATUS.md
 REFLECTION.md
@@ -216,7 +216,7 @@ tests/test_api_wiki.py
 tests/test_bug_investigation_wiring.py
 tests/test_file_bug_compact_response.py
 docs/audits/2026-07-27-retire-cheat-runtime-residue.md
-openspec/changes/retire-cheat-loop/tasks.md
+openspec/changes/archive/2026-08-26-retire-cheat-loop/tasks.md
 STATUS.md
 REFLECTION.md
 .agents/worktrees.md (retire lane only)

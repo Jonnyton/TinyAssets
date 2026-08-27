@@ -1,7 +1,7 @@
 # Retired: `file_bug` to `bug_investigation` forward-trigger wiring
 
 **Status:** superseded and retired by
-`openspec/changes/retire-cheat-loop/` (2026-07-28).
+`openspec/changes/archive/2026-08-26-retire-cheat-loop/` (2026-07-28).
 
 This historical plan proposed a privileged platform-owned automation in which a
 wiki filing automatically enqueued `bug_investigation` and later appended an

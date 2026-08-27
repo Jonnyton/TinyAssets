@@ -100,7 +100,7 @@ hook, template, and test directories.
 
 | TinyAssets area | Current relevant seam | Ringer/Symphony adaptation |
 |---|---|---|
-| `openspec/changes/activate-main-universe-spec-drain/` | Approved ordinary private Branch composition, BYOC-first, activation epoch, single-active claim, GitHub effect receipt, phone control | Generalize immutable inputs and read-only projection; keep Jonathan as first proof |
+| `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/` | Approved ordinary private Branch composition, BYOC-first, activation epoch, single-active claim, GitHub effect receipt, phone control | Generalize immutable inputs and read-only projection; keep Jonathan as first proof |
 | `tinyassets/storage/request_admissions.py` | Transactional request/task records, pickable indexes, leases, recovery and quarantine | Durable admission and claim substrate for ready work; extend only through the owning authority change |
 | `tinyassets/branch_tasks_v2.py` | Epoch-2 task adapter and queue consumer seam | Execute one server-authoritative claim generation; no alternate local identity |
 | `tinyassets/background_branch_authority.py` | Typed background authority/provenance attempts | Bind every attempt to real user, universe, immutable Branch version, provider authority, and effect scope |
@@ -384,7 +384,7 @@ This revision:
 - Required review artifact:
   `docs/audits/2026-07-30-ringer-production-orchestration-claude-review.md`
 - OpenSpec owner:
-  `openspec/changes/activate-main-universe-spec-drain/`
+  `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/`
 - Prior evidence:
   `docs/audits/2026-07-28-openspec-agent-throughput-implications.md`,
   `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`,

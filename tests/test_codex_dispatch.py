@@ -1,6 +1,6 @@
 """Tests for the programmatic Codex dispatch layer.
 
-Covers the wrapper `scripts/codex_review.py` (Windows/PATH resolution, MSYS path
+Covers `scripts/peer_agent.py` (Windows/PATH resolution, MSYS path
 normalization, and the safe `codex exec` command it builds) and the
 `.claude/hooks/codex_dispatch_nudge.py` UserPromptSubmit nudge. Both are loaded
 by path since they live outside the importable package tree.
@@ -26,7 +26,7 @@ def _load(rel: str):
     return mod
 
 
-cr = _load("scripts/codex_review.py")
+cr = _load("scripts/peer_agent.py")
 nudge = _load(".claude/hooks/codex_dispatch_nudge.py")
 
 
@@ -74,46 +74,6 @@ def _args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def test_build_cmd_is_read_only_and_no_approval(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
-    cmd = cr.build_cmd(_args())
-    assert cmd[0] == "CODEXBIN"
-    assert cmd[1] == "exec"
-    assert cmd[cmd.index("-s") + 1] == "read-only"
-    assert cmd[cmd.index("-c") + 1] == "approval_policy=never"
-    # write access is never granted from this path
-    assert "workspace-write" not in cmd
-    assert "danger-full-access" not in cmd
-    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
-
-
-def test_build_cmd_passes_cwd_and_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
-    cmd = cr.build_cmd(_args(cwd="C:/repo", out="C:/verdict.md"))
-    assert cmd[cmd.index("-C") + 1] == "C:/repo"
-    assert cmd[cmd.index("-o") + 1] == "C:/verdict.md"
-
-
-def test_build_cmd_pipes_prompt_via_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The prompt must NEVER be an argv element: the codex.cmd shim goes through
-    # cmd.exe, which truncates argv at the first newline (silent reviewed-nothing).
-    monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
-    cmd = cr.build_cmd(_args())
-    assert cmd[-1] == "-"
-    assert cr.ADVERSARIAL_PREAMBLE not in " ".join(cmd)
-
-
-def test_build_prompt_has_preamble_and_diff() -> None:
-    plain = cr.build_prompt("ask", None)
-    assert cr.ADVERSARIAL_PREAMBLE in plain
-    assert "git diff" not in plain  # no diff instruction without --diff-base
-    with_diff = cr.build_prompt("ask", "origin/main")
-    assert "git diff origin/main...HEAD" in with_diff
-
-
-# --- codex_dispatch_nudge ---------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "prompt,label",
     [
@@ -148,34 +108,6 @@ def test_nudge_silent_on_non_qualifying(prompt: str) -> None:
     assert nudge.classify(prompt) is None
 
 
-def test_nudge_render_steers_to_background_offload() -> None:
-    text = nudge.render("high-risk-ship", "refute it")
-    assert "codex_review.py" in text  # the fail-closed wrapper, not raw exec
-    assert "stdin" in text
-    assert "BACKGROUND offload" in text
-    assert "mcp__codex__codex" in text  # still names the inline gate option
-
-
-def test_run_feeds_full_prompt_via_stdin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
-    seen: dict = {}
-
-    def fake(cmd, timeout=None, **kw):
-        seen.update(kw)
-        return subprocess_completed(0)
-
-    monkeypatch.setattr(cr.subprocess, "run", fake)
-    out = tmp_path / "verdict.md"
-    cr.run(_run_args(out, prompt="line one\nline two"))
-    assert "line one\nline two" in seen.get("input", "")
-    assert cr.ADVERSARIAL_PREAMBLE in seen.get("input", "")
-
-
-# --- run(): background contract — the out file always exists ----------------
-
-
 def _run_args(out: Path, **kw) -> argparse.Namespace:
     base = dict(prompt="ask", out=str(out), cwd=".", diff_base=None, timeout=5.0)
     base.update(kw)
@@ -187,82 +119,64 @@ def _fixed_bin(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
 
 
-def test_run_timeout_writes_error_verdict(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
-) -> None:
-    import subprocess
-
-    def boom(cmd, timeout=None, **kw):
-        raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
-
-    monkeypatch.setattr(cr.subprocess, "run", boom)
-    out = tmp_path / "verdict.md"
-    assert cr.run(_run_args(out)) == 124
-    text = out.read_text()
-    assert "VERDICT: error" in text
-    assert "timed out" in text
-
-
-def test_run_missing_binary_writes_error_verdict(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
-) -> None:
-    def boom(cmd, timeout=None, **kw):
-        raise FileNotFoundError(cmd[0])
-
-    monkeypatch.setattr(cr.subprocess, "run", boom)
-    out = tmp_path / "verdict.md"
-    assert cr.run(_run_args(out)) == 127
-    text = out.read_text()
-    assert "VERDICT: error" in text
-    assert "CODEX_BIN" in text
-
-
-def test_run_zero_exit_empty_output_writes_error_verdict(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
-) -> None:
-    # codex exec "succeeds" but never writes the file: a silent poller trap.
-    monkeypatch.setattr(
-        cr.subprocess, "run", lambda cmd, timeout=None, **kw: subprocess_completed(0)
-    )
-    out = tmp_path / "verdict.md"
-    assert cr.run(_run_args(out)) == 0
-    text = out.read_text()
-    assert "VERDICT: error" in text
-    assert "wrote no output" in text
-
-
-def test_run_success_leaves_codex_verdict_untouched(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
-) -> None:
-    out = tmp_path / "verdict.md"
-
-    def fake(cmd, timeout=None, **kw):
-        out.write_text("findings...\nVERDICT: approve\n")
-        return subprocess_completed(0)
-
-    monkeypatch.setattr(cr.subprocess, "run", fake)
-    assert cr.run(_run_args(out)) == 0
-    assert out.read_text() == "findings...\nVERDICT: approve\n"
-
-
-def test_run_nonzero_with_partial_output_appends_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
-) -> None:
-    out = tmp_path / "verdict.md"
-
-    def fake(cmd, timeout=None, **kw):
-        out.write_text("partial findings\n")
-        return subprocess_completed(3)
-
-    monkeypatch.setattr(cr.subprocess, "run", fake)
-    assert cr.run(_run_args(out)) == 3
-    text = out.read_text()
-    assert text.startswith("partial findings")  # partial output preserved
-    assert "WARNING" in text
-    assert "exited 3" in text
-
-
 def subprocess_completed(rc: int):
     import subprocess
 
     return subprocess.CompletedProcess(args=["codex"], returncode=rc)
+
+
+# --- The nudge's rendered command must actually be runnable ------------------
+#
+# `test_nudge_render_steers_to_background_offload` was DELETED with
+# `codex_review.py` rather than retargeted, leaving only classification
+# coverage. That is how the hook shipped a command argparse rejects
+# (`peer_agent.py --out ...` with no positional provider) in the first place:
+# nothing asserted the rendered text. Restored against the current wrapper, and
+# the command is parsed rather than string-matched, so a shape error fails here
+# instead of at the moment an agent tries to run it.
+# (Cross-family review of PR #2561, round 5.)
+
+
+def test_nudge_render_names_the_wrapper_and_the_inline_gate() -> None:
+    text = nudge.render("high-risk-ship", "refute it")
+    assert "peer_agent.py" in text
+    assert "codex_review.py" not in text, "names the deleted wrapper"
+    assert "BACKGROUND offload" in text
+    assert "stdin" in text, "the argv-truncation warning must survive"
+    assert "mcp__codex__codex" in text, "still names the inline gate option"
+    assert "[peer_agent] ERROR" in text, "the fail-closed marker must be named"
+
+
+def test_nudge_rendered_command_parses() -> None:
+    """Feed the rendered command to peer_agent's OWN parser.
+
+    Checking flag PRESENCE is not parsing: `--out --prompt-file` with no values
+    passes a membership test and argparse rejects it (cross-family review of
+    PR #2561, round 6, mutation-proven). The parser is the only thing that
+    agrees with what actually runs, so `build_arg_parser()` was extracted from
+    `main()` and is used here. Angle-bracket placeholders become syntactically
+    valid values, since the SHAPE is under test, not the paths.
+    """
+    import re
+    import shlex
+
+    text = nudge.render("high-risk-ship", "refute it")
+    match = re.search(r"`(python scripts/peer_agent\.py[^`]*)`", text)
+    assert match, f"no runnable peer_agent command in:\n{text}"
+
+    tokens = shlex.split(match.group(1))
+    assert tokens[:2] == ["python", "scripts/peer_agent.py"], tokens
+    argv = [
+        "brief.md" if t.startswith("<") and t.endswith(">") else t for t in tokens[2:]
+    ]
+
+    try:
+        args = cr.build_arg_parser().parse_args(argv)
+    except SystemExit as exc:  # argparse exits rather than raising
+        raise AssertionError(
+            f"the nudge renders a command argparse rejects: {argv} ({exc})"
+        ) from exc
+
+    assert args.provider in {"claude", "codex"}, args
+    assert args.out and not args.out.startswith("-"), f"--out took a flag as its value: {args}"
+    assert args.prompt or args.prompt_file, f"no prompt source survived parsing: {args}"

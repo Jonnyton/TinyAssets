@@ -10,7 +10,7 @@ Owner: lead + codex-gpt5-desktop
 > without redirect, alias, or compatibility behavior. Current work uses the
 > exact public name `TinyAssets`, the sole remote endpoint
 > `https://tinyassets.io/mcp`, and the exact canonical tool/auth contract in
-> `openspec/changes/reconcile-external-connector-manifests/`.
+> `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/`.
 >
 > Do not execute, refresh, or submit any checklist or payload below. Rebuild
 > current external connector manifests and submission answers from the

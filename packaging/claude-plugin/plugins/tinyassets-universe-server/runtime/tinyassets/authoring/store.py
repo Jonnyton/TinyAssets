@@ -1,7 +1,7 @@
 """Owner-scoped authoring persistence — sessions, events, versions, file
 handles, and per-run effect confirmations.
 
-Task 4.1 of ``openspec/changes/complete-independent-full-platform-targets``.
+Task 4.1 of ``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets``.
 
 Substrate choice: one SQLite database under the canonical data root, the same
 shape every shipped per-context store uses (see

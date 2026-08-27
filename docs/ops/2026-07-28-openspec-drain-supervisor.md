@@ -1,5 +1,12 @@
 # OpenSpec all-day drain supervisor
 
+> **RETIRED (2026-08-26).** `openspec_drain_supervisor.py`, its watchdog, tray,
+> and autostart installer were deleted in the harness reset — autonomous
+> background workers are out of scope under the two-provider decision. Every
+> command below refers to something that no longer exists. Kept as the record of
+> how the drain worked, not as a runbook. Recover from git at `e4180697`.
+
+
 ## Purpose
 
 Use one small persistent controller to drain OpenSpec delivery debt for a

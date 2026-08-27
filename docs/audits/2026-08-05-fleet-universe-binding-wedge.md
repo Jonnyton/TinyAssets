@@ -127,19 +127,19 @@ Three couplings make the current path platform-owned rather than user-owned:
 
 ## Where the correct design already exists
 
-- `openspec/changes/activate-requester-owned-cloud-compute-binding` — owner
+- `openspec/changes/archive/2026-08-26-activate-requester-owned-cloud-compute-binding` — owner
   -scoped enrollment + `bind_provider`, budgets, credential-reference digests,
   explicitly no maintainer/market fallback. Built through task 3.1; **3.2
   (focused tests + independent security review) and 3.3 (deploy the dark bind
   path and reconcile one enrollment through the rendered phone connector)
   remain open.**
-- `openspec/changes/distributed-execution` — the signed job/lease/result
+- `openspec/changes/archive/2026-08-26-distributed-execution` — the signed job/lease/result
   protocol, real sandbox backend, and authenticated execution route that
   replace provider-shaped containers. **25 tasks done, 83 open.**
-- `openspec/changes/activate-custom-agent-runtime-core` (10 done / 2 open) and
+- `openspec/changes/archive/2026-08-26-activate-custom-agent-runtime-core` (10 done / 2 open) and
   `activate-custom-agent-runtimes` (3 / 5) — the custom cloud agent lane
   another session is driving.
-- `openspec/changes/owner-operable-automation` — 0 done / 9 open.
+- `openspec/changes/archive/2026-08-26-owner-operable-automation` — 0 done / 9 open.
 
 The architecture is specced and largely correct. What is missing is the part
 that makes it *user-owned in fact*: closing the credential fail-open, and

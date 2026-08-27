@@ -96,4 +96,4 @@ Token naming: `workflow-<purpose>` (e.g. `workflow-cutover`, `workflow-ci-deploy
 ## Related references
 
 - `references/godaddy.md` — GoDaddy dashboard + Websites + Marketing + base browser-lock pattern + Monaco/Radix helpers.
-- `browser-testing-with-devtools` — Chrome DevTools MCP for richer DOM inspection if Playwright selectors fail.
+- `ui-test` — Chrome DevTools MCP for richer DOM inspection if Playwright selectors fail.

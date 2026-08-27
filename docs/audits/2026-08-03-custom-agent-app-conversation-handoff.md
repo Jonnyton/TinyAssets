@@ -185,8 +185,8 @@ openspec list --json
 openspec status --change activate-custom-agent-runtime-core --json
 rg -n -i 'Slack|workspace_id|team_id|installation_id|offboard|membership' tinyassets --glob '*.py'
 rg -n 'slack_sdk|slack_bolt|x-slack|chat.postMessage|events_api' . --glob '!tests/**' --glob '!docs/**' --glob '!openspec/**' --glob '!*.lock' --glob '!node_modules/**'
-python scripts/docview.py lines openspec/changes/outbound-boundary-layer/tasks.md --start 1 --end 55
-python scripts/docview.py lines openspec/changes/reconcile-universe-personification-relay/tasks.md --start 48 --end 67
+python scripts/docview.py lines openspec/changes/archive/2026-08-26-outbound-boundary-layer/tasks.md --start 1 --end 55
+python scripts/docview.py lines openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/tasks.md --start 48 --end 67
 python scripts/docview.py lines openspec/specs/conversation-custody/spec.md --start 30 --end 60
 python scripts/docview.py lines openspec/specs/conversation-custody/spec.md --start 240 --end 255
 ```

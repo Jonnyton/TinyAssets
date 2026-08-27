@@ -54,7 +54,8 @@ param(
     [string]   $Root   = '',
     [string[]] $Keep   = @(),
     [string]   $Filter = 'wf-*',
-    [switch]   $Apply
+    [switch]   $Apply,
+    [switch]   $IncludeTestResidue
 )
 
 $ErrorActionPreference = 'Continue'
@@ -66,17 +67,24 @@ if (-not $Root) {
     $Root = Split-Path -Parent $repo
 }
 
-$elevated = ([Security.Principal.WindowsPrincipal]`
-    [Security.Principal.WindowsIdentity]::GetCurrent()`
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($id)
+$elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+# WARN, do not gate. IsInRole is a PREDICTION about whether the deletes will
+# work; takeown's actual result is EVIDENCE. An earlier version refused to run
+# when this returned $false, which stopped a genuinely elevated session dead
+# (reported 2026-08-26 from an elevated prompt). Since every delete is already
+# fail-closed on provable emptiness, attempting and reporting the real outcome
+# is strictly better than declining based on a guess.
 if ($Apply -and -not $elevated) {
-    Write-Error @'
-Not elevated. BUILTIN\Administrators is the only principal with rights on these
-directories; without elevation takeown cannot reach them and every removal will
-fail with Access Denied. Re-run from an elevated PowerShell.
-'@
-    exit 1
+    Write-Warning @"
+Not detected as elevated (running as $($id.Name)).
+Proceeding anyway: the check can be wrong, and each delete is independently
+gated on proving the directory is empty. If takeown cannot reach these
+directories you will see FAIL lines with the actual ACL below -- that is the
+real answer, not this warning.
+"@
 }
 
 # Auto-protect anything git still knows about. A registered worktree is live
@@ -122,8 +130,33 @@ function Test-DirectoryEmpty {
         -ErrorAction SilentlyContinue -ErrorVariable enumErrors)
     if ($enumErrors) { return "unreadable" }     # cannot see inside -> never "empty"
     $files = @($items | Where-Object { -not $_.PSIsContainer })
-    if ($files.Count -gt 0) { return "has-files:$($files.Count)" }
-    return "empty"
+    if ($files.Count -eq 0) { return "empty" }
+
+    # A directory holding ONLY test output is still residue. These husks are not
+    # empty -- they hold pytest caches and per-run temp trees, sometimes
+    # thousands of files -- but none of it is work. Classified separately from
+    # "has-files" so the operator opts in explicitly via -IncludeTestResidue and
+    # anything with even one non-residue file still fails closed.
+    # EXACT names only. An earlier version matched with StartsWith on prefixes
+    # like ".claude" and ".tmp", which also matches ".claude/agent-memory" --
+    # real, irreplaceable content -- and would have let -IncludeTestResidue
+    # delete it recursively. Prefix matching cannot express "test output" safely,
+    # so this is an exact allowlist and nothing else counts as residue.
+    $residueRoots = @(".pytest_cache", ".pytest_tmp", ".tmp-pytest",
+                      "__pycache__", ".ruff_cache", ".mypy_cache")
+    $residuePatterns = @("^\.pytest_tmp_[A-Za-z0-9]+$", "^\.test-run-[A-Za-z0-9._-]+$",
+                         "^\.tmp$", "^_test_tmp$", "^_test_tmp_[A-Za-z0-9._-]+$")
+    $foreign = @($files | Where-Object {
+        $rel = $_.FullName.Substring($Path.Length).TrimStart("\")
+        $first = ($rel -split "\\")[0]
+        $ok = $residueRoots -contains $first
+        if (-not $ok) {
+            foreach ($pat in $residuePatterns) { if ($first -match $pat) { $ok = $true; break } }
+        }
+        -not $ok
+    })
+    if ($foreign.Count -eq 0) { return "test-residue:$($files.Count)" }
+    return "has-files:$($foreign.Count)"
 }
 
 foreach ($dir in $targets) {
@@ -131,6 +164,13 @@ foreach ($dir in $targets) {
         switch -Wildcard (Test-DirectoryEmpty -Path $dir.FullName) {
             "empty"      { Write-Host ("WOULD CLEAR  {0} (provably empty)" -f $dir.Name) }
             "has-files*" { Write-Host ("WOULD SKIP   {0} - {1}; holds real content" -f $dir.Name, $_) -ForegroundColor Yellow }
+            "test-residue*" {
+                if ($IncludeTestResidue) {
+                    Write-Host ("WOULD CLEAR  {0} - {1} (test output only)" -f $dir.Name, $_)
+                } else {
+                    Write-Host ("WOULD SKIP   {0} - {1}; re-run with -IncludeTestResidue to clear" -f $dir.Name, $_) -ForegroundColor Yellow
+                }
+            }
             default      { Write-Host ("WOULD CLEAR  {0} (unreadable now; re-checked after takeown, skipped if not empty)" -f $dir.Name) }
         }
         continue
@@ -146,8 +186,12 @@ foreach ($dir in $targets) {
     # THE GATE. Now that access should exist, prove emptiness. If it is still
     # unreadable, or it holds files, do not delete -- report and move on.
     $verdict = Test-DirectoryEmpty -Path $dir.FullName
-    if ($verdict -ne "empty") {
-        if ($verdict -like "has-files*") {
+    $clearable = ($verdict -eq "empty") -or
+                 ($IncludeTestResidue -and $verdict -like "test-residue*")
+    if (-not $clearable) {
+        if ($verdict -like "test-residue*") {
+            Write-Host ("SKIP  {0} - {1}; re-run with -IncludeTestResidue" -f $dir.Name, $verdict) -ForegroundColor Yellow
+        } elseif ($verdict -like "has-files*") {
             Write-Host ("SKIP  {0} - {1}; this is not sandbox residue" -f $dir.Name, $verdict) -ForegroundColor Yellow
         } else {
             Write-Host ("SKIP  {0} - still unreadable after takeown; refusing to delete blind" -f $dir.Name) -ForegroundColor Yellow
@@ -158,8 +202,10 @@ foreach ($dir in $targets) {
 
     Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path $dir.FullName) {
-        Write-Host ("FAIL  {0}" -f $dir.Name) -ForegroundColor Red
-        & icacls $dir.FullName 2>&1 | Select-Object -First 4 | ForEach-Object { "        $_" }
+        Write-Host ("FAIL  {0} - still present after takeown+icacls" -f $dir.Name) -ForegroundColor Red
+        Write-Host ("        running as: {0} (elevated={1})" -f $id.Name, $elevated)
+        & takeown /F $dir.FullName /A 2>&1 | Select-Object -First 2 | ForEach-Object { "        takeown: $_" }
+        & icacls $dir.FullName 2>&1 | Select-Object -First 4 | ForEach-Object { "        acl: $_" }
         $failed++
     } else {
         Write-Host ("CLEARED  {0}" -f $dir.Name) -ForegroundColor Green

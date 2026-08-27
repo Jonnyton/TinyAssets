@@ -2,7 +2,7 @@
 ``extensions`` dispatch table the canonical router half consumes.
 
 Tasks 5.2 and 5.4 of
-``openspec/changes/complete-independent-full-platform-targets`` (capability
+``openspec/changes/archive/2026-08-26-complete-independent-full-platform-targets`` (capability
 ``real-world-handoffs-and-outcomes``).
 
 Public behavior composes under the canonical handle surface (design.md): these

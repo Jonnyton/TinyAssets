@@ -1,5 +1,14 @@
 # Preserved worktree content — harness reset P1
 
+> **The files themselves were removed from the working tree on 2026-08-26**, once
+> the reset merged to `main` as `e4180697`. They are permanently in git history
+> and this manifest is the index. Recover any one with:
+> `git show e4180697:docs/audits/harness-reset-preserved/<worktree>/<path>`
+>
+> Keeping 47,000 lines of recovered duplicates checked out served no purpose the
+> history does not already serve. The manifest stays because *knowing what was
+> rescued* is the part a reader needs; the bytes are one command away.
+
 Captured 2026-08-25 before any worktree reap. Base `origin/main` @ `8cbf9769`.
 
 ## Why this exists
@@ -32,14 +41,14 @@ are saved as patches. Only after this landed were the directories safe to remove
 | `wf-blob-locks2` | `tests/test_lease_store.py` | 185790 | `8de4c65d89eaffa8` | 2026-07-21 15:19 |
 | `wf-blob-locks2` | `tinyassets/runtime/lease_store.py` | 96351 | `f20e2bb80c9a8021` | 2026-07-21 15:05 |
 | `wf-drain-20260728-233434-74ed1e-complete-test-identity-and-reset` | `docs/ops/test-identities.md` | 4356 | `2eb31488780cdba8` | 2026-07-29 00:45 |
-| `wf-drain-20260728-233434-74ed1e-complete-test-identity-and-reset` | `openspec/changes/test-identity-and-reset/tasks.md` | 8797 | `0d62e7bc89ba0350` | 2026-07-29 00:45 |
-| `wf-drain-20260728-233434-74ed1e-transport-workflow-chain-buildin` | `openspec/changes/paid-market-track-e-wave-2-transport/tasks.md` | 23326 | `2ddaadc15296d24a` | 2026-07-29 11:08 |
+| `wf-drain-20260728-233434-74ed1e-complete-test-identity-and-reset` | `openspec/changes/archive/2026-08-26-test-identity-and-reset/tasks.md` | 8797 | `0d62e7bc89ba0350` | 2026-07-29 00:45 |
+| `wf-drain-20260728-233434-74ed1e-transport-workflow-chain-buildin` | `openspec/changes/archive/2026-08-26-paid-market-track-e-wave-2-transport/tasks.md` | 23326 | `2ddaadc15296d24a` | 2026-07-29 11:08 |
 | `wf-drain-20260728-233434-74ed1e-transport-workflow-chain-buildin` | `tests/test_paid_market_workflow_routing.py` | 4040 | `7eb840edb9f3cfc3` | 2026-07-29 11:07 |
 | `wf-drain-20260728-233434-74ed1e-transport-workflow-chain-buildin` | `tinyassets/api/market_workflow.py` | 3626 | `a2c6df04ccdd0563` | 2026-07-29 11:07 |
-| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/reconcile-universe-personification-relay/design.md` | 16976 | `75e1c84a7b4fc5f3` | 2026-07-28 23:51 |
-| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/reconcile-universe-personification-relay/implementation-notes.md` | 13973 | `f8528e4ba01db2b4` | 2026-07-28 23:53 |
-| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/reconcile-universe-personification-relay/specs/universe-personification-and-relay/spec.md` | 13368 | `6acb241136871738` | 2026-07-28 23:51 |
-| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/reconcile-universe-personification-relay/tasks.md` | 13197 | `33e89d0c3e6b9cac` | 2026-07-28 23:59 |
+| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/design.md` | 16976 | `75e1c84a7b4fc5f3` | 2026-07-28 23:51 |
+| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/implementation-notes.md` | 13973 | `f8528e4ba01db2b4` | 2026-07-28 23:53 |
+| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/specs/universe-personification-and-relay/spec.md` | 13368 | `6acb241136871738` | 2026-07-28 23:51 |
+| `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `openspec/changes/archive/2026-08-26-reconcile-universe-personification-relay/tasks.md` | 13197 | `33e89d0c3e6b9cac` | 2026-07-28 23:59 |
 | `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py` | 90100 | `a7673362b65f84c5` | 2026-07-28 23:59 |
 | `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `tests/test_universe_write_boundary.py` | 16694 | `3bf5f695c5b19a95` | 2026-07-28 23:58 |
 | `wf-drain-20260728-233434-74ed1e-universe-personification-relay-s` | `tinyassets/universe_server.py` | 90100 | `a7673362b65f84c5` | 2026-07-28 23:59 |
@@ -49,7 +58,7 @@ are saved as patches. Only after this landed were the directories safe to remove
 | `wf-effect-route` | `tests/test_signed_records.py` | 11394 | `8a6ec961088623f4` | 2026-07-21 15:30 |
 | `wf-effect-route` | `tinyassets/runtime/lease_store.py` | 87649 | `ec86d13c677d221f` | 2026-07-21 15:25 |
 | `wf-effect-route` | `tinyassets/runtime/signed_record_contracts.py` | 10134 | `70b142d55af4b66f` | 2026-07-21 15:22 |
-| `wf-test-identity` | `openspec/changes/test-identity-and-reset/tasks.md` | 1508 | `75a40cf3cb21fdf9` | 2026-07-21 17:20 |
+| `wf-test-identity` | `openspec/changes/archive/2026-08-26-test-identity-and-reset/tasks.md` | 1508 | `75a40cf3cb21fdf9` | 2026-07-21 17:20 |
 | `wf-test-identity` | `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/identity.py` | 1769 | `3de4cb3ebc830bfa` | 2026-07-21 17:08 |
 | `wf-test-identity` | `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/status.py` | 55526 | `c8700babf06621f1` | 2026-07-21 17:05 |
 | `wf-test-identity` | `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/auth/middleware.py` | 18310 | `4976f510d92adad6` | 2026-07-21 17:03 |
@@ -80,14 +89,14 @@ Apply with `git -C <worktree> apply <patch>` against the recorded HEAD.
 ## Restore
 
 ```bash
-# a single file
-cp docs/audits/harness-reset-preserved/<worktree>/<path> <path>
+# a single file (the copies were removed 2026-08-26; git is the source)
+git show e4180697:docs/audits/harness-reset-preserved/<worktree>/<path> > <path>
 # a dirty worktree's work
 git -C ../<worktree> apply docs/audits/harness-reset-preserved/<worktree>--<branch>--<head>.patch
 ```
 
-Nothing here is on any branch's history. This directory **is** the only copy — do not delete it
-without confirming each file is either superseded on `main` or genuinely unwanted.
+Every file listed here is in git history as of `e4180697`. The working-tree
+copies were removed once that merged; this manifest is the index.
 ## CI run artifacts (also unknown to git)
 
 `wf-p0-30495376702-artifact` and `wf-p0-30504334373-artifact` each hold 5 small JSON diagnostics
