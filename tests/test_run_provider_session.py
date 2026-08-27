@@ -455,3 +455,68 @@ def test_foreground_run_rejects_unsupported_provider_role_before_launch(
     assert response["terminal_status"] == "failed"
     assert provider.calls == []
     assert captured["effects"] == []
+
+
+def test_async_sub_branch_gets_its_own_session_not_the_parents(
+    tmp_path: Path, monkeypatch, authenticate_request
+) -> None:
+    """A child run must not be refused because the parent holds the session.
+
+    `graph_compiler` passes the parent's ALREADY-PREPARED `provider_call`
+    straight into `execute_branch_async` for an async sub-branch. That reaches
+    `prepare()`'s "already bound" guard, and before this fix the child run was
+    created FAILED before executing a single node.
+
+    The guard is right and stays -- one session must never serve two runs,
+    because its receipt and claim are minted against one run id. The fix is to
+    mint a SECOND session for the child.
+
+    Found by cross-family review of PR #2559 *after* it merged and deployed. It
+    shipped because no test exercised an async sub-branch through a provider
+    session -- this is that test.
+    """
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.foreground_run_provider import (
+        _session_from_provider_call,
+        prepare_foreground_run_provider,
+    )
+
+    _, _, captured = _run_branch(tmp_path, monkeypatch, authenticate_request, _branch(node_count=1))
+    parent_wrapper = captured["provider_call"]
+    parent_session = _session_from_provider_call(parent_wrapper)
+    assert parent_session is not None, "fixture did not produce a real bound session"
+
+    # A real child run row: the child must validate against ITS OWN run, so a
+    # made-up id proves nothing (and correctly fails "run record is missing").
+    from tinyassets.runs import create_run, update_run_status
+
+    child_branch = _branch(node_count=1)
+    save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
+    child_run_id = create_run(
+        tmp_path,
+        branch_def_id=child_branch.branch_def_id,
+        thread_id="thread-child",
+        inputs={},
+        actor="universe:universe_alice",
+    )
+    update_run_status(tmp_path, child_run_id, status="running")
+
+    child_wrapper = prepare_foreground_run_provider(
+        parent_wrapper,
+        run_id=child_run_id,
+        branch=child_branch,
+        branch_version_id=None,
+        allowed_statuses={"running", "queued"},
+    )
+
+    child_session = _session_from_provider_call(child_wrapper)
+    assert child_session is not None, "child run got no session at all"
+    assert child_session is not parent_session, (
+        "the child reused the PARENT's session; its receipt and claim are minted "
+        "against the parent's run id"
+    )
+    # The child must carry no authority inherited from the parent.
+    assert child_session._receipt is None, "child inherited the parent's receipt"
+    assert child_session._claim is None, "child inherited the parent's claim"
+    # And the parent must be left intact for its own remaining nodes.
+    assert _session_from_provider_call(parent_wrapper) is parent_session

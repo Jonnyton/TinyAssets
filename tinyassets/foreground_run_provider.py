@@ -144,6 +144,25 @@ class _ForegroundRunProviderSession:
         if not all(exact):
             raise PermissionError("foreground run state or immutable subject changed")
 
+    @property
+    def bound_run_id(self) -> str:
+        """The run this session is bound to, or "" before prepare()."""
+        return self._run_id
+
+    def constructor_inputs(self) -> dict[str, Any]:
+        """Exactly what a SIBLING session needs, and nothing more.
+
+        Deliberately excludes `_receipt`, `_claim`, `_branch_snapshot` and
+        `_branch_digest`: a child run must admit on its OWN authority against
+        its OWN run row, never inherit the parent's.
+        """
+        return {
+            "base_path": self._base_path,
+            "universe_id": self._universe_id,
+            "principal_id": self._principal_id,
+            "provider_call": self._provider_call,
+        }
+
     def prepare(
         self,
         *,
@@ -632,6 +651,26 @@ def _session_from_provider_call(provider_call: Any) -> _ForegroundRunProviderSes
     return candidate if type(candidate) is _ForegroundRunProviderSession else None
 
 
+def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
+    """The same wrapper shape around a different session.
+
+    The wrapper is a `UniverseBoundProviderCall`, which enforces one exact
+    universe context and operation. The child MUST keep both -- swapping the
+    session must not become a way to swap the universe binding.
+    """
+    from dataclasses import replace
+
+    try:
+        return replace(provider_call, provider_call=session)
+    except TypeError:
+        # Not a dataclass wrapper: fail closed rather than hand back something
+        # that silently drops the universe binding.
+        raise PermissionError(
+            "cannot rebind a foreground provider call of type "
+            f"{type(provider_call).__name__}"
+        ) from None
+
+
 def prepare_foreground_run_provider(
     provider_call: Any,
     *,
@@ -641,13 +680,38 @@ def prepare_foreground_run_provider(
     allowed_statuses: set[str],
 ) -> Any:
     session = _session_from_provider_call(provider_call)
-    if session is not None:
-        session.prepare(
+    if session is None:
+        return provider_call
+
+    # An async SUB-BRANCH arrives here carrying the PARENT's already-prepared
+    # provider_call: `graph_compiler` passes `provider_call=provider_call`
+    # straight into `execute_branch_async` for the child. That used to reach
+    # `prepare()`'s "already bound" guard and refuse, so the child run was
+    # created FAILED before executing a single node (cross-family review of
+    # PR #2559, after it had merged and deployed; the path had no test).
+    #
+    # The guard stays -- one session must never serve two runs, because its
+    # receipt and claim are minted against a single run id. Mint a SIBLING
+    # instead, from the constructor inputs only, so the child admits on its own
+    # authority and is validated against its own run row. The parent is left
+    # untouched for its remaining nodes.
+    bound = session.bound_run_id
+    if bound and bound != run_id.strip():
+        child = _ForegroundRunProviderSession(**session.constructor_inputs())
+        child.prepare(
             run_id=run_id,
             branch=branch,
             branch_version_id=branch_version_id,
             allowed_statuses=allowed_statuses,
         )
+        return _rebind(provider_call, child)
+
+    session.prepare(
+        run_id=run_id,
+        branch=branch,
+        branch_version_id=branch_version_id,
+        allowed_statuses=allowed_statuses,
+    )
     return provider_call
 
 
