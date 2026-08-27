@@ -72,6 +72,7 @@ jobs:
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
         shell: bash
         run: |
@@ -166,8 +167,36 @@ jobs:
           #     tinyassets-universe-server/runtime/tinyassets/auth/, which
           #     contains the same authority code and was unprotected
           #   - renames, handled by the previous_filename projection above
-          AUTHORITY_RE='(^|/)tinyassets/(auth/|credential_vault\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          # ANCHORED to the two real roots. `(^|/)tinyassets/` was permissive so
+          # the packaging mirror would match, but it also matched ANY nested
+          # copy: `docs/audits/harness-reset-preserved/.../tinyassets/api/
+          # permissions.py` is an archived snapshot, not the authority surface,
+          # and DELETING four such copies is what blocked PR #2561 for six review
+          # rounds. Naming both roots keeps the mirror covered and stops the
+          # guard policing docs.
+          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|credential_vault\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
           AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -Ei "$AUTHORITY_RE" || true)"
+
+          # GROUNDED, not regex-only. A path match says WHERE an edit landed,
+          # never WHETHER it can escalate a privilege. PR #2561's entire
+          # authority change was ONE docstring line repointing a spec path after
+          # archiving -- an unbounded prose review demanded for a comment.
+          #
+          # authority_behavior_check.py parses both revisions, strips docstrings,
+          # and compares ASTs. It fails CLOSED on an add, a delete, a rename, a
+          # syntax error, a non-Python path, or an unreadable blob, so the
+          # receipt stands down only when the code is PROVABLY unchanged. It runs
+          # from this trusted base checkout and only ever ast.parse()s the head
+          # blob -- parsing never executes it.
+          if [ -n "$AUTHORITY_HITS" ]; then
+            git fetch --no-tags --depth=1 origin "$HEAD_OID" >/dev/null 2>&1 || true
+            if python scripts/authority_behavior_check.py \
+                 --base "$BASE_OID" --head "$HEAD_OID" $AUTHORITY_HITS; then
+              echo "authority hits are comment/docstring-only -- receipt not required"
+              AUTHORITY_HITS=""
+            fi
+          fi
+
           if [ -n "$AUTHORITY_HITS" ]; then
             GATE_HITS="$(printf '%s\n%s\n' "$GATE_HITS" "$AUTHORITY_HITS" | sed '/^$/d')"
           fi

@@ -93,7 +93,7 @@ def render(label: str, instruction: str) -> str:
             "  (the wrapper feeds Codex via stdin — never multi-line argv — and",
             "  fail-closes with `[peer_agent] ERROR` and a non-zero exit).",
             "  Inline `mcp__codex__codex` only for a quick blocking gate.",
-            'Policy: CLAUDE.md §"Calling Codex via MCP" — dispatch for',
+            'Policy: CLAUDE.md §"Cross-family dispatch" — dispatch for',
             "judgment-class decisions, not routine work.",
         )
     )

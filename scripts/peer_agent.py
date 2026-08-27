@@ -249,14 +249,15 @@ def kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
-def main() -> int:
-    # Background pipes on Windows default to cp1252; peer output routinely
-    # contains non-cp1252 chars (→, —, …) and must not crash the stdout echo.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+def build_arg_parser() -> argparse.ArgumentParser:
+    """The CLI contract, exposed so callers can be checked against it.
+
+    Extracted from `main()` because the dispatch-nudge hook RENDERS a command
+    for agents to run, and the only honest way to test that the rendered shape
+    works is to hand it to this parser. Checking flag presence is not parsing:
+    `--out --prompt-file` with no values passes a membership test and argparse
+    rejects it (cross-family review of PR #2561, round 6).
+    """
     p = argparse.ArgumentParser(
         description="Dispatch a task to the claude/codex CLI as a peer agent."
     )
@@ -280,7 +281,18 @@ def main() -> int:
     p.add_argument(
         "--effort", default=None, help="Codex reasoning effort (minimal/low/medium/high/xhigh)."
     )
-    args = p.parse_args()
+    return p
+
+
+def main() -> int:
+    # Background pipes on Windows default to cp1252; peer output routinely
+    # contains non-cp1252 chars (→, —, …) and must not crash the stdout echo.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+    args = build_arg_parser().parse_args()
 
     # to_native_path BEFORE abspath: abspath("/c/Users/...") on Windows yields
     # <drive>:\c\Users\..., which the MSYS regex can no longer repair.

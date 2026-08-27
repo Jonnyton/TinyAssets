@@ -137,6 +137,11 @@ def test_inventory_covers_every_required_source_family() -> None:
 
 
 def test_inventory_records_canonical_read_interfaces_without_new_truth() -> None:
+    # Three owners (`paid_market_acceptance`, `provider_work`, `provider_attempt`)
+    # were dropped 2026-08-26: each held ONLY a reference into an archived
+    # OpenSpec change, which is unfalsifiable -- archives are frozen, so the
+    # marker can never stop matching while the canonical requirement is free
+    # to change. The checker now refuses such references outright.
     assert set(CANONICAL_READ_INTERFACES) == {
         "identity",
         "acl",
@@ -147,11 +152,8 @@ def test_inventory_records_canonical_read_interfaces_without_new_truth() -> None
         "request_admission",
         "filing_only_wiki_negative",
         "goal_subscription",
-        "paid_market_acceptance",
         "queue",
         "b2",
-        "provider_work",
-        "provider_attempt",
     }
     assert all(CANONICAL_READ_INTERFACES.values())
 
@@ -175,7 +177,11 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
         CallSite(
             "fantasy_daemon/__main__.py",
             "DaemonController._run_graph",
-            "stream",
+            # Qualified since 2026-08-26: `stream` alone could not tell a
+            # compiled-graph run from an HTTP `request.stream()` body read, so
+            # registering the body reads as reviewed would have blinded the
+            # checker to a real graph stream added beside them.
+            "compiled.stream",
         )
         in observed
     )

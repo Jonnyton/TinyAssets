@@ -111,14 +111,20 @@ def test_read_only_codex_command_never_grants_git_metadata(monkeypatch) -> None:
     # takes the last `-s`, but a bypass flag elsewhere in the argv still widens
     # authority, and a reviewer pointed at the live checkout must stay read-only.
     assert command.count("-s") == 1, command
+    # SUBSTRING, not list membership: `--sandbox=danger-full-access` is a single
+    # argv token, so `in command` never sees it. With the trailing
+    # `-s read-only` still present, codex rejects the duplicate sandbox options
+    # and the "guarded" dispatch becomes non-launchable while the test stays
+    # green (round 6, mutation-proven).
+    joined = " ".join(command)
     for banned in (
         "danger-full-access",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--full-auto",
-        "--yolo",
+        "dangerously-bypass",
+        "full-auto",
+        "yolo",
         "workspace-write",
     ):
-        assert banned not in command, f"{banned!r} survives in a read-only command: {command}"
+        assert banned not in joined, f"{banned!r} survives in a read-only command: {command}"
 
 
 # --- Fail-closed dispatch -------------------------------------------------
@@ -187,9 +193,15 @@ def _run_main(
             # even if `build_codex_cmd` pointed `-o` at the wrong path -- the
             # real CLI would then write elsewhere and peer_agent would read an
             # empty file. (Cross-family review of PR #2561, round 5.)
-            target = out
-            if "-o" in argv:
+            if provider == "codex":
+                # No silent fallback: codex's answer arrives ONLY via `-o`, so a
+                # command that lost the flag must produce no readable out-file --
+                # which is what the real CLI would do. Defaulting to `out` here
+                # kept the test green when `-o` was dropped entirely (round 6).
+                assert "-o" in argv, f"codex command has no -o: {argv}"
                 target = Path(argv[argv.index("-o") + 1])
+            else:
+                target = out
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(out_file_text, encoding="utf-8")
         return proc
