@@ -167,4 +167,32 @@ its test file, the other large red cluster (17 failures). Whether that feature
 was retired deliberately or dropped by accident is a question for the founder,
 not a guess.
 
+---
+
+## Update 2026-08-27 (later still): triaging the 81 found a fourth real drop
+
+The 81 were re-run against `814b4f06` (still exactly 81) and clustered by
+failure reason rather than by test name. Most are step-name assertions against
+steps #2442 replaced -- as measured before, those are retired design. But the
+cluster that asserts *capabilities* rather than step names was checked
+individually, and one of them is right:
+
+**No workflow delivers `TINYASSETS_CODEX_AUTH_JSON_B64` or
+`TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64` any more**, while
+`deploy/docker-entrypoint.sh:117,153` still decodes both on container start and
+`deploy/DEPLOY.md:203` still tells the operator to keep the secret rotated.
+Filed as `docs/concerns/2026-08-27-deploy-drops-subscription-auth-sync.md` (P1).
+That is the fourth real drop recovered from #2442.
+
+The same pass cleared a near-identical-looking assertion:
+`TINYASSETS_GITHUB_PR_CAPABILITIES` **did** relocate, to
+`scripts/github-app-token-refresher.py` on a systemd timer installed by
+`install-host-services.yml`. Its assertion is genuinely stale.
+
+Two assertions that look the same, one real and one not, is the concrete reason
+this file has said from the start that the 81 need per-test triage and not
+bulk deletion. Remaining capability clusters not yet individually checked:
+`terminal_receipt_result=` (14), `org.opencontainers.image.revision` (2),
+cloud-worker liveness (2), and the step-summary capability-map line (2).
+
 **Update:** the `recover-unsafe` founder question is answered — accident, not retirement. See `2026-08-27-unsafe-fence-recovery-path-deleted.md` (P1).
