@@ -23,8 +23,10 @@ the agent repeatedly refusing a merge they had never intended to forbid.
   instruction, and `Bash(*)` is already allowed, so `gh pr merge` runs without a prompt. This is the
   simplest fix and the one to reach for.
 - **Or use GitHub-side auto-merge**, which works regardless of session type: branch protection with
-  required status checks plus `gh pr merge --auto`. The PR merges itself when CI goes green. As of
-  2026-07-21 `main` is NOT protected, so this needs setting up before it can be relied on.
+  required status checks plus `gh pr merge --auto`. The PR merges itself when CI goes green.
+  `main` IS protected as of 2026-08-27 -- four required checks (`policy`, `Diff scope declared`,
+  `required-tests`, `invariants`), `enforce_admins` off, no review required. Read the live state
+  with `gh api repos/Jonnyton/TinyAssets/branches/main/protection`; this line is a snapshot.
 - Do NOT try to work around the constraint from inside a background job. Say plainly that the session
   cannot merge, and hand over the exact command sequence.
 
