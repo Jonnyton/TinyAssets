@@ -32,6 +32,7 @@ for a fresh result: the codex -o target is unlinked before dispatch.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -284,7 +285,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> int:
+def _main() -> int:
     # Background pipes on Windows default to cp1252; peer output routinely
     # contains non-cp1252 chars (→, —, …) and must not crash the stdout echo.
     for stream in (sys.stdout, sys.stderr):
@@ -444,6 +445,108 @@ def main() -> int:
     finally:
         if owned_temp:
             Path(owned_temp).unlink(missing_ok=True)
+
+
+# --- dispatch ledger --------------------------------------------------------
+# A Stop hook cannot see a subprocess it did not start, and it certainly cannot
+# see one that already exited. Without a record, "is a dispatch outstanding?"
+# is unanswerable, and a session ends its turn believing a review is running
+# when it finished — or died — minutes earlier. Both happened on 2026-08-27.
+#
+# The file lives beside the SHARED git common dir, not in the worktree: peers
+# are dispatched from lane worktrees while the hook runs in the session's own
+# checkout, and a ledger only one of them can see is no ledger at all.
+
+
+def _git_common_dir(start: Path) -> "Path | None":
+    """The shared `.git` for this checkout, found WITHOUT running git.
+
+    Deliberately filesystem-only. `peer_agent`'s own tests monkeypatch
+    `subprocess` wholesale, so a `git rev-parse` here was intercepted by their
+    fake process and broke eight of them -- a ledger has no business being
+    reachable from the code under test.
+
+    A linked worktree's `.git` is a FILE containing `gitdir: <path>/.git/
+    worktrees/<name>`; the common dir is the part before `worktrees`. In a
+    normal checkout `.git` is the directory itself.
+    """
+    for d in [start, *start.parents]:
+        dot = d / ".git"
+        if dot.is_dir():
+            return dot
+        if dot.is_file():
+            try:
+                text = dot.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            if not text.startswith("gitdir:"):
+                return None
+            git_dir = Path(text.split(":", 1)[1].strip())
+            if not git_dir.is_absolute():
+                git_dir = (d / git_dir).resolve()
+            parts = git_dir.parts
+            if "worktrees" in parts:
+                return Path(*parts[: parts.index("worktrees")])
+            return git_dir
+    return None
+
+
+def _ledger_path() -> "Path | None":
+    common = _git_common_dir(Path(__file__).resolve().parent)
+    return None if common is None else common / "tinyassets-dispatch-ledger.jsonl"
+
+
+def _ledger_note(event: str, out: str | None, code: int | None = None) -> None:
+    """Append one line. Never raises: a ledger failure must not fail a dispatch.
+
+    Silent under pytest. The suite drives `main()` directly, so without this
+    every run of tests/test_peer_agent.py files real rows in the shared ledger
+    and the Stop hook reports a fistful of `verdict.txt` files under a
+    `--basetemp` directory as outstanding reviews. Observed 2026-08-27: 18 rows,
+    all of them tests, surfaced as nine dispatches to act on.
+
+    A ledger whose job is "what is genuinely outstanding" must not be writable
+    by the thing that exercises it.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    path = _ledger_path()
+    if path is None:
+        return
+    row = {"event": event, "out": out, "pid": os.getpid(), "at": time.time()}
+    if code is not None:
+        row["code"] = code
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _out_from_argv() -> str | None:
+    """--out as written, read before argparse so a parse error still records."""
+    argv = sys.argv
+    for flag in ("--out", "-o"):
+        if flag in argv:
+            try:
+                return argv[argv.index(flag) + 1]
+            except IndexError:
+                return None
+    return None
+
+
+def main() -> int:
+    out = _out_from_argv()
+    _ledger_note("started", out)
+    code = 1
+    try:
+        code = _main()
+        return code
+    finally:
+        # `finally`, so a crash or a kill-by-signal still closes the row. An
+        # unclosed row is exactly what "this dispatch vanished" looks like.
+        _ledger_note("finished", out, code=code)
 
 
 if __name__ == "__main__":
