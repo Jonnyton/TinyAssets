@@ -71,12 +71,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # carry their OWN authority (the inbound webhook token, an event-bus
     # subscription) rather than an MCP request identity" -- reviewed design that
     # was simply never registered here.
-    CallSite("tinyassets/api/runs.py", "enqueue_universe_branch_run", "execute_branch_async"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "enqueue_universe_branch_run",
-        "execute_branch_async",
-    ),
     # The two `stream` hits are NAME COLLISIONS, not execution boundaries: the
     # checker matches by callee name, and these are Starlette `request.stream()`
     # body reads -- both added by earlier Codex reviews specifically to bound an
@@ -256,18 +250,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # `stream` is also Starlette's request-body API. These reviewed sites only
     # enforce bounded request bodies and grant no Branch execution authority.
     CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-        "tinyassets/onboarding/__init__.py",
-        "_read_bounded_body",
-        "stream",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-        "tinyassets/universe_server.py",
-        "create_streamable_http_app._hooks_endpoint",
-        "stream",
-    ),
-    CallSite(
         "tinyassets/api/market.py",
         "_action_goal_run_canonical",
         "_action_run_branch_version",
@@ -304,16 +286,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "tinyassets/bug_investigation.py",
         "enqueue_investigation_request",
         "append_task",
-    ),
-    CallSite(
-        "tinyassets/onboarding/__init__.py",
-        "_read_bounded_body",
-        "stream",
-    ),
-    CallSite(
-        "tinyassets/universe_server.py",
-        "create_streamable_http_app._hooks_endpoint",
-        "stream",
     ),
     CallSite(
         "tinyassets/dispatcher.py",
