@@ -272,24 +272,12 @@ PLAN.md is the working theory of what each module is and how it works. **Everyon
 
 | Skill | When to invoke | What it does for PLAN.md |
 |---|---|---|
-| `improve-codebase-architecture` | Before refactoring a module; when a module feels spaghettified; when planning a decomposition | Module audit against this PLAN.md; surfaces drift between described shape and current code |
-| `auto-iterate` | Every time a behavioral failure recurs across sessions (the same mistake twice = ratchet) | Adds the next prevention layer (doc → script → hook → gate); each ratchet records the trigger in the module it touched |
-| `spec-driven-development` | Before writing code for any feature that spans >1 file or >30 minutes | Produces the spec; this PLAN.md is the PLAN-phase artifact for any spec that touches platform shape |
-| `planning-and-task-breakdown` | After a spec exists; when work needs to be broken into ordered tasks | Decomposes; module Substrate fields tell you what code paths are in scope |
-| `incremental-implementation` | During execution of any multi-file change | Thin vertical slices; the open-brain v2 A/B/C/D series is the exemplar |
-| `domain-model` | When a proposal feels fuzzy or names overload existing concepts | Challenges against the Canonical Vocabulary above + the relevant module |
-| `ubiquitous-language` | When terminology drifts (aliases, overloaded words) | Hardens PLAN.md as the canonical name source |
-| `api-and-interface-design` | When designing a new MCP action, module boundary, or contract | Maps to the API & MCP Interface Module |
-| `code-simplification` | After a feature is working but feels heavier than it should | No new abstractions before reducing existing ones |
-| `zoom-out` | Before any non-trivial code change | Build the high-level map first; required first step inside `improve-codebase-architecture` |
+| `openspec` | Before writing code for any substantive change | Produces the change proposal + delta specs; this PLAN.md is the design-truth artifact the specs complement |
+| `implementation-precedent-scout` | Before building something the codebase may already do | Finds the existing primitive so a module gains a caller, not a parallel implementation |
+| `external-research-implications` | When an outside project, paper, or benchmark is proposed as a direction | Compares module-by-module against these modules and writes durable implications |
+| `security-and-hardening` | When a change touches auth, credentials, permissions, or an external effect | Maps to the Boundary, Providers, and API & MCP Interface modules |
 
-**Auto-iteration of the modular skill.** The `improve-codebase-architecture` skill self-iterates against this PLAN.md via three lightweight mechanisms:
-
-1. **Per-module audit stamps.** Each module section carries a `_Last audited: YYYY-MM-DD_` line. The skill updates the stamp on every audit pass; `scripts/plan_module_audit.py` lists stale modules.
-2. **Drift detection.** The same script compares each module's Substrate field against the code paths actually present in the repo and flags mismatches.
-3. **Recurrence ratchet.** When the same architectural smell is found in two consecutive audits of any module, the auto-iterate ladder fires — adds the next prevention layer (doc → script → hook → gate).
-
-PLAN.md itself stays clean — the audit machinery lives in the skill + the script. PLAN.md only carries the stamp and the module shape.
+The ten-row table that stood here until 2026-08-26 named `improve-codebase-architecture`, `auto-iterate`, `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `domain-model`, `ubiquitous-language`, `api-and-interface-design`, `code-simplification`, and `zoom-out` — **every one of which was deleted by the harness reset.** The whole table pointed at nothing, and so did the audit-machinery paragraph below it. Recover the text from git history if the shape is ever wanted back.
 
 ---
 
@@ -369,12 +357,15 @@ _Last audited: 2026-05-19_
 
 **Purpose:** A multi-tenant workflow platform where many users and daemons collaborate without collapsing into one shared chat or one hidden runtime.
 
-**In scope:** Daemon identity (souls, fingerprints, forks), runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, the live file-locked claim bridge, and its fail-closed migration to server-authoritative transactional activation and claiming across cloud + host executor classes.
+**In scope:** Daemon identity (souls, fingerprints, forks), universe agent rosters, public agent definitions and common configurations, universe-private agent bindings, runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, the live file-locked claim bridge, and its fail-closed migration to server-authoritative transactional activation and claiming across cloud + host executor classes.
 
 **Out of scope:** What a daemon *knows* (Brain); what a daemon *evaluates* (Evolution & Evaluation); goal/gate ladder definitions (Goals & Gates); MCP tool surface (API & MCP Interface).
 
 **Principles:**
 - *Separate identity from runtime.* Daemons are public, forkable, summonable agent identities defined by soul files; runtime instances are resource allocations bound to providers, models, and executor hosts. Every `(user, daemon, executor)` tuple is independently addressable; today's N=1 is the degenerate case.
+- *Public definition, private universe binding.* "Custom agent" is the user-facing role; its canonical identity is a daemon. The reusable definition — soul, capabilities, default graph/configuration, and declared evaluator expectations — is public and forkable. Its installation in a universe — role, authority, goals, resource/model bindings, channel mappings, credentials, conversations, private inputs, and learned memory — is private to that universe and is never inherited by a fork or remix.
+- *Creation is open-ended and commons-shaped.* A user may start from a blank definition, instantiate a common public configuration, fork one definition, or blend many definitions into a new one. General operators, assistants, coding agents, and future forms are configurations over the same daemon/graph substrate, not platform-baked agent classes. A "common configuration" is simply a public definition that the community reuses; it has no privileged platform status.
+- *No artificial power-user ceiling.* Every behavioral component is inspectable, replaceable, removable, composable, versioned, importable, and exportable: soul and operating policy, prompts/context policy, tools and custom code, capabilities/adapters, graph topology, triggers/schedules, memory policy/schema, provider/model requirements, evaluators, budgets, and stop/promotion rules. Users may select components from any number of public definitions or ask an agent to propose an inspectable blend with per-component lineage. TinyAssets enforces substrate invariants — authorization, secret isolation, sandboxing, attribution, action/spend caps, and exactly-once external effects — but does not impose agent categories, fixed topology, or a simplified ceiling that forces advanced users to leave.
 - *Definitions, bindings, and runtimes are distinct.* The public
   `AgentDefinition` is the complete remixable component composition; the
   private `AgentBinding` supplies universe-specific role, goals, authority and
@@ -499,6 +490,7 @@ _Last audited: 2026-05-19_
 - *Evaluation is platform-wide, not fantasy-specific.* Fantasy judges, autoresearch metrics, moderation rubrics, real-world outcomes, and discovery ranking are instantiations of one `Evaluator` primitive.
 - *Native optimization, not an ASI-Evolve clone.* TinyAssets adopts the ASI-Evolve / AlphaEvolve lesson as an engine-native pattern: users ask through any MCP-connected chatbot; the platform runs bounded evaluator-driven optimization over nodes, branches, evaluators, prompts, policies, topology; accepted changes land through normal versioned/provenance-aware branch history. Do not vendor or parallel-run a separate ASI pipeline.
 - *Community model.* Branches, nodes, evaluators, and lessons are remixable public commons when privacy policy permits. The platform preserves many competing solution families rather than collapsing to one "best" workflow.
+- *Agent-definition remix preserves lineage.* Blending multiple public agent definitions creates a new versioned definition with every parent reference, contribution attribution, and supporting evaluation evidence intact. Remix never mutates its sources and never copies their universe-private bindings, memory, conversations, inputs, or credentials.
 - *Safety model.* Candidate generators cannot edit the evaluator or the locked harness they are being judged by. Optimization runs declare editable surface, evaluator chain, budget, stop conditions, merge policy, provenance, and visibility up front. Private instance data must not be promoted into reusable cognition unless privacy layer permits.
 - *Acceptance Scenario Packs.* Host-approved 2026-05-02 direction (pending opposite-provider review): TinyAssets grows reusable long-horizon scenario packs combining user simulation, rubric checks, MCP/API or browser evidence, and artifact capture into `EvalResult` evidence. No vendoring of AgencyBench or its harness — define TinyAssets-native scenario contracts.
 
@@ -519,6 +511,7 @@ _Last audited: 2026-05-19_
 **Out of scope:** What a provider is asked to do (the requesting module); evaluation of provider output (Evolution & Evaluation).
 
 **Principles:**
+- *Agent definitions are provider-portable; subscriptions are private bindings.* A public definition declares capabilities and optional provider/model requirements, never credentials. At installation, the universe binds it to the user's existing Claude, Codex, API-key, local-model, or future provider resources under the resource ledger and `allowed_providers` policy. Provider choice may change without forking the reusable agent definition.
 - *Error loudly when the remaining provider can't produce acceptable work.* Fake success is worse than failure. (Hard Rule #8.)
 - *User-owned compute precedes market compute.* A user MUST be able to bind and
   use their own compute/provider authority before TinyAssets offers that user
@@ -571,6 +564,7 @@ _Last audited: 2026-05-28_
 
 **Principles:**
 - *Keep the core portable; add platform wrappers around it.* MCPB packages, Claude Code plugins, registry metadata, and future `.cnw.zip` packaging are distribution layers over the same daemon and tool surface, not replacement architectures.
+- *Plug-and-play and power-user control share one path.* A common configuration should install into the cloud or a host against existing subscription grants in minutes; a fully custom definition uses the same manifest, runtime, and evidence path. Ease of setup is a default experience, not a separate restricted product tier.
 - *One remote product identity.* Every maintained remote registration uses exact name `TinyAssets` and `https://tinyassets.io/mcp`. Retired route families are ordinary absent routes, never aliases, redirects, translation layers, or compatibility products.
 - *MCP host coverage is matrix-driven.* Claude and ChatGPT are P0 launch gates, but every MCP-capable host is a possible customer surface. Caveats + acceptance proofs live in `docs/design-notes/2026-05-01-mcp-host-customer-matrix.md`.
 - *Install-readiness is continuous.* Main is a downloadable release at all times. Every change preserves flawless first-install — packaging auto-builds via CI (import probe + plugin drift check), user-facing copy is branded and unambiguous, broken install is a production bug.
@@ -779,6 +773,8 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **TinyAssets-first, domain-agnostic identity.** Fantasy authoring is an early benchmark domain, not the trunk.
 - **MCP clients + local host dashboard.** MCP is the shared collaborative surface; host operational controls live in a local dashboard.
 - **Daemons are the public agent identity.** Summonable, forkable, defined by durable soul files. Soul changes create new forks rather than overwriting.
+- **Custom agents split public definitions from private bindings.** Users create universe-scoped agents from scratch, from common public configurations, by forking one definition, or by blending many definitions. The resulting agent remains a daemon: its reusable definition and remix lineage are public, while its universe role, authority, resources, channels, credentials, conversations, private inputs, and learned memory remain private to that universe.
+- **TinyAssets competes on leverage, not lock-in or a lowered ceiling.** A power user can customize, compose, import, export, and run every agent component they would control in a bespoke setup. TinyAssets should remain the better choice because it adds the remix commons, preserved lineage and evaluation evidence, cloud/hostless uptime, plug-and-play installation, collaboration, and bindings to subscriptions users already pay for. If an advanced user must leave solely to express a legitimate agent architecture, the platform design is incomplete.
 - **Daemon identity is platform-wide, not domain-specific authoring.** Migrate or rename the current `author_definitions` substrate into the general daemon registry. Content provenance retains `author_id` + `author_kind` discriminator.
 - **Branch-first collaboration.** Branches are first-class, long-lived, public-forkable. Reconciliation optional, no fixed mainline.
 - **Swarm runtime.** No universe-wide single active daemon. Runtime capacity and daemon identity are separate resources.
