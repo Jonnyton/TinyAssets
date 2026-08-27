@@ -212,7 +212,7 @@ against the current workflow individually.
 | Cloud-worker liveness | 2 | **Stale.** The deploy starts `daemon cloudflared logs` only, deliberately — `deploy/deploy_fail_safe.sh:148` names the reason ("unprofiled worker services that an unqualified `up -d` would start"), and `slack-agent` is `profiles: ["slack"]`. |
 | Runtime compose sync | 2 | **REAL DROP.** Already filed as [deploy-drops-compose-sync](2026-08-27-deploy-drops-compose-sync.md). |
 | Step-summary capability-map / codex-auth visibility lines | 2 | **Downstream of the auth drop**, not independent. Restoring delivery should restore the summary lines. |
-| `recover-unsafe` / `retire_cheat_loop_deploy_fence.py` | 6 | **Unresolved — founder question.** The job was dropped by #2442 while its script and its 17-failure test file both still exist. Deliberate retirement or accident is not something to guess. |
+| `recover-unsafe` / `retire_cheat_loop_deploy_fence.py` | 6 | **ANSWERED — accident. Keep.** Task 2.5a authorises deleting the fence only *after* task 2.5's locked migration; 2.1, 2.5 and 2.5a are all unchecked, three workflows still arm the fence, and all four recovery support files are orphaned in-tree. Filed as [unsafe-fence-recovery-path-deleted](2026-08-27-unsafe-fence-recovery-path-deleted.md) (P1). |
 
 **So the file is not uniformly stale, and "delete all 81" would have destroyed
 two real findings and one open spec.** Six assertions must survive in some form
@@ -221,4 +221,3 @@ rewritten against the current workflow, per the two conditions this file set
 before any deletion lands.
 
 
-**Update:** the `recover-unsafe` founder question is answered — accident, not retirement. See `2026-08-27-unsafe-fence-recovery-path-deleted.md` (P1).
