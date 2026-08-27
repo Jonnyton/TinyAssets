@@ -3231,8 +3231,17 @@ class ConnectionLedger:
             so terminating first would overwrite the child's real exit status and
             report every timeout as a process death (Codex FIX D).
             """
-            client_channel.close()
+            # Read liveness BEFORE touching the channel. Closing our end breaks
+            # the child's pipe, and a healthy-but-slow child then dies on the
+            # broken pipe while trying to send "ready" — so an exitcode sampled
+            # after the close can be a death the PARENT caused, which is the very
+            # misattribution this helper exists to prevent.
             own_exit = worker.exitcode
+            if own_exit is None and not worker.is_alive():
+                # Already exited, just not reaped yet; is_alive() reaps it, so
+                # the EOF path recovers the real code instead of losing it.
+                own_exit = worker.exitcode
+            client_channel.close()
             if own_exit is None:
                 worker.terminate()
                 worker.join(timeout=1.0)
