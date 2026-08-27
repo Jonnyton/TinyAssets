@@ -55,6 +55,10 @@ Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|
 
 - API keys are stripped from the peer's environment (subscription auth only),
   matching the daemon's provider policy in `tinyassets/providers/`.
-- `scripts/peer_agent.py` is the older review-specialized wrapper (adversarial preamble + VERDICT line). Prefer `peer_agent.py` for new work; it generalizes both CLIs and arbitrary prompts.
+- **You write the review contract; the wrapper does not.** The retired `codex_review` wrapper used to
+  inject an adversarial preamble and demand a trailing `VERDICT:` line. It was deleted
+  2026-08-26 and `peer_agent.py` does neither — it sends your prompt verbatim. When you need a
+  verdict, ask for one **in the prompt** ("end with exactly one line: `VERDICT: APPROVE|ADAPT|REJECT`")
+  and check that it arrived. Do not assume enforcement that no longer exists.
 - Peers do not see your chat context. Put everything they need in the prompt/brief: file paths, line numbers, what "done" means, and any constraints (e.g. "do not commit").
 - Windows: the wrapper resolves `.cmd` shims and converts Git-Bash paths; run it with plain `python` from Git Bash.
