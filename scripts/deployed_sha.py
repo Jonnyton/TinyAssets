@@ -305,12 +305,41 @@ def main(argv: list[str] | None = None) -> int:
                 f"which contains {args.assert_contains}"
             )
         else:
+            # Say WHICH kind of "not shipped" this is. A commit touching no
+            # build path can never appear in production's sha, because
+            # build-image.yml is path-filtered -- so "check the push event" is
+            # the wrong advice and reads as a missed deploy. Measured
+            # 2026-08-27: four merged PRs, zero build paths between them, and
+            # this gate reported a deploy gap that did not exist.
+            touches_build = None
+            try:
+                touches_build = bool(
+                    _git(
+                        "rev-list", "-1",
+                        f"{info['deployed_sha']}..{args.assert_contains}",
+                        "--", *BUILD_PATHS,
+                    ).strip()
+                )
+            except DeployedShaError:
+                pass
+            info["asserted_touches_build_path"] = touches_build
+            if touches_build is False:
+                detail = (
+                    "This commit touches NO build path, so no image was built "
+                    "and none will be: build-image.yml is path-filtered. Nothing "
+                    "is waiting to deploy -- the running image is correct. "
+                    "Assert a commit that changes product code instead."
+                )
+            else:
+                detail = (
+                    "Merged is not deployed - check that the merge raised a push "
+                    "event (docs/decisions/"
+                    "ADR-004-merge-attribution-and-the-deploy-gap.md)."
+                )
             print(
                 f"NOT SHIPPED: production serves {info['deployed_sha'][:12]} "
-                f"({info.get('deployed_subject', '')!r}), which does NOT contain "
-                f"{args.assert_contains}.\n"
-                "Merged is not deployed - check that the merge raised a push event "
-                "(docs/decisions/ADR-004-merge-attribution-and-the-deploy-gap.md).",
+                f"({info.get('deployed_subject', '')!r}), which does NOT "
+                f"contain {args.assert_contains}.\n" + detail,
                 file=sys.stderr,
             )
         return 0 if ok else 1

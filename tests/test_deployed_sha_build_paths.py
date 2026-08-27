@@ -59,3 +59,64 @@ def test_build_paths_cover_every_workflow_path() -> None:
         "build-image.yml builds on these paths but deployed_sha.BUILD_PATHS "
         f"omits them, so a real deploy gap would read as 'nothing to deploy': {missing}"
     )
+
+
+# --- the two kinds of "not shipped" -----------------------------------------
+
+
+def _assert_contains(monkeypatch, capsys, *, deployed, target, build_hits):
+    """Drive main() with git and the live surface stubbed."""
+    monkeypatch.setattr(
+        deployed_sha, "report",
+        lambda *a, **k: {
+            "deployed_sha": deployed,
+            "deployed_subject": "some subject",
+            "known_to_git": True,
+            "commits_on_main_not_deployed": 4,
+            "build_affecting_not_deployed": 0,
+        },
+    )
+    monkeypatch.setattr(deployed_sha, "contains", lambda *a, **k: False)
+
+    def fake_git(*args):
+        if args[:2] == ("rev-list", "-1"):
+            return build_hits
+        return ""
+
+    monkeypatch.setattr(deployed_sha, "_git", fake_git)
+    monkeypatch.setattr(sys, "argv",
+                        ["deployed_sha.py", "--assert-contains", target])
+    code = deployed_sha.main()
+    return code, capsys.readouterr().err
+
+
+def test_a_commit_with_no_build_path_says_there_is_nothing_to_deploy(
+    monkeypatch, capsys
+):
+    """The gate cried wolf on 2026-08-27: four merged PRs, zero build paths.
+
+    "check that the merge raised a push event" is the wrong advice for a commit
+    that build-image.yml will never build, and it reads as a missed deploy.
+    """
+    code, err = _assert_contains(
+        monkeypatch, capsys, deployed="a" * 40, target="b" * 40, build_hits="",
+    )
+    assert "touches NO build path" in err
+    assert "the running image is correct" in err
+    assert "raised a push event" not in err
+    # The message changes; the CONTRACT does not. Hard Rule 14 still fails.
+    assert code == 1
+
+
+def test_a_commit_that_does_touch_a_build_path_still_names_the_deploy_gap(
+    monkeypatch, capsys
+):
+    """The real gap must keep pointing at ADR-004, which is how it gets fixed."""
+    code, err = _assert_contains(
+        monkeypatch, capsys, deployed="a" * 40, target="b" * 40,
+        build_hits="b" * 40,
+    )
+    assert "raised a push event" in err
+    assert "ADR-004" in err
+    assert "touches NO build path" not in err
+    assert code == 1
