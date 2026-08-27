@@ -66,17 +66,24 @@ if (-not $Root) {
     $Root = Split-Path -Parent $repo
 }
 
-$elevated = ([Security.Principal.WindowsPrincipal]`
-    [Security.Principal.WindowsIdentity]::GetCurrent()`
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($id)
+$elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+# WARN, do not gate. IsInRole is a PREDICTION about whether the deletes will
+# work; takeown's actual result is EVIDENCE. An earlier version refused to run
+# when this returned $false, which stopped a genuinely elevated session dead
+# (reported 2026-08-26 from an elevated prompt). Since every delete is already
+# fail-closed on provable emptiness, attempting and reporting the real outcome
+# is strictly better than declining based on a guess.
 if ($Apply -and -not $elevated) {
-    Write-Error @'
-Not elevated. BUILTIN\Administrators is the only principal with rights on these
-directories; without elevation takeown cannot reach them and every removal will
-fail with Access Denied. Re-run from an elevated PowerShell.
-'@
-    exit 1
+    Write-Warning @"
+Not detected as elevated (running as $($id.Name)).
+Proceeding anyway: the check can be wrong, and each delete is independently
+gated on proving the directory is empty. If takeown cannot reach these
+directories you will see FAIL lines with the actual ACL below -- that is the
+real answer, not this warning.
+"@
 }
 
 # Auto-protect anything git still knows about. A registered worktree is live
@@ -158,8 +165,10 @@ foreach ($dir in $targets) {
 
     Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path $dir.FullName) {
-        Write-Host ("FAIL  {0}" -f $dir.Name) -ForegroundColor Red
-        & icacls $dir.FullName 2>&1 | Select-Object -First 4 | ForEach-Object { "        $_" }
+        Write-Host ("FAIL  {0} - still present after takeown+icacls" -f $dir.Name) -ForegroundColor Red
+        Write-Host ("        running as: {0} (elevated={1})" -f $id.Name, $elevated)
+        & takeown /F $dir.FullName /A 2>&1 | Select-Object -First 2 | ForEach-Object { "        takeown: $_" }
+        & icacls $dir.FullName 2>&1 | Select-Object -First 4 | ForEach-Object { "        acl: $_" }
         $failed++
     } else {
         Write-Host ("CLEARED  {0}" -f $dir.Name) -ForegroundColor Green
