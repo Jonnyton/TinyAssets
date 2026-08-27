@@ -68,10 +68,23 @@ path previously had none.
 1. **The actual cause.** The two candidates in the code are
    `runtime_root.mkdir()` and the `ConnectionLedger` sqlite open inside
    `_build_credential_broker_dispatch`. I could not confirm which — reading the
-   droplet needs `~/.ssh/tinyassets_deploy_ed25519`, absent on this machine.
-   Measurement makes the timeout the *less* likely of the two: the broker module
-   is pure-stdlib and a fresh interpreter imports it in ~0.13s locally, so the
-   old 5s budget had real headroom. Raising it is insurance, not the diagnosis.
+   droplet needs `~/.ssh/tinyassets_deploy_ed25519`, absent on this machine
+   (filed in `docs/host-actions.md`).
+
+   Two hypotheses I checked and **weakened**, recorded so the next session does
+   not re-run them:
+
+   - *Cold-import timeout.* The broker module is pure-stdlib; a fresh
+     interpreter imports it in ~0.13s locally. The old 5s budget had real
+     headroom. Raising it to 30s is insurance, not the diagnosis.
+   - *`/data` ownership.* A bind-mounted `/data` would mask the Dockerfile's
+     build-time `chown` and deny `mkdir` to uid 1001, which would fit "new grant
+     ⇒ new `sha256(grant_id)` runtime dir ⇒ fails, while older grants work" —
+     and the universe re-granted consent on every attempt. But
+     `deploy/compose.yml:111` mounts the **named volume** `tinyassets-data`, not
+     a bind, and a named volume initializes from the image *including*
+     ownership. Weak unless the volume predates the current uid.
+
    **Next step: deploy this, re-run the post, read the named cause.**
 2. **`source_code` nodes are permanently unrunnable.** `X Hello World Static`
    (`cc60c0c4f787`) is `runnable: false` on `node_not_approved`, and

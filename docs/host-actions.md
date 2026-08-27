@@ -14,6 +14,22 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Blocking a proof path
 
+### Droplet deploy key absent on this machine — blocks reading the live daemon log
+
+*2026-08-27: `scripts/droplet.py` needs `~/.ssh/tinyassets_deploy_ed25519`; it is not on this
+checkout's machine, so every `status` / `env` / `ssh` call fails before connecting.*
+
+This is what stopped the X-posting outage from being diagnosed today
+(`docs/concerns/2026-08-27-outbound-proxy-start-failure.md`). The outbound broker child dies at
+startup and the only way to see *why* is the daemon's stderr in the container log. The fix on
+`claude/outbound-proxy-start-diagnosable` now surfaces the cause class to the caller too, so
+deploying it is the alternative route — but reading the log stays the faster one, and the next
+session will hit the same wall.
+
+Install the key, or confirm agents are meant to reach production only through the deployed surface.
+
+---
+
 ### claude.ai account out of credits — blocks the browser `ui-test` route
 
 *2026-08-25 22:18Z: composer disabled, "monthly spend limit … out of credits"; weekly reset
