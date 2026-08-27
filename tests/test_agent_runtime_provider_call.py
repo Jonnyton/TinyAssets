@@ -25,10 +25,16 @@ class _RecordingProvider(BaseProvider):
         text: str = "approved patch",
         error: Exception | None = None,
         on_call=None,
+        input_tokens: int | None = 70,
+        output_tokens: int | None = 30,
+        cost_microunits: int | None = 5,
     ):
         self.text = text
         self.error = error
         self.on_call = on_call
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cost_microunits = cost_microunits
         self.calls: list[tuple[str, str, ModelConfig, Path | None]] = []
 
     async def complete(
@@ -50,6 +56,9 @@ class _RecordingProvider(BaseProvider):
             model="gpt-test",
             family=self.family,
             latency_ms=12.5,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cost_microunits=self.cost_microunits,
         )
 
 
@@ -129,12 +138,77 @@ def test_actual_provider_call_uses_exact_manifest_input_and_registered_universe(
     reservation = service.provider_store.get_reservation(result.reservation_id)
     assert reservation is not None
     assert reservation.state is ProviderInvocationReservationState.SUCCEEDED
+    assert reservation.actual_input_tokens == 70
+    assert reservation.actual_output_tokens == 30
+    assert reservation.actual_total_tokens == 100
+    assert reservation.actual_cost_microunits == 5
+    assert reservation.settled_at == NOW.isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
     replay = service.execute_provider_call(
         admitted.invocation.invocation_id,
         typed_input=_request().typed_input,
         router=router,
     )
     assert replay == result
+    assert len(provider.calls) == 1
+
+
+def test_provider_response_without_complete_usage_is_indeterminate(
+    tmp_path, authenticate_request
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import AgentProviderOutcomeState
+
+    service, admitted, _universe_dir, _manifest = _execution_service(
+        tmp_path, authenticate_request
+    )
+    provider = _RecordingProvider(cost_microunits=None)
+
+    result = service.execute_provider_call(
+        admitted.invocation.invocation_id,
+        typed_input=_request().typed_input,
+        router=ProviderRouter({"codex": provider}),
+    )
+
+    assert result.state is AgentProviderOutcomeState.INDETERMINATE
+    assert result.typed_output is None
+    assert result.blocker_code == "provider_usage_unavailable"
+    reservation = service.provider_store.get_reservation(result.reservation_id)
+    assert reservation is not None
+    assert reservation.state is ProviderInvocationReservationState.INDETERMINATE
+    assert reservation.actual_total_tokens is None
+    assert reservation.actual_cost_microunits is None
+    assert reservation.settled_at is not None
+
+
+def test_terminal_reservation_rearm_replays_without_second_settlement(
+    tmp_path, authenticate_request
+) -> None:
+    service, admitted, _universe_dir, _manifest = _execution_service(
+        tmp_path, authenticate_request
+    )
+    provider = _RecordingProvider()
+    router = ProviderRouter({"codex": provider})
+
+    outcome = service.execute_provider_call(
+        admitted.invocation.invocation_id,
+        typed_input=_request().typed_input,
+        router=router,
+    )
+    settled = service.provider_store.get_reservation(outcome.reservation_id)
+
+    with pytest.raises(PermissionError, match="already armed"):
+        service.arm_launch(admitted.invocation.invocation_id)
+
+    assert service.provider_store.get_reservation(outcome.reservation_id) == settled
+    assert (
+        service.execute_provider_call(
+            admitted.invocation.invocation_id,
+            typed_input=_request().typed_input,
+            router=router,
+        )
+        == outcome
+    )
     assert len(provider.calls) == 1
 
 

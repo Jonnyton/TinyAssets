@@ -37,8 +37,11 @@ Statuses
     SKIPPED  skipped on Linux too — undecidable from this artifact.
     NOT RUN  never executed: excluded from this job (see
              .github/heavy-test-files.txt) or the node id no longer resolves.
-             `required-tests` excludes the heavy files, so a NOT RUN here is
-             usually "look at heavy-tests instead", not "the entry is bogus".
+             The two jobs partition the suite, so a NOT RUN is usually
+             "look at the OTHER artifact", not "the entry is bogus" — and the
+             report names which one, from the artifact it was ASKED to read.
+             Under --run or --junit the lane is unknown and it says so.
+             Only "no matching testcase" means the node id no longer resolves.
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LEDGER = REPO_ROOT / ".github" / "known-failing-tests.txt"
 HEAVY = REPO_ROOT / ".github" / "heavy-test-files.txt"
 ARTIFACT = "junit-required-tests"
+HEAVY_ARTIFACT = "junit-heavy-tests"
 
 
 def _force_utf8_stdio() -> None:
@@ -262,7 +266,7 @@ def main() -> int:
     ap.add_argument("--run-id", help="GitHub Actions run id to pull the artifact from")
     ap.add_argument("--artifact", default=ARTIFACT,
                     help=f"artifact to read (default {ARTIFACT}; use "
-                         "junit-heavy-tests for the heavy files)")
+                         f"{HEAVY_ARTIFACT} for the heavy files)")
     ap.add_argument("--filter", default="", help="only entries whose node id contains this")
     ap.add_argument("--quiet-failed", action="store_true",
                     help="summarize FAILED entries by count instead of listing them")
@@ -291,6 +295,18 @@ def main() -> int:
             print(f"[oracle] reading junit from run {rid}")
             junit_path = download(rid, Path(tmp), args.artifact)
         results = parse_junit(junit_path)
+
+        # Which lane's artifact is this? Authoritative only when we downloaded
+        # it BY NAME. For --run (a local run of the ledger) or an arbitrary
+        # --junit path it is unknowable, and saying so beats guessing.
+        #
+        # Do NOT infer it from the parsed results. An empty or vacuous heavy
+        # artifact contains no heavy path, so inference flips to "required" and
+        # points a heavy entry at the very artifact being read. Caught by
+        # cross-family review 2026-08-27 on an earlier version of this change.
+        lane: str | None = None
+        if not args.run and not args.junit:
+            lane = {ARTIFACT: "required", HEAVY_ARTIFACT: "heavy"}.get(args.artifact)
 
         heavy = read_heavy()
         buckets: dict[str, list[tuple[str, str]]] = {
@@ -325,8 +341,17 @@ def main() -> int:
         if buckets["notrun"]:
             out += ["", "### NOT RUN", ""]
             for nid, _ in buckets["notrun"]:
-                why = ("excluded by heavy-test-files.txt — look at junit-heavy-tests"
-                       if nid.split("::")[0] in heavy else "no matching testcase")
+                is_heavy = nid.split("::")[0] in heavy
+                if lane == "required" and is_heavy:
+                    why = f"excluded by heavy-test-files.txt — look at {HEAVY_ARTIFACT}"
+                elif lane == "heavy" and not is_heavy:
+                    why = f"not in heavy-test-files.txt — look at {ARTIFACT}"
+                elif lane is None:
+                    why = ("not executed by this junit — which lane it covers is "
+                           "unknown under --run/--junit, so this is NOT evidence "
+                           "the entry is bogus")
+                else:
+                    why = "no matching testcase"
                 out.append(f"- `{nid}` — {why}")
 
         if buckets["failed"] and not args.quiet_failed:

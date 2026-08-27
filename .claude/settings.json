@@ -71,6 +71,10 @@
           {
             "type": "command",
             "command": "python \".claude/hooks/supervisor_check.py\""
+          },
+          {
+            "type": "command",
+            "command": "python \".claude/hooks/keep_working_while_waiting.py\""
           }
         ]
       }

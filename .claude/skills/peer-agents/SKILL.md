@@ -27,6 +27,38 @@ echo "One paragraph: what does workflow/router.py do?" | python scripts/peer_age
 
 For big briefs, write the brief to a file with your Write tool and pass `--prompt-file` — avoids shell-quoting and Windows command-line limits. The prompt always goes to the peer via stdin.
 
+## A dispatched peer must not dispatch
+
+**State this in every brief.** A peer given a review brief will, left to itself,
+farm the review out rather than do it: on 2026-08-27 two dispatched Codex
+reviews each spawned their own `peer_agent.py claude` children (four in total),
+created three worktrees, and ran full local `pytest -m "not slow"` sweeps. After
+34 minutes neither had written a single byte to its `--out` file, and both had
+to be killed. The work was recursive, not deep.
+
+Put a constraints block in the brief itself -- the CLI has no flag for it:
+
+```
+HARD CONSTRAINTS ON HOW YOU WORK:
+- Do NOT dispatch sub-agents. No scripts/peer_agent.py, no claude/codex
+  subprocess, no new worktree. You are the reviewer; review it yourself.
+- Do NOT run the full suite. No scripts/ci_required_tests.py, no
+  `pytest -m "not slow"`. Run at most the one test file you need.
+- Budget ~10 minutes. Read the diff and the cited files and reason.
+```
+
+Two more habits that fell out of the same incident:
+
+- **One dispatch at a time.** Two concurrent reviews multiplied the spawn storm
+  and made it much harder to tell which tree of processes belonged to what.
+- **Set `--timeout` to what you will actually wait** (900s reads better than
+  the 1800s default). A peer that has produced nothing at the halfway mark is
+  not about to; check `Get-CimInstance Win32_Process` command lines before
+  waiting out the rest.
+- **A `nohup ... &` dispatch from the Bash tool is not reliably backgrounded** --
+  one such dispatch looked dead (exit 0, no output) and was still running 30
+  minutes later, duplicating a review. Use the tool's own background mode.
+
 ## Output contract
 
 - Success: `--out` file holds the peer's final message; exit 0. The full result is also on the task's stdout, so a background completion preview usually shows it directly.

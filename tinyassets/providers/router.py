@@ -28,7 +28,11 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.provider_work_authority import ProviderInvocationCarrier
+from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
+    ProviderInvocationReservationState,
+    ProviderInvocationSettlementOwner,
+)
 from tinyassets.providers.base import (
     DEGRADED_JUDGE_RESPONSE,
     BaseProvider,
@@ -525,6 +529,47 @@ class ProviderRouter:
             role=role,
             operation=operation,
         )
+        carrier_settled = False
+        router_settles_carrier = (
+            invocation_carrier is not None
+            and invocation_carrier.settlement_owner
+            is ProviderInvocationSettlementOwner.ROUTER
+        )
+
+        def settle_carrier(
+            state: ProviderInvocationReservationState,
+            *,
+            input_tokens: int | None = None,
+            output_tokens: int | None = None,
+            cost_microunits: int | None = None,
+        ) -> None:
+            nonlocal carrier_settled
+            if not router_settles_carrier or carrier_settled:
+                return
+            try:
+                invocation_carrier.settle(
+                    state,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_microunits=cost_microunits,
+                )
+            except Exception as exc:
+                # Name the CAUSE. The bare message sent a founder in circles for
+                # two days on 2026-08-27: every prompt-template run failed with
+                # "provider invocation usage could not be settled" and neither
+                # the universe nor its founder could tell a budget exhaustion
+                # from a carrier-lifecycle error from a storage failure. The
+                # `settle()` path alone has four distinct PermissionError exits.
+                #
+                # `__cause__` was always attached; nothing surfaced it, because
+                # the message the user sees is built from this string. Keeping
+                # the wrapper type (callers branch on it) and appending the
+                # cause costs nothing and makes the failure actionable.
+                raise ProviderAuthorityHeldError(
+                    "provider invocation usage could not be settled: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            carrier_settled = True
         served_authority = universe_context.served_provider if universe_context else None
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
@@ -884,6 +929,25 @@ class ProviderRouter:
                                 universe_dir.parent,
                                 budget_reservation,
                             )
+                    if invocation_carrier is not None:
+                        if isinstance(
+                            exc,
+                            (
+                                ProviderRateLimitedError,
+                                ProviderOverloadedError,
+                                ProviderUnavailableError,
+                            ),
+                        ):
+                            settle_carrier(
+                                ProviderInvocationReservationState.FAILED,
+                                input_tokens=0,
+                                output_tokens=0,
+                                cost_microunits=0,
+                            )
+                        else:
+                            settle_carrier(
+                                ProviderInvocationReservationState.INDETERMINATE
+                            )
                     raise
                 if budget_reservation is not None:
                     finalize_served_provider_budget(
@@ -894,6 +958,38 @@ class ProviderRouter:
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
                         fallback_output=resp.text,
+                    )
+                # A SUCCEEDED settlement must carry KNOWN usage: settle_invocation
+                # rejects anything that is not an int. But usage is optional on
+                # ProviderResponse by design -- "every existing construction site
+                # and non-streaming provider stays a valid terminal
+                # ProviderResponse" (providers/base.py) -- and codex_provider only
+                # populates it when machine accounting is on
+                # (`machine_accounting = bool(config.sandbox_workspace)`,
+                # codex_provider.py:350). A plain prompt-template node has no
+                # sandbox workspace, so a perfectly successful call arrived here
+                # with all three fields None and the settlement destroyed it:
+                # every prompt-template run in the founder's universe failed with
+                # "provider invocation usage could not be settled" on 2026-08-27
+                # while effect-only branches, which take no carrier, kept working.
+                #
+                # INDETERMINATE is the state that already means exactly this, and
+                # its budget treatment is the conservative one (consume the
+                # reservation rather than report a free call). Settling zeros
+                # instead would report the call as free and leave the budget
+                # undrainable.
+                if (
+                    resp.input_tokens is None
+                    or resp.output_tokens is None
+                    or resp.cost_microunits is None
+                ):
+                    settle_carrier(ProviderInvocationReservationState.INDETERMINATE)
+                else:
+                    settle_carrier(
+                        ProviderInvocationReservationState.SUCCEEDED,
+                        input_tokens=resp.input_tokens,
+                        output_tokens=resp.output_tokens,
+                        cost_microunits=resp.cost_microunits,
                     )
                 self._quota.record_success(provider_name)
             except ProviderAuthorityHeldError:
@@ -1028,6 +1124,12 @@ class ProviderRouter:
                 retry_after=dominant_retry_after_s(attempts),
             )
         if invocation_carrier is not None:
+            settle_carrier(
+                ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                input_tokens=0,
+                output_tokens=0,
+                cost_microunits=0,
+            )
             raise AllProvidersExhaustedError(
                 f"Armed provider {invocation_carrier.provider!r} exhausted; "
                 "provider authority forbids fallback widening.",

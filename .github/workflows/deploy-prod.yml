@@ -32,7 +32,17 @@ on:
 
 concurrency:
   # One deploy at a time; never cancel an in-flight deploy mid-swap.
-  group: deploy-prod
+  #
+  # The group is SHARED with every other workflow that mutates this droplet --
+  # install-host-services.yml, restart-daemon.yml, p0-outage-triage.yml all
+  # declare `production-host-mutation`. That is the point: a daemon restart or
+  # a P0 triage must not land in the middle of an image swap. #2442 moved this
+  # workflow to a private `deploy-prod` group, which silently allowed exactly
+  # that overlap; restored 2026-08-27.
+  #
+  # With cancel-in-progress false they queue rather than cancel, so the cost of
+  # sharing is waiting, never a half-applied mutation.
+  group: production-host-mutation
   cancel-in-progress: false
 
 permissions:
@@ -170,6 +180,103 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service && sudo systemctl daemon-reload && echo 'unit installed + reloaded'"
+
+      - name: Prepare codex auth persistent volume
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          VOLUME_NAME="tinyassets-data"
+          TINYASSETS_UID=1001
+          TINYASSETS_GID=1001
+
+          docker volume create "$VOLUME_NAME" >/dev/null
+          VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
+          CODEX_DIR="$VOLUME_DIR/.codex"
+          CLAUDE_DIR="$VOLUME_DIR/.claude"
+
+          # OAuth registration state lives directly at /data/.auth.db.
+          # The volume root must be writable by the container's uid 1001;
+          # otherwise every public MCP initialize request fails in
+          # OptionalOAuthProvider with sqlite3 "unable to open database file".
+          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$VOLUME_DIR"
+          chmod 755 "$VOLUME_DIR"
+          find "$VOLUME_DIR" -maxdepth 1 -type f \
+            \( -name '.auth.db' -o -name '.auth.db-*' \) \
+            -exec chown "$TINYASSETS_UID:$TINYASSETS_GID" {} + \
+            -exec chmod 600 {} + || true
+
+          # Create the directory if missing. mkdir -p is itself a no-op
+          # when the path already exists.
+          if [ ! -d "$CODEX_DIR" ]; then
+            echo "creating codex auth persistent directory at $CODEX_DIR"
+            mkdir -p "$CODEX_DIR"
+          fi
+
+          # Ownership + mode are repaired UNCONDITIONALLY every deploy.
+          # If a prior attempt left the dir root-owned, this heals the
+          # posture so uid 1001 can write. Both chown and chmod are
+          # themselves idempotent — no-op when state already matches.
+          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"
+          chmod 700 "$CODEX_DIR"
+
+          # Migration: if the volume is empty but a tinyassets-worker container is
+          # currently running with a Codex auth.json inside it, copy the live
+          # refresh chain into /data/.codex so the new container preserves it
+          # instead of falling back to the stale env-var secret.
+          if [ ! -f "$CODEX_DIR/auth.json" ]; then
+            tmp_dir="$(mktemp -d)"
+            trap 'rm -rf "$tmp_dir"' EXIT
+            if docker inspect tinyassets-worker >/dev/null 2>&1; then
+              if docker exec tinyassets-worker test -f /data/.codex/auth.json 2>/dev/null; then
+                echo "migrating live codex auth.json from tinyassets-worker:/data/.codex"
+                docker cp tinyassets-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
+              elif docker exec tinyassets-worker test -f /app/.codex/auth.json 2>/dev/null; then
+                echo "migrating legacy codex auth.json from tinyassets-worker:/app/.codex"
+                docker cp tinyassets-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
+              fi
+            fi
+            if [ -s "$tmp_dir/auth.json" ]; then
+              cp "$tmp_dir/auth.json" "$CODEX_DIR/auth.json"
+              chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"
+              chmod 600 "$CODEX_DIR/auth.json"
+            fi
+          fi
+
+          # Confirm final state for the log.
+          ls -la "$CODEX_DIR" || true
+
+          if [ ! -d "$CLAUDE_DIR" ]; then
+            echo "creating Claude auth persistent directory at $CLAUDE_DIR"
+            mkdir -p "$CLAUDE_DIR"
+          fi
+          chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
+          chmod 700 "$CLAUDE_DIR"
+
+          if ! find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
+            tmp_claude="$(mktemp -d)"
+            if docker inspect tinyassets-worker >/dev/null 2>&1; then
+              if docker exec tinyassets-worker test -d /data/.claude 2>/dev/null; then
+                echo "migrating live Claude config from tinyassets-worker:/data/.claude"
+                docker cp tinyassets-worker:/data/.claude/. "$tmp_claude/" || true
+              elif docker exec tinyassets-worker test -d /app/.claude 2>/dev/null; then
+                echo "migrating legacy Claude config from tinyassets-worker:/app/.claude"
+                docker cp tinyassets-worker:/app/.claude/. "$tmp_claude/" || true
+              fi
+            fi
+            if find "$tmp_claude" -mindepth 1 -maxdepth 1 | grep -q .; then
+              cp -a "$tmp_claude"/. "$CLAUDE_DIR"/
+              chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
+              find "$CLAUDE_DIR" -type d -exec chmod 700 {} +
+              find "$CLAUDE_DIR" -type f -exec chmod 600 {} +
+            fi
+            rm -rf "$tmp_claude"
+          fi
+
+          ls -la "$CLAUDE_DIR" || true
+          SH
 
       - name: Run fail-safe deploy on the droplet
         id: deploy

@@ -1,21 +1,36 @@
-# Active lane: BYO-LLM connect flow slice 1
+# Lane: foreground run provider authority
 
-- Purpose: implement the approved owner/founder-only BYO-LLM serving path without ambient or platform-provider authority.
-- Provider/session: `codex-byo-llm-slice1`.
-- Branch: `claude/byo-llm-slice1`.
-- Base ref: `origin/main` at `7b451b2c98abb9b411d35b32def96a319d721594`.
-- Worktree: `C:/Users/Jonathan/Projects/wf-byo-llm-slice1`.
-- STATUS row: `Build BYO-LLM connect flow slice 1`.
-- OpenSpec: `openspec/changes/byo-llm-connect-flow/`, tasks 1.1-1.6 only.
-- Co-advanced contract: `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`, request capability, requester-local admission, and sink validation only.
-- PLAN refs: `Module: Providers`; `Module: API & MCP Interface`.
-- Memory refs: no prior provider memory found; authored proposal/design/tasks are the durable handoff.
-- Related implications: credential custody, custom-agent binding, Slack app ingress, provider routing, cloud-drain source overlap.
-- Ship condition: focused/full relevant tests, Ruff, plugin mirror, mutation proof, exact-head dual-family approval, isolated canary, rendered proof, and production-SHA gate.
-- Abandon condition: the approved design conflicts with current authoritative code in a way that cannot fail closed within slice 1.
-- Pickup hints: preserve `ProviderWorkBinding`; reject caller authority fields; owner/founder only; no direct u-tiny patch; no rollout from this lane.
-- PR expectation: commit locally only until review/canary prerequisites are independently satisfied.
+**Branch:** `resume/run-provider-authority` (from `claude/run-provider-session`)
+**OpenSpec change:** `openspec/changes/run-provider-authority/`
+**PR:** #2559
 
-## Idea feed refs
+## What this lane does
 
-- None promoted; incidental findings stay out of this slice.
+Foreground runs mint their own provider authority instead of borrowing an
+ambient one. `_ForegroundRunProviderSession.admit()` is split in two:
+
+- `prepare()` captures run identity, the Branch snapshot, and its content
+  digest, and validates run state. No authority is minted.
+- `_admit()` mints the authority, and fires lazily from `_ensure_admitted()`
+  on first provider use, under a lock and idempotent on `self._receipt`.
+
+So a run that never calls a provider never mints provider authority, and
+admission validates against state pinned at prepare time rather than re-read at
+use time -- the exact-revision shape this repo uses elsewhere.
+
+## Corrected 2026-08-27
+
+This file previously described a DIFFERENT lane -- "assigned consumer activation
++ visible refusal" on `claude/consumer-activation-visibility`. The branch was
+repurposed for provider authority without updating it, and the
+2026-08-26 handoff flagged the mismatch: **the commits are the truth.**
+
+## State
+
+Four commits on top of `main`. The last (`19524770`) was committed unreviewed
+purely so a worktree teardown could not lose it; it has since been read and the
+two-phase design above is what it implements. `tests/test_run_provider_session.py`
+passes (10 tests).
+
+Authority-critical: `pr-scope-guard` requires an exact-head cross-family review
+receipt before this can merge.

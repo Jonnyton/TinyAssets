@@ -71,12 +71,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # carry their OWN authority (the inbound webhook token, an event-bus
     # subscription) rather than an MCP request identity" -- reviewed design that
     # was simply never registered here.
-    CallSite("tinyassets/api/runs.py", "enqueue_universe_branch_run", "execute_branch_async"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "enqueue_universe_branch_run",
-        "execute_branch_async",
-    ),
     # The two `stream` hits are NAME COLLISIONS, not execution boundaries: the
     # checker matches by callee name, and these are Starlette `request.stream()`
     # body reads -- both added by earlier Codex reviews specifically to bound an
@@ -165,6 +159,13 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "_action_run_branch",
         "execute_branch_async",
     ),
+    # Reviewed 2026-08-25 (run-provider-authority): server-owned trigger
+    # enqueue enters the same governed foreground admission as the MCP action.
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
+        "enqueue_universe_branch_run",
+        "execute_branch_async",
+    ),
     CallSite(
         "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
         "_action_run_branch_version",
@@ -246,6 +247,8 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "Scheduler._maybe_fire_schedule",
         "_run_fn",
     ),
+    # `stream` is also Starlette's request-body API. These reviewed sites only
+    # enforce bounded request bodies and grant no Branch execution authority.
     CallSite(
         "tinyassets/api/market.py",
         "_action_goal_run_canonical",
@@ -258,6 +261,11 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     ),
     CallSite("tinyassets/api/runs.py", "_action_resume_run", "resume_run"),
     CallSite("tinyassets/api/runs.py", "_action_run_branch", "execute_branch_async"),
+    CallSite(
+        "tinyassets/api/runs.py",
+        "enqueue_universe_branch_run",
+        "execute_branch_async",
+    ),
     CallSite(
         "tinyassets/api/runs.py",
         "_action_run_branch_version",

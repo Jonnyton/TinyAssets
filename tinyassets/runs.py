@@ -1,3 +1,4 @@
+# ruff: noqa: E501 - legacy section-rule comments exceed the line limit.
 """Run orchestration for community-designed branches.
 
 Stores run metadata and per-step events in ``<base>/.runs.db`` so Phase 4
@@ -3150,6 +3151,10 @@ def _execute_branch_core(
     inside an ``invoke_branch_spec`` / ``invoke_branch_version_spec``
     node body.
     """
+    # Freeze the exact definition handed to this run. The worker and provider
+    # receipt share this detached snapshot; later author-store edits cannot
+    # change the admitted subject underneath an asynchronous execution.
+    branch = BranchDefinition.from_dict(branch.to_dict())
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
@@ -3161,12 +3166,39 @@ def _execute_branch_core(
         queue_universe_id=_enqueue_universe_id or None,
     )
 
+    try:
+        from tinyassets.foreground_run_provider import prepare_foreground_run_provider
+
+        provider_call = prepare_foreground_run_provider(
+            provider_call,
+            run_id=run_id,
+            branch=branch,
+            branch_version_id=branch_version_id,
+            allowed_statuses={RUN_STATUS_QUEUED},
+        )
+    except Exception as exc:
+        message = f"Provider authority admission failed: {exc}"
+        update_run_status(
+            base_path,
+            run_id,
+            status=RUN_STATUS_FAILED,
+            error=message,
+            finished_at=_now(),
+        )
+        return RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=message,
+        )
+
     executor = _get_executor(invocation_depth=_invocation_depth)
     effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
 
     def _worker() -> RunOutcome:
+        outcome: RunOutcome
         try:
-            return _invoke_graph(
+            outcome = _invoke_graph(
                 base_path,
                 run_id=run_id, branch=branch, inputs=inputs,
                 provider_call=provider_call,
@@ -3196,10 +3228,31 @@ def _execute_branch_core(
                 error="Background worker crashed; see server logs.",
                 finished_at=_now(),
             )
-            return RunOutcome(
+            outcome = RunOutcome(
                 run_id=run_id, status=RUN_STATUS_FAILED,
                 output={}, error="Background worker crashed.",
             )
+        try:
+            from tinyassets.foreground_run_provider import close_foreground_run_provider
+
+            close_foreground_run_provider(provider_call)
+        except Exception as exc:
+            logger.exception("Foreground provider claim release failed for %s", run_id)
+            message = f"Provider authority settlement failed: {exc}"
+            update_run_status(
+                base_path,
+                run_id,
+                status=RUN_STATUS_FAILED,
+                error=message,
+                finished_at=_now(),
+            )
+            outcome = RunOutcome(
+                run_id=run_id,
+                status=RUN_STATUS_FAILED,
+                output={},
+                error=message,
+            )
+        return outcome
 
     future = executor.submit(_worker)
     _track_future(run_id, future)
@@ -3541,6 +3594,23 @@ def resume_run(
             reason="branch_version_mismatch",
         )
 
+    branch = BranchDefinition.from_dict(branch.to_dict())
+    try:
+        from tinyassets.foreground_run_provider import prepare_foreground_run_provider
+
+        provider_call = prepare_foreground_run_provider(
+            provider_call,
+            run_id=run_id,
+            branch=branch,
+            branch_version_id=run.get("branch_version_id") or None,
+            allowed_statuses={RUN_STATUS_INTERRUPTED},
+        )
+    except Exception as exc:
+        raise ResumeError(
+            f"Provider authority admission failed for run '{run_id}': {exc}",
+            reason="provider_authority_held",
+        ) from exc
+
     # Mark RESUMED immediately (before background work starts).
     update_run_status(base_path, run_id, status=RUN_STATUS_RESUMED)
 
@@ -3562,13 +3632,37 @@ def resume_run(
     executor = _get_executor()
 
     def _resume_worker() -> RunOutcome:
-        return _invoke_graph_resume(
+        outcome = _invoke_graph_resume(
             base_path,
             run_id=run_id,
             branch=branch,
             thread_id=thread_id,
             provider_call=provider_call,
         )
+        try:
+            from tinyassets.foreground_run_provider import close_foreground_run_provider
+
+            close_foreground_run_provider(provider_call)
+        except Exception as exc:
+            logger.exception(
+                "Foreground provider claim release failed for resumed run %s",
+                run_id,
+            )
+            message = f"Provider authority settlement failed: {exc}"
+            update_run_status(
+                base_path,
+                run_id,
+                status=RUN_STATUS_FAILED,
+                error=message,
+                finished_at=_now(),
+            )
+            return RunOutcome(
+                run_id=run_id,
+                status=RUN_STATUS_FAILED,
+                output={},
+                error=message,
+            )
+        return outcome
 
     future = executor.submit(_resume_worker)
     _track_future(run_id, future)
