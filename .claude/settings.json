@@ -15,6 +15,17 @@
       "WebFetch(*)",
       "Agent(*)",
       "SendMessage(*)"
+    ],
+    "deny": [
+      "Read(**/*.pyc)",
+      "Read(**/.mypy_cache/**)",
+      "Read(**/.pytest_cache/**)",
+      "Read(**/.ruff_cache/**)",
+      "Read(**/.svelte-kit/**)",
+      "Read(**/.wrangler/**)",
+      "Read(**/__pycache__/**)",
+      "Read(**/lancedb/**)",
+      "Read(**/node_modules/**)"
     ]
   },
   "hooks": {

@@ -16,7 +16,7 @@ gate reports but blocks nothing.
 
 | Required check | Workflow | What it actually verifies |
 |---|---|---|
-| `policy` | `daemon-request-policy.yml` | Reads the PR's `writer:`/`checker:` labels. Every branch is `false`, no violation fires, check passes. |
+| `policy` | `daemon-request-policy.yml` | Read the PR's `writer:`/`checker:` labels. Every branch is `false`, no violation fires, check passes. **Removed 2026-08-27** — measured at 100 successes / 0 failures over 100 runs, with 0 of the last 300 PRs carrying either label. This ADR called it out and it stayed required for four more months; a documented vacuous gate is still a vacuous gate. |
 | `Diff scope declared` | `pr-scope-guard.yml` | Whether release-critical paths were *declared* via the `infra-change` label. Its own honesty note says it "is a scope-declaration gate, not a security control". |
 
 Both premises were confirmed empirically, not by reading:
