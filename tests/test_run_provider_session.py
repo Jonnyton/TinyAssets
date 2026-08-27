@@ -475,7 +475,10 @@ def test_settlement_failure_names_its_cause() -> None:
     from tinyassets.providers import router as router_module
 
     source = inspect.getsource(router_module)
-    marker = 'raise ProviderAuthorityHeldError(\n                    "provider invocation usage could not be settled: "'
+    marker = (
+        'raise ProviderAuthorityHeldError(\n'
+        '                    "provider invocation usage could not be settled: "'
+    )
     assert marker in source, (
         "the settlement wrapper must append the cause to its message; a bare "
         "'could not be settled' is undiagnosable from the surface that shows it"
@@ -484,3 +487,180 @@ def test_settlement_failure_names_its_cause() -> None:
         "the cause must include the exception TYPE -- four different "
         "PermissionErrors reach this path and only the message tells them apart"
     )
+
+
+def test_async_sub_branch_gets_its_own_session_not_the_parents(
+    tmp_path: Path, monkeypatch, authenticate_request
+) -> None:
+    """A child run must not be refused because the parent holds the session.
+
+    `graph_compiler` passes the parent's ALREADY-PREPARED `provider_call`
+    straight into `execute_branch_async` for an async sub-branch. That reaches
+    `prepare()`'s "already bound" guard, and before this fix the child run was
+    created FAILED before executing a single node.
+
+    The guard is right and stays -- one session must never serve two runs,
+    because its receipt and claim are minted against one run id. The fix is to
+    mint a SECOND session for the child.
+
+    Found by cross-family review of PR #2559 *after* it merged and deployed. It
+    shipped because no test exercised an async sub-branch through a provider
+    session -- this is that test.
+    """
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.foreground_run_provider import (
+        _session_from_provider_call,
+        prepare_foreground_run_provider,
+    )
+
+    _, _, captured = _run_branch(tmp_path, monkeypatch, authenticate_request, _branch(node_count=1))
+    parent_wrapper = captured["provider_call"]
+    parent_session = _session_from_provider_call(parent_wrapper)
+    assert parent_session is not None, "fixture did not produce a real bound session"
+
+    # A real child run row: the child must validate against ITS OWN run, so a
+    # made-up id proves nothing (and correctly fails "run record is missing").
+    from tinyassets.runs import create_run, update_run_status
+
+    child_branch = _branch(node_count=1)
+    save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
+    child_run_id = create_run(
+        tmp_path,
+        branch_def_id=child_branch.branch_def_id,
+        thread_id="thread-child",
+        inputs={},
+        actor="universe:universe_alice",
+    )
+    update_run_status(tmp_path, child_run_id, status="running")
+
+    child_wrapper = prepare_foreground_run_provider(
+        parent_wrapper,
+        run_id=child_run_id,
+        branch=child_branch,
+        branch_version_id=None,
+        allowed_statuses={"running", "queued"},
+    )
+
+    child_session = _session_from_provider_call(child_wrapper)
+    assert child_session is not None, "child run got no session at all"
+    assert child_session is not parent_session, (
+        "the child reused the PARENT's session; its receipt and claim are minted "
+        "against the parent's run id"
+    )
+    # The child must carry no authority inherited from the parent.
+    assert child_session._receipt is None, "child inherited the parent's receipt"
+    assert child_session._claim is None, "child inherited the parent's claim"
+    # And the parent must be left intact for its own remaining nodes.
+    assert _session_from_provider_call(parent_wrapper) is parent_session
+
+
+def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:
+    """A wrapped wrapper must not silently hand the child the parent's session.
+
+    `_session_from_provider_call` looked exactly one `.provider_call` deep. Add
+    one forwarding wrapper and it found nothing, so `prepare_...` returned the
+    call UNCHANGED -- and the child run then executed on the PARENT's prepared
+    session, which is the authority bleed the sibling mint exists to prevent.
+    Reachable by adding a single decorator.
+
+    Nothing builds that shape today (api/runs.py constructs the wrapper
+    directly), which is exactly why this is a test and not a bug report:
+    refusing keeps it true. Cross-family review 2026-08-27, finding (d).
+    """
+    from tinyassets import foreground_run_provider as frp
+
+    class _Forwarding:
+        """One extra layer -- the shape the old lookup could not see past."""
+
+        def __init__(self, inner):
+            self.provider_call = inner
+
+    session = object.__new__(frp._ForegroundRunProviderSession)
+    direct = _Forwarding(session)
+    hidden = _Forwarding(direct)
+
+    # Depth 1 is the supported shape and still resolves.
+    assert frp._locate_session(direct) == (session, 1)
+    # Depth 2 is found, and reported as found -- not silently missed.
+    assert frp._locate_session(hidden) == (session, 2)
+    # A call with no session anywhere still passes through untouched.
+    assert frp._locate_session(_Forwarding(_Forwarding(object()))) == (None, 0)
+
+    with pytest.raises(PermissionError, match="unrecognised wrapper chain"):
+        frp.prepare_foreground_run_provider(
+            hidden,
+            run_id="child-run",
+            branch=None,
+            branch_version_id=None,
+            allowed_statuses={"running"},
+        )
+
+
+def test_an_ordinary_provider_call_is_still_left_alone() -> None:
+    """Fail-closed must not become fail-on-everything."""
+    from tinyassets import foreground_run_provider as frp
+
+    plain = object()
+    assert frp.prepare_foreground_run_provider(
+        plain,
+        run_id="r",
+        branch=None,
+        branch_version_id=None,
+        allowed_statuses={"running"},
+    ) is plain
+
+
+def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
+    """`_rebind` asserted a wrapper shape it never checked.
+
+    The docstring said "the wrapper is a `UniverseBoundProviderCall`, which
+    enforces one exact universe context and operation" -- but `replace()` was
+    called on whatever arrived. Any dataclass exposing a real session as
+    `.provider_call` passed depth 1 and was rebound, carrying whatever
+    universe/operation semantics that type happened to have.
+
+    It needed possession of a real session and the child still revalidated
+    owner/run/branch, so it was never a demonstrated cross-tenant mint. It was
+    an invariant the code asserted and did not enforce, which is its own bug.
+    Cross-family review 2026-08-27, finding (c).
+    """
+    from dataclasses import dataclass
+
+    from tinyassets import foreground_run_provider as frp
+
+    session = object.__new__(frp._ForegroundRunProviderSession)
+
+    @dataclass
+    class _ForgedWrapper:
+        """Right shape, wrong type -- and no universe binding to preserve."""
+
+        provider_call: object
+        universe_context: object = None
+        operation: str = "run_graph"
+
+    forged = _ForgedWrapper(provider_call=session)
+    # It still looks like the supported shape to the locator...
+    assert frp._locate_session(forged) == (session, 1)
+    # ...and is refused anyway, on type.
+    with pytest.raises(PermissionError, match="only an exact"):
+        frp._rebind(forged, session)
+
+
+def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
+    """Fail-closed must not break the one shape that is supposed to work."""
+    from tinyassets import foreground_run_provider as frp
+    from tinyassets.providers.call import UniverseBoundProviderCall
+
+    parent = object.__new__(frp._ForegroundRunProviderSession)
+    child = object.__new__(frp._ForegroundRunProviderSession)
+    sentinel = object()
+    wrapper = UniverseBoundProviderCall(
+        provider_call=parent, universe_context=sentinel, operation="run_graph"
+    )
+
+    rebound = frp._rebind(wrapper, child)
+    assert type(rebound) is UniverseBoundProviderCall
+    assert rebound.provider_call is child
+    # The whole point: swapping the session must not swap the binding.
+    assert rebound.universe_context is sentinel
+    assert rebound.operation == "run_graph"
