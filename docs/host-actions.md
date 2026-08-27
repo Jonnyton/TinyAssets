@@ -14,6 +14,22 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Blocking a proof path
 
+### Droplet deploy key absent on this machine — blocks reading the live daemon log
+
+*2026-08-27: `scripts/droplet.py` needs `~/.ssh/tinyassets_deploy_ed25519`; it is not on this
+checkout's machine, so every `status` / `env` / `ssh` call fails before connecting.*
+
+This is what stopped the X-posting outage from being diagnosed today
+(`docs/concerns/2026-08-27-outbound-proxy-start-failure.md`). The outbound broker child dies at
+startup and the only way to see *why* is the daemon's stderr in the container log. The fix on
+`claude/outbound-proxy-start-diagnosable` now surfaces the cause class to the caller too, so
+deploying it is the alternative route — but reading the log stays the faster one, and the next
+session will hit the same wall.
+
+Install the key, or confirm agents are meant to reach production only through the deployed surface.
+
+---
+
 ### claude.ai account out of credits — blocks the browser `ui-test` route
 
 *2026-08-25 22:18Z: composer disabled, "monthly spend limit … out of credits"; weekly reset
@@ -135,7 +151,24 @@ changes; without the regenerate step this looks unfixed.
 **Why it is a host action:** it is a setting in your X account. Nothing in this
 repo can change it.
 
-**Evidence, 2026-08-27** — run `c2b486ff315045c6`, branch `8ab6516d50c5`
+**Reproduced 2026-08-27 through the webapp**, driving `tinyassets.io/mcp/app`
+as the signed-in founder rather than the MCP — run `948a32670485432a`, same
+branch, same result. Two things that run additionally rules out:
+
+- **Not throttling.** `x-rate-limit-remaining: 39999` of `40000`.
+- **Not the wrong connection.** The universe enumerated every saved connection:
+  `webhook:test`, `x:posting`, and the GitHub PR writer. There is exactly one X
+  connection and it is the read-scoped one, so there is no alternative
+  credential to try.
+
+X names the fault itself in the response body:
+
+```json
+{"detail": "Your client app is not configured with the appropriate oauth1 app permissions for this endpoint.",
+ "status": 403, "title": "Forbidden", "type": "https://api.x.com/2/problems/oauth1-permissions"}
+```
+
+**Original evidence, 2026-08-27** — run `c2b486ff315045c6`, branch `8ab6516d50c5`
 ("X Hello World via Codex v2"), production `44c4e205`:
 
 ```

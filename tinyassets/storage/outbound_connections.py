@@ -17,8 +17,10 @@ import secrets
 import socket
 import sqlite3
 import ssl
+import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -341,6 +343,14 @@ def _sanitize_child_environment() -> None:
 #: is created — nothing routes through the general driver by default.
 _OUTBOUND_HTTP_FLAG = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
 
+#: Handshake budget for the spawned broker child, and the var that overrides it.
+_PROXY_STARTUP_TIMEOUT_VAR = "TINYASSETS_OUTBOUND_PROXY_STARTUP_TIMEOUT_S"
+#: Measured: the broker module is pure-stdlib and a fresh interpreter imports it
+#: in ~0.13s, so this is ~100x headroom, not a guess. Kept well under the cap
+#: because the wait occupies a run-executor thread.
+_DEFAULT_PROXY_STARTUP_TIMEOUT_S = 15.0
+_MAX_PROXY_STARTUP_TIMEOUT_S = 120.0
+
 #: The only connection_type values a connection may be created with. Empty is the
 #: legacy/untyped github/slack shape; "http" is the general typed connection. Any
 #: other value is refused at creation AND fails closed at dispatch (FIX 1).
@@ -394,6 +404,56 @@ def _outbound_http_enabled() -> bool:
     )
 
 
+def _proxy_startup_timeout_seconds() -> float:
+    """Seconds to wait for the spawned broker child's ready handshake.
+
+    The child is a ``spawn`` process, so it pays a FULL cold re-import of the
+    package chain before it can answer. The original 5s budget was measured
+    against nothing, and a cold container under load can exceed it — which
+    surfaced as a proxy that "failed to start" with no further detail. Tunable
+    so a slow host can be corrected without a redeploy.
+    """
+    raw = os.environ.get(_PROXY_STARTUP_TIMEOUT_VAR, "").strip()
+    if not raw:
+        return _DEFAULT_PROXY_STARTUP_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        # An explicitly-set unusable value is a misconfiguration, and silently
+        # swallowing it is what Hard Rule 8 forbids. It still must not take
+        # egress down, so: say so loudly, then use the default (Codex FIX C).
+        print(
+            f"{_PROXY_STARTUP_TIMEOUT_VAR}={raw!r} is not a positive number; "
+            f"using the {_DEFAULT_PROXY_STARTUP_TIMEOUT_S:g}s default",
+            file=sys.stderr,
+        )
+        return _DEFAULT_PROXY_STARTUP_TIMEOUT_S
+    # Cap the range. The startup blocks a run-executor thread, and the top-level
+    # pool is small (4 workers), so an unbounded budget lets a handful of hung
+    # startups stall all top-level graph progress for that long (Codex FIX C).
+    if value > _MAX_PROXY_STARTUP_TIMEOUT_S:
+        print(
+            f"{_PROXY_STARTUP_TIMEOUT_VAR}={raw!r} exceeds the "
+            f"{_MAX_PROXY_STARTUP_TIMEOUT_S:g}s cap; clamping",
+            file=sys.stderr,
+        )
+        return _MAX_PROXY_STARTUP_TIMEOUT_S
+    return value
+
+
+def _describe_child_exit(exitcode: int | None) -> str:
+    """Render a broker child's exit status for an operator-facing error."""
+    if exitcode is None:
+        return ""
+    # A negative code is the signal that killed it — -9 is the OOM killer, which
+    # is the difference between "misconfigured" and "the box is out of memory".
+    if exitcode < 0:
+        return f" (killed by signal {-exitcode})"
+    return f" (exitcode {exitcode})"
+
+
 def _run_proxy_worker(
     channel: Any,
     dispatch_factory: str,
@@ -405,10 +465,29 @@ def _run_proxy_worker(
     _sanitize_child_environment()
     try:
         dispatch = _load_dispatch_factory(dispatch_factory, dispatch_config)
-    except Exception:
+    except Exception as exc:
+        # Hard Rule 8. The startup path runs BEFORE any credential is resolved
+        # (`_load_dispatch_factory` only builds the ledger/driver/audit objects),
+        # so the failure carries no credential material. Only the exception CLASS
+        # crosses the wire, which is enough to discriminate the real causes —
+        # PermissionError (runtime_root mkdir), OperationalError (ledger open),
+        # ImportError — which a fixed string never was.
+        #
+        # The traceback is OPERATOR-VISIBLE, NOT host-only: daemon stderr goes to
+        # Docker's fluentd driver (deploy/compose.yml:24,:46) into Vector, which
+        # forwards unredacted to Better Stack (deploy/vector-betterstack.yaml:10).
+        # It reaches no MCP user, but it does reach a third-party log sink, and
+        # exception messages here can carry absolute host paths. Do not widen this
+        # to dump locals or the config dict (Codex FIX B).
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
         _send_message(
             channel,
-            {"op": "startup_failed", "message": "trusted proxy failed to start"},
+            {
+                "op": "startup_failed",
+                "message": "trusted proxy failed to start",
+                "cause": type(exc).__name__,
+            },
         )
         channel.close()
         return
@@ -3116,6 +3195,9 @@ class ConnectionLedger:
                 ).resolve()
             ),
         }
+        # Resolve the budget BEFORE spawning: a validation failure here must not
+        # leak an already-started child (Codex FIX C).
+        timeout = _proxy_startup_timeout_seconds()
         context = multiprocessing.get_context("spawn")
         client_channel, server_channel = context.Pipe(duplex=True)
         worker = context.Process(
@@ -3130,19 +3212,78 @@ class ConnectionLedger:
             daemon=True,
             name=f"outbound-proxy-{grant_id}",
         )
-        worker.start()
+        try:
+            worker.start()
+        except Exception as exc:
+            # A spawn that never starts used to bypass the diagnostic contract
+            # entirely, surfacing as an unrelated error type (Codex FIX D).
+            client_channel.close()
+            server_channel.close()
+            raise ProxyRequestError(
+                f"outbound proxy could not be spawned: {type(exc).__name__}"
+            ) from exc
         server_channel.close()
-        if not client_channel.poll(5.0):
+
+        def _abandon() -> int | None:
+            """Tear the child down, reporting how it died if it died on its own.
+
+            Reads ``exitcode`` BEFORE terminating: our own SIGTERM sets ``-15``,
+            so terminating first would overwrite the child's real exit status and
+            report every timeout as a process death (Codex FIX D).
+            """
+            # Read liveness BEFORE touching the channel. Closing our end breaks
+            # the child's pipe, and a healthy-but-slow child then dies on the
+            # broken pipe while trying to send "ready" — so an exitcode sampled
+            # after the close can be a death the PARENT caused, which is the very
+            # misattribution this helper exists to prevent.
+            own_exit = worker.exitcode
+            if own_exit is None and not worker.is_alive():
+                # Already exited, just not reaped yet; is_alive() reaps it, so
+                # the EOF path recovers the real code instead of losing it.
+                own_exit = worker.exitcode
             client_channel.close()
-            worker.terminate()
-            worker.join(timeout=1.0)
-            raise ProxyRequestError("outbound proxy failed to start")
-        ready = _receive_message(client_channel)
+            if own_exit is None:
+                worker.terminate()
+                worker.join(timeout=1.0)
+            return own_exit
+
+        _describe = _describe_child_exit
+
+        if not client_channel.poll(timeout):
+            exitcode = _abandon()
+            if exitcode is None:
+                raise ProxyRequestError(
+                    "outbound proxy did not finish starting within "
+                    f"{timeout:g}s"
+                )
+            raise ProxyRequestError(
+                f"outbound proxy exited during startup{_describe(exitcode)}"
+            )
+        try:
+            ready = _receive_message(client_channel)
+        except ProxyRequestError:
+            # On Linux a child that dies CLOSES the pipe, so poll() reports
+            # readable and the read hits EOF. That is a child death, not a
+            # malformed frame, and it was reaching the caller as an unrelated
+            # generic message — the most likely production shape (Codex FIX D).
+            exitcode = _abandon()
+            raise ProxyRequestError(
+                f"outbound proxy exited during startup{_describe(exitcode)}"
+            ) from None
+        if isinstance(ready, dict) and ready.get("op") == "startup_failed":
+            cause = ready.get("cause")
+            _abandon()
+            detail = f": {cause}" if isinstance(cause, str) and cause else ""
+            # The cause is the child's exception CLASS only; its full traceback is
+            # on the daemon's stderr. Redacted by construction, still diagnostic.
+            raise ProxyRequestError(
+                f"outbound proxy failed to start{detail}"
+            )
         if ready != {"op": "ready"}:
-            client_channel.close()
-            worker.terminate()
-            worker.join(timeout=1.0)
-            raise ProxyRequestError("outbound proxy failed to start")
+            _abandon()
+            raise ProxyRequestError(
+                "outbound proxy sent an unrecognized startup message"
+            )
         return ScopedConnectionProxy(
             grant_id=grant_id,
             provider=provider,
