@@ -37,10 +37,8 @@ Statuses
     SKIPPED  skipped on Linux too — undecidable from this artifact.
     NOT RUN  never executed: excluded from this job (see
              .github/heavy-test-files.txt) or the node id no longer resolves.
-             The two jobs partition the suite, so a NOT RUN is usually
-             "look at the OTHER artifact", not "the entry is bogus" — the
-             report names which one. Only "no matching testcase" means the
-             node id itself no longer resolves.
+             `required-tests` excludes the heavy files, so a NOT RUN here is
+             usually "look at heavy-tests instead", not "the entry is bogus".
 """
 
 from __future__ import annotations
@@ -326,18 +324,9 @@ def main() -> int:
 
         if buckets["notrun"]:
             out += ["", "### NOT RUN", ""]
-            # Which side did this artifact actually run? Infer it rather than
-            # trusting the filename: if any heavy-listed file appears among the
-            # testcases, this is the heavy artifact.
-            ran_heavy = any(f in heavy for f in {n.split("::")[0] for n in results})
             for nid, _ in buckets["notrun"]:
-                is_heavy = nid.split("::")[0] in heavy
-                if is_heavy and not ran_heavy:
-                    why = "excluded by heavy-test-files.txt — look at junit-heavy-tests"
-                elif not is_heavy and ran_heavy:
-                    why = "not in heavy-test-files.txt — look at junit-required-tests"
-                else:
-                    why = "no matching testcase"
+                why = ("excluded by heavy-test-files.txt — look at junit-heavy-tests"
+                       if nid.split("::")[0] in heavy else "no matching testcase")
                 out.append(f"- `{nid}` — {why}")
 
         if buckets["failed"] and not args.quiet_failed:
