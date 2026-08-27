@@ -1,5 +1,17 @@
 # Handoff — open lanes as of 2026-08-26
 
+> **SUPERSEDED 2026-08-27.** Two of its three lanes are closed:
+> **Lane 2** (`claude/fleet-slice1-reconciler`) already landed —
+> `tinyassets/runtime_reconcile.py` carries `build_stale_fleet_plan` and
+> `reconcile-stale-retired-fleet-artifacts` is archived complete, confirming what
+> this document guessed. **Lane 3** (PR #2561) merged as `a44aed2c`.
+>
+> **Lane 1 (`claude/run-provider-session`, PR #2559) is still the live lane** and
+> its warning below still stands — the last commit is unreviewed WIP and the
+> `_PURPOSE.md` describes a different lane than the commits.
+>
+> Current state: `docs/handoffs/2026-08-27-closed-branch-index.md`.
+
 Written for a **fresh session with no resumed history**. Everything below is on
 GitHub; nothing depends on a local worktree, and all local `wf-*` worktrees were
 removed after this was written.
