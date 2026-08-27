@@ -32,7 +32,17 @@ on:
 
 concurrency:
   # One deploy at a time; never cancel an in-flight deploy mid-swap.
-  group: deploy-prod
+  #
+  # The group is SHARED with every other workflow that mutates this droplet --
+  # install-host-services.yml, restart-daemon.yml, p0-outage-triage.yml all
+  # declare `production-host-mutation`. That is the point: a daemon restart or
+  # a P0 triage must not land in the middle of an image swap. #2442 moved this
+  # workflow to a private `deploy-prod` group, which silently allowed exactly
+  # that overlap; restored 2026-08-27.
+  #
+  # With cancel-in-progress false they queue rather than cancel, so the cost of
+  # sharing is waiting, never a half-applied mutation.
+  group: production-host-mutation
   cancel-in-progress: false
 
 permissions:
