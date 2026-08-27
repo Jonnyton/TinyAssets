@@ -1,6 +1,6 @@
 ---
 name: peer-agents
-description: Use when dispatching a bounded task or independent cross-family review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use implementation-precedent-scout to define the research role and return contract.
+description: Use when dispatching a bounded task or independent cross-family review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use a repo search for precedent to define the research role and return contract.
 ---
 
 # peer-agents

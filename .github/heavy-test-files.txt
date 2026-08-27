@@ -23,7 +23,6 @@ tests/load/test_agent_runtime_activation_load.py
 tests/load/test_agent_runtime_cloud_load.py
 tests/test_api.py
 tests/test_api_edge_cases.py
-tests/test_background_authority_inventory.py
 tests/test_branch_authoring_actions.py
 tests/test_branch_evaluation_iteration.py
 tests/test_branch_runner.py

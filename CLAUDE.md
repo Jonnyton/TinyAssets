@@ -39,7 +39,7 @@ checkout is behind. There is no startup ritual beyond that.
 
 Per-agent memory lives in `.claude/agent-memory/<name>/` — the named owner
 writes, everyone reads. Skills are in `.claude/skills/` (mirrored from the
-canonical `.agents/skills/`); ten of them, named for their task, no router.
+canonical `.agents/skills/`); seven of them, named for their task, no router.
 
 ### Verification
 

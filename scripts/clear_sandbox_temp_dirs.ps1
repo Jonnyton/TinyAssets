@@ -137,12 +137,23 @@ function Test-DirectoryEmpty {
     # thousands of files -- but none of it is work. Classified separately from
     # "has-files" so the operator opts in explicitly via -IncludeTestResidue and
     # anything with even one non-residue file still fails closed.
-    $residueRoots = @(".pytest_cache", ".pytest_tmp", ".tmp", ".tmp-pytest",
-                      ".test-run", ".claude", "__pycache__")
+    # EXACT names only. An earlier version matched with StartsWith on prefixes
+    # like ".claude" and ".tmp", which also matches ".claude/agent-memory" --
+    # real, irreplaceable content -- and would have let -IncludeTestResidue
+    # delete it recursively. Prefix matching cannot express "test output" safely,
+    # so this is an exact allowlist and nothing else counts as residue.
+    $residueRoots = @(".pytest_cache", ".pytest_tmp", ".tmp-pytest",
+                      "__pycache__", ".ruff_cache", ".mypy_cache")
+    $residuePatterns = @("^\.pytest_tmp_[A-Za-z0-9]+$", "^\.test-run-[A-Za-z0-9._-]+$",
+                         "^\.tmp$", "^_test_tmp$", "^_test_tmp_[A-Za-z0-9._-]+$")
     $foreign = @($files | Where-Object {
         $rel = $_.FullName.Substring($Path.Length).TrimStart("\")
         $first = ($rel -split "\\")[0]
-        -not ($residueRoots | Where-Object { $first -eq $_ -or $first.StartsWith($_) })
+        $ok = $residueRoots -contains $first
+        if (-not $ok) {
+            foreach ($pat in $residuePatterns) { if ($first -match $pat) { $ok = $true; break } }
+        }
+        -not $ok
     })
     if ($foreign.Count -eq 0) { return "test-residue:$($files.Count)" }
     return "has-files:$($foreign.Count)"

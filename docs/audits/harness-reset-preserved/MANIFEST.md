@@ -89,14 +89,14 @@ Apply with `git -C <worktree> apply <patch>` against the recorded HEAD.
 ## Restore
 
 ```bash
-# a single file
-cp docs/audits/harness-reset-preserved/<worktree>/<path> <path>
+# a single file (the copies were removed 2026-08-26; git is the source)
+git show e4180697:docs/audits/harness-reset-preserved/<worktree>/<path> > <path>
 # a dirty worktree's work
 git -C ../<worktree> apply docs/audits/harness-reset-preserved/<worktree>--<branch>--<head>.patch
 ```
 
-Nothing here is on any branch's history. This directory **is** the only copy — do not delete it
-without confirming each file is either superseded on `main` or genuinely unwanted.
+Every file listed here is in git history as of `e4180697`. The working-tree
+copies were removed once that merged; this manifest is the index.
 ## CI run artifacts (also unknown to git)
 
 `wf-p0-30495376702-artifact` and `wf-p0-30504334373-artifact` each hold 5 small JSON diagnostics

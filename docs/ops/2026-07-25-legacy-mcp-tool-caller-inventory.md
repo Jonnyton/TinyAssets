@@ -1,5 +1,9 @@
 # Legacy hidden-MCP-tool caller inventory
 
+> **Historical (2026-08-26):** `scripts/navigator_wiki_sweep.py` was deleted. The
+> inventory below records what was true when written; it is not a live runbook.
+
+
 **Change:** `openspec/changes/retire-legacy-live-mcp-tools` — evidence for tasks 2.1, 2.2, 2.3.
 **Date:** 2026-07-25. **Provider:** claude-code (Opus 5), branch `claude/o5-retire-inventory`.
 **Revision:** **v4** — v2 (`9bd88a07`) reworked v1 (`18379010`) after an opposite-provider review

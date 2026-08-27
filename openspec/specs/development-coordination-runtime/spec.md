@@ -20,7 +20,7 @@ The session sync gate SHALL fetch the configured remote with pruning unless invo
 
 ### Requirement: Worktree Inspection Preserves Lane Intent
 
-The worktree status tool SHALL combine Git worktree state, branch/upstream state, `STATUS.md` references, pull-request/merge evidence, and local `_PURPOSE.md` metadata into a per-worktree classification. Dirty worktrees MUST take precedence over cleanup classifications. A clean lane whose branch is fully merged or whose upstream is gone MAY be marked ready to remove, while an unmerged clean local branch with purpose metadata but no STATUS or pull-request route SHALL be reported as needing promotion. The tool SHALL expose both a human table and machine-readable JSON, and any printed cleanup commands MUST remain suggestions rather than executing removal.
+The worktree status tool SHALL combine Git worktree state, branch/upstream state, pull-request/merge evidence, and local `_PURPOSE.md` metadata into a per-worktree classification. Dirty worktrees MUST take precedence over cleanup classifications. A clean lane whose branch is fully merged or whose upstream is gone MAY be marked ready to remove, while an unmerged clean local branch with purpose metadata but no pull-request route SHALL be reported as needing promotion. The tool SHALL expose both a human table and machine-readable JSON, and any printed cleanup commands MUST remain suggestions rather than executing removal.
 
 #### Scenario: Dirty merged worktree is not declared removable
 
@@ -76,11 +76,8 @@ The cross-provider drift checker SHALL report a `missing-artifact` issue when a 
 - **THEN** it emits a JSON array whose issue objects preserve `code`, `path`, `message`, and `prescription`
 
 ### Requirement: Coordination inspectors expose automation-facing JSON modes
-`claim_check.py --json` SHALL emit the same claimable, blocked, in-flight, host-owned, stale, and prospective-file classifications used by its text report as a JSON object. `worktree_status.py --json` SHALL emit its worktree records as a JSON array, and `provider_context_feed.py --json` SHALL emit its ranked context candidates as a JSON array. JSON mode SHALL inspect and report state without claiming work or mutating a worktree.
+`worktree_status.py --json` SHALL emit its worktree records as a JSON array, and `provider_context_feed.py --json` SHALL emit its ranked context candidates as a JSON array. JSON mode SHALL inspect and report state without claiming work or mutating a worktree.
 
-#### Scenario: Claim classifications are machine-readable
-- **WHEN** `claim_check.py` is invoked with a provider and `--json`
-- **THEN** the result is a parseable JSON object containing the current classified STATUS rows and any prospective-file result
 
 #### Scenario: Worktree inventory is machine-readable
 - **WHEN** `worktree_status.py --json` completes
@@ -128,8 +125,8 @@ The authority-resolution contract SHALL use schema version `resolver-decision-v1
 
 The development coordination runtime SHALL provide a read-only OpenSpec flow
 inspector that enumerates active change directories, counts completed and
-unchecked task checkboxes, maps exact active change names to `STATUS.md` Work
-rows and owners, reports global and exact-session provider WIP, and reports
+unchecked task checkboxes, derives ownership from git branches that name a change,
+reports global and exact-session provider WIP, and reports
 recent active-change admission and archive counts when a git comparison window
 is requested. It MUST expose equivalent human-readable and JSON results and
 MUST NOT create, edit, claim, split, sync, archive, or delete any change.
@@ -143,9 +140,9 @@ session-start step.
 - **THEN** the result includes aggregate task totals and one record per change
 - **AND** the tracked working tree is byte-identical before and after inspection
 
-#### Scenario: Incomplete active change is absent from live coordination
+#### Scenario: Incomplete active change has no owning branch
 
-- **WHEN** an active change with unchecked tasks appears in no `STATUS.md` Work
+- **WHEN** an active change with unchecked tasks is named by no git branch
   row
 - **THEN** the inspector classifies that change as `untracked`
 - **AND** it does not infer implementation authority from the change artifacts
@@ -216,7 +213,7 @@ untracked changes for triage without recommending that they be built.
 - **AND** it directs the provider to triage coordination state first
 
 ### Requirement: OpenSpec delivery flow supports exact-ref inspection
-The OpenSpec flow inspector SHALL support a caller-selected validated Git ref and SHALL classify `STATUS.md`, active change artifacts, task counts, ownership, and recommendations from one immutable snapshot of that ref. Ref inspection MUST remain read-only, MUST NOT move the working tree, and MUST fail closed rather than mixing working-tree and ref content.
+The OpenSpec flow inspector SHALL support a caller-selected validated Git ref and SHALL classify active change artifacts, task counts, ownership, and recommendations from one immutable snapshot of that ref. Ref inspection MUST remain read-only, MUST NOT move the working tree, and MUST fail closed rather than mixing working-tree and ref content.
 
 #### Scenario: Detached controller is behind current main
 - **WHEN** the working tree contains older OpenSpec or STATUS content and the caller selects `origin/main`
@@ -226,6 +223,48 @@ The OpenSpec flow inspector SHALL support a caller-selected validated Git ref an
 - **WHEN** the selected ref cannot be validated or its coordination snapshot cannot be read
 - **THEN** inspection exits non-zero with a bounded diagnostic
 - **AND** it emits no fallback report from the working tree
+
+### Requirement: Gate-defining and authority-critical changes need an exact-head review receipt
+
+A pull request that edits the files DEFINING the required-test gate
+(`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
+`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`,
+`scripts/drain_review_gate.py`) or the authority-critical product paths
+(`tinyassets/auth/`, `tinyassets/credential_vault.py`,
+`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`) SHALL
+carry an exact-head review receipt in the pull-request BODY naming an APPROVE
+verdict, the unchanged head SHA, and a durable artifact. The check SHALL run
+from the trusted base checkout so a pull request cannot weaken the rule judging
+it. Matching SHALL cover renames (via the previous path) and SHALL be
+case-insensitive, and SHALL include the packaging runtime mirror of those paths.
+A deletion-only edit to the quarantine ledger SHALL be exempt, because it only
+tightens the ratchet; any addition SHALL keep the receipt requirement.
+
+#### Scenario: Renaming a protected file does not evade the receipt
+- **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
+- **THEN** the guard reports the authority hit and requires the receipt
+
+### Requirement: Peer dispatch runs from a lane-local worktree with bounded autonomy
+
+Cross-family dispatch SHALL run the peer CLI as a subprocess against an explicit
+working directory so a write-enabled run is confined to a lane worktree rather
+than the live checkout. Read-only SHALL be the default; write autonomy SHALL be
+explicit. The peer's result SHALL always land in the declared output file, and a
+provider failure, timeout, or non-launchable CLI SHALL produce a non-zero exit
+and an explicit error marker rather than a silent empty result.
+
+#### Scenario: A failed dispatch is distinguishable from an empty answer
+- **WHEN** the peer CLI cannot launch
+- **THEN** the output carries an explicit error marker and the exit code is non-zero
+
+### Requirement: Provider launches are consoleless on Windows
+
+Subprocess provider launches on Windows SHALL suppress console-window creation
+so an unattended session does not spawn visible windows.
+
+#### Scenario: A dispatched provider opens no console window
+- **WHEN** a peer provider subprocess starts on Windows
+- **THEN** it is created with no new console
 
 ---
 
@@ -240,7 +279,7 @@ is worse than silence -- a reader cannot tell a stale requirement from a live on
 |---|---|
 | STATUS claims / STATUS row lifecycle | `STATUS.md` retired 2026-08-25; live state moved to typed homes (`openspec/changes/`, `docs/concerns/`, `docs/host-actions.md`, git branches) |
 | Agent Village (2 requirements) | `command_center/` deleted -- it visualised a concurrent-agent fleet that no longer runs, and read the retired board |
-| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision |
+| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision. **Three behaviours in that block survived their machinery and were re-specified above** rather than retired with it: the exact-head review receipt (still enforced by `pr-scope-guard.yml`, `auto-enroll-merge.yml`, `scripts/drain_review_gate.py`), lane-local worktree dispatch (`scripts/peer_agent.py`), and consoleless provider launch. A blanket retirement of the block would have deleted live contracts -- caught by cross-family review 2026-08-26. |
 
 Recover any of it from git: the reset merged as `e4180697`, and this file's
 history holds the full text.

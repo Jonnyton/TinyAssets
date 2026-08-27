@@ -102,7 +102,7 @@ falling back to a raw read.
 
 Canonical in `.agents/skills/`, mirrored to `.claude/skills/`
 (`powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` after
-editing). Ten skills named for their task -- read the matching one; there is no
+editing). Seven skills named for their task -- read the matching one; there is no
 router. Each carries project knowledge you cannot infer from the repo. The 24
 deleted on 2026-08-25 encoded generic practice a current model already has;
 before adding one back, answer the question that removed them: **which model
