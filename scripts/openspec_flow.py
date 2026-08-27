@@ -34,6 +34,34 @@ def _task_counts_text(text: str) -> tuple[int, int]:
     return completed, len(matches) - completed
 
 
+def _status_rows(status_path: Path) -> list[dict[str, str]]:
+    if not status_path.exists():
+        return []
+    return _status_rows_text(status_path.read_text(encoding="utf-8"))
+
+
+def _status_rows_text(text: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 4 or cells[0] in {"Task", "---"}:
+            continue
+        if all(set(cell) <= {"-", ":"} for cell in cells):
+            continue
+        rows.append(
+            {
+                "task": cells[0],
+                "files": cells[1],
+                "depends": cells[2],
+                "status": cells[3],
+                "raw": line,
+            }
+        )
+    return rows
+
+
 def _row_mentions(row: dict[str, str], change_name: str) -> bool:
     boundary = rf"(?<![A-Za-z0-9_-]){re.escape(change_name)}(?![A-Za-z0-9_-])"
     return re.search(boundary, row["raw"]) is not None
@@ -303,14 +331,14 @@ def build_report(
 
     if git_ref is not None:
         candidate_names, snapshot = _git_ref_snapshot(root, git_ref)
-        rows = []  # STATUS.md retired 2026-08-25; ownership comes from branches
+        rows = _status_rows_text(snapshot.get("STATUS.md", ""))
 
         def read_change_file(name: str, filename: str) -> str | None:
             return snapshot.get(f"openspec/changes/{name}/{filename}")
 
     else:
         changes_root = root / "openspec" / "changes"
-        rows = []  # STATUS.md retired 2026-08-25; ownership comes from branches
+        rows = _status_rows(root / "STATUS.md")
         candidate_names = (
             sorted(
                 path.name
@@ -414,11 +442,14 @@ def build_report(
         "provider_wip": {
             provider: sorted(names) for provider, names in sorted(provider_wip.items())
         },
-        # STATUS.md was the only source of claim rows and was retired
-        # 2026-08-25, so this signal has no input. Emitting [] would read as
-        # "no collisions found", which is a false clean -- say unavailable.
-        "collision_atoms": None,
-        "collision_atoms_unavailable": "STATUS.md retired 2026-08-25; ownership is branch-derived",
+        # A board-less repo has no claim rows, so this would emit [] -- which
+        # reads as "no collisions found" when it means "no data source". Say
+        # unavailable instead; `rows` is non-empty only when a STATUS-style board
+        # actually exists (it was retired 2026-08-25).
+        "collision_atoms": _collision_atoms(rows) if rows else None,
+        "collision_atoms_unavailable": (
+            None if rows else "no claim board; ownership is branch-derived"
+        ),
         "recommendations": [
             change["name"] for change in completed_first + claimed_next + queued_last
         ],
