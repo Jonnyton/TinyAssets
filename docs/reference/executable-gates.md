@@ -125,30 +125,51 @@ narrow search is not evidence of emptiness — the same mistake as
 `Get-ChildItem -ErrorAction SilentlyContinue` returning empty on a directory it
 could not read.
 
-## Why 925 local branch refs are not being bulk-deleted
+## Classifying local branch refs: the check that works
 
-Measured 2026-08-26. The primary checkout carries ~975 local branches; 50 were
-provably redundant (on the remote, or merged into `main`) and were deleted. The
-remaining **925 cannot be safely classified**, and the reason is worth writing
-down because the obvious checks all lie:
+Measured 2026-08-26, resolved 2026-08-27. The primary checkout carried ~975
+local branches. The first pass deleted 50 provably-redundant ones and concluded
+the remaining 925 **could not be safely classified**, because every cheap check
+lies under squash-merge:
 
 | Check | Why it lies here |
 |---|---|
-| `git branch --merged main` | This repo **squash-merges**. A squash-merged branch's commits are not ancestors of `main`, so it reports "unmerged" for work that fully landed. `harness-reset` proved this: reported unmerged, content byte-identical to `main`. |
+| `git branch --merged main` | This repo **squash-merges**. A squash-merged branch's commits are not ancestors of `main`, so it reports "unmerged" for work that fully landed. `harness-reset` proved it: reported unmerged, content byte-identical to `main`. |
 | `git diff main..branch` | Sampled 40: all differed by ~2,400 files. That is `main`'s forward progress since they branched, not their content. |
-| `git cherry main branch` | Sampled 14: 5 had zero unique commits, 9 had 1–50. But squash-merging changes patch-ids, so a landed branch's commits still show as `+`. Over-reports. |
+| `git cherry main branch` | Sampled 14: 5 had zero unique commits, 9 had 1–50. Squash-merging changes patch-ids, so a landed branch's commits still show as `+`. Over-reports. |
 
-With squash-merge, no cheap check answers "does this branch hold unlanded
-work?" — it needs per-branch comparison against `main` as it stood when that
-branch diverged.
+That conclusion was **too pessimistic**, and the fix was to stop asking git.
 
-**So the branches stay.** They are inert: a ref is a 41-byte file, they are not
-worktrees, and they cost nothing but noisy `git branch` output. Deleting 925 of
-them to tidy a listing risks unlanded work that nobody has inventoried, and
-Hard Rule 13 exists for exactly that trade.
+**Ask GitHub instead.** The repo has `delete_branch_on_merge: true`, so a local
+branch whose upstream reads `[gone]` had its remote deleted — and intersecting
+those with the head refs of *merged* PRs gives a set whose work provably landed:
 
-**Prevention beats cleanup.** Merge with `gh pr merge --delete-branch` and the
-ref goes with the PR. The accumulation is the bug; the pile is only its symptom.
+```
+git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads \
+  | grep '\[gone\]' | awk '{print $1}' | sort -u          > gone.txt
+gh pr list --state merged --limit 1000 --json headRefName \
+  --jq '.[].headRefName' | sort -u                        > merged.txt
+comm -12 gone.txt merged.txt                              # provably landed
+```
+
+931 local branches → 853 `[gone]` → **716 also matched a merged PR**. Excluding
+branches checked out in a worktree (`harness-cut2` was in the set — a real trap)
+and `main` left 715, deleted with their shas recorded first. **931 → 216.**
+
+Both halves matter: `[gone]` alone is not proof (a remote can be deleted without
+merging), and a merged PR alone is not proof the *local* ref is redundant.
+
+**What remains, and why it stays:**
+
+| Remaining | Count | Why |
+|---|---|---|
+| Gone upstream, no merged PR | 138 | Remote deleted without merging — abandoned, or unlanded. Not distinguishable cheaply. |
+| Live tracking branch | 46 | Remote still exists. |
+| **Never pushed** | 32 | **Highest risk.** Nothing anywhere else holds them. This is the class that held `99529969`, a droplet-diagnostics commit found on no remote during the 2026-08-26 audit. Never bulk-delete these. |
+
+**Prevention still beats cleanup.** `delete_branch_on_merge` is already on, so
+new merges self-clean; the pile was historical. Run the intersection above when
+it grows again — it is cheap, and it is the only check here that does not lie.
 
 ## Not gates, and should not become gates
 
